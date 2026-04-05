@@ -1,10 +1,10 @@
 :root {
     --player-bg: #000;
     --ui-white: #f8f8f8;
-    --ui-muted: rgba(250, 250, 250, 0.65);
+    --ui-muted: rgba(248, 248, 248, 0.86);
     --ui-dim: rgba(12, 12, 12, 0.78);
-    --ui-line: rgba(245, 245, 245, 0.38);
-    --ui-buffered: rgba(245, 245, 245, 0.9);
+    --ui-line: rgba(245, 245, 245, 0.42);
+    --ui-buffered: rgba(245, 245, 245, 0.72);
     --ui-accent: #e50914;
     --font-netflix-sans:
         "Netflix Sans",
@@ -200,7 +200,7 @@ body {
 }
 
 .top-row {
-    padding: 24px 26px;
+    padding: 30px 34px 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -249,14 +249,14 @@ body {
 .controls-panel {
     grid-row: 3;
     align-self: end;
-    padding: 0 20px 24px;
+    padding: 0 24px 26px;
     pointer-events: auto;
 }
 
 .seek-row {
     display: flex;
     align-items: center;
-    gap: 18px;
+    gap: 12px;
 }
 
 .seek-bar {
@@ -288,9 +288,11 @@ body {
 }
 
 .duration {
-    min-width: 54px;
+    min-width: 62px;
     text-align: right;
-    font-size: 1.15rem;
+    font-size: 1.02rem;
+    font-weight: 400;
+    letter-spacing: -0.015em;
     color: var(--ui-muted);
 }
 
@@ -306,25 +308,34 @@ body {
 .controls-right {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 12px;
 }
 
 .controls-cluster {
     display: flex;
     align-items: center;
-    gap: 18px;
+    gap: 16px;
+}
+
+.volume-control {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .episode-label {
     margin: 0;
     text-align: center;
-    font-size: clamp(1.15rem, 1.8vw, 2rem);
+    font-size: clamp(1.08rem, 1.45vw, 1.58rem);
+    font-weight: 500;
+    line-height: 1.1;
     color: #f3f3f3;
-    letter-spacing: -0.015em;
+    letter-spacing: -0.02em;
 }
 
 .episode-label b {
-    font-weight: 700;
+    font-weight: 600;
 }
 
 .icon-btn,
@@ -346,8 +357,8 @@ body {
 }
 
 .icon-btn svg {
-    width: 42px;
-    height: 42px;
+    width: 46px;
+    height: 46px;
     fill: currentColor;
 }
 
@@ -362,24 +373,24 @@ body {
 }
 
 .control-btn {
-    min-width: 52px;
-    height: 52px;
+    min-width: 62px;
+    height: 62px;
     border-radius: 0;
     padding: 0;
     position: relative;
-    font-weight: 700;
-    font-size: 1.22rem;
+    font-weight: 600;
+    font-size: 1.2rem;
 }
 
 .control-btn svg {
-    width: 34px;
-    height: 34px;
+    width: 38px;
+    height: 38px;
     fill: currentColor;
 }
 
 .series-control-btn,
 .episodes-btn {
-    min-width: 56px;
+    min-width: 64px;
 }
 
 .series-control-btn[disabled] {
@@ -389,31 +400,58 @@ body {
 
 .series-control-btn svg,
 .episodes-btn svg {
-    width: 38px;
-    height: 38px;
+    width: 42px;
+    height: 42px;
 }
 
 .episodes-btn .control-icon-image {
-    width: 38px;
-    height: 38px;
+    width: 42px;
+    height: 42px;
 }
 
 .control-icon-image {
-    width: 40px;
-    height: 40px;
+    width: 42px;
+    height: 42px;
     object-fit: contain;
     pointer-events: none;
 }
 
+.control-btn-main .control-icon-image {
+    width: 48px;
+    height: 48px;
+}
+
 .control-btn:not(.control-btn-main) .control-icon-image {
-    width: 46px;
-    height: 46px;
+    width: 44px;
+    height: 44px;
+}
+
+.control-badge {
+    position: absolute;
+    right: 1px;
+    bottom: 6px;
+    min-width: 24px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.94);
+    font-size: 0.68rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    pointer-events: none;
+    backdrop-filter: blur(12px);
+}
+
+.audio-status-badge[hidden] {
+    display: none;
 }
 
 .control-btn-main .icon-play {
     display: none;
-    width: 52px;
-    height: 52px;
+    width: 48px;
+    height: 48px;
 }
 
 .control-btn-main.paused .icon-play {
@@ -424,10 +462,101 @@ body {
     display: none;
 }
 
+.volume-slider-popover {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 14px);
+    width: 74px;
+    height: 264px;
+    padding: 20px 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    background: rgba(43, 43, 43, 0.94);
+    box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translate(-50%, 10px);
+    transition:
+        opacity 140ms ease,
+        transform 140ms ease,
+        visibility 140ms ease;
+}
+
+.volume-control:hover .volume-slider-popover,
+.volume-control:focus-within .volume-slider-popover {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translate(-50%, 0);
+}
+
+.volume-control:hover .control-btn,
+.volume-control:focus-within .control-btn {
+    opacity: 1;
+}
+
+.volume-slider {
+    --volume-percent: 100%;
+    appearance: none;
+    -webkit-appearance: none;
+    width: 194px;
+    height: 14px;
+    margin: 0;
+    border-radius: 999px;
+    border: 0;
+    outline: none;
+    background: linear-gradient(
+        to right,
+        #ff1408 0%,
+        #ff1408 var(--volume-percent),
+        rgba(255, 255, 255, 0.08) var(--volume-percent),
+        rgba(255, 255, 255, 0.08) 100%
+    );
+    cursor: ns-resize;
+    transform: rotate(-90deg);
+}
+
+.volume-slider::-webkit-slider-runnable-track {
+    height: 14px;
+    border-radius: 999px;
+    background: transparent;
+}
+
+.volume-slider::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 34px;
+    height: 34px;
+    margin-top: -10px;
+    border: 0;
+    border-radius: 50%;
+    background: #ff1408;
+    box-shadow: none;
+}
+
+.volume-slider::-moz-range-track {
+    height: 14px;
+    border-radius: 999px;
+    border: 0;
+    background: transparent;
+}
+
+.volume-slider::-moz-range-thumb {
+    width: 34px;
+    height: 34px;
+    border: 0;
+    border-radius: 50%;
+    background: #ff1408;
+    box-shadow: none;
+}
+
 #toggleMutePlayer .icon-volume-off {
     display: none;
-    width: 46px;
-    height: 46px;
+    width: 44px;
+    height: 44px;
 }
 
 #toggleMutePlayer.muted .icon-volume-on-asset {
@@ -725,37 +854,6 @@ body {
     align-items: start;
 }
 
-.audio-popover-grid.subtitles-only {
-    grid-template-columns: minmax(0, 1fr);
-    height: 100%;
-    max-width: 100%;
-    min-height: 0;
-}
-
-.audio-popover-grid.subtitles-only .audio-track-column {
-    display: none;
-}
-
-.audio-popover-grid.subtitles-only .audio-subtitle-column {
-    border-left: 0;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    padding: 0 14px 4px;
-}
-
-.audio-popover-grid.subtitles-only .audio-column-title {
-    margin: 0 0 8px;
-    font-size: clamp(1.3rem, 2.1vw, 1.85rem);
-}
-
-.audio-popover-grid.subtitles-only .subtitle-options {
-    max-height: min(46vh, 360px);
-    padding-right: 4px;
-    margin-right: -2px;
-    gap: 8px;
-}
-
 .audio-tab-list {
     margin: 0 0 10px;
     display: flex;
@@ -941,32 +1039,6 @@ body {
 
 .source-option-details[hidden] {
     display: none;
-}
-
-.audio-popover-grid.subtitles-only .audio-option.subtitle-option {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
-    min-height: 0;
-    padding: 10px 12px 10px 38px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.02);
-    font-size: 1rem;
-    line-height: 1.28;
-    overflow: hidden;
-}
-
-.audio-popover-grid.subtitles-only .audio-option.subtitle-option::before {
-    left: 11px;
-    top: 14px;
-    transform: scale(0.85);
-    font-size: 1.05rem;
-}
-
-.audio-popover-grid.subtitles-only .audio-option.subtitle-option[aria-selected="true"]::before {
-    transform: scale(1);
 }
 
 .subtitle-option-name {
@@ -1159,7 +1231,7 @@ body {
 
 @media (max-width: 920px) {
     .controls-panel {
-        padding: 0 12px 16px;
+        padding: 0 14px 16px;
     }
 
     .seek-row {
@@ -1201,9 +1273,49 @@ body {
         height: 30px;
     }
 
+    .control-btn-main .control-icon-image {
+        width: 34px;
+        height: 34px;
+    }
+
     .control-btn:not(.control-btn-main) .control-icon-image {
         width: 34px;
         height: 34px;
+    }
+
+    .control-badge {
+        right: -2px;
+        bottom: 2px;
+        min-width: 22px;
+        padding: 2px 5px;
+        font-size: 0.58rem;
+    }
+
+    .volume-slider-popover {
+        width: 58px;
+        height: 212px;
+        bottom: calc(100% + 10px);
+        padding: 16px 0;
+    }
+
+    .volume-slider {
+        width: 154px;
+        height: 12px;
+    }
+
+    .volume-slider::-webkit-slider-runnable-track,
+    .volume-slider::-moz-range-track {
+        height: 12px;
+    }
+
+    .volume-slider::-webkit-slider-thumb,
+    .volume-slider::-moz-range-thumb {
+        width: 26px;
+        height: 26px;
+    }
+
+    .volume-slider::-webkit-slider-thumb {
+        margin-top: -7px;
     }
 
     #toggleMutePlayer .icon-volume-off {
@@ -1295,28 +1407,6 @@ body {
         padding-top: 14px;
     }
 
-    .audio-popover-grid.subtitles-only .audio-subtitle-column {
-        border-top: 0;
-        min-height: 0;
-        margin-top: 0;
-        padding-top: 0;
-        padding-left: 10px;
-        padding-right: 10px;
-        padding-bottom: 2px;
-    }
-
-    .audio-popover-grid.subtitles-only .audio-column-title {
-        margin-bottom: 6px;
-        font-size: clamp(1.1rem, 4.5vw, 1.45rem);
-    }
-
-    .audio-popover-grid.subtitles-only .subtitle-options {
-        max-height: min(34vh, 230px);
-        padding-right: 2px;
-        margin-right: 0;
-        gap: 6px;
-    }
-
     .audio-source-panel {
         margin-top: 0;
         padding-top: 0;
@@ -1375,18 +1465,6 @@ body {
 
     .source-option-details {
         display: none;
-    }
-
-    .audio-popover-grid.subtitles-only .audio-option.subtitle-option {
-        padding: 8px 8px 8px 32px;
-        border-radius: 8px;
-        gap: 3px;
-    }
-
-    .audio-popover-grid.subtitles-only .audio-option.subtitle-option::before {
-        left: 8px;
-        top: 11px;
-        font-size: 0.96rem;
     }
 
     .subtitle-option-name {

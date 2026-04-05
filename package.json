@@ -5,12 +5,18 @@
   "scripts": {
     "dev": "./scripts/dev-rust.sh",
     "dev:rust": "cargo run",
-    "dev:vite": "vite --host localhost --port 5173 --strictPort",
+    "dev:vite": "vite",
     "test:rust": "cargo test",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "bench:playback": "node ./scripts/playback-benchmark.mjs",
+    "bench:playback:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "solid-js": "^1.9.9"
   },
   "devDependencies": {
+    "playwright": "^1.54.2",
     "vite": "latest"
   }
 }

@@ -28,6 +28,7 @@ const EXTERNAL_SUBTITLE_CACHE_TTL_MS: u64 = 12 * 60 * 60 * 1000;
 const OPENSUBTITLES_DEFAULT_USER_AGENT: &str = "netflix-rust-backend v1.0.0";
 const OPENSUBTITLES_API_BASE: &str = "https://api.opensubtitles.com/api/v1";
 const OPENSUBTITLES_TRACK_LIMIT: usize = 5;
+const LOCAL_SIDECAR_SUBTITLE_STREAM_INDEX_BASE: i64 = 1_000_000;
 const EXTERNAL_SUBTITLE_STREAM_INDEX_BASE: i64 = 2_000_000;
 
 static ASS_OVERRIDE_RE: LazyLock<Regex> =
@@ -175,25 +176,27 @@ impl MediaService {
             &source_input,
             subtitle_stream_index,
         );
-        if file_is_fresh(&cache_path, Duration::from_millis(HLS_SEGMENT_STALE_MS)).await {
-            return serve_text_file(
-                &cache_path,
-                "text/vtt; charset=utf-8",
-                "public, max-age=120",
-            )
-            .await;
+        if file_is_fresh_against_source(
+            &cache_path,
+            Duration::from_millis(HLS_SEGMENT_STALE_MS),
+            &source_input,
+        )
+        .await
+        {
+            return serve_text_file(&cache_path, "text/vtt; charset=utf-8", "no-store").await;
         }
 
         let cache_key = format!("{source_input}|s:{subtitle_stream_index}");
         let lock = key_lock(&self.subtitle_locks, &cache_key);
         let _guard = lock.lock().await;
-        if file_is_fresh(&cache_path, Duration::from_millis(HLS_SEGMENT_STALE_MS)).await {
-            return serve_text_file(
-                &cache_path,
-                "text/vtt; charset=utf-8",
-                "public, max-age=120",
-            )
-            .await;
+        if file_is_fresh_against_source(
+            &cache_path,
+            Duration::from_millis(HLS_SEGMENT_STALE_MS),
+            &source_input,
+        )
+        .await
+        {
+            return serve_text_file(&cache_path, "text/vtt; charset=utf-8", "no-store").await;
         }
 
         let subtitle_text = self
@@ -203,18 +206,10 @@ impl MediaService {
         if !subtitle_text.trim().is_empty() {
             let _ = tokio::fs::create_dir_all(&self.config.hls_cache_dir).await;
             let _ = tokio::fs::write(&cache_path, subtitle_text.as_bytes()).await;
-            return text_response(
-                subtitle_text,
-                "text/vtt; charset=utf-8",
-                "public, max-age=120",
-            );
+            return text_response(subtitle_text, "text/vtt; charset=utf-8", "no-store");
         }
 
-        text_response(
-            "WEBVTT\n\n".to_owned(),
-            "text/vtt; charset=utf-8",
-            "public, max-age=30",
-        )
+        text_response("WEBVTT\n\n".to_owned(), "text/vtt; charset=utf-8", "no-store")
     }
 
     pub async fn create_external_subtitle_vtt_response(
@@ -235,12 +230,7 @@ impl MediaService {
         )
         .await
         {
-            return serve_text_file(
-                &cache_path,
-                "text/vtt; charset=utf-8",
-                "public, max-age=300",
-            )
-            .await;
+            return serve_text_file(&cache_path, "text/vtt; charset=utf-8", "no-store").await;
         }
 
         let lock = key_lock(&self.external_subtitle_locks, &safe_url);
@@ -251,12 +241,7 @@ impl MediaService {
         )
         .await
         {
-            return serve_text_file(
-                &cache_path,
-                "text/vtt; charset=utf-8",
-                "public, max-age=300",
-            )
-            .await;
+            return serve_text_file(&cache_path, "text/vtt; charset=utf-8", "no-store").await;
         }
 
         let subtitle_text = self
@@ -268,11 +253,7 @@ impl MediaService {
             let _ = tokio::fs::write(&cache_path, subtitle_text.as_bytes()).await;
         }
 
-        text_response(
-            subtitle_text,
-            "text/vtt; charset=utf-8",
-            "public, max-age=120",
-        )
+        text_response(subtitle_text, "text/vtt; charset=utf-8", "no-store")
     }
 
     pub async fn create_opensubtitles_vtt_response(
@@ -287,11 +268,7 @@ impl MediaService {
             .await
             .unwrap_or_default();
         if download_url.trim().is_empty() {
-            return text_response(
-                "WEBVTT\n\n".to_owned(),
-                "text/vtt; charset=utf-8",
-                "public, max-age=30",
-            );
+            return text_response("WEBVTT\n\n".to_owned(), "text/vtt; charset=utf-8", "no-store");
         }
         self.create_external_subtitle_vtt_response(&download_url)
             .await
@@ -451,6 +428,88 @@ impl MediaService {
             .map(|(_, track)| track)
             .take(OPENSUBTITLES_TRACK_LIMIT)
             .collect::<Vec<_>>()
+    }
+
+    pub fn find_local_sidecar_subtitle_tracks(&self, source_input: &str) -> Vec<SubtitleTrack> {
+        let Ok(resolved_input) = self.resolve_transcode_input(source_input) else {
+            return Vec::new();
+        };
+
+        let source_path = Path::new(&resolved_input);
+        if !source_path.is_file() {
+            return Vec::new();
+        }
+
+        let Some(parent_dir) = source_path.parent() else {
+            return Vec::new();
+        };
+        let Some(source_stem) = source_path.file_stem().and_then(|value| value.to_str()) else {
+            return Vec::new();
+        };
+
+        let Ok(entries) = std::fs::read_dir(parent_dir) else {
+            return Vec::new();
+        };
+
+        let mut candidates = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file() && path != source_path)
+            .collect::<Vec<_>>();
+        candidates.sort();
+
+        let mut tracks = Vec::new();
+        let mut next_stream_index = LOCAL_SIDECAR_SUBTITLE_STREAM_INDEX_BASE;
+
+        for candidate_path in candidates {
+            let Some(extension) = candidate_path.extension().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let normalized_extension = extension.trim().to_lowercase();
+            if !is_supported_sidecar_subtitle_extension(&normalized_extension) {
+                continue;
+            }
+
+            let Some(candidate_stem) = candidate_path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let Some(sidecar_suffix) =
+                extract_sidecar_subtitle_suffix(source_stem, candidate_stem)
+            else {
+                continue;
+            };
+
+            let language = infer_sidecar_subtitle_language(sidecar_suffix);
+            let title = infer_sidecar_subtitle_title(sidecar_suffix);
+            let label = if language.is_empty() {
+                if title.is_empty() {
+                    "Subtitle".to_owned()
+                } else {
+                    title.clone()
+                }
+            } else {
+                get_subtitle_language_display_name(&language)
+            };
+            let query = Serializer::new(String::new())
+                .append_pair("input", &candidate_path.to_string_lossy())
+                .append_pair("subtitleStream", "0")
+                .finish();
+
+            tracks.push(SubtitleTrack {
+                streamIndex: next_stream_index,
+                language,
+                title,
+                codec: subtitle_codec_from_extension(&normalized_extension),
+                isDefault: false,
+                isTextBased: true,
+                isExternal: true,
+                label,
+                vttUrl: format!("/api/subtitles.vtt?{query}"),
+            });
+            next_stream_index += 1;
+        }
+
+        tracks
     }
 
     pub fn resolve_transcode_input(&self, raw_input: &str) -> AppResult<String> {
@@ -1120,6 +1179,29 @@ async fn file_is_fresh(path: &Path, ttl: Duration) -> bool {
         .unwrap_or(false)
 }
 
+async fn file_is_fresh_against_source(path: &Path, ttl: Duration, source_input: &str) -> bool {
+    if !file_is_fresh(path, ttl).await {
+        return false;
+    }
+
+    let Ok(cache_metadata) = tokio::fs::metadata(path).await else {
+        return false;
+    };
+    let Ok(cache_modified_at) = cache_metadata.modified() else {
+        return false;
+    };
+
+    let source_path = Path::new(source_input);
+    let Ok(source_metadata) = tokio::fs::metadata(source_path).await else {
+        return true;
+    };
+    let Ok(source_modified_at) = source_metadata.modified() else {
+        return true;
+    };
+
+    source_modified_at <= cache_modified_at
+}
+
 async fn serve_text_file(
     path: &Path,
     content_type: &str,
@@ -1441,6 +1523,94 @@ fn get_subtitle_language_display_name(value: &str) -> String {
     .to_owned()
 }
 
+fn is_supported_sidecar_subtitle_extension(value: &str) -> bool {
+    matches!(value.trim().to_lowercase().as_str(), "srt" | "vtt" | "ass" | "ssa")
+}
+
+fn subtitle_codec_from_extension(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "srt" => "subrip".to_owned(),
+        "vtt" => "webvtt".to_owned(),
+        "ass" => "ass".to_owned(),
+        "ssa" => "ssa".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+fn extract_sidecar_subtitle_suffix<'a>(
+    source_stem: &str,
+    candidate_stem: &'a str,
+) -> Option<&'a str> {
+    if candidate_stem.eq_ignore_ascii_case(source_stem) {
+        return Some("");
+    }
+
+    for delimiter in ['.', '_', '-', ' '] {
+        let prefix = format!("{source_stem}{delimiter}");
+        if candidate_stem
+            .to_ascii_lowercase()
+            .starts_with(&prefix.to_ascii_lowercase())
+        {
+            return candidate_stem.get(prefix.len()..);
+        }
+    }
+
+    None
+}
+
+fn infer_sidecar_subtitle_language(sidecar_suffix: &str) -> String {
+    let trimmed = sidecar_suffix.trim_matches(|ch: char| {
+        ch == '.' || ch == '_' || ch == '-' || ch == ' ' || ch == '(' || ch == ')' || ch == '[' || ch == ']'
+    });
+    if trimmed.is_empty() {
+        return "en".to_owned();
+    }
+
+    let tokens = trimmed
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.trim().is_empty())
+        .map(|token| token.trim().to_lowercase())
+        .collect::<Vec<_>>();
+
+    for preferred_language in [
+        "en", "fr", "es", "de", "it", "pt", "ja", "ko", "zh", "nl", "ro", "pl", "tr", "ru",
+        "ar",
+    ] {
+        let hint_tokens = language_hint_tokens(preferred_language);
+        if tokens.iter().any(|token| hint_tokens.iter().any(|hint| token == hint)) {
+            return preferred_language.to_owned();
+        }
+    }
+
+    for token in &tokens {
+        let normalized = normalize_iso_language(token);
+        if normalized.len() == 2 {
+            return normalized;
+        }
+    }
+
+    String::new()
+}
+
+fn infer_sidecar_subtitle_title(sidecar_suffix: &str) -> String {
+    let trimmed = sidecar_suffix.trim_matches(|ch: char| {
+        ch == '.' || ch == '_' || ch == '-' || ch == ' ' || ch == '(' || ch == ')' || ch == '[' || ch == ']'
+    });
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let lower = trimmed.to_lowercase();
+    if lower.contains("forced") {
+        return "Forced".to_owned();
+    }
+    if lower.contains("sdh") || lower.contains("hearing") || lower.contains("cc") {
+        return "SDH".to_owned();
+    }
+
+    String::new()
+}
+
 fn language_hint_tokens(language: &str) -> Vec<&'static str> {
     match language {
         "en" => vec!["en", "eng", "english"],
@@ -1449,6 +1619,15 @@ fn language_hint_tokens(language: &str) -> Vec<&'static str> {
         "de" => vec!["de", "ger", "deu", "german", "deutsch"],
         "it" => vec!["it", "ita", "italian", "italiano"],
         "pt" => vec!["pt", "por", "portuguese", "portugues", "brazilian", "ptbr"],
+        "ja" => vec!["ja", "jpn", "japanese"],
+        "ko" => vec!["ko", "kor", "korean"],
+        "zh" => vec!["zh", "zho", "chi", "chinese"],
+        "nl" => vec!["nl", "dut", "nld", "dutch"],
+        "ro" => vec!["ro", "rum", "ron", "romanian"],
+        "pl" => vec!["pl", "pol", "polish"],
+        "tr" => vec!["tr", "tur", "turkish"],
+        "ru" => vec!["ru", "rus", "russian"],
+        "ar" => vec!["ar", "ara", "arabic"],
         _ => vec!["auto"],
     }
 }
@@ -1530,10 +1709,10 @@ mod tests {
 
     use super::{
         AudioTrack, MediaProbe, SubtitleTrack, choose_audio_track_from_probe,
-        choose_subtitle_track_from_probe, is_allowed_external_subtitle_download_url,
-        is_allowed_remote_transcode_url, is_local_app_playback_url,
-        merge_preferred_subtitle_tracks, normalize_external_subtitle_download_url,
-        normalize_subtitle_text_to_vtt,
+        choose_subtitle_track_from_probe, extract_sidecar_subtitle_suffix,
+        infer_sidecar_subtitle_language, is_allowed_external_subtitle_download_url,
+        is_allowed_remote_transcode_url, is_local_app_playback_url, merge_preferred_subtitle_tracks,
+        normalize_external_subtitle_download_url, normalize_subtitle_text_to_vtt,
     };
 
     #[test]
@@ -1566,6 +1745,31 @@ mod tests {
         assert!(normalized.contains("00:00:01.250 --> 00:00:03.000"));
         assert!(normalized.contains("Hello world"));
         assert!(normalized.contains("background-color: transparent"));
+    }
+
+    #[test]
+    fn extracts_sidecar_suffix_from_matching_video_stem() {
+        assert_eq!(
+            extract_sidecar_subtitle_suffix(
+                "the-worst-person-in-the-world-2021-1080p-hevc",
+                "the-worst-person-in-the-world-2021-1080p-hevc.en"
+            ),
+            Some("en")
+        );
+        assert_eq!(
+            extract_sidecar_subtitle_suffix(
+                "the-worst-person-in-the-world-2021-1080p-hevc",
+                "the-worst-person-in-the-world-2021-1080p-hevc"
+            ),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn infers_sidecar_subtitle_language_from_common_tokens() {
+        assert_eq!(infer_sidecar_subtitle_language("en"), "en");
+        assert_eq!(infer_sidecar_subtitle_language("english.sdh"), "en");
+        assert_eq!(infer_sidecar_subtitle_language("pt-br"), "pt");
     }
 
     #[test]
@@ -1710,6 +1914,7 @@ mod tests {
     fn detects_local_app_playback_urls() {
         let config = crate::config::Config {
             root_dir: std::env::temp_dir(),
+            frontend_dir: std::env::temp_dir(),
             assets_dir: std::env::temp_dir(),
             cache_dir: std::env::temp_dir(),
             hls_cache_dir: std::env::temp_dir(),

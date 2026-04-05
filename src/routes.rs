@@ -1332,6 +1332,8 @@ pub async fn media_tracks_handler(
 
     if let Ok(probe) = state.media.probe_media_tracks(&source_input).await {
         let mut merged_tracks = probe;
+        let local_sidecar_subtitle_tracks =
+            state.media.find_local_sidecar_subtitle_tracks(&source_input);
         let external_subtitle_tracks = state
             .media
             .search_opensubtitles_tracks(
@@ -1342,6 +1344,12 @@ pub async fn media_tracks_handler(
                 &subtitle_filename_hint,
             )
             .await;
+        if !local_sidecar_subtitle_tracks.is_empty() {
+            merged_tracks.subtitleTracks = merge_preferred_subtitle_tracks(
+                local_sidecar_subtitle_tracks,
+                merged_tracks.subtitleTracks,
+            );
+        }
         if !external_subtitle_tracks.is_empty() {
             merged_tracks.subtitleTracks = merge_preferred_subtitle_tracks(
                 external_subtitle_tracks,

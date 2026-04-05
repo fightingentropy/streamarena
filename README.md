@@ -38,14 +38,15 @@ The app combines two media paths:
 ### Runtime
 
 - Backend: Rust (Axum) in `src/`
-- Frontend: static HTML/CSS/JS in repository root
+- Frontend: multi-page Solid + Vite app with page entries in `src-ui/`
 - External tools: `ffmpeg`, `ffprobe`, optional `mpv`
 - Caching: in-memory + persistent SQLite-backed cache data (managed by the Rust backend)
 
 ### Main files
 
 - `src/`: Rust API, static serving, resolving, remux/HLS/subtitles, upload processing, caching, health/debug
-- `index.html` + `script.js`: home screen, hero, continue watching, details modal, account menu
+- `src-ui/`: Solid page shells and entrypoints for the multi-page frontend
+- `index.html` + `script.js`: home screen structure + browse behavior
 - `player.html` + `player.js`: video playback UI, source selection, subtitles/audio handling, fallback logic
 - `settings.html` + `settings.js`: quality/source/profile/native-playback/remux preferences
 - `upload.html` + `upload.js`: upload and metadata inference flow
@@ -318,6 +319,52 @@ Open:
 Scripts:
 
 - `bun run dev` -> Rust server
+- `bun run bench:playback:install` -> installs the Chromium browser used by the playback benchmark suite
+- `bun run bench:playback -- --source assets/videos/<file>.mp4` -> runs a headless playback comparison across direct, remux, and HLS transport paths
+
+### Playback Benchmark Suite
+
+The repo includes a browser-driven playback benchmark that exercises the real `/player` page in headless Chromium.
+
+It measures:
+
+- cold-start playback latency
+- pause/resume latency
+- seek latency
+- dropped-frame ratio
+- effective decoded frame rate
+- frame processing duration from `requestVideoFrameCallback`
+- transport bytes received for remux/HLS/direct playback during startup, steady-state playback, and the full run
+
+It can rank strategies for different goals:
+
+- `balanced` -> general playback quality and responsiveness
+- `latency` -> fastest startup / seek / resume
+- `efficiency` -> lowest transport overhead while maintaining decode quality
+
+Example:
+
+```bash
+bun run bench:playback:install
+bun run bench:playback -- --source assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4
+```
+
+You can also compare explicit remux modes:
+
+```bash
+bun run bench:playback -- \
+  --source assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4 \
+  --strategy direct,remux:auto,remux:copy,remux:normalize,hls
+```
+
+JSON output is also supported:
+
+```bash
+bun run bench:playback -- \
+  --source assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4 \
+  --objective efficiency \
+  --output tmp/playback-benchmark.json
+```
 - `bun run dev:rust` -> Rust server
 - `bun run dev:vite` -> frontend-only Vite dev server
 - `bun run build` / `bun run preview` -> Vite build/preview flow

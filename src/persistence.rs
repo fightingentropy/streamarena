@@ -1670,6 +1670,7 @@ mod tests {
     async fn setup_test_playback_session_db(path: &Path) -> Db {
         let config = crate::config::Config {
             root_dir: std::env::temp_dir(),
+            frontend_dir: std::env::temp_dir(),
             assets_dir: std::env::temp_dir(),
             cache_dir: std::env::temp_dir(),
             hls_cache_dir: std::env::temp_dir(),

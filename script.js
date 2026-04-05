@@ -93,7 +93,7 @@ const DEFAULT_STREAM_QUALITY_PREFERENCE = "1080p";
 const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
 const JEFFREY_EPSTEIN_SERIES_ID = "jeffrey-epstein-filthy-rich";
 const JEFFREY_EPSTEIN_EPISODE_1_SOURCE =
-  "assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4";
+  "assets/videos/jeffrey-epstein-filthy-rich-s01e01-2160p-hevc.mp4";
 const BREAKING_BAD_SERIES_ID = "breaking-bad";
 const PRIDE_PREJUDICE_SOURCE =
   "assets/videos/Pride.Prejudice.2005.2160p.4K.WEB.x265.10bit.AAC5.1-[YTS.MX].mp4";

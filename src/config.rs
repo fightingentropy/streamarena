@@ -5,6 +5,7 @@ use std::path::PathBuf;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub root_dir: PathBuf,
+    pub frontend_dir: PathBuf,
     pub assets_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub hls_cache_dir: PathBuf,
@@ -34,6 +35,12 @@ pub struct Config {
 impl Config {
     pub fn load() -> Self {
         let root_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let dist_dir = root_dir.join("dist");
+        let frontend_dir = if dist_dir.is_dir() {
+            dist_dir
+        } else {
+            root_dir.clone()
+        };
         let assets_dir = root_dir.join("assets");
         let cache_dir = root_dir.join("cache");
         let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
@@ -49,6 +56,7 @@ impl Config {
 
         Self {
             root_dir: root_dir.clone(),
+            frontend_dir,
             assets_dir: assets_dir.clone(),
             cache_dir: cache_dir.clone(),
             hls_cache_dir: cache_dir.join("hls"),

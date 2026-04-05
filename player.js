@@ -5,6 +5,8 @@ const durationText = document.getElementById("durationText");
 const togglePlay = document.getElementById("togglePlay");
 const rewind10 = document.getElementById("rewind10");
 const forward10 = document.getElementById("forward10");
+const volumeControl = document.getElementById("volumeControl");
+const volumeSlider = document.getElementById("volumeSlider");
 const toggleMutePlayer = document.getElementById("toggleMutePlayer");
 const toggleFullscreen = document.getElementById("toggleFullscreen");
 const toggleSpeed = document.getElementById("toggleSpeed");
@@ -17,8 +19,10 @@ const episodesList = document.getElementById("episodesList");
 const episodesPopoverTitle = document.getElementById("episodesPopoverTitle");
 const toggleAudio = document.getElementById("toggleAudio");
 const audioControl = document.getElementById("audioControl");
+const audioMenu = document.getElementById("audioMenu");
 const audioOptionsContainer = document.getElementById("audioOptions");
 const subtitleOptionsContainer = document.getElementById("subtitleOptions");
+const audioStatusBadge = document.getElementById("audioStatusBadge");
 const subtitlePanel = document.getElementById("subtitlePanel");
 const audioTabSubtitles = document.getElementById("audioTabSubtitles");
 const audioTabSources = document.getElementById("audioTabSources");
@@ -50,7 +54,7 @@ let tmdbSourceQueue = [];
 let tmdbSourceAttemptIndex = 0;
 let tmdbResolveRetries = 0;
 let knownDurationSeconds = 0;
-let tmdbExpectedDurationSeconds = 0;
+let expectedDurationSeconds = 0;
 const maxTmdbResolveRetries = 2;
 let isRecoveringTmdbStream = false;
 let activeTranscodeInput = "";
@@ -80,15 +84,21 @@ let activeAudioTab = "subtitles";
 let seriesEpisodeThumbHydrationTask = null;
 let hasHydratedSeriesEpisodeThumbs = false;
 let hasQueuedGallerySave = false;
+let lastAudibleVolume = 1;
 const sourceSaveStateByHash = new Map();
 const sourceSaveResetTimeoutByHash = new Map();
 
 const params = new URLSearchParams(window.location.search);
+const benchmarkModeEnabled = new Set(["1", "true", "yes", "on"]).has(
+  String(params.get("benchmark") || "")
+    .trim()
+    .toLowerCase(),
+);
 const DEFAULT_TRAILER_SOURCE =
   "assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4";
 const DEFAULT_EPISODE_THUMBNAIL = "assets/images/thumbnail.jpg";
 const JEFFREY_EPSTEIN_EPISODE_1_SOURCE =
-  "assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4";
+  "assets/videos/jeffrey-epstein-filthy-rich-s01e01-2160p-hevc.mp4";
 const STATIC_SERIES_LIBRARY = {
   "jeffrey-epstein-filthy-rich": {
     id: "jeffrey-epstein-filthy-rich",
@@ -716,11 +726,21 @@ const subtitleLanguageNames = {
   es: "Spanish",
   de: "German",
   it: "Italian",
+  no: "Norwegian",
   pt: "Portuguese",
+  uk: "Ukrainian",
   ja: "Japanese",
   ko: "Korean",
   zh: "Chinese",
 };
+
+const playbackBenchmark = benchmarkModeEnabled
+  ? createPlaybackBenchmarkApi()
+  : null;
+
+if (playbackBenchmark) {
+  window.__NETFLIX_PLAYBACK_BENCHMARK__ = playbackBenchmark;
+}
 
 let selectedSourceHash = normalizeSourceHash(sourceHashParam);
 let sourceSelectionPinned = false;
@@ -1550,13 +1570,31 @@ function isGenericSubtitleLabel(value) {
   );
 }
 
+function getSubtitleTrackSourceLabel(track) {
+  if (!track?.isExternal) {
+    return "";
+  }
+
+  const vttUrl = String(track?.vttUrl || "").trim();
+  if (vttUrl.includes("/api/subtitles.opensubtitles.vtt")) {
+    return "OpenSubtitles";
+  }
+  if (vttUrl.includes("/api/subtitles.vtt")) {
+    return "Local file";
+  }
+  if (vttUrl.includes("/api/subtitles.external.vtt")) {
+    return "External";
+  }
+  return "External";
+}
+
 function getSubtitleTrackDisplayLabel(track) {
   const languageLabel = getLanguageDisplayLabel(track?.language || "en");
   const preferredLabel = String(track?.label || track?.title || "").trim();
   if (track?.isExternal) {
     const titleLabel = String(track?.title || "").trim();
     const sourceLabel = isGenericSubtitleLabel(preferredLabel)
-      ? `${languageLabel} (OpenSubtitles)`
+      ? `${languageLabel} (${getSubtitleTrackSourceLabel(track) || "External"})`
       : preferredLabel;
     if (!isGenericSubtitleLabel(titleLabel)) {
       return `${titleLabel} - ${sourceLabel}`;
@@ -1574,6 +1612,7 @@ function getSubtitleTrackDisplayParts(track) {
   const preferredLabel = String(track?.label || "").trim();
   const titleLabel = String(track?.title || "").trim();
   const isExternalTrack = Boolean(track?.isExternal);
+  const sourceLabel = getSubtitleTrackSourceLabel(track);
 
   let primary = languageLabel;
   if (isExternalTrack) {
@@ -1590,8 +1629,8 @@ function getSubtitleTrackDisplayParts(track) {
   if (primary !== languageLabel) {
     secondaryParts.push(languageLabel);
   }
-  if (isExternalTrack) {
-    secondaryParts.push("OpenSubtitles");
+  if (isExternalTrack && sourceLabel) {
+    secondaryParts.push(sourceLabel);
   }
   if (isLikelyForcedSubtitleTrack(track)) {
     secondaryParts.push("Forced");
@@ -1601,6 +1640,85 @@ function getSubtitleTrackDisplayParts(track) {
     primary,
     secondary: secondaryParts.join(" • "),
   };
+}
+
+function isGenericAudioLabel(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+  if (!normalized) {
+    return true;
+  }
+  return (
+    normalized === "soundhandler" ||
+    normalized === "audiohandler" ||
+    normalized === "stereomix" ||
+    normalized === "audio" ||
+    normalized === "track"
+  );
+}
+
+function formatAudioChannelLabel(channels) {
+  const safeChannels = Number(channels);
+  if (!Number.isFinite(safeChannels) || safeChannels <= 0) {
+    return "";
+  }
+  if (safeChannels === 1) {
+    return "Mono";
+  }
+  if (safeChannels === 2) {
+    return "Stereo";
+  }
+  if (safeChannels === 6) {
+    return "5.1";
+  }
+  if (safeChannels === 8) {
+    return "7.1";
+  }
+  return `${Math.floor(safeChannels)}ch`;
+}
+
+function getAudioTrackDisplayLabel(track) {
+  const { primary } = getAudioTrackDisplayParts(track);
+  return primary;
+}
+
+function getAudioTrackDisplayParts(track) {
+  const languageLabel = getLanguageDisplayLabel(track?.language || "und");
+  const preferredLabel = String(track?.title || track?.label || "").trim();
+  const primary = isGenericAudioLabel(preferredLabel)
+    ? languageLabel
+    : `${languageLabel} - ${preferredLabel}`;
+  const secondaryParts = [];
+  const channelLabel = formatAudioChannelLabel(track?.channels);
+  if (channelLabel) {
+    secondaryParts.push(channelLabel);
+  }
+  const codecLabel = String(track?.codec || "")
+    .trim()
+    .toUpperCase();
+  if (codecLabel) {
+    secondaryParts.push(codecLabel);
+  }
+  if (track?.isDefault) {
+    secondaryParts.push("Default");
+  }
+  return {
+    primary,
+    secondary: secondaryParts.join(" • "),
+  };
+}
+
+function getAudioTrackBadgeLabel(track) {
+  const languageCode = String(track?.language || "")
+    .trim()
+    .toUpperCase();
+  if (/^[A-Z]{2,3}$/.test(languageCode)) {
+    return languageCode.slice(0, 3);
+  }
+  const languageLabel = getLanguageDisplayLabel(track?.language || "und");
+  return languageLabel.slice(0, 2).toUpperCase();
 }
 
 function appendSubtitleOptionContent(button, primaryLabel, secondaryLabel = "") {
@@ -1787,6 +1905,21 @@ function clearCustomSubtitleOverlay({ invalidateToken = false } = {}) {
   customSubtitleCues = [];
   customSubtitleCueCursor = 0;
   setCustomSubtitleText("");
+}
+
+function restoreSelectedSubtitleTrackAfterSourceChange() {
+  if (selectedSubtitleStreamIndex < 0) {
+    setCustomSubtitleText("");
+    return;
+  }
+
+  const selectedTrack = getSubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
+  if (!selectedTrack) {
+    setCustomSubtitleText("");
+    return;
+  }
+
+  applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
 }
 
 function renderCustomSubtitleOverlay() {
@@ -3031,12 +3164,8 @@ function rebuildTrackOptionButtons() {
       button.dataset.streamIndex = String(track.streamIndex);
       button.dataset.trackLanguage = String(track.language || "");
       button.dataset.optionType = "audio-track";
-      const languageLabel = getLanguageDisplayLabel(track.language);
-      const titleSuffix = track.title ? ` - ${track.title}` : "";
-      const codecSuffix = track.codec
-        ? ` (${String(track.codec).toUpperCase()})`
-        : "";
-      button.textContent = `${languageLabel}${titleSuffix}${codecSuffix}`;
+      const { primary, secondary } = getAudioTrackDisplayParts(track);
+      appendSubtitleOptionContent(button, primary, secondary);
       button.setAttribute(
         "aria-selected",
         Number(track.streamIndex) === selectedAudioStreamIndex
@@ -3145,6 +3274,78 @@ function shouldUseSoftwareDecode(source) {
     value.includes(".ts") ||
     value.includes(".m3u8")
   );
+}
+
+const browserSafeAudioCodecSet = new Set([
+  "aac",
+  "mp3",
+  "mp2",
+  "opus",
+  "vorbis",
+  "flac",
+  "alac",
+]);
+const browserUnsafeAudioCodecPrefixes = [
+  "ac3",
+  "eac3",
+  "dts",
+  "dca",
+  "truehd",
+  "mlp",
+  "pcm_",
+  "wma",
+];
+
+function isBrowserSafeAudioCodec(codec) {
+  const normalized = String(codec || "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (browserSafeAudioCodecSet.has(normalized)) {
+    return true;
+  }
+  return !browserUnsafeAudioCodecPrefixes.some((prefix) =>
+    normalized.startsWith(prefix),
+  );
+}
+
+function getDefaultEmbeddedAudioTrack() {
+  return (
+    availableAudioTracks.find((track) => Boolean(track?.isDefault)) ||
+    availableAudioTracks[0] ||
+    null
+  );
+}
+
+function getSelectedEmbeddedAudioTrack() {
+  if (selectedAudioStreamIndex >= 0) {
+    return (
+      availableAudioTracks.find(
+        (track) => Number(track?.streamIndex) === selectedAudioStreamIndex,
+      ) || null
+    );
+  }
+  return getDefaultEmbeddedAudioTrack();
+}
+
+function shouldForceRemuxForEmbeddedAudio() {
+  const selectedTrack = getSelectedEmbeddedAudioTrack();
+  if (!selectedTrack) {
+    return false;
+  }
+
+  if (!isBrowserSafeAudioCodec(selectedTrack.codec)) {
+    return true;
+  }
+
+  const defaultTrack = getDefaultEmbeddedAudioTrack();
+  if (!defaultTrack) {
+    return false;
+  }
+
+  return Number(selectedTrack.streamIndex) !== Number(defaultTrack.streamIndex);
 }
 
 function withPreferredAudioSyncForRemuxSource(
@@ -3317,6 +3518,9 @@ function setVideoSource(nextSource) {
     sourceWithAudioSync,
     window.location.origin,
   ).toString();
+  if (playbackBenchmark) {
+    playbackBenchmark._recordSourceChange(absoluteSource);
+  }
   const isHlsSource = absoluteSource.includes("/api/hls/master.m3u8");
   if (isHlsSource && window.Hls?.isSupported?.()) {
     const hlsSourceMeta = parseHlsMasterSource(sourceWithAudioSync);
@@ -3734,8 +3938,9 @@ async function resolveTmdbSourcesAndPlay({
   syncAudioState();
   hideResolver();
   const runtimeSeconds = Number(resolved.metadata?.runtimeSeconds || 0);
-  tmdbExpectedDurationSeconds =
+  expectedDurationSeconds =
     Number.isFinite(runtimeSeconds) && runtimeSeconds > 0 ? runtimeSeconds : 0;
+  syncDurationText();
 
   if (isTmdbTvPlayback && resolved.metadata?.displayTitle) {
     const resolvedEpisodeNumber = Number(
@@ -4308,10 +4513,63 @@ function syncPlayState() {
   togglePlay.setAttribute("aria-label", video.paused ? "Play" : "Pause");
 }
 
+function clampPlayerVolume(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return 1;
+  }
+  return Math.max(0, Math.min(1, numericValue));
+}
+
+function syncVolumeSliderState() {
+  if (!volumeSlider) {
+    return;
+  }
+
+  const currentVolume = clampPlayerVolume(video.volume);
+  const isMuted = video.muted || currentVolume <= 0.001;
+  const visibleVolume = isMuted ? 0 : currentVolume;
+
+  if (visibleVolume > 0) {
+    lastAudibleVolume = visibleVolume;
+  }
+
+  const volumePercent = Math.round(visibleVolume * 100);
+  volumeSlider.value = String(volumePercent);
+  volumeSlider.style.setProperty("--volume-percent", `${volumePercent}%`);
+}
+
 function syncMuteState() {
   const muted = video.muted || video.volume === 0;
   toggleMutePlayer.classList.toggle("muted", muted);
   toggleMutePlayer.setAttribute("aria-label", muted ? "Unmute" : "Mute");
+  syncVolumeSliderState();
+}
+
+function setPlayerVolume(nextVolume) {
+  const clampedVolume = clampPlayerVolume(nextVolume);
+  const isMuted = clampedVolume <= 0.001;
+
+  if (!isMuted) {
+    lastAudibleVolume = clampedVolume;
+  }
+
+  video.volume = clampedVolume;
+  video.muted = isMuted;
+  syncMuteState();
+}
+
+function togglePlayerMute() {
+  const isMuted = video.muted || clampPlayerVolume(video.volume) <= 0.001;
+
+  if (isMuted) {
+    video.muted = false;
+    setPlayerVolume(lastAudibleVolume > 0 ? lastAudibleVolume : 1);
+    return;
+  }
+
+  lastAudibleVolume = Math.max(clampPlayerVolume(video.volume), 0.1);
+  setPlayerVolume(0);
 }
 
 function syncSpeedState() {
@@ -4327,6 +4585,12 @@ function syncSpeedState() {
 }
 
 function syncAudioState() {
+  const selectedAudioTrack = getSelectedEmbeddedAudioTrack();
+  const selectedAudioLabel = selectedAudioTrack
+    ? getAudioTrackDisplayLabel(selectedAudioTrack)
+    : preferredAudioLang === "auto"
+      ? "Auto"
+      : getLanguageDisplayLabel(preferredAudioLang);
   const selectedSubtitleTrack =
     selectedSubtitleStreamIndex >= 0
       ? availableSubtitleTracks.find(
@@ -4341,10 +4605,18 @@ function syncAudioState() {
   const syncHint = preferredAudioSyncMs
     ? `, A/V ${preferredAudioSyncMs > 0 ? "+" : ""}${preferredAudioSyncMs}ms`
     : "";
-  toggleAudio?.setAttribute(
-    "aria-label",
-    `Subtitles (${selectedSubtitleLabel}${syncHint})`,
-  );
+  const controlLabel = `Audio and subtitles (audio: ${selectedAudioLabel}, subtitles: ${selectedSubtitleLabel}${syncHint})`;
+  toggleAudio?.setAttribute("aria-label", controlLabel);
+  toggleAudio?.setAttribute("title", controlLabel);
+  audioMenu?.setAttribute("aria-label", `Audio and subtitles (${selectedAudioLabel})`);
+
+  if (audioStatusBadge) {
+    const shouldShowBadge = availableAudioTracks.length > 1;
+    audioStatusBadge.hidden = !shouldShowBadge;
+    audioStatusBadge.textContent = shouldShowBadge
+      ? getAudioTrackBadgeLabel(selectedAudioTrack)
+      : "";
+  }
 
   audioOptions.forEach((option) => {
     if (option.dataset.optionType === "audio-track") {
@@ -4445,8 +4717,8 @@ function getTimelineDurationSeconds() {
 }
 
 function getDisplayDurationSeconds() {
-  if (isTmdbResolvedPlayback && tmdbExpectedDurationSeconds > 0) {
-    return tmdbExpectedDurationSeconds;
+  if (Number.isFinite(expectedDurationSeconds) && expectedDurationSeconds > 0) {
+    return expectedDurationSeconds;
   }
   return getTimelineDurationSeconds();
 }
@@ -4501,6 +4773,25 @@ function paintSeekProgress(progressValue, bufferedValue = null) {
   const playedPercent = (clamped / max) * 100;
   const bufferedPercent = (bufferedClamped / max) * 100;
   seekBar.style.background = `linear-gradient(to right, var(--ui-accent) 0%, var(--ui-accent) ${playedPercent}%, var(--ui-buffered) ${playedPercent}%, var(--ui-buffered) ${bufferedPercent}%, var(--ui-line) ${bufferedPercent}%, var(--ui-line) 100%)`;
+}
+
+function syncDurationText(elapsedSeconds = getEffectiveCurrentTime()) {
+  const safeElapsedSeconds = Number(elapsedSeconds);
+  const displayDurationSeconds = getDisplayDurationSeconds();
+  const clampedElapsedSeconds = Math.max(
+    0,
+    Math.min(
+      Number.isFinite(displayDurationSeconds) && displayDurationSeconds > 0
+        ? displayDurationSeconds
+        : Number.POSITIVE_INFINITY,
+      Number.isFinite(safeElapsedSeconds) ? safeElapsedSeconds : 0,
+    ),
+  );
+  const remainingSeconds =
+    Number.isFinite(displayDurationSeconds) && displayDurationSeconds > 0
+      ? Math.max(0, displayDurationSeconds - clampedElapsedSeconds)
+      : 0;
+  durationText.textContent = formatTime(remainingSeconds);
 }
 
 function openSpeedPopover() {
@@ -4667,7 +4958,19 @@ function handleUserActivity() {
 
 function syncSeekState() {
   const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
-  if (isDraggingSeek || seekScaleDurationSeconds <= 0) {
+  if (isDraggingSeek) {
+    if (seekScaleDurationSeconds > 0) {
+      syncDurationText(
+        (Number(seekBar.value) / 1000) * seekScaleDurationSeconds,
+      );
+    } else {
+      syncDurationText();
+    }
+    return;
+  }
+
+  syncDurationText();
+  if (seekScaleDurationSeconds <= 0) {
     return;
   }
 
@@ -4679,9 +4982,6 @@ function syncSeekState() {
   paintSeekProgress(
     seekBar.value,
     getBufferedSeekValue(seekScaleDurationSeconds),
-  );
-  durationText.textContent = formatTime(
-    Math.max(0, seekScaleDurationSeconds - effectiveCurrent),
   );
 }
 
@@ -4972,6 +5272,7 @@ async function queueGallerySaveIfRequested(resolvedPayload = {}) {
 async function resolveExplicitSourceTrackSelection(sourceInput) {
   activeTrackSourceInput = String(sourceInput || "").trim();
   if (!activeTrackSourceInput) {
+    expectedDurationSeconds = 0;
     availableAudioTracks = [];
     availableSubtitleTracks = [];
     selectedAudioStreamIndex = -1;
@@ -4999,6 +5300,12 @@ async function resolveExplicitSourceTrackSelection(sourceInput) {
 
   try {
     const payload = await requestJson(`/api/media/tracks?${query.toString()}`);
+    const nextExpectedDurationSeconds = Number(payload?.tracks?.durationSeconds);
+    expectedDurationSeconds =
+      Number.isFinite(nextExpectedDurationSeconds) &&
+      nextExpectedDurationSeconds > 0
+        ? Math.floor(nextExpectedDurationSeconds)
+        : 0;
     availableAudioTracks = Array.isArray(payload?.tracks?.audioTracks)
       ? payload.tracks.audioTracks
       : [];
@@ -5021,6 +5328,7 @@ async function resolveExplicitSourceTrackSelection(sourceInput) {
         : -1;
   } catch {
     // Track probing is best effort for explicit sources.
+    expectedDurationSeconds = 0;
     availableAudioTracks = [];
     availableSubtitleTracks = [];
     selectedAudioStreamIndex = -1;
@@ -5028,6 +5336,8 @@ async function resolveExplicitSourceTrackSelection(sourceInput) {
   }
 
   rebuildTrackOptionButtons();
+  syncAudioState();
+  syncDurationText();
 }
 
 async function resolveTmdbMovieViaBackend(
@@ -5369,12 +5679,47 @@ forward10.addEventListener("click", () => {
 });
 
 toggleMutePlayer.addEventListener("click", () => {
-  if (!hasActiveSource() || isResolvingSource()) {
+  if (isResolvingSource()) {
     return;
   }
 
-  video.muted = !video.muted;
-  syncMuteState();
+  togglePlayerMute();
+});
+
+volumeSlider?.addEventListener("input", () => {
+  if (isResolvingSource()) {
+    return;
+  }
+
+  setPlayerVolume(Number(volumeSlider.value) / 100);
+  showControls();
+  clearControlsHideTimer();
+});
+
+volumeSlider?.addEventListener("change", () => {
+  scheduleControlsHide();
+});
+
+volumeControl?.addEventListener("mouseenter", () => {
+  showControls();
+  clearControlsHideTimer();
+});
+
+volumeControl?.addEventListener("mouseleave", () => {
+  scheduleControlsHide();
+});
+
+volumeControl?.addEventListener("focusin", () => {
+  showControls();
+  clearControlsHideTimer();
+});
+
+volumeControl?.addEventListener("focusout", () => {
+  window.setTimeout(() => {
+    if (!volumeControl.matches(":hover, :focus-within")) {
+      scheduleControlsHide();
+    }
+  }, 0);
 });
 
 async function toggleFullscreenMode() {
@@ -5623,8 +5968,12 @@ audioOptionsContainer?.addEventListener("click", async (event) => {
   const shouldKeepEmbeddedSubtitle = shouldUseNativeEmbeddedSubtitleTrack(
     selectedSubtitleTrack,
   );
+  const shouldUseRemuxForAudioSwitch =
+    shouldUseSoftwareDecode(activeTrackSourceInput) ||
+    shouldForceRemuxForEmbeddedAudio() ||
+    shouldKeepEmbeddedSubtitle;
   showResolver("Switching audio track...");
-  if (shouldKeepEmbeddedSubtitle) {
+  if (shouldUseRemuxForAudioSwitch) {
     setVideoSource(
       buildSoftwareDecodeUrl(
         activeTrackSourceInput,
@@ -5936,6 +6285,7 @@ seekBar.addEventListener("input", () => {
   }
 
   const ratio = Number(seekBar.value) / 1000;
+  syncDurationText(ratio * seekScaleDurationSeconds);
   if (isTranscodeSourceActive()) {
     pendingTranscodeSeekRatio = ratio;
     paintSeekProgress(
@@ -5957,10 +6307,12 @@ seekBar.addEventListener("input", () => {
 });
 
 video.addEventListener("loadedmetadata", () => {
+  restoreSelectedSubtitleTrackAfterSourceChange();
   syncSubtitleTrackVisibility();
   refreshActiveSubtitlePlacement();
   renderCustomSubtitleOverlay();
   window.setTimeout(() => {
+    restoreSelectedSubtitleTrackAfterSourceChange();
     syncSubtitleTrackVisibility();
     refreshActiveSubtitlePlacement();
     renderCustomSubtitleOverlay();
@@ -5994,9 +6346,7 @@ video.addEventListener("loadedmetadata", () => {
   }
 
   if (seekScaleDurationSeconds > 0) {
-    durationText.textContent = formatTime(
-      Math.max(0, seekScaleDurationSeconds - getEffectiveCurrentTime()),
-    );
+    syncDurationText();
   }
   syncSeekState();
   paintSeekProgress(
@@ -6194,12 +6544,11 @@ async function handleKeydown(event) {
     if (isInteractiveTarget(event.target)) {
       return;
     }
-    if (!hasActiveSource() || isResolvingSource()) {
+    if (isResolvingSource()) {
       return;
     }
 
-    video.muted = !video.muted;
-    syncMuteState();
+    togglePlayerMute();
   }
 
   if (event.key.toLowerCase() === "f") {
@@ -6289,6 +6638,613 @@ window.addEventListener("beforeunload", () => {
   destroyHlsInstance();
 });
 
+function createPlaybackBenchmarkApi() {
+  const benchmarkOriginMs = performance.now();
+  const benchmarkState = {
+    counters: {
+      loadedmetadata: 0,
+      canplay: 0,
+      playing: 0,
+      waiting: 0,
+      stalled: 0,
+      error: 0,
+      play: 0,
+      pause: 0,
+      seeking: 0,
+      seeked: 0,
+      ended: 0,
+      timeupdate: 0,
+    },
+    timings: {
+      firstLoadedMetadataMs: null,
+      firstCanPlayMs: null,
+      firstPlayingMs: null,
+      firstTimeUpdateMs: null,
+      firstVideoFrameMs: null,
+      lastVideoFrameMs: null,
+      lastSourceSetMs: null,
+    },
+    frameStats: {
+      callbackCount: 0,
+      processingDurationSampleCount: 0,
+      processingDurationTotalMs: 0,
+      maxProcessingDurationMs: 0,
+      frameIntervalSampleCount: 0,
+      frameIntervalTotalMs: 0,
+      maxFrameIntervalMs: 0,
+      maxPresentedFramesDelta: 0,
+      lastFrameNowMs: null,
+      lastPresentedFrames: null,
+    },
+    events: [],
+    sourceHistory: [],
+    frameCallbackArmed: false,
+  };
+  const loggedEvents = new Set([
+    "sourcechange",
+    "loadedmetadata",
+    "canplay",
+    "playing",
+    "waiting",
+    "stalled",
+    "error",
+    "play",
+    "pause",
+    "seeking",
+    "seeked",
+    "ended",
+  ]);
+
+  function benchmarkNowMs() {
+    return performance.now() - benchmarkOriginMs;
+  }
+
+  function roundBenchmarkNumber(value, digits = 2) {
+    return Number.isFinite(value)
+      ? Number(Number(value).toFixed(digits))
+      : null;
+  }
+
+  function rememberFirstBenchmarkTiming(key) {
+    if (benchmarkState.timings[key] === null) {
+      benchmarkState.timings[key] = roundBenchmarkNumber(benchmarkNowMs(), 1);
+    }
+  }
+
+  function getBenchmarkCurrentSource() {
+    return String(video.currentSrc || video.getAttribute("src") || "").trim();
+  }
+
+  function inferBenchmarkPlaybackMode(source = getBenchmarkCurrentSource()) {
+    const normalized = String(source || "").toLowerCase();
+    if (normalized.includes("/api/hls/master.m3u8")) {
+      return "hls";
+    }
+    if (normalized.includes("/api/remux")) {
+      return "remux";
+    }
+    return "direct";
+  }
+
+  function pushBenchmarkEvent(type, details = {}) {
+    if (!loggedEvents.has(type)) {
+      return;
+    }
+    benchmarkState.events.push({
+      type,
+      atMs: roundBenchmarkNumber(benchmarkNowMs(), 1),
+      currentTime: roundBenchmarkNumber(getEffectiveCurrentTime(), 3),
+      readyState: Number(video.readyState || 0),
+      paused: Boolean(video.paused),
+      seeking: Boolean(video.seeking),
+      mode: inferBenchmarkPlaybackMode(),
+      ...details,
+    });
+    if (benchmarkState.events.length > 120) {
+      benchmarkState.events.shift();
+    }
+  }
+
+  function readBenchmarkVideoQuality() {
+    if (typeof video.getVideoPlaybackQuality !== "function") {
+      return null;
+    }
+
+    try {
+      const quality = video.getVideoPlaybackQuality();
+      return {
+        droppedVideoFrames: Number(quality?.droppedVideoFrames || 0),
+        totalVideoFrames: Number(quality?.totalVideoFrames || 0),
+        corruptedVideoFrames: Number(quality?.corruptedVideoFrames || 0),
+        creationTime: Number(quality?.creationTime || 0),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function summarizeBenchmarkResources() {
+    const totals = {
+      requestCount: 0,
+      transferSize: 0,
+      encodedBodySize: 0,
+      decodedBodySize: 0,
+      durationMs: 0,
+    };
+
+    const entries = performance.getEntriesByType("resource");
+    entries.forEach((entry) => {
+      const name = String(entry?.name || "");
+      let pathname = "";
+      try {
+        pathname = new URL(name, window.location.origin).pathname;
+      } catch {
+        pathname = name;
+      }
+
+      const isPlaybackEntry =
+        pathname.startsWith("/assets/videos/") ||
+        pathname.startsWith("/media/") ||
+        pathname.startsWith("/videos/") ||
+        pathname === "/api/remux" ||
+        pathname === "/api/hls/master.m3u8" ||
+        pathname === "/api/hls/segment.ts";
+
+      if (!isPlaybackEntry) {
+        return;
+      }
+
+      totals.requestCount += 1;
+      totals.transferSize += Number(entry?.transferSize || 0);
+      totals.encodedBodySize += Number(entry?.encodedBodySize || 0);
+      totals.decodedBodySize += Number(entry?.decodedBodySize || 0);
+      totals.durationMs += Number(entry?.duration || 0);
+    });
+
+    return {
+      requestCount: totals.requestCount,
+      transferSize: Math.max(0, Math.round(totals.transferSize)),
+      encodedBodySize: Math.max(0, Math.round(totals.encodedBodySize)),
+      decodedBodySize: Math.max(0, Math.round(totals.decodedBodySize)),
+      durationMs: roundBenchmarkNumber(totals.durationMs, 1),
+    };
+  }
+
+  function getBenchmarkSnapshot() {
+    const frameStats = benchmarkState.frameStats;
+    const quality = readBenchmarkVideoQuality();
+    const effectiveDurationSeconds = (() => {
+      if (typeof getDisplayDurationSeconds === "function") {
+        const displayDuration = Number(getDisplayDurationSeconds());
+        if (Number.isFinite(displayDuration) && displayDuration > 0) {
+          return roundBenchmarkNumber(displayDuration, 3);
+        }
+      }
+      const fallbackDuration = Number(video.duration);
+      return Number.isFinite(fallbackDuration)
+        ? roundBenchmarkNumber(fallbackDuration, 3)
+        : null;
+    })();
+
+    return {
+      benchmarkMode: true,
+      capturedAtMs: roundBenchmarkNumber(benchmarkNowMs(), 1),
+      currentTime: roundBenchmarkNumber(getEffectiveCurrentTime(), 3),
+      rawCurrentTime: roundBenchmarkNumber(Number(video.currentTime || 0), 3),
+      durationSeconds: effectiveDurationSeconds,
+      playbackRate: roundBenchmarkNumber(Number(video.playbackRate || 1), 3),
+      readyState: Number(video.readyState || 0),
+      networkState: Number(video.networkState || 0),
+      paused: Boolean(video.paused),
+      ended: Boolean(video.ended),
+      seeking: Boolean(video.seeking),
+      muted: Boolean(video.muted),
+      volume: roundBenchmarkNumber(Number(video.volume || 0), 3),
+      source: {
+        currentSource: getBenchmarkCurrentSource(),
+        input: extractPlaybackSourceInput(getBenchmarkCurrentSource()),
+        mode: inferBenchmarkPlaybackMode(),
+      },
+      videoMetrics: {
+        clientWidth: Number(video.clientWidth || 0),
+        clientHeight: Number(video.clientHeight || 0),
+        videoWidth: Number(video.videoWidth || 0),
+        videoHeight: Number(video.videoHeight || 0),
+      },
+      timings: { ...benchmarkState.timings },
+      counters: { ...benchmarkState.counters },
+      quality,
+      frameStats: {
+        callbackCount: benchmarkState.frameStats.callbackCount,
+        processingDurationSampleCount:
+          frameStats.processingDurationSampleCount,
+        meanProcessingDurationMs:
+          frameStats.processingDurationSampleCount > 0
+            ? roundBenchmarkNumber(
+                frameStats.processingDurationTotalMs /
+                  frameStats.processingDurationSampleCount,
+                3,
+              )
+            : null,
+        maxProcessingDurationMs: roundBenchmarkNumber(
+          frameStats.maxProcessingDurationMs,
+          3,
+        ),
+        frameIntervalSampleCount: frameStats.frameIntervalSampleCount,
+        meanFrameIntervalMs:
+          frameStats.frameIntervalSampleCount > 0
+            ? roundBenchmarkNumber(
+                frameStats.frameIntervalTotalMs /
+                  frameStats.frameIntervalSampleCount,
+                3,
+              )
+            : null,
+        maxFrameIntervalMs: roundBenchmarkNumber(
+          frameStats.maxFrameIntervalMs,
+          3,
+        ),
+        estimatedFrameRateFps:
+          frameStats.frameIntervalSampleCount > 0 &&
+          frameStats.frameIntervalTotalMs > 0
+            ? roundBenchmarkNumber(
+                1000 /
+                  (frameStats.frameIntervalTotalMs /
+                    frameStats.frameIntervalSampleCount),
+                3,
+              )
+            : null,
+        maxPresentedFramesDelta: frameStats.maxPresentedFramesDelta,
+      },
+      resources: summarizeBenchmarkResources(),
+      events: benchmarkState.events.slice(),
+      sourceHistory: benchmarkState.sourceHistory.slice(),
+    };
+  }
+
+  async function waitForBenchmarkCondition(
+    predicate,
+    {
+      timeoutMs = 30_000,
+      pollIntervalMs = 50,
+      errorMessage = "Benchmark condition timed out.",
+    } = {},
+  ) {
+    const startedAt = performance.now();
+
+    return new Promise((resolve, reject) => {
+      function step() {
+        let result = null;
+        try {
+          result = predicate();
+        } catch (error) {
+          reject(error);
+          return;
+        }
+
+        if (result) {
+          resolve(result === true ? getBenchmarkSnapshot() : result);
+          return;
+        }
+
+        if (performance.now() - startedAt >= timeoutMs) {
+          reject(new Error(errorMessage));
+          return;
+        }
+
+        window.setTimeout(step, pollIntervalMs);
+      }
+
+      step();
+    });
+  }
+
+  function armBenchmarkFrameCallback() {
+    if (
+      benchmarkState.frameCallbackArmed ||
+      typeof video.requestVideoFrameCallback !== "function"
+    ) {
+      return;
+    }
+
+    benchmarkState.frameCallbackArmed = true;
+    video.requestVideoFrameCallback((now, metadata) => {
+      benchmarkState.frameCallbackArmed = false;
+      benchmarkState.frameStats.callbackCount += 1;
+      rememberFirstBenchmarkTiming("firstVideoFrameMs");
+      benchmarkState.timings.lastVideoFrameMs = roundBenchmarkNumber(
+        benchmarkNowMs(),
+        1,
+      );
+
+      const processingDurationMs =
+        Number(metadata?.processingDuration || 0) * 1000;
+      if (Number.isFinite(processingDurationMs) && processingDurationMs >= 0) {
+        benchmarkState.frameStats.processingDurationSampleCount += 1;
+        benchmarkState.frameStats.processingDurationTotalMs +=
+          processingDurationMs;
+        benchmarkState.frameStats.maxProcessingDurationMs = Math.max(
+          benchmarkState.frameStats.maxProcessingDurationMs,
+          processingDurationMs,
+        );
+      }
+
+      if (Number.isFinite(benchmarkState.frameStats.lastFrameNowMs)) {
+        const frameIntervalMs = now - benchmarkState.frameStats.lastFrameNowMs;
+        if (Number.isFinite(frameIntervalMs) && frameIntervalMs >= 0) {
+          benchmarkState.frameStats.frameIntervalSampleCount += 1;
+          benchmarkState.frameStats.frameIntervalTotalMs += frameIntervalMs;
+          benchmarkState.frameStats.maxFrameIntervalMs = Math.max(
+            benchmarkState.frameStats.maxFrameIntervalMs,
+            frameIntervalMs,
+          );
+        }
+      }
+      benchmarkState.frameStats.lastFrameNowMs = now;
+
+      const presentedFrames = Number(metadata?.presentedFrames || 0);
+      if (
+        Number.isFinite(presentedFrames) &&
+        Number.isFinite(benchmarkState.frameStats.lastPresentedFrames)
+      ) {
+        benchmarkState.frameStats.maxPresentedFramesDelta = Math.max(
+          benchmarkState.frameStats.maxPresentedFramesDelta,
+          Math.max(
+            0,
+            presentedFrames - benchmarkState.frameStats.lastPresentedFrames,
+          ),
+        );
+      }
+      if (Number.isFinite(presentedFrames) && presentedFrames >= 0) {
+        benchmarkState.frameStats.lastPresentedFrames = presentedFrames;
+      }
+
+      if (!video.ended) {
+        armBenchmarkFrameCallback();
+      }
+    });
+  }
+
+  function recordBenchmarkVideoEvent(type) {
+    if (Object.hasOwn(benchmarkState.counters, type)) {
+      benchmarkState.counters[type] += 1;
+    }
+
+    if (type === "loadedmetadata") {
+      rememberFirstBenchmarkTiming("firstLoadedMetadataMs");
+      armBenchmarkFrameCallback();
+    } else if (type === "canplay") {
+      rememberFirstBenchmarkTiming("firstCanPlayMs");
+      armBenchmarkFrameCallback();
+    } else if (type === "playing") {
+      rememberFirstBenchmarkTiming("firstPlayingMs");
+      armBenchmarkFrameCallback();
+    } else if (type === "timeupdate") {
+      rememberFirstBenchmarkTiming("firstTimeUpdateMs");
+    }
+
+    if (type === "error") {
+      pushBenchmarkEvent(type, {
+        mediaErrorCode: Number(video.error?.code || 0) || null,
+        mediaErrorMessage: String(video.error?.message || "").trim() || null,
+      });
+      return;
+    }
+
+    pushBenchmarkEvent(type);
+  }
+
+  [
+    "loadedmetadata",
+    "canplay",
+    "playing",
+    "waiting",
+    "stalled",
+    "error",
+    "play",
+    "pause",
+    "seeking",
+    "seeked",
+    "ended",
+    "timeupdate",
+  ].forEach((eventName) => {
+    video.addEventListener(eventName, () => recordBenchmarkVideoEvent(eventName));
+  });
+
+  return {
+    getSnapshot: getBenchmarkSnapshot,
+    play: async () => {
+      await tryPlay();
+      return getBenchmarkSnapshot();
+    },
+    pause: () => {
+      video.pause();
+      return getBenchmarkSnapshot();
+    },
+    waitForPlayback: async ({
+      timeoutMs = 30_000,
+      minCurrentTime = 1.25,
+    } = {}) => {
+      return waitForBenchmarkCondition(
+        () => {
+          const snapshot = getBenchmarkSnapshot();
+          if (!snapshot.source.currentSource) {
+            return null;
+          }
+          const hasStarted =
+            snapshot.timings.firstPlayingMs !== null ||
+            snapshot.timings.firstVideoFrameMs !== null;
+          if (
+            hasStarted &&
+            snapshot.readyState >= 2 &&
+            snapshot.currentTime >= minCurrentTime
+          ) {
+            return snapshot;
+          }
+          return null;
+        },
+        {
+          timeoutMs,
+          errorMessage: `Playback did not advance past ${minCurrentTime}s in time.`,
+        },
+      );
+    },
+    measurePauseResume: async ({
+      pauseDurationMs = 500,
+      playbackAdvanceSeconds = 0.35,
+      timeoutMs = 15_000,
+    } = {}) => {
+      const baselineCurrentTime = getEffectiveCurrentTime();
+      const pauseStartedAt = performance.now();
+      video.pause();
+      await waitForBenchmarkCondition(() => video.paused, {
+        timeoutMs,
+        errorMessage: "Pause did not settle in time.",
+      });
+      const pauseSettledMs = performance.now() - pauseStartedAt;
+
+      if (pauseDurationMs > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, pauseDurationMs));
+      }
+
+      const resumeStartedAt = performance.now();
+      await tryPlay();
+      const targetTime = baselineCurrentTime + Math.max(0.05, playbackAdvanceSeconds);
+      await waitForBenchmarkCondition(
+        () => {
+          if (video.paused || video.readyState < 2) {
+            return null;
+          }
+          return getEffectiveCurrentTime() >= targetTime
+            ? getBenchmarkSnapshot()
+            : null;
+        },
+        {
+          timeoutMs,
+          errorMessage: "Playback did not resume cleanly in time.",
+        },
+      );
+
+      return {
+        baselineCurrentTime: roundBenchmarkNumber(baselineCurrentTime, 3),
+        pauseSettledMs: roundBenchmarkNumber(pauseSettledMs, 2),
+        resumeLatencyMs: roundBenchmarkNumber(
+          performance.now() - resumeStartedAt,
+          2,
+        ),
+        endCurrentTime: roundBenchmarkNumber(getEffectiveCurrentTime(), 3),
+        snapshot: getBenchmarkSnapshot(),
+      };
+    },
+    measureSeek: async ({
+      targetSeconds = 0,
+      playbackAdvanceSeconds = 0.35,
+      timeoutMs = 20_000,
+      showLoading = true,
+    } = {}) => {
+      const baselineCurrentTime = getEffectiveCurrentTime();
+      const safeTargetSeconds = Math.max(0, Number(targetSeconds) || 0);
+      const seekStartedAt = performance.now();
+      seekToAbsoluteTime(safeTargetSeconds, { showLoading });
+
+      await waitForBenchmarkCondition(
+        () => {
+          if (video.seeking || video.readyState < 2) {
+            return null;
+          }
+          const effectiveCurrentTime = getEffectiveCurrentTime();
+          const nearTarget = Math.abs(effectiveCurrentTime - safeTargetSeconds) <= 1;
+          const advancedPastTarget =
+            effectiveCurrentTime >=
+            safeTargetSeconds + Math.max(0.05, playbackAdvanceSeconds);
+          return nearTarget || advancedPastTarget
+            ? getBenchmarkSnapshot()
+            : null;
+        },
+        {
+          timeoutMs,
+          errorMessage: `Seek to ${safeTargetSeconds}s did not settle in time.`,
+        },
+      );
+
+      const endCurrentTime = getEffectiveCurrentTime();
+      return {
+        baselineCurrentTime: roundBenchmarkNumber(baselineCurrentTime, 3),
+        targetSeconds: roundBenchmarkNumber(safeTargetSeconds, 3),
+        seekLatencyMs: roundBenchmarkNumber(
+          performance.now() - seekStartedAt,
+          2,
+        ),
+        endCurrentTime: roundBenchmarkNumber(endCurrentTime, 3),
+        absoluteErrorSeconds: roundBenchmarkNumber(
+          Math.abs(endCurrentTime - safeTargetSeconds),
+          3,
+        ),
+        snapshot: getBenchmarkSnapshot(),
+      };
+    },
+    setStrategy: async ({
+      mode = "direct",
+      input = "",
+      startSeconds = 0,
+      audioStreamIndex = -1,
+      subtitleStreamIndex = -1,
+      videoMode = preferredRemuxVideoMode,
+    } = {}) => {
+      const safeInput = String(input || "").trim();
+      if (!safeInput) {
+        throw new Error("Benchmark strategy input is required.");
+      }
+
+      let nextSource = safeInput;
+      if (mode === "remux") {
+        nextSource = buildSoftwareDecodeUrl(
+          safeInput,
+          startSeconds,
+          audioStreamIndex,
+          preferredAudioSyncMs,
+          subtitleStreamIndex,
+          videoMode,
+        );
+      } else if (mode === "hls") {
+        nextSource = buildHlsPlaybackUrl(
+          safeInput,
+          audioStreamIndex,
+          subtitleStreamIndex,
+        );
+      } else if (mode === "direct") {
+        if (
+          !safeInput.startsWith("/") &&
+          !/^[a-z]+:\/\//i.test(safeInput)
+        ) {
+          nextSource = `/${safeInput}`;
+        }
+      } else {
+        throw new Error(`Unsupported benchmark strategy '${mode}'.`);
+      }
+
+      setVideoSource(nextSource);
+      await tryPlay();
+      return getBenchmarkSnapshot();
+    },
+    _recordSourceChange: (source) => {
+      const atMs = roundBenchmarkNumber(benchmarkNowMs(), 1);
+      benchmarkState.timings.lastSourceSetMs = atMs;
+      benchmarkState.sourceHistory.push({
+        atMs,
+        mode: inferBenchmarkPlaybackMode(source),
+        source,
+      });
+      if (benchmarkState.sourceHistory.length > 24) {
+        benchmarkState.sourceHistory.shift();
+      }
+      pushBenchmarkEvent("sourcechange", {
+        source,
+        mode: inferBenchmarkPlaybackMode(source),
+      });
+    },
+  };
+}
+
 async function initPlaybackSource() {
   hasAppliedInitialResume = false;
   nativePlaybackLaunched = false;
@@ -6303,7 +7259,7 @@ async function initPlaybackSource() {
   rebuildTrackOptionButtons();
 
   if (hasExplicitSource) {
-    tmdbExpectedDurationSeconds = 0;
+    expectedDurationSeconds = 0;
     hideResolver();
     await resolveExplicitSourceTrackSelection(src);
     const subtitleStreamPreferenceBeforeResolve =
@@ -6325,8 +7281,11 @@ async function initPlaybackSource() {
     const shouldUseNativeSubtitleTrack = shouldUseNativeEmbeddedSubtitleTrack(
       selectedSubtitleTrack,
     );
+    const shouldForceAudioRemux =
+      !benchmarkModeEnabled && shouldForceRemuxForEmbeddedAudio();
     const shouldUseRemux =
       shouldUseSoftwareDecode(src) ||
+      shouldForceAudioRemux ||
       (!localUploadSource && selectedAudioStreamIndex >= 0) ||
       shouldUseNativeSubtitleTrack;
     const remuxSubtitleStreamIndex = shouldUseNativeSubtitleTrack
@@ -6360,7 +7319,7 @@ async function initPlaybackSource() {
     seriesRequiresLocalEpisodeSources() &&
     !hasExplicitSource
   ) {
-    tmdbExpectedDurationSeconds = 0;
+    expectedDurationSeconds = 0;
     video.removeAttribute("src");
     video.load();
     showResolver("This episode is unavailable until its MP4 source is added.", {
@@ -6371,7 +7330,7 @@ async function initPlaybackSource() {
   }
 
   if (!isTmdbResolvedPlayback) {
-    tmdbExpectedDurationSeconds = 0;
+    expectedDurationSeconds = 0;
     setVideoSource(src || DEFAULT_TRAILER_SOURCE);
     hideResolver();
     await tryPlay();

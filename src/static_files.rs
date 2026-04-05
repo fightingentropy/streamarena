@@ -22,7 +22,11 @@ pub async fn serve_static(
     if method != Method::GET && method != Method::HEAD {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    let Some(file_path) = resolve_local_path(&state.config.root_dir, uri.path()) else {
+    let Some(file_path) = resolve_local_path(
+        &state.config.frontend_dir,
+        &state.config.root_dir,
+        uri.path(),
+    ) else {
         return Err(ApiError::not_found("Not found"));
     };
     let file = File::open(&file_path)
@@ -115,8 +119,18 @@ pub async fn serve_static(
     Ok(response)
 }
 
-fn resolve_local_path(root_dir: &Path, pathname: &str) -> Option<PathBuf> {
+fn resolve_local_path(frontend_dir: &Path, repo_root: &Path, pathname: &str) -> Option<PathBuf> {
     let decoded = percent_decode(pathname)?;
+    if decoded.starts_with("/assets/") {
+        let normalized = normalize_path(decoded.trim_start_matches('/'));
+        let file_path = repo_root.join(normalized);
+        return if file_path.starts_with(repo_root) {
+            Some(file_path)
+        } else {
+            None
+        };
+    }
+
     let mut requested = if decoded == "/" {
         "/index.html".to_owned()
     } else {
@@ -134,8 +148,8 @@ fn resolve_local_path(root_dir: &Path, pathname: &str) -> Option<PathBuf> {
         requested.push_str(".html");
     }
     let normalized = normalize_path(requested.trim_start_matches('/'));
-    let file_path = root_dir.join(normalized);
-    if file_path.starts_with(root_dir) {
+    let file_path = frontend_dir.join(normalized);
+    if file_path.starts_with(frontend_dir) {
         Some(file_path)
     } else {
         None
@@ -212,8 +226,21 @@ mod tests {
 
     #[test]
     fn maps_clean_route_to_html() {
-        let path = resolve_local_path(Path::new("/tmp/app"), "/settings").unwrap();
+        let path = resolve_local_path(Path::new("/tmp/app"), Path::new("/tmp/app"), "/settings")
+            .unwrap();
         assert!(path.ends_with("settings.html"));
+    }
+
+    #[test]
+    fn preserves_assets_under_repo_root() {
+        let path = resolve_local_path(
+            Path::new("/tmp/app/dist"),
+            Path::new("/tmp/app"),
+            "/assets/library.json",
+        )
+        .unwrap();
+        assert!(path.ends_with("assets/library.json"));
+        assert!(!path.ends_with("dist/assets/library.json"));
     }
 
     #[test]

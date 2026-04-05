@@ -1824,6 +1824,7 @@ mod tests {
         let cache_dir = root_dir.join("cache");
         let config = Config {
             root_dir: root_dir.clone(),
+            frontend_dir: root_dir.clone(),
             assets_dir: assets_dir.clone(),
             cache_dir: cache_dir.clone(),
             hls_cache_dir: cache_dir.join("hls"),
