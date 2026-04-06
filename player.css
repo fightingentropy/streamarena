@@ -214,7 +214,7 @@ body {
 .custom-subtitle-overlay {
     position: absolute;
     left: 50%;
-    bottom: clamp(128px, 18vh, 220px);
+    bottom: clamp(190px, 22vh, 240px);
     transform: translateX(-50%);
     width: min(88vw, 1400px);
     padding: 0 28px;
@@ -222,11 +222,15 @@ body {
     pointer-events: none;
     text-align: center;
     color: #d4d7de;
-    font-size: clamp(1.55rem, 2.85vw, 3.3rem);
+    font-size: clamp(0.85rem, 2.5vw, 3.3rem);
     line-height: 1.18;
     letter-spacing: 0.005em;
     text-wrap: balance;
     word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
     z-index: 34;
     text-shadow:
         0 2px 8px rgba(0, 0, 0, 0.9),
@@ -1230,57 +1234,159 @@ body {
 }
 
 @media (max-width: 920px) {
+    /* --- Controls panel: full-screen overlay --- */
     .controls-panel {
-        padding: 0 14px 16px;
+        grid-row: 1 / -1;
+        grid-column: 1 / -1;
+        align-self: stretch;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        z-index: 2;
     }
 
+    /* --- Back button: above overlay --- */
+    .top-row {
+        grid-row: 1;
+        grid-column: 1;
+        z-index: 3;
+        padding: 16px 16px 0;
+    }
+
+    /* --- Seek bar: bottom of screen --- */
     .seek-row {
-        gap: 10px;
-    }
-
-    .controls-row {
-        grid-template-columns: 1fr;
-        gap: 12px;
-    }
-
-    .controls-left,
-    .controls-right {
-        justify-content: center;
+        order: 10;
+        padding: 0 16px 16px;
         gap: 8px;
+        flex-shrink: 0;
+        z-index: 2;
     }
 
+    /* --- Controls row: flex column, fills vertical space --- */
+    .controls-row {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        flex: 1;
+        margin-top: 0;
+        gap: 0;
+        position: relative;
+        order: 1;
+    }
+
+    /* --- Center playback cluster --- */
+    .controls-left {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 24px;
+        margin: auto 0;
+    }
+
+    .controls-left .controls-cluster {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 32px;
+    }
+
+    /* Reorder: Rewind | Play | Forward (Netflix style) */
+    #togglePlay { order: 1; }
+    #rewind10   { order: 0; }
+    #forward10  { order: 2; }
+
+    /* Play/Pause: large center button */
+    .control-btn-main {
+        min-width: 56px;
+        height: 56px;
+    }
+
+    .control-btn-main .control-icon-image,
+    .control-btn-main .icon-play {
+        width: 56px;
+        height: 56px;
+    }
+
+    /* Rewind/Forward: large touch targets */
+    #rewind10,
+    #forward10 {
+        min-width: 52px;
+        height: 52px;
+    }
+
+    #rewind10 .control-icon-image,
+    #forward10 .control-icon-image {
+        width: 48px;
+        height: 48px;
+    }
+
+    /* Hide volume (use hardware) and fullscreen (already fullscreen) */
+    #volumeControl,
+    #toggleFullscreen {
+        display: none !important;
+    }
+
+    /* --- Right cluster: top-right utility buttons --- */
+    .controls-right {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        gap: 4px;
+        justify-content: flex-end;
+    }
+
+    .controls-right .controls-cluster {
+        gap: 4px;
+    }
+
+    .controls-right .control-btn {
+        min-width: 44px;
+        height: 44px;
+    }
+
+    .controls-right .control-icon-image {
+        width: 28px;
+        height: 28px;
+    }
+
+    .controls-right .control-btn svg {
+        width: 28px;
+        height: 28px;
+    }
+
+    .controls-right .control-btn:not(.control-btn-main) .control-icon-image {
+        width: 28px;
+        height: 28px;
+    }
+
+    /* --- Episode label: above seek bar --- */
     .episode-label {
-        order: -1;
-        font-size: 1rem;
+        order: 2;
+        font-size: 0.92rem;
+        padding: 0 20px;
+        margin-bottom: 8px;
+        margin-top: 0;
+        text-align: center;
+        width: 100%;
+        flex-shrink: 0;
     }
 
-    .controls-cluster {
-        gap: 10px;
-    }
-
+    /* --- Fallback sizing for other buttons --- */
     .control-btn {
-        min-width: 40px;
-        height: 40px;
+        min-width: 52px;
+        height: 52px;
     }
 
     .control-btn svg {
-        width: 24px;
-        height: 24px;
+        width: 28px;
+        height: 28px;
     }
 
     .control-icon-image {
-        width: 30px;
-        height: 30px;
-    }
-
-    .control-btn-main .control-icon-image {
-        width: 34px;
-        height: 34px;
-    }
-
-    .control-btn:not(.control-btn-main) .control-icon-image {
-        width: 34px;
-        height: 34px;
+        width: 48px;
+        height: 48px;
     }
 
     .control-badge {
@@ -1291,57 +1397,47 @@ body {
         font-size: 0.58rem;
     }
 
-    .volume-slider-popover {
-        width: 58px;
-        height: 212px;
-        bottom: calc(100% + 10px);
-        padding: 16px 0;
-    }
-
-    .volume-slider {
-        width: 154px;
-        height: 12px;
-    }
-
-    .volume-slider::-webkit-slider-runnable-track,
-    .volume-slider::-moz-range-track {
-        height: 12px;
-    }
-
-    .volume-slider::-webkit-slider-thumb,
-    .volume-slider::-moz-range-thumb {
-        width: 26px;
-        height: 26px;
-    }
-
-    .volume-slider::-webkit-slider-thumb {
-        margin-top: -7px;
-    }
-
-    #toggleMutePlayer .icon-volume-off {
-        width: 34px;
-        height: 34px;
+    /* --- Popovers: open downward from top-right --- */
+    .controls-right .speed-menu-wrap,
+    .controls-right .audio-menu-wrap,
+    .controls-right .episodes-menu-wrap {
+        position: relative;
     }
 
     .speed-popover {
-        right: -4px;
-        bottom: calc(100% + 8px);
+        right: 0;
+        bottom: auto;
+        top: calc(100% + 8px);
         padding: 16px 14px 20px;
         width: min(640px, calc(100vw - 16px));
     }
 
     .audio-popover {
-        right: -6px;
+        right: 0;
+        bottom: auto;
+        top: calc(100% + 8px);
         width: min(88vw, 430px);
         max-height: min(54vh, 340px);
         padding: 12px 0 10px;
     }
 
     .episodes-popover {
-        right: -6px;
+        right: 0;
+        bottom: auto;
+        top: calc(100% + 8px);
         width: min(95vw, 560px);
         max-height: min(70vh, 620px);
         padding: 10px;
+    }
+
+    /* --- Subtitle overlay: adjust for new layout --- */
+    .custom-subtitle-overlay {
+        bottom: clamp(130px, 18vh, 180px);
+        font-size: clamp(0.82rem, 3.6vw, 1.6rem);
+    }
+
+    .player-shell.controls-hidden .custom-subtitle-overlay {
+        bottom: clamp(48px, 8vh, 80px);
     }
 
     .episodes-popover-head {
@@ -1540,5 +1636,83 @@ body {
 
     .speed-label {
         font-size: 0.8rem;
+    }
+}
+
+/* --- Small phone breakpoint --- */
+@media (max-width: 600px) {
+    .controls-right {
+        top: 12px;
+        right: 12px;
+        gap: 2px;
+    }
+
+    .controls-right .control-btn {
+        min-width: 40px;
+        height: 40px;
+    }
+
+    .controls-right .control-icon-image,
+    .controls-right .control-btn svg {
+        width: 24px;
+        height: 24px;
+    }
+
+    .controls-right .control-btn:not(.control-btn-main) .control-icon-image {
+        width: 24px;
+        height: 24px;
+    }
+
+    .controls-left .controls-cluster {
+        gap: 24px;
+    }
+
+    .control-btn-main {
+        min-width: 52px;
+        height: 52px;
+    }
+
+    .control-btn-main .control-icon-image,
+    .control-btn-main .icon-play {
+        width: 52px;
+        height: 52px;
+    }
+
+    #rewind10,
+    #forward10 {
+        min-width: 48px;
+        height: 48px;
+    }
+
+    #rewind10 .control-icon-image,
+    #forward10 .control-icon-image {
+        width: 44px;
+        height: 44px;
+    }
+
+    .seek-row {
+        padding: 0 12px 12px;
+    }
+
+    .episode-label {
+        font-size: 0.84rem;
+        padding: 0 14px;
+        margin-bottom: 4px;
+    }
+
+    .top-row {
+        padding: 12px 12px 0;
+    }
+
+    .speed-popover {
+        width: min(96vw, 360px);
+    }
+
+    .audio-popover.subtitles-popover {
+        width: min(96vw, 380px);
+    }
+
+    .episodes-popover {
+        width: min(98vw, 360px);
     }
 }

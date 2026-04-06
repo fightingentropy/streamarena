@@ -43,8 +43,8 @@
   ],
   "series": [
     {
-      "id": "local-course-electlix-3",
-      "title": "Electrics LVL 3",
+      "id": "local-course-electrics-lvl3-2025",
+      "title": "Electrical Course 2025",
       "contentKind": "course",
       "tmdbId": "",
       "year": "2025",
@@ -52,44 +52,504 @@
       "requiresLocalEpisodeSources": true,
       "episodes": [
         {
-          "title": "Webinar 1: Short intro & basic electrics",
-          "description": "",
+          "title": "Webinar 1.1 - Short Intro & Basic Electrics",
+          "description": "Webinar 1: Day 1 morning - Course introduction by Brian",
           "thumb": "assets/images/electricity.webp",
-          "src": "assets/videos/webinar-electrics-webinar-1-short-intro-basic-electrics-by-access-training-20260304133944-nypjch.mp4",
+          "src": "assets/videos/webinar-1.1-short-intro-basic-electrics.mp4",
           "contentKind": "course",
           "seasonNumber": 1,
           "episodeNumber": 1,
           "uploadedAt": 1772631584314
         },
         {
-          "title": "Webinar 2: Basic Electrics",
-          "description": "",
+          "title": "Webinar 1.2 - Basic Electrics",
+          "description": "Webinar 1: Day 1 afternoon - Basic electrical concepts",
           "thumb": "assets/images/electricity.webp",
-          "src": "assets/videos/webinar-electrics-webinar-1-basic-electrics-by-access-training-20260305103751-jpb1h4.mp4",
+          "src": "assets/videos/webinar-1.2-basic-electrics.mp4",
           "contentKind": "course",
           "seasonNumber": 1,
           "episodeNumber": 2,
-          "uploadedAt": 1772707071719
+          "uploadedAt": 1772631585314
         },
         {
-          "title": "Webinar 3: Legislation and definitions",
-          "description": "",
+          "title": "Webinar 1.3 - Legislation and Definitions",
+          "description": "Webinar 1: Day 2 morning - Building regulations and definitions",
           "thumb": "assets/images/electricity.webp",
-          "src": "assets/videos/webinar-electrics-webinar-1-legislation-and-definitions-by-access-training-20260305105022-p2bq7k.mp4",
+          "src": "assets/videos/webinar-1.3-legislation-and-definitions.mp4",
           "contentKind": "course",
           "seasonNumber": 1,
           "episodeNumber": 3,
-          "uploadedAt": 1772707822124
+          "uploadedAt": 1772631586314
         },
         {
-          "title": "Webinar 4: Mains position",
-          "description": "",
+          "title": "Webinar 1.4 - Mains Position",
+          "description": "Webinar 1: Day 2 afternoon - Understanding mains position",
           "thumb": "assets/images/electricity.webp",
-          "src": "assets/videos/lesson-4-20260305110137-5yeapv.mp4",
+          "src": "assets/videos/webinar-1.4-mains-position.mp4",
           "contentKind": "course",
           "seasonNumber": 1,
           "episodeNumber": 4,
-          "uploadedAt": 1772708497287
+          "uploadedAt": 1772631587314
+        },
+        {
+          "title": "Webinar 1.5 - Revision Tuesday",
+          "description": "Webinar 1: Tuesday evening Q&A and revision session",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-1.5-revision-tuesday.mp4",
+          "contentKind": "course",
+          "seasonNumber": 1,
+          "episodeNumber": 5,
+          "uploadedAt": 1772631588314
+        },
+        {
+          "title": "Webinar 2.1 - Earthing and Bonding",
+          "description": "Webinar 2: Saturday morning - Earthing and bonding principles",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-2.1-earthing-and-bonding.mp4",
+          "contentKind": "course",
+          "seasonNumber": 2,
+          "episodeNumber": 1,
+          "uploadedAt": 1772631589314
+        },
+        {
+          "title": "Webinar 2.2 - Electrical Design",
+          "description": "Webinar 2: Saturday afternoon - Electrical design fundamentals",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-2.2-electrical-design.mp4",
+          "contentKind": "course",
+          "seasonNumber": 2,
+          "episodeNumber": 2,
+          "uploadedAt": 1772631590314
+        },
+        {
+          "title": "Webinar 2.3 - Design Special Locations",
+          "description": "Webinar 2: Sunday morning - Design for special locations",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-2.3-design-special-locations.mp4",
+          "contentKind": "course",
+          "seasonNumber": 2,
+          "episodeNumber": 3,
+          "uploadedAt": 1772631591314
+        },
+        {
+          "title": "Webinar 2.4 - Lighting Circuits 3-Phase",
+          "description": "Webinar 2: Sunday afternoon - Lighting and 3-phase circuits",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-2.4-lighting-circuits-3-phase.mp4",
+          "contentKind": "course",
+          "seasonNumber": 2,
+          "episodeNumber": 4,
+          "uploadedAt": 1772631592314
+        },
+        {
+          "title": "Webinar 3.1 - 18th Edition",
+          "description": "Webinar 3: 18th Edition wiring regulations",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-3.1-18th-edition.mp4",
+          "contentKind": "course",
+          "seasonNumber": 3,
+          "episodeNumber": 1,
+          "uploadedAt": 1772631593314
+        },
+        {
+          "title": "Webinar 3.2 - 18th Edition (Part 2)",
+          "description": "Webinar 3: 18th Edition continued",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-3.2-18th-edition.mp4",
+          "contentKind": "course",
+          "seasonNumber": 3,
+          "episodeNumber": 2,
+          "uploadedAt": 1772631594314
+        },
+        {
+          "title": "Webinar 3.3 - 18th Edition (Part 3)",
+          "description": "Webinar 3: 18th Edition continued",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-3.3-18th-edition.mp4",
+          "contentKind": "course",
+          "seasonNumber": 3,
+          "episodeNumber": 3,
+          "uploadedAt": 1772631595314
+        },
+        {
+          "title": "Webinar 3.4 - 18th Edition (Part 4)",
+          "description": "Webinar 3: 18th Edition continued",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-3.4-18th-edition.mp4",
+          "contentKind": "course",
+          "seasonNumber": 3,
+          "episodeNumber": 4,
+          "uploadedAt": 1772631596314
+        },
+        {
+          "title": "Webinar 4.1 - Inspection and Testing Demonstration",
+          "description": "Webinar 4: Inspection and testing demonstration",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-4.1-inspection-and-testing-demonstration.mp4",
+          "contentKind": "course",
+          "seasonNumber": 4,
+          "episodeNumber": 1,
+          "uploadedAt": 1772631597314
+        },
+        {
+          "title": "Webinar 4.2 - Inspection and Testing (Part 2)",
+          "description": "Webinar 4: Inspection and testing continued",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-4.2-inspection-and-testing-demonstration.mp4",
+          "contentKind": "course",
+          "seasonNumber": 4,
+          "episodeNumber": 2,
+          "uploadedAt": 1772631598314
+        },
+        {
+          "title": "Webinar 4.3 - PAT Testing",
+          "description": "Webinar 4: Portable Appliance Testing",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-4.3-pat.mp4",
+          "contentKind": "course",
+          "seasonNumber": 4,
+          "episodeNumber": 3,
+          "uploadedAt": 1772631599314
+        },
+        {
+          "title": "Webinar 4.4 - PAT Testing (Part 2)",
+          "description": "Webinar 4: PAT testing continued",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-4.4-pat.mp4",
+          "contentKind": "course",
+          "seasonNumber": 4,
+          "episodeNumber": 4,
+          "uploadedAt": 1772631600314
+        },
+        {
+          "title": "Webinar 5.1 - Testing Demonstrations (Part 2)",
+          "description": "Webinar 5: Saturday morning - Fundamental testing demonstrations, polarity testing",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-5.1-inspection-and-testing-demonstration.mp4",
+          "contentKind": "course",
+          "seasonNumber": 5,
+          "episodeNumber": 1,
+          "uploadedAt": 1772631601314
+        },
+        {
+          "title": "Webinar 5.2 - Live Testing",
+          "description": "Webinar 5: Saturday afternoon - Live testing, continuity recap",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-5.2-inspection-and-testing-demonstration.mp4",
+          "contentKind": "course",
+          "seasonNumber": 5,
+          "episodeNumber": 2,
+          "uploadedAt": 1772631602314
+        },
+        {
+          "title": "Webinar 5.3 - Initial Verification - Inspection",
+          "description": "Webinar 5: Sunday morning - Level 3 initial verification inspections",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-5.3-initial-verification-inspection.mp4",
+          "contentKind": "course",
+          "seasonNumber": 5,
+          "episodeNumber": 3,
+          "uploadedAt": 1772631603314
+        },
+        {
+          "title": "Webinar 5.4 - Initial Verification - Inspection (Part 2)",
+          "description": "Webinar 5: Sunday afternoon - Inspections continued, cables and CPCs",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-5.4-initial-verification-inspection.mp4",
+          "contentKind": "course",
+          "seasonNumber": 5,
+          "episodeNumber": 4,
+          "uploadedAt": 1772631604314
+        },
+        {
+          "title": "Webinar 6.1 - Initial Verification - Testing",
+          "description": "Webinar 6: Initial verification testing procedures",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-6.1-initial-verification-testing.mp4",
+          "contentKind": "course",
+          "seasonNumber": 6,
+          "episodeNumber": 1,
+          "uploadedAt": 1772631605314
+        },
+        {
+          "title": "Webinar 6.2 - Initial Verification - Testing (Part 2)",
+          "description": "Webinar 6: Initial verification testing continued",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-6.2-initial-verification-testing.mp4",
+          "contentKind": "course",
+          "seasonNumber": 6,
+          "episodeNumber": 2,
+          "uploadedAt": 1772631606314
+        },
+        {
+          "title": "Webinar 6.3 - Initial Verification - Testing (Part 3)",
+          "description": "Webinar 6: Initial verification testing continued",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-6.3-initial-verification-testing.mp4",
+          "contentKind": "course",
+          "seasonNumber": 6,
+          "episodeNumber": 3,
+          "uploadedAt": 1772631607314
+        },
+        {
+          "title": "Webinar 6.4 - Initial Verification - Testing (Part 4)",
+          "description": "Webinar 6: Initial verification testing continued",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-6.4-initial-verification-testing.mp4",
+          "contentKind": "course",
+          "seasonNumber": 6,
+          "episodeNumber": 4,
+          "uploadedAt": 1772631608314
+        },
+        {
+          "title": "Webinar 7.1 - Condition Reporting",
+          "description": "Webinar 7: Condition reporting procedures",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-7.1-condition-reporting.mp4",
+          "contentKind": "course",
+          "seasonNumber": 7,
+          "episodeNumber": 1,
+          "uploadedAt": 1772631609314
+        },
+        {
+          "title": "Webinar 7.2 - Condition Reporting Fault Codes",
+          "description": "Webinar 7: Understanding fault codes in condition reporting",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-7.2-condition-reporting-fault-codes.mp4",
+          "contentKind": "course",
+          "seasonNumber": 7,
+          "episodeNumber": 2,
+          "uploadedAt": 1772631610314
+        },
+        {
+          "title": "Webinar 7.3 - Miscellaneous",
+          "description": "Webinar 7: Miscellaneous topics",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-7.3-miscellaneous.mp4",
+          "contentKind": "course",
+          "seasonNumber": 7,
+          "episodeNumber": 3,
+          "uploadedAt": 1772631611314
+        },
+        {
+          "title": "Webinar 7.4 - Miscellaneous (Part 2)",
+          "description": "Webinar 7: Miscellaneous topics continued",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/webinar-7.4-miscellaneous.mp4",
+          "contentKind": "course",
+          "seasonNumber": 7,
+          "episodeNumber": 4,
+          "uploadedAt": 1772631612314
+        },
+        {
+          "title": "Masterclass 01 - Conduit: What Is It and How to Do It",
+          "description": "Masterclass: Understanding conduit systems",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/masterclass-01-conduit-what-is-it-and-how-to-do-it.mp4",
+          "contentKind": "course",
+          "seasonNumber": 8,
+          "episodeNumber": 1,
+          "uploadedAt": 1772631613314
+        },
+        {
+          "title": "Masterclass 02 - Earthing and Bonding Explained",
+          "description": "Masterclass: Deep dive into earthing and bonding",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/masterclass-02-earthing-and-bonding-explained.mp4",
+          "contentKind": "course",
+          "seasonNumber": 8,
+          "episodeNumber": 2,
+          "uploadedAt": 1772631614314
+        },
+        {
+          "title": "Masterclass 03 - Cable Calculation",
+          "description": "Masterclass: Cable calculation methods",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/masterclass-03-cable-calculation.mp4",
+          "contentKind": "course",
+          "seasonNumber": 8,
+          "episodeNumber": 3,
+          "uploadedAt": 1772631615314
+        },
+        {
+          "title": "Masterclass 04 - How to Revise Your Subjects",
+          "description": "Masterclass: Study and revision techniques",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/masterclass-04-how-to-revise-your-subjects.mp4",
+          "contentKind": "course",
+          "seasonNumber": 8,
+          "episodeNumber": 4,
+          "uploadedAt": 1772631616314
+        },
+        {
+          "title": "Masterclass 05 - Inspection & Testing Mock Exam",
+          "description": "Masterclass: Mock exam walkthrough for inspection and testing",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/masterclass-05-inspection-testing-mock-exam-walk-through.mp4",
+          "contentKind": "course",
+          "seasonNumber": 8,
+          "episodeNumber": 5,
+          "uploadedAt": 1772631617314
+        },
+        {
+          "title": "Masterclass 06 - Maximum Disconnection Times",
+          "description": "Masterclass: Understanding maximum disconnection times",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/masterclass-06-maximum-disconnection-times.mp4",
+          "contentKind": "course",
+          "seasonNumber": 8,
+          "episodeNumber": 6,
+          "uploadedAt": 1772631618314
+        },
+        {
+          "title": "Masterclass 07 - The Consumer Unit",
+          "description": "Masterclass: Consumer unit explained",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/masterclass-07-the-consumer-unit.mp4",
+          "contentKind": "course",
+          "seasonNumber": 8,
+          "episodeNumber": 7,
+          "uploadedAt": 1772631619314
+        },
+        {
+          "title": "Masterclass 08 - Useful Calculations",
+          "description": "Masterclass: Useful calculations and when to use them",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/masterclass-08-useful-calculations-and-when-to-use-them.mp4",
+          "contentKind": "course",
+          "seasonNumber": 8,
+          "episodeNumber": 8,
+          "uploadedAt": 1772631620314
+        },
+        {
+          "title": "Masterclass 09 - Which RCD to Use and When",
+          "description": "Masterclass: RCD selection guide",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/masterclass-09-which-rcd-to-use-and-when.mp4",
+          "contentKind": "course",
+          "seasonNumber": 8,
+          "episodeNumber": 9,
+          "uploadedAt": 1772631621314
+        },
+        {
+          "title": "Practical Demo 01 - PAT Testing Demonstration",
+          "description": "Practical: PAT testing demonstration",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-01-pat-testing-demonstration.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 1,
+          "uploadedAt": 1772631622314
+        },
+        {
+          "title": "Practical Demo 02 - Periodic Inspection & Testing",
+          "description": "Practical: Periodic inspection and testing procedures",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-02-periodic-inspection-testing.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 2,
+          "uploadedAt": 1772631623314
+        },
+        {
+          "title": "Practical Demo 03 - Safe Isolation",
+          "description": "Practical: Safe isolation procedures",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-03-safe-isolation.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 3,
+          "uploadedAt": 1772631624314
+        },
+        {
+          "title": "Practical Demo 04 - RCD and Functional Testing",
+          "description": "Practical: RCD and functional testing",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-04-rcd-and-functional-testing.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 4,
+          "uploadedAt": 1772631625314
+        },
+        {
+          "title": "Practical Demo 05 - Initial Verification Inspection",
+          "description": "Practical: Initial verification - the inspection",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-05-initial-verification-the-inspection.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 5,
+          "uploadedAt": 1772631626314
+        },
+        {
+          "title": "Practical Demo 06 - Continuity of Protective Conductors (Method 1)",
+          "description": "Practical: Continuity testing including main and supplementary bonding - Test Method 1",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-06-continuity-of-protective-conductors-including-main-and-supplementary-bonding-test-method-1.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 6,
+          "uploadedAt": 1772631627314
+        },
+        {
+          "title": "Practical Demo 07 - Continuity of Protective Conductors (Method 2)",
+          "description": "Practical: Continuity testing including main and supplementary bonding - Test Method 2",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-07-continuity-of-protective-conductors-including-main-and-supplementary-bonding-test-method-2.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 7,
+          "uploadedAt": 1772631628314
+        },
+        {
+          "title": "Practical Demo 08 - Continuity of Ring Final Circuit",
+          "description": "Practical: Ring final circuit conductors continuity testing",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-08-continuity-of-ring-final-circuit-conductors.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 8,
+          "uploadedAt": 1772631629314
+        },
+        {
+          "title": "Practical Demo 09 - Insulation Resistance",
+          "description": "Practical: Insulation resistance testing",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-09-insulation-resistance.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 9,
+          "uploadedAt": 1772631630314
+        },
+        {
+          "title": "Practical Demo 10 - Supply Polarity",
+          "description": "Practical: Supply polarity testing",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-10-supply-polarity.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 10,
+          "uploadedAt": 1772631631314
+        },
+        {
+          "title": "Practical Demo 11 - Ze and IPF",
+          "description": "Practical: Ze and IPF testing",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-11-ze-and-ipf.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 11,
+          "uploadedAt": 1772631632314
+        },
+        {
+          "title": "Practical Demo 12 - Zs",
+          "description": "Practical: Zs testing",
+          "thumb": "assets/images/electricity.webp",
+          "src": "assets/videos/practical-demo-12-zs.mp4",
+          "contentKind": "course",
+          "seasonNumber": 9,
+          "episodeNumber": 12,
+          "uploadedAt": 1772631633314
         }
       ]
     }

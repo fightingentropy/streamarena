@@ -1884,10 +1884,13 @@ function setCustomSubtitleText(value) {
 
   subtitleOverlay.hidden = false;
   subtitleOverlay.textContent = "";
-  const lines = normalized
+  let lines = normalized
     .split(/\n+/)
     .map((line) => line.trim())
     .filter(Boolean);
+  if (lines.length > 2) {
+    lines = [lines.slice(0, -1).join(" "), lines[lines.length - 1]];
+  }
   lines.forEach((line, lineIndex) => {
     const span = document.createElement("span");
     span.textContent = line;
