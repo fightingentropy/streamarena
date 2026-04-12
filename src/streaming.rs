@@ -34,7 +34,7 @@ const HLS_SEGMENT_WAIT_POLL_MS: u64 = 180;
 const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "mp2", "opus", "vorbis", "flac", "alac"];
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
     &["ac3", "eac3", "dts", "dca", "truehd", "mlp", "pcm_", "wma"];
-const REMUX_FORCE_NORMALIZE_VIDEO_CODECS: &[&str] = &["hevc", "h265", "hvc1", "hev1"];
+const REMUX_FORCE_NORMALIZE_VIDEO_CODECS: &[&str] = &[];
 
 #[derive(Clone)]
 pub struct StreamingService {
@@ -190,9 +190,17 @@ impl StreamingService {
             let probe_format = probe.formatName.to_lowercase();
             let probe_looks_like_matroska =
                 probe_format.contains("matroska") || probe_format.contains("webm");
+            let audio_needs_reencode = probe
+                .audioTracks
+                .iter()
+                .find(|track| track.streamIndex == effective_audio_stream_index)
+                .or_else(|| probe.audioTracks.first())
+                .map(|track| !is_browser_safe_audio_codec(&track.codec))
+                .unwrap_or(false);
             let should_apply_auto_audio_delay = looks_like_matroska_source
                 || probe_looks_like_matroska
-                || resolved_video_mode == "normalize";
+                || resolved_video_mode == "normalize"
+                || audio_needs_reencode;
             if should_apply_auto_audio_delay {
                 let selected_audio_track = probe
                     .audioTracks
@@ -269,7 +277,13 @@ impl StreamingService {
             audio_filters.push(format!("atrim=start={advance_seconds}"));
             audio_filters.push("asetpts=PTS-STARTPTS".to_owned());
         }
-        audio_filters.push("aresample=async=1000:first_pts=0".to_owned());
+        if resolved_video_mode == "normalize" {
+            // When video PTS is also reset (setpts=PTS-STARTPTS), align audio PTS to 0
+            audio_filters.push("aresample=async=1000:first_pts=0".to_owned());
+        } else {
+            // When video is copied, preserve audio PTS alignment with video
+            audio_filters.push("aresample=async=1000".to_owned());
+        }
         ffmpeg_args.push("-af".to_owned());
         ffmpeg_args.push(audio_filters.join(","));
         if resolved_video_mode == "normalize" {
@@ -308,7 +322,9 @@ impl StreamingService {
             "-avoid_negative_ts".to_owned(),
             "make_zero".to_owned(),
             "-movflags".to_owned(),
-            "frag_keyframe+empty_moov+faststart".to_owned(),
+            "frag_keyframe+empty_moov+default_base_moof".to_owned(),
+            "-frag_duration".to_owned(),
+            "5000000".to_owned(),
             "-f".to_owned(),
             "mp4".to_owned(),
             "pipe:1".to_owned(),
@@ -918,16 +934,13 @@ fn get_fallback_audio_stream_index(probe: &MediaProbe) -> i64 {
         .unwrap_or(-1)
 }
 
-fn should_force_normalize_video_for_browser(probe: &MediaProbe, source: &str) -> bool {
+fn should_force_normalize_video_for_browser(probe: &MediaProbe, _source: &str) -> bool {
     let probe_codec = probe.videoCodec.trim().to_lowercase();
     if !probe_codec.is_empty() && REMUX_FORCE_NORMALIZE_VIDEO_CODECS.contains(&probe_codec.as_str())
     {
         return true;
     }
-    let source_text = source.to_lowercase();
-    ["x265", "h265", "hevc", "h.265"]
-        .iter()
-        .any(|pattern| source_text.contains(pattern))
+    false
 }
 
 fn build_hls_video_encode_config(hwaccel_mode: &str) -> VideoEncodeConfig {

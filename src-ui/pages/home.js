@@ -1462,17 +1462,23 @@ export default function HomePage() {
       params.set("src", JEFFREY_EPSTEIN_EPISODE_1_SOURCE);
     }
 
-    window.location.href = `player.html?${params.toString()}`;
+    const _slug = (title || "Title")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+    const _epIdx = isSeriesLaunch && hasEpisodeIndex ? `/${Math.floor(parsedEpisodeIndex)}` : "";
+    window.location.href = `/watch/${_slug}${_epIdx}?${params.toString()}`;
   }
 
-  function getJeffreyEpsteinHeroDestination() {
+  function getHeroDestination() {
     return {
-      title: "Jeffrey Epstein: Filthy Rich",
-      episode: "E1 Hunting Grounds",
-      src: JEFFREY_EPSTEIN_EPISODE_1_SOURCE,
-      mediaType: "tv",
-      seriesId: JEFFREY_EPSTEIN_SERIES_ID,
-      episodeIndex: 0,
+      title: "Project Hail Mary",
+      src: "assets/videos/project-hail-mary-2026-2160p-hevc.mp4",
+      mediaType: "movie",
+      tmdbId: "687163",
+      year: "2026",
+      thumb: "assets/images/project-hail-mary-thumb.jpg",
     };
   }
 
@@ -3547,7 +3553,7 @@ export default function HomePage() {
   }
 
   function handleHeroPlay() {
-    openPlayerPage(getJeffreyEpsteinHeroDestination());
+    openPlayerPage(getHeroDestination());
   }
 
   function handleHeroInfo() {
@@ -3558,13 +3564,13 @@ export default function HomePage() {
   }
 
   function handleHeroTitleClick() {
-    openPlayerPage(getJeffreyEpsteinHeroDestination());
+    openPlayerPage(getHeroDestination());
   }
 
   function handleHeroTitleKeydown(event) {
     if (event.key === "Enter") {
       event.preventDefault();
-      openPlayerPage(getJeffreyEpsteinHeroDestination());
+      openPlayerPage(getHeroDestination());
     }
   }
 
@@ -4143,12 +4149,12 @@ export default function HomePage() {
         id="introVideo"
         ref=${(el) => (introVideoRef = el)}
         class="hero-video"
-        src="assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4"
+        src="assets/videos/project-hail-mary-2026-trailer.mp4"
         autoplay
         loop
         playsinline
         preload="auto"
-        aria-label="Jeffrey Epstein: Filthy Rich trailer"
+        aria-label="Project Hail Mary trailer"
       ></video>
 
       <div class="hero-shade" aria-hidden="true"></div>
@@ -4162,25 +4168,25 @@ export default function HomePage() {
         <h1
           id="heroTitle"
           tabindex="0"
-          aria-label="Open Jeffrey Epstein player"
+          aria-label="Open Project Hail Mary player"
           style="cursor: pointer"
           onClick=${handleHeroTitleClick}
           onKeydown=${handleHeroTitleKeydown}
         >
-          JEFFREY
+          PROJECT
           <br />
-          EPSTEIN:
+          HAIL
           <br />
-          <span>FILTHY RICH</span>
+          <span>MARY</span>
         </h1>
         <div class="rank-line">
           <span class="top10">TOP 10</span>
-          <p>No. 3 in Series Today</p>
+          <p>No. 1 in Films Today</p>
         </div>
         <p class="description">
-          Stories from survivors fuel this documentary series
-          examining how convicted sex offender Jeffrey Epstein used
-          wealth and power to carry out his abuses.
+          A lone astronaut wakes up on a spaceship with no memory and
+          must solve the mystery of a substance killing the sun — with
+          help from an unexpected alien friend.
         </p>
         <div class="hero-actions">
           <button id="heroPlay" class="cta cta-play" type="button" onClick=${handleHeroPlay}>
@@ -4216,8 +4222,6 @@ export default function HomePage() {
       </section>
 
       <div class="subtitle">
-        <strong>[newsman]</strong>
-        <em>The disgraced financier<br />Jeffrey Epstein is dead.</em>
       </div>
 
       <div class="hero-controls">
@@ -4235,7 +4239,7 @@ export default function HomePage() {
             <path d="M14 5.2v13.6a1 1 0 0 1-1.68.74L7.6 15H5a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2.6l4.72-4.54A1 1 0 0 1 14 5.2Zm6.3 3.1a1 1 0 0 1 0 1.4L18.01 12l2.3 2.3a1 1 0 0 1-1.42 1.4L16.6 13.4l-2.3 2.3a1 1 0 0 1-1.4-1.42l2.3-2.28-2.3-2.3a1 1 0 0 1 1.4-1.4l2.3 2.3 2.29-2.3a1 1 0 0 1 1.41 0Z"></path>
           </svg>
         </button>
-        <span class="rating">15</span>
+        <span class="rating">PG-13</span>
       </div>
 
       <section

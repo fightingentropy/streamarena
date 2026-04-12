@@ -182,7 +182,12 @@ function buildPlayerUrl(details) {
     params.set("audioLang", "en");
   }
 
-  return `player.html?${params.toString()}`;
+  const _slug = (details.title || "title")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return `/watch/${_slug}?${params.toString()}`;
 }
 
 function openPlayerPage(details) {

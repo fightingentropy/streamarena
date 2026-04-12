@@ -1,6 +1,16 @@
 {
   "movies": [
     {
+      "id": "local-movie-project-hail-mary-2026",
+      "title": "Project Hail Mary",
+      "tmdbId": "687163",
+      "year": "2026",
+      "src": "assets/videos/project-hail-mary-2026-2160p-hevc.mp4",
+      "thumb": "assets/images/project-hail-mary-thumb.jpg",
+      "description": "Science teacher Ryland Grace wakes up on a spaceship light years from home with no recollection of who he is or how he got there. As his memory returns, he begins to uncover his mission: solve the riddle of the mysterious substance causing the sun to die out.",
+      "uploadedAt": 1776022800000
+    },
+    {
       "id": "local-movie-the-worst-person-in-the-world-2021",
       "title": "The Worst Person in the World",
       "tmdbId": "660120",

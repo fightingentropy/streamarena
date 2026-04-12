@@ -20,7 +20,24 @@ export default defineConfig({
     proxy: {
       "/api": "http://127.0.0.1:5173",
     },
+    watch: {
+      ignored: ["**/.claude/**"],
+    },
   },
+  plugins: [
+    {
+      name: "clean-url-rewrites",
+      configureServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          if (req.url?.startsWith("/watch")) {
+            const [path, query] = req.url.split("?");
+            req.url = `/player.html${query ? `?${query}` : ""}`;
+          }
+          next();
+        });
+      },
+    },
+  ],
   build: {
     outDir: "dist",
     emptyOutDir: true,

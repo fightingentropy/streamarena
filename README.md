@@ -1,4 +1,4 @@
-# Netflix Clone (Rust + Vanilla JS)
+# Netflix Clone (Rust + SolidJS)
 
 This project is a local Netflix-style streaming app with:
 
@@ -20,6 +20,8 @@ This project is a local Netflix-style streaming app with:
 8. Local Development
 9. Operational Notes
 10. Troubleshooting
+11. Clean URL Routing
+12. Remux Pipeline Notes
 
 ## 1) Overview
 
@@ -130,12 +132,15 @@ The app combines two media paths:
 ### Player (`player.html` + `player.js`)
 
 - Accepts URL params including `tmdbId`, `mediaType`, `title`, `src`, `audioLang`, `quality`, `subtitleLang`
+- Clean URL routing: `/watch/<slug>` and `/watch/<slug>/<episodeIndex>` via Vite middleware rewrite
+- Slug-based library lookup on page load for clean URL refresh support
 - Chooses source path based on params and resolver results
 - Attaches subtitles/audio tracks and keeps selected preferences
 - Explicit/local `src` playback can probe media tracks via `/api/media/tracks` and preselect audio/subtitle streams
 - For uploaded local media, English audio is preferred when an English track exists
 - Handles stream fallback and recovery behavior
 - Uses native HLS, remux, and subtitle endpoints when needed (no hls.js dependency — relies on browser-native HLS support)
+- On seek, the previous video source is explicitly torn down (pause + remove src + load) before setting the new source, ensuring the old HTTP stream connection is closed and the server-side ffmpeg process is killed
 
 Keyboard controls:
 
@@ -380,3 +385,60 @@ bun run bench:playback -- \
 - Playback stutter/compatibility issues:
   - use remux mode `normalize` for toughest sources
   - check `/api/health` and `/api/config` for ffmpeg/hwaccel status
+- Audio out of sync:
+  - often caused by non-browser-safe audio codecs (AC3, DTS, TrueHD) that need re-encoding to AAC — the original audio start time offset can be lost during transcode
+  - the server auto-detects audio/video start time offsets and applies `adelay` compensation when `AUTO_AUDIO_SYNC=1`
+  - this applies to MKV sources, normalize mode, and any source with audio that needs re-encoding
+  - manual sync can also be adjusted with `[` / `]` keys during remux playback
+- Zombie ffmpeg processes / high CPU after seeking:
+  - each seek on a remux stream spawns a new server-side ffmpeg process
+  - the frontend tears down the old video source before setting a new one, which closes the HTTP connection and triggers `kill_on_drop` on the server
+  - if zombie processes accumulate (e.g. due to browser not closing connections), kill them with `pkill -f ffmpeg`
+- Stale service worker causing page load failures or screen flashing:
+  - if a `sw.js` was previously registered and the file no longer exists, the stale service worker will intercept fetches and fail
+  - fix: Chrome DevTools -> Application -> Service Workers -> Unregister, then clear site data and hard refresh (Cmd+Shift+R)
+- Clean URL icons/assets broken:
+  - all asset paths in the player must be absolute (e.g. `/assets/icons/...`) since the page loads at `/watch/<slug>` — relative paths resolve incorrectly
+  - similarly, navigation links must be absolute (`/` not `index.html`)
+
+## 11) Clean URL Routing
+
+The player supports clean URLs: `/watch/<slug>` and `/watch/<slug>/<episodeIndex>`.
+
+### How it works
+
+1. Vite middleware in `vite.config.js` rewrites `/watch/*` requests to `player.html`
+2. On page load, the player parses the URL path to extract the slug and optional episode index
+3. The slug is looked up against `assets/library.json` to resolve the media entry and populate query params
+4. `history.replaceState` is called synchronously at module scope to avoid a visible URL flash from query params to the clean URL
+5. Series resolution variables are re-derived after the async slug lookup completes (they use `let` not `const` to allow this)
+
+### Important conventions
+
+- All asset paths (icons, images) must be absolute — the page loads at `/watch/<slug>`, so relative paths break
+- Navigation back to home must use `/` not `index.html`
+- Do not use `<base href="/">` — it interferes with Vite HMR WebSocket connections
+
+## 12) Remux Pipeline Notes
+
+### Video modes
+
+- `copy`: stream-copies video, re-encodes audio to AAC. Fast, low CPU. Used for MP4 sources.
+- `normalize`: re-encodes video (H.264) + audio (AAC). High CPU but maximum compatibility. Used for MKV/WebM sources or when the video codec is not browser-safe.
+- `auto` (default): picks `copy` or `normalize` based on container format and codec probing.
+
+### Audio sync compensation
+
+When audio needs re-encoding (AC3, DTS, etc.), the original audio start time offset may differ from the video start time. The server probes both timestamps and applies:
+- `adelay` filter for positive offsets (audio starts after video)
+- `atrim` + `asetpts` for negative offsets (audio starts before video)
+- `aresample=async=1000:first_pts=0` when video PTS is also reset (normalize mode)
+- `aresample=async=1000` when video is copied (preserves original video PTS)
+
+### Seeking and process cleanup
+
+Each seek on a remux stream starts a new ffmpeg process with `-ss <seconds>`. The frontend explicitly tears down the previous `<video>` source before setting the new URL, which closes the HTTP connection and allows the server to kill the old ffmpeg child process via `kill_on_drop(true)`.
+
+### HEVC / 4K content
+
+4K HEVC content in MP4 containers is stream-copied (no server-side re-encoding), but the browser must decode it — this is CPU-intensive and can cause fan noise. Hardware HEVC decoding depends on browser and GPU support.

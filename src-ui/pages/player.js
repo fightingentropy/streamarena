@@ -87,7 +87,35 @@ let lastAudibleVolume = 1;
 const sourceSaveStateByHash = new Map();
 const sourceSaveResetTimeoutByHash = new Map();
 
+// ─── Clean URL support: /watch/<slug> or /watch/<slug>/<episodeIndex> ───
+function slugify(text) {
+  return String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+function parseWatchPath() {
+  const path = window.location.pathname;
+  const match = path.match(/^\/watch(?:\/([^/]+))?(?:\/(\d+))?$/);
+  if (!match) return null;
+  return { slug: match[1] || "", episodeIndex: match[2] };
+}
+const _watchPath = parseWatchPath();
+const _isCleanUrl = Boolean(_watchPath);
+const _needsSlugResolve = _isCleanUrl && _watchPath.slug && !window.location.search;
+
 const params = new URLSearchParams(window.location.search);
+
+// Immediately clean the URL if we have a slug path with query params.
+// Params are already captured above, so stripping the query string is safe.
+if (_isCleanUrl && _watchPath.slug && window.location.search) {
+  const _immediatePath = _watchPath.episodeIndex
+    ? `/watch/${_watchPath.slug}/${_watchPath.episodeIndex}`
+    : `/watch/${_watchPath.slug}`;
+  try { window.history.replaceState(null, "", _immediatePath); } catch {}
+}
+
 const benchmarkModeEnabled = new Set(["1", "true", "yes", "on"]).has(
   String(params.get("benchmark") || "")
     .trim()
@@ -105,8 +133,8 @@ let SERIES_LIBRARY = Object.freeze({ ...STATIC_SERIES_LIBRARY });
 let _seriesLibraryReady = fetchLocalSeriesLibrary().then((local) => {
   SERIES_LIBRARY = Object.freeze({ ...mergeSeriesLibraries(STATIC_SERIES_LIBRARY, local) });
 });
-const rawSourceParam = String(params.get("src") || "").trim();
-const normalizedRawSourceParam = rawSourceParam.startsWith("assets/")
+let rawSourceParam = String(params.get("src") || "").trim();
+let normalizedRawSourceParam = rawSourceParam.startsWith("assets/")
   ? `/${rawSourceParam}`
   : rawSourceParam;
 
@@ -150,59 +178,61 @@ function inferSeriesPlaybackFromSource(sourceValue) {
   return null;
 }
 
-const mediaTypeParam = String(params.get("mediaType") || "")
+let mediaTypeParam = String(params.get("mediaType") || "")
   .trim()
   .toLowerCase();
-const isExplicitTvPlayback = mediaTypeParam === "tv";
-const requestedSeriesId = String(params.get("seriesId") || "")
+let isExplicitTvPlayback = mediaTypeParam === "tv";
+let requestedSeriesId = String(params.get("seriesId") || "")
   .trim()
   .toLowerCase();
-const hasRequestedEpisodeIndexParam = params.has("episodeIndex");
-const requestedEpisodeIndex = Number(params.get("episodeIndex") || 0);
-const explicitSeriesPlayback =
-  isExplicitTvPlayback &&
-  Object.prototype.hasOwnProperty.call(SERIES_LIBRARY, requestedSeriesId)
-    ? {
-        seriesId: requestedSeriesId,
-        series: SERIES_LIBRARY[requestedSeriesId],
-        episodeIndex: 0,
-      }
-    : null;
-const inferredSeriesPlayback = inferSeriesPlaybackFromSource(
-  normalizedRawSourceParam,
-);
-const activeSeriesMatch = explicitSeriesPlayback || inferredSeriesPlayback;
-const activeSeries = activeSeriesMatch?.series || null;
-const seriesEpisodes = Array.isArray(activeSeries?.episodes)
-  ? activeSeries.episodes
-  : [];
-const selectedSeriesEpisodeIndex = hasRequestedEpisodeIndexParam
-  ? requestedEpisodeIndex
-  : Number(activeSeriesMatch?.episodeIndex || 0);
-const seriesEpisodeIndex = seriesEpisodes.length
-  ? Math.max(
-      0,
-      Math.min(
-        seriesEpisodes.length - 1,
-        Number.isFinite(selectedSeriesEpisodeIndex)
-          ? Math.floor(selectedSeriesEpisodeIndex)
-          : 0,
-      ),
-    )
-  : -1;
-const activeSeriesEpisode =
-  seriesEpisodeIndex >= 0 ? seriesEpisodes[seriesEpisodeIndex] : null;
-const isSeriesPlayback = Boolean(
-  activeSeriesEpisode && (isExplicitTvPlayback || inferredSeriesPlayback),
-);
-const hasSeriesEpisodeControls =
+let hasRequestedEpisodeIndexParam = params.has("episodeIndex");
+let requestedEpisodeIndex = Number(params.get("episodeIndex") || 0);
+function resolveSeriesMatch() {
+  const explicit =
+    isExplicitTvPlayback &&
+    Object.prototype.hasOwnProperty.call(SERIES_LIBRARY, requestedSeriesId)
+      ? {
+          seriesId: requestedSeriesId,
+          series: SERIES_LIBRARY[requestedSeriesId],
+          episodeIndex: 0,
+        }
+      : null;
+  const inferred = inferSeriesPlaybackFromSource(normalizedRawSourceParam);
+  const match = explicit || inferred;
+  const series = match?.series || null;
+  const episodes = Array.isArray(series?.episodes) ? series.episodes : [];
+  const selectedIdx = hasRequestedEpisodeIndexParam
+    ? requestedEpisodeIndex
+    : Number(match?.episodeIndex || 0);
+  const epIndex = episodes.length
+    ? Math.max(
+        0,
+        Math.min(
+          episodes.length - 1,
+          Number.isFinite(selectedIdx) ? Math.floor(selectedIdx) : 0,
+        ),
+      )
+    : -1;
+  const ep = epIndex >= 0 ? episodes[epIndex] : null;
+  const isSeries = Boolean(ep && (isExplicitTvPlayback || inferred));
+  const rawSrc = String(ep?.src || "").trim();
+  const normSrc = rawSrc.startsWith("assets/") ? `/${rawSrc}` : rawSrc;
+  return { explicit, inferred, match, series, episodes, selectedIdx, epIndex, ep, isSeries, normSrc };
+}
+let _resolved = resolveSeriesMatch();
+let explicitSeriesPlayback = _resolved.explicit;
+let inferredSeriesPlayback = _resolved.inferred;
+let activeSeriesMatch = _resolved.match;
+let activeSeries = _resolved.series;
+let seriesEpisodes = _resolved.episodes;
+let seriesEpisodeIndex = _resolved.epIndex;
+let activeSeriesEpisode = _resolved.ep;
+let isSeriesPlayback = _resolved.isSeries;
+let hasSeriesEpisodeControls =
   isSeriesPlayback && Boolean(activeSeries && seriesEpisodes.length > 1);
-const rawSeriesSourceParam = String(activeSeriesEpisode?.src || "").trim();
-const normalizedSeriesSourceParam = rawSeriesSourceParam.startsWith("assets/")
-  ? `/${rawSeriesSourceParam}`
-  : rawSeriesSourceParam;
+let normalizedSeriesSourceParam = _resolved.normSrc;
 const thumbParam = String(params.get("thumb") || "").trim();
-const src = isSeriesPlayback
+let src = isSeriesPlayback
   ? normalizedSeriesSourceParam || normalizedRawSourceParam
   : normalizedRawSourceParam;
 const fallbackSeasonNumber = Number(
@@ -211,10 +241,10 @@ const fallbackSeasonNumber = Number(
 const fallbackEpisodeNumber = Number(
   params.get("episodeNumber") || params.get("episodeOrdinal") || 1,
 );
-const rawTitle = isSeriesPlayback
+let rawTitle = isSeriesPlayback
   ? String(activeSeries.title || "")
   : params.get("title") || "Jeffrey Epstein: Filthy Rich";
-const rawEpisode = isSeriesPlayback
+let rawEpisode = isSeriesPlayback
   ? getSeriesEpisodeLabel(
       seriesEpisodeIndex,
       activeSeriesEpisode?.title || "",
@@ -222,19 +252,19 @@ const rawEpisode = isSeriesPlayback
       Number(activeSeriesEpisode?.episodeNumber || seriesEpisodeIndex + 1),
     )
   : params.get("episode") || "";
-const title = rawTitle;
-const episode = rawEpisode;
-const tmdbId = String(
+let title = rawTitle;
+let episode = rawEpisode;
+let tmdbId = String(
   activeSeries?.tmdbId || params.get("tmdbId") || "",
 ).trim();
-const mediaType = isSeriesPlayback ? "tv" : mediaTypeParam;
-const year = String(activeSeries?.year || params.get("year") || "").trim();
-const seasonNumber = isSeriesPlayback
+let mediaType = isSeriesPlayback ? "tv" : mediaTypeParam;
+let year = String(activeSeries?.year || params.get("year") || "").trim();
+let seasonNumber = isSeriesPlayback
   ? Math.max(1, Math.floor(Number(activeSeriesEpisode?.seasonNumber || 1)))
   : Number.isFinite(fallbackSeasonNumber)
     ? Math.max(1, Math.floor(fallbackSeasonNumber))
     : 1;
-const episodeNumber = isSeriesPlayback
+let episodeNumber = isSeriesPlayback
   ? Math.max(
       1,
       Math.floor(
@@ -248,12 +278,12 @@ const hasAudioLangParam = params.has("audioLang");
 const audioLangParam = (params.get("audioLang") || "auto").trim().toLowerCase();
 const hasQualityParam = params.has("quality");
 const qualityParam = (params.get("quality") || "auto").trim().toLowerCase();
-const preferredContainerParam = String(
+let preferredContainerParam = String(
   activeSeries?.preferredContainer || params.get("preferredContainer") || "",
 )
   .trim()
   .toLowerCase();
-const preferredContainer =
+let preferredContainer =
   preferredContainerParam === "mp4" || preferredContainerParam === "mkv"
     ? preferredContainerParam
     : "";
@@ -268,31 +298,28 @@ const saveToGalleryParam = (params.get("saveToGallery") || "")
 const shouldSaveToGallery = new Set(["1", "true", "yes", "on"]).has(
   saveToGalleryParam,
 );
-const hasExplicitSource = Boolean(src);
-const isExplicitLocalUploadSource = Boolean(
-  hasExplicitSource &&
-  (() => {
-    const normalizedSource = String(src || "")
-      .trim()
-      .toLowerCase();
-    return (
-      normalizedSource.startsWith("/media/") ||
-      normalizedSource.includes("/media/") ||
-      normalizedSource.startsWith("/videos/") ||
-      normalizedSource.startsWith("videos/") ||
-      normalizedSource.includes("/videos/") ||
-      normalizedSource.startsWith("assets/videos/") ||
-      normalizedSource.includes("/assets/videos/")
-    );
-  })(),
-);
-const isTmdbMoviePlayback = Boolean(
+let hasExplicitSource = Boolean(src);
+function computeIsExplicitLocalUploadSource() {
+  if (!hasExplicitSource) return false;
+  const normalizedSource = String(src || "").trim().toLowerCase();
+  return (
+    normalizedSource.startsWith("/media/") ||
+    normalizedSource.includes("/media/") ||
+    normalizedSource.startsWith("/videos/") ||
+    normalizedSource.startsWith("videos/") ||
+    normalizedSource.includes("/videos/") ||
+    normalizedSource.startsWith("assets/videos/") ||
+    normalizedSource.includes("/assets/videos/")
+  );
+}
+let isExplicitLocalUploadSource = computeIsExplicitLocalUploadSource();
+let isTmdbMoviePlayback = Boolean(
   !hasExplicitSource && tmdbId && mediaType === "movie",
 );
-const isTmdbTvPlayback = Boolean(
+let isTmdbTvPlayback = Boolean(
   !hasExplicitSource && tmdbId && mediaType === "tv",
 );
-const isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
+let isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
 const supportedAudioLangs = new Set([
   "auto",
   "en",
@@ -940,13 +967,13 @@ if ((isTmdbMoviePlayback || isExplicitLocalUploadSource) && hasSubtitleLangParam
   persistSubtitleLangPreference(preferredSubtitleLang);
 }
 applyPreferredSourceAudioSync(selectedSourceHash);
-const sourceIdentity = isSeriesPlayback
+let sourceIdentity = isSeriesPlayback
   ? `series:${activeSeries.id}:episode:${seriesEpisodeIndex}`
   : src ||
     (isTmdbResolvedPlayback
       ? `tmdb:${mediaType}:${tmdbId}${isTmdbTvPlayback ? `:s${seasonNumber}:e${episodeNumber}` : ""}`
       : DEFAULT_TRAILER_SOURCE);
-const resumeStorageKey = `netflix-resume:${sourceIdentity}`;
+let resumeStorageKey = `netflix-resume:${sourceIdentity}`;
 const speedStorageKey = "netflix-playback-speed";
 let resumeTime = 0;
 let lastPersistedResumeTime = 0;
@@ -2300,8 +2327,12 @@ function shouldUseNativeEmbeddedSubtitleTrack(track) {
   // Prefer browser-native subtitle rendering for internal text tracks.
   // For remux playback this keeps subtitle selection attached to the source
   // and avoids slow VTT extraction against remote MKV URLs.
+  // Skip for local sources — VTT overlay works fine and avoids forcing remux.
   const hasTrack = Boolean(track);
   if (!hasTrack || track.isExternal || !track.isTextBased) {
+    return false;
+  }
+  if (isExplicitLocalUploadSource) {
     return false;
   }
   return true;
@@ -2730,6 +2761,14 @@ function setVideoSource(nextSource) {
 
   clearStreamStallRecovery();
   clearSubtitleTrack();
+
+  // Explicitly tear down the previous source to close the HTTP connection
+  // and let the server kill the old ffmpeg process (kill_on_drop).
+  if (video.src) {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  }
 
   const transcodeMeta = parseTranscodeSource(sourceWithAudioSync);
   if (transcodeMeta) {
@@ -3379,7 +3418,9 @@ function navigateToSeriesEpisode(nextIndex) {
   nextParams.delete("sourceHash");
 
   const nextQuery = nextParams.toString();
-  const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
+  const _seriesSlug = slugify(activeSeries?.title || title);
+  const _episodePath = _seriesSlug ? `/watch/${_seriesSlug}/${safeIndex}` : window.location.pathname;
+  const nextUrl = `${_episodePath}${nextQuery ? `?${nextQuery}` : ""}`;
   window.location.href = nextUrl;
 }
 
@@ -3435,7 +3476,8 @@ function renderSeriesEpisodePreview() {
 
     const thumb = document.createElement("img");
     thumb.className = "episode-preview-thumb";
-    thumb.src = String(episodeEntry.thumb || DEFAULT_EPISODE_THUMBNAIL);
+    const thumbUrl = String(episodeEntry.thumb || DEFAULT_EPISODE_THUMBNAIL);
+    thumb.src = thumbUrl.startsWith("/") || thumbUrl.startsWith("http") ? thumbUrl : `/${thumbUrl}`;
     thumb.alt = `Episode ${index + 1} preview`;
     thumb.loading = "lazy";
     main.appendChild(thumb);
@@ -5316,7 +5358,140 @@ function createPlaybackBenchmarkApi() {
   };
 }
 
+function cleanUrlIfNeeded() {
+  try {
+    const cleanSlug = isSeriesPlayback
+      ? slugify(activeSeries?.title || title)
+      : slugify(title);
+    if (cleanSlug) {
+      const cleanPath = isSeriesPlayback
+        ? `/watch/${cleanSlug}/${seriesEpisodeIndex}`
+        : `/watch/${cleanSlug}`;
+      window.history.replaceState(null, "", cleanPath);
+    }
+  } catch { /* cosmetic — don't break playback */ }
+}
+
 async function initPlaybackSource() {
+  // Ensure local series library is loaded before resolving playback
+  await _seriesLibraryReady;
+
+  // ─── Clean URL slug resolution (on refresh with no query params) ───
+  if (_needsSlugResolve && _watchPath) {
+    try {
+      const _libResp = await fetch("/api/library");
+      if (_libResp.ok) {
+        const _lib = await _libResp.json();
+        const _slug = _watchPath.slug;
+        const _movies = Array.isArray(_lib?.movies) ? _lib.movies : [];
+        const _allSeries = Array.isArray(_lib?.series) ? _lib.series : [];
+        const _movieMatch = _movies.find((m) => slugify(m.title) === _slug);
+        const _seriesMatch = _allSeries.find((s) => slugify(s.title) === _slug);
+        if (_movieMatch) {
+          if (!params.has("title")) params.set("title", _movieMatch.title);
+          if (!params.has("src") && _movieMatch.src) params.set("src", _movieMatch.src);
+          if (!params.has("tmdbId") && _movieMatch.tmdbId) params.set("tmdbId", _movieMatch.tmdbId);
+          if (!params.has("year") && _movieMatch.year) params.set("year", _movieMatch.year);
+          if (!params.has("thumb") && _movieMatch.thumb) params.set("thumb", _movieMatch.thumb);
+          if (!params.has("mediaType")) params.set("mediaType", "movie");
+          // Re-derive source variables from updated params
+          rawSourceParam = String(params.get("src") || "").trim();
+          normalizedRawSourceParam = rawSourceParam.startsWith("assets/") ? `/${rawSourceParam}` : rawSourceParam;
+          src = normalizedRawSourceParam;
+          hasExplicitSource = Boolean(src);
+          isExplicitLocalUploadSource = computeIsExplicitLocalUploadSource();
+          title = params.get("title") || title;
+          tmdbId = String(params.get("tmdbId") || "").trim();
+          mediaType = String(params.get("mediaType") || "").trim().toLowerCase();
+          year = String(params.get("year") || "").trim();
+          isTmdbMoviePlayback = Boolean(!hasExplicitSource && tmdbId && mediaType === "movie");
+          isTmdbTvPlayback = Boolean(!hasExplicitSource && tmdbId && mediaType === "tv");
+          isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
+        } else if (_seriesMatch) {
+          if (!params.has("title")) params.set("title", _seriesMatch.title);
+          if (!params.has("seriesId")) params.set("seriesId", _seriesMatch.id);
+          if (!params.has("mediaType")) params.set("mediaType", "tv");
+          if (!params.has("episodeIndex")) params.set("episodeIndex", _watchPath.episodeIndex || "0");
+          if (!params.has("tmdbId") && _seriesMatch.tmdbId) params.set("tmdbId", _seriesMatch.tmdbId);
+          if (!params.has("year") && _seriesMatch.year) params.set("year", _seriesMatch.year);
+          // Re-derive series resolution variables from updated params
+          mediaTypeParam = String(params.get("mediaType") || "").trim().toLowerCase();
+          isExplicitTvPlayback = mediaTypeParam === "tv";
+          requestedSeriesId = String(params.get("seriesId") || "").trim().toLowerCase();
+          hasRequestedEpisodeIndexParam = params.has("episodeIndex");
+          requestedEpisodeIndex = Number(params.get("episodeIndex") || 0);
+          title = params.get("title") || title;
+        }
+      }
+    } catch { /* slug resolution is best-effort */ }
+  }
+
+  _resolved = resolveSeriesMatch();
+  explicitSeriesPlayback = _resolved.explicit;
+  inferredSeriesPlayback = _resolved.inferred;
+  activeSeriesMatch = _resolved.match;
+  activeSeries = _resolved.series;
+  seriesEpisodes = _resolved.episodes;
+  seriesEpisodeIndex = _resolved.epIndex;
+  activeSeriesEpisode = _resolved.ep;
+  isSeriesPlayback = _resolved.isSeries;
+  hasSeriesEpisodeControls =
+    isSeriesPlayback && Boolean(activeSeries && seriesEpisodes.length > 1);
+  normalizedSeriesSourceParam = _resolved.normSrc;
+  src = isSeriesPlayback
+    ? normalizedSeriesSourceParam || normalizedRawSourceParam
+    : normalizedRawSourceParam;
+  rawTitle = isSeriesPlayback
+    ? String(activeSeries?.title || "")
+    : params.get("title") || "Jeffrey Epstein: Filthy Rich";
+  rawEpisode = isSeriesPlayback
+    ? getSeriesEpisodeLabel(
+        seriesEpisodeIndex,
+        activeSeriesEpisode?.title || "",
+        activeSeries,
+        Number(activeSeriesEpisode?.episodeNumber || seriesEpisodeIndex + 1),
+      )
+    : params.get("episode") || "";
+  title = rawTitle;
+  episode = rawEpisode;
+  tmdbId = String(activeSeries?.tmdbId || params.get("tmdbId") || "").trim();
+  mediaType = isSeriesPlayback ? "tv" : mediaTypeParam;
+  year = String(activeSeries?.year || params.get("year") || "").trim();
+  seasonNumber = isSeriesPlayback
+    ? Math.max(1, Math.floor(Number(activeSeriesEpisode?.seasonNumber || 1)))
+    : Number.isFinite(fallbackSeasonNumber)
+      ? Math.max(1, Math.floor(fallbackSeasonNumber))
+      : 1;
+  episodeNumber = isSeriesPlayback
+    ? Math.max(
+        1,
+        Math.floor(
+          Number(activeSeriesEpisode?.episodeNumber || seriesEpisodeIndex + 1),
+        ),
+      )
+    : Number.isFinite(fallbackEpisodeNumber)
+      ? Math.max(1, Math.floor(fallbackEpisodeNumber))
+      : 1;
+  preferredContainerParam = String(
+    activeSeries?.preferredContainer || params.get("preferredContainer") || "",
+  ).trim().toLowerCase();
+  preferredContainer =
+    preferredContainerParam === "mp4" || preferredContainerParam === "mkv"
+      ? preferredContainerParam
+      : "";
+  hasExplicitSource = Boolean(src);
+  isExplicitLocalUploadSource = computeIsExplicitLocalUploadSource();
+  isTmdbMoviePlayback = Boolean(!hasExplicitSource && tmdbId && mediaType === "movie");
+  isTmdbTvPlayback = Boolean(!hasExplicitSource && tmdbId && mediaType === "tv");
+  isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
+  sourceIdentity = isSeriesPlayback
+    ? `series:${activeSeries.id}:episode:${seriesEpisodeIndex}`
+    : src ||
+      (isTmdbResolvedPlayback
+        ? `tmdb:${mediaType}:${tmdbId}${isTmdbTvPlayback ? `:s${seasonNumber}:e${episodeNumber}` : ""}`
+        : DEFAULT_TRAILER_SOURCE);
+  resumeStorageKey = `netflix-resume:${sourceIdentity}`;
+
   hasAppliedInitialResume = false;
   pendingTranscodeSeekRatio = null;
   availableAudioTracks = [];
@@ -5381,6 +5556,7 @@ async function initPlaybackSource() {
     setVideoSource(nextSource);
     applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
     await tryPlay();
+    cleanUrlIfNeeded();
     return;
   }
 
@@ -5416,6 +5592,8 @@ async function initPlaybackSource() {
       isError: true,
     });
   }
+
+  cleanUrlIfNeeded();
 }
 
   // ─── Speed option refs (collected after mount) ───
@@ -5426,7 +5604,8 @@ async function initPlaybackSource() {
   }
 
   // ─── Global event handler references for cleanup ───
-  function handleGlobalKeydown(e) { handleKeydown(e); }
+  let _handleKeydownRef;
+  function handleGlobalKeydown(e) { if (_handleKeydownRef) _handleKeydownRef(e); }
   function handleGlobalMousemove() { handleUserActivity(); }
   function handleGlobalBeforeunload() {
     clearSingleClickPlaybackToggle();
@@ -5445,15 +5624,12 @@ async function initPlaybackSource() {
       window.__NETFLIX_PLAYBACK_BENCHMARK__ = playbackBenchmark;
     }
 
-    setEpisodeLabel(title, episode);
-    renderSeriesEpisodePreview();
-    syncSeriesControls();
-    void hydrateSeriesEpisodeThumbnails();
+    // Deferred to after initPlaybackSource resolves (needs series library)
 
 goBack.addEventListener("click", () => {
   persistResumeTime(true);
   if (isSeriesPlayback) {
-    window.location.href = "index.html";
+    window.location.href = "/";
     return;
   }
 
@@ -5462,7 +5638,7 @@ goBack.addEventListener("click", () => {
     return;
   }
 
-  window.location.href = "index.html";
+  window.location.href = "/";
 });
 
 togglePlay.addEventListener("click", togglePlayback);
@@ -6470,9 +6646,10 @@ async function handleKeydown(event) {
       return;
     }
     persistResumeTime(true);
-    window.location.href = "index.html";
+    window.location.href = "/";
   }
 }
+_handleKeydownRef = handleKeydown;
 
 window.addEventListener("keydown", handleKeydown, { capture: true });
 window.addEventListener("storage", (event) => {
@@ -6545,7 +6722,12 @@ window.addEventListener("beforeunload", () => {
     showControls();
     paintSeekProgress(seekBar.value);
     scheduleControlsHide();
-    initPlaybackSource();
+    initPlaybackSource().then(() => {
+      setEpisodeLabel(title, episode);
+      renderSeriesEpisodePreview();
+      syncSeriesControls();
+      void hydrateSeriesEpisodeThumbnails();
+    });
 
     playerShell.focus();
 
@@ -6632,7 +6814,7 @@ window.addEventListener("beforeunload", () => {
                     <path d="M5 3.5v17L20 12 5 3.5Z"></path>
                   </svg>
                   <img
-                    src="assets/icons/player-controls/left-pause.svg"
+                    src="/assets/icons/player-controls/left-pause.svg"
                     class="control-icon-image icon-pause-asset"
                     alt=""
                   />
@@ -6645,7 +6827,7 @@ window.addEventListener("beforeunload", () => {
                   aria-label="Rewind 10 seconds"
                 >
                   <img
-                    src="assets/icons/player-controls/left-rewind-10.svg"
+                    src="/assets/icons/player-controls/left-rewind-10.svg"
                     class="control-icon-image"
                     alt=""
                   />
@@ -6658,7 +6840,7 @@ window.addEventListener("beforeunload", () => {
                   aria-label="Forward 10 seconds"
                 >
                   <img
-                    src="assets/icons/player-controls/left-forward-10.svg"
+                    src="/assets/icons/player-controls/left-forward-10.svg"
                     class="control-icon-image"
                     alt=""
                   />
@@ -6685,7 +6867,7 @@ window.addEventListener("beforeunload", () => {
                     aria-label="Mute"
                   >
                     <img
-                      src="assets/icons/player-controls/left-volume.svg"
+                      src="/assets/icons/player-controls/left-volume.svg"
                       class="control-icon-image icon-volume-on-asset"
                       alt=""
                     />
@@ -6730,7 +6912,7 @@ window.addEventListener("beforeunload", () => {
                     aria-expanded="false"
                   >
                     <img
-                      src="assets/icons/player-controls/right-episodes.svg"
+                      src="/assets/icons/player-controls/right-episodes.svg"
                       class="control-icon-image"
                       alt=""
                     />
@@ -6771,7 +6953,7 @@ window.addEventListener("beforeunload", () => {
                     aria-expanded="false"
                   >
                     <img
-                      src="assets/icons/player-controls/right-captions.svg"
+                      src="/assets/icons/player-controls/right-captions.svg"
                       class="control-icon-image"
                       alt=""
                     />
@@ -6935,7 +7117,7 @@ window.addEventListener("beforeunload", () => {
                     aria-expanded="false"
                   >
                     <img
-                      src="assets/icons/player-controls/right-playback-speed.svg"
+                      src="/assets/icons/player-controls/right-playback-speed.svg"
                       class="control-icon-image"
                       alt=""
                     />
@@ -6983,7 +7165,7 @@ window.addEventListener("beforeunload", () => {
                   aria-label="Fullscreen"
                 >
                   <img
-                    src="assets/icons/player-controls/right-fullscreen.svg"
+                    src="/assets/icons/player-controls/right-fullscreen.svg"
                     class="control-icon-image"
                     alt=""
                   />
