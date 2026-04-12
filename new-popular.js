@@ -1,18 +1,25 @@
+import {
+  STREAM_QUALITY_PREF_KEY,
+  PROFILE_AVATAR_STYLE_PREF_KEY,
+  PROFILE_AVATAR_MODE_PREF_KEY,
+  PROFILE_AVATAR_IMAGE_PREF_KEY,
+  supportedStreamQualityPreferences,
+  supportedAvatarStyles,
+  avatarStyleClassNames,
+  normalizeAvatarStyle,
+  normalizeAvatarMode,
+  sanitizeAvatarImageData,
+  getStoredAvatarStylePreference,
+  getStoredAvatarModePreference,
+  getStoredAvatarImagePreference,
+  escapeHtml,
+} from "./src-ui/shared.js";
+
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 const AUDIO_LANG_PREF_KEY_PREFIX = "netflix-audio-lang:movie:";
-const STREAM_QUALITY_PREF_KEY = "netflix-stream-quality-pref";
 const DEFAULT_AUDIO_LANGUAGE_PREF_KEY = "netflix-default-audio-lang";
-const PROFILE_AVATAR_STYLE_PREF_KEY = "netflix-profile-avatar-style";
-const PROFILE_AVATAR_MODE_PREF_KEY = "netflix-profile-avatar-mode";
-const PROFILE_AVATAR_IMAGE_PREF_KEY = "netflix-profile-avatar-image";
 
 const supportedAudioLangs = new Set(["auto", "en", "fr", "es", "de"]);
-const supportedStreamQualityPreferences = new Set([
-  "auto",
-  "2160p",
-  "1080p",
-  "720p",
-]);
 const supportedDefaultAudioLanguages = new Set([
   "auto",
   "en",
@@ -27,16 +34,6 @@ const supportedDefaultAudioLanguages = new Set([
   "nl",
   "ro",
 ]);
-const supportedAvatarStyles = new Set([
-  "blue",
-  "crimson",
-  "emerald",
-  "violet",
-  "amber",
-]);
-const avatarStyleClassNames = Array.from(supportedAvatarStyles).map(
-  (style) => `avatar-style-${style}`,
-);
 
 const heroBackdrop = document.getElementById("heroBackdrop");
 const heroTitle = document.getElementById("heroTitle");
@@ -63,15 +60,6 @@ const accountAvatarButton = document.getElementById("accountAvatarButton");
 const accountAvatar = document.getElementById("accountAvatar");
 
 let featuredMovie = null;
-
-function escapeHtml(value) {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
 
 function normalizeTitleKey(value) {
   return String(value || "")
@@ -120,64 +108,6 @@ function normalizeDefaultAudioLanguage(value) {
     return normalized;
   }
   return "en";
-}
-
-function normalizeAvatarStyle(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (supportedAvatarStyles.has(normalized)) {
-    return normalized;
-  }
-  return "blue";
-}
-
-function normalizeAvatarMode(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  return normalized === "custom" ? "custom" : "preset";
-}
-
-function sanitizeAvatarImageData(value) {
-  const raw = String(value || "").trim();
-  if (!raw.startsWith("data:image/")) {
-    return "";
-  }
-  if (raw.length > 2_000_000) {
-    return "";
-  }
-  return raw;
-}
-
-function getStoredAvatarStylePreference() {
-  try {
-    return normalizeAvatarStyle(
-      localStorage.getItem(PROFILE_AVATAR_STYLE_PREF_KEY),
-    );
-  } catch {
-    return "blue";
-  }
-}
-
-function getStoredAvatarModePreference() {
-  try {
-    return normalizeAvatarMode(
-      localStorage.getItem(PROFILE_AVATAR_MODE_PREF_KEY),
-    );
-  } catch {
-    return "preset";
-  }
-}
-
-function getStoredAvatarImagePreference() {
-  try {
-    return sanitizeAvatarImageData(
-      localStorage.getItem(PROFILE_AVATAR_IMAGE_PREF_KEY),
-    );
-  } catch {
-    return "";
-  }
 }
 
 function applyAvatarStyle(style, mode, imageData) {
@@ -428,13 +358,15 @@ function renderCardRow(container, items, genreMap, imageBase) {
     return;
   }
   container.innerHTML = "";
+  const fragment = document.createDocumentFragment();
   items.forEach((item, index) => {
     const card = buildCardFromMovie(item, genreMap, imageBase);
     if (index >= Math.max(1, items.length - 2)) {
       card.classList.add("card--align-right");
     }
-    container.appendChild(card);
+    fragment.appendChild(card);
   });
+  container.appendChild(fragment);
 }
 
 function configureHero(item, genreMap, imageBase = TMDB_IMAGE_BASE) {

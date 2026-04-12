@@ -1,15 +1,27 @@
-const STREAM_QUALITY_PREF_KEY = "netflix-stream-quality-pref";
+import {
+  STREAM_QUALITY_PREF_KEY,
+  PROFILE_AVATAR_STYLE_PREF_KEY,
+  PROFILE_AVATAR_MODE_PREF_KEY,
+  PROFILE_AVATAR_IMAGE_PREF_KEY,
+  LIBRARY_EDIT_MODE_PREF_KEY,
+  supportedStreamQualityPreferences,
+  supportedAvatarStyles,
+  avatarStyleClassNames,
+  normalizeAvatarStyle,
+  normalizeAvatarMode,
+  sanitizeAvatarImageData,
+  getStoredAvatarStylePreference,
+  getStoredAvatarModePreference,
+  getStoredAvatarImagePreference,
+  escapeHtml,
+} from "./src-ui/shared.js";
+
 const SUBTITLE_COLOR_PREF_KEY = "netflix-subtitle-color-pref";
 const SOURCE_MIN_SEEDERS_PREF_KEY = "netflix-source-filter-min-seeders";
 const SOURCE_LANGUAGE_PREF_KEY = "netflix-source-filter-language";
 const SOURCE_AUDIO_PROFILE_PREF_KEY = "netflix-source-filter-audio-profile";
 const DEFAULT_AUDIO_LANGUAGE_PREF_KEY = "netflix-default-audio-lang";
-const NATIVE_PLAYBACK_MODE_PREF_KEY = "netflix-native-playback-mode";
 const REMUX_VIDEO_MODE_PREF_KEY = "netflix-remux-video-mode";
-const PROFILE_AVATAR_STYLE_PREF_KEY = "netflix-profile-avatar-style";
-const PROFILE_AVATAR_MODE_PREF_KEY = "netflix-profile-avatar-mode";
-const PROFILE_AVATAR_IMAGE_PREF_KEY = "netflix-profile-avatar-image";
-const LIBRARY_EDIT_MODE_PREF_KEY = "netflix-library-edit-mode";
 
 const DEFAULT_SUBTITLE_COLOR = "#b8bcc3";
 const DEFAULT_AVATAR_STYLE = "blue";
@@ -17,12 +29,6 @@ const DEFAULT_AVATAR_MODE = "preset";
 const DEFAULT_STREAM_QUALITY_PREFERENCE = "1080p";
 const AVATAR_OUTPUT_SIZE_PX = 180;
 
-const supportedStreamQualityPreferences = new Set([
-  "auto",
-  "2160p",
-  "1080p",
-  "720p",
-]);
 const supportedDefaultAudioLanguages = [
   "auto",
   "en",
@@ -39,17 +45,7 @@ const supportedDefaultAudioLanguages = [
 ];
 const supportedSourceLanguages = ["en", "any", "fr", "es", "de", "it", "pt"];
 const supportedSourceAudioProfiles = ["single", "any"];
-const supportedAvatarStyles = new Set([
-  "blue",
-  "crimson",
-  "emerald",
-  "violet",
-  "amber",
-]);
 const supportedAvatarChoices = new Set([...supportedAvatarStyles, "custom"]);
-const avatarStyleClassNames = Array.from(supportedAvatarStyles).map(
-  (style) => `avatar-style-${style}`,
-);
 
 const qualityForm = document.getElementById("qualityForm");
 const saveStatus = document.getElementById("saveStatus");
@@ -241,64 +237,6 @@ function normalizeSourceAudioProfile(value) {
     return normalized;
   }
   return "single";
-}
-
-function normalizeNativePlaybackMode(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (
-    !normalized ||
-    normalized === "auto" ||
-    normalized === "on" ||
-    normalized === "1" ||
-    normalized === "enabled"
-  ) {
-    return "auto";
-  }
-  if (
-    normalized === "off" ||
-    normalized === "0" ||
-    normalized === "disabled" ||
-    normalized === "browser"
-  ) {
-    return "off";
-  }
-  return "auto";
-}
-
-function getStoredNativePlaybackMode() {
-  try {
-    return normalizeNativePlaybackMode(
-      localStorage.getItem(NATIVE_PLAYBACK_MODE_PREF_KEY),
-    );
-  } catch {
-    return "auto";
-  }
-}
-
-function setSelectedNativePlaybackMode(value) {
-  const normalized = normalizeNativePlaybackMode(value);
-  const input = qualityForm?.querySelector(
-    `input[name="nativePlaybackMode"][value="${normalized}"]`,
-  );
-  if (input) {
-    input.checked = true;
-  }
-}
-
-function persistNativePlaybackMode(value) {
-  const normalized = normalizeNativePlaybackMode(value);
-  try {
-    if (normalized === "auto") {
-      localStorage.removeItem(NATIVE_PLAYBACK_MODE_PREF_KEY);
-      return normalized;
-    }
-    localStorage.setItem(NATIVE_PLAYBACK_MODE_PREF_KEY, normalized);
-    return normalized;
-  } catch {
-    return normalized;
-  }
 }
 
 function normalizeRemuxVideoMode(value) {
@@ -535,23 +473,6 @@ function persistSubtitleColorPreference(value) {
   }
 }
 
-function normalizeAvatarStyle(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (supportedAvatarStyles.has(normalized)) {
-    return normalized;
-  }
-  return DEFAULT_AVATAR_STYLE;
-}
-
-function normalizeAvatarMode(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  return normalized === "custom" ? "custom" : DEFAULT_AVATAR_MODE;
-}
-
 function normalizeAvatarChoice(value) {
   const normalized = String(value || "")
     .trim()
@@ -560,49 +481,6 @@ function normalizeAvatarChoice(value) {
     return normalized;
   }
   return DEFAULT_AVATAR_STYLE;
-}
-
-function sanitizeAvatarImageData(value) {
-  const raw = String(value || "").trim();
-  if (!raw.startsWith("data:image/")) {
-    return "";
-  }
-
-  // Keep payload bounded for localStorage safety.
-  if (raw.length > 2_000_000) {
-    return "";
-  }
-  return raw;
-}
-
-function getStoredAvatarStylePreference() {
-  try {
-    return normalizeAvatarStyle(
-      localStorage.getItem(PROFILE_AVATAR_STYLE_PREF_KEY),
-    );
-  } catch {
-    return DEFAULT_AVATAR_STYLE;
-  }
-}
-
-function getStoredAvatarModePreference() {
-  try {
-    return normalizeAvatarMode(
-      localStorage.getItem(PROFILE_AVATAR_MODE_PREF_KEY),
-    );
-  } catch {
-    return DEFAULT_AVATAR_MODE;
-  }
-}
-
-function getStoredAvatarImagePreference() {
-  try {
-    return sanitizeAvatarImageData(
-      localStorage.getItem(PROFILE_AVATAR_IMAGE_PREF_KEY),
-    );
-  } catch {
-    return "";
-  }
 }
 
 function applyAvatarPreviewPreset(style) {
@@ -825,15 +703,6 @@ async function convertFileToAvatarImage(file) {
     throw new Error("Image is too large to save.");
   }
   return safeOutput;
-}
-
-function escapeHtml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 function readStoredLibraryEditMode() {
@@ -1557,9 +1426,6 @@ qualityForm?.addEventListener("submit", (event) => {
   const selectedDefaultAudioLanguage = normalizeDefaultAudioLanguage(
     formData.get("defaultAudioLanguage") || "en",
   );
-  const selectedNativePlaybackMode = normalizeNativePlaybackMode(
-    formData.get("nativePlaybackMode") || "auto",
-  );
   const selectedRemuxVideoMode = normalizeRemuxVideoMode(
     formData.get("remuxVideoMode") || "auto",
   );
@@ -1606,9 +1472,6 @@ qualityForm?.addEventListener("submit", (event) => {
   const savedDefaultAudioLanguage = persistDefaultAudioLanguage(
     selectedDefaultAudioLanguage,
   );
-  const savedNativePlaybackMode = persistNativePlaybackMode(
-    selectedNativePlaybackMode,
-  );
   const savedRemuxVideoMode = persistRemuxVideoMode(selectedRemuxVideoMode);
   setSelectedSourceFilters(
     savedSourceMinSeeders,
@@ -1616,7 +1479,6 @@ qualityForm?.addEventListener("submit", (event) => {
     savedSourceAudioProfile,
   );
   setSelectedDefaultAudioLanguage(savedDefaultAudioLanguage);
-  setSelectedNativePlaybackMode(savedNativePlaybackMode);
   setSelectedRemuxVideoMode(savedRemuxVideoMode);
 
   if (saveStatus) {
@@ -1640,7 +1502,6 @@ setSelectedSourceFilters(
   getStoredSourceLanguage(),
   getStoredSourceAudioProfile(),
 );
-setSelectedNativePlaybackMode(getStoredNativePlaybackMode());
 setSelectedRemuxVideoMode(getStoredRemuxVideoMode());
 
 const storedAvatarStyle = getStoredAvatarStylePreference();

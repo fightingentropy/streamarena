@@ -308,7 +308,6 @@ a:focus-visible {
 }
 
 .source-filter-section,
-.native-playback-section,
 .remux-mode-section,
 .subtitle-color-section,
 .avatar-style-section,
@@ -320,7 +319,6 @@ a:focus-visible {
 }
 
 .quality-option,
-.native-playback-option,
 .remux-mode-option,
 .avatar-style-option {
   position: relative;
@@ -333,7 +331,6 @@ a:focus-visible {
 }
 
 .quality-option:hover,
-.native-playback-option:hover,
 .remux-mode-option:hover,
 .avatar-style-option:hover,
 .subtitle-color-reset-btn:hover,
@@ -353,7 +350,6 @@ a:focus-visible {
 }
 
 .quality-option input,
-.native-playback-option input,
 .remux-mode-option input {
   position: absolute;
   left: 16px;
@@ -363,7 +359,6 @@ a:focus-visible {
 }
 
 .quality-option-label,
-.native-playback-option-label,
 .remux-mode-option-label {
   font-size: 1rem;
   font-weight: 600;
@@ -377,7 +372,6 @@ a:focus-visible {
 }
 
 .quality-option:has(input:checked),
-.native-playback-option:has(input:checked),
 .remux-mode-option:has(input:checked),
 .avatar-style-option:has(input:checked) {
   border-color: rgba(255, 255, 255, 0.48);
@@ -385,13 +379,11 @@ a:focus-visible {
 }
 
 .source-filter-help,
-.native-playback-help,
 .remux-mode-help,
 .subtitle-color-help,
 .avatar-style-help,
 .library-edit-help,
 .maintenance-help,
-.native-playback-note,
 .remux-mode-note,
 .source-filter-note {
   margin: 0;
@@ -451,14 +443,12 @@ a:focus-visible {
   color: var(--text);
 }
 
-.native-playback-options,
 .remux-mode-options {
   margin-top: 14px;
   display: grid;
   gap: 10px;
 }
 
-.native-playback-option,
 .remux-mode-option {
   display: grid;
   gap: 5px;

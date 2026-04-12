@@ -221,10 +221,12 @@ body {
     margin: 0;
     pointer-events: none;
     text-align: center;
-    color: #d4d7de;
+    color: #fff;
+    font-family: "Inter", "Helvetica Neue", "Segoe UI", system-ui, -apple-system, sans-serif;
     font-size: clamp(0.85rem, 2.5vw, 3.3rem);
-    line-height: 1.18;
-    letter-spacing: 0.005em;
+    font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: 0.01em;
     text-wrap: balance;
     word-break: break-word;
     display: -webkit-box;
@@ -232,9 +234,14 @@ body {
     -webkit-box-orient: vertical;
     overflow: hidden;
     z-index: 34;
+    -webkit-text-stroke: 0.6px rgba(0, 0, 0, 0.7);
+    paint-order: stroke fill;
     text-shadow:
-        0 2px 8px rgba(0, 0, 0, 0.9),
-        0 0 1px rgba(0, 0, 0, 0.8);
+        -1px -1px 0 rgba(0, 0, 0, 0.85),
+         1px -1px 0 rgba(0, 0, 0, 0.85),
+        -1px  1px 0 rgba(0, 0, 0, 0.85),
+         1px  1px 0 rgba(0, 0, 0, 0.85),
+         0 0 6px rgba(0, 0, 0, 0.5);
 }
 
 .player-shell.controls-hidden .custom-subtitle-overlay {
@@ -408,11 +415,6 @@ body {
     height: 42px;
 }
 
-.episodes-btn .control-icon-image {
-    width: 42px;
-    height: 42px;
-}
-
 .control-icon-image {
     width: 42px;
     height: 42px;
@@ -428,6 +430,11 @@ body {
 .control-btn:not(.control-btn-main) .control-icon-image {
     width: 44px;
     height: 44px;
+}
+
+.control-btn.episodes-btn .control-icon-image {
+    width: 50px;
+    height: 42px;
 }
 
 .control-badge {

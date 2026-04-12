@@ -1,14 +1,12 @@
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::RequestExt;
 use axum::Router;
 use axum::body::{Body, to_bytes};
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State};
-use axum::http::header::{HOST, ORIGIN, REFERER};
-use axum::http::{HeaderMap, Method, Response, Uri};
+use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::{Method, Response, Uri};
 use axum::routing::any;
 use serde_json::{Value, json};
 use url::Url;
@@ -26,7 +24,7 @@ use crate::media::{
 };
 use crate::persistence::{Db, TitlePreference, build_cache_debug_payload};
 use crate::process::{
-    RuntimeServices, normalize_audio_sync_ms, resolve_effective_remux_hwaccel_mode,
+    RuntimeServices, resolve_effective_remux_hwaccel_mode,
     to_absolute_playback_url,
 };
 use crate::resolver::ResolverService;
@@ -57,8 +55,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/library", any(library_handler))
         .route("/api/title/preferences", any(title_preferences_handler))
         .route("/api/session/progress", any(session_progress_handler))
-        .route("/api/native/player", any(native_player_handler))
-        .route("/api/native/play", any(native_play_handler))
         .route("/api/tmdb/popular-movies", any(tmdb_popular_movies_handler))
         .route("/api/tmdb/search", any(tmdb_search_handler))
         .route("/api/tmdb/details", any(tmdb_details_handler))
@@ -141,10 +137,7 @@ pub async fn config_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    let (ffmpeg, native_player) = tokio::join!(
-        state.runtime.get_ffmpeg_capabilities(false),
-        state.runtime.get_native_player_status(false)
-    );
+    let ffmpeg = state.runtime.get_ffmpeg_capabilities(false).await;
     Ok(json_response(json!({
         "realDebridConfigured": !state.config.real_debrid_token.is_empty(),
         "tmdbConfigured": !state.config.tmdb_api_key.is_empty(),
@@ -159,13 +152,6 @@ pub async fn config_handler(
         "remuxHwaccel": {
             "requested": state.config.remux_hwaccel_mode,
             "effective": resolve_effective_remux_hwaccel_mode(&ffmpeg, &state.config.remux_hwaccel_mode)
-        },
-        "nativePlayback": {
-            "mode": state.config.native_playback_mode,
-            "available": native_player.available,
-            "mpvBinary": native_player.mpvBinary,
-            "version": native_player.version,
-            "notes": native_player.notes
         }
     })))
 }
@@ -496,157 +482,6 @@ pub async fn session_progress_handler(
     Ok(json_response(json!({
         "ok": true,
         "session": next_session.map(build_playback_session_payload)
-    })))
-}
-
-pub async fn native_player_handler(
-    State(state): State<AppState>,
-    method: Method,
-    uri: Uri,
-) -> AppResult<Response<Body>> {
-    if method != Method::GET {
-        return Err(ApiError::method_not_allowed("Method not allowed."));
-    }
-    let refresh = uri.query().unwrap_or_default().contains("refresh=1");
-    let native_player = state.runtime.get_native_player_status(refresh).await;
-    Ok(json_response(json!({
-        "mode": state.config.native_playback_mode,
-        "player": "mpv",
-        "available": native_player.available,
-        "mpvBinary": native_player.mpvBinary,
-        "version": native_player.version,
-        "notes": native_player.notes
-    })))
-}
-
-pub async fn native_play_handler(
-    State(state): State<AppState>,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    method: Method,
-    uri: Uri,
-    request: Request<Body>,
-) -> AppResult<Response<Body>> {
-    if method != Method::POST {
-        return Err(ApiError::method_not_allowed(
-            "Method not allowed. Use POST.",
-        ));
-    }
-    let request_headers = request.headers().clone();
-    let request_url = absolute_request_url_from_headers(
-        &uri,
-        &request_headers,
-        &state.config.host,
-        state.config.port,
-    )?;
-    if !remote.ip().is_loopback() {
-        return Err(ApiError::forbidden(
-            "Native playback requests are restricted to local loopback access.",
-        ));
-    }
-    if !is_same_origin_native_playback_request(&request_headers, &request_url) {
-        return Err(ApiError::forbidden(
-            "Native playback requests must originate from this app.",
-        ));
-    }
-    let native_player = state.runtime.get_native_player_status(false).await;
-    if state.config.native_playback_mode == "off" {
-        return Ok(json_response(json!({
-            "ok": true,
-            "launched": false,
-            "reason": "disabled",
-            "player": "mpv"
-        })));
-    }
-    if !native_player.available {
-        return Ok(json_response(json!({
-            "ok": true,
-            "launched": false,
-            "reason": "unavailable",
-            "player": "mpv"
-        })));
-    }
-
-    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-        .await
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let payload = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-
-    let source_url = to_absolute_playback_url(
-        payload
-            .get("sourceUrl")
-            .and_then(Value::as_str)
-            .or_else(|| payload.get("source").and_then(Value::as_str))
-            .or_else(|| payload.get("url").and_then(Value::as_str))
-            .unwrap_or_default(),
-        &request_url,
-    );
-    if source_url.is_empty() {
-        return Err(ApiError::bad_request("Missing or invalid sourceUrl."));
-    }
-    let parsed_source_url = Url::parse(&source_url)
-        .map_err(|_| ApiError::bad_request("Missing or invalid sourceUrl."))?;
-    if !is_allowed_native_source_url(&parsed_source_url, &request_url) {
-        return Err(ApiError::bad_request(
-            "Unsupported native playback source URL.",
-        ));
-    }
-    let subtitle_url = to_absolute_playback_url(
-        payload
-            .get("subtitleUrl")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-        &request_url,
-    );
-    if !subtitle_url.trim().is_empty() {
-        let parsed_subtitle_url =
-            Url::parse(&subtitle_url).map_err(|_| ApiError::bad_request("Invalid subtitleUrl."))?;
-        if !is_allowed_native_subtitle_url(&parsed_subtitle_url, &request_url) {
-            return Err(ApiError::bad_request(
-                "Unsupported native playback subtitle URL.",
-            ));
-        }
-    }
-    let title = [
-        payload
-            .get("title")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-        payload
-            .get("episode")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    ]
-    .into_iter()
-    .filter(|part| !part.trim().is_empty())
-    .collect::<Vec<_>>()
-    .join(" - ");
-    let start_seconds = payload
-        .get("startSeconds")
-        .and_then(Value::as_i64)
-        .unwrap_or_default()
-        .max(0);
-    let audio_sync_ms = normalize_audio_sync_ms(
-        payload
-            .get("audioSyncMs")
-            .and_then(Value::as_i64)
-            .unwrap_or_default(),
-    );
-    state
-        .runtime
-        .launch_mpv(
-            source_url.clone(),
-            subtitle_url,
-            title,
-            start_seconds,
-            audio_sync_ms,
-        )
-        .await?;
-    Ok(json_response(json!({
-        "ok": true,
-        "launched": true,
-        "player": "mpv",
-        "sourceUrl": source_url
     })))
 }
 
@@ -1491,22 +1326,6 @@ fn absolute_request_url(state: &AppState, uri: &Uri) -> AppResult<Url> {
     absolute_request_url_with_authority(uri, None, &state.config.host, state.config.port)
 }
 
-fn absolute_request_url_from_headers(
-    uri: &Uri,
-    headers: &HeaderMap,
-    default_host: &str,
-    default_port: u16,
-) -> AppResult<Url> {
-    let authority = headers
-        .get(HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("{default_host}:{default_port}"));
-    absolute_request_url_with_authority(uri, Some(authority), default_host, default_port)
-}
-
 fn absolute_request_url_with_authority(
     uri: &Uri,
     authority: Option<String>,
@@ -1522,66 +1341,6 @@ fn query_pairs(query: &str) -> BTreeMap<String, String> {
     url::form_urlencoded::parse(query.as_bytes())
         .into_owned()
         .collect()
-}
-
-fn is_same_origin_native_playback_request(headers: &HeaderMap, request_url: &Url) -> bool {
-    if let Some(origin_header) = headers.get(ORIGIN) {
-        return header_origin_matches(origin_header, request_url);
-    }
-    if let Some(referer_header) = headers.get(REFERER) {
-        return header_origin_matches(referer_header, request_url);
-    }
-    false
-}
-
-fn header_origin_matches(value: &axum::http::HeaderValue, request_url: &Url) -> bool {
-    value
-        .to_str()
-        .ok()
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("null"))
-        .and_then(|value| Url::parse(value).ok())
-        .map(|value| urls_share_origin(&value, request_url))
-        .unwrap_or(false)
-}
-
-fn urls_share_origin(left: &Url, right: &Url) -> bool {
-    left.scheme() == right.scheme()
-        && left.host_str().map(|value| value.to_lowercase())
-            == right.host_str().map(|value| value.to_lowercase())
-        && left.port_or_known_default() == right.port_or_known_default()
-}
-
-fn is_allowed_native_source_url(candidate: &Url, request_url: &Url) -> bool {
-    if urls_share_origin(candidate, request_url) {
-        return matches!(candidate.path(), "/api/remux" | "/api/hls/master.m3u8")
-            || candidate.path().starts_with("/assets/videos/")
-            || candidate.path().starts_with("/media/");
-    }
-    is_allowed_native_remote_source_url(candidate)
-}
-
-fn is_allowed_native_subtitle_url(candidate: &Url, request_url: &Url) -> bool {
-    urls_share_origin(candidate, request_url)
-        && matches!(
-            candidate.path(),
-            "/api/subtitles.vtt"
-                | "/api/subtitles.opensubtitles.vtt"
-                | "/api/subtitles.external.vtt"
-        )
-}
-
-fn is_allowed_native_remote_source_url(candidate: &Url) -> bool {
-    if candidate.scheme() != "https" {
-        return false;
-    }
-    let hostname = candidate
-        .host_str()
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
-    !hostname.is_empty()
-        && (hostname == "download.real-debrid.com" || hostname.ends_with(".real-debrid.com"))
 }
 
 fn is_numeric_id(value: &str) -> bool {
@@ -2237,14 +1996,11 @@ impl StringExt for String {
 #[cfg(test)]
 mod tests {
     use super::{
-        absolute_request_url_from_headers, build_playback_session_key, find_episode_pattern,
-        is_allowed_native_source_url, is_allowed_native_subtitle_url,
-        is_same_origin_native_playback_request, normalize_preferred_audio_lang,
-        normalize_subtitle_preference,
+        absolute_request_url_with_authority, build_playback_session_key, find_episode_pattern,
+        normalize_preferred_audio_lang, normalize_subtitle_preference,
     };
-    use axum::http::header::{HOST, ORIGIN, REFERER};
+    use axum::http::header::HOST;
     use axum::http::{HeaderMap, HeaderValue, Uri};
-    use url::Url;
 
     #[test]
     fn normalizes_audio_preferences() {
@@ -2271,91 +2027,17 @@ mod tests {
     }
 
     #[test]
-    fn native_playback_requires_same_origin_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert(HOST, HeaderValue::from_static("127.0.0.1:5173"));
-        headers.insert(ORIGIN, HeaderValue::from_static("http://127.0.0.1:5173"));
-        let request_url = Url::parse("http://127.0.0.1:5173/api/native/play").expect("request url");
-        assert!(is_same_origin_native_playback_request(
-            &headers,
-            &request_url
-        ));
-
-        headers.insert(ORIGIN, HeaderValue::from_static("https://evil.example"));
-        assert!(!is_same_origin_native_playback_request(
-            &headers,
-            &request_url
-        ));
-
-        let mut referer_only = HeaderMap::new();
-        referer_only.insert(HOST, HeaderValue::from_static("127.0.0.1:5173"));
-        referer_only.insert(
-            REFERER,
-            HeaderValue::from_static("http://127.0.0.1:5173/player?x=1"),
-        );
-        assert!(is_same_origin_native_playback_request(
-            &referer_only,
-            &request_url
-        ));
-
-        let missing_headers = HeaderMap::new();
-        assert!(!is_same_origin_native_playback_request(
-            &missing_headers,
-            &request_url
-        ));
-    }
-
-    #[test]
-    fn native_playback_source_urls_are_allowlisted() {
-        let request_url = Url::parse("http://127.0.0.1:5173/api/native/play").expect("request url");
-        assert!(is_allowed_native_source_url(
-            &Url::parse("http://127.0.0.1:5173/api/remux?input=assets/videos/test.mp4")
-                .expect("remux url"),
-            &request_url,
-        ));
-        assert!(is_allowed_native_source_url(
-            &Url::parse("http://127.0.0.1:5173/assets/videos/test.mp4").expect("asset url"),
-            &request_url,
-        ));
-        assert!(is_allowed_native_source_url(
-            &Url::parse("https://download.real-debrid.com/video.mkv").expect("rd url"),
-            &request_url,
-        ));
-        assert!(!is_allowed_native_source_url(
-            &Url::parse("http://127.0.0.1:5173/settings").expect("settings url"),
-            &request_url,
-        ));
-        assert!(!is_allowed_native_source_url(
-            &Url::parse("https://example.com/video.mkv").expect("example url"),
-            &request_url,
-        ));
-    }
-
-    #[test]
-    fn native_playback_subtitle_urls_are_restricted_to_local_endpoints() {
-        let request_url = Url::parse("http://127.0.0.1:5173/api/native/play").expect("request url");
-        assert!(is_allowed_native_subtitle_url(
-            &Url::parse("http://127.0.0.1:5173/api/subtitles.vtt?x=1").expect("subtitle url"),
-            &request_url,
-        ));
-        assert!(is_allowed_native_subtitle_url(
-            &Url::parse("http://127.0.0.1:5173/api/subtitles.external.vtt?x=1")
-                .expect("external subtitle url"),
-            &request_url,
-        ));
-        assert!(!is_allowed_native_subtitle_url(
-            &Url::parse("https://example.com/subtitles.vtt").expect("remote subtitle url"),
-            &request_url,
-        ));
-    }
-
-    #[test]
     fn request_url_prefers_host_header_when_available() {
         let mut headers = HeaderMap::new();
         headers.insert(HOST, HeaderValue::from_static("127.0.0.1:5173"));
-        let uri: Uri = "/api/native/play".parse().expect("uri");
-        let url = absolute_request_url_from_headers(&uri, &headers, "0.0.0.0", 5173)
+        let uri: Uri = "/api/config".parse().expect("uri");
+        let authority = headers
+            .get(HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap()
+            .to_owned();
+        let url = absolute_request_url_with_authority(&uri, Some(authority), "0.0.0.0", 5173)
             .expect("request url");
-        assert_eq!(url.as_str(), "http://127.0.0.1:5173/api/native/play");
+        assert_eq!(url.as_str(), "http://127.0.0.1:5173/api/config");
     }
 }

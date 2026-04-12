@@ -23,13 +23,11 @@ pub struct Config {
     pub codex_model: String,
     pub openai_api_key: String,
     pub openai_responses_model: String,
-    pub native_playback_mode: String,
     pub remux_video_mode: String,
     pub hls_hwaccel_mode: String,
     pub remux_hwaccel_mode: String,
     pub auto_audio_sync_enabled: bool,
     pub playback_sessions_enabled: bool,
-    pub mpv_binary: String,
 }
 
 impl Config {
@@ -99,11 +97,6 @@ impl Config {
                 .unwrap_or_else(|_| "gpt-5-mini".to_owned())
                 .trim()
                 .to_owned(),
-            native_playback_mode: normalize_native_playback_mode(
-                env::var("NATIVE_PLAYBACK")
-                    .or_else(|_| env::var("NATIVE_PLAYER_MODE"))
-                    .unwrap_or_else(|_| "auto".to_owned()),
-            ),
             remux_video_mode: normalize_remux_video_mode(
                 env::var("REMUX_VIDEO_MODE").unwrap_or_else(|_| "auto".to_owned()),
             ),
@@ -121,10 +114,6 @@ impl Config {
             playback_sessions_enabled: normalize_bool_flag(
                 env::var("PLAYBACK_SESSIONS").unwrap_or_else(|_| "0".to_owned()),
             ),
-            mpv_binary: env::var("MPV_BINARY")
-                .unwrap_or_else(|_| "mpv".to_owned())
-                .trim()
-                .to_owned(),
         }
     }
 }
@@ -134,13 +123,6 @@ fn normalize_bool_flag(value: String) -> bool {
         value.trim().to_lowercase().as_str(),
         "" | "0" | "false" | "off"
     )
-}
-
-fn normalize_native_playback_mode(value: String) -> String {
-    match value.trim().to_lowercase().as_str() {
-        "off" => "off".to_owned(),
-        _ => "auto".to_owned(),
-    }
 }
 
 fn normalize_remux_video_mode(value: String) -> String {

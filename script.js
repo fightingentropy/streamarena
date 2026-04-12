@@ -1,3 +1,21 @@
+import {
+  STREAM_QUALITY_PREF_KEY,
+  PROFILE_AVATAR_STYLE_PREF_KEY,
+  PROFILE_AVATAR_MODE_PREF_KEY,
+  PROFILE_AVATAR_IMAGE_PREF_KEY,
+  LIBRARY_EDIT_MODE_PREF_KEY,
+  supportedStreamQualityPreferences,
+  supportedAvatarStyles,
+  avatarStyleClassNames,
+  normalizeAvatarStyle,
+  normalizeAvatarMode,
+  sanitizeAvatarImageData,
+  getStoredAvatarStylePreference,
+  getStoredAvatarModePreference,
+  getStoredAvatarImagePreference,
+  escapeHtml,
+} from "./src-ui/shared.js";
+
 const introVideo = document.getElementById("introVideo");
 const muteToggle = document.getElementById("muteToggle");
 const playButton = document.getElementById("heroPlay");
@@ -66,6 +84,7 @@ let detailsRequestVersion = 0;
 let isSearchModeActive = false;
 let searchDebounceTimer = null;
 let activeSearchRequestToken = 0;
+let searchAbortController = null;
 let searchContextTarget = null;
 let searchBoxHideTimer = null;
 let libraryEditModalCloseTimer = null;
@@ -74,6 +93,17 @@ let isSavingLibraryEdit = false;
 let activeLibraryEditCategory = "title";
 
 const tmdbDetailsCache = new Map();
+const TMDB_DETAILS_CACHE_MAX = 200;
+
+function setTmdbDetailsCache(key, value) {
+  tmdbDetailsCache.delete(key); // move to end (most recent)
+  if (tmdbDetailsCache.size >= TMDB_DETAILS_CACHE_MAX) {
+    const firstKey = tmdbDetailsCache.keys().next().value;
+    tmdbDetailsCache.delete(firstKey);
+  }
+  tmdbDetailsCache.set(key, value);
+}
+
 const SEARCH_DEBOUNCE_MS = 280;
 const SEARCH_MIN_QUERY_LENGTH = 2;
 const SEARCH_RESULTS_LIMIT = 40;
@@ -81,11 +111,6 @@ const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 const AUDIO_LANG_PREF_KEY_PREFIX = "netflix-audio-lang:movie:";
 const SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:movie:";
 const SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:movie:";
-const STREAM_QUALITY_PREF_KEY = "netflix-stream-quality-pref";
-const PROFILE_AVATAR_STYLE_PREF_KEY = "netflix-profile-avatar-style";
-const PROFILE_AVATAR_MODE_PREF_KEY = "netflix-profile-avatar-mode";
-const PROFILE_AVATAR_IMAGE_PREF_KEY = "netflix-profile-avatar-image";
-const LIBRARY_EDIT_MODE_PREF_KEY = "netflix-library-edit-mode";
 const HERO_TRAILER_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
 const RESUME_STORAGE_PREFIX = "netflix-resume:";
 const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
@@ -101,80 +126,6 @@ const PRIDE_PREJUDICE_THUMBNAIL = "assets/images/pride-prejudice-thumb.jpg";
 const DEFAULT_LOCAL_THUMBNAIL = "assets/images/thumbnail.jpg";
 const HIDDEN_LOCAL_SERIES_TMDB_IDS = new Set(["103506", "1396"]);
 const supportedAudioLangs = new Set(["auto", "en", "fr", "es", "de"]);
-const supportedStreamQualityPreferences = new Set([
-  "auto",
-  "2160p",
-  "1080p",
-  "720p",
-]);
-const supportedAvatarStyles = new Set([
-  "blue",
-  "crimson",
-  "emerald",
-  "violet",
-  "amber",
-]);
-const avatarStyleClassNames = Array.from(supportedAvatarStyles).map(
-  (style) => `avatar-style-${style}`,
-);
-
-function normalizeAvatarStyle(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (supportedAvatarStyles.has(normalized)) {
-    return normalized;
-  }
-  return "blue";
-}
-
-function normalizeAvatarMode(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  return normalized === "custom" ? "custom" : "preset";
-}
-
-function sanitizeAvatarImageData(value) {
-  const raw = String(value || "").trim();
-  if (!raw.startsWith("data:image/")) {
-    return "";
-  }
-  if (raw.length > 2_000_000) {
-    return "";
-  }
-  return raw;
-}
-
-function getStoredAvatarStylePreference() {
-  try {
-    return normalizeAvatarStyle(
-      localStorage.getItem(PROFILE_AVATAR_STYLE_PREF_KEY),
-    );
-  } catch {
-    return "blue";
-  }
-}
-
-function getStoredAvatarModePreference() {
-  try {
-    return normalizeAvatarMode(
-      localStorage.getItem(PROFILE_AVATAR_MODE_PREF_KEY),
-    );
-  } catch {
-    return "preset";
-  }
-}
-
-function getStoredAvatarImagePreference() {
-  try {
-    return sanitizeAvatarImageData(
-      localStorage.getItem(PROFILE_AVATAR_IMAGE_PREF_KEY),
-    );
-  } catch {
-    return "";
-  }
-}
 
 function getStoredHeroTrailerMutedPreference() {
   try {
@@ -1015,15 +966,6 @@ function formatRuntime(minutes) {
   if (!hours) return `${remainingMinutes}m`;
   if (!remainingMinutes) return `${hours}h`;
   return `${hours}h ${remainingMinutes}m`;
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }
 
 function createArtworkImage(src, altText, className = "") {
@@ -1969,9 +1911,11 @@ function renderSearchResults(results, rawQuery, imageBase = TMDB_IMAGE_BASE) {
     return;
   }
 
+  const fragment = document.createDocumentFragment();
   list.forEach((item) => {
-    searchResultsGrid.appendChild(buildSearchResultCard(item, imageBase));
+    fragment.appendChild(buildSearchResultCard(item, imageBase));
   });
+  searchResultsGrid.appendChild(fragment);
   setSearchStatus(
     `Showing ${list.length} result${list.length === 1 ? "" : "s"} for "${safeQuery}".`,
     "success",
@@ -1988,17 +1932,30 @@ async function runTmdbSearch(rawQuery) {
     return;
   }
 
+  // Abort any in-flight search request
+  if (searchAbortController) {
+    searchAbortController.abort();
+  }
+  searchAbortController = new AbortController();
+  const signal = searchAbortController.signal;
+
   setSearchStatus(`Searching for "${query}"...`);
   try {
-    const payload = await apiFetch("/api/tmdb/search", {
-      query,
-      limit: String(SEARCH_RESULTS_LIMIT),
-    });
+    const params = new URLSearchParams({ query, limit: String(SEARCH_RESULTS_LIMIT) });
+    const url = `/api/tmdb/search?${params.toString()}`;
+    const response = await fetch(url, { signal });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(payload?.error || `Request failed (${response.status})`);
+    }
     if (requestToken !== activeSearchRequestToken) {
       return;
     }
     renderSearchResults(payload?.results || [], query, payload?.imageBase || TMDB_IMAGE_BASE);
   } catch (error) {
+    if (error?.name === "AbortError") {
+      return;
+    }
     if (requestToken !== activeSearchRequestToken) {
       return;
     }
@@ -2619,13 +2576,15 @@ function buildCardFromLocalSeries(
 
 function renderPopularCards(cardsToRender) {
   cardsContainer.innerHTML = "";
+  const fragment = document.createDocumentFragment();
   cardsToRender.forEach((card, index) => {
     if (index >= Math.max(1, cardsToRender.length - 2)) {
       card.classList.add("card--align-right");
     }
-    cardsContainer.appendChild(card);
+    fragment.appendChild(card);
     attachCardInteractions(card);
   });
+  cardsContainer.appendChild(fragment);
 }
 
 async function loadPopularTitles() {
@@ -2835,6 +2794,7 @@ async function loadContinueWatching() {
   );
 
   continueCardsContainer.innerHTML = "";
+  const fragment = document.createDocumentFragment();
   entries.forEach((entry, index) => {
     const normalizedMediaType =
       inferContinueMediaType(
@@ -2852,9 +2812,10 @@ async function loadContinueWatching() {
     if (index >= Math.max(1, entries.length - 2)) {
       card.classList.add("card--align-right");
     }
-    continueCardsContainer.appendChild(card);
+    fragment.appendChild(card);
     attachCardInteractions(card);
   });
+  continueCardsContainer.appendChild(fragment);
 
   continueRow.hidden = false;
   if (continueEmpty) {
@@ -3301,14 +3262,16 @@ function renderMyListRow() {
     return;
   }
 
+  const fragment = document.createDocumentFragment();
   entries.forEach((entry, index) => {
     const card = buildMyListCard(entry);
     if (index >= Math.max(1, entries.length - 2)) {
       card.classList.add("card--align-right");
     }
-    myListCardsContainer.appendChild(card);
+    fragment.appendChild(card);
     attachCardInteractions(card);
   });
+  myListCardsContainer.appendChild(fragment);
   syncAllMyListButtons();
   myListRow.hidden = false;
   if (myListEmpty) {
@@ -3359,6 +3322,7 @@ function renderDetailsRecommendations(currentCard) {
     return;
   }
 
+  const fragment = document.createDocumentFragment();
   recommendations.forEach((entry) => {
     const safeTitle = String(entry.title || "").trim() || "Untitled";
     const item = document.createElement("article");
@@ -3388,8 +3352,9 @@ function renderDetailsRecommendations(currentCard) {
         openSuggestion();
       }
     });
-    detailsMoreGrid.appendChild(item);
+    fragment.appendChild(item);
   });
+  detailsMoreGrid.appendChild(fragment);
 }
 
 function populateDetailsModal(details) {
@@ -3468,7 +3433,7 @@ async function hydrateModalFromTmdb(card) {
       activeDetails,
       mediaType,
     );
-    tmdbDetailsCache.set(cacheKey, modalPatch);
+    setTmdbDetailsCache(cacheKey, modalPatch);
     activeDetails = modalPatch;
     populateDetailsModal(activeDetails);
   } catch (error) {

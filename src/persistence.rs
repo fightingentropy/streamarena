@@ -25,9 +25,12 @@ const RESOLVED_STREAM_PERSIST_MAX_ENTRIES: i64 = 6000;
 const MOVIE_QUICK_START_PERSIST_MAX_ENTRIES: i64 = 1200;
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 
+type Pool = std::sync::Mutex<Vec<Connection>>;
+
 #[derive(Clone)]
 pub struct Db {
     path: Arc<PathBuf>,
+    pool: Arc<Pool>,
 }
 
 #[allow(non_snake_case)]
@@ -108,18 +111,21 @@ impl Db {
 
         Ok(Self {
             path: Arc::new(path),
+            pool: Arc::new(std::sync::Mutex::new(Vec::new())),
         })
     }
 
     pub async fn sweep(&self) {
         let path = self.path.clone();
-        let _ = task::spawn_blocking(move || sweep_db(path)).await;
+        let pool = self.pool.clone();
+        let _ = task::spawn_blocking(move || sweep_db(&pool, &path)).await;
     }
 
     pub async fn clear_persistent_caches(&self) -> AppResult<()> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             connection.execute_batch(
                 "
                 DELETE FROM resolved_stream_cache;
@@ -131,6 +137,7 @@ impl Db {
                 DELETE FROM title_track_preferences;
                 ",
             )?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -141,9 +148,10 @@ impl Db {
 
     pub async fn persistent_counts(&self) -> AppResult<CacheCounts> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
-            Ok::<CacheCounts, rusqlite::Error>(CacheCounts {
+            let connection = take_connection(&pool, &path)?;
+            let counts = CacheCounts {
                 tmdb_response_size: table_count(&connection, "tmdb_response_cache")?,
                 playback_session_size: table_count(&connection, "playback_sessions")?,
                 resolved_stream_size: table_count(&connection, "resolved_stream_cache")?,
@@ -151,7 +159,9 @@ impl Db {
                 source_health_size: table_count(&connection, "source_health_stats")?,
                 media_probe_size: table_count(&connection, "media_probe_cache")?,
                 title_preference_size: table_count(&connection, "title_track_preferences")?,
-            })
+            };
+            return_connection(&pool, connection);
+            Ok::<CacheCounts, rusqlite::Error>(counts)
         })
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
@@ -163,8 +173,9 @@ impl Db {
         tmdb_id: String,
     ) -> AppResult<Option<TitlePreference>> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let row = connection
                 .query_row(
                     "
@@ -184,6 +195,7 @@ impl Db {
                 .optional()?;
 
             let Some((audio_lang, subtitle_lang, updated_at)) = row else {
+                return_connection(&pool, connection);
                 return Ok(None);
             };
             if updated_at == 0 || updated_at + TITLE_PREFERENCES_STALE_MS <= now_ms() {
@@ -191,13 +203,16 @@ impl Db {
                     "DELETE FROM title_track_preferences WHERE tmdb_id = ?",
                     [tmdb_id.as_str()],
                 )?;
+                return_connection(&pool, connection);
                 return Ok(None);
             }
 
-            Ok(Some(TitlePreference {
+            let result = TitlePreference {
                 audioLang: normalize_preferred_audio_lang(&audio_lang),
                 subtitleLang: normalize_subtitle_preference(&subtitle_lang),
-            }))
+            };
+            return_connection(&pool, connection);
+            Ok(Some(result))
         })
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
@@ -211,11 +226,13 @@ impl Db {
         subtitle_lang: String,
     ) -> AppResult<()> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let normalized_audio = normalize_preferred_audio_lang(&audio_lang);
             let normalized_subtitle = normalize_subtitle_preference(&subtitle_lang);
-            connection.execute(
+            let tx = connection.unchecked_transaction()?;
+            tx.execute(
                 "
                 INSERT INTO title_track_preferences (
                   tmdb_id,
@@ -249,12 +266,14 @@ impl Db {
             if normalize_preferred_audio_lang(&audio_lang) != "auto" {
                 for quality in ["auto", "2160p", "1080p", "720p"] {
                     let session_key = format!("{tmdb_id}:auto:{quality}");
-                    let _ = connection.execute(
+                    let _ = tx.execute(
                         "DELETE FROM playback_sessions WHERE session_key = ?",
                         [session_key],
                     );
                 }
             }
+            tx.commit()?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -265,12 +284,14 @@ impl Db {
 
     pub async fn delete_title_preference(&self, tmdb_id: String) -> AppResult<()> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             connection.execute(
                 "DELETE FROM title_track_preferences WHERE tmdb_id = ?",
                 [tmdb_id.as_str()],
             )?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -281,12 +302,14 @@ impl Db {
 
     pub async fn delete_playback_sessions_for_tmdb(&self, tmdb_id: String) -> AppResult<()> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             connection.execute(
                 "DELETE FROM playback_sessions WHERE tmdb_id = ?",
                 [tmdb_id.as_str()],
             )?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -300,12 +323,14 @@ impl Db {
         tmdb_id: String,
     ) -> AppResult<()> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             connection.execute(
                 "DELETE FROM movie_quick_start_cache WHERE cache_key LIKE ?",
                 [format!("{tmdb_id}:%")],
             )?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -319,7 +344,8 @@ impl Db {
         session_key: String,
     ) -> AppResult<Option<PlaybackSession>> {
         let path = self.path.clone();
-        task::spawn_blocking(move || get_playback_session_inner(path, session_key))
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || get_playback_session_inner(&pool, &path, session_key))
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?
             .map_err(|error| ApiError::internal(error.to_string()))
@@ -330,8 +356,9 @@ impl Db {
         tmdb_id: String,
     ) -> AppResult<Option<PlaybackSession>> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let key = connection
                 .query_row(
                     "
@@ -345,8 +372,9 @@ impl Db {
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?;
+            return_connection(&pool, connection);
             match key {
-                Some(session_key) => get_playback_session_inner(path.clone(), session_key),
+                Some(session_key) => get_playback_session_inner(&pool, &path, session_key),
                 None => Ok(None),
             }
         })
@@ -363,12 +391,13 @@ impl Db {
         last_error: String,
     ) -> AppResult<bool> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let Some(existing) = get_playback_session_inner(path.clone(), session_key.clone())?
+            let Some(existing) = get_playback_session_inner(&pool, &path, session_key.clone())?
             else {
                 return Ok(false);
             };
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let next_health = normalize_session_health_state(&health_state);
             let next_fail_count = if next_health == "invalid" {
                 existing.health_fail_count + 1
@@ -409,6 +438,7 @@ impl Db {
                     session_key,
                 ],
             )?;
+            return_connection(&pool, connection);
             Ok(true)
         })
         .await
@@ -421,8 +451,9 @@ impl Db {
         session_key: String,
     ) -> AppResult<bool> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let now = now_ms();
             let updated = connection.execute(
                 "
@@ -442,6 +473,7 @@ impl Db {
                     session_key,
                 ],
             )?;
+            return_connection(&pool, connection);
             Ok(updated > 0)
         })
         .await
@@ -461,8 +493,9 @@ impl Db {
         }
 
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let normalized_audio_lang = normalize_preferred_audio_lang(&input.audio_lang);
             let normalized_quality = normalize_preferred_stream_quality(&input.preferred_quality);
             let session_key = build_playback_session_key(
@@ -470,14 +503,14 @@ impl Db {
                 &normalized_audio_lang,
                 &normalized_quality,
             );
-            let existing = get_playback_session_inner(path.clone(), session_key.clone())?;
+            let existing = get_playback_session_inner(&pool, &path, session_key.clone())?;
             let auto_session_key = if normalized_audio_lang != "auto" {
                 build_playback_session_key(&input.tmdb_id, "auto", &normalized_quality)
             } else {
                 String::new()
             };
             let auto_session = if !auto_session_key.is_empty() && auto_session_key != session_key {
-                get_playback_session_inner(path.clone(), auto_session_key.clone())?
+                get_playback_session_inner(&pool, &path, auto_session_key.clone())?
             } else {
                 None
             };
@@ -492,7 +525,8 @@ impl Db {
                 })
                 .max(0.0);
             let now = now_ms();
-            connection.execute(
+            let tx = connection.unchecked_transaction()?;
+            tx.execute(
                 "
                 INSERT INTO playback_sessions (
                   session_key,
@@ -555,17 +589,19 @@ impl Db {
                 ],
             )?;
             if !auto_session_key.is_empty() && auto_session_key != session_key {
-                let _ = connection.execute(
+                let _ = tx.execute(
                     "DELETE FROM playback_sessions WHERE session_key = ?",
                     [auto_session_key.as_str()],
                 );
             }
+            tx.commit()?;
             trim_table(
                 &connection,
                 "playback_sessions",
                 "updated_at",
                 PLAYBACK_SESSION_PERSIST_MAX_ENTRIES,
             )?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -584,8 +620,9 @@ impl Db {
             return Ok(());
         }
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let (success, failure, decode_failure, ended_early, playback_error) =
                 match event_type.as_str() {
                     "success" => (1, 0, 0, 0, 0),
@@ -628,6 +665,7 @@ impl Db {
                     now_ms(),
                 ],
             )?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -644,8 +682,9 @@ impl Db {
             return Ok(None);
         }
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let row = connection
                 .query_row(
                     "
@@ -681,6 +720,7 @@ impl Db {
                 updated_at,
             )) = row
             else {
+                return_connection(&pool, connection);
                 return Ok(None);
             };
             if updated_at == 0 || updated_at + SOURCE_HEALTH_STALE_MS <= now_ms() {
@@ -688,15 +728,18 @@ impl Db {
                     "DELETE FROM source_health_stats WHERE source_key = ?",
                     [source_key.as_str()],
                 )?;
+                return_connection(&pool, connection);
                 return Ok(None);
             }
-            Ok(Some(SourceHealthStats {
+            let result = SourceHealthStats {
                 success_count: success_count.max(0),
                 failure_count: failure_count.max(0),
                 decode_failure_count: decode_failure_count.max(0),
                 ended_early_count: ended_early_count.max(0),
                 playback_error_count: playback_error_count.max(0),
-            }))
+            };
+            return_connection(&pool, connection);
+            Ok(Some(result))
         })
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
@@ -705,8 +748,9 @@ impl Db {
 
     pub async fn get_tmdb_cache(&self, cache_key: String) -> AppResult<Option<(Value, i64)>> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let row = connection
                 .query_row(
                     "
@@ -719,6 +763,7 @@ impl Db {
                 )
                 .optional()?;
             let Some((payload_json, expires_at)) = row else {
+                return_connection(&pool, connection);
                 return Ok(None);
             };
             if expires_at <= now_ms() {
@@ -726,6 +771,7 @@ impl Db {
                     "DELETE FROM tmdb_response_cache WHERE cache_key = ?",
                     [cache_key.as_str()],
                 )?;
+                return_connection(&pool, connection);
                 return Ok(None);
             }
             let parsed = serde_json::from_str::<Value>(&payload_json).unwrap_or(Value::Null);
@@ -734,8 +780,10 @@ impl Db {
                     "DELETE FROM tmdb_response_cache WHERE cache_key = ?",
                     [cache_key.as_str()],
                 )?;
+                return_connection(&pool, connection);
                 return Ok(None);
             }
+            return_connection(&pool, connection);
             Ok(Some((parsed, expires_at)))
         })
         .await
@@ -750,8 +798,9 @@ impl Db {
         expires_at: i64,
     ) -> AppResult<()> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             connection.execute(
                 "
                 INSERT INTO tmdb_response_cache (
@@ -779,6 +828,7 @@ impl Db {
                 "updated_at",
                 TMDB_RESPONSE_PERSIST_MAX_ENTRIES,
             )?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -792,8 +842,9 @@ impl Db {
         cache_key: String,
     ) -> AppResult<Option<(Value, i64, i64)>> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let row = connection
                 .query_row(
                     "
@@ -812,6 +863,7 @@ impl Db {
                 )
                 .optional()?;
             let Some((payload_json, expires_at, next_validation_at)) = row else {
+                return_connection(&pool, connection);
                 return Ok(None);
             };
             if expires_at <= now_ms() {
@@ -819,6 +871,7 @@ impl Db {
                     "DELETE FROM resolved_stream_cache WHERE cache_key = ?",
                     [cache_key.as_str()],
                 )?;
+                return_connection(&pool, connection);
                 return Ok(None);
             }
             let parsed = serde_json::from_str::<Value>(&payload_json).unwrap_or(Value::Null);
@@ -827,8 +880,10 @@ impl Db {
                     "DELETE FROM resolved_stream_cache WHERE cache_key = ?",
                     [cache_key.as_str()],
                 )?;
+                return_connection(&pool, connection);
                 return Ok(None);
             }
+            return_connection(&pool, connection);
             Ok(Some((parsed, expires_at.max(0), next_validation_at.max(0))))
         })
         .await
@@ -844,8 +899,9 @@ impl Db {
         next_validation_at: i64,
     ) -> AppResult<()> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             connection.execute(
                 "
                 INSERT INTO resolved_stream_cache (
@@ -878,6 +934,7 @@ impl Db {
                 "updated_at",
                 RESOLVED_STREAM_PERSIST_MAX_ENTRIES,
             )?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -891,8 +948,9 @@ impl Db {
         cache_key: String,
     ) -> AppResult<Option<(Value, i64)>> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let row = connection
                 .query_row(
                     "
@@ -905,6 +963,7 @@ impl Db {
                 )
                 .optional()?;
             let Some((payload_json, expires_at)) = row else {
+                return_connection(&pool, connection);
                 return Ok(None);
             };
             if expires_at <= now_ms() {
@@ -912,6 +971,7 @@ impl Db {
                     "DELETE FROM movie_quick_start_cache WHERE cache_key = ?",
                     [cache_key.as_str()],
                 )?;
+                return_connection(&pool, connection);
                 return Ok(None);
             }
             let parsed = serde_json::from_str::<Value>(&payload_json).unwrap_or(Value::Null);
@@ -920,8 +980,10 @@ impl Db {
                     "DELETE FROM movie_quick_start_cache WHERE cache_key = ?",
                     [cache_key.as_str()],
                 )?;
+                return_connection(&pool, connection);
                 return Ok(None);
             }
+            return_connection(&pool, connection);
             Ok(Some((parsed, expires_at.max(0))))
         })
         .await
@@ -936,8 +998,9 @@ impl Db {
         expires_at: i64,
     ) -> AppResult<()> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             connection.execute(
                 "
                 INSERT INTO movie_quick_start_cache (
@@ -965,6 +1028,7 @@ impl Db {
                 "updated_at",
                 MOVIE_QUICK_START_PERSIST_MAX_ENTRIES,
             )?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -975,12 +1039,14 @@ impl Db {
 
     pub async fn delete_movie_quick_start_cache(&self, cache_key: String) -> AppResult<()> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             connection.execute(
                 "DELETE FROM movie_quick_start_cache WHERE cache_key = ?",
                 [cache_key.as_str()],
             )?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -991,8 +1057,9 @@ impl Db {
 
     pub async fn get_media_probe_cache(&self, probe_key: String) -> AppResult<Option<Value>> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             let row = connection
                 .query_row(
                     "
@@ -1005,6 +1072,7 @@ impl Db {
                 )
                 .optional()?;
             let Some((payload_json, updated_at)) = row else {
+                return_connection(&pool, connection);
                 return Ok(None);
             };
             if updated_at == 0 || updated_at + MEDIA_PROBE_STALE_MS <= now_ms() {
@@ -1012,6 +1080,7 @@ impl Db {
                     "DELETE FROM media_probe_cache WHERE probe_key = ?",
                     [probe_key.as_str()],
                 )?;
+                return_connection(&pool, connection);
                 return Ok(None);
             }
             let parsed = serde_json::from_str::<Value>(&payload_json).unwrap_or(Value::Null);
@@ -1020,8 +1089,10 @@ impl Db {
                     "DELETE FROM media_probe_cache WHERE probe_key = ?",
                     [probe_key.as_str()],
                 )?;
+                return_connection(&pool, connection);
                 return Ok(None);
             }
+            return_connection(&pool, connection);
             Ok(Some(parsed))
         })
         .await
@@ -1031,8 +1102,9 @@ impl Db {
 
     pub async fn set_media_probe_cache(&self, probe_key: String, payload: Value) -> AppResult<()> {
         let path = self.path.clone();
+        let pool = self.pool.clone();
         task::spawn_blocking(move || {
-            let connection = open_connection(&path)?;
+            let connection = take_connection(&pool, &path)?;
             connection.execute(
                 "
                 INSERT INTO media_probe_cache (
@@ -1051,6 +1123,7 @@ impl Db {
                     now_ms(),
                 ],
             )?;
+            return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
         .await
@@ -1061,10 +1134,11 @@ impl Db {
 }
 
 fn get_playback_session_inner(
-    path: Arc<PathBuf>,
+    pool: &Pool,
+    path: &PathBuf,
     session_key: String,
 ) -> Result<Option<PlaybackSession>, rusqlite::Error> {
-    let connection = open_connection(&path)?;
+    let connection = take_connection(pool, path)?;
     let row = connection
         .query_row(
             "
@@ -1117,6 +1191,7 @@ fn get_playback_session_inner(
             },
         )
         .optional()?;
+    return_connection(pool, connection);
     Ok(row)
 }
 
@@ -1203,8 +1278,8 @@ fn init_schema(path: PathBuf) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
-fn sweep_db(path: Arc<PathBuf>) -> Result<(), rusqlite::Error> {
-    let connection = open_connection(&path)?;
+fn sweep_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
+    let connection = take_connection(pool, path)?;
     let now = now_ms();
     let stale_threshold = now - PLAYBACK_SESSION_STALE_MS;
     connection.execute(
@@ -1259,7 +1334,26 @@ fn sweep_db(path: Arc<PathBuf>) -> Result<(), rusqlite::Error> {
         "updated_at",
         PLAYBACK_SESSION_PERSIST_MAX_ENTRIES,
     )?;
+    return_connection(pool, connection);
     Ok(())
+}
+
+fn take_connection(pool: &Pool, path: &PathBuf) -> Result<Connection, rusqlite::Error> {
+    let mut connections = pool.lock().unwrap();
+    if let Some(conn) = connections.pop() {
+        Ok(conn)
+    } else {
+        drop(connections);
+        open_connection(path)
+    }
+}
+
+fn return_connection(pool: &Pool, conn: Connection) {
+    let mut connections = pool.lock().unwrap();
+    if connections.len() < 4 {
+        connections.push(conn);
+    }
+    // else drop it — pool is full
 }
 
 fn open_connection(path: &PathBuf) -> Result<Connection, rusqlite::Error> {
@@ -1688,13 +1782,13 @@ mod tests {
             codex_model: String::new(),
             openai_api_key: String::new(),
             openai_responses_model: String::new(),
-            native_playback_mode: "off".to_owned(),
+
             remux_video_mode: "auto".to_owned(),
             hls_hwaccel_mode: "none".to_owned(),
             remux_hwaccel_mode: "none".to_owned(),
             auto_audio_sync_enabled: false,
             playback_sessions_enabled: true,
-            mpv_binary: "mpv".to_owned(),
+
         };
         Db::initialize(&config).await.expect("init db")
     }

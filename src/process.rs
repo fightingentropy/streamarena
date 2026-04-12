@@ -9,10 +9,9 @@ use tokio::time::timeout;
 use url::Url;
 
 use crate::config::Config;
-use crate::error::{ApiError, AppResult};
+
 
 const FFMPEG_CAPABILITY_REFRESH_MS: i64 = 5 * 60 * 1000;
-const NATIVE_PLAYER_STATUS_REFRESH_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct EncoderFlags {
@@ -36,22 +35,10 @@ pub struct FfmpegSnapshot {
     pub notes: Vec<String>,
 }
 
-#[allow(non_snake_case)]
-#[derive(Debug, Clone, Serialize)]
-pub struct NativePlayerSnapshot {
-    pub checkedAt: i64,
-    pub mode: String,
-    pub mpvBinary: String,
-    pub available: bool,
-    pub version: String,
-    pub notes: Vec<String>,
-}
-
 #[derive(Clone)]
 pub struct RuntimeServices {
     config: Config,
     ffmpeg_snapshot: Arc<Mutex<FfmpegSnapshot>>,
-    native_snapshot: Arc<Mutex<NativePlayerSnapshot>>,
 }
 
 impl RuntimeServices {
@@ -73,14 +60,6 @@ impl RuntimeServices {
                 },
                 notes: Vec::new(),
             })),
-            native_snapshot: Arc::new(Mutex::new(NativePlayerSnapshot {
-                checkedAt: 0,
-                mode: config.native_playback_mode.clone(),
-                mpvBinary: config.mpv_binary.clone(),
-                available: false,
-                version: String::new(),
-                notes: Vec::new(),
-            })),
             config,
         }
     }
@@ -98,76 +77,6 @@ impl RuntimeServices {
         next
     }
 
-    pub async fn get_native_player_status(&self, force_refresh: bool) -> NativePlayerSnapshot {
-        let snapshot = self.native_snapshot.lock().await.clone();
-        if !force_refresh
-            && snapshot.checkedAt > 0
-            && now_ms() - snapshot.checkedAt < NATIVE_PLAYER_STATUS_REFRESH_MS
-        {
-            return snapshot;
-        }
-        let next = probe_native_player_status(&self.config).await;
-        *self.native_snapshot.lock().await = next.clone();
-        next
-    }
-
-    pub async fn launch_mpv(
-        &self,
-        source_url: String,
-        subtitle_url: String,
-        title: String,
-        start_seconds: i64,
-        audio_sync_ms: i64,
-    ) -> AppResult<()> {
-        if source_url.trim().is_empty() {
-            return Err(ApiError::bad_request("Missing source URL."));
-        }
-        let safe_start_seconds = start_seconds.max(0);
-        let safe_audio_sync_ms = normalize_audio_sync_ms(audio_sync_ms);
-
-        let mut command = Command::new("/bin/sh");
-        let mut args = vec![
-            self.config.mpv_binary.clone(),
-            "--force-window=yes".to_owned(),
-            "--idle=no".to_owned(),
-            "--keep-open=no".to_owned(),
-        ];
-        if !title.trim().is_empty() {
-            args.push(format!("--title={title}"));
-        }
-        if safe_start_seconds > 0 {
-            args.push(format!("--start={safe_start_seconds}"));
-        }
-        if safe_audio_sync_ms != 0 {
-            args.push(format!(
-                "--audio-delay={:.3}",
-                safe_audio_sync_ms as f64 / 1000.0
-            ));
-        }
-        if !subtitle_url.trim().is_empty() {
-            args.push(format!("--sub-file={subtitle_url}"));
-        }
-        args.push(source_url);
-        let quoted = args
-            .into_iter()
-            .map(shell_quote)
-            .collect::<Vec<_>>()
-            .join(" ");
-        command
-            .arg("-lc")
-            .arg(format!("nohup {quoted} >/dev/null 2>&1 &"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let status = command
-            .status()
-            .await
-            .map_err(|error| ApiError::internal(error.to_string()))?;
-        if !status.success() {
-            return Err(ApiError::internal("Failed to launch mpv."));
-        }
-        Ok(())
-    }
 }
 
 pub fn normalize_audio_sync_ms(value: i64) -> i64 {
@@ -294,46 +203,6 @@ async fn probe_ffmpeg_capabilities(config: &Config) -> FfmpegSnapshot {
     snapshot
 }
 
-async fn probe_native_player_status(config: &Config) -> NativePlayerSnapshot {
-    let mut snapshot = NativePlayerSnapshot {
-        checkedAt: now_ms(),
-        mode: config.native_playback_mode.clone(),
-        mpvBinary: config.mpv_binary.clone(),
-        available: false,
-        version: String::new(),
-        notes: Vec::new(),
-    };
-
-    if config.native_playback_mode == "off" {
-        snapshot
-            .notes
-            .push("Native playback is disabled by configuration.".to_owned());
-        return snapshot;
-    }
-
-    match run_process_capture([config.mpv_binary.as_str(), "--version"], 5_000).await {
-        Ok(output) => {
-            let version_line = output
-                .lines()
-                .find(|line| line.to_lowercase().starts_with("mpv "))
-                .unwrap_or_default()
-                .trim()
-                .to_owned();
-            if version_line.is_empty() {
-                snapshot
-                    .notes
-                    .push("mpv was found but version output was unexpected.".to_owned());
-            } else {
-                snapshot.available = true;
-                snapshot.version = version_line;
-            }
-        }
-        Err(message) => snapshot.notes.push(format!("mpv unavailable: {message}")),
-    }
-
-    snapshot
-}
-
 pub async fn run_process_capture_text(
     command: &[String],
     timeout_ms: u64,
@@ -416,10 +285,6 @@ fn can_use_hwaccel_mode(snapshot: &FfmpegSnapshot, mode: &str) -> bool {
         "qsv" => snapshot.encoders.h264_qsv && snapshot.hwaccels.iter().any(|item| item == "qsv"),
         _ => false,
     }
-}
-
-fn shell_quote(value: String) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn now_ms() -> i64 {

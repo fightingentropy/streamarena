@@ -6,7 +6,7 @@ This project is a local Netflix-style streaming app with:
 - A full custom player (`player.html`)
 - A settings UI (`settings.html`)
 - A local upload workflow (`upload.html`)
-- A Rust backend that handles metadata, stream resolving, remux/HLS/subtitles, caching, and local library management
+- A Rust backend that handles metadata, stream resolving, remux/subtitles, caching, and local library management
 
 ## Table of Contents
 
@@ -39,16 +39,16 @@ The app combines two media paths:
 
 - Backend: Rust (Axum) in `src/`
 - Frontend: multi-page Solid + Vite app with page entries in `src-ui/`
-- External tools: `ffmpeg`, `ffprobe`, optional `mpv`
+- External tools: `ffmpeg`, `ffprobe`
 - Caching: in-memory + persistent SQLite-backed cache data (managed by the Rust backend)
 
 ### Main files
 
-- `src/`: Rust API, static serving, resolving, remux/HLS/subtitles, upload processing, caching, health/debug
+- `src/`: Rust API, static serving, resolving, remux/subtitles, upload processing, caching, health/debug
 - `src-ui/`: Solid page shells and entrypoints for the multi-page frontend
 - `index.html` + `script.js`: home screen structure + browse behavior
 - `player.html` + `player.js`: video playback UI, source selection, subtitles/audio handling, fallback logic
-- `settings.html` + `settings.js`: quality/source/profile/native-playback/remux preferences
+- `settings.html` + `settings.js`: quality/source/profile/remux preferences
 - `upload.html` + `upload.js`: upload and metadata inference flow
 - `assets/library.json`: local media catalog
 
@@ -62,6 +62,7 @@ The app combines two media paths:
   - TMDB resolve flow (`/api/resolve/movie`, `/api/resolve/tv`)
   - fallback asset playback
 - Server remux endpoint (`/api/remux`) with selectable audio/subtitle stream indexes
+- Native HLS playback via browser-native `<video>` support (Chrome 142+, Safari, Edge 142+) with automatic remux fallback
 - HLS endpoints for playlist + segment serving
 - Subtitle extraction to VTT from embedded streams and external subtitle providers
 - Automatic subtitle prewarm for selected subtitle streams on resolve responses
@@ -103,14 +104,12 @@ The app combines two media paths:
 
 - Subtitle color preference
 - Profile avatar preset or custom uploaded image
-- Native playback mode preference (`auto`/`off`)
 - Remux video mode preference (`auto`/`copy`/`normalize`)
 - Per-title language preference persistence (`/api/title/preferences`)
 
 ### Operations and debugging
 
 - Health endpoint with ffmpeg/ffprobe capability info
-- Native player capability endpoint
 - Cache stats endpoint + cache clear action
 - Settings page button to clear all server caches
 
@@ -136,7 +135,7 @@ The app combines two media paths:
 - Explicit/local `src` playback can probe media tracks via `/api/media/tracks` and preselect audio/subtitle streams
 - For uploaded local media, English audio is preferred when an English track exists
 - Handles stream fallback and recovery behavior
-- Uses remux/HLS/subtitle endpoints when needed
+- Uses native HLS, remux, and subtitle endpoints when needed (no hls.js dependency — relies on browser-native HLS support)
 
 Keyboard controls:
 
@@ -152,7 +151,7 @@ Keyboard controls:
 - Stream quality preference
 - Subtitle color picker/reset
 - Source filters (seeders, result limit, language, formats)
-- Native playback mode and remux mode preferences
+- Remux mode preference
 - Avatar style presets + custom image crop/resize pipeline
 - Cache clear action hitting `/api/debug/cache?clear=1`
 
@@ -176,13 +175,6 @@ All API routes are served by the Rust backend.
 - `GET /api/health[?refresh=1]`
 - `GET /api/debug/cache`
 - `GET /api/debug/cache?clear=1`
-
-### Native player
-
-- `GET /api/native/player[?refresh=1]`
-- `POST /api/native/play`
-
-`/api/native/play` is loopback-restricted and launches `mpv` when available and enabled.
 
 ### Library and uploads
 
@@ -259,8 +251,6 @@ Runtime:
 - `AUTO_AUDIO_SYNC` (`0|1`)
 - `REMUX_VIDEO_MODE` (`auto|copy|normalize`)
 - `PLAYBACK_SESSIONS` (`0|1`)
-- `NATIVE_PLAYBACK` (`auto|off`)
-- `MPV_BINARY`
 
 ## 7) Data, Cache, and Persistence
 
@@ -272,7 +262,6 @@ Runtime:
 - `netflix-source-filter-allowed-formats`
 - `netflix-source-filter-language`
 - `netflix-source-filter-results-limit`
-- `netflix-native-playback-mode`
 - `netflix-remux-video-mode`
 - `netflix-profile-avatar-style`
 - `netflix-profile-avatar-mode`
@@ -287,7 +276,7 @@ Runtime:
 
 - In-memory TTL caches for TMDB responses, resolved streams, quick-start and lookup data
 - Persistent cache tables used for resolved data/session/probe/source-health/title-preference retention
-- Periodic cache sweeping and stale HLS/upload-session cleanup
+- Periodic cache sweeping and stale upload-session cleanup
 
 ### Local media files
 
@@ -302,8 +291,6 @@ Prerequisites:
 - Rust toolchain
 - Bun or another package runner if you want to use the `package.json` scripts
 - `ffmpeg` and `ffprobe` on `PATH`
-- Optional: `mpv` on `PATH` for native handoff
-
 Setup:
 
 ```bash
@@ -320,7 +307,7 @@ Scripts:
 
 - `bun run dev` -> Rust server
 - `bun run bench:playback:install` -> installs the Chromium browser used by the playback benchmark suite
-- `bun run bench:playback -- --source assets/videos/<file>.mp4` -> runs a headless playback comparison across direct, remux, and HLS transport paths
+- `bun run bench:playback -- --source assets/videos/<file>.mp4` -> runs a headless playback comparison across direct, remux, and native-HLS transport paths
 
 ### Playback Benchmark Suite
 
@@ -334,7 +321,7 @@ It measures:
 - dropped-frame ratio
 - effective decoded frame rate
 - frame processing duration from `requestVideoFrameCallback`
-- transport bytes received for remux/HLS/direct playback during startup, steady-state playback, and the full run
+- transport bytes received for remux/native-HLS/direct playback during startup, steady-state playback, and the full run
 
 It can rank strategies for different goals:
 
@@ -373,7 +360,6 @@ bun run bench:playback -- \
 
 - `bun run dev` is the full-stack runtime: Rust serves `/api/*` and the frontend.
 - `bun run dev:vite` is frontend-only and does not replace the Rust backend APIs.
-- Native playback launch is intentionally loopback-only.
 - Upload processing depends on ffmpeg availability.
 - Upload compatibility handling:
   - media is probed after upload
@@ -391,9 +377,6 @@ bun run bench:playback -- \
 - Subtitles unavailable:
   - stream may not include text subtitle track
   - external subtitle provider may not have matching data
-- Native playback does not launch:
-  - ensure `NATIVE_PLAYBACK=auto` (or Settings equivalent)
-  - ensure `mpv` is installed or `MPV_BINARY` points correctly
 - Playback stutter/compatibility issues:
   - use remux mode `normalize` for toughest sources
   - check `/api/health` and `/api/config` for ffmpeg/hwaccel status

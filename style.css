@@ -89,7 +89,7 @@ body.modal-open {
         rgba(0, 0, 0, 0.66) 0%,
         rgba(0, 0, 0, 0.02) 100%
     );
-    backdrop-filter: blur(1px);
+    will-change: transform;
 }
 
 .nav-left {

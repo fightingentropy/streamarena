@@ -1932,13 +1932,13 @@ mod tests {
             codex_model: String::new(),
             openai_api_key: String::new(),
             openai_responses_model: String::new(),
-            native_playback_mode: "off".to_owned(),
+
             remux_video_mode: "auto".to_owned(),
             hls_hwaccel_mode: "none".to_owned(),
             remux_hwaccel_mode: "none".to_owned(),
             auto_audio_sync_enabled: false,
             playback_sessions_enabled: false,
-            mpv_binary: "mpv".to_owned(),
+
         };
         assert!(is_local_app_playback_url(
             &config,

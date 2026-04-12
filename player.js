@@ -1,3 +1,26 @@
+import { parseWebVttCues } from "./src-ui/player/subtitles.js";
+import {
+  DEFAULT_EPISODE_THUMBNAIL,
+  STATIC_SERIES_LIBRARY,
+  mergeSeriesLibraries,
+  fetchLocalSeriesLibrary,
+  getSeriesEpisodeLabel,
+} from "./src-ui/player/episodes.js";
+import {
+  normalizeSourceHash,
+  getSourceDisplayName,
+  getSourceDisplayHint,
+  getSourceDisplayMeta,
+  isSourceOptionLikelyContainer,
+  parseSourceOptionVerticalResolution,
+  getDetectedSourceOptionLanguages,
+  sortSourcesBySeeders,
+  isBrowserSafeAudioCodec,
+} from "./src-ui/player/sources.js";
+import {
+  STREAM_QUALITY_PREF_KEY,
+} from "./src-ui/shared.js";
+
 const video = document.getElementById("playerVideo");
 const goBack = document.getElementById("goBack");
 const seekBar = document.getElementById("seekBar");
@@ -64,7 +87,6 @@ let transcodeBaseOffsetSeconds = 0;
 let hasAppliedInitialResume = false;
 let pendingTranscodeSeekRatio = null;
 let pendingStandardSeekRatio = null;
-let hlsInstance = null;
 let activeTrackSourceInput = "";
 let selectedAudioStreamIndex = -1;
 let selectedSubtitleStreamIndex = -1;
@@ -75,11 +97,12 @@ let subtitleTrackElement = null;
 let customSubtitleCues = [];
 let customSubtitleCueCursor = 0;
 let customSubtitleLoadToken = 0;
+let subtitleRafId = 0;
+let lastRenderedSubtitleCueIndex = -1;
 let resolvedTrackPreferenceAudio = "auto";
 let preferredSubtitleLang = "";
 let audioOptions = [];
 let subtitleOptions = [];
-let nativePlaybackLaunched = false;
 let activeAudioTab = "subtitles";
 let seriesEpisodeThumbHydrationTask = null;
 let hasHydratedSeriesEpisodeThumbs = false;
@@ -96,364 +119,10 @@ const benchmarkModeEnabled = new Set(["1", "true", "yes", "on"]).has(
 );
 const DEFAULT_TRAILER_SOURCE =
   "assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4";
-const DEFAULT_EPISODE_THUMBNAIL = "assets/images/thumbnail.jpg";
-const JEFFREY_EPSTEIN_EPISODE_1_SOURCE =
-  "assets/videos/jeffrey-epstein-filthy-rich-s01e01-2160p-hevc.mp4";
-const STATIC_SERIES_LIBRARY = {
-  "jeffrey-epstein-filthy-rich": {
-    id: "jeffrey-epstein-filthy-rich",
-    title: "Jeffrey Epstein: Filthy Rich",
-    tmdbId: "103506",
-    year: "2020",
-    preferredContainer: "mp4",
-    requiresLocalEpisodeSources: true,
-    episodes: [
-      {
-        title: "Hunting Grounds",
-        description:
-          'Survivors recount how Epstein abused, manipulated and silenced them as he ran a so-called molestation "pyramid scheme" out of his Palm Beach mansion.',
-        thumb: "assets/images/jeffrey-epstein-s01e01-thumb.jpg",
-        src: JEFFREY_EPSTEIN_EPISODE_1_SOURCE,
-        seasonNumber: 1,
-        episodeNumber: 1,
-      },
-      {
-        title: "Follow the Money",
-        description:
-          "The survivors and journalists retrace how Epstein built influence, money and legal insulation for years.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 2,
-      },
-      {
-        title: "The Island",
-        description:
-          "Victims and insiders detail what happened at Epstein's private island and who enabled access.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 3,
-      },
-      {
-        title: "Finding Their Voice",
-        description:
-          "Women who were silenced for years step forward publicly and push for accountability.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 4,
-      },
-    ],
-  },
-  "breaking-bad": {
-    id: "breaking-bad",
-    title: "Breaking Bad",
-    tmdbId: "1396",
-    year: "2008",
-    episodes: [
-      {
-        title: "Pilot",
-        description:
-          "A chemistry teacher facing a life-changing diagnosis is pushed toward a dangerous new plan.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 1,
-      },
-      {
-        title: "Cat's in the Bag...",
-        description:
-          "Walt and Jesse scramble to cover their tracks while pressure builds at home and at work.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 2,
-      },
-      {
-        title: "...And the Bag's in the River",
-        description:
-          "A difficult decision tests Walt's limits as Jesse struggles with the fallout.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 3,
-      },
-      {
-        title: "Cancer Man",
-        description:
-          "Family tension grows as Walt keeps secrets and Jesse tries to steady his life.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 4,
-      },
-      {
-        title: "Gray Matter",
-        description:
-          "A job offer from Walt's past creates a conflict between pride, money and survival.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 5,
-      },
-      {
-        title: "Crazy Handful of Nothin'",
-        description:
-          "Walt adopts a new identity to send a message while family and law pressure increase.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 6,
-      },
-      {
-        title: "A No-Rough-Stuff-Type Deal",
-        description:
-          "A risky theft and a bigger distribution push leave Walt and Jesse in over their heads.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 7,
-      },
-    ],
-  },
-};
+// DEFAULT_EPISODE_THUMBNAIL, STATIC_SERIES_LIBRARY — imported from ./src-ui/player/episodes.js
 
-function normalizeSeriesContentKind(value, fallback = "series") {
-  return String(value || fallback || "")
-    .trim()
-    .toLowerCase() === "course"
-    ? "course"
-    : "series";
-}
-
-function cloneSeriesEpisode(entry = {}) {
-  const contentKind = normalizeSeriesContentKind(entry?.contentKind);
-  return {
-    title: String(entry?.title || "").trim(),
-    description: String(entry?.description || "").trim(),
-    thumb: String(entry?.thumb || "").trim() || DEFAULT_EPISODE_THUMBNAIL,
-    src: String(entry?.src || "").trim(),
-    contentKind,
-    seasonNumber: Math.max(1, Math.floor(Number(entry?.seasonNumber || 1))),
-    episodeNumber: Math.max(1, Math.floor(Number(entry?.episodeNumber || 1))),
-  };
-}
-
-function mergeSeriesLibraries(staticLibrary = {}, localLibrary = {}) {
-  const merged = {};
-  const staticEntries = Object.entries(staticLibrary || {});
-  const staticTmdbToSeriesId = new Map();
-
-  staticEntries.forEach(([seriesId, series]) => {
-    const tmdbId = String(series?.tmdbId || "").trim();
-    const seriesContentKind = normalizeSeriesContentKind(series?.contentKind);
-    if (tmdbId) {
-      staticTmdbToSeriesId.set(tmdbId, seriesId);
-    }
-    merged[seriesId] = {
-      ...series,
-      contentKind: seriesContentKind,
-      episodes: Array.isArray(series?.episodes)
-        ? series.episodes.map((episode) =>
-            cloneSeriesEpisode({
-              ...episode,
-              contentKind:
-                episode?.contentKind || seriesContentKind || "series",
-            }),
-          )
-        : [],
-    };
-  });
-
-  const localEntries = Object.values(localLibrary || {});
-  localEntries.forEach((series) => {
-    const localTmdbId = String(series?.tmdbId || "").trim();
-    const localSeriesContentKind = normalizeSeriesContentKind(
-      series?.contentKind,
-      /\bcourse\b/i.test(String(series?.id || "").trim()) ? "course" : "series",
-    );
-    const localId = String(series?.id || "")
-      .trim()
-      .toLowerCase();
-    const mappedStaticId =
-      localTmdbId && staticTmdbToSeriesId.has(localTmdbId)
-        ? staticTmdbToSeriesId.get(localTmdbId)
-        : "";
-    const targetId = mappedStaticId || localId;
-    if (!targetId) {
-      return;
-    }
-
-    if (!merged[targetId]) {
-      merged[targetId] = {
-        id: targetId,
-        title: String(series?.title || "Series").trim() || "Series",
-        tmdbId: localTmdbId,
-        year: String(series?.year || "").trim(),
-        contentKind: localSeriesContentKind,
-        preferredContainer: "mp4",
-        requiresLocalEpisodeSources: true,
-        episodes: [],
-      };
-    }
-
-    const targetSeries = merged[targetId];
-    const targetEpisodes = Array.isArray(targetSeries.episodes)
-      ? targetSeries.episodes
-      : [];
-    const localEpisodes = Array.isArray(series?.episodes)
-      ? series.episodes
-      : [];
-
-    localEpisodes.forEach((episode) => {
-      const nextEpisode = cloneSeriesEpisode({
-        ...episode,
-        contentKind:
-          episode?.contentKind ||
-          targetSeries.contentKind ||
-          localSeriesContentKind,
-      });
-      if (!nextEpisode.src) {
-        return;
-      }
-      const existingIndex = targetEpisodes.findIndex(
-        (entry) =>
-          Number(entry?.seasonNumber || 1) === nextEpisode.seasonNumber &&
-          Number(entry?.episodeNumber || 1) === nextEpisode.episodeNumber,
-      );
-
-      if (existingIndex >= 0) {
-        targetEpisodes[existingIndex] = {
-          ...targetEpisodes[existingIndex],
-          src: nextEpisode.src,
-          contentKind: nextEpisode.contentKind,
-          thumb:
-            String(nextEpisode.thumb || "").trim() ||
-            String(targetEpisodes[existingIndex]?.thumb || "").trim() ||
-            DEFAULT_EPISODE_THUMBNAIL,
-          title:
-            String(targetEpisodes[existingIndex]?.title || "").trim() ||
-            nextEpisode.title,
-          description:
-            String(targetEpisodes[existingIndex]?.description || "").trim() ||
-            nextEpisode.description,
-        };
-      } else {
-        targetEpisodes.push(nextEpisode);
-      }
-    });
-
-    targetEpisodes.sort((left, right) => {
-      const seasonDelta =
-        Number(left?.seasonNumber || 1) - Number(right?.seasonNumber || 1);
-      if (seasonDelta !== 0) {
-        return seasonDelta;
-      }
-      return (
-        Number(left?.episodeNumber || 1) - Number(right?.episodeNumber || 1)
-      );
-    });
-
-    targetSeries.episodes = targetEpisodes;
-    targetSeries.contentKind = normalizeSeriesContentKind(
-      targetSeries.contentKind || localSeriesContentKind,
-      localSeriesContentKind,
-    );
-    targetSeries.requiresLocalEpisodeSources =
-      Boolean(targetSeries.requiresLocalEpisodeSources) ||
-      Boolean(series?.requiresLocalEpisodeSources);
-    if (!String(targetSeries.tmdbId || "").trim() && localTmdbId) {
-      targetSeries.tmdbId = localTmdbId;
-    }
-  });
-
-  return merged;
-}
-
-function normalizeLocalSeriesLibrary(payload) {
-  const list = Array.isArray(payload?.series) ? payload.series : [];
-  const nextLibrary = {};
-
-  list.forEach((entry) => {
-    const id = String(entry?.id || "")
-      .trim()
-      .toLowerCase();
-    const title = String(entry?.title || "").trim();
-    if (!id || !title) {
-      return;
-    }
-    const contentKind = normalizeSeriesContentKind(
-      entry?.contentKind,
-      /\bcourse\b/i.test(`${id} ${title}`.trim()) ? "course" : "series",
-    );
-    const episodes = Array.isArray(entry?.episodes)
-      ? entry.episodes
-          .map((episode, index) => {
-            const src = String(episode?.src || "").trim();
-            if (!src) {
-              return null;
-            }
-            const seasonNumber = Number(episode?.seasonNumber || 1);
-            const episodeNumber = Number(episode?.episodeNumber || index + 1);
-            const episodeContentKind = normalizeSeriesContentKind(
-              episode?.contentKind,
-              contentKind,
-            );
-            const fallbackTitlePrefix =
-              episodeContentKind === "course" ? "Lesson" : "Episode";
-            return {
-              title:
-                String(episode?.title || "").trim() ||
-                `${fallbackTitlePrefix} ${index + 1}`,
-              description: String(episode?.description || "").trim(),
-              thumb:
-                String(episode?.thumb || "").trim() ||
-                DEFAULT_EPISODE_THUMBNAIL,
-              src,
-              contentKind: episodeContentKind,
-              seasonNumber:
-                Number.isFinite(seasonNumber) && seasonNumber > 0
-                  ? Math.floor(seasonNumber)
-                  : 1,
-              episodeNumber:
-                Number.isFinite(episodeNumber) && episodeNumber > 0
-                  ? Math.floor(episodeNumber)
-                  : index + 1,
-            };
-          })
-          .filter(Boolean)
-      : [];
-    if (!episodes.length) {
-      return;
-    }
-    episodes.sort((left, right) => {
-      const seasonDelta = left.seasonNumber - right.seasonNumber;
-      if (seasonDelta !== 0) {
-        return seasonDelta;
-      }
-      return left.episodeNumber - right.episodeNumber;
-    });
-
-    nextLibrary[id] = {
-      id,
-      title,
-      contentKind,
-      tmdbId: /^\d+$/.test(String(entry?.tmdbId || "").trim())
-        ? String(entry.tmdbId).trim()
-        : "",
-      year: String(entry?.year || "").trim(),
-      preferredContainer: "mp4",
-      requiresLocalEpisodeSources: true,
-      episodes,
-    };
-  });
-
-  return nextLibrary;
-}
-
-async function fetchLocalSeriesLibrary() {
-  try {
-    const response = await fetch("/api/library");
-    if (!response.ok) {
-      return {};
-    }
-    const payload = await response.json().catch(() => null);
-    return normalizeLocalSeriesLibrary(payload || {});
-  } catch {
-    return {};
-  }
-}
+// normalizeSeriesContentKind, cloneSeriesEpisode, mergeSeriesLibraries,
+// normalizeLocalSeriesLibrary, fetchLocalSeriesLibrary — imported from ./src-ui/player/episodes.js
 
 const SERIES_LIBRARY = Object.freeze({
   ...mergeSeriesLibraries(
@@ -668,13 +337,11 @@ const SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:movie:";
 const SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:movie:";
 const LOCAL_SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:local:";
 const LOCAL_SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:local:";
-const STREAM_QUALITY_PREF_KEY = "netflix-stream-quality-pref";
 const SOURCE_MIN_SEEDERS_PREF_KEY = "netflix-source-filter-min-seeders";
 const SOURCE_LANGUAGE_PREF_KEY = "netflix-source-filter-language";
 const SOURCE_AUDIO_PROFILE_PREF_KEY = "netflix-source-filter-audio-profile";
 const DEFAULT_AUDIO_LANGUAGE_PREF_KEY = "netflix-default-audio-lang";
 const SOURCE_AUDIO_SYNC_PREF_KEY_PREFIX = "netflix-source-audio-sync:";
-const NATIVE_PLAYBACK_MODE_PREF_KEY = "netflix-native-playback-mode";
 const REMUX_VIDEO_MODE_PREF_KEY = "netflix-remux-video-mode";
 const SUBTITLE_COLOR_PREF_KEY = "netflix-subtitle-color-pref";
 const DEFAULT_SUBTITLE_COLOR = "#b8bcc3";
@@ -694,14 +361,7 @@ const supportedSourceLanguages = new Set([
   "pt",
 ]);
 const supportedSourceAudioProfiles = new Set(["single", "any"]);
-const SOURCE_LANGUAGE_TOKENS = {
-  en: ["english", " eng ", "en audio", "dubbed english", " dual audio eng"],
-  fr: ["french", " fran", "vf", "vff", " fra "],
-  es: ["spanish", "espanol", "castellano", " spa ", " esp "],
-  de: ["german", " deutsch", " ger ", " deu "],
-  it: ["italian", " italiano", " ita "],
-  pt: ["portuguese", " portugues", " por ", " pt-br ", " brazilian "],
-};
+// SOURCE_LANGUAGE_TOKENS — imported from ./src-ui/player/sources.js
 const AUDIO_SYNC_MIN_MS = -2500;
 const AUDIO_SYNC_MAX_MS = 2500;
 const AUDIO_SYNC_STEP_MS = 50;
@@ -721,6 +381,8 @@ const SUBTITLE_MATTE_BOTTOM_TARGET_OFFSET_PX = 82;
 const SUBTITLE_MATTE_TOP_GUARD_RATIO = 0.35;
 const subtitleLanguageNames = {
   off: "Off",
+  un: "English",
+  und: "English",
   en: "English",
   fr: "French",
   es: "Spanish",
@@ -986,40 +648,6 @@ function normalizeAudioSyncMs(value) {
     Math.min(AUDIO_SYNC_MAX_MS, Math.round(parsed)),
   );
   return clamped;
-}
-
-function normalizeNativePlaybackMode(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (
-    !normalized ||
-    normalized === "auto" ||
-    normalized === "on" ||
-    normalized === "1" ||
-    normalized === "enabled"
-  ) {
-    return "auto";
-  }
-  if (
-    normalized === "off" ||
-    normalized === "0" ||
-    normalized === "disabled" ||
-    normalized === "browser"
-  ) {
-    return "off";
-  }
-  return "auto";
-}
-
-function getStoredNativePlaybackMode() {
-  try {
-    return normalizeNativePlaybackMode(
-      localStorage.getItem(NATIVE_PLAYBACK_MODE_PREF_KEY),
-    );
-  } catch {
-    return "auto";
-  }
 }
 
 function normalizeRemuxVideoMode(value) {
@@ -1332,7 +960,6 @@ let preferredSourceFormats = [...supportedSourceFormats];
 let preferredSourceLanguage = getStoredSourceLanguage();
 let preferredSourceAudioProfile = getStoredSourceAudioProfile();
 let preferredAudioSyncMs = 0;
-let preferredNativePlaybackMode = getStoredNativePlaybackMode();
 let preferredRemuxVideoMode = getStoredRemuxVideoMode();
 preferredSubtitleLang = normalizeSubtitlePreference(subtitleLangParam);
 if ((isTmdbMoviePlayback || isExplicitLocalUploadSource) && !hasSubtitleLangParam) {
@@ -1589,53 +1216,16 @@ function getSubtitleTrackSourceLabel(track) {
 }
 
 function getSubtitleTrackDisplayLabel(track) {
-  const languageLabel = getLanguageDisplayLabel(track?.language || "en");
-  const preferredLabel = String(track?.label || track?.title || "").trim();
-  if (track?.isExternal) {
-    const titleLabel = String(track?.title || "").trim();
-    const sourceLabel = isGenericSubtitleLabel(preferredLabel)
-      ? `${languageLabel} (${getSubtitleTrackSourceLabel(track) || "External"})`
-      : preferredLabel;
-    if (!isGenericSubtitleLabel(titleLabel)) {
-      return `${titleLabel} - ${sourceLabel}`;
-    }
-    return sourceLabel;
-  }
-  if (isGenericSubtitleLabel(preferredLabel)) {
-    return languageLabel;
-  }
-  return preferredLabel || languageLabel;
+  return getLanguageDisplayLabel(track?.language || "en");
 }
 
 function getSubtitleTrackDisplayParts(track) {
   const languageLabel = getLanguageDisplayLabel(track?.language || "en");
-  const preferredLabel = String(track?.label || "").trim();
-  const titleLabel = String(track?.title || "").trim();
-  const isExternalTrack = Boolean(track?.isExternal);
-  const sourceLabel = getSubtitleTrackSourceLabel(track);
-
-  let primary = languageLabel;
-  if (isExternalTrack) {
-    if (!isGenericSubtitleLabel(titleLabel)) {
-      primary = titleLabel;
-    } else if (!isGenericSubtitleLabel(preferredLabel)) {
-      primary = preferredLabel;
-    }
-  } else if (!isGenericSubtitleLabel(preferredLabel)) {
-    primary = preferredLabel;
-  }
-
+  const primary = languageLabel;
   const secondaryParts = [];
-  if (primary !== languageLabel) {
-    secondaryParts.push(languageLabel);
-  }
-  if (isExternalTrack && sourceLabel) {
-    secondaryParts.push(sourceLabel);
-  }
   if (isLikelyForcedSubtitleTrack(track)) {
     secondaryParts.push("Forced");
   }
-
   return {
     primary,
     secondary: secondaryParts.join(" • "),
@@ -1686,27 +1276,9 @@ function getAudioTrackDisplayLabel(track) {
 
 function getAudioTrackDisplayParts(track) {
   const languageLabel = getLanguageDisplayLabel(track?.language || "und");
-  const preferredLabel = String(track?.title || track?.label || "").trim();
-  const primary = isGenericAudioLabel(preferredLabel)
-    ? languageLabel
-    : `${languageLabel} - ${preferredLabel}`;
-  const secondaryParts = [];
-  const channelLabel = formatAudioChannelLabel(track?.channels);
-  if (channelLabel) {
-    secondaryParts.push(channelLabel);
-  }
-  const codecLabel = String(track?.codec || "")
-    .trim()
-    .toUpperCase();
-  if (codecLabel) {
-    secondaryParts.push(codecLabel);
-  }
-  if (track?.isDefault) {
-    secondaryParts.push("Default");
-  }
   return {
-    primary,
-    secondary: secondaryParts.join(" • "),
+    primary: languageLabel,
+    secondary: "",
   };
 }
 
@@ -1739,137 +1311,8 @@ function appendSubtitleOptionContent(button, primaryLabel, secondaryLabel = "") 
   button.appendChild(meta);
 }
 
-function parseVttTimestampToSeconds(value) {
-  const raw = String(value || "").trim();
-  const match = raw.match(/^((\d{1,2}):)?(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/);
-  if (!match) {
-    return NaN;
-  }
-
-  const hours = Number(match[2] || 0);
-  const minutes = Number(match[3] || 0);
-  const seconds = Number(match[4] || 0);
-  const milliseconds = Number((match[5] || "0").padEnd(3, "0"));
-  if (
-    !Number.isFinite(hours) ||
-    !Number.isFinite(minutes) ||
-    !Number.isFinite(seconds) ||
-    !Number.isFinite(milliseconds)
-  ) {
-    return NaN;
-  }
-
-  return hours * 3600 + minutes * 60 + seconds + milliseconds / 1000;
-}
-
-function decodeSubtitleHtmlEntities(value) {
-  const text = String(value || "");
-  if (!text || !text.includes("&")) {
-    return text;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.innerHTML = text;
-  return textarea.value;
-}
-
-function isVttTimingLine(value) {
-  return String(value || "").trim().includes("-->");
-}
-
-function parseWebVttCues(rawText) {
-  const normalized = String(rawText || "")
-    .replace(/^\uFEFF/, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n");
-  if (!normalized.trim()) {
-    return [];
-  }
-
-  const lines = normalized.split("\n");
-  const cues = [];
-  let index = 0;
-  while (index < lines.length) {
-    const line = String(lines[index] || "");
-    const trimmed = line.trim();
-
-    if (!trimmed || /^WEBVTT\b/i.test(trimmed)) {
-      index += 1;
-      continue;
-    }
-
-    if (/^STYLE\b/i.test(trimmed) || /^NOTE\b/i.test(trimmed)) {
-      index += 1;
-      while (index < lines.length) {
-        const blockLine = String(lines[index] || "");
-        const blockTrimmed = blockLine.trim();
-        if (!blockTrimmed) {
-          break;
-        }
-        const nextTrimmed = String(lines[index + 1] || "").trim();
-        if (
-          isVttTimingLine(blockTrimmed) ||
-          (nextTrimmed && isVttTimingLine(nextTrimmed))
-        ) {
-          break;
-        }
-        index += 1;
-      }
-      continue;
-    }
-
-    if (/^REGION\b/i.test(trimmed) || /^X-TIMESTAMP-MAP=/i.test(trimmed)) {
-      index += 1;
-      continue;
-    }
-
-    let timingLine = trimmed;
-    if (!isVttTimingLine(timingLine)) {
-      const nextLine = String(lines[index + 1] || "").trim();
-      if (isVttTimingLine(nextLine)) {
-        index += 1;
-        timingLine = nextLine;
-      } else {
-        index += 1;
-        continue;
-      }
-    }
-
-    const [startPart, endPart] = timingLine
-      .split("-->", 2)
-      .map((part) => String(part || "").trim());
-    const startToken = startPart.split(/\s+/)[0];
-    const endToken = endPart.split(/\s+/)[0];
-    const startSeconds = parseVttTimestampToSeconds(startToken);
-    const endSeconds = parseVttTimestampToSeconds(endToken);
-    index += 1;
-
-    const cueLines = [];
-    while (index < lines.length && String(lines[index] || "").trim()) {
-      cueLines.push(String(lines[index] || ""));
-      index += 1;
-    }
-
-    const rawCueText = cueLines.join("\n");
-    const cueText = decodeSubtitleHtmlEntities(
-      rawCueText
-        .replace(/<br\s*\/?>/gi, "\n")
-        .replace(/<\/?[^>]+>/g, "")
-        .replace(/\u200b/g, ""),
-    ).trim();
-    if (
-      !cueText ||
-      !Number.isFinite(startSeconds) ||
-      !Number.isFinite(endSeconds) ||
-      endSeconds <= startSeconds
-    ) {
-      continue;
-    }
-
-    cues.push({ startSeconds, endSeconds, text: cueText });
-  }
-
-  return cues;
-}
+// parseVttTimestampToSeconds, decodeSubtitleHtmlEntities, isVttTimingLine,
+// parseWebVttCues — imported from ./src-ui/player/subtitles.js
 
 function setCustomSubtitleText(value) {
   if (!subtitleOverlay) {
@@ -1907,7 +1350,24 @@ function clearCustomSubtitleOverlay({ invalidateToken = false } = {}) {
   }
   customSubtitleCues = [];
   customSubtitleCueCursor = 0;
+  lastRenderedSubtitleCueIndex = -1;
   setCustomSubtitleText("");
+}
+
+function startSubtitleRafLoop() {
+  if (subtitleRafId) return;
+  function tick() {
+    renderCustomSubtitleOverlay();
+    subtitleRafId = requestAnimationFrame(tick);
+  }
+  subtitleRafId = requestAnimationFrame(tick);
+}
+
+function stopSubtitleRafLoop() {
+  if (subtitleRafId) {
+    cancelAnimationFrame(subtitleRafId);
+    subtitleRafId = 0;
+  }
 }
 
 function restoreSelectedSubtitleTrackAfterSourceChange() {
@@ -1925,13 +1385,36 @@ function restoreSelectedSubtitleTrackAfterSourceChange() {
   applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
 }
 
+function findSubtitleCueAtTime(cues, timeSeconds) {
+  let lo = 0;
+  let hi = cues.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const cue = cues[mid];
+    if (timeSeconds < cue.startSeconds) {
+      hi = mid - 1;
+    } else if (timeSeconds > cue.endSeconds) {
+      lo = mid + 1;
+    } else {
+      return mid;
+    }
+  }
+  return -1;
+}
+
 function renderCustomSubtitleOverlay() {
   if (!subtitleOverlay || selectedSubtitleStreamIndex < 0) {
-    setCustomSubtitleText("");
+    if (lastRenderedSubtitleCueIndex !== -1) {
+      lastRenderedSubtitleCueIndex = -1;
+      setCustomSubtitleText("");
+    }
     return;
   }
   if (!customSubtitleCues.length) {
-    setCustomSubtitleText("");
+    if (lastRenderedSubtitleCueIndex !== -1) {
+      lastRenderedSubtitleCueIndex = -1;
+      setCustomSubtitleText("");
+    }
     return;
   }
 
@@ -1940,35 +1423,54 @@ function renderCustomSubtitleOverlay() {
     return;
   }
 
+  // Fast path: check if cursor still matches.
   let cueIndex =
     customSubtitleCueCursor >= 0 &&
     customSubtitleCueCursor < customSubtitleCues.length
       ? customSubtitleCueCursor
-      : 0;
-  const activeCue =
-    customSubtitleCues[cueIndex] &&
+      : -1;
+  if (
+    cueIndex >= 0 &&
     currentTimeSeconds >= customSubtitleCues[cueIndex].startSeconds &&
     currentTimeSeconds <= customSubtitleCues[cueIndex].endSeconds
-      ? customSubtitleCues[cueIndex]
-      : null;
-
-  if (activeCue) {
-    setCustomSubtitleText(activeCue.text);
+  ) {
+    if (lastRenderedSubtitleCueIndex !== cueIndex) {
+      lastRenderedSubtitleCueIndex = cueIndex;
+      setCustomSubtitleText(customSubtitleCues[cueIndex].text);
+    }
     return;
   }
 
-  cueIndex = customSubtitleCues.findIndex(
-    (cue) =>
-      currentTimeSeconds >= cue.startSeconds &&
-      currentTimeSeconds <= cue.endSeconds,
-  );
+  // Check next cue (common sequential advance).
+  const nextIndex = (customSubtitleCueCursor || 0) + 1;
+  if (
+    nextIndex < customSubtitleCues.length &&
+    currentTimeSeconds >= customSubtitleCues[nextIndex].startSeconds &&
+    currentTimeSeconds <= customSubtitleCues[nextIndex].endSeconds
+  ) {
+    customSubtitleCueCursor = nextIndex;
+    if (lastRenderedSubtitleCueIndex !== nextIndex) {
+      lastRenderedSubtitleCueIndex = nextIndex;
+      setCustomSubtitleText(customSubtitleCues[nextIndex].text);
+    }
+    return;
+  }
+
+  // Binary search for arbitrary position (seek, skip, etc.).
+  cueIndex = findSubtitleCueAtTime(customSubtitleCues, currentTimeSeconds);
   if (cueIndex >= 0) {
     customSubtitleCueCursor = cueIndex;
-    setCustomSubtitleText(customSubtitleCues[cueIndex].text);
+    if (lastRenderedSubtitleCueIndex !== cueIndex) {
+      lastRenderedSubtitleCueIndex = cueIndex;
+      setCustomSubtitleText(customSubtitleCues[cueIndex].text);
+    }
     return;
   }
 
-  setCustomSubtitleText("");
+  if (lastRenderedSubtitleCueIndex !== -1) {
+    lastRenderedSubtitleCueIndex = -1;
+    setCustomSubtitleText("");
+  }
 }
 
 async function loadCustomSubtitleFromTrack(track) {
@@ -1999,7 +1501,11 @@ async function loadCustomSubtitleFromTrack(track) {
     }
     customSubtitleCues = parseWebVttCues(rawVtt);
     customSubtitleCueCursor = 0;
+    lastRenderedSubtitleCueIndex = -1;
     renderCustomSubtitleOverlay();
+    if (!video.paused && !video.ended) {
+      startSubtitleRafLoop();
+    }
     return customSubtitleCues.length > 0;
   } catch {
     if (requestToken === customSubtitleLoadToken) {
@@ -2009,12 +1515,7 @@ async function loadCustomSubtitleFromTrack(track) {
   }
 }
 
-function normalizeSourceHash(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  return /^[a-f0-9]{40}$/.test(normalized) ? normalized : "";
-}
+// normalizeSourceHash — imported from ./src-ui/player/sources.js
 
 function getSourceAudioSyncStorageKey(sourceHash) {
   return `${SOURCE_AUDIO_SYNC_PREF_KEY_PREFIX}${normalizeSourceHash(sourceHash)}`;
@@ -2061,133 +1562,9 @@ function applyPreferredSourceAudioSync(sourceHash = selectedSourceHash) {
     : 0;
 }
 
-function getSourceDisplayName(option = {}) {
-  const primary = String(option.primary || "").trim();
-  if (primary) {
-    return primary;
-  }
+// getSourceDisplayName, getSourceDisplayHint, getSourceDisplayMeta — imported from ./src-ui/player/sources.js
 
-  const fallback = String(option.filename || "").trim();
-  if (fallback) {
-    return fallback;
-  }
-
-  return "Stream source";
-}
-
-function getSourceDisplayHint(option = {}) {
-  const hintParts = [];
-  const provider = String(option.provider || "").trim();
-  const quality = String(option.qualityLabel || "").trim();
-  const container = String(option.container || "")
-    .trim()
-    .toUpperCase();
-
-  if (provider) {
-    hintParts.push(provider);
-  }
-  if (quality) {
-    hintParts.push(quality);
-  }
-  if (container) {
-    hintParts.push(container);
-  }
-
-  return hintParts.join(" • ");
-}
-
-function getSourceDisplayMeta(option = {}) {
-  const meta = [];
-  const seeders = Number.isFinite(Number(option.seeders))
-    ? Math.max(0, Math.floor(Number(option.seeders)))
-    : 0;
-  const size = String(option.size || "").trim();
-  const releaseGroup = String(option.releaseGroup || "").trim();
-
-  if (Number.isFinite(seeders) && seeders > 0) {
-    meta.push(`👤 ${seeders}`);
-  }
-  if (size) {
-    meta.push(`💾 ${size}`);
-  }
-  if (releaseGroup) {
-    meta.push(`⚙ ${releaseGroup}`);
-  }
-
-  return meta.join(" ");
-}
-
-function isSourceOptionLikelyContainer(option = {}, container = "") {
-  const safeContainer = String(container || "")
-    .trim()
-    .toLowerCase();
-  if (!safeContainer) {
-    return false;
-  }
-  const explicitContainer = String(option?.container || "")
-    .trim()
-    .toLowerCase();
-  if (explicitContainer) {
-    return explicitContainer === safeContainer;
-  }
-
-  const sourceText = [
-    option?.filename,
-    option?.primary,
-    option?.title,
-    option?.name,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  if (!sourceText) {
-    return false;
-  }
-  if (safeContainer === "mkv") {
-    return /\.mkv\b/.test(sourceText);
-  }
-  if (safeContainer === "mp4") {
-    return /\.mp4\b/.test(sourceText);
-  }
-  return false;
-}
-
-function sortSourcesBySeeders(sources = [], { preferContainer = "" } = {}) {
-  const normalizedPreferredContainer = String(preferContainer || "")
-    .trim()
-    .toLowerCase();
-  return [...sources].sort((left, right) => {
-    if (normalizedPreferredContainer) {
-      const rightPreferred = isSourceOptionLikelyContainer(
-        right,
-        normalizedPreferredContainer,
-      );
-      const leftPreferred = isSourceOptionLikelyContainer(
-        left,
-        normalizedPreferredContainer,
-      );
-      if (rightPreferred !== leftPreferred) {
-        return Number(rightPreferred) - Number(leftPreferred);
-      }
-    }
-
-    const rightSeeders = Number.isFinite(Number(right?.seeders))
-      ? Math.max(0, Math.floor(Number(right.seeders)))
-      : 0;
-    const leftSeeders = Number.isFinite(Number(left?.seeders))
-      ? Math.max(0, Math.floor(Number(left.seeders)))
-      : 0;
-    if (rightSeeders !== leftSeeders) {
-      return rightSeeders - leftSeeders;
-    }
-    return getSourceDisplayName(left).localeCompare(
-      getSourceDisplayName(right),
-      undefined,
-      { sensitivity: "base" },
-    );
-  });
-}
+// isSourceOptionLikelyContainer, sortSourcesBySeeders — imported from ./src-ui/player/sources.js
 
 function getSourceOptionByHash(sourceHash) {
   const normalizedHash = normalizeSourceHash(sourceHash);
@@ -2288,79 +1665,7 @@ function scheduleSourceSaveRetryReset(sourceHash = "", delayMs = 2200) {
   sourceSaveResetTimeoutByHash.set(normalizedHash, timeoutId);
 }
 
-function parseSourceOptionVerticalResolution(option = {}) {
-  const labelMatch = String(option?.qualityLabel || "")
-    .toLowerCase()
-    .match(/(\d{3,4})p/);
-  if (labelMatch) {
-    const parsed = Number(labelMatch[1]);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-
-  const text = [
-    option?.filename,
-    option?.primary,
-    option?.title,
-    option?.name,
-    option?.qualityLabel,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  if (!text) {
-    return 0;
-  }
-  if (/\b(2160p|4k|uhd)\b/.test(text)) return 2160;
-  if (/\b1080p\b/.test(text)) return 1080;
-  if (/\b720p\b/.test(text)) return 720;
-  if (/\b480p\b/.test(text)) return 480;
-  return 0;
-}
-
-function getDetectedSourceOptionLanguages(option = {}) {
-  const text = ` ${[
-    option?.filename,
-    option?.primary,
-    option?.title,
-    option?.name,
-    option?.provider,
-    option?.releaseGroup,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ")} `;
-
-  const matched = new Set();
-  if (!text.trim()) {
-    return matched;
-  }
-
-  Object.entries(SOURCE_LANGUAGE_TOKENS).forEach(([lang, tokens]) => {
-    if (
-      tokens.some((token) => {
-        const normalizedToken = String(token || "")
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, " ")
-          .trim()
-          .replace(/\s+/g, " ");
-        if (!normalizedToken) {
-          return false;
-        }
-        return text.includes(` ${normalizedToken} `);
-      })
-    ) {
-      matched.add(lang);
-    }
-  });
-
-  return matched;
-}
+// parseSourceOptionVerticalResolution, getDetectedSourceOptionLanguages — imported from ./src-ui/player/sources.js
 
 function scoreSourceOptionLanguageForDefault(
   option = {},
@@ -2748,7 +2053,10 @@ function shouldPreferBrowserHlsPlayback(
   source,
   subtitleStreamIndex = selectedSubtitleStreamIndex,
 ) {
-  if (!window.Hls?.isSupported?.()) {
+  const hasNativeHls =
+    video.canPlayType("application/vnd.apple.mpegURL") === "maybe" ||
+    video.canPlayType("application/vnd.apple.mpegURL") === "probably";
+  if (!hasNativeHls) {
     return false;
   }
   const sourceInput = extractPlaybackSourceInput(source).toLowerCase();
@@ -2802,18 +2110,6 @@ function buildPreferredBrowserPlaybackSource(
   return buildHlsPlaybackUrl(normalizedSourceInput, audioStreamIndex, -1);
 }
 
-function destroyHlsInstance() {
-  if (!hlsInstance) {
-    return;
-  }
-
-  try {
-    hlsInstance.destroy();
-  } catch {
-    // Ignore HLS teardown errors.
-  }
-  hlsInstance = null;
-}
 
 function clearSubtitleTrack() {
   if (!subtitleTrackElement) {
@@ -3279,40 +2575,8 @@ function shouldUseSoftwareDecode(source) {
   );
 }
 
-const browserSafeAudioCodecSet = new Set([
-  "aac",
-  "mp3",
-  "mp2",
-  "opus",
-  "vorbis",
-  "flac",
-  "alac",
-]);
-const browserUnsafeAudioCodecPrefixes = [
-  "ac3",
-  "eac3",
-  "dts",
-  "dca",
-  "truehd",
-  "mlp",
-  "pcm_",
-  "wma",
-];
-
-function isBrowserSafeAudioCodec(codec) {
-  const normalized = String(codec || "")
-    .trim()
-    .toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  if (browserSafeAudioCodecSet.has(normalized)) {
-    return true;
-  }
-  return !browserUnsafeAudioCodecPrefixes.some((prefix) =>
-    normalized.startsWith(prefix),
-  );
-}
+// browserSafeAudioCodecSet, browserUnsafeAudioCodecPrefixes, isBrowserSafeAudioCodec
+// — imported from ./src-ui/player/sources.js
 
 function getDefaultEmbeddedAudioTrack() {
   return (
@@ -3487,7 +2751,6 @@ function setVideoSource(nextSource) {
   );
 
   clearStreamStallRecovery();
-  destroyHlsInstance();
   clearSubtitleTrack();
 
   const transcodeMeta = parseTranscodeSource(sourceWithAudioSync);
@@ -3525,100 +2788,43 @@ function setVideoSource(nextSource) {
     playbackBenchmark._recordSourceChange(absoluteSource);
   }
   const isHlsSource = absoluteSource.includes("/api/hls/master.m3u8");
-  if (isHlsSource && window.Hls?.isSupported?.()) {
-    const hlsSourceMeta = parseHlsMasterSource(sourceWithAudioSync);
-    hlsInstance = new window.Hls({
-      enableWorker: true,
-      lowLatencyMode: false,
-    });
-    hlsInstance.loadSource(absoluteSource);
-    hlsInstance.attachMedia(video);
-    hlsInstance.on(window.Hls.Events.ERROR, (_, event) => {
-      if (!event?.fatal) {
-        if (event?.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
-          try {
-            hlsInstance?.startLoad();
-          } catch {
-            // Ignore HLS restart errors.
-          }
-          scheduleStreamStallRecovery(
-            "Network stalled, trying another source...",
-          );
-        } else if (event?.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
-          try {
-            hlsInstance?.recoverMediaError();
-          } catch {
-            // Ignore HLS media recovery errors.
-          }
-        }
-        return;
-      }
-      try {
-        hlsInstance?.destroy();
-      } catch {
-        // Ignore HLS teardown errors.
-      }
-      hlsInstance = null;
 
-      // Native playback of m3u8 is unreliable in Chromium; fallback to server remux.
-      if (hlsSourceMeta?.input) {
+  if (isHlsSource) {
+    // Use native HLS — supported in Safari, Chrome 142+, Edge 142+.
+    video.setAttribute("src", absoluteSource);
+    video.load();
+
+    // If native HLS fails, fall back to server-side remux.
+    const hlsMeta = parseHlsMasterSource(sourceWithAudioSync);
+    const onNativeHlsError = () => {
+      video.removeEventListener("error", onNativeHlsError);
+      if (hlsMeta?.input) {
         const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
         const remuxFallback = buildSoftwareDecodeUrl(
-          hlsSourceMeta.input,
+          hlsMeta.input,
           resumeAt,
-          hlsSourceMeta.audioStreamIndex,
+          hlsMeta.audioStreamIndex,
           preferredAudioSyncMs,
-          hlsSourceMeta.subtitleStreamIndex,
+          hlsMeta.subtitleStreamIndex,
         );
         video.setAttribute(
           "src",
           new URL(remuxFallback, window.location.origin).toString(),
         );
-      } else {
-        video.setAttribute("src", absoluteSource);
+        video.load();
+        void tryPlay();
       }
-      video.load();
-      void tryPlay();
-      scheduleStreamStallRecovery("Stream stalled, trying another source...");
-    });
-    return;
-  }
+    };
+    video.addEventListener("error", onNativeHlsError, { once: true });
 
-  if (isHlsSource) {
-    const hlsMeta = parseHlsMasterSource(sourceWithAudioSync);
-    if (hlsMeta?.input) {
-      const remuxFallback = buildSoftwareDecodeUrl(
-        hlsMeta.input,
-        0,
-        hlsMeta.audioStreamIndex,
-        preferredAudioSyncMs,
-        hlsMeta.subtitleStreamIndex,
-      );
-      video.setAttribute(
-        "src",
-        new URL(remuxFallback, window.location.origin).toString(),
-      );
-      video.load();
-      scheduleStreamStallRecovery("Stream stalled, trying another source...");
-      return;
-    }
+    void tryPlay();
+    scheduleStreamStallRecovery("Stream stalled, trying another source...");
+    return;
   }
 
   video.setAttribute("src", absoluteSource);
   video.load();
   scheduleStreamStallRecovery("Stream stalled, trying another source...");
-}
-
-function shouldAttemptNativePlayback(source) {
-  if (preferredNativePlaybackMode === "off" || nativePlaybackLaunched) {
-    return false;
-  }
-  try {
-    const url = new URL(String(source || ""), window.location.origin);
-    return url.pathname === "/api/remux";
-  } catch {
-    return false;
-  }
 }
 
 function getActiveSubtitleVttUrl() {
@@ -3629,67 +2835,6 @@ function getActiveSubtitleVttUrl() {
     (track) => Number(track?.streamIndex) === selectedSubtitleStreamIndex,
   );
   return String(selectedTrack?.vttUrl || "").trim();
-}
-
-function tearDownBrowserPlaybackForNative() {
-  clearStreamStallRecovery();
-  destroyHlsInstance();
-  clearSubtitleTrack();
-  try {
-    video.pause();
-  } catch {
-    // Ignore pause errors.
-  }
-  video.removeAttribute("src");
-  video.load();
-}
-
-async function tryLaunchNativePlayback(source, startSeconds = 0) {
-  if (!shouldAttemptNativePlayback(source)) {
-    return false;
-  }
-  const sourceUrl = withPreferredAudioSyncForRemuxSource(
-    source,
-    preferredAudioSyncMs,
-  );
-  const safeStartSeconds =
-    Number.isFinite(startSeconds) && startSeconds > 0
-      ? Math.floor(startSeconds)
-      : 0;
-  const payload = {
-    sourceUrl,
-    subtitleUrl: getActiveSubtitleVttUrl(),
-    title,
-    episode,
-    startSeconds: safeStartSeconds,
-    audioSyncMs: preferredAudioSyncMs,
-    sourceHash: selectedSourceHash,
-  };
-  try {
-    const response = await requestJson(
-      "/api/native/play",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      },
-      12000,
-    );
-    if (!response?.launched) {
-      return false;
-    }
-
-    nativePlaybackLaunched = true;
-    tearDownBrowserPlaybackForNative();
-    if (!hasExplicitSource) {
-      showResolver("Playing in mpv (native player).", { showStatus: true });
-    }
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function setTmdbSourceQueue(primaryUrl, fallbackUrls = []) {
@@ -3721,26 +2866,6 @@ async function tryNextTmdbSource() {
   setVideoSource(nextSource);
   await tryPlay();
   return true;
-}
-
-function buildNativePlaybackFallbackSource() {
-  const sourceInput = String(
-    activeTrackSourceInput ||
-      activeTranscodeInput ||
-      extractPlaybackSourceInput(video.currentSrc || video.getAttribute("src") || ""),
-  ).trim();
-  if (!sourceInput) {
-    return "";
-  }
-
-  return buildSoftwareDecodeUrl(
-    sourceInput,
-    0,
-    selectedAudioStreamIndex,
-    activeAudioSyncMs || preferredAudioSyncMs,
-    selectedSubtitleStreamIndex,
-    selectedSourceHash,
-  );
 }
 
 function applyStoredSubtitleSelectionPreference() {
@@ -4010,24 +3135,6 @@ function attemptTmdbRecovery(message) {
     return true;
   }
 
-  const nativeFallbackSource = buildNativePlaybackFallbackSource();
-  if (nativeFallbackSource) {
-    const resumeFrom = getEffectiveCurrentTime();
-    showResolver("Browser playback failed, trying mpv fallback...");
-    void tryLaunchNativePlayback(nativeFallbackSource, resumeFrom)
-      .then((launched) => {
-        if (!launched) {
-          showResolver("Resolved stream could not be played. Try again.", {
-            isError: true,
-          });
-        }
-      })
-      .finally(() => {
-        isRecoveringTmdbStream = false;
-      });
-    return true;
-  }
-
   isRecoveringTmdbStream = false;
   return false;
 }
@@ -4052,55 +3159,8 @@ function setEpisodeLabel(currentTitle, currentEpisode) {
   }
 }
 
-function shouldHideSeriesEpisodePrefix(seriesEntry = activeSeries) {
-  const seriesTitle = String(seriesEntry?.title || "").trim();
-  const seriesId = String(seriesEntry?.id || "").trim();
-  const contentKind = String(
-    seriesEntry?.contentKind || seriesEntry?.episodes?.[0]?.contentKind || "",
-  )
-    .trim()
-    .toLowerCase();
-  const firstEpisodeTitle = String(seriesEntry?.episodes?.[0]?.title || "").trim();
-  return (
-    contentKind === "course" ||
-    /\bcourse\b/i.test(seriesTitle) ||
-    /\bcourse\b/i.test(seriesId) ||
-    /\b(webinar|lesson|module|class)\b/i.test(firstEpisodeTitle)
-  );
-}
-
-function normalizeCourseEpisodeDisplayTitle(value) {
-  const raw = String(value || "").trim();
-  if (!raw) {
-    return "";
-  }
-  return raw
-    .replace(/^webinar-\s*electrics\s*webinar\s*(\d+)\s*-\s*/i, "Webinar $1 - ")
-    .replace(/\s+by\s+access\s+training\s*$/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function getSeriesEpisodeLabel(
-  index,
-  episodeTitle,
-  seriesEntry = activeSeries,
-  episodeNumber = index + 1,
-) {
-  const safeEpisodeNumber =
-    Number.isFinite(Number(episodeNumber)) && Number(episodeNumber) > 0
-      ? Math.floor(Number(episodeNumber))
-      : index + 1;
-  const safeTitle = String(episodeTitle || "").trim();
-  const isCourseEntry = shouldHideSeriesEpisodePrefix(seriesEntry);
-  if (isCourseEntry) {
-    const normalizedCourseTitle = normalizeCourseEpisodeDisplayTitle(safeTitle);
-    return normalizedCourseTitle || `Lesson ${safeEpisodeNumber}`;
-  }
-  return safeTitle
-    ? `E${safeEpisodeNumber} ${safeTitle}`
-    : `E${safeEpisodeNumber}`;
-}
+// shouldHideSeriesEpisodePrefix, normalizeCourseEpisodeDisplayTitle,
+// getSeriesEpisodeLabel — imported from ./src-ui/player/episodes.js
 
 function seriesRequiresLocalEpisodeSources(seriesEntry = activeSeries) {
   return Boolean(seriesEntry?.requiresLocalEpisodeSources);
@@ -4301,7 +3361,7 @@ function navigateToSeriesEpisode(nextIndex) {
   nextParams.set("title", String(activeSeries.title || title || "Title"));
   nextParams.set(
     "episode",
-    getSeriesEpisodeLabel(safeIndex, targetEpisode.title),
+    getSeriesEpisodeLabel(safeIndex, targetEpisode.title, activeSeries),
   );
   nextParams.delete("src");
   nextParams.set("mediaType", "tv");
@@ -4614,11 +3674,8 @@ function syncAudioState() {
   audioMenu?.setAttribute("aria-label", `Audio and subtitles (${selectedAudioLabel})`);
 
   if (audioStatusBadge) {
-    const shouldShowBadge = availableAudioTracks.length > 1;
-    audioStatusBadge.hidden = !shouldShowBadge;
-    audioStatusBadge.textContent = shouldShowBadge
-      ? getAudioTrackBadgeLabel(selectedAudioTrack)
-      : "";
+    audioStatusBadge.hidden = true;
+    audioStatusBadge.textContent = "";
   }
 
   audioOptions.forEach((option) => {
@@ -4657,7 +3714,6 @@ function getCurrentAudioSyncSourceHash() {
 
 async function adjustSourceAudioSync(deltaMs = 0) {
   if (
-    nativePlaybackLaunched ||
     !isTranscodeSourceActive() ||
     !activeTranscodeInput
   ) {
@@ -6230,15 +5286,6 @@ document.addEventListener("pointerdown", (event) => {
 });
 
 video.addEventListener("ratechange", () => {
-  if (!playbackRates.includes(video.playbackRate)) {
-    const nearestRate = playbackRates.reduce((closest, rate) => {
-      return Math.abs(rate - video.playbackRate) <
-        Math.abs(closest - video.playbackRate)
-        ? rate
-        : closest;
-    }, playbackRates[0]);
-    video.playbackRate = nearestRate;
-  }
   syncSpeedState();
 });
 
@@ -6370,8 +5417,14 @@ window.addEventListener("resize", refreshActiveSubtitlePlacement);
 document.addEventListener("fullscreenchange", refreshActiveSubtitlePlacement);
 
 video.addEventListener("timeupdate", syncSeekState);
-video.addEventListener("timeupdate", renderCustomSubtitleOverlay);
-video.addEventListener("seeking", renderCustomSubtitleOverlay);
+video.addEventListener("play", startSubtitleRafLoop);
+video.addEventListener("playing", startSubtitleRafLoop);
+video.addEventListener("pause", stopSubtitleRafLoop);
+video.addEventListener("ended", stopSubtitleRafLoop);
+video.addEventListener("seeking", () => {
+  lastRenderedSubtitleCueIndex = -1;
+  renderCustomSubtitleOverlay();
+});
 video.addEventListener("progress", syncSeekState);
 video.addEventListener("durationchange", syncSeekState);
 video.addEventListener("waiting", () => {
@@ -6624,10 +5677,6 @@ window.addEventListener("storage", (event) => {
     }
   }
 
-  if (event.key === NATIVE_PLAYBACK_MODE_PREF_KEY) {
-    preferredNativePlaybackMode = getStoredNativePlaybackMode();
-  }
-
   if (event.key === REMUX_VIDEO_MODE_PREF_KEY) {
     preferredRemuxVideoMode = getStoredRemuxVideoMode();
   }
@@ -6638,7 +5687,6 @@ window.addEventListener("beforeunload", () => {
   clearControlsHideTimer();
   clearStreamStallRecovery();
   persistResumeTime(true);
-  destroyHlsInstance();
 });
 
 function createPlaybackBenchmarkApi() {
@@ -7250,7 +6298,6 @@ function createPlaybackBenchmarkApi() {
 
 async function initPlaybackSource() {
   hasAppliedInitialResume = false;
-  nativePlaybackLaunched = false;
   pendingTranscodeSeekRatio = null;
   availableAudioTracks = [];
   availableSubtitleTracks = [];

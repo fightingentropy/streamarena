@@ -202,45 +202,6 @@ export default function SettingsPage() {
               </p>
             </section>
 
-            <section
-              class="native-playback-section"
-              aria-labelledby="nativePlaybackTitle"
-            >
-              <h2 id="nativePlaybackTitle" class="settings-section-title">
-                Native Playback
-              </h2>
-              <p class="native-playback-help">
-                Use mpv as a fallback for local files the browser
-                does not handle cleanly.
-              </p>
-              <div
-                class="native-playback-options"
-                role="radiogroup"
-                aria-label="Native playback mode"
-              >
-                <label class="native-playback-option">
-                  <input
-                    type="radio"
-                    name="nativePlaybackMode"
-                    value="auto"
-                  />
-                  <span class="native-playback-option-label">Auto (Use mpv when available)</span>
-                </label>
-                <label class="native-playback-option">
-                  <input
-                    type="radio"
-                    name="nativePlaybackMode"
-                    value="off"
-                  />
-                  <span class="native-playback-option-label">Browser only</span>
-                </label>
-              </div>
-              <p class="native-playback-note">
-                Torrent autoplay still stays browser-first and MP4
-                only.
-              </p>
-            </section>
-
             <section class="remux-mode-section" aria-labelledby="remuxModeTitle">
               <h2 id="remuxModeTitle" class="settings-section-title">
                 Browser Remux
@@ -283,8 +244,7 @@ export default function SettingsPage() {
                 </label>
               </div>
               <p class="remux-mode-note">
-                Applies only to in-browser playback. Native mpv
-                playback is separate.
+                Applies only to in-browser playback.
               </p>
             </section>
 

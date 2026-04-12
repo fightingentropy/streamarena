@@ -938,7 +938,6 @@ async function runStrategy(browser, baseUrl, strategy, sourceInput, options, pro
   await context.addInitScript(({ remuxVideoMode }) => {
     try {
       localStorage.clear();
-      localStorage.setItem("netflix-native-playback-mode", "off");
       localStorage.setItem("netflix-remux-video-mode", remuxVideoMode);
       localStorage.setItem("netflix-stream-quality-pref", "1080p");
     } catch {

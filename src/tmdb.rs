@@ -30,6 +30,7 @@ pub struct TmdbService {
 #[derive(Clone)]
 struct CachedValue {
     expires_at: i64,
+    last_accessed_at: i64,
     value: Value,
 }
 
@@ -108,6 +109,7 @@ impl TmdbService {
             cache_key.clone(),
             CachedValue {
                 expires_at,
+                last_accessed_at: now_ms(),
                 value: payload.clone(),
             },
         );
@@ -136,7 +138,11 @@ impl TmdbService {
         if let Some(entry) = self.cache.get(cache_key) {
             if entry.expires_at > now_ms() {
                 self.hits.fetch_add(1, Ordering::Relaxed);
-                return Ok(Some(entry.value.clone()));
+                let value = entry.value.clone();
+                drop(entry);
+                // Update last_accessed_at for LRU
+                self.cache.entry(cache_key.to_owned()).and_modify(|e| e.last_accessed_at = now_ms());
+                return Ok(Some(value));
             }
             self.cache.remove(cache_key);
             self.expired.fetch_add(1, Ordering::Relaxed);
@@ -147,6 +153,7 @@ impl TmdbService {
                 cache_key.to_owned(),
                 CachedValue {
                     expires_at,
+                    last_accessed_at: now_ms(),
                     value: payload.clone(),
                 },
             );
@@ -162,7 +169,7 @@ impl TmdbService {
 
 fn trim_cache(cache: &DashMap<String, CachedValue>) {
     while cache.len() > TMDB_RESPONSE_CACHE_MAX_ENTRIES {
-        let Some(entry) = cache.iter().min_by_key(|entry| entry.value().expires_at) else {
+        let Some(entry) = cache.iter().min_by_key(|entry| entry.value().last_accessed_at) else {
             break;
         };
         let key = entry.key().clone();

@@ -35,10 +35,6 @@ impl ApiError {
         Self::new(StatusCode::NOT_FOUND, message)
     }
 
-    pub fn forbidden(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::FORBIDDEN, message)
-    }
-
     pub fn bad_gateway(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_GATEWAY, message)
     }
