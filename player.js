@@ -24,6 +24,9 @@ import {
 const video = document.getElementById("playerVideo");
 const goBack = document.getElementById("goBack");
 const seekBar = document.getElementById("seekBar");
+const seekPreview = document.getElementById("seekPreview");
+const seekPreviewCanvas = document.getElementById("seekPreviewCanvas");
+const seekPreviewTime = document.getElementById("seekPreviewTime");
 const durationText = document.getElementById("durationText");
 const togglePlay = document.getElementById("togglePlay");
 const rewind10 = document.getElementById("rewind10");
@@ -5287,6 +5290,72 @@ document.addEventListener("pointerdown", (event) => {
 
 video.addEventListener("ratechange", () => {
   syncSpeedState();
+});
+
+// --- Seek preview thumbnail on hover ---
+const seekPreviewCtx = seekPreviewCanvas.getContext("2d", { willReadFrequently: false });
+let seekPreviewVideo = null;
+let seekPreviewPending = null;
+let seekPreviewReady = false;
+
+function getOrCreatePreviewVideo() {
+  if (seekPreviewVideo) return seekPreviewVideo;
+  seekPreviewVideo = document.createElement("video");
+  seekPreviewVideo.preload = "auto";
+  seekPreviewVideo.muted = true;
+  seekPreviewVideo.playsInline = true;
+  seekPreviewVideo.crossOrigin = video.crossOrigin || "anonymous";
+  seekPreviewVideo.addEventListener("seeked", () => {
+    seekPreviewCtx.drawImage(seekPreviewVideo, 0, 0, 160, 90);
+  });
+  return seekPreviewVideo;
+}
+
+function syncPreviewVideoSource() {
+  const pv = getOrCreatePreviewVideo();
+  const mainSrc = video.currentSrc || video.src || "";
+  if (!mainSrc || pv.src === mainSrc) return;
+  pv.src = mainSrc;
+  seekPreviewReady = false;
+  pv.addEventListener("loadeddata", () => { seekPreviewReady = true; }, { once: true });
+}
+
+function updateSeekPreview(e) {
+  const rect = seekBar.getBoundingClientRect();
+  const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+  const ratio = x / rect.width;
+  const duration = getSeekScaleDurationSeconds();
+  if (duration <= 0) return;
+
+  const timeAtCursor = ratio * duration;
+  seekPreviewTime.textContent = formatTime(timeAtCursor);
+
+  // Position the preview, clamped so it doesn't go off-screen
+  const previewWidth = 160;
+  const minLeft = previewWidth / 2;
+  const maxLeft = rect.width - previewWidth / 2;
+  const left = Math.max(minLeft, Math.min(x, maxLeft));
+  seekPreview.style.left = `${left}px`;
+  seekPreview.hidden = false;
+
+  // Draw thumbnail from main video if same source, or preview video
+  syncPreviewVideoSource();
+  if (seekPreviewReady && seekPreviewVideo) {
+    const target = timeAtCursor;
+    if (seekPreviewPending !== target) {
+      seekPreviewPending = target;
+      seekPreviewVideo.currentTime = target;
+    }
+  } else {
+    // Fallback: draw from main video at approximate position
+    seekPreviewCtx.drawImage(video, 0, 0, 160, 90);
+  }
+}
+
+seekBar.addEventListener("pointermove", updateSeekPreview);
+seekBar.addEventListener("pointerenter", updateSeekPreview);
+seekBar.addEventListener("pointerleave", () => {
+  seekPreview.hidden = true;
 });
 
 seekBar.addEventListener("pointerdown", () => {

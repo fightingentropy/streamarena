@@ -27,15 +27,21 @@ export default function PlayerPage() {
 
         <section class="controls-panel">
           <div class="seek-row">
-            <input
-              id="seekBar"
-              class="seek-bar"
-              type="range"
-              min="0"
-              max="1000"
-              value="0"
-              aria-label="Seek"
-            />
+            <div class="seek-bar-wrap">
+              <input
+                id="seekBar"
+                class="seek-bar"
+                type="range"
+                min="0"
+                max="1000"
+                value="0"
+                aria-label="Seek"
+              />
+              <div id="seekPreview" class="seek-preview" hidden>
+                <canvas id="seekPreviewCanvas" class="seek-preview-thumb" width="160" height="90"></canvas>
+                <span id="seekPreviewTime" class="seek-preview-time">00:00</span>
+              </div>
+            </div>
             <span id="durationText" class="duration">00:00</span>
           </div>
 

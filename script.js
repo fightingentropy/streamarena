@@ -1592,6 +1592,10 @@ function buildContinueWatchingCard(entry, tmdbDetails = null) {
             </button>`
     : "";
 
+  const resumeMin = Math.floor((entry.resumeSeconds || 0) / 60);
+  const totalMin = runtimeMinutes || (estimatedDurationSeconds > 0 ? Math.round(estimatedDurationSeconds / 60) : 0);
+  const progressTimeLabel = totalMin > 0 ? `${resumeMin} of ${totalMin}m` : resumeMin > 0 ? `${resumeMin}m watched` : "";
+
   card.innerHTML = `
     <div class="card-base">
       <img src="${posterUrl}" alt="${safeTitle}" loading="lazy" />
@@ -1619,6 +1623,10 @@ function buildContinueWatchingCard(entry, tmdbDetails = null) {
           <button class="hover-round hover-details" type="button" aria-label="More details">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
           </button>
+        </div>
+        <div class="card-hover-progress">
+          <div class="progress"><span style="width: ${progressPercent}%"></span></div>
+          ${progressTimeLabel ? `<span class="progress-time">${progressTimeLabel}</span>` : ""}
         </div>
         <div class="card-hover-meta">
           <span class="meta-age">${maturity}</span>

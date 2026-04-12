@@ -877,16 +877,49 @@ body.is-search-mode #myListRow {
     display: none;
 }
 
-.continue-row .progress {
+.continue-row .card-base .progress {
     display: block;
     height: 4px;
     background: rgba(255, 255, 255, 0.24);
 }
 
-.continue-row .progress span {
+.continue-row .card-base .progress span {
     display: block;
     height: 100%;
     background: var(--netflix-red);
+}
+
+.card-hover-progress {
+    display: none;
+}
+
+.continue-row .card-hover-progress {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 16px;
+}
+
+.continue-row .card-hover-progress .progress {
+    display: block;
+    flex: 1;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.24);
+}
+
+.continue-row .card-hover-progress .progress span {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--netflix-red);
+}
+
+.continue-row .card-hover-progress .progress-time {
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.7);
+    white-space: nowrap;
 }
 
 .card-hover {
