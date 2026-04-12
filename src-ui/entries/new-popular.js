@@ -1,10 +1,12 @@
 import "../../style.css";
 import "../../new-popular.css";
 
-import { mountPage } from "../lib/mount-page.js";
-import NewPopularPage from "../pages/new-popular.js";
+import { requireAuth, hydrateFromServer } from "../lib/auth.js";
+
+await requireAuth();
+hydrateFromServer();
+
+const { mountPage } = await import("../lib/mount-page.js");
+const { default: NewPopularPage } = await import("../pages/new-popular.js");
 
 mountPage(NewPopularPage, { bodyClass: "new-popular-route" });
-queueMicrotask(() => {
-  void import("../../new-popular.js");
-});

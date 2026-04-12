@@ -4,6 +4,7 @@ import { defineConfig } from "vite";
 
 const pages = {
   index: resolve(__dirname, "index.html"),
+  login: resolve(__dirname, "login.html"),
   player: resolve(__dirname, "player.html"),
   settings: resolve(__dirname, "settings.html"),
   upload: resolve(__dirname, "upload.html"),

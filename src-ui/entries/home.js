@@ -1,9 +1,11 @@
 import "../../style.css";
 
-import { mountPage } from "../lib/mount-page.js";
-import HomePage from "../pages/home.js";
+import { requireAuth, hydrateFromServer } from "../lib/auth.js";
+
+await requireAuth();
+hydrateFromServer();
+
+const { mountPage } = await import("../lib/mount-page.js");
+const { default: HomePage } = await import("../pages/home.js");
 
 mountPage(HomePage);
-queueMicrotask(() => {
-  void import("../../script.js");
-});

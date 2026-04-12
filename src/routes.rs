@@ -11,6 +11,9 @@ use axum::routing::any;
 use serde_json::{Value, json};
 use url::Url;
 
+use axum::http::HeaderMap;
+
+use crate::auth;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult, json_response};
 use crate::library::{
@@ -91,6 +94,21 @@ pub fn build_router(state: AppState) -> Router {
             "/api/subtitles.external.vtt",
             any(subtitles_external_vtt_handler),
         )
+        .route("/api/auth/signup", any(auth_signup_handler))
+        .route("/api/auth/login", any(auth_login_handler))
+        .route("/api/auth/logout", any(auth_logout_handler))
+        .route("/api/auth/me", any(auth_me_handler))
+        .route("/api/user/preferences", any(user_preferences_handler))
+        .route(
+            "/api/user/watch-progress",
+            any(user_watch_progress_handler),
+        )
+        .route(
+            "/api/user/continue-watching",
+            any(user_continue_watching_handler),
+        )
+        .route("/api/user/my-list", any(user_my_list_handler))
+        .route("/api/user/sync", any(user_sync_handler))
         .fallback(any(serve_static))
         .with_state(state)
 }
@@ -1335,6 +1353,491 @@ fn absolute_request_url_with_authority(
     let authority = authority.unwrap_or_else(|| format!("{default_host}:{default_port}"));
     Url::parse(&format!("http://{authority}{uri}"))
         .map_err(|error| ApiError::internal(error.to_string()))
+}
+
+// ── Auth / User route handlers ────────────────────────────────────────
+
+const SESSION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
+
+fn set_session_cookie(token: &str) -> String {
+    format!(
+        "session={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={SESSION_MAX_AGE_SECONDS}"
+    )
+}
+
+fn clear_session_cookie() -> String {
+    "session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0".to_owned()
+}
+
+async fn auth_signup_handler(
+    State(state): State<AppState>,
+    method: Method,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
+        .await
+        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = serde_json::from_slice::<Value>(&bytes)
+        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let username = payload
+        .get("username")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let password = payload
+        .get("password")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let display_name = payload
+        .get("displayName")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+
+    if username.is_empty() || username.len() > 64 {
+        return Err(ApiError::bad_request("Username must be 1-64 characters."));
+    }
+    if password.len() < 6 || password.len() > 256 {
+        return Err(ApiError::bad_request(
+            "Password must be 6-256 characters.",
+        ));
+    }
+
+    // Check if username already taken
+    if state.db.get_user_by_username(username.clone()).await?.is_some() {
+        return Err(ApiError::bad_request("Username already taken."));
+    }
+
+    let password_hash = auth::hash_password(&password)
+        .map_err(|error| ApiError::internal(error))?;
+
+    let user_id = state
+        .db
+        .create_user(username.clone(), password_hash, display_name.clone())
+        .await?;
+
+    let token = auth::generate_session_token();
+    let expires_at = now_ms() + SESSION_MAX_AGE_SECONDS * 1000;
+    state
+        .db
+        .create_session(token.clone(), user_id, expires_at)
+        .await?;
+
+    let mut response = json_response(json!({
+        "ok": true,
+        "user": {
+            "id": user_id,
+            "username": username,
+            "displayName": display_name
+        }
+    }));
+    response.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        set_session_cookie(&token).parse().unwrap(),
+    );
+    Ok(response)
+}
+
+async fn auth_login_handler(
+    State(state): State<AppState>,
+    method: Method,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
+        .await
+        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = serde_json::from_slice::<Value>(&bytes)
+        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let username = payload
+        .get("username")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let password = payload
+        .get("password")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    if username.is_empty() || password.is_empty() {
+        return Err(ApiError::bad_request("Username and password are required."));
+    }
+
+    let (user_id, db_username, password_hash, display_name) = state
+        .db
+        .get_user_by_username(username.clone())
+        .await?
+        .ok_or_else(|| ApiError::unauthorized("Invalid username or password."))?;
+
+    if !auth::verify_password(&password, &password_hash) {
+        return Err(ApiError::unauthorized("Invalid username or password."));
+    }
+
+    let token = auth::generate_session_token();
+    let expires_at = now_ms() + SESSION_MAX_AGE_SECONDS * 1000;
+    state
+        .db
+        .create_session(token.clone(), user_id, expires_at)
+        .await?;
+
+    let mut response = json_response(json!({
+        "ok": true,
+        "user": {
+            "id": user_id,
+            "username": db_username,
+            "displayName": display_name
+        }
+    }));
+    response.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        set_session_cookie(&token).parse().unwrap(),
+    );
+    Ok(response)
+}
+
+async fn auth_logout_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    if let Some(token) = auth::extract_session_token(&headers) {
+        state.db.delete_session(token).await?;
+    }
+    let mut response = json_response(json!({ "ok": true }));
+    response.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        clear_session_cookie().parse().unwrap(),
+    );
+    Ok(response)
+}
+
+async fn auth_me_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    let user = auth::require_auth(&state.db, &headers).await?;
+    Ok(json_response(json!({
+        "id": user.id,
+        "username": user.username,
+        "displayName": user.display_name
+    })))
+}
+
+async fn user_preferences_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    let user = auth::require_auth(&state.db, &headers).await?;
+    match method {
+        Method::GET => {
+            let prefs = state.db.get_user_preferences(user.id).await?;
+            let mut obj = serde_json::Map::new();
+            for (key, value) in prefs {
+                obj.insert(key, Value::String(value));
+            }
+            Ok(json_response(Value::Object(obj)))
+        }
+        Method::PUT => {
+            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
+                .await
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = serde_json::from_slice::<Value>(&bytes)
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let entries: Vec<(String, String)> = match payload.as_object() {
+                Some(obj) => obj
+                    .iter()
+                    .map(|(k, v)| {
+                        let val = match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        (k.clone(), val)
+                    })
+                    .collect(),
+                None => {
+                    return Err(ApiError::bad_request("Body must be a JSON object."));
+                }
+            };
+            state
+                .db
+                .upsert_user_preferences(user.id, entries)
+                .await?;
+            Ok(json_response(json!({ "ok": true })))
+        }
+        _ => Err(ApiError::method_not_allowed(
+            "Method not allowed. Use GET or PUT.",
+        )),
+    }
+}
+
+async fn user_watch_progress_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    let user = auth::require_auth(&state.db, &headers).await?;
+    match method {
+        Method::GET => {
+            let progress = state.db.get_user_watch_progress(user.id).await?;
+            let entries: Vec<Value> = progress
+                .into_iter()
+                .map(|(source_identity, resume_seconds, updated_at)| {
+                    json!({
+                        "sourceIdentity": source_identity,
+                        "resumeSeconds": resume_seconds,
+                        "updatedAt": updated_at
+                    })
+                })
+                .collect();
+            Ok(json_response(json!({ "entries": entries })))
+        }
+        Method::PUT => {
+            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
+                .await
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = serde_json::from_slice::<Value>(&bytes)
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let source_identity = payload
+                .get("sourceIdentity")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if source_identity.is_empty() {
+                return Err(ApiError::bad_request("Missing sourceIdentity."));
+            }
+            let resume_seconds = payload
+                .get("resumeSeconds")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            state
+                .db
+                .upsert_user_watch_progress(user.id, source_identity, resume_seconds, now_ms())
+                .await?;
+            Ok(json_response(json!({ "ok": true })))
+        }
+        Method::DELETE => {
+            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
+                .await
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = serde_json::from_slice::<Value>(&bytes)
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let source_identity = payload
+                .get("sourceIdentity")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if source_identity.is_empty() {
+                return Err(ApiError::bad_request("Missing sourceIdentity."));
+            }
+            state
+                .db
+                .delete_user_watch_progress(user.id, source_identity)
+                .await?;
+            Ok(json_response(json!({ "ok": true })))
+        }
+        _ => Err(ApiError::method_not_allowed(
+            "Method not allowed. Use GET, PUT, or DELETE.",
+        )),
+    }
+}
+
+async fn user_continue_watching_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    let user = auth::require_auth(&state.db, &headers).await?;
+    match method {
+        Method::GET => {
+            let entries = state.db.get_user_continue_watching(user.id).await?;
+            Ok(json_response(json!({ "entries": entries })))
+        }
+        Method::PUT => {
+            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
+                .await
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = serde_json::from_slice::<Value>(&bytes)
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let source_identity = payload
+                .get("sourceIdentity")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if source_identity.is_empty() {
+                return Err(ApiError::bad_request("Missing sourceIdentity."));
+            }
+            state
+                .db
+                .upsert_user_continue_watching(user.id, payload)
+                .await?;
+            Ok(json_response(json!({ "ok": true })))
+        }
+        Method::DELETE => {
+            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
+                .await
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = serde_json::from_slice::<Value>(&bytes)
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let source_identity = payload
+                .get("sourceIdentity")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if source_identity.is_empty() {
+                return Err(ApiError::bad_request("Missing sourceIdentity."));
+            }
+            state
+                .db
+                .delete_user_continue_watching(user.id, source_identity)
+                .await?;
+            Ok(json_response(json!({ "ok": true })))
+        }
+        _ => Err(ApiError::method_not_allowed(
+            "Method not allowed. Use GET, PUT, or DELETE.",
+        )),
+    }
+}
+
+async fn user_my_list_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    let user = auth::require_auth(&state.db, &headers).await?;
+    match method {
+        Method::GET => {
+            let entries = state.db.get_user_my_list(user.id).await?;
+            Ok(json_response(json!({ "entries": entries })))
+        }
+        Method::PUT => {
+            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
+                .await
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = serde_json::from_slice::<Value>(&bytes)
+                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let entries = payload
+                .get("entries")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            state.db.replace_user_my_list(user.id, entries).await?;
+            Ok(json_response(json!({ "ok": true })))
+        }
+        _ => Err(ApiError::method_not_allowed(
+            "Method not allowed. Use GET or PUT.",
+        )),
+    }
+}
+
+async fn user_sync_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    let user = auth::require_auth(&state.db, &headers).await?;
+    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
+        .await
+        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = serde_json::from_slice::<Value>(&bytes)
+        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+
+    // Preferences
+    if let Some(prefs) = payload.get("preferences").and_then(Value::as_object) {
+        let entries: Vec<(String, String)> = prefs
+            .iter()
+            .map(|(k, v)| {
+                let val = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                (k.clone(), val)
+            })
+            .collect();
+        if !entries.is_empty() {
+            state
+                .db
+                .upsert_user_preferences(user.id, entries)
+                .await?;
+        }
+    }
+
+    // Watch progress
+    if let Some(progress_arr) = payload.get("watchProgress").and_then(Value::as_array) {
+        for entry in progress_arr {
+            let source_identity = entry
+                .get("sourceIdentity")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if source_identity.is_empty() {
+                continue;
+            }
+            let resume_seconds = entry
+                .get("resumeSeconds")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let updated_at = entry
+                .get("updatedAt")
+                .and_then(Value::as_i64)
+                .unwrap_or_else(now_ms);
+            state
+                .db
+                .upsert_user_watch_progress(user.id, source_identity, resume_seconds, updated_at)
+                .await?;
+        }
+    }
+
+    // Continue watching
+    if let Some(cw_arr) = payload.get("continueWatching").and_then(Value::as_array) {
+        for entry in cw_arr {
+            let source_identity = entry
+                .get("sourceIdentity")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if source_identity.is_empty() {
+                continue;
+            }
+            state
+                .db
+                .upsert_user_continue_watching(user.id, entry.clone())
+                .await?;
+        }
+    }
+
+    // My list
+    if let Some(my_list_arr) = payload.get("myList").and_then(Value::as_array) {
+        state
+            .db
+            .replace_user_my_list(user.id, my_list_arr.clone())
+            .await?;
+    }
+
+    Ok(json_response(json!({ "ok": true })))
 }
 
 fn query_pairs(query: &str) -> BTreeMap<String, String> {

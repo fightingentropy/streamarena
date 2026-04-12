@@ -1,7 +1,597 @@
 import html from "solid-js/html";
+import { createSignal, onMount, onCleanup } from "solid-js";
+import UploadSection from "../components/upload-section.js";
+import {
+  STREAM_QUALITY_PREF_KEY,
+  PROFILE_AVATAR_STYLE_PREF_KEY,
+  PROFILE_AVATAR_MODE_PREF_KEY,
+  PROFILE_AVATAR_IMAGE_PREF_KEY,
+  supportedStreamQualityPreferences,
+  supportedAvatarStyles,
+  avatarStyleClassNames,
+  normalizeAvatarStyle,
+  normalizeAvatarMode,
+  sanitizeAvatarImageData,
+  getStoredAvatarStylePreference,
+  getStoredAvatarModePreference,
+  getStoredAvatarImagePreference,
+} from "../shared.js";
+
+// ─── Preference key constants ───────────────────────────────────────────────
+const SUBTITLE_COLOR_PREF_KEY = "netflix-subtitle-color-pref";
+const SOURCE_MIN_SEEDERS_PREF_KEY = "netflix-source-filter-min-seeders";
+const SOURCE_LANGUAGE_PREF_KEY = "netflix-source-filter-language";
+const SOURCE_AUDIO_PROFILE_PREF_KEY = "netflix-source-filter-audio-profile";
+const DEFAULT_AUDIO_LANGUAGE_PREF_KEY = "netflix-default-audio-lang";
+const REMUX_VIDEO_MODE_PREF_KEY = "netflix-remux-video-mode";
+
+// ─── Defaults ───────────────────────────────────────────────────────────────
+const DEFAULT_SUBTITLE_COLOR = "#b8bcc3";
+const DEFAULT_AVATAR_STYLE = "blue";
+const DEFAULT_AVATAR_MODE = "preset";
+const DEFAULT_STREAM_QUALITY_PREFERENCE = "1080p";
+const AVATAR_OUTPUT_SIZE_PX = 180;
+
+// ─── Supported value sets ───────────────────────────────────────────────────
+const supportedDefaultAudioLanguages = [
+  "auto", "en", "ja", "ko", "zh", "fr", "es", "de", "it", "pt", "nl", "ro",
+];
+const supportedSourceLanguages = ["en", "any", "fr", "es", "de", "it", "pt"];
+const supportedSourceAudioProfiles = ["single", "any"];
+const supportedAvatarChoices = new Set([...supportedAvatarStyles, "custom"]);
+
+// ─── Normalization helpers ──────────────────────────────────────────────────
+
+function normalizeStreamQualityPreference(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return DEFAULT_STREAM_QUALITY_PREFERENCE;
+  if (normalized === "4k" || normalized === "uhd") return "2160p";
+  if (normalized === "2160") return "2160p";
+  if (normalized === "1080") return "1080p";
+  if (normalized === "720") return "720p";
+  if (supportedStreamQualityPreferences.has(normalized)) return normalized;
+  return DEFAULT_STREAM_QUALITY_PREFERENCE;
+}
+
+function normalizeSourceMinSeeders(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(50000, Math.floor(parsed)));
+}
+
+function normalizeDefaultAudioLanguage(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized || normalized === "en" || normalized === "eng" || normalized === "english") return "en";
+  if (normalized === "auto" || normalized === "default" || normalized === "source" || normalized === "original") return "auto";
+  if (supportedDefaultAudioLanguages.includes(normalized)) return normalized;
+  return "en";
+}
+
+function normalizeSourceLanguage(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized || normalized === "en" || normalized === "eng" || normalized === "english") return "en";
+  if (normalized === "any" || normalized === "all" || normalized === "auto" || normalized === "*") return "any";
+  if (supportedSourceLanguages.includes(normalized)) return normalized;
+  return "en";
+}
+
+function normalizeSourceAudioProfile(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized || normalized === "single" || normalized === "single-audio" || normalized === "single_audio" || normalized === "singleaudio" || normalized === "preferred") return "single";
+  if (normalized === "any" || normalized === "multi" || normalized === "multi-audio" || normalized === "multi_audio" || normalized === "multiaudio" || normalized === "all") return "any";
+  if (supportedSourceAudioProfiles.includes(normalized)) return normalized;
+  return "single";
+}
+
+function normalizeRemuxVideoMode(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized || normalized === "auto" || normalized === "default") return "auto";
+  if (normalized === "copy" || normalized === "passthrough" || normalized === "direct" || normalized === "streamcopy") return "copy";
+  if (normalized === "normalize" || normalized === "transcode" || normalized === "aggressive" || normalized === "rebuild") return "normalize";
+  return "auto";
+}
+
+function normalizeSubtitleColor(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(raw)) return raw;
+  if (/^#[0-9a-f]{3}$/.test(raw)) return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`;
+  return DEFAULT_SUBTITLE_COLOR;
+}
+
+function normalizeAvatarChoice(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (supportedAvatarChoices.has(normalized)) return normalized;
+  return DEFAULT_AVATAR_STYLE;
+}
+
+// ─── localStorage getters ───────────────────────────────────────────────────
+
+function getStoredStreamQualityPreference() {
+  try { return normalizeStreamQualityPreference(localStorage.getItem(STREAM_QUALITY_PREF_KEY)); }
+  catch { return DEFAULT_STREAM_QUALITY_PREFERENCE; }
+}
+
+function getStoredSubtitleColorPreference() {
+  try { return normalizeSubtitleColor(localStorage.getItem(SUBTITLE_COLOR_PREF_KEY)); }
+  catch { return DEFAULT_SUBTITLE_COLOR; }
+}
+
+function getStoredDefaultAudioLanguage() {
+  try { return normalizeDefaultAudioLanguage(localStorage.getItem(DEFAULT_AUDIO_LANGUAGE_PREF_KEY)); }
+  catch { return "en"; }
+}
+
+function getStoredSourceMinSeeders() {
+  try { return normalizeSourceMinSeeders(localStorage.getItem(SOURCE_MIN_SEEDERS_PREF_KEY)); }
+  catch { return 0; }
+}
+
+function getStoredSourceLanguage() {
+  try { return normalizeSourceLanguage(localStorage.getItem(SOURCE_LANGUAGE_PREF_KEY)); }
+  catch { return "en"; }
+}
+
+function getStoredSourceAudioProfile() {
+  try { return normalizeSourceAudioProfile(localStorage.getItem(SOURCE_AUDIO_PROFILE_PREF_KEY)); }
+  catch { return "single"; }
+}
+
+function getStoredRemuxVideoMode() {
+  try { return normalizeRemuxVideoMode(localStorage.getItem(REMUX_VIDEO_MODE_PREF_KEY)); }
+  catch { return "auto"; }
+}
+
+// ─── Persist helpers (localStorage + server sync) ───────────────────────────
+
+function persistSelectedQuality(value) {
+  const normalized = normalizeStreamQualityPreference(value);
+  try {
+    if (normalized === DEFAULT_STREAM_QUALITY_PREFERENCE) localStorage.removeItem(STREAM_QUALITY_PREF_KEY);
+    else localStorage.setItem(STREAM_QUALITY_PREF_KEY, normalized);
+  } catch {}
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [STREAM_QUALITY_PREF_KEY]: normalized }),
+  }).catch(() => {});
+  return normalized;
+}
+
+function persistSubtitleColorPreference(value) {
+  const normalized = normalizeSubtitleColor(value);
+  try {
+    if (normalized === DEFAULT_SUBTITLE_COLOR) localStorage.removeItem(SUBTITLE_COLOR_PREF_KEY);
+    else localStorage.setItem(SUBTITLE_COLOR_PREF_KEY, normalized);
+  } catch {}
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [SUBTITLE_COLOR_PREF_KEY]: normalized }),
+  }).catch(() => {});
+  return normalized;
+}
+
+function persistDefaultAudioLanguage(value) {
+  const normalized = normalizeDefaultAudioLanguage(value);
+  try {
+    if (normalized === "en") localStorage.removeItem(DEFAULT_AUDIO_LANGUAGE_PREF_KEY);
+    else localStorage.setItem(DEFAULT_AUDIO_LANGUAGE_PREF_KEY, normalized);
+  } catch {}
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [DEFAULT_AUDIO_LANGUAGE_PREF_KEY]: normalized }),
+  }).catch(() => {});
+  return normalized;
+}
+
+function persistSourceMinSeeders(value) {
+  const normalized = normalizeSourceMinSeeders(value);
+  try {
+    if (normalized <= 0) localStorage.removeItem(SOURCE_MIN_SEEDERS_PREF_KEY);
+    else localStorage.setItem(SOURCE_MIN_SEEDERS_PREF_KEY, String(normalized));
+  } catch {}
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [SOURCE_MIN_SEEDERS_PREF_KEY]: String(normalized) }),
+  }).catch(() => {});
+  return normalized;
+}
+
+function persistSourceLanguage(value) {
+  const normalized = normalizeSourceLanguage(value);
+  try {
+    if (normalized === "en") localStorage.removeItem(SOURCE_LANGUAGE_PREF_KEY);
+    else localStorage.setItem(SOURCE_LANGUAGE_PREF_KEY, normalized);
+  } catch {}
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [SOURCE_LANGUAGE_PREF_KEY]: normalized }),
+  }).catch(() => {});
+  return normalized;
+}
+
+function persistSourceAudioProfile(value) {
+  const normalized = normalizeSourceAudioProfile(value);
+  try {
+    if (normalized === "single") localStorage.removeItem(SOURCE_AUDIO_PROFILE_PREF_KEY);
+    else localStorage.setItem(SOURCE_AUDIO_PROFILE_PREF_KEY, normalized);
+  } catch {}
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [SOURCE_AUDIO_PROFILE_PREF_KEY]: normalized }),
+  }).catch(() => {});
+  return normalized;
+}
+
+function persistRemuxVideoMode(value) {
+  const normalized = normalizeRemuxVideoMode(value);
+  try {
+    if (normalized === "auto") localStorage.removeItem(REMUX_VIDEO_MODE_PREF_KEY);
+    else localStorage.setItem(REMUX_VIDEO_MODE_PREF_KEY, normalized);
+  } catch {}
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [REMUX_VIDEO_MODE_PREF_KEY]: normalized }),
+  }).catch(() => {});
+  return normalized;
+}
+
+function persistAvatarStylePreference(styleValue) {
+  const style = normalizeAvatarStyle(styleValue);
+  try {
+    if (style === DEFAULT_AVATAR_STYLE) localStorage.removeItem(PROFILE_AVATAR_STYLE_PREF_KEY);
+    else localStorage.setItem(PROFILE_AVATAR_STYLE_PREF_KEY, style);
+  } catch {}
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [PROFILE_AVATAR_STYLE_PREF_KEY]: style }),
+  }).catch(() => {});
+  return style;
+}
+
+function persistAvatarModePreference(modeValue) {
+  const mode = normalizeAvatarMode(modeValue);
+  try {
+    if (mode === DEFAULT_AVATAR_MODE) localStorage.removeItem(PROFILE_AVATAR_MODE_PREF_KEY);
+    else localStorage.setItem(PROFILE_AVATAR_MODE_PREF_KEY, mode);
+  } catch {}
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [PROFILE_AVATAR_MODE_PREF_KEY]: mode }),
+  }).catch(() => {});
+  return mode;
+}
+
+function persistAvatarImagePreference(imageData) {
+  const safeImage = sanitizeAvatarImageData(imageData);
+  try {
+    if (!safeImage) localStorage.removeItem(PROFILE_AVATAR_IMAGE_PREF_KEY);
+    else localStorage.setItem(PROFILE_AVATAR_IMAGE_PREF_KEY, safeImage);
+  } catch {}
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [PROFILE_AVATAR_IMAGE_PREF_KEY]: safeImage || "" }),
+  }).catch(() => {});
+  return safeImage || "";
+}
+
+// ─── Image processing ───────────────────────────────────────────────────────
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Unable to read image file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Unable to decode image."));
+    image.src = dataUrl;
+  });
+}
+
+async function convertFileToAvatarImage(file) {
+  if (!file || !String(file.type || "").startsWith("image/")) {
+    throw new Error("Please choose an image file.");
+  }
+
+  const dataUrl = await readFileAsDataUrl(file);
+  const image = await loadImage(dataUrl);
+  const sourceWidth = Number(image.naturalWidth || image.width || 0);
+  const sourceHeight = Number(image.naturalHeight || image.height || 0);
+  if (sourceWidth <= 0 || sourceHeight <= 0) {
+    throw new Error("Image size is invalid.");
+  }
+
+  const cropSize = Math.min(sourceWidth, sourceHeight);
+  const sourceX = Math.floor((sourceWidth - cropSize) / 2);
+  const sourceY = Math.floor((sourceHeight - cropSize) / 2);
+  const canvas = document.createElement("canvas");
+  canvas.width = AVATAR_OUTPUT_SIZE_PX;
+  canvas.height = AVATAR_OUTPUT_SIZE_PX;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas context unavailable.");
+  }
+
+  context.clearRect(0, 0, AVATAR_OUTPUT_SIZE_PX, AVATAR_OUTPUT_SIZE_PX);
+  context.drawImage(
+    image, sourceX, sourceY, cropSize, cropSize,
+    0, 0, AVATAR_OUTPUT_SIZE_PX, AVATAR_OUTPUT_SIZE_PX,
+  );
+
+  let output = canvas.toDataURL("image/webp", 0.9);
+  if (!output.startsWith("data:image/")) {
+    output = canvas.toDataURL("image/png");
+  }
+  const safeOutput = sanitizeAvatarImageData(output);
+  if (!safeOutput) {
+    throw new Error("Image is too large to save.");
+  }
+  return safeOutput;
+}
+
+// ─── Deprecation cleanup ────────────────────────────────────────────────────
+
+function clearDeprecatedSourcePreferenceStorage() {
+  const deprecatedKeys = [
+    "netflix-source-filter-allowed-formats",
+    "netflix-source-filter-results-limit",
+  ];
+  try { deprecatedKeys.forEach((key) => localStorage.removeItem(key)); }
+  catch {}
+}
+
+// ─── Component ──────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
+  // ── Reactive state ──────────────────────────────────────────────────────
+  const [selectedQuality, setSelectedQuality] = createSignal(getStoredStreamQualityPreference());
+  const [subtitleColor, setSubtitleColor] = createSignal(getStoredSubtitleColorPreference());
+  const [defaultAudioLang, setDefaultAudioLang] = createSignal(getStoredDefaultAudioLanguage());
+  const [sourceMinSeeders, setSourceMinSeeders] = createSignal(getStoredSourceMinSeeders());
+  const [sourceLang, setSourceLang] = createSignal(getStoredSourceLanguage());
+  const [sourceAudioProfile, setSourceAudioProfile] = createSignal(getStoredSourceAudioProfile());
+  const [remuxVideoMode, setRemuxVideoMode] = createSignal(getStoredRemuxVideoMode());
+
+  // Avatar state
+  const storedAvatarStyle = getStoredAvatarStylePreference();
+  const storedAvatarMode = getStoredAvatarModePreference();
+  const storedAvatarImage = getStoredAvatarImagePreference();
+  const initialAvatarChoice = (storedAvatarMode === "custom" && storedAvatarImage) ? "custom" : storedAvatarStyle;
+
+  const [avatarChoice, setAvatarChoice] = createSignal(initialAvatarChoice);
+  const [pendingCustomImage, setPendingCustomImage] = createSignal(storedAvatarImage);
+  const [avatarUploadHint, setAvatarUploadHint] = createSignal("");
+
+  // Cache clearing state
+  const [isClearingCaches, setIsClearingCaches] = createSignal(false);
+  const [cacheClearStatus, setCacheClearStatus] = createSignal("");
+  const [cacheClearTone, setCacheClearTone] = createSignal("");
+
+  // Toast state
+  const [toastMessage, setToastMessage] = createSignal("");
+  const [toastVisible, setToastVisible] = createSignal(false);
+  let toastTimeout = 0;
+
+  // Refs for imperative DOM access
+  let avatarImageInputRef;
+  let avatarPreviewRef;
+  let avatarCustomThumbRef;
+
+  // ── Init ────────────────────────────────────────────────────────────────
+  clearDeprecatedSourcePreferenceStorage();
+
+  // ── Toast ───────────────────────────────────────────────────────────────
+  function showToast(message) {
+    setToastMessage(message);
+    setToastVisible(false);
+    // Force a tick so the class removal takes effect before re-adding
+    requestAnimationFrame(() => {
+      setToastVisible(true);
+    });
+    clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => setToastVisible(false), 2500);
+  }
+
+  onCleanup(() => clearTimeout(toastTimeout));
+
+  // ── Avatar preview helpers ──────────────────────────────────────────────
+
+  function computeAvatarPreviewClass() {
+    const choice = avatarChoice();
+    const customImg = pendingCustomImage();
+    if (choice === "custom" && sanitizeAvatarImageData(customImg)) {
+      return "avatar-style-preview avatar-style-custom-image";
+    }
+    const style = choice === "custom" ? getStoredAvatarStylePreference() : normalizeAvatarStyle(choice);
+    return `avatar-style-preview avatar-style-${style}`;
+  }
+
+  function computeAvatarPreviewStyle() {
+    const choice = avatarChoice();
+    const customImg = sanitizeAvatarImageData(pendingCustomImage());
+    if (choice === "custom" && customImg) {
+      return `--avatar-image: url("${customImg}"); background-image: var(--avatar-image)`;
+    }
+    return "";
+  }
+
+  function computeCustomThumbClass() {
+    const customImg = sanitizeAvatarImageData(pendingCustomImage());
+    if (customImg) {
+      return "avatar-style-swatch avatar-style-custom-thumb avatar-style-custom-image";
+    }
+    return "avatar-style-swatch avatar-style-custom-thumb";
+  }
+
+  function computeCustomThumbStyle() {
+    const customImg = sanitizeAvatarImageData(pendingCustomImage());
+    if (customImg) {
+      return `--avatar-image: url("${customImg}"); background-image: var(--avatar-image)`;
+    }
+    return "";
+  }
+
+  // ── Event handlers ──────────────────────────────────────────────────────
+
+  function handleQualityChange(value) {
+    setSelectedQuality(normalizeStreamQualityPreference(value));
+  }
+
+  function handleSubtitleColorInput(e) {
+    setSubtitleColor(normalizeSubtitleColor(e.target.value));
+  }
+
+  function handleSubtitleColorReset() {
+    setSubtitleColor(DEFAULT_SUBTITLE_COLOR);
+  }
+
+  function handleDefaultAudioLangChange(e) {
+    setDefaultAudioLang(normalizeDefaultAudioLanguage(e.target.value));
+  }
+
+  function handleSourceMinSeedersChange(e) {
+    setSourceMinSeeders(normalizeSourceMinSeeders(e.target.value));
+  }
+
+  function handleSourceLangChange(e) {
+    setSourceLang(normalizeSourceLanguage(e.target.value));
+  }
+
+  function handleSourceAudioProfileChange(e) {
+    setSourceAudioProfile(normalizeSourceAudioProfile(e.target.value));
+  }
+
+  function handleAvatarChoiceChange(value) {
+    const nextChoice = normalizeAvatarChoice(value);
+    setAvatarChoice(nextChoice);
+  }
+
+  async function handleAvatarImageChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setAvatarUploadHint("Processing image...");
+
+    try {
+      const preparedImage = await convertFileToAvatarImage(file);
+      setPendingCustomImage(preparedImage);
+      setAvatarChoice("custom");
+      setAvatarUploadHint("Image ready. Save Settings to apply.");
+    } catch (error) {
+      setAvatarUploadHint(error instanceof Error ? error.message : "Failed to load image.");
+    } finally {
+      if (avatarImageInputRef) avatarImageInputRef.value = "";
+    }
+  }
+
+  function handleFormSubmit(e) {
+    e.preventDefault();
+
+    const savedQuality = persistSelectedQuality(selectedQuality());
+    setSelectedQuality(savedQuality);
+
+    const savedSubtitleColor = persistSubtitleColorPreference(subtitleColor());
+    setSubtitleColor(savedSubtitleColor);
+
+    const currentAvatarChoice = normalizeAvatarChoice(avatarChoice());
+
+    if (currentAvatarChoice === "custom") {
+      const customImage = sanitizeAvatarImageData(
+        pendingCustomImage() || getStoredAvatarImagePreference(),
+      );
+      if (!customImage) {
+        showToast("Choose an image first");
+        return;
+      }
+      persistAvatarModePreference("custom");
+      persistAvatarImagePreference(customImage);
+      setPendingCustomImage(customImage);
+      setAvatarChoice("custom");
+    } else {
+      const savedStyle = persistAvatarStylePreference(currentAvatarChoice);
+      persistAvatarModePreference("preset");
+      persistAvatarImagePreference("");
+      setAvatarChoice(savedStyle);
+      setPendingCustomImage("");
+    }
+
+    const savedMinSeeders = persistSourceMinSeeders(sourceMinSeeders());
+    setSourceMinSeeders(savedMinSeeders);
+
+    const savedSourceLang = persistSourceLanguage(sourceLang());
+    setSourceLang(savedSourceLang);
+
+    const savedSourceAudioProfile = persistSourceAudioProfile(sourceAudioProfile());
+    setSourceAudioProfile(savedSourceAudioProfile);
+
+    const savedDefaultAudioLang = persistDefaultAudioLanguage(defaultAudioLang());
+    setDefaultAudioLang(savedDefaultAudioLang);
+
+    const savedRemuxVideoMode = persistRemuxVideoMode(remuxVideoMode());
+    setRemuxVideoMode(savedRemuxVideoMode);
+
+    showToast("Settings saved");
+  }
+
+  async function handleClearAllCaches() {
+    if (isClearingCaches()) return;
+
+    const shouldProceed = window.confirm("Clear all server caches for every title?");
+    if (!shouldProceed) return;
+
+    setIsClearingCaches(true);
+    setCacheClearStatus("Clearing caches...");
+    setCacheClearTone("");
+
+    try {
+      const response = await fetch(`/api/debug/cache?clear=1&t=${Date.now()}`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const errorMessage = payload?.error || payload?.message || `Request failed (${response.status})`;
+        throw new Error(errorMessage);
+      }
+
+      const persistent = payload?.caches?.persistentDb || {};
+      const sourceCount = Number(persistent.resolvedStreamSize || 0);
+      const tmdbCount = Number(persistent.tmdbResponseSize || 0);
+      setCacheClearStatus(`Done. Server cache cleared (sources ${sourceCount}, TMDB ${tmdbCount}).`);
+      setCacheClearTone("success");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to clear cache.";
+      setCacheClearStatus(message);
+      setCacheClearTone("error");
+    } finally {
+      setIsClearingCaches(false);
+    }
+  }
+
+  // ── Template ────────────────────────────────────────────────────────────
+
   return html`<div data-solid-page-root="" style="display: contents">
+    <div
+      class=${() => "toast" + (toastVisible() ? " toast--visible" : "")}
+      id="settingsToast"
+    >${() => toastMessage()}</div>
+
     <main class="settings-page">
       <header class="settings-header">
         <div class="settings-header-brand">
@@ -16,147 +606,87 @@ export default function SettingsPage() {
               class="settings-logo"
             />
           </a>
-          <div class="settings-header-copy">
-            <p class="settings-header-label">Playback System</p>
-            <a class="settings-back-link" href="/">Back to Browse</a>
-          </div>
+          <a class="settings-back-link" href="/">Back to Browse</a>
         </div>
-        <p class="settings-header-note">
-          Local defaults shape playback. Library and cache tools
-          apply immediately when used.
-        </p>
+        <h1 class="settings-title">Settings</h1>
       </header>
-
-      <section class="settings-hero" aria-labelledby="settingsTitle">
-        <div class="settings-headline">
-          <p class="settings-kicker">Defaults and Tools</p>
-          <h1 id="settingsTitle">Settings</h1>
-          <p class="settings-description">
-            This page keeps playback behavior quiet and explicit:
-            choose the default source bias, caption tone, avatar,
-            and repair mode once, then leave the player clean.
-          </p>
-        </div>
-
-        <aside class="settings-hero-panel" aria-label="Settings overview">
-          <p class="settings-hero-panel-label">Overview</p>
-          <div class="settings-overview-list">
-            <article class="settings-overview-item">
-              <span class="settings-overview-label">Playback</span>
-              <strong>Quality, audio, remux</strong>
-              <p>Default decisions for browser-first playback.</p>
-            </article>
-            <article class="settings-overview-item">
-              <span class="settings-overview-label">Identity</span>
-              <strong>Subtitles and avatar</strong>
-              <p>Small visual defaults carried across the app shell.</p>
-            </article>
-            <article class="settings-overview-item">
-              <span class="settings-overview-label">Maintenance</span>
-              <strong>Library edit and cache reset</strong>
-              <p>Immediate tools kept separate from the main save path.</p>
-            </article>
-          </div>
-        </aside>
-      </section>
 
       <div class="settings-layout">
         <section
           class="settings-card settings-card--main"
           aria-labelledby="settingsDefaultsTitle"
         >
-          <div class="settings-card-intro">
-            <p class="settings-card-kicker">Saved Preferences</p>
-            <h2 id="settingsDefaultsTitle" class="settings-card-title">
-              Default behavior
-            </h2>
-            <p class="settings-card-copy">
-              These values persist locally and inform the next
-              playback session unless a title-level override is
-              chosen.
-            </p>
-          </div>
-
-          <form id="qualityForm" class="quality-form">
+          <form class="quality-form" onSubmit=${handleFormSubmit}>
             <h2 class="settings-section-title">Playback Quality</h2>
             <label class="quality-option">
-              <input type="radio" name="quality" value="auto" />
-              <span class="quality-option-label">Auto (Any Quality)</span>
-              <small>Let the resolver choose the highest-ranked match.</small>
+              <input
+                type="radio"
+                name="quality"
+                value="auto"
+                checked=${() => selectedQuality() === "auto"}
+                onChange=${() => handleQualityChange("auto")}
+              />
+              <span class="quality-option-label">Auto</span>
             </label>
 
             <label class="quality-option">
-              <input type="radio" name="quality" value="2160p" />
+              <input
+                type="radio"
+                name="quality"
+                value="2160p"
+                checked=${() => selectedQuality() === "2160p"}
+                onChange=${() => handleQualityChange("2160p")}
+              />
               <span class="quality-option-label">4K (2160p)</span>
-              <small>Prefer the highest-resolution releases available.</small>
             </label>
 
             <label class="quality-option">
-              <input type="radio" name="quality" value="1080p" />
-              <span class="quality-option-label">Full HD (1080p default)</span>
-              <small>Balanced start time and image quality for browser playback.</small>
+              <input
+                type="radio"
+                name="quality"
+                value="1080p"
+                checked=${() => selectedQuality() === "1080p"}
+                onChange=${() => handleQualityChange("1080p")}
+              />
+              <span class="quality-option-label">Full HD (1080p)</span>
             </label>
 
-            <label class="quality-option">
-              <input type="radio" name="quality" value="720p" />
-              <span class="quality-option-label">HD (720p)</span>
-              <small>Lower bitrate for smoother starts on weaker sources.</small>
-            </label>
-
-            <section
-              class="source-filter-section"
-              aria-labelledby="defaultAudioTitle"
-            >
+            <section class="settings-group" aria-labelledby="defaultAudioTitle">
               <h2 id="defaultAudioTitle" class="settings-section-title">
                 Default Audio
               </h2>
-              <p class="source-filter-help">
-                Pick the audio language playback should prefer
-                before any title-specific override.
-              </p>
 
               <label class="source-language-filter" for="defaultAudioLanguage">
-                <span class="source-filter-label">Preferred audio language</span>
+                <span class="source-filter-label">Language</span>
                 <select
                   id="defaultAudioLanguage"
                   name="defaultAudioLanguage"
+                  onChange=${handleDefaultAudioLangChange}
                 >
-                  <option value="en">English (default)</option>
-                  <option value="auto">Auto / source default</option>
-                  <option value="ja">Japanese</option>
-                  <option value="ko">Korean</option>
-                  <option value="zh">Chinese</option>
-                  <option value="fr">French</option>
-                  <option value="es">Spanish</option>
-                  <option value="de">German</option>
-                  <option value="it">Italian</option>
-                  <option value="pt">Portuguese</option>
-                  <option value="nl">Dutch</option>
-                  <option value="ro">Romanian</option>
+                  <option value="en" selected=${() => defaultAudioLang() === "en"}>English</option>
+                  <option value="auto" selected=${() => defaultAudioLang() === "auto"}>Auto</option>
+                  <option value="ja" selected=${() => defaultAudioLang() === "ja"}>Japanese</option>
+                  <option value="ko" selected=${() => defaultAudioLang() === "ko"}>Korean</option>
+                  <option value="zh" selected=${() => defaultAudioLang() === "zh"}>Chinese</option>
+                  <option value="fr" selected=${() => defaultAudioLang() === "fr"}>French</option>
+                  <option value="es" selected=${() => defaultAudioLang() === "es"}>Spanish</option>
+                  <option value="de" selected=${() => defaultAudioLang() === "de"}>German</option>
+                  <option value="it" selected=${() => defaultAudioLang() === "it"}>Italian</option>
+                  <option value="pt" selected=${() => defaultAudioLang() === "pt"}>Portuguese</option>
+                  <option value="nl" selected=${() => defaultAudioLang() === "nl"}>Dutch</option>
+                  <option value="ro" selected=${() => defaultAudioLang() === "ro"}>Romanian</option>
                 </select>
               </label>
-
-              <p class="source-filter-note">
-                Player audio selections for a specific movie still
-                override this default.
-              </p>
             </section>
 
-            <section
-              class="source-filter-section"
-              aria-labelledby="sourceFilterTitle"
-            >
+            <section class="settings-group" aria-labelledby="sourceFilterTitle">
               <h2 id="sourceFilterTitle" class="settings-section-title">
-                Torrent Source Defaults
+                Source Defaults
               </h2>
-              <p class="source-filter-help">
-                Keep browser-first torrent playback simple. Local
-                files are not restricted by these source rules.
-              </p>
 
               <div class="source-filter-stack">
                 <label class="source-min-seeds" for="sourceMinSeeders">
-                  <span class="source-filter-label">Minimum seeds</span>
+                  <span class="source-filter-label">Min seeds</span>
                   <input
                     id="sourceMinSeeders"
                     name="sourceMinSeeders"
@@ -164,135 +694,81 @@ export default function SettingsPage() {
                     min="0"
                     max="50000"
                     step="1"
-                    value="0"
+                    value=${() => String(sourceMinSeeders())}
+                    onChange=${handleSourceMinSeedersChange}
                   />
                 </label>
 
                 <label class="source-language-filter" for="sourceLanguage">
-                  <span class="source-filter-label">Source language</span>
-                  <select id="sourceLanguage" name="sourceLanguage">
-                    <option value="en">English only (default)</option>
-                    <option value="any">Any language</option>
-                    <option value="fr">French</option>
-                    <option value="es">Spanish</option>
-                    <option value="de">German</option>
-                    <option value="it">Italian</option>
-                    <option value="pt">Portuguese</option>
+                  <span class="source-filter-label">Language</span>
+                  <select
+                    id="sourceLanguage"
+                    name="sourceLanguage"
+                    onChange=${handleSourceLangChange}
+                  >
+                    <option value="en" selected=${() => sourceLang() === "en"}>English</option>
+                    <option value="any" selected=${() => sourceLang() === "any"}>Any</option>
+                    <option value="fr" selected=${() => sourceLang() === "fr"}>French</option>
+                    <option value="es" selected=${() => sourceLang() === "es"}>Spanish</option>
+                    <option value="de" selected=${() => sourceLang() === "de"}>German</option>
+                    <option value="it" selected=${() => sourceLang() === "it"}>Italian</option>
+                    <option value="pt" selected=${() => sourceLang() === "pt"}>Portuguese</option>
                   </select>
                 </label>
 
                 <label class="source-language-filter" for="sourceAudioProfile">
-                  <span class="source-filter-label">Source audio mix</span>
-                  <select id="sourceAudioProfile" name="sourceAudioProfile">
-                    <option value="single">
-                      Prefer single-audio releases (default)
-                    </option>
-                    <option value="any">
-                      Allow multi-audio / dubbed releases
-                    </option>
+                  <span class="source-filter-label">Audio mix</span>
+                  <select
+                    id="sourceAudioProfile"
+                    name="sourceAudioProfile"
+                    onChange=${handleSourceAudioProfileChange}
+                  >
+                    <option value="single" selected=${() => sourceAudioProfile() === "single"}>Single audio</option>
+                    <option value="any" selected=${() => sourceAudioProfile() === "any"}>Multi / dubbed</option>
                   </select>
                 </label>
               </div>
-
-              <p class="source-filter-note">
-                Torrent sources stay MP4-only for the fastest
-                browser start. Leave source language on English and
-                source audio mix on single-audio to bias auto-play
-                toward cleaner single-language releases.
-              </p>
-            </section>
-
-            <section class="remux-mode-section" aria-labelledby="remuxModeTitle">
-              <h2 id="remuxModeTitle" class="settings-section-title">
-                Browser Remux
-              </h2>
-              <p class="remux-mode-help">
-                Controls how aggressive browser remux should be
-                when timing cleanup is needed.
-              </p>
-              <div
-                class="remux-mode-options"
-                role="radiogroup"
-                aria-label="Browser remux video mode"
-              >
-                <label class="remux-mode-option">
-                  <input
-                    type="radio"
-                    name="remuxVideoMode"
-                    value="auto"
-                  />
-                  <span class="remux-mode-option-label">Auto (Recommended)</span>
-                  <small>Uses copy for simple files and switches to normalize when stronger timestamp cleanup is needed.</small>
-                </label>
-                <label class="remux-mode-option">
-                  <input
-                    type="radio"
-                    name="remuxVideoMode"
-                    value="copy"
-                  />
-                  <span class="remux-mode-option-label">Copy (Fastest)</span>
-                  <small>Lowest CPU usage, but problematic files can stay out of sync.</small>
-                </label>
-                <label class="remux-mode-option">
-                  <input
-                    type="radio"
-                    name="remuxVideoMode"
-                    value="normalize"
-                  />
-                  <span class="remux-mode-option-label">Normalize (Best Sync)</span>
-                  <small>Rebuilds video timestamps for stronger sync correction.</small>
-                </label>
-              </div>
-              <p class="remux-mode-note">
-                Applies only to in-browser playback.
-              </p>
             </section>
 
             <section
-              class="subtitle-color-section"
+              class="settings-group"
               aria-labelledby="subtitleColorTitle"
             >
               <h2 id="subtitleColorTitle" class="settings-section-title">
                 Subtitles
               </h2>
-              <p class="subtitle-color-help">
-                Pick the default caption color for browser
-                playback.
-              </p>
               <div class="subtitle-color-controls">
                 <label class="subtitle-color-picker-label" for="subtitleColorInput">Color</label>
                 <input
                   id="subtitleColorInput"
                   name="subtitleColor"
                   type="color"
-                  value="#b8bcc3"
+                  value=${() => subtitleColor()}
+                  onInput=${handleSubtitleColorInput}
                 />
                 <button
-                  id="subtitleColorReset"
                   class="subtitle-color-reset-btn"
                   type="button"
+                  onClick=${handleSubtitleColorReset}
                 >
                   Reset
                 </button>
               </div>
-              <p id="subtitleColorPreview" class="subtitle-color-preview">
-                Sample subtitle preview text.
+              <p class="subtitle-color-preview" style=${() => `color: ${subtitleColor()}`}>
+                Sample subtitle text
               </p>
             </section>
 
-            <section class="avatar-style-section" aria-labelledby="avatarStyleTitle">
+            <section class="settings-group" aria-labelledby="avatarStyleTitle">
               <h2 id="avatarStyleTitle" class="settings-section-title">
-                Appearance
+                Avatar
               </h2>
-              <p class="avatar-style-help">
-                Choose the icon used in the top-right account menu.
-              </p>
 
               <div class="avatar-style-preview-wrap">
-                <span class="avatar-style-preview-label">Preview</span>
                 <div
-                  id="avatarStylePreview"
-                  class="avatar-style-preview avatar-style-blue"
+                  ref=${(el) => { avatarPreviewRef = el; }}
+                  class=${computeAvatarPreviewClass}
+                  style=${computeAvatarPreviewStyle}
                   aria-hidden="true"
                 ></div>
               </div>
@@ -303,61 +779,98 @@ export default function SettingsPage() {
                 aria-label="Profile icon style"
               >
                 <label class="avatar-style-option">
-                  <input type="radio" name="avatarStyle" value="blue" />
+                  <input
+                    type="radio"
+                    name="avatarStyle"
+                    value="blue"
+                    checked=${() => avatarChoice() === "blue"}
+                    onChange=${() => handleAvatarChoiceChange("blue")}
+                  />
                   <span class="avatar-style-swatch avatar-style-blue" aria-hidden="true"></span>
                   <span>Blue</span>
                 </label>
                 <label class="avatar-style-option">
-                  <input type="radio" name="avatarStyle" value="crimson" />
+                  <input
+                    type="radio"
+                    name="avatarStyle"
+                    value="crimson"
+                    checked=${() => avatarChoice() === "crimson"}
+                    onChange=${() => handleAvatarChoiceChange("crimson")}
+                  />
                   <span class="avatar-style-swatch avatar-style-crimson" aria-hidden="true"></span>
                   <span>Crimson</span>
                 </label>
                 <label class="avatar-style-option">
-                  <input type="radio" name="avatarStyle" value="emerald" />
+                  <input
+                    type="radio"
+                    name="avatarStyle"
+                    value="emerald"
+                    checked=${() => avatarChoice() === "emerald"}
+                    onChange=${() => handleAvatarChoiceChange("emerald")}
+                  />
                   <span class="avatar-style-swatch avatar-style-emerald" aria-hidden="true"></span>
                   <span>Emerald</span>
                 </label>
                 <label class="avatar-style-option">
-                  <input type="radio" name="avatarStyle" value="violet" />
+                  <input
+                    type="radio"
+                    name="avatarStyle"
+                    value="violet"
+                    checked=${() => avatarChoice() === "violet"}
+                    onChange=${() => handleAvatarChoiceChange("violet")}
+                  />
                   <span class="avatar-style-swatch avatar-style-violet" aria-hidden="true"></span>
                   <span>Violet</span>
                 </label>
                 <label class="avatar-style-option">
-                  <input type="radio" name="avatarStyle" value="amber" />
+                  <input
+                    type="radio"
+                    name="avatarStyle"
+                    value="amber"
+                    checked=${() => avatarChoice() === "amber"}
+                    onChange=${() => handleAvatarChoiceChange("amber")}
+                  />
                   <span class="avatar-style-swatch avatar-style-amber" aria-hidden="true"></span>
                   <span>Amber</span>
                 </label>
                 <label class="avatar-style-option avatar-style-option--custom">
-                  <input type="radio" name="avatarStyle" value="custom" />
+                  <input
+                    type="radio"
+                    name="avatarStyle"
+                    value="custom"
+                    checked=${() => avatarChoice() === "custom"}
+                    onChange=${() => handleAvatarChoiceChange("custom")}
+                  />
                   <span
-                    id="avatarCustomThumb"
-                    class="avatar-style-swatch avatar-style-custom-thumb"
+                    ref=${(el) => { avatarCustomThumbRef = el; }}
+                    class=${computeCustomThumbClass}
+                    style=${computeCustomThumbStyle}
                     aria-hidden="true"
                   ></span>
-                  <span>Custom image</span>
+                  <span>Custom</span>
                 </label>
               </div>
 
               <div class="avatar-upload-controls">
-                <label class="avatar-upload-btn" for="avatarImageInput">Choose from computer</label>
+                <label class="avatar-upload-btn" for="avatarImageInput">Upload image</label>
                 <input
                   id="avatarImageInput"
                   type="file"
                   accept="image/*"
+                  ref=${(el) => { avatarImageInputRef = el; }}
+                  onChange=${handleAvatarImageChange}
                 />
-                <span
-                  id="avatarUploadHint"
-                  class="avatar-upload-hint"
-                >Center-cropped and resized before save.</span>
+                <span class="avatar-upload-hint">
+                  ${() => avatarUploadHint()}
+                </span>
               </div>
             </section>
 
             <div class="settings-actions">
-              <button id="saveQuality" class="save-btn" type="submit">
-                Save Settings
+              <button class="save-btn" type="submit">
+                Save
               </button>
               <p
-                id="saveStatus"
                 class="save-status"
                 role="status"
                 aria-live="polite"
@@ -366,74 +879,39 @@ export default function SettingsPage() {
           </form>
         </section>
 
-        <aside class="settings-sidebar" aria-label="Tools">
-          <div class="settings-sidebar-header">
-            <p class="settings-sidebar-kicker">Immediate Actions</p>
-            <h2 class="settings-sidebar-title">Tool rail</h2>
-            <p class="settings-sidebar-copy">
-              These actions bypass the main save button and update
-              state the moment you trigger them.
-            </p>
-          </div>
+        ${UploadSection}
 
-          <section
-            class="library-edit-section settings-tool-card"
-            aria-labelledby="libraryEditTitle"
-          >
-            <div class="library-edit-header">
-              <h2 id="libraryEditTitle" class="settings-section-title">
-                Library Tools
-              </h2>
-              <label class="library-edit-toggle">
-                <input id="libraryEditModeToggle" type="checkbox" />
-                <span>Edit mode</span>
-              </label>
-            </div>
-            <p class="library-edit-help">
-              Enable edit mode to expose title edit actions across
-              the app, then update metadata or remove entries.
-            </p>
-            <p
-              id="libraryEditStatus"
-              class="library-edit-status"
-              role="status"
-              aria-live="polite"
-            ></p>
-            <div
-              id="libraryEditList"
-              class="library-edit-list"
-              role="list"
-            ></div>
-          </section>
-
-          <section
-            class="maintenance-section settings-tool-card"
-            aria-labelledby="maintenanceTitle"
-          >
+        <section
+          class="settings-card settings-card--compact"
+          aria-labelledby="maintenanceTitle"
+        >
+          <div class="maintenance-row">
             <h2 id="maintenanceTitle" class="settings-section-title">
-              Maintenance
+              Cache
             </h2>
-            <p class="maintenance-help">
-              Clear cached stream, metadata, subtitle, and
-              playback-session state when you want a hard reset.
-            </p>
-            <div class="maintenance-actions">
+            <div class="maintenance-inline">
               <button
-                id="clearAllCachesBtn"
                 class="clear-cache-btn"
                 type="button"
+                disabled=${() => isClearingCaches()}
+                onClick=${handleClearAllCaches}
               >
-                Clear Server Caches
+                Clear All Caches
               </button>
               <p
-                id="cacheClearStatus"
-                class="cache-clear-status"
+                class=${() => {
+                  let cls = "cache-clear-status";
+                  const tone = cacheClearTone();
+                  if (tone === "success") cls += " status-success";
+                  else if (tone === "error") cls += " status-error";
+                  return cls;
+                }}
                 role="status"
                 aria-live="polite"
-              ></p>
+              >${() => cacheClearStatus()}</p>
             </div>
-          </section>
-        </aside>
+          </div>
+        </section>
       </div>
     </main>
   </div>`;

@@ -1131,6 +1131,501 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))?;
         Ok(())
     }
+
+    // ── User / Auth methods ──────────────────────────────────────────
+
+    pub async fn create_user(
+        &self,
+        username: String,
+        password_hash: String,
+        display_name: String,
+    ) -> AppResult<i64> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            connection.execute(
+                "INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?)",
+                params![username, password_hash, display_name, now, now],
+            )?;
+            let id = connection.last_insert_rowid();
+            return_connection(&pool, connection);
+            Ok::<i64, rusqlite::Error>(id)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn get_user_by_username(
+        &self,
+        username: String,
+    ) -> AppResult<Option<(i64, String, String, String)>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let row = connection
+                .query_row(
+                    "SELECT id, username, password_hash, display_name FROM users WHERE username = ?",
+                    [username.as_str()],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            return_connection(&pool, connection);
+            Ok::<Option<(i64, String, String, String)>, rusqlite::Error>(row)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn get_user_by_id(
+        &self,
+        user_id: i64,
+    ) -> AppResult<Option<(i64, String, String, String)>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let row = connection
+                .query_row(
+                    "SELECT id, username, password_hash, display_name FROM users WHERE id = ?",
+                    [user_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            return_connection(&pool, connection);
+            Ok::<Option<(i64, String, String, String)>, rusqlite::Error>(row)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn create_session(
+        &self,
+        token: String,
+        user_id: i64,
+        expires_at: i64,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            connection.execute(
+                "INSERT INTO auth_sessions (token, user_id, created_at, expires_at)
+                 VALUES (?, ?, ?, ?)",
+                params![token, user_id, now, expires_at],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn get_session(&self, token: String) -> AppResult<Option<(i64, i64)>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let row = connection
+                .query_row(
+                    "SELECT user_id, expires_at FROM auth_sessions WHERE token = ?",
+                    [token.as_str()],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()?;
+            return_connection(&pool, connection);
+            Ok::<Option<(i64, i64)>, rusqlite::Error>(row)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn delete_session(&self, token: String) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "DELETE FROM auth_sessions WHERE token = ?",
+                [token.as_str()],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn cleanup_expired_sessions(&self) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            connection.execute(
+                "DELETE FROM auth_sessions WHERE expires_at <= ?",
+                [now],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn get_user_preferences(
+        &self,
+        user_id: i64,
+    ) -> AppResult<Vec<(String, String)>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let rows = {
+                let mut stmt = connection.prepare(
+                    "SELECT pref_key, pref_value FROM user_preferences WHERE user_id = ?",
+                )?;
+                stmt.query_map([user_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            };
+            return_connection(&pool, connection);
+            Ok::<Vec<(String, String)>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn upsert_user_preferences(
+        &self,
+        user_id: i64,
+        entries: Vec<(String, String)>,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            let tx = connection.unchecked_transaction()?;
+            for (key, value) in &entries {
+                tx.execute(
+                    "INSERT INTO user_preferences (user_id, pref_key, pref_value, updated_at)
+                     VALUES (?, ?, ?, ?)
+                     ON CONFLICT(user_id, pref_key) DO UPDATE SET
+                       pref_value = excluded.pref_value,
+                       updated_at = excluded.updated_at",
+                    params![user_id, key, value, now],
+                )?;
+            }
+            tx.commit()?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn get_user_watch_progress(
+        &self,
+        user_id: i64,
+    ) -> AppResult<Vec<(String, f64, i64)>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let rows = {
+                let mut stmt = connection.prepare(
+                    "SELECT source_identity, resume_seconds, updated_at
+                     FROM user_watch_progress WHERE user_id = ?",
+                )?;
+                stmt.query_map([user_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            };
+            return_connection(&pool, connection);
+            Ok::<Vec<(String, f64, i64)>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn upsert_user_watch_progress(
+        &self,
+        user_id: i64,
+        source_identity: String,
+        resume_seconds: f64,
+        updated_at: i64,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "INSERT INTO user_watch_progress (user_id, source_identity, resume_seconds, updated_at)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(user_id, source_identity) DO UPDATE SET
+                   resume_seconds = excluded.resume_seconds,
+                   updated_at = excluded.updated_at",
+                params![user_id, source_identity, resume_seconds, updated_at],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn delete_user_watch_progress(
+        &self,
+        user_id: i64,
+        source_identity: String,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "DELETE FROM user_watch_progress WHERE user_id = ? AND source_identity = ?",
+                params![user_id, source_identity],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn get_user_continue_watching(
+        &self,
+        user_id: i64,
+    ) -> AppResult<Vec<Value>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let rows = {
+                let mut stmt = connection.prepare(
+                    "SELECT source_identity, title, episode, src, tmdb_id, media_type,
+                            series_id, episode_index, year, thumb, resume_seconds, updated_at
+                     FROM user_continue_watching WHERE user_id = ?
+                     ORDER BY updated_at DESC",
+                )?;
+                stmt.query_map([user_id], |row| {
+                    Ok(json!({
+                        "sourceIdentity": row.get::<_, String>(0)?,
+                        "title": row.get::<_, String>(1)?,
+                        "episode": row.get::<_, String>(2)?,
+                        "src": row.get::<_, String>(3)?,
+                        "tmdbId": row.get::<_, String>(4)?,
+                        "mediaType": row.get::<_, String>(5)?,
+                        "seriesId": row.get::<_, String>(6)?,
+                        "episodeIndex": row.get::<_, i64>(7)?,
+                        "year": row.get::<_, String>(8)?,
+                        "thumb": row.get::<_, String>(9)?,
+                        "resumeSeconds": row.get::<_, f64>(10)?,
+                        "updatedAt": row.get::<_, i64>(11)?,
+                    }))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            };
+            return_connection(&pool, connection);
+            Ok::<Vec<Value>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn upsert_user_continue_watching(
+        &self,
+        user_id: i64,
+        entry: Value,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            let source_identity = entry.get("sourceIdentity").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let title = entry.get("title").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let episode = entry.get("episode").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let src = entry.get("src").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let tmdb_id = entry.get("tmdbId").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let media_type = entry.get("mediaType").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let series_id = entry.get("seriesId").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let episode_index = entry.get("episodeIndex").and_then(Value::as_i64).unwrap_or(-1);
+            let year = entry.get("year").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let thumb = entry.get("thumb").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let resume_seconds = entry.get("resumeSeconds").and_then(Value::as_f64).unwrap_or(0.0);
+            connection.execute(
+                "INSERT INTO user_continue_watching
+                   (user_id, source_identity, title, episode, src, tmdb_id, media_type,
+                    series_id, episode_index, year, thumb, resume_seconds, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(user_id, source_identity) DO UPDATE SET
+                   title = excluded.title,
+                   episode = excluded.episode,
+                   src = excluded.src,
+                   tmdb_id = excluded.tmdb_id,
+                   media_type = excluded.media_type,
+                   series_id = excluded.series_id,
+                   episode_index = excluded.episode_index,
+                   year = excluded.year,
+                   thumb = excluded.thumb,
+                   resume_seconds = excluded.resume_seconds,
+                   updated_at = excluded.updated_at",
+                params![
+                    user_id, source_identity, title, episode, src, tmdb_id, media_type,
+                    series_id, episode_index, year, thumb, resume_seconds, now
+                ],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn delete_user_continue_watching(
+        &self,
+        user_id: i64,
+        source_identity: String,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "DELETE FROM user_continue_watching WHERE user_id = ? AND source_identity = ?",
+                params![user_id, source_identity],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn get_user_my_list(&self, user_id: i64) -> AppResult<Vec<Value>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let rows = {
+                let mut stmt = connection.prepare(
+                    "SELECT item_identity, details_json, added_at
+                     FROM user_my_list WHERE user_id = ?
+                     ORDER BY added_at DESC",
+                )?;
+                stmt.query_map([user_id], |row| {
+                    let item_identity: String = row.get(0)?;
+                    let details_json: String = row.get(1)?;
+                    let added_at: i64 = row.get(2)?;
+                    let mut details: Value =
+                        serde_json::from_str(&details_json).unwrap_or_else(|_| json!({}));
+                    if let Some(obj) = details.as_object_mut() {
+                        obj.insert("itemIdentity".to_owned(), Value::String(item_identity));
+                        obj.insert("addedAt".to_owned(), Value::Number(added_at.into()));
+                    }
+                    Ok(details)
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            };
+            return_connection(&pool, connection);
+            Ok::<Vec<Value>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn replace_user_my_list(
+        &self,
+        user_id: i64,
+        entries: Vec<Value>,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            let tx = connection.unchecked_transaction()?;
+            tx.execute("DELETE FROM user_my_list WHERE user_id = ?", [user_id])?;
+            for entry in &entries {
+                let item_identity = entry
+                    .get("itemIdentity")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                if item_identity.is_empty() {
+                    continue;
+                }
+                let added_at = entry
+                    .get("addedAt")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(now);
+                let details_json = serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_owned());
+                tx.execute(
+                    "INSERT INTO user_my_list (user_id, item_identity, details_json, added_at)
+                     VALUES (?, ?, ?, ?)",
+                    params![user_id, item_identity, details_json, added_at],
+                )?;
+            }
+            tx.commit()?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
 }
 
 fn get_playback_session_inner(
@@ -1273,6 +1768,58 @@ fn init_schema(path: PathBuf) -> Result<(), rusqlite::Error> {
           updated_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_title_track_preferences_updated ON title_track_preferences(updated_at);
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+          password_hash TEXT NOT NULL,
+          display_name TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+          token TEXT PRIMARY KEY,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
+        CREATE TABLE IF NOT EXISTS user_preferences (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          pref_key TEXT NOT NULL,
+          pref_value TEXT NOT NULL DEFAULT '',
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, pref_key)
+        );
+        CREATE TABLE IF NOT EXISTS user_watch_progress (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          source_identity TEXT NOT NULL,
+          resume_seconds REAL NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, source_identity)
+        );
+        CREATE TABLE IF NOT EXISTS user_continue_watching (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          source_identity TEXT NOT NULL,
+          title TEXT NOT NULL DEFAULT '',
+          episode TEXT NOT NULL DEFAULT '',
+          src TEXT NOT NULL DEFAULT '',
+          tmdb_id TEXT NOT NULL DEFAULT '',
+          media_type TEXT NOT NULL DEFAULT '',
+          series_id TEXT NOT NULL DEFAULT '',
+          episode_index INTEGER NOT NULL DEFAULT -1,
+          year TEXT NOT NULL DEFAULT '',
+          thumb TEXT NOT NULL DEFAULT '',
+          resume_seconds REAL NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, source_identity)
+        );
+        CREATE TABLE IF NOT EXISTS user_my_list (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          item_identity TEXT NOT NULL,
+          details_json TEXT NOT NULL DEFAULT '{}',
+          added_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, item_identity)
+        );
         ",
     )?;
     Ok(())
@@ -1309,6 +1856,10 @@ fn sweep_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
     connection.execute(
         "DELETE FROM title_track_preferences WHERE updated_at <= ?",
         [now - TITLE_PREFERENCES_STALE_MS],
+    )?;
+    connection.execute(
+        "DELETE FROM auth_sessions WHERE expires_at <= ?",
+        [now],
     )?;
     trim_table(
         &connection,
