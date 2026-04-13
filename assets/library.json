@@ -53,6 +53,27 @@
   ],
   "series": [
     {
+      "id": "local-series-louie-2010",
+      "title": "Louie",
+      "contentKind": "series",
+      "tmdbId": "32962",
+      "year": "2010",
+      "preferredContainer": "mp4",
+      "requiresLocalEpisodeSources": true,
+      "episodes": [
+        {
+          "title": "Pilot",
+          "description": "Louie volunteers to accompany his daughter's class on a field trip, where interactions with a disagreeable bus driver create comedic chaos. Later, Louie attempts an awkward and ultimately unsuccessful romantic outing.",
+          "thumb": "assets/images/louie-thumb.jpg",
+          "src": "assets/videos/louie-s01e01-pilot-1080p.mp4",
+          "contentKind": "series",
+          "seasonNumber": 1,
+          "episodeNumber": 1,
+          "uploadedAt": 1681401600000
+        }
+      ]
+    },
+    {
       "id": "local-course-electrics-lvl3-2025",
       "title": "Electrical Course 2025",
       "contentKind": "course",
