@@ -707,6 +707,16 @@ function getContinueWatchingEntries() {
     }
   });
 
+  // Build a set of normalised src paths already covered by meta-map entries
+  // so orphan resume keys that match a known source file are skipped.
+  const knownSrcPaths = new Set();
+  for (const entry of entriesBySource.values()) {
+    const src = normalizeLocalAssetPathForCompare(entry.src || "");
+    if (src) {
+      knownSrcPaths.add(src);
+    }
+  }
+
   for (let index = 0; index < localStorage.length; index += 1) {
     const key = localStorage.key(index);
     if (!key || !key.startsWith(RESUME_STORAGE_PREFIX)) {
@@ -716,6 +726,12 @@ function getContinueWatchingEntries() {
     const sourceIdentity = key.slice(RESUME_STORAGE_PREFIX.length).trim();
     const dedupeCandidateKey = dedupeKeyForSource(sourceIdentity);
     if (!sourceIdentity || entriesBySource.has(dedupeCandidateKey)) {
+      continue;
+    }
+
+    // Skip orphan resume keys whose path duplicates an already-collected entry's src.
+    const normalizedOrphanPath = normalizeLocalAssetPathForCompare(sourceIdentity);
+    if (normalizedOrphanPath && knownSrcPaths.has(normalizedOrphanPath)) {
       continue;
     }
 
