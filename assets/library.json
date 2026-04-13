@@ -70,6 +70,26 @@
           "seasonNumber": 1,
           "episodeNumber": 1,
           "uploadedAt": 1681401600000
+        },
+        {
+          "title": "Poker / Divorce",
+          "description": "During a poker game, an intense conversation about language and culture unfolds. Later, Louie's brother mentions his divorce, prompting Louie to reflect on a past relationship and search for a former high school crush on social media.",
+          "thumb": "assets/images/louie-s01e02-thumb.jpg",
+          "src": "assets/videos/louie-s01e02-1080p.mp4",
+          "contentKind": "series",
+          "seasonNumber": 1,
+          "episodeNumber": 2,
+          "uploadedAt": 1681401600000
+        },
+        {
+          "title": "Dr. Ben / Nick",
+          "description": "Louie visits a doctor who's an old high school friend with an odd sense of humor. Later, he dines with a fellow comedian after a Comedy Cellar performance, where they discuss passionate political viewpoints.",
+          "thumb": "assets/images/louie-s01e03-thumb.jpg",
+          "src": "assets/videos/louie-s01e03-1080p.mp4",
+          "contentKind": "series",
+          "seasonNumber": 1,
+          "episodeNumber": 3,
+          "uploadedAt": 1681401600000
         }
       ]
     },

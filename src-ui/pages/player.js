@@ -891,25 +891,33 @@ try {
 } catch {
   // Ignore storage access issues.
 }
-// If localStorage has no resume, fetch from server as fallback.
-let _serverResumeReady = (async () => {
-  if (resumeTime > 1) return;
-  try {
-    const res = await fetch("/api/user/watch-progress");
-    if (!res.ok) return;
-    const data = await res.json();
-    const entry = (data.entries || []).find(
-      (e) => e.sourceIdentity === sourceIdentity,
-    );
-    if (entry && Number.isFinite(entry.resumeSeconds) && entry.resumeSeconds > 1) {
-      resumeTime = entry.resumeSeconds;
-      lastPersistedResumeTime = entry.resumeSeconds;
-      try {
-        localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
-      } catch {}
-    }
-  } catch {}
-})();
+// If localStorage has no resume, fetch from server and apply as fallback.
+if (!(resumeTime > 1)) {
+  fetch("/api/user/watch-progress")
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data) => {
+      if (!data) return;
+      const entry = (data.entries || []).find(
+        (e) => e.sourceIdentity === sourceIdentity,
+      );
+      if (entry && Number.isFinite(entry.resumeSeconds) && entry.resumeSeconds > 1) {
+        resumeTime = entry.resumeSeconds;
+        lastPersistedResumeTime = entry.resumeSeconds;
+        try {
+          localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
+        } catch {}
+        // Apply the resume now (metadata may already be loaded).
+        if (Number.isFinite(video.duration) && video.duration > 0) {
+          const dur = getSeekScaleDurationSeconds();
+          if (resumeTime > 1 && resumeTime < dur - 8) {
+            video.currentTime = resumeTime;
+            hasAppliedInitialResume = true;
+          }
+        }
+      }
+    })
+    .catch(() => {});
+}
 
 function getCanonicalContinueWatchingMetadata() {
   return {
@@ -5370,6 +5378,34 @@ async function initPlaybackSource() {
         : DEFAULT_TRAILER_SOURCE);
   resumeStorageKey = `netflix-resume:${sourceIdentity}`;
 
+  // Re-read resume time with the (possibly updated) storage key.
+  try {
+    const storedResume = Number(localStorage.getItem(resumeStorageKey));
+    if (Number.isFinite(storedResume) && storedResume > 0) {
+      resumeTime = storedResume;
+      lastPersistedResumeTime = storedResume;
+    }
+  } catch {}
+  // If localStorage still has no resume, try the server.
+  if (!(resumeTime > 1)) {
+    try {
+      const res = await fetch("/api/user/watch-progress");
+      if (res.ok) {
+        const data = await res.json();
+        const entry = (data?.entries || []).find(
+          (e) => e.sourceIdentity === sourceIdentity,
+        );
+        if (entry && Number.isFinite(entry.resumeSeconds) && entry.resumeSeconds > 1) {
+          resumeTime = entry.resumeSeconds;
+          lastPersistedResumeTime = entry.resumeSeconds;
+          try {
+            localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
   hasAppliedInitialResume = false;
   pendingTranscodeSeekRatio = null;
   availableAudioTracks = [];
@@ -6241,7 +6277,7 @@ trackListener(seekBar, "input", () => {
   seekToAbsoluteTime(ratio * seekScaleDurationSeconds, { showLoading: true });
 });
 
-trackListener(video, "loadedmetadata", async () => {
+trackListener(video, "loadedmetadata", () => {
   // Reapply saved playback speed (browser resets to 1x on new source)
   const restoredSpeed = Number(localStorage.getItem(speedStorageKey));
   if (Number.isFinite(restoredSpeed) && playbackRates.includes(restoredSpeed)) {
@@ -6258,8 +6294,6 @@ trackListener(video, "loadedmetadata", async () => {
     refreshActiveSubtitlePlacement();
     renderCustomSubtitleOverlay();
   }, 200);
-  // Wait for server resume fallback before applying initial resume.
-  await _serverResumeReady;
   const timelineDurationSeconds = getTimelineDurationSeconds();
   const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
   if (
