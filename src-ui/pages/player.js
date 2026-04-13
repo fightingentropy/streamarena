@@ -891,6 +891,25 @@ try {
 } catch {
   // Ignore storage access issues.
 }
+// If localStorage has no resume, fetch from server as fallback.
+let _serverResumeReady = (async () => {
+  if (resumeTime > 1) return;
+  try {
+    const res = await fetch("/api/user/watch-progress");
+    if (!res.ok) return;
+    const data = await res.json();
+    const entry = (data.entries || []).find(
+      (e) => e.sourceIdentity === sourceIdentity,
+    );
+    if (entry && Number.isFinite(entry.resumeSeconds) && entry.resumeSeconds > 1) {
+      resumeTime = entry.resumeSeconds;
+      lastPersistedResumeTime = entry.resumeSeconds;
+      try {
+        localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
+      } catch {}
+    }
+  } catch {}
+})();
 
 function getCanonicalContinueWatchingMetadata() {
   return {
@@ -6222,7 +6241,7 @@ trackListener(seekBar, "input", () => {
   seekToAbsoluteTime(ratio * seekScaleDurationSeconds, { showLoading: true });
 });
 
-trackListener(video, "loadedmetadata", () => {
+trackListener(video, "loadedmetadata", async () => {
   // Reapply saved playback speed (browser resets to 1x on new source)
   const restoredSpeed = Number(localStorage.getItem(speedStorageKey));
   if (Number.isFinite(restoredSpeed) && playbackRates.includes(restoredSpeed)) {
@@ -6239,6 +6258,8 @@ trackListener(video, "loadedmetadata", () => {
     refreshActiveSubtitlePlacement();
     renderCustomSubtitleOverlay();
   }, 200);
+  // Wait for server resume fallback before applying initial resume.
+  await _serverResumeReady;
   const timelineDurationSeconds = getTimelineDurationSeconds();
   const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
   if (
