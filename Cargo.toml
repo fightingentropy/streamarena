@@ -10,8 +10,6 @@ dotenvy = "0.15"
 encoding_rs = "0.8"
 flate2 = "1"
 futures-util = "0.3"
-http = "1"
-http-body-util = "0.1"
 mime_guess = "2"
 multer = "3"
 reqwest = { version = "0.12", default-features = false, features = ["charset", "gzip", "http2", "json", "rustls-tls", "stream"] }

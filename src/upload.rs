@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use axum::body::Body;
 use axum::extract::Request;
@@ -13,6 +13,7 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 
 use crate::config::Config;
+use crate::utils::{hash_stable_string, now_ms};
 use crate::error::{ApiError, AppResult};
 use crate::library::{
     Library, MovieEntry, SeriesEntry, SeriesEpisodeEntry, mutate_local_library, normalize_tmdb_id,
@@ -1210,13 +1211,18 @@ fn build_upload_temp_filename(original_name: &str) -> String {
 }
 
 fn random_suffix() -> String {
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default()
-        ^ std::process::id() as u128;
-    let text = format!("{seed:x}");
-    text.chars().rev().take(6).collect::<String>()
+    let mut buf = [0u8; 8];
+    getrandom::fill(&mut buf).unwrap_or_else(|_| {
+        // Fallback: use time + pid if OS CSPRNG is unavailable (should never happen).
+        let fallback = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+            ^ std::process::id() as u128;
+        buf = (fallback as u64).to_le_bytes();
+    });
+    let value = u64::from_le_bytes(buf);
+    format!("{value:012x}")[..12].to_owned()
 }
 
 async fn append_request_chunk_to_file(
@@ -1522,13 +1528,6 @@ fn json_string(value: &Value) -> String {
     }
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
-}
-
 trait StringExt {
     fn if_empty_then<F: FnOnce() -> String>(self, fallback: F) -> String;
 }
@@ -1628,15 +1627,6 @@ fn build_gallery_download_job_key(
         "gallery:url:{title_key}:{}",
         hash_stable_string(playable_url)
     )
-}
-
-fn hash_stable_string(value: &str) -> String {
-    let mut hash: u32 = 2_166_136_261;
-    for ch in value.bytes() {
-        hash ^= ch as u32;
-        hash = hash.wrapping_mul(16_777_619);
-    }
-    format!("{hash:08x}")
 }
 
 #[cfg(test)]
@@ -1848,6 +1838,8 @@ mod tests {
             remux_hwaccel_mode: "none".to_owned(),
             auto_audio_sync_enabled: false,
             playback_sessions_enabled: false,
+            opensubtitles_api_key: String::new(),
+            opensubtitles_user_agent: String::new(),
 
         };
         tokio::fs::create_dir_all(&assets_dir)

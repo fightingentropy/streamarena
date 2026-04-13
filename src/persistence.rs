@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,7 @@ use tokio::task;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
+use crate::utils::now_ms;
 use crate::routes::{
     normalize_preferred_audio_lang, normalize_preferred_stream_quality,
     normalize_session_health_state, normalize_subtitle_preference,
@@ -1890,7 +1891,7 @@ fn sweep_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
 }
 
 fn take_connection(pool: &Pool, path: &PathBuf) -> Result<Connection, rusqlite::Error> {
-    let mut connections = pool.lock().unwrap();
+    let mut connections = pool.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(conn) = connections.pop() {
         Ok(conn)
     } else {
@@ -1900,7 +1901,7 @@ fn take_connection(pool: &Pool, path: &PathBuf) -> Result<Connection, rusqlite::
 }
 
 fn return_connection(pool: &Pool, conn: Connection) {
-    let mut connections = pool.lock().unwrap();
+    let mut connections = pool.lock().unwrap_or_else(|e| e.into_inner());
     if connections.len() < 4 {
         connections.push(conn);
     }
@@ -1969,12 +1970,6 @@ fn normalize_playback_session_fallback_urls(values: Vec<String>) -> Vec<String> 
     unique
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
-}
 
 pub fn build_cache_debug_payload(
     started_at_ms: i64,
@@ -2339,6 +2334,8 @@ mod tests {
             remux_hwaccel_mode: "none".to_owned(),
             auto_audio_sync_enabled: false,
             playback_sessions_enabled: true,
+            opensubtitles_api_key: String::new(),
+            opensubtitles_user_agent: String::new(),
 
         };
         Db::initialize(&config).await.expect("init db")

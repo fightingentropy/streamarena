@@ -51,9 +51,7 @@ export function decodeSubtitleHtmlEntities(value) {
   if (!text || !text.includes("&")) {
     return text;
   }
-  const textarea = document.createElement("textarea");
-  textarea.innerHTML = text;
-  return textarea.value;
+  return new DOMParser().parseFromString(text, "text/html").body.textContent || "";
 }
 
 /**

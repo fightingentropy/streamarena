@@ -11,27 +11,18 @@ import {
   getStoredAvatarModePreference,
   getStoredAvatarImagePreference,
   escapeHtml,
+  TMDB_IMAGE_BASE,
 } from "../shared.js";
-
-const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
-const AUDIO_LANG_PREF_KEY_PREFIX = "netflix-audio-lang:movie:";
-const DEFAULT_AUDIO_LANGUAGE_PREF_KEY = "netflix-default-audio-lang";
-
-const supportedAudioLangs = new Set(["auto", "en", "fr", "es", "de"]);
-const supportedDefaultAudioLanguages = new Set([
-  "auto",
-  "en",
-  "ja",
-  "ko",
-  "zh",
-  "fr",
-  "es",
-  "de",
-  "it",
-  "pt",
-  "nl",
-  "ro",
-]);
+import {
+  AUDIO_LANG_PREF_KEY_PREFIX,
+  DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
+  supportedAudioLangs,
+  supportedDefaultAudioLanguages,
+  normalizeStreamQualityPreference,
+  normalizeDefaultAudioLanguage,
+  getStoredStreamQualityPreference,
+  getStoredAudioLangForTmdbMovie,
+} from "../lib/preferences.js";
 
 // --- Pure utility functions (no DOM) ---
 
@@ -43,69 +34,6 @@ function normalizeTitleKey(value) {
     .trim();
 }
 
-function normalizeStreamQualityPreference(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (!normalized) return "auto";
-  if (normalized === "4k" || normalized === "uhd") return "2160p";
-  if (normalized === "2160") return "2160p";
-  if (normalized === "1080") return "1080p";
-  if (normalized === "720") return "720p";
-  if (supportedStreamQualityPreferences.has(normalized)) {
-    return normalized;
-  }
-  return "auto";
-}
-
-function normalizeDefaultAudioLanguage(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (
-    !normalized ||
-    normalized === "en" ||
-    normalized === "eng" ||
-    normalized === "english"
-  ) {
-    return "en";
-  }
-  if (
-    normalized === "auto" ||
-    normalized === "default" ||
-    normalized === "source" ||
-    normalized === "original"
-  ) {
-    return "auto";
-  }
-  if (supportedDefaultAudioLanguages.has(normalized)) {
-    return normalized;
-  }
-  return "en";
-}
-
-function getStoredAudioLangForTmdbMovie(tmdbId) {
-  const normalizedTmdbId = String(tmdbId || "").trim();
-  if (!normalizedTmdbId) {
-    return "auto";
-  }
-  try {
-    const raw = String(
-      localStorage.getItem(
-        `${AUDIO_LANG_PREF_KEY_PREFIX}${normalizedTmdbId}`,
-      ) || "",
-    )
-      .trim()
-      .toLowerCase();
-    if (supportedAudioLangs.has(raw)) {
-      return raw;
-    }
-  } catch {
-    // Ignore localStorage failures.
-  }
-  return "auto";
-}
-
 function getStoredDefaultAudioLanguage() {
   try {
     return normalizeDefaultAudioLanguage(
@@ -113,16 +41,6 @@ function getStoredDefaultAudioLanguage() {
     );
   } catch {
     return "en";
-  }
-}
-
-function getStoredStreamQualityPreference() {
-  try {
-    return normalizeStreamQualityPreference(
-      localStorage.getItem(STREAM_QUALITY_PREF_KEY),
-    );
-  } catch {
-    return "auto";
   }
 }
 
@@ -187,7 +105,8 @@ function buildPlayerUrl(details) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
-  return `/watch/${_slug}?${params.toString()}`;
+  try { sessionStorage.setItem(`watch:${_slug}`, params.toString()); } catch {}
+  return `/watch/${_slug}`;
 }
 
 function openPlayerPage(details) {

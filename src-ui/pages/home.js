@@ -1,5 +1,5 @@
 import html from "solid-js/html";
-import { createSignal, createEffect, onMount, onCleanup } from "solid-js";
+import { createSignal, onMount, onCleanup } from "solid-js";
 import {
   STREAM_QUALITY_PREF_KEY,
   PROFILE_AVATAR_STYLE_PREF_KEY,
@@ -16,7 +16,17 @@ import {
   getStoredAvatarModePreference,
   getStoredAvatarImagePreference,
   escapeHtml,
+  TMDB_IMAGE_BASE,
+  readContinueWatchingMetaMap,
 } from "../shared.js";
+import {
+  AUDIO_LANG_PREF_KEY_PREFIX,
+  DEFAULT_STREAM_QUALITY_PREFERENCE,
+  supportedAudioLangs,
+  normalizeStreamQualityPreference,
+  getStoredStreamQualityPreference,
+  getStoredAudioLangForTmdbMovie,
+} from "../lib/preferences.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -24,14 +34,10 @@ import {
 const SEARCH_DEBOUNCE_MS = 280;
 const SEARCH_MIN_QUERY_LENGTH = 2;
 const SEARCH_RESULTS_LIMIT = 40;
-const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
-const AUDIO_LANG_PREF_KEY_PREFIX = "netflix-audio-lang:movie:";
 const SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:movie:";
 const SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:movie:";
 const HERO_TRAILER_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
 const RESUME_STORAGE_PREFIX = "netflix-resume:";
-const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
-const DEFAULT_STREAM_QUALITY_PREFERENCE = "1080p";
 const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
 const JEFFREY_EPSTEIN_SERIES_ID = "jeffrey-epstein-filthy-rich";
 const JEFFREY_EPSTEIN_EPISODE_1_SOURCE =
@@ -42,7 +48,6 @@ const PRIDE_PREJUDICE_SOURCE =
 const PRIDE_PREJUDICE_THUMBNAIL = "assets/images/pride-prejudice-thumb.jpg";
 const DEFAULT_LOCAL_THUMBNAIL = "assets/images/thumbnail.jpg";
 const HIDDEN_LOCAL_SERIES_TMDB_IDS = new Set(["103506", "1396"]);
-const supportedAudioLangs = new Set(["auto", "en", "fr", "es", "de"]);
 
 // ---------------------------------------------------------------------------
 // Pure utility functions (no signals needed)
@@ -361,51 +366,6 @@ function renderLibraryEditSeriesFieldsHtml(item = {}, activeCat = "title") {
     </section>`;
 }
 
-function getStoredAudioLangForTmdbMovie(tmdbId) {
-  const normalizedTmdbId = String(tmdbId || "").trim();
-  if (!normalizedTmdbId) {
-    return "auto";
-  }
-  try {
-    const raw = String(
-      localStorage.getItem(
-        `${AUDIO_LANG_PREF_KEY_PREFIX}${normalizedTmdbId}`,
-      ) || "",
-    )
-      .trim()
-      .toLowerCase();
-    if (supportedAudioLangs.has(raw)) {
-      return raw;
-    }
-  } catch {
-    // Ignore storage access issues.
-  }
-  return "auto";
-}
-
-function normalizeStreamQualityPreference(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (!normalized) return DEFAULT_STREAM_QUALITY_PREFERENCE;
-  if (normalized === "4k" || normalized === "uhd") return "2160p";
-  if (normalized === "2160") return "2160p";
-  if (normalized === "1080") return "1080p";
-  if (normalized === "720") return "720p";
-  if (supportedStreamQualityPreferences.has(normalized)) {
-    return normalized;
-  }
-  return DEFAULT_STREAM_QUALITY_PREFERENCE;
-}
-
-function getStoredStreamQualityPreference() {
-  try {
-    const raw = localStorage.getItem(STREAM_QUALITY_PREF_KEY);
-    return normalizeStreamQualityPreference(raw);
-  } catch {
-    return DEFAULT_STREAM_QUALITY_PREFERENCE;
-  }
-}
 
 function formatRuntime(minutes) {
   if (!minutes || Number.isNaN(minutes)) return "";
@@ -427,16 +387,6 @@ function formatResumeTimestamp(totalSeconds) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-function readContinueWatchingMetaMap() {
-  try {
-    const parsed = JSON.parse(
-      localStorage.getItem(CONTINUE_WATCHING_META_KEY) || "{}",
-    );
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
 
 function extractSeriesIdFromSourceIdentity(sourceIdentity) {
   const normalizedSource = String(sourceIdentity || "").trim();
@@ -1468,7 +1418,8 @@ export default function HomePage() {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "");
     const _epIdx = isSeriesLaunch && hasEpisodeIndex ? `/${Math.floor(parsedEpisodeIndex)}` : "";
-    window.location.href = `/watch/${_slug}${_epIdx}?${params.toString()}`;
+    try { sessionStorage.setItem(`watch:${_slug}`, params.toString()); } catch {}
+    window.location.href = `/watch/${_slug}${_epIdx}`;
   }
 
   function getHeroDestination() {

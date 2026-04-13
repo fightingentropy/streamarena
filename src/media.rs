@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::env;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, LazyLock};
@@ -21,11 +20,11 @@ use crate::config::Config;
 use crate::error::{ApiError, AppResult};
 use crate::persistence::Db;
 use crate::process::run_process_capture_text;
+use crate::utils::hash_stable_string;
 
 const HLS_SEGMENT_STALE_MS: u64 = 6 * 60 * 60 * 1000;
 const SUBTITLE_EXTRACT_TIMEOUT_MS: u64 = 3 * 60 * 1000;
 const EXTERNAL_SUBTITLE_CACHE_TTL_MS: u64 = 12 * 60 * 60 * 1000;
-const OPENSUBTITLES_DEFAULT_USER_AGENT: &str = "netflix-rust-backend v1.0.0";
 const OPENSUBTITLES_API_BASE: &str = "https://api.opensubtitles.com/api/v1";
 const OPENSUBTITLES_TRACK_LIMIT: usize = 5;
 const LOCAL_SIDECAR_SUBTITLE_STREAM_INDEX_BASE: i64 = 1_000_000;
@@ -104,18 +103,14 @@ pub struct MediaService {
 
 impl MediaService {
     pub fn new(config: Config, db: Db, http_client: reqwest::Client) -> Self {
+        let opensubtitles_api_key = config.opensubtitles_api_key.clone();
+        let subtitle_user_agent = config.opensubtitles_user_agent.clone();
         Self {
             config,
             db,
             http_client,
-            opensubtitles_api_key: env::var("OPENSUBTITLES_API_KEY")
-                .unwrap_or_default()
-                .trim()
-                .to_owned(),
-            subtitle_user_agent: env::var("OPENSUBTITLES_USER_AGENT")
-                .unwrap_or_else(|_| OPENSUBTITLES_DEFAULT_USER_AGENT.to_owned())
-                .trim()
-                .to_owned(),
+            opensubtitles_api_key,
+            subtitle_user_agent,
             probe_locks: Arc::new(DashMap::new()),
             subtitle_locks: Arc::new(DashMap::new()),
             external_subtitle_locks: Arc::new(DashMap::new()),
@@ -1688,15 +1683,6 @@ fn parse_frame_rate_to_fps(value: &str) -> f64 {
     raw.parse::<f64>().unwrap_or(0.0)
 }
 
-fn hash_stable_string(value: &str) -> String {
-    let mut hash: u32 = 2_166_136_261;
-    for ch in value.bytes() {
-        hash ^= ch as u32;
-        hash = hash.wrapping_mul(16_777_619);
-    }
-    format!("{hash:08x}")
-}
-
 fn json_number(value: &Value) -> Option<f64> {
     value
         .as_f64()
@@ -1938,6 +1924,8 @@ mod tests {
             remux_hwaccel_mode: "none".to_owned(),
             auto_audio_sync_enabled: false,
             playback_sessions_enabled: false,
+            opensubtitles_api_key: String::new(),
+            opensubtitles_user_agent: String::new(),
 
         };
         assert!(is_local_app_playback_url(

@@ -8,6 +8,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::error::{ApiError, AppResult};
+use crate::utils::now_ms;
 
 static LOCAL_LIBRARY_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -407,15 +408,6 @@ fn value_i64(value: Option<&Value>) -> Option<i64> {
         Some(Value::String(text)) => text.parse::<i64>().ok(),
         _ => None,
     }
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
 }
 
 fn is_filename_noise_token(token: &str) -> bool {

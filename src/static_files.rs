@@ -121,6 +121,9 @@ pub async fn serve_static(
 
 fn resolve_local_path(frontend_dir: &Path, repo_root: &Path, pathname: &str) -> Option<PathBuf> {
     let decoded = percent_decode(pathname)?;
+    if decoded.starts_with("/watch/") || decoded == "/watch" {
+        return Some(frontend_dir.join("player.html"));
+    }
     if decoded.starts_with("/assets/") {
         let normalized = normalize_path(decoded.trim_start_matches('/'));
         let file_path = repo_root.join(normalized);
@@ -241,6 +244,17 @@ mod tests {
         .unwrap();
         assert!(path.ends_with("assets/library.json"));
         assert!(!path.ends_with("dist/assets/library.json"));
+    }
+
+    #[test]
+    fn maps_watch_route_to_player_html() {
+        let path = resolve_local_path(
+            Path::new("/tmp/app/dist"),
+            Path::new("/tmp/app"),
+            "/watch/electrical-course-2025/0",
+        )
+        .unwrap();
+        assert!(path.ends_with("player.html"));
     }
 
     #[test]

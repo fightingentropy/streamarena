@@ -1,6 +1,6 @@
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::Serialize;
 use tokio::process::Command;
@@ -9,6 +9,7 @@ use tokio::time::timeout;
 use url::Url;
 
 use crate::config::Config;
+use crate::utils::now_ms;
 
 
 const FFMPEG_CAPABILITY_REFRESH_MS: i64 = 5 * 60 * 1000;
@@ -285,13 +286,6 @@ fn can_use_hwaccel_mode(snapshot: &FfmpegSnapshot, mode: &str) -> bool {
         "qsv" => snapshot.encoders.h264_qsv && snapshot.hwaccels.iter().any(|item| item == "qsv"),
         _ => false,
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

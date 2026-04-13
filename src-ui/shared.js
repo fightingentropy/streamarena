@@ -87,6 +87,23 @@ export function getStoredAvatarImagePreference() {
   }
 }
 
+// --- TMDB ---
+export const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
+
+// --- Continue-watching metadata ---
+const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
+
+export function readContinueWatchingMetaMap() {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(CONTINUE_WATCHING_META_KEY) || "{}",
+    );
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 // --- HTML escaping ---
 export function escapeHtml(value) {
   return String(value || "")

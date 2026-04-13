@@ -16,56 +16,36 @@ import {
   getStoredAvatarModePreference,
   getStoredAvatarImagePreference,
 } from "../shared.js";
+import {
+  SUBTITLE_COLOR_PREF_KEY,
+  SOURCE_MIN_SEEDERS_PREF_KEY,
+  SOURCE_AUDIO_PROFILE_PREF_KEY,
+  DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
+  REMUX_VIDEO_MODE_PREF_KEY,
+  DEFAULT_SUBTITLE_COLOR,
+  DEFAULT_STREAM_QUALITY_PREFERENCE,
+  normalizeStreamQualityPreference,
+  normalizeSourceMinSeeders,
+  normalizeDefaultAudioLanguage,
+  normalizeSourceAudioProfile,
+  normalizeRemuxVideoMode,
+  normalizeSubtitleColor,
+  getStoredStreamQualityPreference,
+} from "../lib/preferences.js";
 
 // ─── Preference key constants ───────────────────────────────────────────────
-const SUBTITLE_COLOR_PREF_KEY = "netflix-subtitle-color-pref";
-const SOURCE_MIN_SEEDERS_PREF_KEY = "netflix-source-filter-min-seeders";
 const SOURCE_LANGUAGE_PREF_KEY = "netflix-source-filter-language";
-const SOURCE_AUDIO_PROFILE_PREF_KEY = "netflix-source-filter-audio-profile";
-const DEFAULT_AUDIO_LANGUAGE_PREF_KEY = "netflix-default-audio-lang";
-const REMUX_VIDEO_MODE_PREF_KEY = "netflix-remux-video-mode";
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
-const DEFAULT_SUBTITLE_COLOR = "#b8bcc3";
 const DEFAULT_AVATAR_STYLE = "blue";
 const DEFAULT_AVATAR_MODE = "preset";
-const DEFAULT_STREAM_QUALITY_PREFERENCE = "1080p";
 const AVATAR_OUTPUT_SIZE_PX = 180;
 
 // ─── Supported value sets ───────────────────────────────────────────────────
-const supportedDefaultAudioLanguages = [
-  "auto", "en", "ja", "ko", "zh", "fr", "es", "de", "it", "pt", "nl", "ro",
-];
 const supportedSourceLanguages = ["en", "any", "fr", "es", "de", "it", "pt"];
-const supportedSourceAudioProfiles = ["single", "any"];
 const supportedAvatarChoices = new Set([...supportedAvatarStyles, "custom"]);
 
 // ─── Normalization helpers ──────────────────────────────────────────────────
-
-function normalizeStreamQualityPreference(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) return DEFAULT_STREAM_QUALITY_PREFERENCE;
-  if (normalized === "4k" || normalized === "uhd") return "2160p";
-  if (normalized === "2160") return "2160p";
-  if (normalized === "1080") return "1080p";
-  if (normalized === "720") return "720p";
-  if (supportedStreamQualityPreferences.has(normalized)) return normalized;
-  return DEFAULT_STREAM_QUALITY_PREFERENCE;
-}
-
-function normalizeSourceMinSeeders(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.max(0, Math.min(50000, Math.floor(parsed)));
-}
-
-function normalizeDefaultAudioLanguage(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized || normalized === "en" || normalized === "eng" || normalized === "english") return "en";
-  if (normalized === "auto" || normalized === "default" || normalized === "source" || normalized === "original") return "auto";
-  if (supportedDefaultAudioLanguages.includes(normalized)) return normalized;
-  return "en";
-}
 
 function normalizeSourceLanguage(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -75,29 +55,6 @@ function normalizeSourceLanguage(value) {
   return "en";
 }
 
-function normalizeSourceAudioProfile(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized || normalized === "single" || normalized === "single-audio" || normalized === "single_audio" || normalized === "singleaudio" || normalized === "preferred") return "single";
-  if (normalized === "any" || normalized === "multi" || normalized === "multi-audio" || normalized === "multi_audio" || normalized === "multiaudio" || normalized === "all") return "any";
-  if (supportedSourceAudioProfiles.includes(normalized)) return normalized;
-  return "single";
-}
-
-function normalizeRemuxVideoMode(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized || normalized === "auto" || normalized === "default") return "auto";
-  if (normalized === "copy" || normalized === "passthrough" || normalized === "direct" || normalized === "streamcopy") return "copy";
-  if (normalized === "normalize" || normalized === "transcode" || normalized === "aggressive" || normalized === "rebuild") return "normalize";
-  return "auto";
-}
-
-function normalizeSubtitleColor(value) {
-  const raw = String(value || "").trim().toLowerCase();
-  if (/^#[0-9a-f]{6}$/.test(raw)) return raw;
-  if (/^#[0-9a-f]{3}$/.test(raw)) return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`;
-  return DEFAULT_SUBTITLE_COLOR;
-}
-
 function normalizeAvatarChoice(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (supportedAvatarChoices.has(normalized)) return normalized;
@@ -105,11 +62,6 @@ function normalizeAvatarChoice(value) {
 }
 
 // ─── localStorage getters ───────────────────────────────────────────────────
-
-function getStoredStreamQualityPreference() {
-  try { return normalizeStreamQualityPreference(localStorage.getItem(STREAM_QUALITY_PREF_KEY)); }
-  catch { return DEFAULT_STREAM_QUALITY_PREFERENCE; }
-}
 
 function getStoredSubtitleColorPreference() {
   try { return normalizeSubtitleColor(localStorage.getItem(SUBTITLE_COLOR_PREF_KEY)); }

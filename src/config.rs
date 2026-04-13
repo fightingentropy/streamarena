@@ -1,7 +1,6 @@
 use std::env;
 use std::path::PathBuf;
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Config {
     pub root_dir: PathBuf,
@@ -18,16 +17,23 @@ pub struct Config {
     pub tmdb_api_key: String,
     pub real_debrid_token: String,
     pub torrentio_base_url: String,
+    #[allow(dead_code)] // Loaded from env, reserved for Codex integration
     pub codex_auth_file: String,
+    #[allow(dead_code)] // Loaded from env, reserved for Codex integration
     pub codex_url: String,
+    #[allow(dead_code)] // Loaded from env, reserved for Codex integration
     pub codex_model: String,
+    #[allow(dead_code)] // Loaded from env, reserved for OpenAI integration
     pub openai_api_key: String,
+    #[allow(dead_code)] // Loaded from env, reserved for OpenAI integration
     pub openai_responses_model: String,
     pub remux_video_mode: String,
     pub hls_hwaccel_mode: String,
     pub remux_hwaccel_mode: String,
     pub auto_audio_sync_enabled: bool,
     pub playback_sessions_enabled: bool,
+    pub opensubtitles_api_key: String,
+    pub opensubtitles_user_agent: String,
 }
 
 impl Config {
@@ -114,6 +120,14 @@ impl Config {
             playback_sessions_enabled: normalize_bool_flag(
                 env::var("PLAYBACK_SESSIONS").unwrap_or_else(|_| "0".to_owned()),
             ),
+            opensubtitles_api_key: env::var("OPENSUBTITLES_API_KEY")
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
+            opensubtitles_user_agent: env::var("OPENSUBTITLES_USER_AGENT")
+                .unwrap_or_else(|_| "netflix-rust-backend v1.0.0".to_owned())
+                .trim()
+                .to_owned(),
         }
     }
 }

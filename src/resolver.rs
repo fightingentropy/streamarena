@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::LazyLock;
 use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 use serde::Deserialize;
@@ -11,6 +10,7 @@ use tokio::time::sleep;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
+use crate::utils::now_ms;
 use crate::media::{
     MediaProbe, MediaService, choose_audio_track_from_probe, choose_subtitle_track_from_probe,
     merge_preferred_subtitle_tracks,
@@ -3473,12 +3473,6 @@ fn push_unique_url(target: &mut Vec<String>, value: &str) {
     target.push(value.to_owned());
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
-}
 
 trait IfEmptyThen {
     fn if_empty_then(self, fallback: impl FnOnce() -> String) -> String;

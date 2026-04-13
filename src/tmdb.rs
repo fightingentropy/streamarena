@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use dashmap::DashMap;
 use serde_json::Value;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
 use crate::persistence::Db;
+use crate::utils::now_ms;
 
 const TMDB_BASE_URL: &str = "https://api.themoviedb.org/3";
 const TMDB_RESPONSE_CACHE_TTL_DEFAULT_MS: i64 = 6 * 60 * 60 * 1000;
@@ -66,11 +65,11 @@ impl TmdbService {
 
         let mut query = params.clone();
         query.insert("language".to_owned(), "en-US".to_owned());
-        query.insert("api_key".to_owned(), self.config.tmdb_api_key.clone());
 
         let response = self
             .client
             .get(format!("{TMDB_BASE_URL}{path}"))
+            .header("Authorization", format!("Bearer {}", self.config.tmdb_api_key))
             .query(&query)
             .timeout(std::time::Duration::from_millis(timeout_ms))
             .send()
@@ -167,15 +166,14 @@ impl TmdbService {
     }
 }
 
+const TMDB_CACHE_EVICTION_AGE_MS: i64 = 24 * 60 * 60 * 1000;
+
 fn trim_cache(cache: &DashMap<String, CachedValue>) {
-    while cache.len() > TMDB_RESPONSE_CACHE_MAX_ENTRIES {
-        let Some(entry) = cache.iter().min_by_key(|entry| entry.value().last_accessed_at) else {
-            break;
-        };
-        let key = entry.key().clone();
-        drop(entry);
-        cache.remove(&key);
+    if cache.len() <= TMDB_RESPONSE_CACHE_MAX_ENTRIES {
+        return;
     }
+    let cutoff = now_ms() - TMDB_CACHE_EVICTION_AGE_MS;
+    cache.retain(|_, entry| entry.last_accessed_at > cutoff);
 }
 
 pub fn build_tmdb_response_cache_key(path: &str, params: &BTreeMap<String, String>) -> String {
@@ -215,13 +213,6 @@ fn map_reqwest_error(error: reqwest::Error, timeout_message: &str) -> ApiError {
     } else {
         ApiError::internal(error.to_string())
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

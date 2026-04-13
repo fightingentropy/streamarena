@@ -3,7 +3,7 @@ import "../../upload.css";
 import { requireAuth, hydrateFromServer } from "../lib/auth.js";
 
 await requireAuth();
-hydrateFromServer();
+await hydrateFromServer();
 
 const { mountPage } = await import("../lib/mount-page.js");
 const { default: UploadPage } = await import("../pages/upload.js");

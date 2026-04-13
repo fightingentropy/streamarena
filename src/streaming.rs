@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
@@ -18,6 +18,7 @@ use url::form_urlencoded::byte_serialize;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
+use crate::utils::{hash_stable_string, now_ms};
 use crate::media::{MediaProbe, MediaService};
 use crate::process::{
     RuntimeServices, normalize_audio_sync_ms, resolve_effective_remux_hwaccel_mode,
@@ -34,7 +35,6 @@ const HLS_SEGMENT_WAIT_POLL_MS: u64 = 180;
 const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "mp2", "opus", "vorbis", "flac", "alac"];
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
     &["ac3", "eac3", "dts", "dca", "truehd", "mlp", "pcm_", "wma"];
-const REMUX_FORCE_NORMALIZE_VIDEO_CODECS: &[&str] = &[];
 
 #[derive(Clone)]
 pub struct StreamingService {
@@ -335,7 +335,7 @@ impl StreamingService {
             .args(ffmpeg_args.iter().skip(1))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut child = command
             .spawn()
@@ -345,12 +345,30 @@ impl StreamingService {
             .take()
             .ok_or_else(|| ApiError::internal("Failed to capture ffmpeg stdout."))?;
 
+        // Capture stderr in a background task so ffmpeg errors are logged.
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut reader = tokio::io::BufReader::new(stderr);
+                let mut output = String::new();
+                let _ = tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut output).await;
+                if !output.trim().is_empty() {
+                    eprintln!("[remux] ffmpeg stderr: {output}");
+                }
+            });
+        }
+
         let stream = stream::try_unfold(
             (stdout, child, vec![0_u8; 16 * 1024]),
             |(mut stdout, mut child, mut buffer)| async move {
                 let read = stdout.read(&mut buffer).await?;
                 if read == 0 {
-                    child.wait().await?;
+                    let status = child.wait().await?;
+                    if !status.success() {
+                        eprintln!(
+                            "[remux] ffmpeg exited with code {}",
+                            status.code().unwrap_or(-1)
+                        );
+                    }
                     return Ok(None);
                 }
                 let bytes = Bytes::copy_from_slice(&buffer[..read]);
@@ -578,10 +596,22 @@ impl StreamingService {
             .args(args.iter().skip(1))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let child = command
+            .stderr(Stdio::piped());
+        let mut child = command
             .spawn()
             .map_err(|error| ApiError::internal(error.to_string()))?;
+
+        // Capture stderr in a background task so HLS transcode errors are logged.
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut reader = tokio::io::BufReader::new(stderr);
+                let mut output = String::new();
+                let _ = tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut output).await;
+                if !output.trim().is_empty() {
+                    eprintln!("[transcode] ffmpeg stderr: {output}");
+                }
+            });
+        }
         let now = now_ms();
         let job = Arc::new(HlsJob {
             source_input: source_input.to_owned(),
@@ -935,10 +965,21 @@ fn get_fallback_audio_stream_index(probe: &MediaProbe) -> i64 {
 }
 
 fn should_force_normalize_video_for_browser(probe: &MediaProbe, _source: &str) -> bool {
-    let probe_codec = probe.videoCodec.trim().to_lowercase();
-    if !probe_codec.is_empty() && REMUX_FORCE_NORMALIZE_VIDEO_CODECS.contains(&probe_codec.as_str())
-    {
-        return true;
+    // MP4/MOV containers use edit lists (elst atoms) to trim B-frame lead-in
+    // and keep audio/video in sync.  Fragmented MP4 output (used by the remux
+    // endpoint) cannot carry edit lists, so the raw video PTS is exposed and
+    // the first presentable frame starts later than audio.  When B-frames are
+    // present and the audio will be re-encoded (meaning it goes through the
+    // filter pipeline rather than stream-copy), force normalize mode so that
+    // setpts=PTS-STARTPTS resets video PTS to 0 and eliminates the gap.
+    if probe.videoBFrames > 0 {
+        let has_unsafe_audio = probe
+            .audioTracks
+            .iter()
+            .any(|track| !is_browser_safe_audio_codec(&track.codec));
+        if has_unsafe_audio {
+            return true;
+        }
     }
     false
 }
@@ -1156,22 +1197,6 @@ fn build_hls_transcode_args(
         format!("{output_prefix}-%06d.ts"),
     ]);
     args
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
-}
-
-fn hash_stable_string(value: &str) -> String {
-    let mut hash: u32 = 2_166_136_261;
-    for ch in value.bytes() {
-        hash ^= ch as u32;
-        hash = hash.wrapping_mul(16_777_619);
-    }
-    format!("{hash:08x}")
 }
 
 fn key_lock(map: &DashMap<String, Arc<Mutex<()>>>, key: &str) -> Arc<Mutex<()>> {

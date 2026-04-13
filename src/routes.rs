@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::RequestExt;
 use axum::Router;
@@ -16,6 +15,7 @@ use axum::http::HeaderMap;
 use crate::auth;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult, json_response};
+use crate::utils::now_ms;
 use crate::library::{
     normalize_upload_content_type, normalize_upload_episode_ordinal, normalize_whitespace,
     normalize_year, read_local_library, strip_file_extension, title_from_filename_token,
@@ -1361,12 +1361,12 @@ const SESSION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
 
 fn set_session_cookie(token: &str) -> String {
     format!(
-        "session={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={SESSION_MAX_AGE_SECONDS}"
+        "session={token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={SESSION_MAX_AGE_SECONDS}"
     )
 }
 
 fn clear_session_cookie() -> String {
-    "session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0".to_owned()
+    "session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0".to_owned()
 }
 
 async fn auth_signup_handler(
@@ -1439,7 +1439,9 @@ async fn auth_signup_handler(
     }));
     response.headers_mut().insert(
         axum::http::header::SET_COOKIE,
-        set_session_cookie(&token).parse().unwrap(),
+        set_session_cookie(&token)
+            .parse()
+            .map_err(|_| ApiError::internal("Failed to build session cookie."))?,
     );
     Ok(response)
 }
@@ -1500,7 +1502,9 @@ async fn auth_login_handler(
     }));
     response.headers_mut().insert(
         axum::http::header::SET_COOKIE,
-        set_session_cookie(&token).parse().unwrap(),
+        set_session_cookie(&token)
+            .parse()
+            .map_err(|_| ApiError::internal("Failed to build session cookie."))?,
     );
     Ok(response)
 }
@@ -1519,7 +1523,9 @@ async fn auth_logout_handler(
     let mut response = json_response(json!({ "ok": true }));
     response.headers_mut().insert(
         axum::http::header::SET_COOKIE,
-        clear_session_cookie().parse().unwrap(),
+        clear_session_cookie()
+            .parse()
+            .map_err(|_| ApiError::internal("Failed to build session cookie."))?,
     );
     Ok(response)
 }
@@ -2475,12 +2481,6 @@ fn stringify_json(value: Option<&Value>) -> String {
     }
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
-}
 
 trait StringExt {
     fn if_empty_then<F: FnOnce() -> String>(self, fallback: F) -> String;

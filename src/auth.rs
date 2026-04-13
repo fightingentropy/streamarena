@@ -33,9 +33,15 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
         .is_ok()
 }
 
+/// Generate a cryptographically random session token.
+///
+/// Uses the OS CSPRNG via `getrandom`. If `getrandom::fill` fails, the
+/// process is in an unrecoverable state (the OS random source is broken),
+/// so panicking is the correct response -- serving requests with weak
+/// tokens would be worse than crashing.
 pub fn generate_session_token() -> String {
     let mut buf = [0u8; 32];
-    getrandom::fill(&mut buf).expect("getrandom failed");
+    getrandom::fill(&mut buf).expect("OS CSPRNG unavailable — cannot generate secure tokens");
     hex_encode(&buf)
 }
 

@@ -11,6 +11,7 @@ mod static_files;
 mod streaming;
 mod tmdb;
 mod upload;
+mod utils;
 
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
