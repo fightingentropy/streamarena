@@ -7279,7 +7279,7 @@ trackListener(window, "beforeunload", () => {
             <img
               ref=${el => autoPlayThumb = el}
               class="autoplay-thumb"
-              src="/${DEFAULT_EPISODE_THUMBNAIL}"
+              src=${`/${DEFAULT_EPISODE_THUMBNAIL}`}
               alt="Next episode"
             />
             <div class="autoplay-countdown-ring-wrap">
