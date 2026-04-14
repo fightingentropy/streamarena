@@ -45,6 +45,8 @@ export default function PlayerPage() {
   let durationText, togglePlay, rewind10, forward10, volumeControl, volumeSlider;
   let toggleMutePlayer, toggleFullscreen, toggleSpeed, speedControl;
   let nextEpisode, toggleEpisodes, episodesControl, episodesList, episodesPopoverTitle;
+  let autoPlayOverlay, autoPlayThumb, autoPlayTitle, autoPlayEpLabel;
+  let autoPlayCountdownText, autoPlayProgressRing, autoPlayBtn, autoPlayCancel;
   let toggleAudio, audioControl, audioMenu, audioOptionsContainer, subtitleOptionsContainer;
   let audioStatusBadge, subtitlePanel, audioTabSubtitles, audioTabSources;
   let sourcePanel, sourceOptionsContainer, sourceOptionDetails, episodeLabel;
@@ -99,6 +101,12 @@ let activeAudioTab = "subtitles";
 let seriesEpisodeThumbHydrationTask = null;
 let hasHydratedSeriesEpisodeThumbs = false;
 let hasQueuedGallerySave = false;
+let autoPlayCountdownInterval = null;
+let autoPlayCountdownSeconds = 0;
+let autoPlayOverlayVisible = false;
+let autoPlayCancelled = false;
+const AUTO_PLAY_COUNTDOWN_DURATION = 5;
+const AUTO_PLAY_SHOW_BEFORE_END_SECONDS = 10;
 let lastAudibleVolume = 1;
 const sourceSaveStateByHash = new Map();
 const sourceSaveResetTimeoutByHash = new Map();
@@ -3492,6 +3500,120 @@ function syncSeriesControls() {
   }
 }
 
+// ─── Auto-play next episode ───
+
+function getNextPlayableEpisode() {
+  if (!isSeriesPlayback || !activeSeries || !seriesEpisodes.length) {
+    return null;
+  }
+  const nextIndex = seriesEpisodeIndex + 1;
+  if (nextIndex >= seriesEpisodes.length) {
+    return null;
+  }
+  const nextEp = seriesEpisodes[nextIndex];
+  if (!nextEp || !isSeriesEpisodePlayable(nextEp)) {
+    return null;
+  }
+  return { episode: nextEp, index: nextIndex };
+}
+
+function showAutoPlayCard() {
+  const next = getNextPlayableEpisode();
+  if (!next || !autoPlayOverlay || autoPlayCancelled) {
+    return;
+  }
+
+  const nextLabel = getSeriesEpisodeLabel(
+    next.index,
+    next.episode.title,
+    activeSeries,
+    next.episode.episodeNumber,
+  );
+  const rawThumb = next.episode.thumb || DEFAULT_EPISODE_THUMBNAIL;
+  const thumbSrc = rawThumb.startsWith("/") || rawThumb.startsWith("http") ? rawThumb : `/${rawThumb}`;
+
+  if (autoPlayThumb) {
+    autoPlayThumb.src = thumbSrc;
+    autoPlayThumb.alt = nextLabel;
+  }
+  if (autoPlayTitle) {
+    autoPlayTitle.textContent = activeSeries.title || "Next Episode";
+  }
+  if (autoPlayEpLabel) {
+    autoPlayEpLabel.textContent = nextLabel;
+  }
+  if (autoPlayCountdownText) {
+    autoPlayCountdownText.textContent = "";
+  }
+  if (autoPlayProgressRing) {
+    autoPlayProgressRing.style.strokeDashoffset = "0";
+  }
+
+  autoPlayOverlay.hidden = false;
+  autoPlayOverlayVisible = true;
+}
+
+function startAutoPlayCountdown() {
+  const next = getNextPlayableEpisode();
+  if (!next || !autoPlayOverlay || autoPlayCancelled) {
+    return;
+  }
+
+  if (!autoPlayOverlayVisible) {
+    showAutoPlayCard();
+  }
+  if (!autoPlayOverlayVisible) {
+    return;
+  }
+
+  autoPlayOverlay.classList.add("is-countdown");
+  autoPlayCountdownSeconds = AUTO_PLAY_COUNTDOWN_DURATION;
+
+  const circumference = 2 * Math.PI * 20;
+  if (autoPlayProgressRing) {
+    autoPlayProgressRing.style.strokeDasharray = `${circumference}`;
+    autoPlayProgressRing.style.strokeDashoffset = "0";
+  }
+
+  function tick() {
+    if (autoPlayCountdownSeconds <= 0) {
+      clearInterval(autoPlayCountdownInterval);
+      autoPlayCountdownInterval = null;
+      navigateToSeriesEpisode(next.index);
+      return;
+    }
+    if (autoPlayCountdownText) {
+      autoPlayCountdownText.textContent = String(autoPlayCountdownSeconds);
+    }
+    if (autoPlayProgressRing) {
+      const progress = 1 - autoPlayCountdownSeconds / AUTO_PLAY_COUNTDOWN_DURATION;
+      autoPlayProgressRing.style.strokeDashoffset = String(circumference * progress);
+    }
+    autoPlayCountdownSeconds--;
+  }
+
+  tick();
+  autoPlayCountdownInterval = window.setInterval(tick, 1000);
+}
+
+function hideAutoPlayOverlay() {
+  if (autoPlayCountdownInterval) {
+    clearInterval(autoPlayCountdownInterval);
+    autoPlayCountdownInterval = null;
+  }
+  autoPlayCountdownSeconds = 0;
+  autoPlayOverlayVisible = false;
+  if (autoPlayOverlay) {
+    autoPlayOverlay.hidden = true;
+    autoPlayOverlay.classList.remove("is-countdown");
+  }
+}
+
+function cancelAutoPlay() {
+  autoPlayCancelled = true;
+  hideAutoPlayOverlay();
+}
+
 // Deferred to onMount (needs refs):
 // setEpisodeLabel, renderSeriesEpisodePreview, syncSeriesControls, hydrateSeriesEpisodeThumbnails
 
@@ -5651,6 +5773,22 @@ if (nextEpisode) {
   });
 }
 
+// Auto-play overlay buttons.
+if (autoPlayBtn) {
+  trackListener(autoPlayBtn, "click", () => {
+    const next = getNextPlayableEpisode();
+    if (next) {
+      hideAutoPlayOverlay();
+      navigateToSeriesEpisode(next.index);
+    }
+  });
+}
+if (autoPlayCancel) {
+  trackListener(autoPlayCancel, "click", () => {
+    cancelAutoPlay();
+  });
+}
+
 trackListener(toggleSpeed, "click", (event) => {
   event.preventDefault();
   if (!speedControl || isResolvingSource()) {
@@ -6379,6 +6517,31 @@ trackListener(video, "timeupdate", () => {
     clearStreamStallRecovery();
   }
   persistResumeTime(false);
+
+  // Auto-play: show the "next episode" card near the end.
+  if (hasSeriesEpisodeControls && !autoPlayCancelled && !autoPlayOverlayVisible) {
+    const duration = getDisplayDurationSeconds();
+    const current = getEffectiveCurrentTime();
+    if (
+      Number.isFinite(duration) &&
+      duration > AUTO_PLAY_SHOW_BEFORE_END_SECONDS + 5 &&
+      current >= duration - AUTO_PLAY_SHOW_BEFORE_END_SECONDS
+    ) {
+      showAutoPlayCard();
+    }
+  }
+  // Hide the card if user seeks back well before the end.
+  if (autoPlayOverlayVisible && !video.ended) {
+    const duration = getDisplayDurationSeconds();
+    const current = getEffectiveCurrentTime();
+    if (
+      Number.isFinite(duration) &&
+      current < duration - AUTO_PLAY_SHOW_BEFORE_END_SECONDS - 5
+    ) {
+      hideAutoPlayOverlay();
+      autoPlayCancelled = false; // allow re-trigger if they reach end again
+    }
+  }
 });
 trackListener(video, "play", syncPlayState);
 trackListener(video, "play", () => {
@@ -6422,6 +6585,11 @@ trackListener(video, "ended", () => {
   resumeTime = 0;
   lastPersistedResumeTime = 0;
   lastPersistedResumeAt = 0;
+
+  // Auto-play: start countdown to next episode.
+  if (hasSeriesEpisodeControls && !autoPlayCancelled && getNextPlayableEpisode()) {
+    startAutoPlayCountdown();
+  }
 });
 trackListener(video, "volumechange", syncMuteState);
 trackListener(video, "canplay", () => {
@@ -7103,6 +7271,57 @@ trackListener(window, "beforeunload", () => {
             </div>
           </div>
         </section>
+      </div>
+
+      <div id="autoPlayOverlay" ref=${el => autoPlayOverlay = el} class="autoplay-overlay" hidden>
+        <div class="autoplay-card">
+          <div class="autoplay-thumb-wrap">
+            <img
+              ref=${el => autoPlayThumb = el}
+              class="autoplay-thumb"
+              src="/${DEFAULT_EPISODE_THUMBNAIL}"
+              alt="Next episode"
+            />
+            <div class="autoplay-countdown-ring-wrap">
+              <svg class="autoplay-countdown-ring" viewBox="0 0 48 48">
+                <circle class="autoplay-ring-track" cx="24" cy="24" r="20" />
+                <circle
+                  ref=${el => autoPlayProgressRing = el}
+                  class="autoplay-ring-progress"
+                  cx="24" cy="24" r="20"
+                />
+              </svg>
+              <span ref=${el => autoPlayCountdownText = el} class="autoplay-countdown-text"></span>
+            </div>
+          </div>
+          <div class="autoplay-info">
+            <p class="autoplay-up-next">Next Episode</p>
+            <p ref=${el => autoPlayTitle = el} class="autoplay-series-title"></p>
+            <p ref=${el => autoPlayEpLabel = el} class="autoplay-ep-label"></p>
+          </div>
+          <div class="autoplay-actions">
+            <button
+              ref=${el => autoPlayBtn = el}
+              class="autoplay-play-btn"
+              type="button"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 3.5v17L20 12 5 3.5Z"></path>
+              </svg>
+              Play Now
+            </button>
+            <button
+              ref=${el => autoPlayCancel = el}
+              class="autoplay-cancel-btn"
+              type="button"
+              aria-label="Cancel auto-play"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
       </div>
 
       <div id="resolverOverlay" ref=${el => resolverOverlay = el} class="resolver-overlay" hidden>

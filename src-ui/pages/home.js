@@ -747,6 +747,13 @@ function getContinueWatchingEntries() {
       ? String(seriesMatch[1] || "").trim()
       : "";
     const inferredEpisodeIndex = seriesMatch ? Number(seriesMatch[2]) : -1;
+
+    // Skip orphan entries that have no TMDB ID or series context — they
+    // produce grey placeholder cards with no useful title or artwork.
+    if (!tmdbId && !inferredSeriesId) {
+      continue;
+    }
+
     const normalizedEntry = normalizeLocalContinueEntry({
       sourceIdentity,
       resumeSeconds,
