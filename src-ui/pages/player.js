@@ -4126,6 +4126,11 @@ function persistResumeTime(force = false) {
     if (isNearEnd) {
       localStorage.removeItem(resumeStorageKey);
       removeContinueWatchingEntry();
+      fetch("/api/user/watch-progress", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceIdentity }),
+      }).catch(() => {});
       resumeTime = 0;
       lastPersistedResumeTime = 0;
       lastPersistedResumeAt = 0;
@@ -4136,6 +4141,11 @@ function persistResumeTime(force = false) {
       if (force) {
         localStorage.removeItem(resumeStorageKey);
         removeContinueWatchingEntry();
+        fetch("/api/user/watch-progress", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sourceIdentity }),
+        }).catch(() => {});
         resumeTime = 0;
         lastPersistedResumeTime = 0;
         lastPersistedResumeAt = 0;
@@ -6582,6 +6592,11 @@ trackListener(video, "ended", () => {
   } catch {
     // Ignore storage access issues.
   }
+  fetch("/api/user/watch-progress", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sourceIdentity }),
+  }).catch(() => {});
   resumeTime = 0;
   lastPersistedResumeTime = 0;
   lastPersistedResumeAt = 0;

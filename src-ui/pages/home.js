@@ -468,6 +468,14 @@ function removeResumeEntriesForSource(
 
   keysToDelete.forEach((key) => {
     localStorage.removeItem(key);
+    const identity = key.slice(RESUME_STORAGE_PREFIX.length);
+    if (identity) {
+      fetch("/api/user/watch-progress", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceIdentity: identity }),
+      }).catch(() => {});
+    }
   });
 }
 
@@ -1102,7 +1110,7 @@ function getRecommendationIdentity(details) {
 function normalizeMyListEntry(entry) {
   const details = entry && typeof entry === "object" ? entry : {};
   const normalizedEpisodeIndex = Number(details.episodeIndex);
-  return {
+  const normalized = {
     title: String(details.title || "").trim() || "Untitled",
     episode: String(details.episode || "").trim(),
     src: String(details.src || "").trim(),
@@ -1122,6 +1130,10 @@ function normalizeMyListEntry(entry) {
         : -1,
     addedAt: Number(details.addedAt) || Date.now(),
   };
+  normalized.itemIdentity =
+    String(details.itemIdentity || "").trim() ||
+    getRecommendationIdentity(normalized);
+  return normalized;
 }
 
 function readMyListEntries() {
@@ -1146,7 +1158,7 @@ function writeMyListEntries(entries) {
   fetch("/api/user/my-list", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(safeEntries),
+    body: JSON.stringify({ entries: safeEntries }),
   }).catch(() => {});
   return safeEntries;
 }

@@ -65,11 +65,14 @@ export async function hydrateFromServer() {
 
     if (progressRes.ok) {
       const progress = await progressRes.json();
-      if (Array.isArray(progress)) {
-        for (const entry of progress) {
-          if (entry.sourceIdentity && entry.resumeSeconds > 0) {
-            localStorage.setItem(`netflix-resume:${entry.sourceIdentity}`, String(entry.resumeSeconds));
-          }
+      const progressEntries = Array.isArray(progress?.entries)
+        ? progress.entries
+        : Array.isArray(progress)
+          ? progress
+          : [];
+      for (const entry of progressEntries) {
+        if (entry.sourceIdentity && entry.resumeSeconds > 0) {
+          localStorage.setItem(`netflix-resume:${entry.sourceIdentity}`, String(entry.resumeSeconds));
         }
       }
     }
@@ -97,8 +100,13 @@ export async function hydrateFromServer() {
 
     if (listRes.ok) {
       const list = await listRes.json();
-      if (Array.isArray(list)) {
-        localStorage.setItem("netflix-my-list-v1", JSON.stringify(list));
+      const listEntries = Array.isArray(list?.entries)
+        ? list.entries
+        : Array.isArray(list)
+          ? list
+          : [];
+      if (listEntries.length > 0) {
+        localStorage.setItem("netflix-my-list-v1", JSON.stringify(listEntries));
       }
     }
   } catch {
