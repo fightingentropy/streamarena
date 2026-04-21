@@ -238,14 +238,6 @@ Required integrations:
 - `TMDB_API_KEY`
 - `REAL_DEBRID_TOKEN`
 
-Codex/OpenAI-assisted metadata inference:
-
-- `CODEX_AUTH_FILE`
-- `CODEX_URL`
-- `CODEX_MODEL`
-- `OPENAI_API_KEY`
-- `OPENAI_RESPONSES_MODEL`
-
 Runtime:
 
 - `TORRENTIO_BASE_URL`

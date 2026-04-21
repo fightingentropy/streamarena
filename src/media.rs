@@ -1913,12 +1913,6 @@ mod tests {
             tmdb_api_key: String::new(),
             real_debrid_token: String::new(),
             torrentio_base_url: String::new(),
-            codex_auth_file: String::new(),
-            codex_url: String::new(),
-            codex_model: String::new(),
-            openai_api_key: String::new(),
-            openai_responses_model: String::new(),
-
             remux_video_mode: "auto".to_owned(),
             hls_hwaccel_mode: "none".to_owned(),
             remux_hwaccel_mode: "none".to_owned(),

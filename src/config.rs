@@ -17,16 +17,6 @@ pub struct Config {
     pub tmdb_api_key: String,
     pub real_debrid_token: String,
     pub torrentio_base_url: String,
-    #[allow(dead_code)] // Loaded from env, reserved for Codex integration
-    pub codex_auth_file: String,
-    #[allow(dead_code)] // Loaded from env, reserved for Codex integration
-    pub codex_url: String,
-    #[allow(dead_code)] // Loaded from env, reserved for Codex integration
-    pub codex_model: String,
-    #[allow(dead_code)] // Loaded from env, reserved for OpenAI integration
-    pub openai_api_key: String,
-    #[allow(dead_code)] // Loaded from env, reserved for OpenAI integration
-    pub openai_responses_model: String,
     pub remux_video_mode: String,
     pub hls_hwaccel_mode: String,
     pub remux_hwaccel_mode: String,
@@ -82,26 +72,6 @@ impl Config {
                 .unwrap_or_else(|_| "https://torrentio.strem.fun".to_owned())
                 .trim()
                 .trim_end_matches('/')
-                .to_owned(),
-            codex_auth_file: env::var("CODEX_AUTH_FILE")
-                .unwrap_or_else(|_| "~/.codex/auth.json".to_owned())
-                .trim()
-                .to_owned(),
-            codex_url: env::var("CODEX_URL")
-                .unwrap_or_else(|_| "https://chatgpt.com/backend-api/codex/responses".to_owned())
-                .trim()
-                .to_owned(),
-            codex_model: env::var("CODEX_MODEL")
-                .unwrap_or_else(|_| "gpt-5.2-codex".to_owned())
-                .trim()
-                .to_owned(),
-            openai_api_key: env::var("OPENAI_API_KEY")
-                .unwrap_or_default()
-                .trim()
-                .to_owned(),
-            openai_responses_model: env::var("OPENAI_RESPONSES_MODEL")
-                .unwrap_or_else(|_| "gpt-5-mini".to_owned())
-                .trim()
                 .to_owned(),
             remux_video_mode: normalize_remux_video_mode(
                 env::var("REMUX_VIDEO_MODE").unwrap_or_else(|_| "auto".to_owned()),
