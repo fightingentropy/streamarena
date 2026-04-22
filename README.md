@@ -235,7 +235,7 @@ Copy `.env.example` to `.env` and fill required keys.
 
 Required integrations:
 
-- `TMDB_API_KEY`
+- `TMDB_API_KEY` (TMDB v3 API key or v4 read access token)
 - `REAL_DEBRID_TOKEN`
 
 Runtime:

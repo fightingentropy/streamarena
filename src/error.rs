@@ -39,6 +39,10 @@ impl ApiError {
         Self::new(StatusCode::BAD_GATEWAY, message)
     }
 
+    pub fn gateway_timeout(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::GATEWAY_TIMEOUT, message)
+    }
+
     pub fn payload_too_large(message: impl Into<String>) -> Self {
         Self::new(StatusCode::PAYLOAD_TOO_LARGE, message)
     }

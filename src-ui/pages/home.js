@@ -1239,6 +1239,8 @@ function readLibraryPositiveInteger(root, selector, fallback = 1) {
 // ---------------------------------------------------------------------------
 const tmdbDetailsCache = new Map();
 const TMDB_DETAILS_CACHE_MAX = 200;
+const TMDB_DETAILS_ENRICHMENT_TIMEOUT_MS = 2500;
+const TMDB_DETAILS_MODAL_TIMEOUT_MS = 6000;
 
 function setTmdbDetailsCache(key, value) {
   tmdbDetailsCache.delete(key);
@@ -1327,6 +1329,7 @@ export default function HomePage() {
   let detailsTrigger = null;
   let closeModalTimer = null;
   let detailsRequestVersion = 0;
+  let continueWatchingLoadVersion = 0;
   let searchDebounceTimer = null;
   let activeSearchRequestToken = 0;
   let searchAbortController = null;
@@ -1996,10 +1999,14 @@ export default function HomePage() {
     }
 
     try {
-      const details = await apiFetch("/api/tmdb/details", {
-        tmdbId,
-        mediaType,
-      });
+      const details = await apiFetchWithTimeout(
+        "/api/tmdb/details",
+        {
+          tmdbId,
+          mediaType,
+        },
+        TMDB_DETAILS_MODAL_TIMEOUT_MS,
+      );
 
       if (
         requestVersion !== detailsRequestVersion ||
@@ -3144,12 +3151,16 @@ export default function HomePage() {
     if (!continueCardsRef) {
       return;
     }
+    const loadVersion = ++continueWatchingLoadVersion;
 
     const [entriesRaw, localLibrary] = await Promise.all([
       Promise.resolve(getContinueWatchingEntries()),
       apiFetch("/api/library").catch(() => ({ movies: [], series: [] })),
     ]);
     const entries = enrichContinueEntriesWithLocalLibrary(entriesRaw, localLibrary);
+    if (loadVersion !== continueWatchingLoadVersion) {
+      return;
+    }
     if (!entries.length) {
       continueCardsRef.innerHTML = "";
       setContinueEmptyVisible(true);
@@ -3178,56 +3189,72 @@ export default function HomePage() {
       ),
     );
 
-    const detailsMap = new Map();
-    await Promise.all(
-      tmdbDetailKeys.map(async (detailKey) => {
-        try {
+    const renderEntries = (detailsMap = new Map()) => {
+      if (loadVersion !== continueWatchingLoadVersion || !continueCardsRef) {
+        return;
+      }
+      continueCardsRef.innerHTML = "";
+      const fragment = document.createDocumentFragment();
+      entries.forEach((entry, index) => {
+        const normalizedMediaType =
+          inferContinueMediaType(
+            entry.sourceIdentity,
+            entry.mediaType,
+            entry.seriesId,
+          ) || "movie";
+        const detailsLookupKey = entry.tmdbId
+          ? `${normalizedMediaType}:${String(entry.tmdbId).trim()}`
+          : "";
+        const details = detailsLookupKey
+          ? detailsMap.get(detailsLookupKey) || null
+          : null;
+        const card = buildContinueWatchingCardElement(entry, details);
+        if (index >= Math.max(1, entries.length - 2)) {
+          card.classList.add("card--align-right");
+        }
+        fragment.appendChild(card);
+        attachCardInteractions(card);
+      });
+      continueCardsRef.appendChild(fragment);
+
+      setContinueRowVisible(true);
+      setContinueEmptyVisible(false);
+      renderMyListRow();
+    };
+
+    renderEntries();
+
+    if (!tmdbDetailKeys.length) {
+      return;
+    }
+
+    void (async () => {
+      const detailsMap = new Map();
+      await Promise.allSettled(
+        tmdbDetailKeys.map(async (detailKey) => {
           const separatorIndex = detailKey.indexOf(":");
           if (separatorIndex <= 0) {
             return;
           }
           const mediaType = detailKey.slice(0, separatorIndex);
           const tmdbId = detailKey.slice(separatorIndex + 1);
-          const details = await apiFetch("/api/tmdb/details", {
-            tmdbId,
-            mediaType,
-          });
+          const details = await apiFetchWithTimeout(
+            "/api/tmdb/details",
+            {
+              tmdbId,
+              mediaType,
+            },
+            TMDB_DETAILS_ENRICHMENT_TIMEOUT_MS,
+          );
           if (details && typeof details === "object") {
             detailsMap.set(detailKey, details);
           }
-        } catch {
-          // Best-effort enrichment only.
-        }
-      }),
-    );
-
-    continueCardsRef.innerHTML = "";
-    const fragment = document.createDocumentFragment();
-    entries.forEach((entry, index) => {
-      const normalizedMediaType =
-        inferContinueMediaType(
-          entry.sourceIdentity,
-          entry.mediaType,
-          entry.seriesId,
-        ) || "movie";
-      const detailsLookupKey = entry.tmdbId
-        ? `${normalizedMediaType}:${String(entry.tmdbId).trim()}`
-        : "";
-      const details = detailsLookupKey
-        ? detailsMap.get(detailsLookupKey) || null
-        : null;
-      const card = buildContinueWatchingCardElement(entry, details);
-      if (index >= Math.max(1, entries.length - 2)) {
-        card.classList.add("card--align-right");
+        }),
+      );
+      if (detailsMap.size > 0) {
+        renderEntries(detailsMap);
       }
-      fragment.appendChild(card);
-      attachCardInteractions(card);
-    });
-    continueCardsRef.appendChild(fragment);
-
-    setContinueRowVisible(true);
-    setContinueEmptyVisible(false);
-    renderMyListRow();
+    })();
   }
 
   // ---- Search ----

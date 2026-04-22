@@ -1,8 +1,9 @@
+use dashmap::DashMap;
+use reqwest::StatusCode;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use dashmap::DashMap;
-use serde_json::Value;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
@@ -52,11 +53,13 @@ impl TmdbService {
         params: BTreeMap<String, String>,
         timeout_ms: u64,
     ) -> AppResult<Value> {
-        if self.config.tmdb_api_key.trim().is_empty() {
+        let credential = tmdb_credential_from_config(&self.config.tmdb_api_key)
+            .ok_or_else(|| ApiError::internal("TMDB_API_KEY is not configured on the server."))?;
+        if credential.secret().is_empty() {
             return Err(ApiError::internal(
                 "TMDB_API_KEY is not configured on the server.",
             ));
-        }
+        };
 
         let cache_key = build_tmdb_response_cache_key(path, &params);
         if let Some(cached) = self.get_cached_response(&cache_key).await? {
@@ -69,7 +72,7 @@ impl TmdbService {
         let response = self
             .client
             .get(format!("{TMDB_BASE_URL}{path}"))
-            .header("Authorization", format!("Bearer {}", self.config.tmdb_api_key))
+            .apply_tmdb_credential(&credential)
             .query(&query)
             .timeout(std::time::Duration::from_millis(timeout_ms))
             .send()
@@ -99,7 +102,7 @@ impl TmdbService {
                 .or_else(|| payload.get("message").and_then(Value::as_str))
                 .map(ToOwned::to_owned)
                 .unwrap_or_else(|| format!("Request failed ({status})"));
-            return Err(ApiError::internal(message));
+            return Err(map_tmdb_status_error(status, message));
         }
 
         let ttl_ms = get_tmdb_cache_ttl_ms(path);
@@ -140,7 +143,9 @@ impl TmdbService {
                 let value = entry.value.clone();
                 drop(entry);
                 // Update last_accessed_at for LRU
-                self.cache.entry(cache_key.to_owned()).and_modify(|e| e.last_accessed_at = now_ms());
+                self.cache
+                    .entry(cache_key.to_owned())
+                    .and_modify(|e| e.last_accessed_at = now_ms());
                 return Ok(Some(value));
             }
             self.cache.remove(cache_key);
@@ -209,9 +214,82 @@ pub fn get_tmdb_cache_ttl_ms(path: &str) -> i64 {
 
 fn map_reqwest_error(error: reqwest::Error, timeout_message: &str) -> ApiError {
     if error.is_timeout() {
-        ApiError::internal(timeout_message)
+        ApiError::gateway_timeout(timeout_message)
     } else {
-        ApiError::internal(error.to_string())
+        ApiError::bad_gateway(error.to_string())
+    }
+}
+
+enum TmdbCredential {
+    ApiKey(String),
+    Bearer(String),
+}
+
+impl TmdbCredential {
+    fn secret(&self) -> &str {
+        match self {
+            Self::ApiKey(value) | Self::Bearer(value) => value.as_str(),
+        }
+    }
+}
+
+trait TmdbRequestAuth {
+    fn apply_tmdb_credential(self, credential: &TmdbCredential) -> Self;
+}
+
+impl TmdbRequestAuth for reqwest::RequestBuilder {
+    fn apply_tmdb_credential(self, credential: &TmdbCredential) -> Self {
+        match credential {
+            TmdbCredential::ApiKey(api_key) => self.query(&[("api_key", api_key.as_str())]),
+            TmdbCredential::Bearer(token) => {
+                self.header("Authorization", format!("Bearer {token}"))
+            }
+        }
+    }
+}
+
+fn tmdb_credential_from_config(value: &str) -> Option<TmdbCredential> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("bearer "))
+    {
+        let token = trimmed[7..].trim();
+        return (!token.is_empty()).then(|| TmdbCredential::Bearer(token.to_owned()));
+    }
+    if looks_like_tmdb_read_access_token(trimmed) {
+        Some(TmdbCredential::Bearer(trimmed.to_owned()))
+    } else {
+        Some(TmdbCredential::ApiKey(trimmed.to_owned()))
+    }
+}
+
+fn looks_like_tmdb_read_access_token(value: &str) -> bool {
+    value.starts_with("eyJ") && value.matches('.').count() >= 2
+}
+
+fn map_tmdb_status_error(status: StatusCode, message: String) -> ApiError {
+    let message = message.trim();
+    let detail = if message.is_empty() {
+        status.to_string()
+    } else {
+        message.to_owned()
+    };
+    match status {
+        StatusCode::NOT_FOUND => ApiError::not_found(format!("TMDB item not found: {detail}")),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+            ApiError::bad_gateway(format!("TMDB authentication failed: {detail}"))
+        }
+        StatusCode::TOO_MANY_REQUESTS => {
+            ApiError::bad_gateway(format!("TMDB rate limit exceeded: {detail}"))
+        }
+        _ if status.is_server_error() => {
+            ApiError::bad_gateway(format!("TMDB service failed: {detail}"))
+        }
+        _ => ApiError::bad_gateway(format!("TMDB request failed: {detail}")),
     }
 }
 
@@ -219,7 +297,7 @@ fn map_reqwest_error(error: reqwest::Error, timeout_message: &str) -> ApiError {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::build_tmdb_response_cache_key;
+    use super::{TmdbCredential, build_tmdb_response_cache_key, tmdb_credential_from_config};
 
     #[test]
     fn sorts_tmdb_cache_key_parameters() {
@@ -230,5 +308,17 @@ mod tests {
         assert!(key.contains("language=en-US"));
         assert!(key.contains("page=1"));
         assert!(key.contains("query=test"));
+    }
+
+    #[test]
+    fn treats_plain_tmdb_config_value_as_v3_api_key() {
+        let credential = tmdb_credential_from_config("abc123").expect("credential");
+        assert!(matches!(credential, TmdbCredential::ApiKey(value) if value == "abc123"));
+    }
+
+    #[test]
+    fn treats_bearer_tmdb_config_value_as_read_access_token() {
+        let credential = tmdb_credential_from_config("Bearer eyJabc.def.ghi").expect("credential");
+        assert!(matches!(credential, TmdbCredential::Bearer(value) if value == "eyJabc.def.ghi"));
     }
 }
