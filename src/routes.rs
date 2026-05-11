@@ -15,20 +15,19 @@ use axum::http::HeaderMap;
 use crate::auth;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult, json_response};
-use crate::utils::now_ms;
 use crate::library::{
     normalize_upload_content_type, normalize_upload_episode_ordinal, normalize_whitespace,
     normalize_year, read_local_library, strip_file_extension, title_from_filename_token,
     write_local_library,
 };
+use crate::live::live_hls_handler;
 use crate::media::{
     MediaProbe, MediaService, choose_audio_track_from_probe, choose_subtitle_track_from_probe,
     merge_preferred_subtitle_tracks,
 };
 use crate::persistence::{Db, TitlePreference, build_cache_debug_payload};
 use crate::process::{
-    RuntimeServices, resolve_effective_remux_hwaccel_mode,
-    to_absolute_playback_url,
+    RuntimeServices, resolve_effective_remux_hwaccel_mode, to_absolute_playback_url,
 };
 use crate::resolver::ResolverService;
 use crate::static_files::serve_static;
@@ -36,6 +35,7 @@ use crate::streaming::StreamingService;
 use crate::tmdb::TmdbService;
 use crate::upload::UPLOAD_SESSION_CHUNK_MAX_BYTES;
 use crate::upload::UploadService;
+use crate::utils::now_ms;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -43,6 +43,7 @@ pub struct AppState {
     pub db: Db,
     pub tmdb: TmdbService,
     pub media: MediaService,
+    pub http_client: reqwest::Client,
     pub resolver: ResolverService,
     pub streaming: StreamingService,
     pub upload: UploadService,
@@ -82,6 +83,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/resolve/movie", any(resolve_movie_handler))
         .route("/api/resolve/tv", any(resolve_tv_handler))
         .route("/api/remux", any(remux_handler))
+        .route("/api/live/hls.m3u8", any(live_hls_handler))
         .route("/api/hls/master.m3u8", any(hls_master_handler))
         .route("/api/hls/segment.ts", any(hls_segment_handler))
         .route("/api/media/tracks", any(media_tracks_handler))
@@ -99,10 +101,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/logout", any(auth_logout_handler))
         .route("/api/auth/me", any(auth_me_handler))
         .route("/api/user/preferences", any(user_preferences_handler))
-        .route(
-            "/api/user/watch-progress",
-            any(user_watch_progress_handler),
-        )
+        .route("/api/user/watch-progress", any(user_watch_progress_handler))
         .route(
             "/api/user/continue-watching",
             any(user_continue_watching_handler),
@@ -1185,8 +1184,9 @@ pub async fn media_tracks_handler(
 
     if let Ok(probe) = state.media.probe_media_tracks(&source_input).await {
         let mut merged_tracks = probe;
-        let local_sidecar_subtitle_tracks =
-            state.media.find_local_sidecar_subtitle_tracks(&source_input);
+        let local_sidecar_subtitle_tracks = state
+            .media
+            .find_local_sidecar_subtitle_tracks(&source_input);
         let external_subtitle_tracks = state
             .media
             .search_opensubtitles_tracks(
@@ -1375,7 +1375,9 @@ async fn auth_signup_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
         .await
@@ -1404,18 +1406,20 @@ async fn auth_signup_handler(
         return Err(ApiError::bad_request("Username must be 1-64 characters."));
     }
     if password.len() < 6 || password.len() > 256 {
-        return Err(ApiError::bad_request(
-            "Password must be 6-256 characters.",
-        ));
+        return Err(ApiError::bad_request("Password must be 6-256 characters."));
     }
 
     // Check if username already taken
-    if state.db.get_user_by_username(username.clone()).await?.is_some() {
+    if state
+        .db
+        .get_user_by_username(username.clone())
+        .await?
+        .is_some()
+    {
         return Err(ApiError::bad_request("Username already taken."));
     }
 
-    let password_hash = auth::hash_password(&password)
-        .map_err(|error| ApiError::internal(error))?;
+    let password_hash = auth::hash_password(&password).map_err(ApiError::internal)?;
 
     let user_id = state
         .db
@@ -1452,7 +1456,9 @@ async fn auth_login_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
         .await
@@ -1515,7 +1521,9 @@ async fn auth_logout_handler(
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     if let Some(token) = auth::extract_session_token(&headers) {
         state.db.delete_session(token).await?;
@@ -1583,10 +1591,7 @@ async fn user_preferences_handler(
                     return Err(ApiError::bad_request("Body must be a JSON object."));
                 }
             };
-            state
-                .db
-                .upsert_user_preferences(user.id, entries)
-                .await?;
+            state.db.upsert_user_preferences(user.id, entries).await?;
             Ok(json_response(json!({ "ok": true })))
         }
         _ => Err(ApiError::method_not_allowed(
@@ -1763,7 +1768,9 @@ async fn user_sync_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     let user = auth::require_auth(&state.db, &headers).await?;
     let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
@@ -1785,10 +1792,7 @@ async fn user_sync_handler(
             })
             .collect();
         if !entries.is_empty() {
-            state
-                .db
-                .upsert_user_preferences(user.id, entries)
-                .await?;
+            state.db.upsert_user_preferences(user.id, entries).await?;
         }
     }
 
@@ -2480,7 +2484,6 @@ fn stringify_json(value: Option<&Value>) -> String {
         _ => String::new(),
     }
 }
-
 
 trait StringExt {
     fn if_empty_then<F: FnOnce() -> String>(self, fallback: F) -> String;

@@ -204,7 +204,11 @@ impl MediaService {
             return text_response(subtitle_text, "text/vtt; charset=utf-8", "no-store");
         }
 
-        text_response("WEBVTT\n\n".to_owned(), "text/vtt; charset=utf-8", "no-store")
+        text_response(
+            "WEBVTT\n\n".to_owned(),
+            "text/vtt; charset=utf-8",
+            "no-store",
+        )
     }
 
     pub async fn create_external_subtitle_vtt_response(
@@ -263,7 +267,11 @@ impl MediaService {
             .await
             .unwrap_or_default();
         if download_url.trim().is_empty() {
-            return text_response("WEBVTT\n\n".to_owned(), "text/vtt; charset=utf-8", "no-store");
+            return text_response(
+                "WEBVTT\n\n".to_owned(),
+                "text/vtt; charset=utf-8",
+                "no-store",
+            );
         }
         self.create_external_subtitle_vtt_response(&download_url)
             .await
@@ -417,7 +425,7 @@ impl MediaService {
                 ))
             })
             .collect::<Vec<_>>();
-        ranked.sort_by(|left, right| right.0.cmp(&left.0));
+        ranked.sort_by_key(|item| std::cmp::Reverse(item.0));
         ranked
             .into_iter()
             .map(|(_, track)| track)
@@ -457,7 +465,8 @@ impl MediaService {
         let mut next_stream_index = LOCAL_SIDECAR_SUBTITLE_STREAM_INDEX_BASE;
 
         for candidate_path in candidates {
-            let Some(extension) = candidate_path.extension().and_then(|value| value.to_str()) else {
+            let Some(extension) = candidate_path.extension().and_then(|value| value.to_str())
+            else {
                 continue;
             };
             let normalized_extension = extension.trim().to_lowercase();
@@ -465,11 +474,11 @@ impl MediaService {
                 continue;
             }
 
-            let Some(candidate_stem) = candidate_path.file_stem().and_then(|value| value.to_str()) else {
+            let Some(candidate_stem) = candidate_path.file_stem().and_then(|value| value.to_str())
+            else {
                 continue;
             };
-            let Some(sidecar_suffix) =
-                extract_sidecar_subtitle_suffix(source_stem, candidate_stem)
+            let Some(sidecar_suffix) = extract_sidecar_subtitle_suffix(source_stem, candidate_stem)
             else {
                 continue;
             };
@@ -1519,7 +1528,10 @@ fn get_subtitle_language_display_name(value: &str) -> String {
 }
 
 fn is_supported_sidecar_subtitle_extension(value: &str) -> bool {
-    matches!(value.trim().to_lowercase().as_str(), "srt" | "vtt" | "ass" | "ssa")
+    matches!(
+        value.trim().to_lowercase().as_str(),
+        "srt" | "vtt" | "ass" | "ssa"
+    )
 }
 
 fn subtitle_codec_from_extension(value: &str) -> String {
@@ -1555,7 +1567,14 @@ fn extract_sidecar_subtitle_suffix<'a>(
 
 fn infer_sidecar_subtitle_language(sidecar_suffix: &str) -> String {
     let trimmed = sidecar_suffix.trim_matches(|ch: char| {
-        ch == '.' || ch == '_' || ch == '-' || ch == ' ' || ch == '(' || ch == ')' || ch == '[' || ch == ']'
+        ch == '.'
+            || ch == '_'
+            || ch == '-'
+            || ch == ' '
+            || ch == '('
+            || ch == ')'
+            || ch == '['
+            || ch == ']'
     });
     if trimmed.is_empty() {
         return "en".to_owned();
@@ -1568,11 +1587,13 @@ fn infer_sidecar_subtitle_language(sidecar_suffix: &str) -> String {
         .collect::<Vec<_>>();
 
     for preferred_language in [
-        "en", "fr", "es", "de", "it", "pt", "ja", "ko", "zh", "nl", "ro", "pl", "tr", "ru",
-        "ar",
+        "en", "fr", "es", "de", "it", "pt", "ja", "ko", "zh", "nl", "ro", "pl", "tr", "ru", "ar",
     ] {
         let hint_tokens = language_hint_tokens(preferred_language);
-        if tokens.iter().any(|token| hint_tokens.iter().any(|hint| token == hint)) {
+        if tokens
+            .iter()
+            .any(|token| hint_tokens.iter().any(|hint| token == hint))
+        {
             return preferred_language.to_owned();
         }
     }
@@ -1589,7 +1610,14 @@ fn infer_sidecar_subtitle_language(sidecar_suffix: &str) -> String {
 
 fn infer_sidecar_subtitle_title(sidecar_suffix: &str) -> String {
     let trimmed = sidecar_suffix.trim_matches(|ch: char| {
-        ch == '.' || ch == '_' || ch == '-' || ch == ' ' || ch == '(' || ch == ')' || ch == '[' || ch == ']'
+        ch == '.'
+            || ch == '_'
+            || ch == '-'
+            || ch == ' '
+            || ch == '('
+            || ch == ')'
+            || ch == '['
+            || ch == ']'
     });
     if trimmed.is_empty() {
         return String::new();
@@ -1697,8 +1725,9 @@ mod tests {
         AudioTrack, MediaProbe, SubtitleTrack, choose_audio_track_from_probe,
         choose_subtitle_track_from_probe, extract_sidecar_subtitle_suffix,
         infer_sidecar_subtitle_language, is_allowed_external_subtitle_download_url,
-        is_allowed_remote_transcode_url, is_local_app_playback_url, merge_preferred_subtitle_tracks,
-        normalize_external_subtitle_download_url, normalize_subtitle_text_to_vtt,
+        is_allowed_remote_transcode_url, is_local_app_playback_url,
+        merge_preferred_subtitle_tracks, normalize_external_subtitle_download_url,
+        normalize_subtitle_text_to_vtt,
     };
 
     #[test]
@@ -1920,7 +1949,6 @@ mod tests {
             playback_sessions_enabled: false,
             opensubtitles_api_key: String::new(),
             opensubtitles_user_agent: String::new(),
-
         };
         assert!(is_local_app_playback_url(
             &config,

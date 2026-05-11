@@ -9,11 +9,11 @@ use tokio::task;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
-use crate::utils::now_ms;
 use crate::routes::{
     normalize_preferred_audio_lang, normalize_preferred_stream_quality,
     normalize_session_health_state, normalize_subtitle_preference,
 };
+use crate::utils::now_ms;
 
 const TITLE_PREFERENCES_STALE_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 const PLAYBACK_SESSION_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
@@ -1283,29 +1283,7 @@ impl Db {
         Ok(())
     }
 
-    pub async fn cleanup_expired_sessions(&self) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
-        task::spawn_blocking(move || {
-            let connection = take_connection(&pool, &path)?;
-            let now = now_ms();
-            connection.execute(
-                "DELETE FROM auth_sessions WHERE expires_at <= ?",
-                [now],
-            )?;
-            return_connection(&pool, connection);
-            Ok::<(), rusqlite::Error>(())
-        })
-        .await
-        .map_err(|error| ApiError::internal(error.to_string()))?
-        .map_err(|error| ApiError::internal(error.to_string()))?;
-        Ok(())
-    }
-
-    pub async fn get_user_preferences(
-        &self,
-        user_id: i64,
-    ) -> AppResult<Vec<(String, String)>> {
+    pub async fn get_user_preferences(&self, user_id: i64) -> AppResult<Vec<(String, String)>> {
         let path = self.path.clone();
         let pool = self.pool.clone();
         task::spawn_blocking(move || {
@@ -1438,10 +1416,7 @@ impl Db {
         Ok(())
     }
 
-    pub async fn get_user_continue_watching(
-        &self,
-        user_id: i64,
-    ) -> AppResult<Vec<Value>> {
+    pub async fn get_user_continue_watching(&self, user_id: i64) -> AppResult<Vec<Value>> {
         let path = self.path.clone();
         let pool = self.pool.clone();
         task::spawn_blocking(move || {
@@ -1479,27 +1454,65 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
-    pub async fn upsert_user_continue_watching(
-        &self,
-        user_id: i64,
-        entry: Value,
-    ) -> AppResult<()> {
+    pub async fn upsert_user_continue_watching(&self, user_id: i64, entry: Value) -> AppResult<()> {
         let path = self.path.clone();
         let pool = self.pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
-            let source_identity = entry.get("sourceIdentity").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let title = entry.get("title").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let episode = entry.get("episode").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let src = entry.get("src").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let tmdb_id = entry.get("tmdbId").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let media_type = entry.get("mediaType").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let series_id = entry.get("seriesId").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let episode_index = entry.get("episodeIndex").and_then(Value::as_i64).unwrap_or(-1);
-            let year = entry.get("year").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let thumb = entry.get("thumb").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let resume_seconds = entry.get("resumeSeconds").and_then(Value::as_f64).unwrap_or(0.0);
+            let source_identity = entry
+                .get("sourceIdentity")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let title = entry
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let episode = entry
+                .get("episode")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let src = entry
+                .get("src")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let tmdb_id = entry
+                .get("tmdbId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let media_type = entry
+                .get("mediaType")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let series_id = entry
+                .get("seriesId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let episode_index = entry
+                .get("episodeIndex")
+                .and_then(Value::as_i64)
+                .unwrap_or(-1);
+            let year = entry
+                .get("year")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let thumb = entry
+                .get("thumb")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let resume_seconds = entry
+                .get("resumeSeconds")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
             connection.execute(
                 "INSERT INTO user_continue_watching
                    (user_id, source_identity, title, episode, src, tmdb_id, media_type,
@@ -1518,8 +1531,19 @@ impl Db {
                    resume_seconds = excluded.resume_seconds,
                    updated_at = excluded.updated_at",
                 params![
-                    user_id, source_identity, title, episode, src, tmdb_id, media_type,
-                    series_id, episode_index, year, thumb, resume_seconds, now
+                    user_id,
+                    source_identity,
+                    title,
+                    episode,
+                    src,
+                    tmdb_id,
+                    media_type,
+                    series_id,
+                    episode_index,
+                    year,
+                    thumb,
+                    resume_seconds,
+                    now
                 ],
             )?;
             return_connection(&pool, connection);
@@ -1586,11 +1610,7 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
-    pub async fn replace_user_my_list(
-        &self,
-        user_id: i64,
-        entries: Vec<Value>,
-    ) -> AppResult<()> {
+    pub async fn replace_user_my_list(&self, user_id: i64, entries: Vec<Value>) -> AppResult<()> {
         let path = self.path.clone();
         let pool = self.pool.clone();
         task::spawn_blocking(move || {
@@ -1607,10 +1627,7 @@ impl Db {
                 if item_identity.is_empty() {
                     continue;
                 }
-                let added_at = entry
-                    .get("addedAt")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(now);
+                let added_at = entry.get("addedAt").and_then(Value::as_i64).unwrap_or(now);
                 let details_json = serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_owned());
                 tx.execute(
                     "INSERT INTO user_my_list (user_id, item_identity, details_json, added_at)
@@ -1858,10 +1875,7 @@ fn sweep_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
         "DELETE FROM title_track_preferences WHERE updated_at <= ?",
         [now - TITLE_PREFERENCES_STALE_MS],
     )?;
-    connection.execute(
-        "DELETE FROM auth_sessions WHERE expires_at <= ?",
-        [now],
-    )?;
+    connection.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", [now])?;
     trim_table(
         &connection,
         "resolved_stream_cache",
@@ -1969,7 +1983,6 @@ fn normalize_playback_session_fallback_urls(values: Vec<String>) -> Vec<String> 
     }
     unique
 }
-
 
 pub fn build_cache_debug_payload(
     started_at_ms: i64,
@@ -2330,7 +2343,6 @@ mod tests {
             playback_sessions_enabled: true,
             opensubtitles_api_key: String::new(),
             opensubtitles_user_agent: String::new(),
-
         };
         Db::initialize(&config).await.expect("init db")
     }

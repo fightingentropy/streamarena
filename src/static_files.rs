@@ -125,7 +125,7 @@ fn resolve_local_path(frontend_dir: &Path, repo_root: &Path, pathname: &str) -> 
         return Some(frontend_dir.join("player.html"));
     }
     if decoded.starts_with("/assets/") {
-        let normalized = normalize_path(decoded.trim_start_matches('/'));
+        let normalized = normalize_path(decoded.trim_start_matches('/'))?;
         let file_path = repo_root.join(normalized);
         return if file_path.starts_with(repo_root) {
             Some(file_path)
@@ -150,7 +150,7 @@ fn resolve_local_path(frontend_dir: &Path, repo_root: &Path, pathname: &str) -> 
     {
         requested.push_str(".html");
     }
-    let normalized = normalize_path(requested.trim_start_matches('/'));
+    let normalized = normalize_path(requested.trim_start_matches('/'))?;
     let file_path = frontend_dir.join(normalized);
     if file_path.starts_with(frontend_dir) {
         Some(file_path)
@@ -159,19 +159,16 @@ fn resolve_local_path(frontend_dir: &Path, repo_root: &Path, pathname: &str) -> 
     }
 }
 
-fn normalize_path(path: &str) -> PathBuf {
+fn normalize_path(path: &str) -> Option<PathBuf> {
     let mut output = PathBuf::new();
     for component in Path::new(path).components() {
         match component {
             Component::Normal(value) => output.push(value),
             Component::CurDir => {}
-            Component::ParentDir => {
-                output.pop();
-            }
-            _ => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
         }
     }
-    output
+    Some(output)
 }
 
 fn percent_decode(path: &str) -> Option<String> {
@@ -229,8 +226,8 @@ mod tests {
 
     #[test]
     fn maps_clean_route_to_html() {
-        let path = resolve_local_path(Path::new("/tmp/app"), Path::new("/tmp/app"), "/settings")
-            .unwrap();
+        let path =
+            resolve_local_path(Path::new("/tmp/app"), Path::new("/tmp/app"), "/settings").unwrap();
         assert!(path.ends_with("settings.html"));
     }
 
@@ -244,6 +241,26 @@ mod tests {
         .unwrap();
         assert!(path.ends_with("assets/library.json"));
         assert!(!path.ends_with("dist/assets/library.json"));
+    }
+
+    #[test]
+    fn rejects_asset_path_traversal() {
+        assert!(
+            resolve_local_path(
+                Path::new("/tmp/app/dist"),
+                Path::new("/tmp/app"),
+                "/assets/../.env",
+            )
+            .is_none()
+        );
+        assert!(
+            resolve_local_path(
+                Path::new("/tmp/app/dist"),
+                Path::new("/tmp/app"),
+                "/assets/%2e%2e/.env",
+            )
+            .is_none()
+        );
     }
 
     #[test]
