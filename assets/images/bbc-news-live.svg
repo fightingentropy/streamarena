@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">BBC News live channel artwork</title>
+  <desc id="desc">A BBC News branded live channel slate.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#160608"/>
+      <stop offset="0.54" stop-color="#45090d"/>
+      <stop offset="1" stop-color="#09090b"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.48" stop-color="#e50914"/>
+      <stop offset="1" stop-color="#8c0009"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1280" height="720" fill="#000" opacity="0.2"/>
+  <circle cx="1040" cy="210" r="178" fill="none" stroke="#fff" stroke-width="4" opacity="0.13"/>
+  <circle cx="1040" cy="210" r="112" fill="none" stroke="#fff" stroke-width="4" opacity="0.18"/>
+  <circle cx="1040" cy="210" r="44" fill="#e50914" opacity="0.9"/>
+  <rect x="78" y="78" width="154" height="54" rx="27" fill="#e50914"/>
+  <text x="155" y="114" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="700" fill="#fff">LIVE</text>
+  <g font-family="Helvetica Neue, Arial, sans-serif" fill="#fff">
+    <rect x="84" y="278" width="118" height="80" fill="#fff"/>
+    <rect x="218" y="278" width="118" height="80" fill="#fff"/>
+    <rect x="352" y="278" width="118" height="80" fill="#fff"/>
+    <text x="143" y="334" text-anchor="middle" font-size="47" font-weight="800" fill="#111">B</text>
+    <text x="277" y="334" text-anchor="middle" font-size="47" font-weight="800" fill="#111">B</text>
+    <text x="411" y="334" text-anchor="middle" font-size="47" font-weight="800" fill="#111">C</text>
+    <text x="84" y="468" font-size="112" font-weight="800" letter-spacing="0">NEWS</text>
+    <text x="88" y="532" font-size="31" font-weight="500" fill="#f0d8da">Live global headlines and breaking news</text>
+  </g>
+  <rect x="86" y="594" width="690" height="10" rx="5" fill="url(#line)"/>
+  <path d="M0 616c120-48 230-52 350-12 148 48 270 47 430 2 190-53 332-35 500 49v65H0Z" fill="#050505" opacity="0.74"/>
+</svg>

@@ -9,6 +9,7 @@ const pages = {
   settings: resolve(__dirname, "settings.html"),
   upload: resolve(__dirname, "upload.html"),
   "new-popular": resolve(__dirname, "new-popular.html"),
+  live: resolve(__dirname, "live.html"),
 };
 
 export default defineConfig({

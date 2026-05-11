@@ -38,12 +38,23 @@ import {
   normalizeRemuxVideoMode,
   normalizeSubtitleColor,
 } from "../lib/preferences.js";
+import { LIVE_CHANNEL_PLAYBACK_FALLBACKS } from "../lib/live-channels.js";
+import {
+  deriveLiveStreamStateFromParams,
+  getLivePlaybackSource,
+  getSelectedLiveStreamOption as getSelectedLiveStreamOptionFromState,
+  normalizePlaybackSourceValue,
+  renderLiveStreamOptions as renderLiveStreamOptionsDom,
+  shouldShowLiveStreamControls as shouldShowLiveStreamControlsForState,
+  syncLiveStreamControls as syncLiveStreamControlsDom,
+} from "../player/live-streams.js";
 
 export default function PlayerPage() {
   // ─── Ref declarations (replacing document.getElementById) ───
   let video, goBack, seekBar, seekPreview, seekPreviewCanvas, seekPreviewTime;
   let durationText, togglePlay, rewind10, forward10, volumeControl, volumeSlider;
   let toggleMutePlayer, toggleFullscreen, toggleSpeed, speedControl;
+  let toggleLiveStream, liveStreamControl, liveStreamMenu, liveStreamOptionsContainer;
   let nextEpisode, toggleEpisodes, episodesControl, episodesList, episodesPopoverTitle;
   let autoPlayOverlay, autoPlayThumb, autoPlayTitle, autoPlayEpLabel;
   let autoPlayCountdownText, autoPlayProgressRing, autoPlayBtn, autoPlayCancel;
@@ -61,6 +72,7 @@ const seekLoadingTimeoutMs = 9000;
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
+let liveStreamPopoverCloseTimeout = null;
 let episodesPopoverCloseTimeout = null;
 let audioPopoverCloseTimeout = null;
 let streamStallRecoveryTimeout = null;
@@ -110,6 +122,11 @@ const AUTO_PLAY_SHOW_BEFORE_END_SECONDS = 10;
 let lastAudibleVolume = 1;
 const sourceSaveStateByHash = new Map();
 const sourceSaveResetTimeoutByHash = new Map();
+let liveStreamOptions = [];
+let selectedLiveStreamId = "";
+let isLivePlayback = false;
+let lastRequestedPlaybackSource = "";
+let lastRequestedAbsolutePlaybackSource = "";
 
 const _cleanups = [];
 function trackListener(target, event, handler, options) {
@@ -166,9 +183,23 @@ let _seriesLibraryReady = fetchLocalSeriesLibrary().then((local) => {
   SERIES_LIBRARY = Object.freeze({ ...mergeSeriesLibraries(STATIC_SERIES_LIBRARY, local) });
 });
 let rawSourceParam = String(params.get("src") || "").trim();
-let normalizedRawSourceParam = rawSourceParam.startsWith("assets/")
-  ? `/${rawSourceParam}`
-  : rawSourceParam;
+let normalizedRawSourceParam = normalizePlaybackSourceValue(rawSourceParam);
+
+function refreshLiveStreamStateFromParams(queryParams = params) {
+  const nextState = deriveLiveStreamStateFromParams(
+    queryParams,
+    normalizedRawSourceParam,
+  );
+  liveStreamOptions = nextState.options;
+  selectedLiveStreamId = nextState.selectedStreamId;
+  isLivePlayback = nextState.isLivePlayback;
+  if (nextState.selectedSource) {
+    rawSourceParam = nextState.selectedSource;
+    normalizedRawSourceParam = nextState.selectedSource;
+  }
+}
+
+refreshLiveStreamStateFromParams(params);
 
 function normalizeSeriesSourceLookupValue(value) {
   const normalized = String(value || "").trim();
@@ -267,6 +298,16 @@ const thumbParam = String(params.get("thumb") || "").trim();
 let src = isSeriesPlayback
   ? normalizedSeriesSourceParam || normalizedRawSourceParam
   : normalizedRawSourceParam;
+
+function setExplicitPlaybackSourceState(nextSource) {
+  const normalizedSource = normalizePlaybackSourceValue(nextSource);
+  rawSourceParam = normalizedSource;
+  normalizedRawSourceParam = normalizedSource;
+  src = normalizedSource;
+  hasExplicitSource = Boolean(src);
+  isExplicitLocalUploadSource = computeIsExplicitLocalUploadSource();
+}
+
 const fallbackSeasonNumber = Number(
   params.get("seasonNumber") || params.get("season") || 1,
 );
@@ -881,6 +922,8 @@ if ((isTmdbMoviePlayback || isExplicitLocalUploadSource) && hasSubtitleLangParam
 applyPreferredSourceAudioSync(selectedSourceHash);
 let sourceIdentity = isSeriesPlayback
   ? `series:${activeSeries.id}:episode:${seriesEpisodeIndex}`
+  : isLivePlayback
+    ? `live:${slugify(title) || "stream"}`
   : src ||
     (isTmdbResolvedPlayback
       ? `tmdb:${mediaType}:${tmdbId}${isTmdbTvPlayback ? `:s${seasonNumber}:e${episodeNumber}` : ""}`
@@ -1091,6 +1134,14 @@ function hideResolver() {
 
 function hasActiveSource() {
   return Boolean(video.currentSrc || video.getAttribute("src"));
+}
+
+function hasRecoverablePlaybackSource() {
+  return Boolean(
+    hasActiveSource() ||
+      lastRequestedAbsolutePlaybackSource ||
+      lastRequestedPlaybackSource,
+  );
 }
 
 function getLanguageDisplayLabel(langCode) {
@@ -1746,6 +1797,28 @@ function syncSourcePanelVisibility() {
   }
 }
 
+function getPlayableSubtitleTracks() {
+  return availableSubtitleTracks.filter((track) => isPlayableSubtitleTrack(track));
+}
+
+function shouldShowAudioSubtitleControl() {
+  if (!isLivePlayback) {
+    return true;
+  }
+  return availableAudioTracks.length > 0 || getPlayableSubtitleTracks().length > 0;
+}
+
+function syncAudioSubtitleControlVisibility() {
+  if (!audioControl) {
+    return;
+  }
+  const shouldShow = shouldShowAudioSubtitleControl();
+  audioControl.hidden = !shouldShow;
+  if (!shouldShow) {
+    closeAudioPopover(false, { force: true });
+  }
+}
+
 function setActiveAudioTab(nextTab = "subtitles") {
   const normalizedTab = nextTab === "sources" ? "sources" : "subtitles";
   const sourceTabVisible = isTmdbResolvedPlayback;
@@ -1898,6 +1971,7 @@ function renderSourceOptionButtons() {
 
   syncSourceSelectionState();
   renderSelectedSourceDetails();
+  syncLiveStreamControls();
 }
 
 function parseHlsMasterSource(source) {
@@ -2403,6 +2477,15 @@ function rebuildTrackOptionButtons() {
       );
       audioOptionsContainer.appendChild(button);
     });
+  } else if (isLivePlayback) {
+    const button = document.createElement("button");
+    button.className = "audio-option";
+    button.type = "button";
+    button.setAttribute("role", "option");
+    button.dataset.optionType = "live-audio";
+    button.textContent = "Default";
+    button.setAttribute("aria-selected", "true");
+    audioOptionsContainer.appendChild(button);
   } else {
     ["auto", "en", "fr", "es", "de"].forEach((lang) => {
       const button = document.createElement("button");
@@ -2492,16 +2575,22 @@ function rebuildTrackOptionButtons() {
     subtitleOptionsContainer.querySelectorAll(".subtitle-option"),
   );
   renderSourceOptionButtons();
+  syncAudioSubtitleControlVisibility();
 }
 
 function shouldUseSoftwareDecode(source) {
   const value = String(source || "").toLowerCase();
+  if (value.includes(".m3u8")) {
+    return !(
+      video.canPlayType("application/vnd.apple.mpegURL") === "maybe" ||
+      video.canPlayType("application/vnd.apple.mpegURL") === "probably"
+    );
+  }
   return (
     value.includes(".mkv") ||
     value.includes(".avi") ||
     value.includes(".wmv") ||
-    value.includes(".ts") ||
-    value.includes(".m3u8")
+    value.includes(".ts")
   );
 }
 
@@ -2679,6 +2768,7 @@ function setVideoSource(nextSource) {
     nextSource,
     preferredAudioSyncMs,
   );
+  lastRequestedPlaybackSource = sourceWithAudioSync;
 
   clearStreamStallRecovery();
   clearSubtitleTrack();
@@ -2722,6 +2812,7 @@ function setVideoSource(nextSource) {
     sourceWithAudioSync,
     window.location.origin,
   ).toString();
+  lastRequestedAbsolutePlaybackSource = absoluteSource;
   if (playbackBenchmark) {
     playbackBenchmark._recordSourceChange(absoluteSource);
   }
@@ -3419,6 +3510,7 @@ function openEpisodesPopover() {
     return;
   }
 
+  closeLiveStreamPopover(false);
   closeSpeedPopover(false);
   closeAudioPopover();
   window.clearTimeout(episodesPopoverCloseTimeout);
@@ -3709,7 +3801,111 @@ function syncSpeedState() {
   });
 }
 
+function getSelectedLiveStreamOption() {
+  return getSelectedLiveStreamOptionFromState(
+    liveStreamOptions,
+    selectedLiveStreamId,
+  );
+}
+
+function shouldShowLiveStreamControls() {
+  return shouldShowLiveStreamControlsForState(isLivePlayback, liveStreamOptions);
+}
+
+function syncLiveStreamControls() {
+  syncLiveStreamControlsDom({
+    liveStreamControl,
+    toggleLiveStream,
+    liveStreamMenu,
+    liveStreamOptionsContainer,
+    liveStreamOptions,
+    selectedLiveStreamId,
+    isLivePlayback,
+  });
+}
+
+function renderLiveStreamOptions() {
+  renderLiveStreamOptionsDom(
+    liveStreamOptionsContainer,
+    liveStreamOptions,
+    selectedLiveStreamId,
+  );
+  syncLiveStreamControls();
+}
+
+function openLiveStreamPopover() {
+  if (!liveStreamControl || !shouldShowLiveStreamControls() || isResolvingSource()) {
+    return;
+  }
+
+  closeEpisodesPopover(false);
+  closeAudioPopover();
+  closeSpeedPopover(false);
+  window.clearTimeout(liveStreamPopoverCloseTimeout);
+  liveStreamControl.classList.add("is-open");
+  toggleLiveStream?.setAttribute("aria-expanded", "true");
+}
+
+function closeLiveStreamPopover(withDelay = false) {
+  if (!liveStreamControl) {
+    return;
+  }
+
+  window.clearTimeout(liveStreamPopoverCloseTimeout);
+
+  const close = () => {
+    if (liveStreamControl.matches(":hover, :focus-within")) {
+      return;
+    }
+    liveStreamControl.classList.remove("is-open");
+    toggleLiveStream?.setAttribute("aria-expanded", "false");
+  };
+
+  if (!withDelay) {
+    close();
+    return;
+  }
+
+  liveStreamPopoverCloseTimeout = window.setTimeout(close, 140);
+}
+
+async function switchLiveStream(streamId) {
+  const nextStream =
+    liveStreamOptions.find((option) => option.id === streamId) || null;
+  if (!nextStream || !nextStream.source || nextStream.id === selectedLiveStreamId) {
+    closeLiveStreamPopover();
+    return;
+  }
+
+  const wasPaused = video.paused;
+  selectedLiveStreamId = nextStream.id;
+  setExplicitPlaybackSourceState(nextStream.source);
+  expectedDurationSeconds = 0;
+  resumeTime = 0;
+  lastPersistedResumeTime = 0;
+  lastPersistedResumeAt = 0;
+  availableAudioTracks = [];
+  availableSubtitleTracks = [];
+  selectedAudioStreamIndex = -1;
+  selectedSubtitleStreamIndex = -1;
+  activeTrackSourceInput = "";
+  clearSubtitleTrack();
+  hideAllSubtitleTracks();
+  rebuildTrackOptionButtons();
+  syncLiveStreamControls();
+  setVideoSource(getLivePlaybackSource(nextStream.source, isLivePlayback));
+  hideResolver();
+  if (!wasPaused) {
+    await tryPlay();
+  }
+  syncPlayState();
+  syncDurationText();
+  closeLiveStreamPopover();
+}
+
 function syncAudioState() {
+  syncAudioSubtitleControlVisibility();
+
   const selectedAudioTrack = getSelectedEmbeddedAudioTrack();
   const selectedAudioLabel = selectedAudioTrack
     ? getAudioTrackDisplayLabel(selectedAudioTrack)
@@ -3920,6 +4116,7 @@ function openSpeedPopover() {
     return;
   }
 
+  closeLiveStreamPopover(false);
   closeEpisodesPopover(false);
   window.clearTimeout(speedPopoverCloseTimeout);
   speedControl.classList.add("is-open");
@@ -3951,7 +4148,7 @@ function closeSpeedPopover(withDelay = true) {
 }
 
 function openAudioPopover() {
-  if (!audioControl) {
+  if (!audioControl || !shouldShowAudioSubtitleControl()) {
     return;
   }
 
@@ -3967,6 +4164,7 @@ function openAudioPopover() {
     return;
   }
 
+  closeLiveStreamPopover(false);
   closeEpisodesPopover(false);
   window.clearTimeout(audioPopoverCloseTimeout);
   if (isTmdbResolvedPlayback && !availablePlaybackSources.length) {
@@ -3978,7 +4176,7 @@ function openAudioPopover() {
   toggleAudio?.setAttribute("aria-expanded", "true");
 }
 
-function closeAudioPopover(withDelay = false) {
+function closeAudioPopover(withDelay = false, { force = false } = {}) {
   if (!audioControl) {
     return;
   }
@@ -3986,7 +4184,7 @@ function closeAudioPopover(withDelay = false) {
   window.clearTimeout(audioPopoverCloseTimeout);
 
   const close = () => {
-    if (audioControl.matches(":hover, :focus-within")) {
+    if (!force && audioControl.matches(":hover, :focus-within")) {
       return;
     }
 
@@ -4054,6 +4252,7 @@ function hideControls() {
   }
 
   closeSpeedPopover(false);
+  closeLiveStreamPopover(false);
   closeEpisodesPopover(false);
   closeAudioPopover();
   playerShell.classList.add("controls-hidden");
@@ -4107,6 +4306,10 @@ function syncSeekState() {
 }
 
 function persistResumeTime(force = false) {
+  if (isLivePlayback) {
+    return;
+  }
+
   const effectiveCurrentTime = Math.max(0, getEffectiveCurrentTime());
   if (!Number.isFinite(effectiveCurrentTime)) {
     return;
@@ -4198,6 +4401,30 @@ function persistResumeTime(force = false) {
 }
 
 async function tryPlay() {
+  const attributeSource = video.getAttribute("src") || "";
+  const fallbackRequestedSource =
+    lastRequestedAbsolutePlaybackSource ||
+    (lastRequestedPlaybackSource
+      ? new URL(lastRequestedPlaybackSource, window.location.origin).toString()
+      : "");
+  const restoreSource =
+    !attributeSource && fallbackRequestedSource
+      ? fallbackRequestedSource
+      : video.currentSrc || attributeSource || fallbackRequestedSource;
+  const hasStoppedOrEndedSource =
+    Boolean(restoreSource) &&
+    (!hasActiveSource() ||
+      video.ended ||
+      video.networkState === 0);
+
+  if (hasStoppedOrEndedSource) {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+    video.setAttribute("src", restoreSource);
+    video.load();
+  }
+
   if (!hasActiveSource()) {
     return;
   }
@@ -4210,7 +4437,7 @@ async function tryPlay() {
 }
 
 async function togglePlayback() {
-  if (!hasActiveSource() || isResolvingSource()) {
+  if (!hasRecoverablePlaybackSource() || isResolvingSource()) {
     return;
   }
 
@@ -5405,7 +5632,28 @@ async function initPlaybackSource() {
         const _allSeries = Array.isArray(_lib?.series) ? _lib.series : [];
         const _movieMatch = _movies.find((m) => slugify(m.title) === _slug);
         const _seriesMatch = _allSeries.find((s) => slugify(s.title) === _slug);
-        if (_movieMatch) {
+        const _liveMatch = LIVE_CHANNEL_PLAYBACK_FALLBACKS[_slug] || null;
+        if (_liveMatch) {
+          if (!params.has("title")) params.set("title", _liveMatch.title);
+          if (!params.has("src")) params.set("src", _liveMatch.source);
+          if (!params.has("thumb") && _liveMatch.thumb) params.set("thumb", _liveMatch.thumb);
+          if (!params.has("episode")) params.set("episode", "Live");
+          params.set("live", "1");
+          if (!params.has("liveStreamId")) {
+            params.set("liveStreamId", _liveMatch.defaultStreamId || "default");
+          }
+          if (!params.has("liveStreams")) {
+            params.set("liveStreams", JSON.stringify(_liveMatch.streams || []));
+          }
+          rawSourceParam = String(params.get("src") || "").trim();
+          normalizedRawSourceParam = normalizePlaybackSourceValue(rawSourceParam);
+          refreshLiveStreamStateFromParams(params);
+          src = normalizedRawSourceParam;
+          hasExplicitSource = Boolean(src);
+          isExplicitLocalUploadSource = computeIsExplicitLocalUploadSource();
+          title = params.get("title") || title;
+          episode = params.get("episode") || episode;
+        } else if (_movieMatch) {
           if (!params.has("title")) params.set("title", _movieMatch.title);
           if (!params.has("src") && _movieMatch.src) params.set("src", _movieMatch.src);
           if (!params.has("tmdbId") && _movieMatch.tmdbId) params.set("tmdbId", _movieMatch.tmdbId);
@@ -5414,7 +5662,7 @@ async function initPlaybackSource() {
           if (!params.has("mediaType")) params.set("mediaType", "movie");
           // Re-derive source variables from updated params
           rawSourceParam = String(params.get("src") || "").trim();
-          normalizedRawSourceParam = rawSourceParam.startsWith("assets/") ? `/${rawSourceParam}` : rawSourceParam;
+          normalizedRawSourceParam = normalizePlaybackSourceValue(rawSourceParam);
           src = normalizedRawSourceParam;
           hasExplicitSource = Boolean(src);
           isExplicitLocalUploadSource = computeIsExplicitLocalUploadSource();
@@ -5504,6 +5752,8 @@ async function initPlaybackSource() {
   isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
   sourceIdentity = isSeriesPlayback
     ? `series:${activeSeries.id}:episode:${seriesEpisodeIndex}`
+    : isLivePlayback
+      ? `live:${slugify(title) || "stream"}`
     : src ||
       (isTmdbResolvedPlayback
         ? `tmdb:${mediaType}:${tmdbId}${isTmdbTvPlayback ? `:s${seasonNumber}:e${episodeNumber}` : ""}`
@@ -5547,11 +5797,28 @@ async function initPlaybackSource() {
   activeTrackSourceInput = "";
   clearSubtitleTrack();
   hideAllSubtitleTracks();
+  renderLiveStreamOptions();
+  syncLiveStreamControls();
   rebuildTrackOptionButtons();
 
   if (hasExplicitSource) {
     expectedDurationSeconds = 0;
     hideResolver();
+    if (isLivePlayback) {
+      availableAudioTracks = [];
+      availableSubtitleTracks = [];
+      selectedAudioStreamIndex = -1;
+      selectedSubtitleStreamIndex = -1;
+      activeTrackSourceInput = "";
+      clearSubtitleTrack();
+      hideAllSubtitleTracks();
+      rebuildTrackOptionButtons();
+      setVideoSource(getLivePlaybackSource(src, isLivePlayback));
+      await tryPlay();
+      cleanUrlIfNeeded();
+      return;
+    }
+
     await resolveExplicitSourceTrackSelection(src);
     const subtitleStreamPreferenceBeforeResolve =
       getStoredSubtitleStreamPreferenceForCurrentPlayback();
@@ -5829,10 +6096,26 @@ if (toggleEpisodes) {
   });
 }
 
+if (toggleLiveStream) {
+  trackListener(toggleLiveStream, "click", (event) => {
+    event.preventDefault();
+    if (!liveStreamControl || isResolvingSource()) {
+      return;
+    }
+
+    const shouldOpen = !liveStreamControl.classList.contains("is-open");
+    if (shouldOpen) {
+      openLiveStreamPopover();
+    } else {
+      closeLiveStreamPopover();
+    }
+  });
+}
+
 if (toggleAudio) {
   trackListener(toggleAudio, "click", (event) => {
     event.preventDefault();
-    if (!audioControl || isResolvingSource()) {
+    if (!audioControl || !shouldShowAudioSubtitleControl() || isResolvingSource()) {
       return;
     }
 
@@ -5861,6 +6144,38 @@ if (episodesControl) {
   trackListener(episodesControl, "focusout", () =>
     closeEpisodesPopover(true),
   );
+}
+
+if (liveStreamControl) {
+  trackListener(liveStreamControl, "mouseenter", () => {
+    if (isResolvingSource()) {
+      return;
+    }
+    openLiveStreamPopover();
+  });
+  trackListener(liveStreamControl, "mouseleave", () =>
+    closeLiveStreamPopover(true),
+  );
+  trackListener(liveStreamControl, "focusin", () => {
+    if (isResolvingSource()) {
+      return;
+    }
+    openLiveStreamPopover();
+  });
+  trackListener(liveStreamControl, "focusout", (event) => {
+    if (!(event.target instanceof Node)) {
+      closeLiveStreamPopover(true);
+      return;
+    }
+
+    if (
+      event.relatedTarget instanceof Node &&
+      liveStreamControl.contains(event.relatedTarget)
+    ) {
+      return;
+    }
+    closeLiveStreamPopover(true);
+  });
 }
 
 if (audioControl) {
@@ -6252,6 +6567,21 @@ if (sourceOptionsContainer) trackListener(sourceOptionsContainer, "click", (even
   void handleSourceOptionSelection(sourceOption.dataset.sourceHash || "");
 });
 
+if (liveStreamOptionsContainer) {
+  trackListener(liveStreamOptionsContainer, "click", (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+    const option = event.target.closest(".live-stream-option");
+    if (!(option instanceof HTMLButtonElement)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void switchLiveStream(option.dataset.streamId || "");
+  });
+}
+
 trackListener(document, "pointerdown", (event) => {
   if (!speedControl) {
     return;
@@ -6274,6 +6604,18 @@ trackListener(document, "pointerdown", (event) => {
   }
 
   closeEpisodesPopover();
+});
+
+trackListener(document, "pointerdown", (event) => {
+  if (!liveStreamControl) {
+    return;
+  }
+
+  if (liveStreamControl.contains(event.target)) {
+    return;
+  }
+
+  closeLiveStreamPopover();
 });
 
 trackListener(document, "pointerdown", (event) => {
@@ -6739,6 +7081,11 @@ async function handleKeydown(event) {
   }
 
   if (event.key === "Escape" && !document.fullscreenElement) {
+    if (liveStreamControl?.classList.contains("is-open")) {
+      closeLiveStreamPopover();
+      return;
+    }
+
     if (audioControl?.classList.contains("is-open")) {
       closeAudioPopover();
       return;
@@ -6808,6 +7155,8 @@ trackListener(window, "beforeunload", () => {
       video.playbackRate = savedSpeed;
     }
     syncSpeedState();
+    renderLiveStreamOptions();
+    syncLiveStreamControls();
     syncSourcePanelVisibility();
     rebuildTrackOptionButtons();
     syncAudioState();
@@ -6857,6 +7206,7 @@ trackListener(window, "beforeunload", () => {
     clearSeekLoadingTimeout();
     stopSubtitleRafLoop();
     if (speedPopoverCloseTimeout) clearTimeout(speedPopoverCloseTimeout);
+    if (liveStreamPopoverCloseTimeout) clearTimeout(liveStreamPopoverCloseTimeout);
     if (episodesPopoverCloseTimeout) clearTimeout(episodesPopoverCloseTimeout);
     if (audioPopoverCloseTimeout) clearTimeout(audioPopoverCloseTimeout);
     if (seekLoadingTimeout) clearTimeout(seekLoadingTimeout);
@@ -7050,6 +7400,41 @@ trackListener(window, "beforeunload", () => {
                       ref=${el => episodesList = el}
                       class="episodes-list"
                       role="list"
+                    ></div>
+                  </div>
+                </div>
+                <div
+                  id="liveStreamControl"
+                  ref=${el => liveStreamControl = el}
+                  class="speed-menu-wrap live-stream-menu-wrap"
+                  hidden
+                >
+                  <button
+                    id="toggleLiveStream"
+                    ref=${el => toggleLiveStream = el}
+                    class="control-btn live-stream-btn"
+                    type="button"
+                    aria-label="Live stream"
+                    aria-haspopup="listbox"
+                    aria-controls="liveStreamMenu"
+                    aria-expanded="false"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4 6.5h16v2H4v-2Zm0 4.5h10v2H4v-2Zm0 4.5h16v2H4v-2Zm13.8-5.4 3.8 2.4-3.8 2.4v-4.8Z"></path>
+                    </svg>
+                  </button>
+                  <div
+                    id="liveStreamMenu"
+                    ref=${el => liveStreamMenu = el}
+                    class="speed-popover live-stream-popover"
+                    role="listbox"
+                    aria-label="Live stream"
+                  >
+                    <p class="speed-popover-title live-stream-popover-title">Live stream</p>
+                    <div
+                      id="liveStreamOptions"
+                      ref=${el => liveStreamOptionsContainer = el}
+                      class="audio-options live-stream-options"
                     ></div>
                   </div>
                 </div>

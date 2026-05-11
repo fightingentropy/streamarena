@@ -893,6 +893,62 @@ body {
     overflow: hidden;
 }
 
+.live-stream-popover {
+    right: 0;
+    width: min(360px, calc(100vw - 22px));
+    max-height: min(46vh, 340px);
+    padding: 16px 0 14px;
+    overflow: hidden;
+}
+
+.live-stream-popover-title {
+    margin: 0 22px 12px;
+    font-size: clamp(1.28rem, 1.8vw, 1.7rem);
+}
+
+.live-stream-options {
+    max-height: min(34vh, 260px);
+    padding: 0 16px;
+    margin: 0;
+    gap: 4px;
+}
+
+.live-stream-option {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-height: 58px;
+    padding: 10px 12px 10px 42px;
+    font-size: 1rem;
+}
+
+.live-stream-option::before {
+    left: 11px;
+    font-size: 1.2rem;
+}
+
+.live-stream-option-name,
+.live-stream-option-meta {
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.live-stream-option-name {
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.24;
+}
+
+.live-stream-option-meta {
+    color: rgba(245, 245, 245, 0.68);
+    font-size: 0.82rem;
+    line-height: 1.2;
+}
+
 .audio-popover-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1462,6 +1518,14 @@ body {
         padding: 12px 0 10px;
     }
 
+    .live-stream-popover {
+        right: 0;
+        bottom: auto;
+        top: calc(100% + 8px);
+        width: min(84vw, 320px);
+        max-height: min(46vh, 300px);
+    }
+
     .episodes-popover {
         right: 0;
         bottom: auto;
@@ -1602,6 +1666,34 @@ body {
 
     .source-option-details {
         display: none;
+    }
+
+    .live-stream-popover-title {
+        margin: 0 18px 10px;
+        font-size: clamp(1.08rem, 4.6vw, 1.42rem);
+    }
+
+    .live-stream-options {
+        max-height: min(32vh, 230px);
+        padding: 0 12px;
+    }
+
+    .live-stream-option {
+        min-height: 48px;
+        padding: 8px 10px 8px 34px;
+    }
+
+    .live-stream-option::before {
+        left: 9px;
+        font-size: 1.02rem;
+    }
+
+    .live-stream-option-name {
+        font-size: 0.9rem;
+    }
+
+    .live-stream-option-meta {
+        font-size: 0.74rem;
     }
 
     .subtitle-option-name {
@@ -1747,6 +1839,10 @@ body {
 
     .speed-popover {
         width: min(96vw, 360px);
+    }
+
+    .live-stream-popover {
+        width: min(96vw, 310px);
     }
 
     .audio-popover.subtitles-popover {

@@ -10,7 +10,6 @@ use tokio::time::sleep;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
-use crate::utils::now_ms;
 use crate::media::{
     MediaProbe, MediaService, choose_audio_track_from_probe, choose_subtitle_track_from_probe,
     merge_preferred_subtitle_tracks,
@@ -21,6 +20,7 @@ use crate::routes::{
     normalize_subtitle_preference,
 };
 use crate::tmdb::TmdbService;
+use crate::utils::now_ms;
 
 const REAL_DEBRID_API_BASE: &str = "https://api.real-debrid.com/rest/1.0";
 const SOURCE_LANGUAGE_FILTER_DEFAULT: &str = "en";
@@ -919,7 +919,7 @@ impl ResolverService {
 
         let ranked_candidates = verified_candidates
             .into_iter()
-            .chain(uncertain_candidates.into_iter())
+            .chain(uncertain_candidates)
             .collect::<Vec<_>>();
         if ranked_candidates.is_empty() {
             return Err(last_error.unwrap_or_else(|| {
@@ -2657,9 +2657,7 @@ fn count_matching_title_tokens(normalized_value: &str, title_tokens: &[String]) 
     if normalized_value.is_empty() || title_tokens.is_empty() {
         return 0;
     }
-    let normalized_token_set = normalized_value
-        .split_whitespace()
-        .collect::<HashSet<_>>();
+    let normalized_token_set = normalized_value.split_whitespace().collect::<HashSet<_>>();
     title_tokens
         .iter()
         .filter(|token| normalized_token_set.contains(token.as_str()))
@@ -3473,7 +3471,6 @@ fn push_unique_url(target: &mut Vec<String>, value: &str) {
     target.push(value.to_owned());
 }
 
-
 trait IfEmptyThen {
     fn if_empty_then(self, fallback: impl FnOnce() -> String) -> String;
 }
@@ -3497,10 +3494,10 @@ mod tests {
     use super::{
         ResolveMetadata, SourceFilters, TorrentioBehaviorHints, TorrentioStream,
         build_rd_torrent_cache_key, build_torrentio_stream_cache_key, collect_episode_signatures,
-        compute_torrentio_cache_deadlines, normalize_allowed_formats,
-        does_filename_likely_match_movie, normalize_source_audio_profile_filter,
-        normalize_source_hash, now_ms, parse_runtime_from_label_seconds, parse_seed_count,
-        select_top_movie_candidates, sort_movie_candidates,
+        compute_torrentio_cache_deadlines, does_filename_likely_match_movie,
+        normalize_allowed_formats, normalize_source_audio_profile_filter, normalize_source_hash,
+        now_ms, parse_runtime_from_label_seconds, parse_seed_count, select_top_movie_candidates,
+        sort_movie_candidates,
     };
 
     #[test]

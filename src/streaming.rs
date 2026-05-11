@@ -18,12 +18,12 @@ use url::form_urlencoded::byte_serialize;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
-use crate::utils::{hash_stable_string, now_ms};
 use crate::media::{MediaProbe, MediaService};
 use crate::process::{
     RuntimeServices, normalize_audio_sync_ms, resolve_effective_remux_hwaccel_mode,
     run_process_capture_bytes,
 };
+use crate::utils::{hash_stable_string, now_ms};
 
 const HLS_SEGMENT_DURATION_SECONDS: i64 = 6;
 const HLS_SEGMENT_STALE_MS: i64 = 6 * 60 * 60 * 1000;

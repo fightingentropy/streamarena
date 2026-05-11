@@ -11,7 +11,6 @@ use url::Url;
 use crate::config::Config;
 use crate::utils::now_ms;
 
-
 const FFMPEG_CAPABILITY_REFRESH_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,7 +76,6 @@ impl RuntimeServices {
         *self.ffmpeg_snapshot.lock().await = next.clone();
         next
     }
-
 }
 
 pub fn normalize_audio_sync_ms(value: i64) -> i64 {

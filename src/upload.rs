@@ -13,7 +13,6 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 
 use crate::config::Config;
-use crate::utils::{hash_stable_string, now_ms};
 use crate::error::{ApiError, AppResult};
 use crate::library::{
     Library, MovieEntry, SeriesEntry, SeriesEpisodeEntry, mutate_local_library, normalize_tmdb_id,
@@ -22,6 +21,7 @@ use crate::library::{
 };
 use crate::media::{MediaProbe, MediaService};
 use crate::process::{RuntimeServices, run_process_capture_text};
+use crate::utils::{hash_stable_string, now_ms};
 
 const UPLOAD_SESSION_STALE_MS: i64 = 6 * 60 * 60 * 1000;
 const UPLOAD_TRANSCODE_TIMEOUT_MS: u64 = 2 * 60 * 60 * 1000;
@@ -1834,7 +1834,6 @@ mod tests {
             playback_sessions_enabled: false,
             opensubtitles_api_key: String::new(),
             opensubtitles_user_agent: String::new(),
-
         };
         tokio::fs::create_dir_all(&assets_dir)
             .await

@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod error;
 mod library;
+mod live;
 mod media;
 mod persistence;
 mod process;
@@ -99,6 +100,7 @@ async fn main() -> AppResult<()> {
         db,
         tmdb,
         media,
+        http_client,
         resolver,
         streaming,
         upload,
