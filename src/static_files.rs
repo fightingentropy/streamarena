@@ -13,6 +13,11 @@ use tokio_util::io::ReaderStream;
 use crate::error::{ApiError, AppResult};
 use crate::routes::AppState;
 
+const CACHE_NO_STORE: &str = "no-store";
+const CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";
+const CACHE_STATIC_ASSET: &str = "public, max-age=86400";
+const CACHE_VIDEO_ASSET: &str = "public, max-age=3600";
+
 pub async fn serve_static(
     State(state): State<AppState>,
     method: Method,
@@ -45,6 +50,7 @@ pub async fn serve_static(
         .first_raw()
         .unwrap_or("application/octet-stream")
         .to_owned();
+    let cache_control = cache_control_for_path(uri.path(), &content_type);
 
     if let Some(range_header) = headers.get(RANGE).and_then(|value| value.to_str().ok()) {
         let Some((start, end)) = parse_range(range_header, file_size) else {
@@ -79,9 +85,7 @@ pub async fn serve_static(
                 .unwrap_or(HeaderValue::from_static("application/octet-stream")),
         );
         headers.insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-        if should_disable_cache(&content_type) {
-            headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        }
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static(cache_control));
         headers.insert(
             CONTENT_LENGTH,
             HeaderValue::from_str(&len.to_string()).unwrap(),
@@ -109,9 +113,7 @@ pub async fn serve_static(
             .unwrap_or(HeaderValue::from_static("application/octet-stream")),
     );
     headers.insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-    if should_disable_cache(&content_type) {
-        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    }
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static(cache_control));
     headers.insert(
         CONTENT_LENGTH,
         HeaderValue::from_str(&file_size.to_string()).unwrap(),
@@ -212,17 +214,36 @@ fn parse_range(header: &str, file_size: u64) -> Option<(u64, u64)> {
     Some((start, end))
 }
 
-fn should_disable_cache(content_type: &str) -> bool {
-    content_type.starts_with("text/")
-        || content_type.contains("javascript")
+fn cache_control_for_path(pathname: &str, content_type: &str) -> &'static str {
+    if pathname == "/"
+        || pathname.ends_with(".html")
+        || pathname == "/assets/library.json"
+        || content_type.starts_with("text/html")
         || content_type.contains("json")
+    {
+        return CACHE_NO_STORE;
+    }
+    if pathname.starts_with("/ui-assets/") {
+        return CACHE_IMMUTABLE;
+    }
+    if pathname.starts_with("/assets/videos/") {
+        return CACHE_VIDEO_ASSET;
+    }
+    if pathname.starts_with("/assets/images/") || pathname.starts_with("/assets/icons/") {
+        return CACHE_STATIC_ASSET;
+    }
+    if content_type.starts_with("text/") || content_type.contains("javascript") {
+        return CACHE_NO_STORE;
+    }
+    CACHE_STATIC_ASSET
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::{parse_range, resolve_local_path};
+    use super::{CACHE_IMMUTABLE, CACHE_NO_STORE, CACHE_STATIC_ASSET, cache_control_for_path};
+    use super::{CACHE_VIDEO_ASSET, parse_range, resolve_local_path};
 
     #[test]
     fn maps_clean_route_to_html() {
@@ -282,5 +303,38 @@ mod tests {
     #[test]
     fn parses_large_suffix_range() {
         assert_eq!(parse_range("bytes=-999", 100), Some((0, 99)));
+    }
+
+    #[test]
+    fn keeps_html_and_library_uncached() {
+        assert_eq!(cache_control_for_path("/", "text/html"), CACHE_NO_STORE);
+        assert_eq!(
+            cache_control_for_path("/assets/library.json", "application/json"),
+            CACHE_NO_STORE
+        );
+    }
+
+    #[test]
+    fn caches_hashed_vite_assets_immutably() {
+        assert_eq!(
+            cache_control_for_path("/ui-assets/home-DROte660.js", "text/javascript"),
+            CACHE_IMMUTABLE
+        );
+        assert_eq!(
+            cache_control_for_path("/ui-assets/style-D8pVIT3e.css", "text/css"),
+            CACHE_IMMUTABLE
+        );
+    }
+
+    #[test]
+    fn caches_media_assets_without_marking_them_immutable() {
+        assert_eq!(
+            cache_control_for_path("/assets/images/poster.jpg", "image/jpeg"),
+            CACHE_STATIC_ASSET
+        );
+        assert_eq!(
+            cache_control_for_path("/assets/videos/movie.mp4", "video/mp4"),
+            CACHE_VIDEO_ASSET
+        );
     }
 }
