@@ -1283,7 +1283,7 @@ export default function HomePage() {
   const [continueRowVisible, setContinueRowVisible] = createSignal(false);
   const [continueEmptyVisible, setContinueEmptyVisible] = createSignal(false);
   const [popularRowVisible, setPopularRowVisible] = createSignal(true);
-  const [popularRowTitle, setPopularRowTitle] = createSignal("Downloaded Titles");
+  const [popularRowTitle, setPopularRowTitle] = createSignal("Today's Top Picks for You");
   const [myListRowVisible, setMyListRowVisible] = createSignal(false);
   const [myListEmptyVisible, setMyListEmptyVisible] = createSignal(false);
 
@@ -3135,7 +3135,7 @@ export default function HomePage() {
         );
       });
 
-      setPopularRowTitle(cardsToRender.length ? "Downloaded Titles" : "Downloaded Titles");
+      setPopularRowTitle("Today's Top Picks for You");
       setPopularRowVisible(cardsToRender.length > 0);
     } catch (error) {
       console.error("Failed to load local downloaded titles:", error);

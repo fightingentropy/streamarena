@@ -25,6 +25,7 @@ body {
     font-family: var(--font-netflix-sans);
     background: var(--bg);
     color: var(--text);
+    overflow-x: hidden;
 }
 
 body.modal-open {
@@ -846,6 +847,20 @@ body.is-search-mode #myListRow {
     align-items: flex-end;
     position: relative;
     overflow: visible;
+}
+
+.cards.popular-cards {
+    --card-hover-lift: clamp(265px, 18vw, 330px);
+    margin-top: calc(-1 * var(--card-hover-lift));
+    padding-top: var(--card-hover-lift);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+}
+
+.cards.popular-cards::-webkit-scrollbar {
+    display: none;
 }
 
 .card {
