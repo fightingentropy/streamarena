@@ -4395,7 +4395,7 @@ export default function HomePage() {
         <h2>Continue watching for <span id="continueWatchingName">${displayName || "you"}</span></h2>
         <div
           id="continueCards"
-          class="cards"
+          class="cards popular-cards continue-cards"
           ref=${(el) => (continueCardsRef = el)}
         ></div>
         <p

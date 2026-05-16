@@ -609,7 +609,7 @@ body.modal-open {
 
 .continue-row {
     position: absolute;
-    z-index: 11;
+    z-index: 18;
     left: 48px;
     right: 48px;
     bottom: 36px;
