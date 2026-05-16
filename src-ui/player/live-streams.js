@@ -40,7 +40,11 @@ function normalizeLiveStreamOption(option = {}, index = 0) {
   };
 }
 
-function readLiveStreamOptionsFromParams(queryParams, fallbackSource = "") {
+function readLiveStreamOptionsFromParams(
+  queryParams,
+  fallbackSource = "",
+  includeFallbackSource = false,
+) {
   const parsedOptions = [];
   const rawStreams = String(queryParams.get("liveStreams") || "").trim();
   if (rawStreams) {
@@ -68,7 +72,9 @@ function readLiveStreamOptionsFromParams(queryParams, fallbackSource = "") {
     seenSources.add(key);
     return true;
   });
-  const normalizedFallback = normalizePlaybackSourceValue(fallbackSource);
+  const normalizedFallback = includeFallbackSource
+    ? normalizePlaybackSourceValue(fallbackSource)
+    : "";
   if (
     normalizedFallback &&
     !uniqueOptions.some((option) => option.source === normalizedFallback)
@@ -84,17 +90,26 @@ function readLiveStreamOptionsFromParams(queryParams, fallbackSource = "") {
 }
 
 export function deriveLiveStreamStateFromParams(queryParams, fallbackSource = "") {
-  const options = readLiveStreamOptionsFromParams(queryParams, fallbackSource);
   let selectedStreamId = normalizeLiveStreamId(queryParams.get("liveStreamId"));
   const liveParam = String(queryParams.get("live") || "")
     .trim()
     .toLowerCase();
-  const isLivePlayback =
-    options.length > 0 ||
+  const hasLiveFlag =
     liveParam === "1" ||
     liveParam === "true" ||
     liveParam === "yes" ||
     liveParam === "on";
+  const hasLiveStreamMetadata = Boolean(
+    String(queryParams.get("liveStreams") || "").trim(),
+  );
+  const options = readLiveStreamOptionsFromParams(
+    queryParams,
+    fallbackSource,
+    hasLiveFlag || hasLiveStreamMetadata,
+  );
+  const isLivePlayback =
+    hasLiveFlag ||
+    options.length > 0;
 
   const selectedStream =
     options.find((option) => option.id === selectedStreamId) ||

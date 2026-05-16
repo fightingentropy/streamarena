@@ -91,6 +91,9 @@ let activeAudioStreamIndex = -1;
 let activeAudioSyncMs = 0;
 let transcodeBaseOffsetSeconds = 0;
 let hasAppliedInitialResume = false;
+let initialResumeRetryTimeout = 0;
+let initialResumeAttemptCount = 0;
+let initialResumeApplyDeadline = 0;
 let pendingTranscodeSeekRatio = null;
 let pendingStandardSeekRatio = null;
 let activeTrackSourceInput = "";
@@ -421,6 +424,10 @@ const AUDIO_SYNC_STEP_MS = 50;
 const RESUME_SAVE_MIN_INTERVAL_MS = 3000;
 const RESUME_SAVE_MIN_DELTA_SECONDS = 1.5;
 const RESUME_FLUSH_INTERVAL_MS = 1000;
+const INITIAL_RESUME_RETRY_MS = 250;
+const INITIAL_RESUME_MAX_ATTEMPTS = 120;
+const INITIAL_RESUME_APPLY_WINDOW_MS = 30000;
+const INITIAL_RESUME_TOLERANCE_SECONDS = 2;
 const RESUME_CLEAR_AT_END_THRESHOLD_SECONDS = 8;
 const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
 const SUBTITLE_LINE_FROM_BOTTOM = -4;
@@ -956,17 +963,13 @@ if (!(resumeTime > 1)) {
       if (entry && Number.isFinite(entry.resumeSeconds) && entry.resumeSeconds > 1) {
         resumeTime = entry.resumeSeconds;
         lastPersistedResumeTime = entry.resumeSeconds;
+        resetInitialResumeApplication();
         try {
           localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
         } catch {}
         persistContinueWatchingEntry(entry.resumeSeconds);
-        // Apply the resume now (metadata may already be loaded).
-        if (Number.isFinite(video.duration) && video.duration > 0) {
-          const dur = getSeekScaleDurationSeconds();
-          if (resumeTime > 1 && resumeTime < dur - 8) {
-            video.currentTime = resumeTime;
-            hasAppliedInitialResume = true;
-          }
+        if (!applyInitialResumeIfReady()) {
+          scheduleInitialResumeRetry();
         }
       }
     })
@@ -1054,7 +1057,133 @@ function removeContinueWatchingEntry() {
   }).catch(() => {});
 }
 
+function hasInitialResumeTarget() {
+  return Number.isFinite(resumeTime) && resumeTime > 1;
+}
+
+function clearInitialResumeRetry() {
+  if (initialResumeRetryTimeout) {
+    window.clearTimeout(initialResumeRetryTimeout);
+    initialResumeRetryTimeout = 0;
+  }
+}
+
+function resetInitialResumeApplication() {
+  clearInitialResumeRetry();
+  initialResumeAttemptCount = 0;
+  hasAppliedInitialResume = false;
+  initialResumeApplyDeadline = hasInitialResumeTarget()
+    ? Date.now() + INITIAL_RESUME_APPLY_WINDOW_MS
+    : 0;
+}
+
+function isCurrentTimeAtInitialResumeTarget() {
+  if (!hasInitialResumeTarget()) {
+    return true;
+  }
+  const current = getEffectiveCurrentTime();
+  return (
+    Number.isFinite(current) &&
+    current >= resumeTime - INITIAL_RESUME_TOLERANCE_SECONDS
+  );
+}
+
+function shouldHoldProgressSaveForInitialResume(effectiveCurrentTime) {
+  return (
+    hasInitialResumeTarget() &&
+    initialResumeApplyDeadline > 0 &&
+    Date.now() <= initialResumeApplyDeadline &&
+    Number.isFinite(effectiveCurrentTime) &&
+    effectiveCurrentTime < resumeTime - INITIAL_RESUME_TOLERANCE_SECONDS
+  );
+}
+
+function applyInitialResumeIfReady() {
+  if (!hasInitialResumeTarget()) {
+    hasAppliedInitialResume = true;
+    return true;
+  }
+
+  if (hasAppliedInitialResume && isCurrentTimeAtInitialResumeTarget()) {
+    return true;
+  }
+
+  if (
+    hasAppliedInitialResume &&
+    initialResumeApplyDeadline > 0 &&
+    Date.now() <= initialResumeApplyDeadline &&
+    !isCurrentTimeAtInitialResumeTarget()
+  ) {
+    hasAppliedInitialResume = false;
+  }
+
+  if (hasAppliedInitialResume) {
+    return true;
+  }
+
+  const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
+  if (
+    !Number.isFinite(seekScaleDurationSeconds) ||
+    seekScaleDurationSeconds <= 0 ||
+    resumeTime >= seekScaleDurationSeconds - RESUME_CLEAR_AT_END_THRESHOLD_SECONDS
+  ) {
+    return false;
+  }
+
+  try {
+    if (isTranscodeSourceActive()) {
+      const relativeResume = resumeTime - transcodeBaseOffsetSeconds;
+      if (
+        relativeResume >= 0 &&
+        Number.isFinite(video.duration) &&
+        relativeResume < video.duration - 3
+      ) {
+        video.currentTime = relativeResume;
+      } else {
+        seekToAbsoluteTime(resumeTime);
+      }
+    } else {
+      const timelineDurationSeconds = getTimelineDurationSeconds();
+      if (
+        !Number.isFinite(timelineDurationSeconds) ||
+        timelineDurationSeconds <= 0 ||
+        resumeTime >= timelineDurationSeconds - RESUME_CLEAR_AT_END_THRESHOLD_SECONDS
+      ) {
+        return false;
+      }
+      video.currentTime = resumeTime;
+    }
+
+    hasAppliedInitialResume = true;
+    clearInitialResumeRetry();
+    syncSeekState();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function scheduleInitialResumeRetry() {
+  if (
+    hasAppliedInitialResume ||
+    !hasInitialResumeTarget() ||
+    initialResumeRetryTimeout ||
+    initialResumeAttemptCount >= INITIAL_RESUME_MAX_ATTEMPTS
+  ) {
+    return;
+  }
+
+  initialResumeAttemptCount += 1;
+  initialResumeRetryTimeout = window.setTimeout(() => {
+    initialResumeRetryTimeout = 0;
+    if (!applyInitialResumeIfReady()) {
+      scheduleInitialResumeRetry();
+    }
+  }, INITIAL_RESUME_RETRY_MS);
+}
+
 if (resumeTime > 1) {
+  resetInitialResumeApplication();
   persistContinueWatchingEntry(resumeTime);
 }
 
@@ -2811,6 +2940,9 @@ function setVideoSource(nextSource) {
   }
 
   knownDurationSeconds = 0;
+  if (hasInitialResumeTarget()) {
+    resetInitialResumeApplication();
+  }
   const absoluteSource = new URL(
     sourceWithAudioSync,
     window.location.origin,
@@ -4326,6 +4458,13 @@ function persistResumeTime(force = false) {
     return;
   }
 
+  if (shouldHoldProgressSaveForInitialResume(effectiveCurrentTime)) {
+    if (!applyInitialResumeIfReady()) {
+      scheduleInitialResumeRetry();
+    }
+    return;
+  }
+
   const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
   const isNearEnd =
     Number.isFinite(seekScaleDurationSeconds) &&
@@ -5782,6 +5921,7 @@ async function initPlaybackSource() {
         if (entry && Number.isFinite(entry.resumeSeconds) && entry.resumeSeconds > 1) {
           resumeTime = entry.resumeSeconds;
           lastPersistedResumeTime = entry.resumeSeconds;
+          resetInitialResumeApplication();
           try {
             localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
           } catch {}
@@ -5793,7 +5933,7 @@ async function initPlaybackSource() {
     persistContinueWatchingEntry(resumeTime);
   }
 
-  hasAppliedInitialResume = false;
+  resetInitialResumeApplication();
   pendingTranscodeSeekRatio = null;
   availableAudioTracks = [];
   availableSubtitleTracks = [];
@@ -6799,32 +6939,9 @@ trackListener(video, "loadedmetadata", () => {
     refreshActiveSubtitlePlacement();
     renderCustomSubtitleOverlay();
   }, 200);
-  const timelineDurationSeconds = getTimelineDurationSeconds();
   const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
-  if (
-    !hasAppliedInitialResume &&
-    Number.isFinite(resumeTime) &&
-    resumeTime > 1 &&
-    resumeTime < seekScaleDurationSeconds - 8
-  ) {
-    if (isTranscodeSourceActive()) {
-      const relativeResume = resumeTime - transcodeBaseOffsetSeconds;
-      if (
-        relativeResume >= 0 &&
-        Number.isFinite(video.duration) &&
-        relativeResume < video.duration - 3
-      ) {
-        video.currentTime = relativeResume;
-      } else {
-        seekToAbsoluteTime(resumeTime);
-      }
-    } else if (resumeTime < timelineDurationSeconds - 8) {
-      video.currentTime = resumeTime;
-    }
-    hasAppliedInitialResume = true;
-  }
-  if (!hasAppliedInitialResume) {
-    hasAppliedInitialResume = true;
+  if (!applyInitialResumeIfReady()) {
+    scheduleInitialResumeRetry();
   }
 
   if (seekScaleDurationSeconds > 0) {
@@ -6874,14 +6991,23 @@ trackListener(video, "seeked", () => {
 trackListener(video, "canplay", () => {
   clearStreamStallRecovery();
   hideSeekLoadingIndicator();
+  if (!applyInitialResumeIfReady()) {
+    scheduleInitialResumeRetry();
+  }
 });
 trackListener(video, "playing", () => {
   clearStreamStallRecovery();
   hideSeekLoadingIndicator();
+  if (!applyInitialResumeIfReady()) {
+    scheduleInitialResumeRetry();
+  }
 });
 trackListener(video, "timeupdate", () => {
   if (getEffectiveCurrentTime() > 0.5) {
     clearStreamStallRecovery();
+  }
+  if (!applyInitialResumeIfReady()) {
+    scheduleInitialResumeRetry();
   }
   persistResumeTime(false);
 
@@ -7226,6 +7352,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
       window.clearInterval(resumeFlushIntervalId);
       resumeFlushIntervalId = 0;
     }
+    clearInitialResumeRetry();
     document.removeEventListener("keydown", handleGlobalKeydown);
     document.removeEventListener("mousemove", handleGlobalMousemove);
     window.removeEventListener("beforeunload", handleGlobalBeforeunload);
