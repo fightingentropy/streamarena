@@ -427,8 +427,9 @@ function removeResumeEntriesForSource(
 ) {
   const normalizedSource = String(sourceIdentity || "").trim();
   if (!normalizedSource) {
-    return;
+    return [];
   }
+  const serverDeletes = [];
   const keysToDelete = new Set();
   keysToDelete.add(`${RESUME_STORAGE_PREFIX}${normalizedSource}`);
 
@@ -437,12 +438,18 @@ function removeResumeEntriesForSource(
     .toLowerCase();
   if (normalizedSeriesId) {
     const seriesResumePrefix = `${RESUME_STORAGE_PREFIX}series:${normalizedSeriesId}:episode:`;
+    const storageKeys = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
+      if (key) {
+        storageKeys.push(key);
+      }
+    }
+    storageKeys.forEach((key) => {
       if (key && key.startsWith(seriesResumePrefix)) {
         keysToDelete.add(key);
       }
-    }
+    });
   }
 
   const tmdbId = String(parsedTmdbSource?.tmdbId || "").trim();
@@ -470,13 +477,29 @@ function removeResumeEntriesForSource(
     localStorage.removeItem(key);
     const identity = key.slice(RESUME_STORAGE_PREFIX.length);
     if (identity) {
-      fetch("/api/user/watch-progress", {
+      serverDeletes.push(fetch("/api/user/watch-progress", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceIdentity: identity }),
-      }).catch(() => {});
+        body: JSON.stringify({
+          sourceIdentity: identity,
+          seriesId: normalizedSeriesId,
+        }),
+      }).catch(() => {}));
     }
   });
+
+  if (normalizedSeriesId) {
+    serverDeletes.push(fetch("/api/user/watch-progress", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourceIdentity: normalizedSource,
+        seriesId: normalizedSeriesId,
+      }),
+    }).catch(() => {}));
+  }
+
+  return serverDeletes;
 }
 
 function removeContinueMetaEntriesForSource(
@@ -494,7 +517,13 @@ function removeContinueMetaEntriesForSource(
     .toLowerCase();
   if (normalizedSeriesId) {
     Object.keys(metaMap).forEach((key) => {
-      if (extractSeriesIdFromSourceIdentity(key) === normalizedSeriesId) {
+      const valueSeriesId = String(metaMap[key]?.seriesId || "")
+        .trim()
+        .toLowerCase();
+      if (
+        extractSeriesIdFromSourceIdentity(key) === normalizedSeriesId ||
+        valueSeriesId === normalizedSeriesId
+      ) {
         delete metaMap[key];
       }
     });
@@ -753,18 +782,24 @@ async function fetchServerContinueWatchingEntries() {
   }
 }
 
-function removeContinueWatchingEntry(sourceIdentity) {
+async function removeContinueWatchingEntry(sourceIdentity, seriesId = "") {
   const normalizedSource = String(sourceIdentity || "").trim();
   if (!normalizedSource) return;
   const normalizedSeriesId =
+    String(seriesId || "")
+      .trim()
+      .toLowerCase() ||
     extractSeriesIdFromSourceIdentity(normalizedSource);
   const parsedTmdbSource = parseTmdbSourceIdentity(normalizedSource);
+  const serverDeletes = [];
 
   try {
-    removeResumeEntriesForSource(
-      normalizedSource,
-      normalizedSeriesId,
-      parsedTmdbSource,
+    serverDeletes.push(
+      ...removeResumeEntriesForSource(
+        normalizedSource,
+        normalizedSeriesId,
+        parsedTmdbSource,
+      ),
     );
 
     const metaMap = readContinueWatchingMetaMap();
@@ -801,11 +836,16 @@ function removeContinueWatchingEntry(sourceIdentity) {
   );
 
   // Sync deletion to server in background
-  fetch("/api/user/continue-watching", {
+  serverDeletes.push(fetch("/api/user/continue-watching", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sourceIdentity: normalizedSource }),
-  }).catch(() => {});
+    body: JSON.stringify({
+      sourceIdentity: normalizedSource,
+      seriesId: normalizedSeriesId,
+    }),
+  }).catch(() => {}));
+
+  await Promise.allSettled(serverDeletes);
 }
 
 function getContinueWatchingEntries() {
@@ -2418,8 +2458,10 @@ export default function HomePage() {
         return;
       }
 
-      removeContinueWatchingEntry(resumeSource);
-      void loadContinueWatching();
+      void (async () => {
+        await removeContinueWatchingEntry(resumeSource, card.dataset.seriesId);
+        await loadContinueWatching();
+      })();
     });
 
     const hoverMyListButton = card.querySelector(

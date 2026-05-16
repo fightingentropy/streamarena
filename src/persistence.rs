@@ -1416,6 +1416,30 @@ impl Db {
         Ok(())
     }
 
+    pub async fn delete_user_watch_progress_for_series(
+        &self,
+        user_id: i64,
+        series_id: String,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let source_prefix = format!("series:{series_id}:episode:%");
+            connection.execute(
+                "DELETE FROM user_watch_progress
+                 WHERE user_id = ? AND source_identity LIKE ?",
+                params![user_id, source_prefix],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
     pub async fn get_user_continue_watching(&self, user_id: i64) -> AppResult<Vec<Value>> {
         let path = self.path.clone();
         let pool = self.pool.clone();
@@ -1567,6 +1591,32 @@ impl Db {
             connection.execute(
                 "DELETE FROM user_continue_watching WHERE user_id = ? AND source_identity = ?",
                 params![user_id, source_identity],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn delete_user_continue_watching_for_series(
+        &self,
+        user_id: i64,
+        series_id: String,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let normalized_series_id = series_id.trim().to_owned();
+            let source_prefix = format!("series:{normalized_series_id}:episode:%");
+            connection.execute(
+                "DELETE FROM user_continue_watching
+                 WHERE user_id = ?
+                   AND (series_id = ? OR source_identity LIKE ?)",
+                params![user_id, normalized_series_id, source_prefix],
             )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())

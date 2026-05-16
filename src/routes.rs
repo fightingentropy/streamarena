@@ -1660,6 +1660,20 @@ async fn user_watch_progress_handler(
             if source_identity.is_empty() {
                 return Err(ApiError::bad_request("Missing sourceIdentity."));
             }
+            let series_id = payload
+                .get("seriesId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_ascii_lowercase())
+                .unwrap_or_else(|| extract_series_id_from_source_identity(&source_identity));
+            if !series_id.is_empty() {
+                state
+                    .db
+                    .delete_user_watch_progress_for_series(user.id, series_id)
+                    .await?;
+                return Ok(json_response(json!({ "ok": true })));
+            }
             state
                 .db
                 .delete_user_watch_progress(user.id, source_identity)
@@ -1717,9 +1731,31 @@ async fn user_continue_watching_handler(
             if source_identity.is_empty() {
                 return Err(ApiError::bad_request("Missing sourceIdentity."));
             }
+            let series_id = payload
+                .get("seriesId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_ascii_lowercase())
+                .unwrap_or_else(|| extract_series_id_from_source_identity(&source_identity));
+            if !series_id.is_empty() {
+                state
+                    .db
+                    .delete_user_continue_watching_for_series(user.id, series_id.clone())
+                    .await?;
+                state
+                    .db
+                    .delete_user_watch_progress_for_series(user.id, series_id)
+                    .await?;
+                return Ok(json_response(json!({ "ok": true })));
+            }
             state
                 .db
-                .delete_user_continue_watching(user.id, source_identity)
+                .delete_user_continue_watching(user.id, source_identity.clone())
+                .await?;
+            state
+                .db
+                .delete_user_watch_progress(user.id, source_identity)
                 .await?;
             Ok(json_response(json!({ "ok": true })))
         }
@@ -1940,6 +1976,16 @@ pub fn normalize_session_health_state(value: &str) -> String {
         "invalid" => "invalid".to_owned(),
         _ => "unknown".to_owned(),
     }
+}
+
+fn extract_series_id_from_source_identity(source_identity: &str) -> String {
+    let Some(rest) = source_identity.trim().strip_prefix("series:") else {
+        return String::new();
+    };
+    let Some((series_id, _episode_suffix)) = rest.split_once(":episode:") else {
+        return String::new();
+    };
+    series_id.trim().to_ascii_lowercase()
 }
 
 fn normalize_iso_language(value: &str) -> String {
