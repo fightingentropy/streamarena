@@ -48,6 +48,9 @@ const PRIDE_PREJUDICE_SOURCE =
   "assets/videos/Pride.Prejudice.2005.2160p.4K.WEB.x265.10bit.AAC5.1-[YTS.MX].mp4";
 const PRIDE_PREJUDICE_THUMBNAIL = "assets/images/pride-prejudice-thumb.jpg";
 const DEFAULT_LOCAL_THUMBNAIL = "assets/images/thumbnail.jpg";
+const HERO_TRAILER_SOURCE = "assets/videos/project-hail-mary-2026-trailer.mp4";
+const HERO_TRAILER_POSTER = "assets/images/project-hail-mary-thumb.jpg";
+const HERO_TRAILER_AUTOPLAY_DELAY_MS = 1200;
 const HIDDEN_LOCAL_SERIES_TMDB_IDS = new Set(["103506", "1396"]);
 
 // ---------------------------------------------------------------------------
@@ -1425,6 +1428,8 @@ function setTmdbDetailsCache(key, value) {
 export default function HomePage() {
   // ---- Refs ----
   let introVideoRef;
+  let heroTrailerAutoplayTimer = null;
+  let heroTrailerIdleCallbackId = null;
   let pageRootRef;
   let continueCardsRef;
   let cardsContainerRef;
@@ -3707,19 +3712,84 @@ export default function HomePage() {
   }
 
   // ---- Hero ----
+  function shouldSkipHeroTrailerAutoplay() {
+    try {
+      if (navigator.connection?.saveData) {
+        return true;
+      }
+      return window.matchMedia?.("(prefers-reduced-data: reduce)")?.matches || false;
+    } catch {
+      return false;
+    }
+  }
+
+  function loadHeroTrailerSource() {
+    if (!(introVideoRef instanceof HTMLVideoElement)) {
+      return false;
+    }
+    if (introVideoRef.currentSrc || introVideoRef.getAttribute("src")) {
+      return true;
+    }
+    const source = String(introVideoRef.dataset.src || "").trim();
+    if (!source) {
+      return false;
+    }
+    introVideoRef.setAttribute("src", source);
+    introVideoRef.load();
+    return true;
+  }
+
+  function cancelHeroTrailerAutoplay() {
+    if (heroTrailerAutoplayTimer) {
+      window.clearTimeout(heroTrailerAutoplayTimer);
+      heroTrailerAutoplayTimer = null;
+    }
+    if (
+      heroTrailerIdleCallbackId !== null &&
+      typeof window.cancelIdleCallback === "function"
+    ) {
+      window.cancelIdleCallback(heroTrailerIdleCallbackId);
+      heroTrailerIdleCallbackId = null;
+    }
+  }
+
+  function scheduleHeroTrailerAutoplay() {
+    if (!(introVideoRef instanceof HTMLVideoElement) || shouldSkipHeroTrailerAutoplay()) {
+      return;
+    }
+    const startTrailer = () => {
+      heroTrailerAutoplayTimer = null;
+      heroTrailerIdleCallbackId = null;
+      if (!loadHeroTrailerSource()) {
+        return;
+      }
+      applyStoredHeroTrailerAudioPreference({ shouldPlay: true });
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      heroTrailerIdleCallbackId = window.requestIdleCallback(startTrailer, {
+        timeout: HERO_TRAILER_AUTOPLAY_DELAY_MS,
+      });
+      return;
+    }
+    heroTrailerAutoplayTimer = window.setTimeout(
+      startTrailer,
+      HERO_TRAILER_AUTOPLAY_DELAY_MS,
+    );
+  }
+
   function syncMuteUI() {
     if (!introVideoRef) return;
     setIsMuted(introVideoRef.muted);
   }
 
-  function applyStoredHeroTrailerAudioPreference() {
+  function applyStoredHeroTrailerAudioPreference({ shouldPlay = false } = {}) {
     if (!(introVideoRef instanceof HTMLVideoElement)) {
       return;
     }
     const preferredMuted = getStoredHeroTrailerMutedPreference();
     introVideoRef.muted = preferredMuted;
     setIsMuted(preferredMuted);
-    if (!introVideoRef.paused) {
+    if (!shouldPlay || !introVideoRef.paused) {
       return;
     }
     void introVideoRef.play().catch(() => {});
@@ -3727,6 +3797,8 @@ export default function HomePage() {
 
   async function handleMuteToggle() {
     if (!introVideoRef) return;
+    cancelHeroTrailerAutoplay();
+    loadHeroTrailerSource();
     introVideoRef.muted = !introVideoRef.muted;
     setStoredHeroTrailerMutedPreference(introVideoRef.muted);
     syncMuteUI();
@@ -4012,6 +4084,7 @@ export default function HomePage() {
     // Apply initial preferences
     applyStoredHeroTrailerAudioPreference();
     syncMuteUI();
+    scheduleHeroTrailerAutoplay();
     applyLibraryEditModeClass();
     renderMyListRow();
     void loadContinueWatching();
@@ -4143,6 +4216,7 @@ export default function HomePage() {
 
       if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
       if (searchBoxHideTimer) clearTimeout(searchBoxHideTimer);
+      cancelHeroTrailerAutoplay();
       if (closeModalTimer) clearTimeout(closeModalTimer);
       if (libraryEditModalCloseTimer) clearTimeout(libraryEditModalCloseTimer);
     });
@@ -4337,11 +4411,11 @@ export default function HomePage() {
         id="introVideo"
         ref=${(el) => (introVideoRef = el)}
         class="hero-video"
-        src="assets/videos/project-hail-mary-2026-trailer.mp4"
-        autoplay
+        data-src=${HERO_TRAILER_SOURCE}
+        poster=${HERO_TRAILER_POSTER}
         loop
         playsinline
-        preload="auto"
+        preload="metadata"
         aria-label="Project Hail Mary trailer"
       ></video>
 

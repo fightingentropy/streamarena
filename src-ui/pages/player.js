@@ -6791,14 +6791,17 @@ trackListener(video, "ratechange", () => {
 
 // --- Seek preview thumbnail on hover ---
 const seekPreviewCtx = seekPreviewCanvas.getContext("2d", { willReadFrequently: false });
+const SEEK_PREVIEW_SEEK_THROTTLE_MS = 240;
+const SEEK_PREVIEW_SEEK_STEP_SECONDS = 5;
 let seekPreviewVideo = null;
 let seekPreviewPending = null;
 let seekPreviewReady = false;
+let seekPreviewLastSeekAt = Number.NEGATIVE_INFINITY;
 
 function getOrCreatePreviewVideo() {
   if (seekPreviewVideo) return seekPreviewVideo;
   seekPreviewVideo = document.createElement("video");
-  seekPreviewVideo.preload = "auto";
+  seekPreviewVideo.preload = "metadata";
   seekPreviewVideo.muted = true;
   seekPreviewVideo.playsInline = true;
   seekPreviewVideo.crossOrigin = video.crossOrigin || "anonymous";
@@ -6806,6 +6809,16 @@ function getOrCreatePreviewVideo() {
     seekPreviewCtx.drawImage(seekPreviewVideo, 0, 0, 160, 90);
   });
   return seekPreviewVideo;
+}
+
+function closeSeekPreviewVideo() {
+  if (!seekPreviewVideo) return;
+  seekPreviewVideo.pause();
+  seekPreviewVideo.removeAttribute("src");
+  seekPreviewVideo.load();
+  seekPreviewPending = null;
+  seekPreviewReady = false;
+  seekPreviewLastSeekAt = Number.NEGATIVE_INFINITY;
 }
 
 function syncPreviewVideoSource() {
@@ -6838,9 +6851,21 @@ function updateSeekPreview(e) {
   // Draw thumbnail from main video if same source, or preview video
   syncPreviewVideoSource();
   if (seekPreviewReady && seekPreviewVideo) {
-    const target = timeAtCursor;
-    if (seekPreviewPending !== target) {
+    const target = Math.max(
+      0,
+      Math.min(
+        duration,
+        Math.round(timeAtCursor / SEEK_PREVIEW_SEEK_STEP_SECONDS) *
+          SEEK_PREVIEW_SEEK_STEP_SECONDS,
+      ),
+    );
+    const now = performance.now();
+    if (
+      seekPreviewPending !== target &&
+      now - seekPreviewLastSeekAt >= SEEK_PREVIEW_SEEK_THROTTLE_MS
+    ) {
       seekPreviewPending = target;
+      seekPreviewLastSeekAt = now;
       seekPreviewVideo.currentTime = target;
     }
   } else {
@@ -6853,6 +6878,7 @@ trackListener(seekBar, "pointermove", updateSeekPreview);
 trackListener(seekBar, "pointerenter", updateSeekPreview);
 trackListener(seekBar, "pointerleave", () => {
   seekPreview.hidden = true;
+  closeSeekPreviewVideo();
 });
 
 trackListener(seekBar, "pointerdown", () => {
