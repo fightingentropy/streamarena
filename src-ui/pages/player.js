@@ -957,6 +957,7 @@ if (!(resumeTime > 1)) {
         try {
           localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
         } catch {}
+        persistContinueWatchingEntry(entry.resumeSeconds);
         // Apply the resume now (metadata may already be loaded).
         if (Number.isFinite(video.duration) && video.duration > 0) {
           const dur = getSeekScaleDurationSeconds();
@@ -4333,6 +4334,7 @@ function persistResumeTime(force = false) {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sourceIdentity }),
+        keepalive: Boolean(force),
       }).catch(() => {});
       resumeTime = 0;
       lastPersistedResumeTime = 0;
@@ -4341,18 +4343,6 @@ function persistResumeTime(force = false) {
     }
 
     if (effectiveCurrentTime < 1) {
-      if (force) {
-        localStorage.removeItem(resumeStorageKey);
-        removeContinueWatchingEntry();
-        fetch("/api/user/watch-progress", {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sourceIdentity }),
-        }).catch(() => {});
-        resumeTime = 0;
-        lastPersistedResumeTime = 0;
-        lastPersistedResumeAt = 0;
-      }
       return;
     }
 
@@ -4381,6 +4371,7 @@ function persistResumeTime(force = false) {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sourceIdentity, resumeSeconds: nextResumeTime }),
+      keepalive: Boolean(force),
     }).catch(() => {});
 
     // Sync continue-watching entry to server in background
@@ -4394,6 +4385,7 @@ function persistResumeTime(force = false) {
         ...metadata,
         updatedAt: Date.now(),
       }),
+      keepalive: Boolean(force),
     }).catch(() => {});
   } catch {
     // Ignore storage access issues.
@@ -5787,6 +5779,9 @@ async function initPlaybackSource() {
       }
     } catch {}
   }
+  if (resumeTime > 1) {
+    persistContinueWatchingEntry(resumeTime);
+  }
 
   hasAppliedInitialResume = false;
   pendingTranscodeSeekRatio = null;
@@ -5926,6 +5921,11 @@ async function initPlaybackSource() {
     clearControlsHideTimer();
     clearStreamStallRecovery();
     persistResumeTime(true);
+  }
+  function handleDocumentVisibilityChange() {
+    if (document.visibilityState === "hidden") {
+      handleGlobalBeforeunload();
+    }
   }
 
   onMount(() => {
@@ -7146,6 +7146,14 @@ trackListener(window, "beforeunload", () => {
   clearStreamStallRecovery();
   persistResumeTime(true);
 });
+trackListener(window, "pagehide", () => {
+  clearSingleClickPlaybackToggle();
+  hideSeekLoadingIndicator();
+  clearControlsHideTimer();
+  clearStreamStallRecovery();
+  persistResumeTime(true);
+});
+trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
 
     syncMuteState();
     syncPlayState();
@@ -7192,6 +7200,8 @@ trackListener(window, "beforeunload", () => {
     trackListener(document, "keydown", handleGlobalKeydown);
     trackListener(document, "mousemove", handleGlobalMousemove);
     trackListener(window, "beforeunload", handleGlobalBeforeunload);
+    trackListener(window, "pagehide", handleGlobalBeforeunload);
+    trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
   });
 
   onCleanup(() => {
@@ -7200,6 +7210,8 @@ trackListener(window, "beforeunload", () => {
     document.removeEventListener("keydown", handleGlobalKeydown);
     document.removeEventListener("mousemove", handleGlobalMousemove);
     window.removeEventListener("beforeunload", handleGlobalBeforeunload);
+    window.removeEventListener("pagehide", handleGlobalBeforeunload);
+    document.removeEventListener("visibilitychange", handleDocumentVisibilityChange);
     clearControlsHideTimer();
     clearSingleClickPlaybackToggle();
     clearStreamStallRecovery();

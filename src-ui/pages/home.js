@@ -584,6 +584,55 @@ function inferContinueMediaType(
   return "";
 }
 
+function getContinueDedupeKey(sourceIdentity, explicitSeriesId = "") {
+  const normalizedSeriesId =
+    String(explicitSeriesId || "")
+      .trim()
+      .toLowerCase() || extractSeriesIdFromSourceIdentity(sourceIdentity);
+  if (normalizedSeriesId) {
+    return `series:${normalizedSeriesId}`;
+  }
+  return String(sourceIdentity || "").trim();
+}
+
+function getStoredResumeSecondsForSource(sourceIdentity, fallbackResumeSeconds = 0) {
+  const normalizedSource = String(sourceIdentity || "").trim();
+  if (!normalizedSource) {
+    return 0;
+  }
+
+  let storedResumeSeconds = 0;
+  try {
+    const storedValue = Number(
+      localStorage.getItem(`${RESUME_STORAGE_PREFIX}${normalizedSource}`),
+    );
+    if (Number.isFinite(storedValue) && storedValue >= 1) {
+      storedResumeSeconds = storedValue;
+    }
+  } catch {
+    // Ignore localStorage access issues.
+  }
+
+  if (storedResumeSeconds >= 1) {
+    return storedResumeSeconds;
+  }
+
+  const fallbackValue = Number(fallbackResumeSeconds);
+  if (Number.isFinite(fallbackValue) && fallbackValue >= 1) {
+    try {
+      localStorage.setItem(
+        `${RESUME_STORAGE_PREFIX}${normalizedSource}`,
+        String(fallbackValue),
+      );
+    } catch {
+      // Ignore localStorage access issues.
+    }
+    return fallbackValue;
+  }
+
+  return 0;
+}
+
 function normalizeLocalContinueEntry(entry) {
   const safeEntry = { ...entry };
   safeEntry.mediaType = String(safeEntry.mediaType || "")
@@ -597,6 +646,111 @@ function normalizeLocalContinueEntry(entry) {
     ? Math.max(0, Math.floor(Number(safeEntry.episodeIndex)))
     : -1;
   return safeEntry;
+}
+
+function addContinueEntryToMap(entriesBySource, entry) {
+  if (!(entriesBySource instanceof Map) || !entry) {
+    return;
+  }
+
+  const normalizedEntry = normalizeLocalContinueEntry(entry);
+  const normalizedSource = String(normalizedEntry.sourceIdentity || "").trim();
+  const resumeSeconds = Number(normalizedEntry.resumeSeconds);
+  if (!normalizedSource || !Number.isFinite(resumeSeconds) || resumeSeconds < 1) {
+    return;
+  }
+
+  const dedupeKey = getContinueDedupeKey(
+    normalizedSource,
+    normalizedEntry.seriesId,
+  );
+  const existingEntry = entriesBySource.get(dedupeKey);
+  const nextUpdatedAt = Number(normalizedEntry.updatedAt || 0);
+  const existingUpdatedAt = Number(existingEntry?.updatedAt || 0);
+  if (
+    !existingEntry ||
+    nextUpdatedAt > existingUpdatedAt ||
+    (nextUpdatedAt === existingUpdatedAt &&
+      resumeSeconds >= Number(existingEntry.resumeSeconds || 0))
+  ) {
+    entriesBySource.set(dedupeKey, normalizedEntry);
+  }
+}
+
+function sortAndLimitContinueEntries(entries) {
+  return Array.from(entries || [])
+    .sort((left, right) => {
+      if (right.updatedAt !== left.updatedAt) {
+        return right.updatedAt - left.updatedAt;
+      }
+      return right.resumeSeconds - left.resumeSeconds;
+    })
+    .slice(0, 12);
+}
+
+function mergeContinueWatchingEntries(...entryLists) {
+  const entriesBySource = new Map();
+  entryLists.flat().forEach((entry) => {
+    addContinueEntryToMap(entriesBySource, entry);
+  });
+  return sortAndLimitContinueEntries(entriesBySource.values());
+}
+
+function normalizeServerContinueEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+
+  const normalizedSource = String(entry.sourceIdentity || "").trim();
+  const resumeSeconds = Number(entry.resumeSeconds);
+  if (!normalizedSource || !Number.isFinite(resumeSeconds) || resumeSeconds < 1) {
+    return null;
+  }
+
+  const parsedTmdbSource = parseTmdbSourceIdentity(normalizedSource);
+  const seriesId =
+    String(entry.seriesId || "").trim() ||
+    extractSeriesIdFromSourceIdentity(normalizedSource);
+  return normalizeLocalContinueEntry({
+    sourceIdentity: normalizedSource,
+    resumeSeconds,
+    updatedAt: Number(entry.updatedAt) || 0,
+    title: String(entry.title || "").trim(),
+    episode: String(entry.episode || "").trim(),
+    src: String(entry.src || "").trim(),
+    tmdbId:
+      String(entry.tmdbId || "").trim() ||
+      String(parsedTmdbSource.tmdbId || "").trim(),
+    mediaType: inferContinueMediaType(
+      normalizedSource,
+      String(entry.mediaType || "").trim(),
+      seriesId,
+    ),
+    seriesId,
+    episodeIndex: Number.isFinite(Number(entry.episodeIndex))
+      ? Math.max(0, Math.floor(Number(entry.episodeIndex)))
+      : -1,
+    year: String(entry.year || "").trim(),
+    thumb: String(entry.thumb || "").trim(),
+  });
+}
+
+async function fetchServerContinueWatchingEntries() {
+  try {
+    const response = await fetch("/api/user/continue-watching");
+    if (!response.ok) {
+      return [];
+    }
+    const data = await response.json();
+    const rawEntries = Array.isArray(data?.entries)
+      ? data.entries
+      : Array.isArray(data)
+        ? data
+        : [];
+    return rawEntries.map(normalizeServerContinueEntry).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 function removeContinueWatchingEntry(sourceIdentity) {
@@ -657,24 +811,16 @@ function removeContinueWatchingEntry(sourceIdentity) {
 function getContinueWatchingEntries() {
   const entriesBySource = new Map();
   const metaMap = readContinueWatchingMetaMap();
-  const dedupeKeyForSource = (sourceIdentity, explicitSeriesId = "") => {
-    const normalizedSeriesId =
-      String(explicitSeriesId || "")
-        .trim()
-        .toLowerCase() || extractSeriesIdFromSourceIdentity(sourceIdentity);
-    if (normalizedSeriesId) {
-      return `series:${normalizedSeriesId}`;
-    }
-    return String(sourceIdentity || "").trim();
-  };
 
   Object.entries(metaMap).forEach(([sourceIdentity, value]) => {
     const normalizedSource = String(sourceIdentity || "").trim();
     if (!normalizedSource || typeof value !== "object" || value === null)
       return;
 
-    const resumeKey = `${RESUME_STORAGE_PREFIX}${normalizedSource}`;
-    const resumeSeconds = Number(localStorage.getItem(resumeKey));
+    const resumeSeconds = getStoredResumeSecondsForSource(
+      normalizedSource,
+      Number(value.resumeSeconds) || 0,
+    );
     if (!Number.isFinite(resumeSeconds) || resumeSeconds < 1) {
       return;
     }
@@ -701,18 +847,7 @@ function getContinueWatchingEntries() {
       year: String(value.year || "").trim(),
       thumb: String(value.thumb || "").trim(),
     });
-    const dedupeKey = dedupeKeyForSource(
-      normalizedSource,
-      normalizedEntry.seriesId,
-    );
-    const existingEntry = entriesBySource.get(dedupeKey);
-    if (
-      !existingEntry ||
-      Number(normalizedEntry.updatedAt || 0) >=
-        Number(existingEntry.updatedAt || 0)
-    ) {
-      entriesBySource.set(dedupeKey, normalizedEntry);
-    }
+    addContinueEntryToMap(entriesBySource, normalizedEntry);
   });
 
   // Build a set of normalised src paths already covered by meta-map entries
@@ -732,7 +867,7 @@ function getContinueWatchingEntries() {
     }
 
     const sourceIdentity = key.slice(RESUME_STORAGE_PREFIX.length).trim();
-    const dedupeCandidateKey = dedupeKeyForSource(sourceIdentity);
+    const dedupeCandidateKey = getContinueDedupeKey(sourceIdentity);
     if (!sourceIdentity || entriesBySource.has(dedupeCandidateKey)) {
       continue;
     }
@@ -755,10 +890,11 @@ function getContinueWatchingEntries() {
       ? String(seriesMatch[1] || "").trim()
       : "";
     const inferredEpisodeIndex = seriesMatch ? Number(seriesMatch[2]) : -1;
+    const hasLocalMediaSource = isLikelyLocalMediaSource(sourceIdentity);
 
-    // Skip orphan entries that have no TMDB ID or series context — they
-    // produce grey placeholder cards with no useful title or artwork.
-    if (!tmdbId && !inferredSeriesId) {
+    // Skip unknown orphan entries, but keep local video paths so they can be
+    // enriched from assets/library.json after the library fetch.
+    if (!tmdbId && !inferredSeriesId && !hasLocalMediaSource) {
       continue;
     }
 
@@ -766,15 +902,21 @@ function getContinueWatchingEntries() {
       sourceIdentity,
       resumeSeconds,
       updatedAt: 0,
-      title: tmdbId ? "Movie" : "Continue Watching",
+      title: tmdbId
+        ? "Movie"
+        : hasLocalMediaSource
+          ? normalizeLocalMovieDisplayTitle(sourceIdentity)
+          : "Continue Watching",
       episode: "",
-      src: tmdbId || inferredSeriesId ? "" : sourceIdentity,
+      src: hasLocalMediaSource ? sourceIdentity : "",
       tmdbId,
-      mediaType: inferContinueMediaType(
-        sourceIdentity,
-        parsedTmdbSource.mediaType,
-        inferredSeriesId,
-      ),
+      mediaType: hasLocalMediaSource
+        ? "movie"
+        : inferContinueMediaType(
+            sourceIdentity,
+            parsedTmdbSource.mediaType,
+            inferredSeriesId,
+          ),
       seriesId: inferredSeriesId,
       episodeIndex: Number.isFinite(inferredEpisodeIndex)
         ? Math.max(0, Math.floor(inferredEpisodeIndex))
@@ -782,25 +924,10 @@ function getContinueWatchingEntries() {
       year: "",
       thumb: "",
     });
-    const dedupeKey = dedupeKeyForSource(sourceIdentity, inferredSeriesId);
-    const existingEntry = entriesBySource.get(dedupeKey);
-    if (
-      !existingEntry ||
-      Number(normalizedEntry.updatedAt || 0) >=
-        Number(existingEntry.updatedAt || 0)
-    ) {
-      entriesBySource.set(dedupeKey, normalizedEntry);
-    }
+    addContinueEntryToMap(entriesBySource, normalizedEntry);
   }
 
-  return Array.from(entriesBySource.values())
-    .sort((left, right) => {
-      if (right.updatedAt !== left.updatedAt) {
-        return right.updatedAt - left.updatedAt;
-      }
-      return right.resumeSeconds - left.resumeSeconds;
-    })
-    .slice(0, 12);
+  return sortAndLimitContinueEntries(entriesBySource.values());
 }
 
 function normalizeLocalAssetPathForCompare(value) {
@@ -3153,11 +3280,15 @@ export default function HomePage() {
     }
     const loadVersion = ++continueWatchingLoadVersion;
 
-    const [entriesRaw, localLibrary] = await Promise.all([
+    const [entriesRaw, serverEntriesRaw, localLibrary] = await Promise.all([
       Promise.resolve(getContinueWatchingEntries()),
+      fetchServerContinueWatchingEntries(),
       apiFetch("/api/library").catch(() => ({ movies: [], series: [] })),
     ]);
-    const entries = enrichContinueEntriesWithLocalLibrary(entriesRaw, localLibrary);
+    const entries = enrichContinueEntriesWithLocalLibrary(
+      mergeContinueWatchingEntries(serverEntriesRaw, entriesRaw),
+      localLibrary,
+    );
     if (loadVersion !== continueWatchingLoadVersion) {
       return;
     }
