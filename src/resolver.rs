@@ -3284,7 +3284,7 @@ fn should_prefer_software_decode(source: &str) -> bool {
 fn should_prefer_software_decode_source(source: &str, filename: &str) -> bool {
     let normalized_source = source.to_lowercase();
     if normalized_source.contains("download.real-debrid.com") {
-        return !is_likely_html5_playable_url(source, filename);
+        return true;
     }
     if should_prefer_software_decode(source) {
         return true;
@@ -3492,12 +3492,13 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ResolveMetadata, SourceFilters, TorrentioBehaviorHints, TorrentioStream,
+        ResolveMetadata, ResolvedSource, SourceFilters, TorrentioBehaviorHints, TorrentioStream,
         build_rd_torrent_cache_key, build_torrentio_stream_cache_key, collect_episode_signatures,
         compute_torrentio_cache_deadlines, does_filename_likely_match_movie,
-        normalize_allowed_formats, normalize_source_audio_profile_filter, normalize_source_hash,
-        now_ms, parse_runtime_from_label_seconds, parse_seed_count, select_top_movie_candidates,
-        sort_movie_candidates,
+        normalize_allowed_formats, normalize_resolved_source_for_software_decode,
+        normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
+        parse_runtime_from_label_seconds, parse_seed_count, select_top_movie_candidates,
+        should_prefer_software_decode_source, sort_movie_candidates,
     };
 
     #[test]
@@ -3564,6 +3565,33 @@ mod tests {
         assert_eq!(
             build_rd_torrent_cache_key("ABCDEF0123456789ABCDEF0123456789ABCDEF01"),
             "rd-torrent:abcdef0123456789abcdef0123456789abcdef01"
+        );
+    }
+
+    #[test]
+    fn prefers_remux_for_real_debrid_mp4_sources() {
+        assert!(should_prefer_software_decode_source(
+            "https://126-4.download.real-debrid.com/path/The.Matrix.1999.1080p.mp4",
+            "The.Matrix.1999.1080p.mp4"
+        ));
+
+        let normalized = normalize_resolved_source_for_software_decode(
+            &ResolvedSource {
+                playable_url:
+                    "https://126-4.download.real-debrid.com/path/The.Matrix.1999.1080p.mp4"
+                        .to_owned(),
+                filename: "The.Matrix.1999.1080p.mp4".to_owned(),
+                ..ResolvedSource::default()
+            },
+            -1,
+            -1,
+        );
+
+        assert!(normalized.playable_url.starts_with("/api/remux?"));
+        assert!(normalized.playable_url.contains("input="));
+        assert_eq!(
+            normalized.fallback_urls,
+            vec!["https://126-4.download.real-debrid.com/path/The.Matrix.1999.1080p.mp4"]
         );
     }
 
