@@ -9,6 +9,10 @@
     "test:rust": "cargo test",
     "build": "vite build",
     "preview": "vite preview",
+    "mini:deploy": "./scripts/deploy-mini.sh",
+    "mini:check": "./scripts/check-mini.sh",
+    "mini:backup": "./scripts/backup-mini.sh",
+    "mini:install-agents": "./scripts/install-mini-agents.sh",
     "bench:playback": "node ./scripts/playback-benchmark.mjs",
     "bench:playback:install": "playwright install chromium"
   },

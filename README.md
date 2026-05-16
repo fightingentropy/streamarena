@@ -421,7 +421,26 @@ Server logs:
 - Tunnel stdout: `/Users/hermes/.cloudflared/netflix-tunnel.log`
 - Tunnel stderr: `/Users/hermes/.cloudflared/netflix-tunnel.err.log`
 - Log rotation script: `/Users/hermes/.local/bin/netflix-rotate-logs`
-- Cron entry: `17 3 * * * /Users/hermes/.local/bin/netflix-rotate-logs >/dev/null 2>&1 # netflix-rotate-logs`
+- Log rotation LaunchAgent: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-log-rotation.plist`
+- Rotation schedule: daily at `03:17`
+
+Disk monitoring:
+
+- Monitor script: `/Users/hermes/.local/bin/netflix-disk-monitor`
+- LaunchAgent: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-disk-monitor.plist`
+- Schedule: hourly
+- Thresholds: warn at `90%` disk usage or below `50G` free
+- Log: `/Users/hermes/.local/state/netflix/disk-monitor.log`
+
+MacBook helper scripts:
+
+- `bun run mini:check` -> verifies the mini runtime, tunnel, public Access response, asset shape, env permissions, maintenance agents, and disk space.
+- `bun run mini:deploy` -> builds locally, syncs `dist`, the backend binary, and non-video assets, restarts the mini backend, then runs `mini:check`.
+- `bun run mini:deploy -- --skip-build` -> deploys existing local build artifacts and restarts/checks the mini.
+- `bun run mini:deploy -- --video assets/videos/<file>.mp4` -> copies that symlink target as a real file to the mini.
+- `bun run mini:install-agents` -> installs/updates the log rotation and disk monitor LaunchAgents on the mini.
+- `bun run mini:backup -- <backup-root>` -> creates a timestamped full mini backup.
+- `bun run mini:backup -- --config-only <backup-root>` -> backs up only secrets/config/plists/helper scripts.
 
 Health checks:
 
@@ -440,20 +459,10 @@ Expected results:
 Deploying code changes from the MacBook:
 
 ```bash
-bun run build
-cargo build --release
-
-rsync -a --delete -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' dist/ \
-  hermes@m4mini.local:/Users/hermes/Developer/netflix/dist/
-
-rsync -a -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' target/release/netflix-rust-backend \
-  hermes@m4mini.local:/Users/hermes/Developer/netflix/bin/netflix-rust-backend
-
-ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
-  'pkill -TERM -f /Users/hermes/Developer/netflix/bin/netflix-rust-backend'
+bun run mini:deploy
 ```
 
-`launchd` should restart the backend automatically.
+`mini:deploy` intentionally does not sync `assets/videos`.
 
 Deploying assets:
 
@@ -479,6 +488,34 @@ rsync -aL --partial -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' 
 ```
 
 If a future deploy should intentionally remove a title from the Mac mini, delete that specific file explicitly on the mini and update `assets/library.json`.
+
+Backups:
+
+- Use an external drive or another large volume for full backups. The mini assets are about `153G`.
+- Full backup example:
+
+```bash
+bun run mini:backup -- /Volumes/Backup/netflix-mini
+```
+
+- Config-only backup example:
+
+```bash
+bun run mini:backup -- --config-only ~/Backups/netflix-mini-config
+```
+
+The backup script writes timestamped snapshots and maintains a `latest` symlink. Full backups use `rsync --link-dest` against the previous snapshot when available, so unchanged files can be hard-linked on backup volumes that support hard links.
+
+Restore outline for a replacement Mac mini:
+
+1. Copy `runtime/{assets,bin,cache,dist}` from the latest backup to `/Users/hermes/Developer/netflix`.
+2. Restore `config/env` to `/Users/hermes/.config/netflix/env` and set permissions to `600`.
+3. Restore the `cloudflared` config/credentials to `/Users/hermes/.cloudflared`.
+4. Restore `local-bin/cloudflared`, `local-bin/netflix-rotate-logs`, and `local-bin/netflix-disk-monitor` to `/Users/hermes/.local/bin` and make them executable.
+5. Restore the app/tunnel LaunchDaemons to `/Library/LaunchDaemons`.
+6. Run `bun run mini:install-agents` from the MacBook checkout to reinstall the user LaunchAgents.
+7. Load the app/tunnel LaunchDaemons or reboot the mini.
+8. Run `bun run mini:check` from the MacBook checkout.
 
 ## 10) Troubleshooting
 
