@@ -363,6 +363,123 @@ bun run bench:playback -- \
   - audio-only AAC transcode can be applied when enabled and needed
 - Cache clear from Settings applies globally (all titles/sources).
 
+### Mac mini private server deployment
+
+The Mac mini at `m4mini.local` is the private always-on server for this app.
+The MacBook checkout remains the development repo.
+
+Development machine:
+
+- Path: `/Users/erlinhoxha/Developer/netflix`
+- Git-tracked source of truth.
+- Local media is stored under `/Users/erlinhoxha/Movies/...`.
+- `assets/videos` should contain symlinks only and should not store real video files.
+- Some full-catalog titles are intentionally not present on the MacBook to save space. For example, Requiem for a Dream and Hot Fuzz are kept on the Mac mini, not locally.
+
+Server machine:
+
+- Host: `hermes@m4mini.local`
+- Runtime path: `/Users/hermes/Developer/netflix`
+- Public hostnames: `fightingentropy.org` and `www.fightingentropy.org`
+- Public ingress: Cloudflare Tunnel named `netflix`
+- Local listener: `127.0.0.1:5173`
+- Runtime tree only:
+  - `assets`
+  - `bin`
+  - `cache`
+  - `dist`
+- The server deploy is not a git checkout and intentionally has no `.git`, source folders, `node_modules`, Rust `target`, `Cargo.toml`, or `package.json`.
+
+Server processes are supervised by system LaunchDaemons:
+
+- `/Library/LaunchDaemons/com.fightingentropy.netflix-app.plist`
+- `/Library/LaunchDaemons/com.cloudflare.cloudflared.netflix.plist`
+
+The app daemon runs:
+
+- Working directory: `/Users/hermes/Developer/netflix`
+- Backend binary: `/Users/hermes/Developer/netflix/bin/netflix-rust-backend`
+- Launcher script: `/Users/hermes/.cloudflared/run-netflix-app.sh`
+
+The Cloudflare daemon runs:
+
+- Binary: `/Users/hermes/.local/bin/cloudflared`
+- Version currently deployed: `2026.5.0`
+- Config: `/Users/hermes/.cloudflared/config.yml`
+- Credentials: `/Users/hermes/.cloudflared/81e9ea9c-bd0a-4177-8fe9-b12431c3b0b3.json`
+
+Secrets on the server live outside the deploy tree:
+
+- Env file: `/Users/hermes/.config/netflix/env`
+- Permissions: `600`
+- Do not put server secrets back into `/Users/hermes/Developer/netflix/.env`.
+
+Server logs:
+
+- App stdout: `/Users/hermes/.cloudflared/netflix-app.log`
+- App stderr: `/Users/hermes/.cloudflared/netflix-app.err.log`
+- Tunnel stdout: `/Users/hermes/.cloudflared/netflix-tunnel.log`
+- Tunnel stderr: `/Users/hermes/.cloudflared/netflix-tunnel.err.log`
+- Log rotation script: `/Users/hermes/.local/bin/netflix-rotate-logs`
+- Cron entry: `17 3 * * * /Users/hermes/.local/bin/netflix-rotate-logs >/dev/null 2>&1 # netflix-rotate-logs`
+
+Health checks:
+
+```bash
+ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
+  'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1:5173'
+
+curl -sSI --max-time 10 https://fightingentropy.org | sed -n '1,8p'
+```
+
+Expected results:
+
+- Mini local app: `200`
+- Public host with Cloudflare Access enabled: `HTTP/2 302`
+
+Deploying code changes from the MacBook:
+
+```bash
+bun run build
+cargo build --release
+
+rsync -a --delete -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' dist/ \
+  hermes@m4mini.local:/Users/hermes/Developer/netflix/dist/
+
+rsync -a -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' target/release/netflix-rust-backend \
+  hermes@m4mini.local:/Users/hermes/Developer/netflix/bin/netflix-rust-backend
+
+ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
+  'pkill -TERM -f /Users/hermes/Developer/netflix/bin/netflix-rust-backend'
+```
+
+`launchd` should restart the backend automatically.
+
+Deploying assets:
+
+- Do not run `rsync --delete assets/` from the MacBook to the Mac mini. The MacBook no longer has the full catalog locally, and `--delete` would remove mini-only videos.
+- To update non-video asset metadata, sync only the explicit files/directories:
+
+```bash
+rsync -a -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' \
+  assets/library.json hermes@m4mini.local:/Users/hermes/Developer/netflix/assets/library.json
+
+rsync -a --delete -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' \
+  assets/images/ hermes@m4mini.local:/Users/hermes/Developer/netflix/assets/images/
+
+rsync -a --delete -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' \
+  assets/icons/ hermes@m4mini.local:/Users/hermes/Developer/netflix/assets/icons/
+```
+
+- To add a new local symlinked video from the MacBook to the mini, follow symlinks and copy the target as a real file:
+
+```bash
+rsync -aL --partial -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' assets/videos/<file>.mp4 \
+  hermes@m4mini.local:/Users/hermes/Developer/netflix/assets/videos/<file>.mp4
+```
+
+If a future deploy should intentionally remove a title from the Mac mini, delete that specific file explicitly on the mini and update `assets/library.json`.
+
 ## 10) Troubleshooting
 
 - `TMDB`/resolver errors:
