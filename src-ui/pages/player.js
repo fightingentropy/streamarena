@@ -420,6 +420,7 @@ const AUDIO_SYNC_MAX_MS = 2500;
 const AUDIO_SYNC_STEP_MS = 50;
 const RESUME_SAVE_MIN_INTERVAL_MS = 3000;
 const RESUME_SAVE_MIN_DELTA_SECONDS = 1.5;
+const RESUME_FLUSH_INTERVAL_MS = 1000;
 const RESUME_CLEAR_AT_END_THRESHOLD_SECONDS = 8;
 const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
 const SUBTITLE_LINE_FROM_BOTTOM = -4;
@@ -933,6 +934,7 @@ const speedStorageKey = "netflix-playback-speed";
 let resumeTime = 0;
 let lastPersistedResumeTime = 0;
 let lastPersistedResumeAt = 0;
+let resumeFlushIntervalId = 0;
 try {
   const storedResume = Number(localStorage.getItem(resumeStorageKey));
   if (Number.isFinite(storedResume) && storedResume > 0) {
@@ -5931,6 +5933,10 @@ async function initPlaybackSource() {
   onMount(() => {
     collectSpeedOptionRefs();
 
+    resumeFlushIntervalId = window.setInterval(() => {
+      persistResumeTime(false);
+    }, RESUME_FLUSH_INTERVAL_MS);
+
     // Benchmark API (needs video ref)
     if (benchmarkModeEnabled) {
       playbackBenchmark = createPlaybackBenchmarkApi();
@@ -7207,6 +7213,10 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
   onCleanup(() => {
     _cleanups.forEach(fn => fn());
     _cleanups.length = 0;
+    if (resumeFlushIntervalId) {
+      window.clearInterval(resumeFlushIntervalId);
+      resumeFlushIntervalId = 0;
+    }
     document.removeEventListener("keydown", handleGlobalKeydown);
     document.removeEventListener("mousemove", handleGlobalMousemove);
     window.removeEventListener("beforeunload", handleGlobalBeforeunload);
