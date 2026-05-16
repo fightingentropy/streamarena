@@ -17,6 +17,7 @@ import {
   getStoredAvatarImagePreference,
   escapeHtml,
   TMDB_IMAGE_BASE,
+  CONTINUE_WATCHING_META_KEY,
   readContinueWatchingMetaMap,
 } from "../shared.js";
 import {
