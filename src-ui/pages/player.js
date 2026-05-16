@@ -3172,11 +3172,19 @@ function attemptTmdbRecovery(message) {
 }
 
 function setEpisodeLabel(currentTitle, currentEpisode) {
+  if (!episodeLabel) {
+    return;
+  }
+  const formattedTitle = String(currentTitle || "").trim();
   const formattedEpisode = String(currentEpisode || "").trim();
   episodeLabel.textContent = "";
 
+  if (!formattedTitle) {
+    return;
+  }
+
   const strong = document.createElement("b");
-  strong.textContent = currentTitle;
+  strong.textContent = formattedTitle;
   episodeLabel.appendChild(strong);
 
   if (formattedEpisode) {
@@ -5932,6 +5940,7 @@ async function initPlaybackSource() {
 
   onMount(() => {
     collectSpeedOptionRefs();
+    setEpisodeLabel(_needsSlugResolve ? "" : title, _needsSlugResolve ? "" : episode);
 
     resumeFlushIntervalId = window.setInterval(() => {
       persistResumeTime(false);
@@ -7363,7 +7372,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
               </div>
             </div>
 
-            <p id="episodeLabel" ref=${el => episodeLabel = el} class="episode-label">Title</p>
+            <p id="episodeLabel" ref=${el => episodeLabel = el} class="episode-label"></p>
 
             <div class="controls-right">
               <div class="controls-cluster">
