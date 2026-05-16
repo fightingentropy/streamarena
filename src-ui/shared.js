@@ -91,7 +91,7 @@ export function getStoredAvatarImagePreference() {
 export const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 
 // --- Continue-watching metadata ---
-const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
+export const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
 
 export function readContinueWatchingMetaMap() {
   try {
