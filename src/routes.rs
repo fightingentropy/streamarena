@@ -161,6 +161,11 @@ pub async fn config_handler(
         "playbackSessionsEnabled": state.config.playback_sessions_enabled,
         "autoAudioSyncEnabled": state.config.auto_audio_sync_enabled,
         "remuxVideoMode": state.config.remux_video_mode,
+        "remuxLimits": {
+            "maxConcurrent": state.config.remux_max_concurrent,
+            "queueTimeoutMs": state.config.remux_queue_timeout_ms,
+            "processTimeoutSeconds": state.config.remux_process_timeout_seconds
+        },
         "maxUploadBytes": state.config.max_upload_bytes,
         "hlsHwaccel": {
             "requested": state.config.hls_hwaccel_mode,
@@ -186,6 +191,7 @@ pub async fn health_handler(
     Ok(json_response(json!({
         "ok": true,
         "uptimeSeconds": ((now_ms() - state.started_at_ms) / 1000).max(0),
+        "streaming": state.streaming.stats(),
         "ffmpeg": ffmpeg
     })))
 }

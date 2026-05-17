@@ -18,6 +18,9 @@ pub struct Config {
     pub real_debrid_token: String,
     pub torrentio_base_url: String,
     pub remux_video_mode: String,
+    pub remux_max_concurrent: usize,
+    pub remux_queue_timeout_ms: u64,
+    pub remux_process_timeout_seconds: u64,
     pub hls_hwaccel_mode: String,
     pub remux_hwaccel_mode: String,
     pub auto_audio_sync_enabled: bool,
@@ -47,6 +50,14 @@ impl Config {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(10 * 1024 * 1024 * 1024)
             .max(50 * 1024 * 1024);
+        let remux_max_concurrent = parse_usize_env("REMUX_MAX_CONCURRENT", 2, 1, 16);
+        let remux_queue_timeout_ms = parse_u64_env("REMUX_QUEUE_TIMEOUT_MS", 2_000, 100, 60_000);
+        let remux_process_timeout_seconds = parse_u64_env(
+            "REMUX_PROCESS_TIMEOUT_SECONDS",
+            4 * 60 * 60,
+            60,
+            24 * 60 * 60,
+        );
 
         Self {
             root_dir: root_dir.clone(),
@@ -76,6 +87,9 @@ impl Config {
             remux_video_mode: normalize_remux_video_mode(
                 env::var("REMUX_VIDEO_MODE").unwrap_or_else(|_| "auto".to_owned()),
             ),
+            remux_max_concurrent,
+            remux_queue_timeout_ms,
+            remux_process_timeout_seconds,
             hls_hwaccel_mode: normalize_hwaccel_mode(
                 env::var("HLS_HWACCEL").unwrap_or_else(|_| "none".to_owned()),
             ),
@@ -100,6 +114,22 @@ impl Config {
                 .to_owned(),
         }
     }
+}
+
+fn parse_usize_env(name: &str, fallback: usize, min: usize, max: usize) -> usize {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(fallback)
+        .clamp(min, max)
+}
+
+fn parse_u64_env(name: &str, fallback: u64, min: u64, max: u64) -> u64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(fallback)
+        .clamp(min, max)
 }
 
 fn normalize_bool_flag(value: String) -> bool {

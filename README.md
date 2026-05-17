@@ -247,6 +247,9 @@ Runtime:
 - `HLS_HWACCEL` (`none|auto|videotoolbox|cuda|qsv`)
 - `AUTO_AUDIO_SYNC` (`0|1`)
 - `REMUX_VIDEO_MODE` (`auto|copy|normalize`)
+- `REMUX_MAX_CONCURRENT` (default `2`)
+- `REMUX_QUEUE_TIMEOUT_MS` (default `2000`)
+- `REMUX_PROCESS_TIMEOUT_SECONDS` (default `14400`)
 - `PLAYBACK_SESSIONS` (`0|1`)
 
 ## 7) Data, Cache, and Persistence
@@ -432,13 +435,23 @@ Disk monitoring:
 - Thresholds: warn at `90%` disk usage or below `50G` free
 - Log: `/Users/hermes/.local/state/netflix/disk-monitor.log`
 
+Watchdog/self-healing:
+
+- Watchdog script: `/Users/hermes/.local/bin/netflix-watchdog`
+- LaunchAgent: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-watchdog.plist`
+- Schedule: every `60` seconds and at load
+- Probe: `GET http://127.0.0.1:5173/api/library`
+- Restart threshold: `3` consecutive failed probes
+- Restart behavior: logs the failed probe reason, kills stale `ffmpeg` processes, stops the backend, then restarts it through the app LaunchDaemon or `/Users/hermes/.cloudflared/run-netflix-app.sh`
+- Log: `/Users/hermes/.local/state/netflix/watchdog.log`
+
 MacBook helper scripts:
 
 - `bun run mini:check` -> verifies the mini runtime, tunnel, public Access response, asset shape, env permissions, maintenance agents, and disk space.
 - `bun run mini:deploy` -> builds locally, syncs `dist`, the backend binary, and non-video assets, restarts the mini backend, then runs `mini:check`.
 - `bun run mini:deploy -- --skip-build` -> deploys existing local build artifacts and restarts/checks the mini.
 - `bun run mini:deploy -- --video assets/videos/<file>.mp4` -> copies that symlink target as a real file to the mini.
-- `bun run mini:install-agents` -> installs/updates the log rotation and disk monitor LaunchAgents on the mini.
+- `bun run mini:install-agents` -> installs/updates the log rotation, disk monitor, and watchdog LaunchAgents on the mini.
 - `bun run mini:backup -- <backup-root>` -> creates a timestamped full mini backup.
 - `bun run mini:backup -- --config-only <backup-root>` -> backs up only secrets/config/plists/helper scripts.
 
@@ -511,7 +524,7 @@ Restore outline for a replacement Mac mini:
 1. Copy `runtime/{assets,bin,cache,dist}` from the latest backup to `/Users/hermes/Developer/netflix`.
 2. Restore `config/env` to `/Users/hermes/.config/netflix/env` and set permissions to `600`.
 3. Restore the `cloudflared` config/credentials to `/Users/hermes/.cloudflared`.
-4. Restore `local-bin/cloudflared`, `local-bin/netflix-rotate-logs`, and `local-bin/netflix-disk-monitor` to `/Users/hermes/.local/bin` and make them executable.
+4. Restore `local-bin/cloudflared`, `local-bin/netflix-rotate-logs`, `local-bin/netflix-disk-monitor`, and `local-bin/netflix-watchdog` to `/Users/hermes/.local/bin` and make them executable.
 5. Restore the app/tunnel LaunchDaemons to `/Library/LaunchDaemons`.
 6. Run `bun run mini:install-agents` from the MacBook checkout to reinstall the user LaunchAgents.
 7. Load the app/tunnel LaunchDaemons or reboot the mini.
@@ -530,16 +543,17 @@ Restore outline for a replacement Mac mini:
   - external subtitle provider may not have matching data
 - Playback stutter/compatibility issues:
   - use remux mode `normalize` for toughest sources
-  - check `/api/health` and `/api/config` for ffmpeg/hwaccel status
+  - check `/api/health` and `/api/config` for ffmpeg/hwaccel status and remux pressure
 - Audio out of sync:
   - often caused by non-browser-safe audio codecs (AC3, DTS, TrueHD) that need re-encoding to AAC — the original audio start time offset can be lost during transcode
   - the server auto-detects audio/video start time offsets and applies `adelay` compensation when `AUTO_AUDIO_SYNC=1`
   - this applies to MKV sources, normalize mode, and any source with audio that needs re-encoding
   - manual sync can also be adjusted with `[` / `]` keys during remux playback
 - Zombie ffmpeg processes / high CPU after seeking:
-  - each seek on a remux stream spawns a new server-side ffmpeg process
-  - the frontend tears down the old video source before setting a new one, which closes the HTTP connection and triggers `kill_on_drop` on the server
-  - if zombie processes accumulate (e.g. due to browser not closing connections), kill them with `pkill -f ffmpeg`
+  - each seek on a remux stream may spawn a new server-side ffmpeg process
+  - the backend caps simultaneous remux jobs with `REMUX_MAX_CONCURRENT` and returns HTTP 429 after `REMUX_QUEUE_TIMEOUT_MS`
+  - `/api/health` exposes active, canceled, rejected, timed-out, and failed remux counters
+  - the Mac mini watchdog restarts the backend after repeated failed `/api/library` probes and kills stale `ffmpeg` during restart
 - Stale service worker causing page load failures or screen flashing:
   - if a `sw.js` was previously registered and the file no longer exists, the stale service worker will intercept fetches and fail
   - fix: Chrome DevTools -> Application -> Service Workers -> Unregister, then clear site data and hard refresh (Cmd+Shift+R)

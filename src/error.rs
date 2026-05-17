@@ -47,6 +47,10 @@ impl ApiError {
         Self::new(StatusCode::PAYLOAD_TOO_LARGE, message)
     }
 
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, message)
+    }
+
     pub fn unauthorized(message: impl Into<String>) -> Self {
         Self::new(StatusCode::UNAUTHORIZED, message)
     }

@@ -40,7 +40,7 @@ expected_tree="assets,bin,cache,dist"
 
 runtime_tree=$(find "$app" -maxdepth 1 -mindepth 1 -exec basename {} \; | sort | paste -sd, -)
 app_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173 || true)
-library_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/assets/library.json || true)
+library_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/library || true)
 listener=$(lsof -nP -iTCP:5173 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}')
 app_pid=$(pgrep -f "$app/bin/netflix-rust-backend" | head -1 || true)
 tunnel_pid=$(pgrep -f "cloudflared tunnel run netflix" | head -1 || true)
@@ -53,6 +53,10 @@ env_mode=$(stat -f '%Lp' "$HOME/.config/netflix/env" 2>/dev/null || echo missing
 env_in_app=$(test -e "$app/.env" && echo yes || echo no)
 log_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.netflix-log-rotation.plist" && echo yes || echo no)
 disk_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.netflix-disk-monitor.plist" && echo yes || echo no)
+watchdog_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.netflix-watchdog.plist" && echo yes || echo no)
+watchdog_helper=$(test -x "$HOME/.local/bin/netflix-watchdog" && echo yes || echo no)
+watchdog_log=$(test -f "$HOME/.local/state/netflix/watchdog.log" && echo yes || echo no)
+watchdog_launch_state=$(launchctl print "gui/$(id -u)/com.fightingentropy.netflix-watchdog" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}')
 cron_leftover=$(crontab -l 2>/dev/null | grep -c 'netflix-rotate-logs' || true)
 
 df_line=$(df -Pk "$app" | awk 'NR == 2 {print $4 " " $5}')
@@ -78,6 +82,10 @@ printf 'env_mode=%s\n' "$env_mode"
 printf 'env_in_app=%s\n' "$env_in_app"
 printf 'log_agent=%s\n' "$log_agent"
 printf 'disk_agent=%s\n' "$disk_agent"
+printf 'watchdog_agent=%s\n' "$watchdog_agent"
+printf 'watchdog_helper=%s\n' "$watchdog_helper"
+printf 'watchdog_log=%s\n' "$watchdog_log"
+printf 'watchdog_launch_state=%s\n' "${watchdog_launch_state:-missing}"
 printf 'cron_leftover=%s\n' "$cron_leftover"
 printf 'disk_capacity_percent=%s\n' "$capacity"
 printf 'disk_available_gb=%s\n' "$available_gb"
@@ -106,13 +114,17 @@ env_mode=$(value_for env_mode)
 env_in_app=$(value_for env_in_app)
 log_agent=$(value_for log_agent)
 disk_agent=$(value_for disk_agent)
+watchdog_agent=$(value_for watchdog_agent)
+watchdog_helper=$(value_for watchdog_helper)
+watchdog_log=$(value_for watchdog_log)
+watchdog_launch_state=$(value_for watchdog_launch_state)
 cron_leftover=$(value_for cron_leftover)
 disk_capacity_percent=$(value_for disk_capacity_percent)
 disk_available_gb=$(value_for disk_available_gb)
 
 [[ "$runtime_tree" == "$expected_tree" ]] && pass "runtime tree is $runtime_tree" || bad "runtime tree is $runtime_tree, expected $expected_tree"
 [[ "$app_http" == "200" ]] && pass "mini app returns HTTP 200" || bad "mini app returned HTTP $app_http"
-[[ "$library_http" == "200" ]] && pass "library endpoint returns HTTP 200" || bad "library endpoint returned HTTP $library_http"
+[[ "$library_http" == "200" ]] && pass "API library endpoint returns HTTP 200" || bad "API library endpoint returned HTTP $library_http"
 [[ "$listener" == "127.0.0.1:5173" ]] && pass "listener is localhost only" || bad "listener is '$listener'"
 [[ "$app_pid" != "missing" ]] && pass "backend process is running ($app_pid)" || bad "backend process missing"
 [[ "$tunnel_pid" != "missing" ]] && pass "cloudflared process is running ($tunnel_pid)" || bad "cloudflared process missing"
@@ -123,6 +135,10 @@ disk_available_gb=$(value_for disk_available_gb)
 [[ "$env_in_app" == "no" ]] && pass "server env is outside deploy tree" || bad "server .env still exists in deploy tree"
 [[ "$log_agent" == "yes" ]] && pass "log rotation LaunchAgent exists" || bad "log rotation LaunchAgent missing"
 [[ "$disk_agent" == "yes" ]] && pass "disk monitor LaunchAgent exists" || bad "disk monitor LaunchAgent missing"
+[[ "$watchdog_agent" == "yes" ]] && pass "watchdog LaunchAgent exists" || bad "watchdog LaunchAgent missing"
+[[ "$watchdog_helper" == "yes" ]] && pass "watchdog helper is executable" || bad "watchdog helper missing or not executable"
+[[ "$watchdog_log" == "yes" ]] && pass "watchdog log exists" || bad "watchdog log missing"
+[[ "$watchdog_launch_state" != "missing" ]] && pass "watchdog launchd state is $watchdog_launch_state" || bad "watchdog LaunchAgent is not loaded"
 [[ "$cron_leftover" == "0" ]] && pass "old cron log rotation removed" || bad "old cron log rotation still present"
 
 if [[ "$disk_capacity_percent" -ge "$MAX_DISK_PERCENT" ]]; then

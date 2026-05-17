@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
@@ -9,11 +9,12 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{Response, StatusCode};
 use dashmap::DashMap;
 use futures_util::stream;
+use serde::Serialize;
 use tokio::fs;
-use tokio::io::AsyncReadExt;
-use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
-use tokio::time::sleep;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::process::{Child, ChildStderr, ChildStdout, Command};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::time::{Instant as TokioInstant, sleep, sleep_until, timeout};
 use url::form_urlencoded::byte_serialize;
 
 use crate::config::Config;
@@ -32,6 +33,8 @@ const HLS_TRANSCODE_IDLE_MS: i64 = 8 * 60 * 1000;
 const HLS_SEGMENT_WAIT_TIMEOUT_MS: i64 = 30_000;
 const HLS_SEGMENT_WAIT_POLL_MS: u64 = 180;
 const REMUX_ACCURATE_SEEK_PREROLL_SECONDS: i64 = 12;
+const FFMPEG_STDERR_MAX_LINES: usize = 80;
+const FFMPEG_STDERR_MAX_BYTES: usize = 16 * 1024;
 
 const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "mp2", "opus", "vorbis", "flac", "alac"];
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
@@ -44,6 +47,77 @@ pub struct StreamingService {
     media: MediaService,
     hls_jobs: Arc<DashMap<String, Arc<HlsJob>>>,
     hls_job_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    remux_permits: Arc<Semaphore>,
+    remux_metrics: Arc<RemuxMetrics>,
+    remux_active_jobs: Arc<DashMap<u64, i64>>,
+    remux_next_job_id: Arc<AtomicU64>,
+}
+
+#[derive(Default)]
+struct RemuxMetrics {
+    active: AtomicI64,
+    started: AtomicI64,
+    completed: AtomicI64,
+    failed: AtomicI64,
+    canceled: AtomicI64,
+    timed_out: AtomicI64,
+    rejected: AtomicI64,
+    spawn_errors: AtomicI64,
+    read_errors: AtomicI64,
+    stderr_truncated: AtomicI64,
+}
+
+struct RemuxStreamGuard {
+    metrics: Arc<RemuxMetrics>,
+    active_jobs: Arc<DashMap<u64, i64>>,
+    job_id: u64,
+    _permit: OwnedSemaphorePermit,
+    finished: bool,
+}
+
+struct RemuxStreamState {
+    stdout: ChildStdout,
+    child: Child,
+    buffer: Vec<u8>,
+    guard: RemuxStreamGuard,
+    deadline: TokioInstant,
+    timeout_seconds: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamingStats {
+    remux: RemuxStats,
+    hls: HlsStats,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemuxStats {
+    active: i64,
+    active_jobs: usize,
+    max_concurrent: usize,
+    queue_timeout_ms: u64,
+    process_timeout_seconds: u64,
+    oldest_active_seconds: i64,
+    started: i64,
+    completed: i64,
+    failed: i64,
+    canceled: i64,
+    timed_out: i64,
+    rejected: i64,
+    spawn_errors: i64,
+    read_errors: i64,
+    stderr_truncated: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HlsStats {
+    jobs: usize,
+    active_jobs: usize,
+    completed_jobs: usize,
+    failed_jobs: usize,
 }
 
 struct HlsJob {
@@ -69,18 +143,72 @@ struct VideoEncodeConfig {
 
 impl StreamingService {
     pub fn new(config: Config, runtime: RuntimeServices, media: MediaService) -> Self {
+        let remux_max_concurrent = config.remux_max_concurrent;
         Self {
             config,
             runtime,
             media,
             hls_jobs: Arc::new(DashMap::new()),
             hls_job_locks: Arc::new(DashMap::new()),
+            remux_permits: Arc::new(Semaphore::new(remux_max_concurrent)),
+            remux_metrics: Arc::new(RemuxMetrics::default()),
+            remux_active_jobs: Arc::new(DashMap::new()),
+            remux_next_job_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
     pub async fn prune(&self) {
         self.prune_idle_hls_jobs().await;
         let _ = self.prune_hls_cache_files().await;
+    }
+
+    pub fn stats(&self) -> StreamingStats {
+        let now = now_ms();
+        let oldest_active_seconds = self
+            .remux_active_jobs
+            .iter()
+            .map(|entry| ((now - *entry.value()) / 1000).max(0))
+            .max()
+            .unwrap_or(0);
+        let mut active_hls_jobs = 0_usize;
+        let mut completed_hls_jobs = 0_usize;
+        let mut failed_hls_jobs = 0_usize;
+        for job in self.hls_jobs.iter() {
+            let exited = job.exited.load(Ordering::Relaxed);
+            let completed = job.completed.load(Ordering::Relaxed);
+            if !exited {
+                active_hls_jobs += 1;
+            } else if completed {
+                completed_hls_jobs += 1;
+            } else {
+                failed_hls_jobs += 1;
+            }
+        }
+        StreamingStats {
+            remux: RemuxStats {
+                active: self.remux_metrics.active.load(Ordering::Relaxed),
+                active_jobs: self.remux_active_jobs.len(),
+                max_concurrent: self.config.remux_max_concurrent,
+                queue_timeout_ms: self.config.remux_queue_timeout_ms,
+                process_timeout_seconds: self.config.remux_process_timeout_seconds,
+                oldest_active_seconds,
+                started: self.remux_metrics.started.load(Ordering::Relaxed),
+                completed: self.remux_metrics.completed.load(Ordering::Relaxed),
+                failed: self.remux_metrics.failed.load(Ordering::Relaxed),
+                canceled: self.remux_metrics.canceled.load(Ordering::Relaxed),
+                timed_out: self.remux_metrics.timed_out.load(Ordering::Relaxed),
+                rejected: self.remux_metrics.rejected.load(Ordering::Relaxed),
+                spawn_errors: self.remux_metrics.spawn_errors.load(Ordering::Relaxed),
+                read_errors: self.remux_metrics.read_errors.load(Ordering::Relaxed),
+                stderr_truncated: self.remux_metrics.stderr_truncated.load(Ordering::Relaxed),
+            },
+            hls: HlsStats {
+                jobs: self.hls_jobs.len(),
+                active_jobs: active_hls_jobs,
+                completed_jobs: completed_hls_jobs,
+                failed_jobs: failed_hls_jobs,
+            },
+        }
     }
 
     pub async fn create_remux_response(
@@ -93,6 +221,30 @@ impl StreamingService {
         preferred_video_mode: &str,
     ) -> AppResult<Response<Body>> {
         let source = self.media.resolve_transcode_input(input)?;
+        let permit = match timeout(
+            Duration::from_millis(self.config.remux_queue_timeout_ms),
+            self.remux_permits.clone().acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
+                return Err(ApiError::internal("Remux limiter is closed."));
+            }
+            Err(_) => {
+                self.remux_metrics.rejected.fetch_add(1, Ordering::Relaxed);
+                return Err(ApiError::too_many_requests(
+                    "Server is busy preparing another stream. Please retry in a moment.",
+                ));
+            }
+        };
+        let job_id = self.remux_next_job_id.fetch_add(1, Ordering::Relaxed);
+        let guard = RemuxStreamGuard::new(
+            self.remux_metrics.clone(),
+            self.remux_active_jobs.clone(),
+            job_id,
+            permit,
+        );
         let safe_start_seconds = start_seconds.max(0);
         let safe_audio_stream_index = if audio_stream_index >= 0 {
             audio_stream_index
@@ -350,42 +502,75 @@ impl StreamingService {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|error| ApiError::internal(error.to_string()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| ApiError::internal("Failed to capture ffmpeg stdout."))?;
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                let mut guard = guard;
+                guard.mark_spawn_error();
+                return Err(ApiError::internal(error.to_string()));
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                let mut guard = guard;
+                guard.mark_spawn_error();
+                return Err(ApiError::internal("Failed to capture ffmpeg stdout."));
+            }
+        };
 
         // Capture stderr in a background task so ffmpeg errors are logged.
         if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(async move {
-                let mut reader = tokio::io::BufReader::new(stderr);
-                let mut output = String::new();
-                let _ = tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut output).await;
-                if !output.trim().is_empty() {
-                    eprintln!("[remux] ffmpeg stderr: {output}");
-                }
-            });
+            spawn_bounded_ffmpeg_stderr_logger("remux", stderr, Some(self.remux_metrics.clone()));
         }
 
+        let timeout_seconds = self.config.remux_process_timeout_seconds;
         let stream = stream::try_unfold(
-            (stdout, child, vec![0_u8; 16 * 1024]),
-            |(mut stdout, mut child, mut buffer)| async move {
-                let read = stdout.read(&mut buffer).await?;
+            RemuxStreamState {
+                stdout,
+                child,
+                buffer: vec![0_u8; 16 * 1024],
+                guard,
+                deadline: TokioInstant::now() + Duration::from_secs(timeout_seconds),
+                timeout_seconds,
+            },
+            |mut state| async move {
+                let read = tokio::select! {
+                    read_result = state.stdout.read(&mut state.buffer) => {
+                        match read_result {
+                            Ok(read) => read,
+                            Err(error) => {
+                                state.guard.mark_read_error();
+                                return Err(error);
+                            }
+                        }
+                    }
+                    _ = sleep_until(state.deadline) => {
+                        let _ = state.child.kill().await;
+                        let _ = state.child.wait().await;
+                        state.guard.mark_timed_out();
+                        eprintln!(
+                            "[remux] ffmpeg timed out after {} seconds",
+                            state.timeout_seconds
+                        );
+                        return Ok(None);
+                    }
+                };
                 if read == 0 {
-                    let status = child.wait().await?;
+                    let status = state.child.wait().await?;
                     if !status.success() {
+                        state.guard.mark_failed();
                         eprintln!(
                             "[remux] ffmpeg exited with code {}",
                             status.code().unwrap_or(-1)
                         );
+                    } else {
+                        state.guard.mark_completed();
                     }
                     return Ok(None);
                 }
-                let bytes = Bytes::copy_from_slice(&buffer[..read]);
-                Ok::<_, std::io::Error>(Some((bytes, (stdout, child, buffer))))
+                let bytes = Bytes::copy_from_slice(&state.buffer[..read]);
+                Ok::<_, std::io::Error>(Some((bytes, state)))
             },
         );
 
@@ -621,14 +806,7 @@ impl StreamingService {
 
         // Capture stderr in a background task so HLS transcode errors are logged.
         if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(async move {
-                let mut reader = tokio::io::BufReader::new(stderr);
-                let mut output = String::new();
-                let _ = tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut output).await;
-                if !output.trim().is_empty() {
-                    eprintln!("[transcode] ffmpeg stderr: {output}");
-                }
-            });
+            spawn_bounded_ffmpeg_stderr_logger("transcode", stderr, None);
         }
         let now = now_ms();
         let job = Arc::new(HlsJob {
@@ -1221,6 +1399,122 @@ fn key_lock(map: &DashMap<String, Arc<Mutex<()>>>, key: &str) -> Arc<Mutex<()>> 
     map.entry(key.to_owned())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
+}
+
+impl RemuxStreamGuard {
+    fn new(
+        metrics: Arc<RemuxMetrics>,
+        active_jobs: Arc<DashMap<u64, i64>>,
+        job_id: u64,
+        permit: OwnedSemaphorePermit,
+    ) -> Self {
+        metrics.started.fetch_add(1, Ordering::Relaxed);
+        metrics.active.fetch_add(1, Ordering::Relaxed);
+        active_jobs.insert(job_id, now_ms());
+        Self {
+            metrics,
+            active_jobs,
+            job_id,
+            _permit: permit,
+            finished: false,
+        }
+    }
+
+    fn mark_completed(&mut self) {
+        if !self.finished {
+            self.metrics.completed.fetch_add(1, Ordering::Relaxed);
+            self.finished = true;
+        }
+    }
+
+    fn mark_failed(&mut self) {
+        if !self.finished {
+            self.metrics.failed.fetch_add(1, Ordering::Relaxed);
+            self.finished = true;
+        }
+    }
+
+    fn mark_timed_out(&mut self) {
+        if !self.finished {
+            self.metrics.timed_out.fetch_add(1, Ordering::Relaxed);
+            self.finished = true;
+        }
+    }
+
+    fn mark_spawn_error(&mut self) {
+        if !self.finished {
+            self.metrics.spawn_errors.fetch_add(1, Ordering::Relaxed);
+            self.finished = true;
+        }
+    }
+
+    fn mark_read_error(&mut self) {
+        if !self.finished {
+            self.metrics.read_errors.fetch_add(1, Ordering::Relaxed);
+            self.finished = true;
+        }
+    }
+}
+
+impl Drop for RemuxStreamGuard {
+    fn drop(&mut self) {
+        self.active_jobs.remove(&self.job_id);
+        self.metrics.active.fetch_sub(1, Ordering::Relaxed);
+        if !self.finished {
+            self.metrics.canceled.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+fn spawn_bounded_ffmpeg_stderr_logger(
+    label: &'static str,
+    stderr: ChildStderr,
+    remux_metrics: Option<Arc<RemuxMetrics>>,
+) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        let mut captured = String::new();
+        let mut captured_lines = 0_usize;
+        let mut dropped_lines = 0_usize;
+        let mut truncated = false;
+
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if captured.len() + line.len() < FFMPEG_STDERR_MAX_BYTES
+                        && captured_lines < FFMPEG_STDERR_MAX_LINES
+                    {
+                        captured.push_str(&line);
+                        captured.push('\n');
+                        captured_lines += 1;
+                    } else {
+                        dropped_lines += 1;
+                        truncated = true;
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    eprintln!("[{label}] failed to read ffmpeg stderr: {error}");
+                    break;
+                }
+            }
+        }
+
+        if truncated && let Some(metrics) = remux_metrics.as_ref() {
+            metrics.stderr_truncated.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let trimmed = captured.trim();
+        if !trimmed.is_empty() {
+            if truncated {
+                eprintln!(
+                    "[{label}] ffmpeg stderr (truncated, dropped {dropped_lines} lines): {trimmed}"
+                );
+            } else {
+                eprintln!("[{label}] ffmpeg stderr: {trimmed}");
+            }
+        }
+    });
 }
 
 #[cfg(test)]
