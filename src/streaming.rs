@@ -35,6 +35,7 @@ const HLS_SEGMENT_WAIT_POLL_MS: u64 = 180;
 const REMUX_ACCURATE_SEEK_PREROLL_SECONDS: i64 = 12;
 const FFMPEG_STDERR_MAX_LINES: usize = 80;
 const FFMPEG_STDERR_MAX_BYTES: usize = 16 * 1024;
+const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v2";
 
 const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "mp2", "opus", "vorbis", "flac", "alac"];
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
@@ -126,6 +127,7 @@ struct HlsJob {
     encode_mode: String,
     allow_software_fallback: bool,
     output_prefix: String,
+    completion_marker_path: PathBuf,
     child: Mutex<Option<Child>>,
     last_accessed_at: AtomicI64,
     finished_at: AtomicI64,
@@ -786,8 +788,33 @@ impl StreamingService {
         allow_software_fallback: bool,
     ) -> AppResult<Arc<HlsJob>> {
         let job_key = build_hls_transcode_job_key(source_input, audio_stream_index);
-        let output_prefix = build_hls_transcode_output_prefix(&self.config.hls_cache_dir, &job_key);
         let encode_config = build_hls_video_encode_config(encode_mode);
+        let output_prefix = build_hls_transcode_output_prefix(
+            &self.config.hls_cache_dir,
+            &job_key,
+            &encode_config.mode,
+        );
+        let completion_marker_path = build_hls_completion_marker_path(&output_prefix);
+        if fs::metadata(&completion_marker_path).await.is_ok() {
+            let now = now_ms();
+            let job = Arc::new(HlsJob {
+                source_input: source_input.to_owned(),
+                audio_stream_index,
+                encode_mode: encode_config.mode.clone(),
+                allow_software_fallback,
+                output_prefix,
+                completion_marker_path,
+                child: Mutex::new(None),
+                last_accessed_at: AtomicI64::new(now),
+                finished_at: AtomicI64::new(now),
+                exited: AtomicBool::new(true),
+                completed: AtomicBool::new(true),
+                exit_code: AtomicI32::new(0),
+            });
+            self.hls_jobs.insert(job_key, job.clone());
+            return Ok(job);
+        }
+        let _ = self.remove_incomplete_hls_outputs(&output_prefix).await;
         let args = build_hls_transcode_args(
             source_input,
             audio_stream_index,
@@ -815,6 +842,7 @@ impl StreamingService {
             encode_mode: encode_config.mode.clone(),
             allow_software_fallback,
             output_prefix,
+            completion_marker_path,
             child: Mutex::new(Some(child)),
             last_accessed_at: AtomicI64::new(now),
             finished_at: AtomicI64::new(0),
@@ -823,6 +851,14 @@ impl StreamingService {
             exit_code: AtomicI32::new(-1),
         });
         self.hls_jobs.insert(job_key, job.clone());
+        let service = self.clone();
+        let job_for_refresh = job.clone();
+        tokio::spawn(async move {
+            while !job_for_refresh.exited.load(Ordering::Relaxed) {
+                sleep(Duration::from_millis(1_000)).await;
+                service.refresh_hls_job_state(&job_for_refresh).await;
+            }
+        });
         Ok(job)
     }
 
@@ -834,15 +870,17 @@ impl StreamingService {
         match child.try_wait() {
             Ok(Some(status)) => {
                 job.exited.store(true, Ordering::Relaxed);
-                job.completed.store(status.success(), Ordering::Relaxed);
+                let success = status.success();
+                job.completed.store(success, Ordering::Relaxed);
                 job.exit_code.store(
-                    status
-                        .code()
-                        .unwrap_or(if status.success() { 0 } else { 1 }),
+                    status.code().unwrap_or(if success { 0 } else { 1 }),
                     Ordering::Relaxed,
                 );
                 job.finished_at.store(now_ms(), Ordering::Relaxed);
                 *guard = None;
+                if success {
+                    let _ = fs::write(&job.completion_marker_path, b"complete\n").await;
+                }
             }
             Ok(None) => {}
             Err(_) => {
@@ -931,13 +969,12 @@ impl StreamingService {
             -1
         };
         let segment_path = output_path.unwrap_or_else(|| {
-            self.config.hls_cache_dir.join(format!(
-                "{}.ts",
-                hash_stable_string(&format!(
-                    "{}|a:{}|i:{}",
-                    source_input, safe_audio_stream_index, safe_segment_index
-                ))
-            ))
+            build_hls_on_demand_segment_path(
+                &self.config.hls_cache_dir,
+                source_input,
+                safe_audio_stream_index,
+                safe_segment_index,
+            )
         });
         let segment_start_seconds = safe_segment_index * HLS_SEGMENT_DURATION_SECONDS;
         let build_segment_args = |encode_config: &VideoEncodeConfig| {
@@ -1019,16 +1056,54 @@ impl StreamingService {
         segment_index: i64,
         audio_stream_index: i64,
     ) -> AppResult<PathBuf> {
+        let safe_segment_index = segment_index.max(0);
+        let safe_audio_stream_index = if audio_stream_index >= 0 {
+            audio_stream_index
+        } else {
+            -1
+        };
+        let on_demand_path = build_hls_on_demand_segment_path(
+            &self.config.hls_cache_dir,
+            source_input,
+            safe_audio_stream_index,
+            safe_segment_index,
+        );
+        if let Ok(metadata) = fs::metadata(&on_demand_path).await
+            && metadata.is_file()
+            && metadata.len() > 0
+        {
+            return Ok(on_demand_path);
+        }
         let job = self
-            .ensure_hls_transcode_job(source_input, audio_stream_index)
+            .ensure_hls_transcode_job(source_input, safe_audio_stream_index)
             .await?;
-        self.wait_for_hls_segment_from_job(job, segment_index).await
+        self.wait_for_hls_segment_from_job(job, safe_segment_index)
+            .await
     }
 
     async fn ensure_hls_cache_directory(&self) -> AppResult<()> {
         fs::create_dir_all(&self.config.hls_cache_dir)
             .await
             .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    async fn remove_incomplete_hls_outputs(&self, output_prefix: &str) -> AppResult<()> {
+        let mut entries = match fs::read_dir(&self.config.hls_cache_dir).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(ApiError::internal(error.to_string())),
+        };
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?
+        {
+            let path = entry.path();
+            if path.to_string_lossy().starts_with(output_prefix) {
+                let _ = fs::remove_file(path).await;
+            }
+        }
+        Ok(())
     }
 
     async fn prune_idle_hls_jobs(&self) {
@@ -1055,6 +1130,10 @@ impl StreamingService {
             {
                 if let Some(mut child) = job.child.lock().await.take() {
                     let _ = child.kill().await;
+                    job.exited.store(true, Ordering::Relaxed);
+                    job.completed.store(false, Ordering::Relaxed);
+                    job.exit_code.store(1, Ordering::Relaxed);
+                    job.finished_at.store(now_ms(), Ordering::Relaxed);
                 }
                 self.hls_jobs.remove(&key);
             }
@@ -1323,11 +1402,22 @@ fn build_hls_transcode_job_key(source_input: &str, audio_stream_index: i64) -> S
     format!("{source_input}|a:{audio_stream_index}")
 }
 
-fn build_hls_transcode_output_prefix(cache_dir: &Path, job_key: &str) -> String {
+fn build_hls_transcode_output_prefix(cache_dir: &Path, job_key: &str, encode_mode: &str) -> String {
     cache_dir
-        .join(format!("{}-{}", hash_stable_string(job_key), now_ms()))
+        .join(format!(
+            "{}-{}",
+            HLS_CACHE_SCHEMA_VERSION,
+            hash_stable_string(&format!(
+                "{}|segment:{}|encode:{}|{}",
+                HLS_CACHE_SCHEMA_VERSION, HLS_SEGMENT_DURATION_SECONDS, encode_mode, job_key
+            ))
+        ))
         .to_string_lossy()
         .to_string()
+}
+
+fn build_hls_completion_marker_path(output_prefix: &str) -> PathBuf {
+    PathBuf::from(format!("{output_prefix}.complete"))
 }
 
 fn build_hls_transcode_segment_path_from_prefix(
@@ -1335,6 +1425,24 @@ fn build_hls_transcode_segment_path_from_prefix(
     segment_index: i64,
 ) -> PathBuf {
     PathBuf::from(format!("{output_prefix}-{:06}.ts", segment_index.max(0)))
+}
+
+fn build_hls_on_demand_segment_path(
+    cache_dir: &Path,
+    source_input: &str,
+    audio_stream_index: i64,
+    segment_index: i64,
+) -> PathBuf {
+    cache_dir.join(format!(
+        "{}.ts",
+        hash_stable_string(&format!(
+            "{}|ondemand|a:{}|i:{}|{}",
+            HLS_CACHE_SCHEMA_VERSION,
+            audio_stream_index,
+            segment_index.max(0),
+            source_input
+        ))
+    ))
 }
 
 fn build_hls_transcode_args(
