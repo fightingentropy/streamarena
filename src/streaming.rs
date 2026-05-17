@@ -48,6 +48,8 @@ pub struct StreamingService {
     media: MediaService,
     hls_jobs: Arc<DashMap<String, Arc<HlsJob>>>,
     hls_job_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    hls_job_permits: Arc<Semaphore>,
+    hls_metrics: Arc<HlsMetrics>,
     remux_permits: Arc<Semaphore>,
     remux_metrics: Arc<RemuxMetrics>,
     remux_active_jobs: Arc<DashMap<u64, i64>>,
@@ -66,6 +68,20 @@ struct RemuxMetrics {
     spawn_errors: AtomicI64,
     read_errors: AtomicI64,
     stderr_truncated: AtomicI64,
+}
+
+#[derive(Default)]
+struct HlsMetrics {
+    active_transcodes: AtomicI64,
+    playlist_requests: AtomicI64,
+    segment_requests: AtomicI64,
+    segment_cache_hits: AtomicI64,
+    segment_cache_misses: AtomicI64,
+    on_demand_renders: AtomicI64,
+    transcode_started: AtomicI64,
+    transcode_completed: AtomicI64,
+    transcode_failed: AtomicI64,
+    transcode_skipped_busy: AtomicI64,
 }
 
 struct RemuxStreamGuard {
@@ -119,6 +135,17 @@ pub struct HlsStats {
     active_jobs: usize,
     completed_jobs: usize,
     failed_jobs: usize,
+    max_transcode_jobs: usize,
+    active_transcodes: i64,
+    playlist_requests: i64,
+    segment_requests: i64,
+    segment_cache_hits: i64,
+    segment_cache_misses: i64,
+    on_demand_renders: i64,
+    transcode_started: i64,
+    transcode_completed: i64,
+    transcode_failed: i64,
+    transcode_skipped_busy: i64,
 }
 
 struct HlsJob {
@@ -128,6 +155,7 @@ struct HlsJob {
     allow_software_fallback: bool,
     output_prefix: String,
     completion_marker_path: PathBuf,
+    permit: Mutex<Option<OwnedSemaphorePermit>>,
     child: Mutex<Option<Child>>,
     last_accessed_at: AtomicI64,
     finished_at: AtomicI64,
@@ -146,12 +174,15 @@ struct VideoEncodeConfig {
 impl StreamingService {
     pub fn new(config: Config, runtime: RuntimeServices, media: MediaService) -> Self {
         let remux_max_concurrent = config.remux_max_concurrent;
+        let hls_max_transcode_jobs = config.hls_max_transcode_jobs;
         Self {
             config,
             runtime,
             media,
             hls_jobs: Arc::new(DashMap::new()),
             hls_job_locks: Arc::new(DashMap::new()),
+            hls_job_permits: Arc::new(Semaphore::new(hls_max_transcode_jobs)),
+            hls_metrics: Arc::new(HlsMetrics::default()),
             remux_permits: Arc::new(Semaphore::new(remux_max_concurrent)),
             remux_metrics: Arc::new(RemuxMetrics::default()),
             remux_active_jobs: Arc::new(DashMap::new()),
@@ -209,6 +240,23 @@ impl StreamingService {
                 active_jobs: active_hls_jobs,
                 completed_jobs: completed_hls_jobs,
                 failed_jobs: failed_hls_jobs,
+                max_transcode_jobs: self.config.hls_max_transcode_jobs,
+                active_transcodes: self.hls_metrics.active_transcodes.load(Ordering::Relaxed),
+                playlist_requests: self.hls_metrics.playlist_requests.load(Ordering::Relaxed),
+                segment_requests: self.hls_metrics.segment_requests.load(Ordering::Relaxed),
+                segment_cache_hits: self.hls_metrics.segment_cache_hits.load(Ordering::Relaxed),
+                segment_cache_misses: self
+                    .hls_metrics
+                    .segment_cache_misses
+                    .load(Ordering::Relaxed),
+                on_demand_renders: self.hls_metrics.on_demand_renders.load(Ordering::Relaxed),
+                transcode_started: self.hls_metrics.transcode_started.load(Ordering::Relaxed),
+                transcode_completed: self.hls_metrics.transcode_completed.load(Ordering::Relaxed),
+                transcode_failed: self.hls_metrics.transcode_failed.load(Ordering::Relaxed),
+                transcode_skipped_busy: self
+                    .hls_metrics
+                    .transcode_skipped_busy
+                    .load(Ordering::Relaxed),
             },
         }
     }
@@ -624,6 +672,9 @@ impl StreamingService {
         input: &str,
         audio_stream_index: i64,
     ) -> AppResult<Response<Body>> {
+        self.hls_metrics
+            .playlist_requests
+            .fetch_add(1, Ordering::Relaxed);
         let source_input = self.media.resolve_transcode_input(input)?;
         let probe = self.media.probe_media_tracks(&source_input).await?;
         let media_duration_seconds = probe.durationSeconds.max(1) as f64;
@@ -679,6 +730,9 @@ impl StreamingService {
         segment_index: i64,
         audio_stream_index: i64,
     ) -> AppResult<Response<Body>> {
+        self.hls_metrics
+            .segment_requests
+            .fetch_add(1, Ordering::Relaxed);
         let source_input = self.media.resolve_transcode_input(input)?;
         let segment_path = self
             .get_or_create_hls_segment(&source_input, segment_index.max(0), audio_stream_index)
@@ -804,6 +858,7 @@ impl StreamingService {
                 allow_software_fallback,
                 output_prefix,
                 completion_marker_path,
+                permit: Mutex::new(None),
                 child: Mutex::new(None),
                 last_accessed_at: AtomicI64::new(now),
                 finished_at: AtomicI64::new(now),
@@ -815,6 +870,17 @@ impl StreamingService {
             return Ok(job);
         }
         let _ = self.remove_incomplete_hls_outputs(&output_prefix).await;
+        let permit = match self.hls_job_permits.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                self.hls_metrics
+                    .transcode_skipped_busy
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(ApiError::too_many_requests(
+                    "HLS transcode capacity is busy; serving segments on demand.",
+                ));
+            }
+        };
         let args = build_hls_transcode_args(
             source_input,
             audio_stream_index,
@@ -836,6 +902,12 @@ impl StreamingService {
             spawn_bounded_ffmpeg_stderr_logger("transcode", stderr, None);
         }
         let now = now_ms();
+        self.hls_metrics
+            .active_transcodes
+            .fetch_add(1, Ordering::Relaxed);
+        self.hls_metrics
+            .transcode_started
+            .fetch_add(1, Ordering::Relaxed);
         let job = Arc::new(HlsJob {
             source_input: source_input.to_owned(),
             audio_stream_index,
@@ -843,6 +915,7 @@ impl StreamingService {
             allow_software_fallback,
             output_prefix,
             completion_marker_path,
+            permit: Mutex::new(Some(permit)),
             child: Mutex::new(Some(child)),
             last_accessed_at: AtomicI64::new(now),
             finished_at: AtomicI64::new(0),
@@ -881,6 +954,7 @@ impl StreamingService {
                 if success {
                     let _ = fs::write(&job.completion_marker_path, b"complete\n").await;
                 }
+                self.release_hls_job_permit(job, success).await;
             }
             Ok(None) => {}
             Err(_) => {
@@ -889,7 +963,26 @@ impl StreamingService {
                 job.exit_code.store(1, Ordering::Relaxed);
                 job.finished_at.store(now_ms(), Ordering::Relaxed);
                 *guard = None;
+                self.release_hls_job_permit(job, false).await;
             }
+        }
+    }
+
+    async fn release_hls_job_permit(&self, job: &Arc<HlsJob>, success: bool) {
+        if job.permit.lock().await.take().is_none() {
+            return;
+        }
+        self.hls_metrics
+            .active_transcodes
+            .fetch_sub(1, Ordering::Relaxed);
+        if success {
+            self.hls_metrics
+                .transcode_completed
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.hls_metrics
+                .transcode_failed
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -911,6 +1004,9 @@ impl StreamingService {
                 && metadata.is_file()
                 && metadata.len() > 0
             {
+                self.hls_metrics
+                    .segment_cache_hits
+                    .fetch_add(1, Ordering::Relaxed);
                 return Ok(segment_path);
             }
 
@@ -961,6 +1057,9 @@ impl StreamingService {
         audio_stream_index: i64,
         output_path: Option<PathBuf>,
     ) -> AppResult<PathBuf> {
+        self.hls_metrics
+            .on_demand_renders
+            .fetch_add(1, Ordering::Relaxed);
         self.ensure_hls_cache_directory().await?;
         let safe_segment_index = segment_index.max(0);
         let safe_audio_stream_index = if audio_stream_index >= 0 {
@@ -1072,13 +1171,33 @@ impl StreamingService {
             && metadata.is_file()
             && metadata.len() > 0
         {
+            self.hls_metrics
+                .segment_cache_hits
+                .fetch_add(1, Ordering::Relaxed);
             return Ok(on_demand_path);
         }
-        let job = self
+        self.hls_metrics
+            .segment_cache_misses
+            .fetch_add(1, Ordering::Relaxed);
+        match self
             .ensure_hls_transcode_job(source_input, safe_audio_stream_index)
-            .await?;
-        self.wait_for_hls_segment_from_job(job, safe_segment_index)
             .await
+        {
+            Ok(job) => {
+                self.wait_for_hls_segment_from_job(job, safe_segment_index)
+                    .await
+            }
+            Err(_) if self.hls_job_permits.available_permits() == 0 => {
+                self.render_hls_segment_on_demand(
+                    source_input,
+                    safe_segment_index,
+                    safe_audio_stream_index,
+                    Some(on_demand_path),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn ensure_hls_cache_directory(&self) -> AppResult<()> {
@@ -1134,6 +1253,7 @@ impl StreamingService {
                     job.completed.store(false, Ordering::Relaxed);
                     job.exit_code.store(1, Ordering::Relaxed);
                     job.finished_at.store(now_ms(), Ordering::Relaxed);
+                    self.release_hls_job_permit(&job, false).await;
                 }
                 self.hls_jobs.remove(&key);
             }

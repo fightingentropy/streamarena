@@ -21,6 +21,7 @@ pub struct Config {
     pub remux_max_concurrent: usize,
     pub remux_queue_timeout_ms: u64,
     pub remux_process_timeout_seconds: u64,
+    pub hls_max_transcode_jobs: usize,
     pub hls_hwaccel_mode: String,
     pub remux_hwaccel_mode: String,
     pub auto_audio_sync_enabled: bool,
@@ -58,6 +59,7 @@ impl Config {
             60,
             24 * 60 * 60,
         );
+        let hls_max_transcode_jobs = parse_usize_env("HLS_MAX_TRANSCODE_JOBS", 1, 1, 8);
 
         Self {
             root_dir: root_dir.clone(),
@@ -90,6 +92,7 @@ impl Config {
             remux_max_concurrent,
             remux_queue_timeout_ms,
             remux_process_timeout_seconds,
+            hls_max_transcode_jobs,
             hls_hwaccel_mode: normalize_hwaccel_mode(
                 env::var("HLS_HWACCEL").unwrap_or_else(|_| "auto".to_owned()),
             ),
