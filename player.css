@@ -836,6 +836,12 @@ body {
     color: rgba(245, 245, 245, 0.86);
 }
 
+.episode-preview-number.is-season-label {
+    font-size: 1.05rem;
+    line-height: 1.08;
+    white-space: normal;
+}
+
 .episode-preview-main {
     min-width: 0;
 }

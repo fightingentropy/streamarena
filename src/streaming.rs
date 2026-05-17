@@ -31,6 +31,7 @@ const HLS_SEGMENT_MAX_FILES: usize = 3000;
 const HLS_TRANSCODE_IDLE_MS: i64 = 8 * 60 * 1000;
 const HLS_SEGMENT_WAIT_TIMEOUT_MS: i64 = 30_000;
 const HLS_SEGMENT_WAIT_POLL_MS: u64 = 180;
+const REMUX_ACCURATE_SEEK_PREROLL_SECONDS: i64 = 12;
 
 const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "mp2", "opus", "vorbis", "flac", "alac"];
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
@@ -230,6 +231,14 @@ impl StreamingService {
         let total_audio_sync_ms =
             normalize_audio_sync_ms(auto_audio_delay_ms + safe_manual_audio_sync_ms);
 
+        let (fast_seek_seconds, accurate_trim_seconds) =
+            if safe_start_seconds > 0 && resolved_video_mode == "normalize" {
+                let trim = safe_start_seconds.min(REMUX_ACCURATE_SEEK_PREROLL_SECONDS);
+                (safe_start_seconds - trim, trim)
+            } else {
+                (safe_start_seconds, 0)
+            };
+
         let mut ffmpeg_args = vec![
             "ffmpeg".to_owned(),
             "-v".to_owned(),
@@ -241,15 +250,19 @@ impl StreamingService {
             "-probesize".to_owned(),
             "100M".to_owned(),
         ];
-        if safe_start_seconds > 0 {
+        if fast_seek_seconds > 0 {
             ffmpeg_args.push("-ss".to_owned());
-            ffmpeg_args.push(safe_start_seconds.to_string());
+            ffmpeg_args.push(fast_seek_seconds.to_string());
         }
         if resolved_video_mode == "normalize" {
             ffmpeg_args.extend(remux_video_encode_config.pre_input_args.clone());
         }
         ffmpeg_args.push("-i".to_owned());
         ffmpeg_args.push(source.clone());
+        if accurate_trim_seconds > 0 {
+            ffmpeg_args.push("-ss".to_owned());
+            ffmpeg_args.push(accurate_trim_seconds.to_string());
+        }
         ffmpeg_args.push("-map".to_owned());
         ffmpeg_args.push("0:v:0".to_owned());
         ffmpeg_args.push("-map".to_owned());
@@ -405,6 +418,11 @@ impl StreamingService {
             )
             .header("X-Remux-Video-Mode-Requested", requested_video_mode)
             .header("X-Remux-Video-Mode-Resolved", resolved_video_mode)
+            .header("X-Remux-Fast-Seek-Seconds", fast_seek_seconds.to_string())
+            .header(
+                "X-Remux-Accurate-Trim-Seconds",
+                accurate_trim_seconds.to_string(),
+            )
             .header(
                 "X-Remux-Hwaccel-Requested",
                 self.config.remux_hwaccel_mode.clone(),

@@ -408,7 +408,7 @@ function extractSeriesIdFromSourceIdentity(sourceIdentity) {
 function parseTmdbSourceIdentity(sourceIdentity) {
   const normalizedSource = String(sourceIdentity || "").trim();
   if (!normalizedSource.toLowerCase().startsWith("tmdb:")) {
-    return { tmdbId: "", mediaType: "" };
+    return { tmdbId: "", mediaType: "", seasonNumber: 0, episodeNumber: 0 };
   }
   const typedMatch = /^tmdb:(movie|tv):(\d+)(?::s(\d+):e(\d+))?$/i.exec(
     normalizedSource,
@@ -419,9 +419,11 @@ function parseTmdbSourceIdentity(sourceIdentity) {
         .trim()
         .toLowerCase(),
       tmdbId: String(typedMatch[2] || "").trim(),
+      seasonNumber: Number(typedMatch[3] || 0) || 0,
+      episodeNumber: Number(typedMatch[4] || 0) || 0,
     };
   }
-  return { tmdbId: "", mediaType: "" };
+  return { tmdbId: "", mediaType: "", seasonNumber: 0, episodeNumber: 0 };
 }
 
 function removeResumeEntriesForSource(
@@ -531,7 +533,6 @@ function removeContinueMetaEntriesForSource(
         delete metaMap[key];
       }
     });
-    return;
   }
 
   const tmdbId = String(parsedTmdbSource?.tmdbId || "").trim();
@@ -625,6 +626,10 @@ function getContinueDedupeKey(sourceIdentity, explicitSeriesId = "") {
   if (normalizedSeriesId) {
     return `series:${normalizedSeriesId}`;
   }
+  const parsedSource = parseTmdbSourceIdentity(sourceIdentity);
+  if (parsedSource.mediaType === "tv" && parsedSource.tmdbId) {
+    return `tmdb:tv:${parsedSource.tmdbId}`;
+  }
   return String(sourceIdentity || "").trim();
 }
 
@@ -678,6 +683,12 @@ function normalizeLocalContinueEntry(entry) {
   safeEntry.episodeIndex = Number.isFinite(Number(safeEntry.episodeIndex))
     ? Math.max(0, Math.floor(Number(safeEntry.episodeIndex)))
     : -1;
+  safeEntry.seasonNumber = Number.isFinite(Number(safeEntry.seasonNumber))
+    ? Math.max(0, Math.floor(Number(safeEntry.seasonNumber)))
+    : 0;
+  safeEntry.episodeNumber = Number.isFinite(Number(safeEntry.episodeNumber))
+    ? Math.max(0, Math.floor(Number(safeEntry.episodeNumber)))
+    : 0;
   return safeEntry;
 }
 
@@ -743,6 +754,9 @@ function normalizeServerContinueEntry(entry) {
   const parsedTmdbSource = parseTmdbSourceIdentity(normalizedSource);
   const seriesId =
     String(entry.seriesId || "").trim() ||
+    (parsedTmdbSource.mediaType === "tv" && parsedTmdbSource.tmdbId
+      ? `tmdb-tv-${parsedTmdbSource.tmdbId}`
+      : "") ||
     extractSeriesIdFromSourceIdentity(normalizedSource);
   return normalizeLocalContinueEntry({
     sourceIdentity: normalizedSource,
@@ -762,7 +776,15 @@ function normalizeServerContinueEntry(entry) {
     seriesId,
     episodeIndex: Number.isFinite(Number(entry.episodeIndex))
       ? Math.max(0, Math.floor(Number(entry.episodeIndex)))
-      : -1,
+      : parsedTmdbSource.mediaType === "tv" && parsedTmdbSource.episodeNumber > 0
+        ? parsedTmdbSource.episodeNumber - 1
+        : -1,
+    seasonNumber: Number.isFinite(Number(entry.seasonNumber))
+      ? Math.max(0, Math.floor(Number(entry.seasonNumber)))
+      : parsedTmdbSource.seasonNumber,
+    episodeNumber: Number.isFinite(Number(entry.episodeNumber))
+      ? Math.max(0, Math.floor(Number(entry.episodeNumber)))
+      : parsedTmdbSource.episodeNumber,
     year: String(entry.year || "").trim(),
     thumb: String(entry.thumb || "").trim(),
   });
@@ -869,6 +891,11 @@ function getContinueWatchingEntries() {
       return;
     }
 
+    const parsedTmdbSource = parseTmdbSourceIdentity(normalizedSource);
+    const tmdbSeriesId =
+      parsedTmdbSource.mediaType === "tv" && parsedTmdbSource.tmdbId
+        ? `tmdb-tv-${parsedTmdbSource.tmdbId}`
+        : "";
     const normalizedEntry = normalizeLocalContinueEntry({
       sourceIdentity: normalizedSource,
       resumeSeconds,
@@ -877,17 +904,25 @@ function getContinueWatchingEntries() {
       episode: String(value.episode || "").trim(),
       src: String(value.src || "").trim(),
       tmdbId:
-        String(value.tmdbId || "").trim() ||
-        parseTmdbSourceIdentity(normalizedSource).tmdbId,
+        String(value.tmdbId || "").trim() || parsedTmdbSource.tmdbId,
       mediaType: inferContinueMediaType(
         normalizedSource,
         String(value.mediaType || "").trim(),
         String(value.seriesId || "").trim(),
       ),
-      seriesId: String(value.seriesId || "").trim(),
+      seriesId: String(value.seriesId || "").trim() || tmdbSeriesId,
       episodeIndex: Number.isFinite(Number(value.episodeIndex))
         ? Math.max(0, Math.floor(Number(value.episodeIndex)))
-        : -1,
+        : parsedTmdbSource.mediaType === "tv" &&
+            parsedTmdbSource.episodeNumber > 0
+          ? parsedTmdbSource.episodeNumber - 1
+          : -1,
+      seasonNumber: Number.isFinite(Number(value.seasonNumber))
+        ? Math.max(0, Math.floor(Number(value.seasonNumber)))
+        : parsedTmdbSource.seasonNumber,
+      episodeNumber: Number.isFinite(Number(value.episodeNumber))
+        ? Math.max(0, Math.floor(Number(value.episodeNumber)))
+        : parsedTmdbSource.episodeNumber,
       year: String(value.year || "").trim(),
       thumb: String(value.thumb || "").trim(),
     });
@@ -947,7 +982,9 @@ function getContinueWatchingEntries() {
       resumeSeconds,
       updatedAt: 0,
       title: tmdbId
-        ? "Movie"
+        ? parsedTmdbSource.mediaType === "tv"
+          ? "Series"
+          : "Movie"
         : hasLocalMediaSource
           ? normalizeLocalMovieDisplayTitle(sourceIdentity)
           : "Continue Watching",
@@ -961,10 +998,18 @@ function getContinueWatchingEntries() {
             parsedTmdbSource.mediaType,
             inferredSeriesId,
           ),
-      seriesId: inferredSeriesId,
+      seriesId:
+        inferredSeriesId ||
+        (parsedTmdbSource.mediaType === "tv" && tmdbId
+          ? `tmdb-tv-${tmdbId}`
+          : ""),
       episodeIndex: Number.isFinite(inferredEpisodeIndex)
         ? Math.max(0, Math.floor(inferredEpisodeIndex))
-        : -1,
+        : parsedTmdbSource.mediaType === "tv" && parsedTmdbSource.episodeNumber > 0
+          ? parsedTmdbSource.episodeNumber - 1
+          : -1,
+      seasonNumber: parsedTmdbSource.seasonNumber,
+      episodeNumber: parsedTmdbSource.episodeNumber,
       year: "",
       thumb: "",
     });
@@ -1201,6 +1246,8 @@ function createSearchResultDetails(item, imageBase = TMDB_IMAGE_BASE) {
 
 function getCardDetails(card) {
   const rawEpisodeIndex = Number(card.dataset.episodeIndex || -1);
+  const rawSeasonNumber = Number(card.dataset.seasonNumber || 0);
+  const rawEpisodeNumber = Number(card.dataset.episodeNumber || 0);
   return {
     title: card.dataset.title || "Title",
     episode: card.dataset.episode || "",
@@ -1216,6 +1263,8 @@ function getCardDetails(card) {
     libraryId: card.dataset.libraryId || "",
     librarySrc: card.dataset.librarySrc || "",
     episodeIndex: Number.isFinite(rawEpisodeIndex) ? rawEpisodeIndex : -1,
+    seasonNumber: Number.isFinite(rawSeasonNumber) ? rawSeasonNumber : 0,
+    episodeNumber: Number.isFinite(rawEpisodeNumber) ? rawEpisodeNumber : 0,
     year: card.dataset.year || "",
   };
 }
@@ -1524,6 +1573,8 @@ export default function HomePage() {
     year,
     seriesId,
     episodeIndex,
+    seasonNumber,
+    episodeNumber,
     saveToGallery = false,
   }) {
     const normalizePlaybackSource = (value) => {
@@ -1547,6 +1598,8 @@ export default function HomePage() {
     const parsedEpisodeIndex = Number(episodeIndex);
     const hasEpisodeIndex =
       Number.isFinite(parsedEpisodeIndex) && parsedEpisodeIndex >= 0;
+    const parsedSeasonNumber = Number(seasonNumber);
+    const parsedEpisodeNumber = Number(episodeNumber);
     const isSeriesLaunch =
       normalizedMediaType === "tv" ||
       (!normalizedMediaType && Boolean(normalizedSeriesId) && hasEpisodeIndex);
@@ -1591,6 +1644,22 @@ export default function HomePage() {
 
     if (isSeriesLaunch && hasEpisodeIndex) {
       params.set("episodeIndex", String(Math.floor(parsedEpisodeIndex)));
+    }
+
+    if (
+      isSeriesLaunch &&
+      Number.isFinite(parsedSeasonNumber) &&
+      parsedSeasonNumber > 0
+    ) {
+      params.set("seasonNumber", String(Math.floor(parsedSeasonNumber)));
+    }
+
+    if (
+      isSeriesLaunch &&
+      Number.isFinite(parsedEpisodeNumber) &&
+      parsedEpisodeNumber > 0
+    ) {
+      params.set("episodeNumber", String(Math.floor(parsedEpisodeNumber)));
     }
 
     if (!src && tmdbId && normalizedMediaType === "movie") {
@@ -2582,15 +2651,19 @@ export default function HomePage() {
     card.dataset.episodeIndex = Number.isFinite(Number(entry.episodeIndex))
       ? String(Math.max(0, Math.floor(Number(entry.episodeIndex))))
       : "-1";
+    card.dataset.seasonNumber = Number.isFinite(Number(entry.seasonNumber))
+      ? String(Math.max(0, Math.floor(Number(entry.seasonNumber))))
+      : "0";
+    card.dataset.episodeNumber = Number.isFinite(Number(entry.episodeNumber))
+      ? String(Math.max(0, Math.floor(Number(entry.episodeNumber))))
+      : "0";
     const continueSeriesId = String(entry.seriesId || "").trim();
     const continueSrc = String(entry.src || "").trim();
     const continueSourceIdentity = String(entry.sourceIdentity || "").trim();
-    if (continueSeriesId) {
+    if (continueSeriesId && continueSrc) {
       card.dataset.libraryType = "series";
       card.dataset.libraryId = continueSeriesId;
-      if (continueSrc) {
-        card.dataset.librarySrc = continueSrc;
-      }
+      card.dataset.librarySrc = continueSrc;
     } else if (
       !String(entry.tmdbId || "").trim() &&
       (isLikelyLocalMediaSource(continueSrc) ||

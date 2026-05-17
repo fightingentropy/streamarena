@@ -693,7 +693,10 @@ pub async fn tmdb_tv_season_handler(
                 } else {
                     format!("https://image.tmdb.org/t/p/w780{still_path}")
                 },
-                "name": stringify_json(entry.get("name"))
+                "name": stringify_json(entry.get("name")),
+                "overview": stringify_json(entry.get("overview")),
+                "airDate": stringify_json(entry.get("air_date")),
+                "runtime": entry.get("runtime").and_then(Value::as_i64).unwrap_or(0)
             })
         })
         .collect::<Vec<_>>();

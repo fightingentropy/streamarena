@@ -122,6 +122,8 @@ let autoPlayOverlayVisible = false;
 let autoPlayCancelled = false;
 const AUTO_PLAY_COUNTDOWN_DURATION = 5;
 const AUTO_PLAY_SHOW_BEFORE_END_SECONDS = 10;
+const MAX_TMDB_EPISODE_LIST_SEASONS = 12;
+const MAX_TMDB_EPISODE_LIST_EPISODES = 300;
 let lastAudibleVolume = 1;
 const sourceSaveStateByHash = new Map();
 const sourceSaveResetTimeoutByHash = new Map();
@@ -977,19 +979,83 @@ if (!(resumeTime > 1)) {
 }
 
 function getCanonicalContinueWatchingMetadata() {
+  const isTmdbSeriesPlayback = Boolean(isTmdbTvPlayback && tmdbId);
+  const normalizedSeriesId = isSeriesPlayback
+    ? String(activeSeries?.id || "")
+    : isTmdbSeriesPlayback
+      ? String(activeSeries?.id || `tmdb-tv-${tmdbId}`)
+      : "";
+  const normalizedEpisodeIndex =
+    isSeriesPlayback || isTmdbSeriesPlayback
+      ? Math.max(
+          0,
+          Math.floor(
+            Number.isFinite(Number(seriesEpisodeIndex))
+              ? Number(seriesEpisodeIndex)
+              : Number(episodeNumber || 1) - 1,
+          ),
+        )
+      : -1;
   return {
     title: String(title || "Title"),
     episode: String(episode || "Now Playing"),
     src: String(src || ""),
     tmdbId: String(tmdbId || ""),
     mediaType: String(mediaType || ""),
-    seriesId: isSeriesPlayback ? String(activeSeries.id || "") : "",
-    episodeIndex: isSeriesPlayback ? seriesEpisodeIndex : -1,
+    seriesId: normalizedSeriesId,
+    episodeIndex: normalizedEpisodeIndex,
+    seasonNumber:
+      isSeriesPlayback || isTmdbSeriesPlayback
+        ? Math.max(1, Math.floor(Number(seasonNumber || 1)))
+        : 0,
+    episodeNumber:
+      isSeriesPlayback || isTmdbSeriesPlayback
+        ? Math.max(1, Math.floor(Number(episodeNumber || 1)))
+        : 0,
     year: String(year || ""),
-    thumb: isSeriesPlayback
+    thumb: isSeriesPlayback || isTmdbSeriesPlayback
       ? String(activeSeriesEpisode?.thumb || DEFAULT_EPISODE_THUMBNAIL)
       : thumbParam,
   };
+}
+
+function parseTmdbTvSourceIdentity(value) {
+  const match = /^tmdb:tv:(\d+)(?::s(\d+):e(\d+))?$/i.exec(
+    String(value || "").trim(),
+  );
+  return match
+    ? {
+        tmdbId: String(match[1] || "").trim(),
+        seasonNumber: Number(match[2] || 0) || 0,
+        episodeNumber: Number(match[3] || 0) || 0,
+      }
+    : { tmdbId: "", seasonNumber: 0, episodeNumber: 0 };
+}
+
+function getContinueWatchingSeriesKey(sourceValue, metadata = {}) {
+  const seriesId = String(metadata?.seriesId || "")
+    .trim()
+    .toLowerCase();
+  if (seriesId) {
+    return `series:${seriesId}`;
+  }
+  const tmdbId = String(metadata?.tmdbId || "").trim();
+  const mediaType = String(metadata?.mediaType || "")
+    .trim()
+    .toLowerCase();
+  if (mediaType === "tv" && tmdbId) {
+    return `tmdb:tv:${tmdbId}`;
+  }
+  const parsedTmdbSource = parseTmdbTvSourceIdentity(sourceValue);
+  if (parsedTmdbSource.tmdbId) {
+    return `tmdb:tv:${parsedTmdbSource.tmdbId}`;
+  }
+  const seriesMatch = /^series:([^:]+):episode:\d+$/i.exec(
+    String(sourceValue || "").trim(),
+  );
+  return seriesMatch
+    ? `series:${String(seriesMatch[1] || "").trim().toLowerCase()}`
+    : "";
 }
 
 function persistContinueWatchingEntry(resumeSeconds) {
@@ -1005,6 +1071,21 @@ function persistContinueWatchingEntry(resumeSeconds) {
   try {
     const metadata = getCanonicalContinueWatchingMetadata();
     const metaMap = readContinueWatchingMetaMap();
+    const nextSeriesKey = getContinueWatchingSeriesKey(
+      normalizedSource,
+      metadata,
+    );
+    if (nextSeriesKey) {
+      Object.keys(metaMap).forEach((storedSource) => {
+        if (
+          storedSource !== normalizedSource &&
+          getContinueWatchingSeriesKey(storedSource, metaMap[storedSource]) ===
+            nextSeriesKey
+        ) {
+          delete metaMap[storedSource];
+        }
+      });
+    }
     metaMap[normalizedSource] = {
       sourceIdentity: normalizedSource,
       title: metadata.title,
@@ -1014,6 +1095,8 @@ function persistContinueWatchingEntry(resumeSeconds) {
       mediaType: metadata.mediaType,
       seriesId: metadata.seriesId,
       episodeIndex: metadata.episodeIndex,
+      seasonNumber: metadata.seasonNumber,
+      episodeNumber: metadata.episodeNumber,
       year: metadata.year,
       thumb: metadata.thumb,
       resumeSeconds: Number(resumeSeconds),
@@ -1075,6 +1158,13 @@ function resetInitialResumeApplication() {
   initialResumeApplyDeadline = hasInitialResumeTarget()
     ? Date.now() + INITIAL_RESUME_APPLY_WINDOW_MS
     : 0;
+}
+
+function markInitialResumeHandled() {
+  clearInitialResumeRetry();
+  initialResumeAttemptCount = 0;
+  hasAppliedInitialResume = true;
+  initialResumeApplyDeadline = 0;
 }
 
 function isCurrentTimeAtInitialResumeTarget() {
@@ -1140,7 +1230,7 @@ function applyInitialResumeIfReady() {
       ) {
         video.currentTime = relativeResume;
       } else {
-        seekToAbsoluteTime(resumeTime);
+        seekToAbsoluteTime(resumeTime, { isInitialResume: true });
       }
     } else {
       const timelineDurationSeconds = getTimelineDurationSeconds();
@@ -2892,7 +2982,7 @@ function getEffectiveCurrentTime() {
   return Number(video.currentTime) || 0;
 }
 
-function setVideoSource(nextSource) {
+function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
   if (!nextSource) {
     return;
   }
@@ -2940,7 +3030,7 @@ function setVideoSource(nextSource) {
   }
 
   knownDurationSeconds = 0;
-  if (hasInitialResumeTarget()) {
+  if (resetInitialResume && hasInitialResumeTarget()) {
     resetInitialResumeApplication();
   }
   const absoluteSource = new URL(
@@ -3334,6 +3424,15 @@ function setEpisodeLabel(currentTitle, currentEpisode) {
 // shouldHideSeriesEpisodePrefix, normalizeCourseEpisodeDisplayTitle,
 // getSeriesEpisodeLabel — imported from ./src-ui/player/episodes.js
 
+function isEpisodeListPlayback() {
+  return Boolean(
+    activeSeries &&
+      Array.isArray(seriesEpisodes) &&
+      seriesEpisodes.length > 0 &&
+      (isSeriesPlayback || isTmdbTvPlayback),
+  );
+}
+
 function seriesRequiresLocalEpisodeSources(seriesEntry = activeSeries) {
   return Boolean(seriesEntry?.requiresLocalEpisodeSources);
 }
@@ -3371,6 +3470,172 @@ function buildSeriesEpisodeIdentityKey(season, episode) {
 function isFallbackEpisodeThumbnail(thumbValue) {
   const normalized = String(thumbValue || "").trim();
   return !normalized || normalized === DEFAULT_EPISODE_THUMBNAIL;
+}
+
+function normalizeTmdbSeasonEpisode(entry = {}, fallbackSeasonNumber = 1, fallbackIndex = 0) {
+  const parsedSeason = Number(entry?.seasonNumber || fallbackSeasonNumber || 1);
+  const parsedEpisode = Number(entry?.episodeNumber || fallbackIndex + 1);
+  const safeSeasonNumber =
+    Number.isFinite(parsedSeason) && parsedSeason > 0
+      ? Math.floor(parsedSeason)
+      : 1;
+  const safeEpisodeNumber =
+    Number.isFinite(parsedEpisode) && parsedEpisode > 0
+      ? Math.floor(parsedEpisode)
+      : fallbackIndex + 1;
+  const title =
+    String(entry?.name || entry?.title || "").trim() ||
+    `Episode ${safeEpisodeNumber}`;
+  const thumb =
+    String(entry?.stillUrl || entry?.thumb || "").trim() ||
+    DEFAULT_EPISODE_THUMBNAIL;
+  return {
+    title,
+    description: String(entry?.overview || "").trim(),
+    thumb,
+    src: "",
+    contentKind: "series",
+    seasonNumber: safeSeasonNumber,
+    episodeNumber: safeEpisodeNumber,
+    airDate: String(entry?.airDate || "").trim(),
+    runtime: Number(entry?.runtime || 0) || 0,
+  };
+}
+
+function getTmdbSeasonNumbersToFetch(details, currentSeasonNumber) {
+  const currentSeason = Math.max(1, Math.floor(Number(currentSeasonNumber) || 1));
+  const seasons = Array.isArray(details?.seasons)
+    ? details.seasons
+        .map((season) => ({
+          seasonNumber: Math.max(
+            0,
+            Math.floor(Number(season?.season_number || 0)),
+          ),
+          episodeCount: Math.max(
+            0,
+            Math.floor(Number(season?.episode_count || 0)),
+          ),
+        }))
+        .filter((season) => season.seasonNumber > 0 && season.episodeCount > 0)
+        .sort((left, right) => left.seasonNumber - right.seasonNumber)
+    : [];
+
+  const seasonNumbers = seasons.length
+    ? seasons.map((season) => season.seasonNumber)
+    : [currentSeason];
+  const withCurrentSeason = seasonNumbers.includes(currentSeason)
+    ? seasonNumbers
+    : [currentSeason, ...seasonNumbers];
+  return [...new Set(withCurrentSeason)].slice(0, MAX_TMDB_EPISODE_LIST_SEASONS);
+}
+
+async function fetchTmdbSeasonEpisodes(tmdbSeriesId, season) {
+  const query = new URLSearchParams({
+    tmdbId: String(tmdbSeriesId || ""),
+    seasonNumber: String(Math.max(1, Math.floor(Number(season) || 1))),
+  });
+  const payload = await requestJson(
+    `/api/tmdb/tv/season?${query.toString()}`,
+    {},
+    25000,
+  );
+  const payloadSeason = Math.max(
+    1,
+    Math.floor(Number(payload?.seasonNumber || season || 1)),
+  );
+  return (Array.isArray(payload?.episodes) ? payload.episodes : [])
+    .map((episodeEntry, index) =>
+      normalizeTmdbSeasonEpisode(episodeEntry, payloadSeason, index),
+    )
+    .filter((episodeEntry) => episodeEntry.episodeNumber > 0);
+}
+
+async function hydrateTmdbTvEpisodeCatalog() {
+  if (!isTmdbTvPlayback || isSeriesPlayback || !tmdbId) {
+    return false;
+  }
+
+  const currentSeason = Math.max(1, Math.floor(Number(seasonNumber) || 1));
+  const currentEpisode = Math.max(1, Math.floor(Number(episodeNumber) || 1));
+  let details = null;
+  try {
+    const query = new URLSearchParams({ tmdbId, mediaType: "tv" });
+    details = await requestJson(
+      `/api/tmdb/details?${query.toString()}`,
+      {},
+      25000,
+    );
+  } catch {
+    details = null;
+  }
+
+  const seasonNumbers = getTmdbSeasonNumbersToFetch(details, currentSeason);
+  const seasonPayloads = await Promise.all(
+    seasonNumbers.map((season) =>
+      fetchTmdbSeasonEpisodes(tmdbId, season).catch(() => []),
+    ),
+  );
+  const episodes = seasonPayloads
+    .flat()
+    .sort((left, right) => {
+      const seasonDelta =
+        Number(left?.seasonNumber || 1) - Number(right?.seasonNumber || 1);
+      if (seasonDelta !== 0) {
+        return seasonDelta;
+      }
+      return Number(left?.episodeNumber || 1) - Number(right?.episodeNumber || 1);
+    })
+    .slice(0, MAX_TMDB_EPISODE_LIST_EPISODES);
+
+  if (!episodes.length) {
+    return false;
+  }
+
+  const matchedIndex = episodes.findIndex(
+    (episodeEntry) =>
+      Number(episodeEntry?.seasonNumber || 1) === currentSeason &&
+      Number(episodeEntry?.episodeNumber || 1) === currentEpisode,
+  );
+  const selectedIndex = matchedIndex >= 0 ? matchedIndex : 0;
+  const selectedEpisode = episodes[selectedIndex] || episodes[0];
+  const detailsTitle = String(details?.name || details?.title || "").trim();
+  const detailsDate = String(
+    details?.first_air_date || details?.release_date || "",
+  ).trim();
+
+  activeSeries = {
+    id: `tmdb-tv-${tmdbId}`,
+    title: detailsTitle || title || "Series",
+    tmdbId,
+    year: detailsDate ? detailsDate.slice(0, 4) : year,
+    contentKind: "series",
+    preferredContainer,
+    requiresLocalEpisodeSources: false,
+    episodes,
+  };
+  seriesEpisodes = episodes;
+  seriesEpisodeIndex = selectedIndex;
+  activeSeriesEpisode = selectedEpisode;
+  title = activeSeries.title;
+  rawTitle = title;
+  seasonNumber = Math.max(
+    1,
+    Math.floor(Number(selectedEpisode?.seasonNumber || currentSeason)),
+  );
+  episodeNumber = Math.max(
+    1,
+    Math.floor(Number(selectedEpisode?.episodeNumber || currentEpisode)),
+  );
+  episode = getSeriesEpisodeLabel(
+    selectedIndex,
+    selectedEpisode?.title || "",
+    activeSeries,
+    episodeNumber,
+  );
+  rawEpisode = episode;
+  year = activeSeries.year || year;
+  hasHydratedSeriesEpisodeThumbs = true;
+  return true;
 }
 
 async function fetchSeriesEpisodeStillMap() {
@@ -3442,7 +3707,7 @@ async function fetchSeriesEpisodeStillMap() {
 }
 
 async function hydrateSeriesEpisodeThumbnails() {
-  if (!isSeriesPlayback || !activeSeries || !seriesEpisodes.length) {
+  if (!isEpisodeListPlayback()) {
     return;
   }
   if (hasHydratedSeriesEpisodeThumbs) {
@@ -3491,7 +3756,7 @@ async function hydrateSeriesEpisodeThumbnails() {
 }
 
 function navigateToSeriesEpisode(nextIndex) {
-  if (!isSeriesPlayback || !activeSeries || !seriesEpisodes.length) {
+  if (!isEpisodeListPlayback()) {
     return;
   }
 
@@ -3528,14 +3793,23 @@ function navigateToSeriesEpisode(nextIndex) {
   persistResumeTime(true);
 
   const nextParams = new URLSearchParams();
-  nextParams.set("seriesId", activeSeries.id);
-  nextParams.set("episodeIndex", String(safeIndex));
   nextParams.set("title", String(activeSeries.title || title || "Title"));
   nextParams.set(
     "episode",
-    getSeriesEpisodeLabel(safeIndex, targetEpisode.title, activeSeries),
+    getSeriesEpisodeLabel(
+      safeIndex,
+      targetEpisode.title,
+      activeSeries,
+      Math.max(1, Math.floor(Number(targetEpisode?.episodeNumber || safeIndex + 1))),
+    ),
   );
   nextParams.set("mediaType", "tv");
+  if (isSeriesPlayback && activeSeries.id) {
+    nextParams.set("seriesId", activeSeries.id);
+    nextParams.set("episodeIndex", String(safeIndex));
+  } else {
+    nextParams.set("episodeIndex", String(safeIndex));
+  }
   if (activeSeries.tmdbId) {
     nextParams.set("tmdbId", String(activeSeries.tmdbId));
   }
@@ -3593,6 +3867,13 @@ function renderSeriesEpisodePreview() {
     episodesPopoverTitle.textContent = activeSeries.title;
   }
 
+  const hasMultipleSeasons =
+    new Set(
+      seriesEpisodes.map((episodeEntry) =>
+        getSeriesEpisodeSeasonNumber(episodeEntry),
+      ),
+    ).size > 1;
+
   seriesEpisodes.forEach((episodeEntry, index) => {
     const isPlayable = isSeriesEpisodePlayable(episodeEntry);
     const item = document.createElement("button");
@@ -3617,7 +3898,14 @@ function renderSeriesEpisodePreview() {
 
     const number = document.createElement("p");
     number.className = "episode-preview-number";
-    number.textContent = String(index + 1);
+    const itemSeasonNumber = getSeriesEpisodeSeasonNumber(episodeEntry);
+    const itemEpisodeNumber = getSeriesEpisodeOrdinalNumber(episodeEntry, index);
+    if (hasMultipleSeasons) {
+      number.classList.add("is-season-label");
+      number.textContent = `S${itemSeasonNumber} E${itemEpisodeNumber}`;
+    } else {
+      number.textContent = String(itemEpisodeNumber);
+    }
 
     const main = document.createElement("div");
     main.className = "episode-preview-main";
@@ -3738,7 +4026,7 @@ function syncSeriesControls() {
 // ─── Auto-play next episode ───
 
 function getNextPlayableEpisode() {
-  if (!isSeriesPlayback || !activeSeries || !seriesEpisodes.length) {
+  if (!isEpisodeListPlayback()) {
     return null;
   }
   const nextIndex = seriesEpisodeIndex + 1;
@@ -4591,8 +4879,14 @@ async function togglePlayback() {
   syncPlayState();
 }
 
-function seekToAbsoluteTime(targetSeconds, { showLoading = false } = {}) {
+function seekToAbsoluteTime(
+  targetSeconds,
+  { showLoading = false, isInitialResume = false } = {},
+) {
   const clampedTarget = Math.max(0, Number(targetSeconds) || 0);
+  if (!isInitialResume) {
+    markInitialResumeHandled();
+  }
   if (showLoading) {
     showSeekLoadingIndicator();
   }
@@ -4618,10 +4912,50 @@ function seekToAbsoluteTime(targetSeconds, { showLoading = false } = {}) {
       activeAudioSyncMs || preferredAudioSyncMs,
       selectedSubtitleStreamIndex,
     ),
+    { resetInitialResume: false },
   );
   if (shouldResumePlayback) {
     void tryPlay();
   }
+}
+
+function getSeekRatioFromPointerEvent(event) {
+  if (!seekBar || !event) {
+    return null;
+  }
+  const rect = seekBar.getBoundingClientRect();
+  const clientX = Number(event.clientX);
+  if (!Number.isFinite(clientX) || rect.width <= 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+}
+
+function setPendingSeekRatio(ratio) {
+  const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
+  if (
+    !Number.isFinite(ratio) ||
+    seekScaleDurationSeconds <= 0 ||
+    !hasActiveSource() ||
+    isResolvingSource()
+  ) {
+    return false;
+  }
+
+  const clampedRatio = Math.max(0, Math.min(1, ratio));
+  seekBar.value = String(Math.round(clampedRatio * 1000));
+  syncDurationText(clampedRatio * seekScaleDurationSeconds);
+  paintSeekProgress(
+    seekBar.value,
+    getBufferedSeekValue(seekScaleDurationSeconds),
+  );
+
+  if (isTranscodeSourceActive()) {
+    pendingTranscodeSeekRatio = clampedRatio;
+  } else {
+    pendingStandardSeekRatio = clampedRatio;
+  }
+  return true;
 }
 
 async function requestJson(url, options = {}, timeoutMs = 20000) {
@@ -5746,11 +6080,12 @@ function createPlaybackBenchmarkApi() {
 
 function cleanUrlIfNeeded() {
   try {
-    const cleanSlug = isSeriesPlayback
+    const shouldUseEpisodePath = isEpisodeListPlayback();
+    const cleanSlug = shouldUseEpisodePath
       ? slugify(activeSeries?.title || title)
       : slugify(title);
     if (cleanSlug) {
-      const cleanPath = isSeriesPlayback
+      const cleanPath = shouldUseEpisodePath
         ? `/watch/${cleanSlug}/${seriesEpisodeIndex}`
         : `/watch/${cleanSlug}`;
       window.history.replaceState(null, "", cleanPath);
@@ -5891,6 +6226,11 @@ async function initPlaybackSource() {
   isTmdbMoviePlayback = Boolean(!hasExplicitSource && tmdbId && mediaType === "movie");
   isTmdbTvPlayback = Boolean(!hasExplicitSource && tmdbId && mediaType === "tv");
   isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
+  if (isTmdbTvPlayback && !isSeriesPlayback) {
+    await hydrateTmdbTvEpisodeCatalog();
+    hasSeriesEpisodeControls =
+      isEpisodeListPlayback() && Boolean(seriesEpisodes.length > 1);
+  }
   sourceIdentity = isSeriesPlayback
     ? `series:${activeSeries.id}:episode:${seriesEpisodeIndex}`
     : isLivePlayback
@@ -6096,16 +6436,6 @@ async function initPlaybackSource() {
 
 trackListener(goBack, "click", () => {
   persistResumeTime(true);
-  if (isSeriesPlayback) {
-    window.location.href = "/";
-    return;
-  }
-
-  if (window.history.length > 1) {
-    window.history.back();
-    return;
-  }
-
   window.location.href = "/";
 });
 
@@ -6874,19 +7204,32 @@ function updateSeekPreview(e) {
   }
 }
 
-trackListener(seekBar, "pointermove", updateSeekPreview);
+trackListener(seekBar, "pointermove", (event) => {
+  updateSeekPreview(event);
+  if (isDraggingSeek) {
+    const pointerRatio = getSeekRatioFromPointerEvent(event);
+    if (pointerRatio !== null) {
+      setPendingSeekRatio(pointerRatio);
+    }
+  }
+});
 trackListener(seekBar, "pointerenter", updateSeekPreview);
 trackListener(seekBar, "pointerleave", () => {
   seekPreview.hidden = true;
   closeSeekPreviewVideo();
 });
 
-trackListener(seekBar, "pointerdown", () => {
+trackListener(seekBar, "pointerdown", (event) => {
   isDraggingSeek = true;
+  pendingTranscodeSeekRatio = null;
   pendingStandardSeekRatio = null;
+  const pointerRatio = getSeekRatioFromPointerEvent(event);
+  if (pointerRatio !== null) {
+    setPendingSeekRatio(pointerRatio);
+  }
 });
 
-function handleSeekPointerUp() {
+function handleSeekPointerUp(event) {
   if (!isDraggingSeek) {
     return;
   }
@@ -6896,6 +7239,13 @@ function handleSeekPointerUp() {
     pendingTranscodeSeekRatio = null;
     pendingStandardSeekRatio = null;
     return;
+  }
+
+  if (pendingTranscodeSeekRatio === null && pendingStandardSeekRatio === null) {
+    const pointerRatio = getSeekRatioFromPointerEvent(event);
+    if (pointerRatio !== null) {
+      setPendingSeekRatio(pointerRatio);
+    }
   }
 
   if (pendingTranscodeSeekRatio !== null && isTranscodeSourceActive()) {
@@ -6929,11 +7279,15 @@ trackListener(seekBar, "input", () => {
   const ratio = Number(seekBar.value) / 1000;
   syncDurationText(ratio * seekScaleDurationSeconds);
   if (isTranscodeSourceActive()) {
-    pendingTranscodeSeekRatio = ratio;
     paintSeekProgress(
       seekBar.value,
       getBufferedSeekValue(seekScaleDurationSeconds),
     );
+    if (isDraggingSeek) {
+      pendingTranscodeSeekRatio = ratio;
+      return;
+    }
+    seekToAbsoluteTime(ratio * seekScaleDurationSeconds, { showLoading: true });
     return;
   }
 
@@ -7570,7 +7924,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
                     aria-label="Episodes"
                   >
                     <div class="episodes-popover-head">
-                      <p class="episodes-overline">Limited Series</p>
+                      <p class="episodes-overline">Episodes</p>
                       <h2
                         id="episodesPopoverTitle"
                         ref=${el => episodesPopoverTitle = el}

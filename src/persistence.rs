@@ -1425,12 +1425,28 @@ impl Db {
         let pool = self.pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
-            let source_prefix = format!("series:{series_id}:episode:%");
-            connection.execute(
-                "DELETE FROM user_watch_progress
-                 WHERE user_id = ? AND source_identity LIKE ?",
-                params![user_id, source_prefix],
-            )?;
+            let normalized_series_id = series_id.trim().to_ascii_lowercase();
+            let source_prefix = format!("series:{normalized_series_id}:episode:%");
+            if let Some(tmdb_id) = tmdb_tv_id_from_series_id(&normalized_series_id) {
+                let tmdb_source = format!("tmdb:tv:{tmdb_id}");
+                let tmdb_source_prefix = format!("{tmdb_source}:%");
+                connection.execute(
+                    "DELETE FROM user_watch_progress
+                     WHERE user_id = ?
+                       AND (
+                         source_identity LIKE ?
+                         OR source_identity = ?
+                         OR source_identity LIKE ?
+                       )",
+                    params![user_id, source_prefix, tmdb_source, tmdb_source_prefix],
+                )?;
+            } else {
+                connection.execute(
+                    "DELETE FROM user_watch_progress
+                     WHERE user_id = ? AND source_identity LIKE ?",
+                    params![user_id, source_prefix],
+                )?;
+            }
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
@@ -1537,6 +1553,72 @@ impl Db {
                 .get("resumeSeconds")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0);
+            let normalized_series_id = series_id.trim().to_ascii_lowercase();
+            let normalized_media_type = media_type.trim().to_ascii_lowercase();
+            let normalized_tmdb_id = tmdb_id.trim().to_owned();
+            if !normalized_series_id.is_empty() {
+                let source_prefix = format!("series:{normalized_series_id}:episode:%");
+                if let Some(tmdb_id_from_series) = tmdb_tv_id_from_series_id(&normalized_series_id)
+                {
+                    let tmdb_source = format!("tmdb:tv:{tmdb_id_from_series}");
+                    let tmdb_source_prefix = format!("{tmdb_source}:%");
+                    connection.execute(
+                        "DELETE FROM user_continue_watching
+                         WHERE user_id = ?
+                           AND source_identity <> ?
+                           AND (
+                             lower(series_id) = ?
+                             OR source_identity LIKE ?
+                             OR source_identity = ?
+                             OR source_identity LIKE ?
+                             OR (tmdb_id = ? AND lower(media_type) = 'tv')
+                           )",
+                        params![
+                            user_id,
+                            source_identity,
+                            normalized_series_id,
+                            source_prefix,
+                            tmdb_source,
+                            tmdb_source_prefix,
+                            tmdb_id_from_series
+                        ],
+                    )?;
+                } else {
+                    connection.execute(
+                        "DELETE FROM user_continue_watching
+                         WHERE user_id = ?
+                           AND source_identity <> ?
+                           AND (lower(series_id) = ? OR source_identity LIKE ?)",
+                        params![
+                            user_id,
+                            source_identity,
+                            normalized_series_id,
+                            source_prefix
+                        ],
+                    )?;
+                }
+            }
+            if normalized_media_type == "tv" && !normalized_tmdb_id.is_empty() {
+                let tmdb_source = format!("tmdb:tv:{normalized_tmdb_id}");
+                let tmdb_source_prefix = format!("{tmdb_source}:%");
+                connection.execute(
+                    "DELETE FROM user_continue_watching
+                     WHERE user_id = ?
+                       AND source_identity <> ?
+                       AND (
+                         (tmdb_id = ? AND lower(media_type) = 'tv')
+                         OR source_identity = ?
+                         OR source_identity LIKE ?
+                       )",
+                    params![
+                        user_id,
+                        source_identity,
+                        normalized_tmdb_id,
+                        tmdb_source,
+                        tmdb_source_prefix
+                    ],
+                )?;
+            }
             connection.execute(
                 "INSERT INTO user_continue_watching
                    (user_id, source_identity, title, episode, src, tmdb_id, media_type,
@@ -1610,14 +1692,38 @@ impl Db {
         let pool = self.pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
-            let normalized_series_id = series_id.trim().to_owned();
+            let normalized_series_id = series_id.trim().to_ascii_lowercase();
             let source_prefix = format!("series:{normalized_series_id}:episode:%");
-            connection.execute(
-                "DELETE FROM user_continue_watching
-                 WHERE user_id = ?
-                   AND (series_id = ? OR source_identity LIKE ?)",
-                params![user_id, normalized_series_id, source_prefix],
-            )?;
+            if let Some(tmdb_id) = tmdb_tv_id_from_series_id(&normalized_series_id) {
+                let tmdb_source = format!("tmdb:tv:{tmdb_id}");
+                let tmdb_source_prefix = format!("{tmdb_source}:%");
+                connection.execute(
+                    "DELETE FROM user_continue_watching
+                     WHERE user_id = ?
+                       AND (
+                         lower(series_id) = ?
+                         OR source_identity LIKE ?
+                         OR source_identity = ?
+                         OR source_identity LIKE ?
+                         OR (tmdb_id = ? AND lower(media_type) = 'tv')
+                       )",
+                    params![
+                        user_id,
+                        normalized_series_id,
+                        source_prefix,
+                        tmdb_source,
+                        tmdb_source_prefix,
+                        tmdb_id
+                    ],
+                )?;
+            } else {
+                connection.execute(
+                    "DELETE FROM user_continue_watching
+                     WHERE user_id = ?
+                       AND (lower(series_id) = ? OR source_identity LIKE ?)",
+                    params![user_id, normalized_series_id, source_prefix],
+                )?;
+            }
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
@@ -1970,6 +2076,16 @@ fn return_connection(pool: &Pool, conn: Connection) {
         connections.push(conn);
     }
     // else drop it — pool is full
+}
+
+fn tmdb_tv_id_from_series_id(series_id: &str) -> Option<String> {
+    let normalized = series_id.trim().to_ascii_lowercase();
+    let tmdb_id = normalized.strip_prefix("tmdb-tv-")?;
+    if tmdb_id.chars().all(|ch| ch.is_ascii_digit()) && !tmdb_id.is_empty() {
+        Some(tmdb_id.to_owned())
+    } else {
+        None
+    }
 }
 
 fn open_connection(path: &PathBuf) -> Result<Connection, rusqlite::Error> {
@@ -2343,6 +2459,68 @@ mod tests {
                 .await
                 .expect("load deleted quick start cache")
                 .is_none()
+        );
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn continue_watching_keeps_one_entry_per_tmdb_series() {
+        let path = unique_temp_db_path("continue-watching-tmdb-series");
+        let db = setup_test_playback_session_db(&path).await;
+        let user_id = db
+            .create_user(
+                "series-test".to_owned(),
+                "hash".to_owned(),
+                "Series Test".to_owned(),
+            )
+            .await
+            .expect("create user");
+        db.upsert_user_continue_watching(
+            user_id,
+            json!({
+                "sourceIdentity": "tmdb:tv:85552:s1:e1",
+                "title": "Euphoria",
+                "episode": "Pilot",
+                "tmdbId": "85552",
+                "mediaType": "tv",
+                "resumeSeconds": 180.0
+            }),
+        )
+        .await
+        .expect("persist first episode");
+        db.upsert_user_continue_watching(
+            user_id,
+            json!({
+                "sourceIdentity": "tmdb:tv:85552:s1:e2",
+                "title": "Euphoria",
+                "episode": "Stuntin' Like My Daddy",
+                "tmdbId": "85552",
+                "mediaType": "tv",
+                "seriesId": "tmdb-tv-85552",
+                "episodeIndex": 1,
+                "resumeSeconds": 240.0
+            }),
+        )
+        .await
+        .expect("persist second episode");
+
+        let entries = db
+            .get_user_continue_watching(user_id)
+            .await
+            .expect("load continue watching");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["sourceIdentity"], "tmdb:tv:85552:s1:e2");
+        assert_eq!(entries[0]["seriesId"], "tmdb-tv-85552");
+
+        db.delete_user_continue_watching_for_series(user_id, "tmdb-tv-85552".to_owned())
+            .await
+            .expect("delete series continue watching");
+        assert!(
+            db.get_user_continue_watching(user_id)
+                .await
+                .expect("load deleted continue watching")
+                .is_empty()
         );
 
         let _ = tokio::fs::remove_file(&path).await;
