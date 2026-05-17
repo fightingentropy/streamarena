@@ -3282,10 +3282,6 @@ fn should_prefer_software_decode(source: &str) -> bool {
 }
 
 fn should_prefer_software_decode_source(source: &str, filename: &str) -> bool {
-    let normalized_source = source.to_lowercase();
-    if normalized_source.contains("download.real-debrid.com") {
-        return true;
-    }
     if should_prefer_software_decode(source) {
         return true;
     }
@@ -3430,6 +3426,14 @@ fn normalize_resolved_source_for_software_decode(
         && !has_explicit_subtitle_selection
         && !should_prefer_software_decode_source(&current_playable, &normalized.filename)
     {
+        let remux_fallback = build_remux_proxy_url(
+            &current_playable,
+            audio_stream_index,
+            normalized_subtitle_stream_index,
+        );
+        if is_real_debrid_download_url(&current_playable) && !remux_fallback.is_empty() {
+            push_unique_url(&mut normalized.fallback_urls, &remux_fallback);
+        }
         return normalized;
     }
     let proxy_meta = if is_playback_proxy_url(&current_playable) {
@@ -3462,6 +3466,16 @@ fn normalize_resolved_source_for_software_decode(
     normalized.playable_url = preferred_remux;
     normalized.fallback_urls = next_fallbacks;
     normalized
+}
+
+fn is_real_debrid_download_url(value: &str) -> bool {
+    url::Url::parse(value)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_lowercase()))
+        .map(|host| {
+            host == "download.real-debrid.com" || host.ends_with(".download.real-debrid.com")
+        })
+        .unwrap_or(false)
 }
 
 fn push_unique_url(target: &mut Vec<String>, value: &str) {
@@ -3569,8 +3583,8 @@ mod tests {
     }
 
     #[test]
-    fn prefers_remux_for_real_debrid_mp4_sources() {
-        assert!(should_prefer_software_decode_source(
+    fn prefers_direct_for_browser_safe_real_debrid_mp4_sources() {
+        assert!(!should_prefer_software_decode_source(
             "https://126-4.download.real-debrid.com/path/The.Matrix.1999.1080p.mp4",
             "The.Matrix.1999.1080p.mp4"
         ));
@@ -3587,11 +3601,15 @@ mod tests {
             -1,
         );
 
-        assert!(normalized.playable_url.starts_with("/api/remux?"));
-        assert!(normalized.playable_url.contains("input="));
+        assert_eq!(
+            normalized.playable_url,
+            "https://126-4.download.real-debrid.com/path/The.Matrix.1999.1080p.mp4"
+        );
         assert_eq!(
             normalized.fallback_urls,
-            vec!["https://126-4.download.real-debrid.com/path/The.Matrix.1999.1080p.mp4"]
+            vec![
+                "/api/remux?input=https%3A%2F%2F126-4.download.real-debrid.com%2Fpath%2FThe.Matrix.1999.1080p.mp4"
+            ]
         );
     }
 

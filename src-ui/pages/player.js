@@ -2281,6 +2281,8 @@ function shouldPreferBrowserHlsPlayback(
   if (!hasNativeHls) {
     return false;
   }
+  const normalizedSource = String(source || "").toLowerCase();
+  const isRemuxCandidate = normalizedSource.includes("/api/remux");
   const sourceInput = extractPlaybackSourceInput(source).toLowerCase();
   if (
     !sourceInput ||
@@ -2301,6 +2303,10 @@ function shouldPreferBrowserHlsPlayback(
     .replace(/\s+/g, " ");
   if (!normalizedText) {
     return false;
+  }
+
+  if (isRemuxCandidate) {
+    return true;
   }
 
   if (/\b(remux|bdremux|bluray remux|bdrip x264|bluray x264|avc)\b/.test(normalizedText)) {

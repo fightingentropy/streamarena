@@ -544,6 +544,9 @@ Restore outline for a replacement Mac mini:
 - Playback stutter/compatibility issues:
   - use remux mode `normalize` for toughest sources
   - check `/api/health` and `/api/config` for ffmpeg/hwaccel status and remux pressure
+  - browser-safe Real-Debrid MP4 sources are tried directly first, with remux kept as a fallback
+  - remux-prone MKV/WebM/AVI/WMV/TS sources prefer native HLS on browsers that support it, so seeks reuse cached HLS segments instead of restarting remux
+  - `HLS_HWACCEL=auto` uses VideoToolbox on macOS when available
 - Audio out of sync:
   - often caused by non-browser-safe audio codecs (AC3, DTS, TrueHD) that need re-encoding to AAC — the original audio start time offset can be lost during transcode
   - the server auto-detects audio/video start time offsets and applies `adelay` compensation when `AUTO_AUDIO_SYNC=1`

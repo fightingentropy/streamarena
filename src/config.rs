@@ -91,7 +91,7 @@ impl Config {
             remux_queue_timeout_ms,
             remux_process_timeout_seconds,
             hls_hwaccel_mode: normalize_hwaccel_mode(
-                env::var("HLS_HWACCEL").unwrap_or_else(|_| "none".to_owned()),
+                env::var("HLS_HWACCEL").unwrap_or_else(|_| "auto".to_owned()),
             ),
             remux_hwaccel_mode: normalize_hwaccel_mode(
                 env::var("REMUX_HWACCEL")
@@ -102,7 +102,7 @@ impl Config {
                 env::var("AUTO_AUDIO_SYNC").unwrap_or_else(|_| "1".to_owned()),
             ),
             playback_sessions_enabled: normalize_bool_flag(
-                env::var("PLAYBACK_SESSIONS").unwrap_or_else(|_| "0".to_owned()),
+                env::var("PLAYBACK_SESSIONS").unwrap_or_else(|_| "1".to_owned()),
             ),
             opensubtitles_api_key: env::var("OPENSUBTITLES_API_KEY")
                 .unwrap_or_default()
