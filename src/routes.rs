@@ -197,6 +197,7 @@ pub async fn health_handler(
         "ok": true,
         "uptimeSeconds": ((now_ms() - state.started_at_ms) / 1000).max(0),
         "streaming": state.streaming.stats(),
+        "resolver": state.resolver.stats(),
         "ffmpeg": ffmpeg
     })))
 }

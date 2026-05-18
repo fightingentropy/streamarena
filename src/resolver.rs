@@ -1,11 +1,15 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
+use dashmap::DashMap;
 use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 use crate::config::Config;
@@ -35,6 +39,7 @@ const TORRENTIO_CACHE_MAX_AGE_DEFAULT_SECONDS: i64 = 60 * 60;
 const TORRENTIO_CACHE_STALE_WINDOW_DEFAULT_SECONDS: i64 = 4 * 60 * 60;
 const RD_TORRENT_CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const EXTERNAL_SUBTITLE_STREAM_INDEX_BASE: i64 = 2_000_000;
+const RESOLVE_LOCK_MAX_ENTRIES: usize = 1024;
 const DEFAULT_TRACKERS: &[&str] = &[
     "udp://tracker.opentrackr.org:1337/announce",
     "udp://open.stealth.si:80/announce",
@@ -97,6 +102,32 @@ pub struct ResolverService {
     client: reqwest::Client,
     tmdb: TmdbService,
     media: MediaService,
+    resolve_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    resolve_metrics: Arc<ResolverMetrics>,
+}
+
+#[derive(Default)]
+struct ResolverMetrics {
+    movie_requests: AtomicI64,
+    tv_requests: AtomicI64,
+    coalesced_waits: AtomicI64,
+    active_resolves: AtomicI64,
+    lock_prunes: AtomicI64,
+}
+
+struct ResolverActiveGuard {
+    metrics: Arc<ResolverMetrics>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolverStats {
+    movie_requests: i64,
+    tv_requests: i64,
+    coalesced_waits: i64,
+    active_resolves: i64,
+    lock_keys: usize,
+    lock_prunes: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +225,34 @@ impl ResolverService {
             client,
             tmdb,
             media,
+            resolve_locks: Arc::new(DashMap::new()),
+            resolve_metrics: Arc::new(ResolverMetrics::default()),
+        }
+    }
+
+    pub fn stats(&self) -> ResolverStats {
+        ResolverStats {
+            movie_requests: self.resolve_metrics.movie_requests.load(Ordering::Relaxed),
+            tv_requests: self.resolve_metrics.tv_requests.load(Ordering::Relaxed),
+            coalesced_waits: self.resolve_metrics.coalesced_waits.load(Ordering::Relaxed),
+            active_resolves: self.resolve_metrics.active_resolves.load(Ordering::Relaxed),
+            lock_keys: self.resolve_locks.len(),
+            lock_prunes: self.resolve_metrics.lock_prunes.load(Ordering::Relaxed),
+        }
+    }
+
+    fn prune_idle_resolve_locks(&self) {
+        if self.resolve_locks.len() <= RESOLVE_LOCK_MAX_ENTRIES {
+            return;
+        }
+        let before = self.resolve_locks.len();
+        self.resolve_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
+        let removed = before.saturating_sub(self.resolve_locks.len()) as i64;
+        if removed > 0 {
+            self.resolve_metrics
+                .lock_prunes
+                .fetch_add(removed, Ordering::Relaxed);
         }
     }
 
@@ -349,6 +408,63 @@ impl ResolverService {
         source_language: &str,
         source_audio_profile: &str,
     ) -> AppResult<Value> {
+        self.resolve_metrics
+            .movie_requests
+            .fetch_add(1, Ordering::Relaxed);
+        let lock_key = build_movie_resolve_lock_key(
+            tmdb_id,
+            preferred_audio_lang,
+            preferred_quality,
+            preferred_subtitle_lang,
+            source_hash,
+            min_seeders,
+            allowed_formats,
+            source_language,
+            source_audio_profile,
+        );
+        let lock = resolver_key_lock(&self.resolve_locks, &lock_key);
+        let _guard = match lock.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                self.resolve_metrics
+                    .coalesced_waits
+                    .fetch_add(1, Ordering::Relaxed);
+                lock.lock().await
+            }
+        };
+        let _active_guard = ResolverActiveGuard::new(self.resolve_metrics.clone());
+        self.prune_idle_resolve_locks();
+        self.resolve_movie_inner(
+            tmdb_id,
+            title_fallback,
+            year_fallback,
+            preferred_audio_lang,
+            preferred_quality,
+            preferred_subtitle_lang,
+            source_hash,
+            min_seeders,
+            allowed_formats,
+            source_language,
+            source_audio_profile,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn resolve_movie_inner(
+        &self,
+        tmdb_id: &str,
+        title_fallback: &str,
+        year_fallback: &str,
+        preferred_audio_lang: &str,
+        preferred_quality: &str,
+        preferred_subtitle_lang: &str,
+        source_hash: &str,
+        min_seeders: &str,
+        allowed_formats: &str,
+        source_language: &str,
+        source_audio_profile: &str,
+    ) -> AppResult<Value> {
         let stored_preference = self
             .db
             .get_title_preference(tmdb_id.trim().to_owned())
@@ -450,6 +566,78 @@ impl ResolverService {
 
     #[allow(clippy::too_many_arguments)]
     pub async fn resolve_tv(
+        &self,
+        tmdb_id: &str,
+        title_fallback: &str,
+        year_fallback: &str,
+        season_number: &str,
+        season_alias: &str,
+        episode_number: &str,
+        episode_alias: &str,
+        preferred_audio_lang: &str,
+        preferred_quality: &str,
+        preferred_subtitle_lang: &str,
+        preferred_container: &str,
+        source_hash: &str,
+        min_seeders: &str,
+        allowed_formats: &str,
+        source_language: &str,
+        source_audio_profile: &str,
+    ) -> AppResult<Value> {
+        self.resolve_metrics
+            .tv_requests
+            .fetch_add(1, Ordering::Relaxed);
+        let lock_key = build_tv_resolve_lock_key(
+            tmdb_id,
+            season_number,
+            season_alias,
+            episode_number,
+            episode_alias,
+            preferred_audio_lang,
+            preferred_quality,
+            preferred_subtitle_lang,
+            preferred_container,
+            source_hash,
+            min_seeders,
+            allowed_formats,
+            source_language,
+            source_audio_profile,
+        );
+        let lock = resolver_key_lock(&self.resolve_locks, &lock_key);
+        let _guard = match lock.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                self.resolve_metrics
+                    .coalesced_waits
+                    .fetch_add(1, Ordering::Relaxed);
+                lock.lock().await
+            }
+        };
+        let _active_guard = ResolverActiveGuard::new(self.resolve_metrics.clone());
+        self.prune_idle_resolve_locks();
+        self.resolve_tv_inner(
+            tmdb_id,
+            title_fallback,
+            year_fallback,
+            season_number,
+            season_alias,
+            episode_number,
+            episode_alias,
+            preferred_audio_lang,
+            preferred_quality,
+            preferred_subtitle_lang,
+            preferred_container,
+            source_hash,
+            min_seeders,
+            allowed_formats,
+            source_language,
+            source_audio_profile,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn resolve_tv_inner(
         &self,
         tmdb_id: &str,
         title_fallback: &str,
@@ -1566,6 +1754,120 @@ struct SourceFilters {
     allowed_formats: Vec<String>,
     source_language: String,
     source_audio_profile: String,
+}
+
+fn resolver_key_lock(map: &DashMap<String, Arc<Mutex<()>>>, key: &str) -> Arc<Mutex<()>> {
+    map.entry(key.to_owned())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_movie_resolve_lock_key(
+    tmdb_id: &str,
+    preferred_audio_lang: &str,
+    preferred_quality: &str,
+    preferred_subtitle_lang: &str,
+    source_hash: &str,
+    min_seeders: &str,
+    allowed_formats: &str,
+    source_language: &str,
+    source_audio_profile: &str,
+) -> String {
+    format!(
+        "movie|tmdb:{}|audio:{}|sub:{}|quality:{}|hash:{}|{}",
+        tmdb_id.trim(),
+        normalize_preferred_audio_lang(preferred_audio_lang),
+        normalize_subtitle_preference(preferred_subtitle_lang),
+        normalize_preferred_stream_quality(preferred_quality),
+        normalize_source_hash(source_hash),
+        build_source_filter_lock_key(
+            min_seeders,
+            allowed_formats,
+            source_language,
+            source_audio_profile,
+        )
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_tv_resolve_lock_key(
+    tmdb_id: &str,
+    season_number: &str,
+    season_alias: &str,
+    episode_number: &str,
+    episode_alias: &str,
+    preferred_audio_lang: &str,
+    preferred_quality: &str,
+    preferred_subtitle_lang: &str,
+    preferred_container: &str,
+    source_hash: &str,
+    min_seeders: &str,
+    allowed_formats: &str,
+    source_language: &str,
+    source_audio_profile: &str,
+) -> String {
+    let season_number = normalize_episode_ordinal(
+        if season_number.trim().is_empty() {
+            season_alias
+        } else {
+            season_number
+        },
+        1,
+    );
+    let episode_number = normalize_episode_ordinal(
+        if episode_number.trim().is_empty() {
+            episode_alias
+        } else {
+            episode_number
+        },
+        1,
+    );
+    format!(
+        "tv|tmdb:{}|s:{}|e:{}|audio:{}|sub:{}|quality:{}|container:{}|hash:{}|{}",
+        tmdb_id.trim(),
+        season_number,
+        episode_number,
+        normalize_preferred_audio_lang(preferred_audio_lang),
+        normalize_subtitle_preference(preferred_subtitle_lang),
+        normalize_preferred_stream_quality(preferred_quality),
+        normalize_preferred_container(preferred_container),
+        normalize_source_hash(source_hash),
+        build_source_filter_lock_key(
+            min_seeders,
+            allowed_formats,
+            source_language,
+            source_audio_profile,
+        )
+    )
+}
+
+fn build_source_filter_lock_key(
+    min_seeders: &str,
+    allowed_formats: &str,
+    source_language: &str,
+    source_audio_profile: &str,
+) -> String {
+    format!(
+        "min:{}|formats:{}|lang:{}|profile:{}",
+        normalize_minimum_seeders(min_seeders),
+        normalize_allowed_formats(allowed_formats).join(","),
+        normalize_source_language_filter(source_language),
+        normalize_source_audio_profile_filter(source_audio_profile)
+    )
+}
+
+impl ResolverActiveGuard {
+    fn new(metrics: Arc<ResolverMetrics>) -> Self {
+        metrics.active_resolves.fetch_add(1, Ordering::Relaxed);
+        Self { metrics }
+    }
+}
+
+impl Drop for ResolverActiveGuard {
+    fn drop(&mut self) {
+        self.metrics.active_resolves.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3507,12 +3809,12 @@ mod tests {
 
     use super::{
         ResolveMetadata, ResolvedSource, SourceFilters, TorrentioBehaviorHints, TorrentioStream,
-        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, collect_episode_signatures,
-        compute_torrentio_cache_deadlines, does_filename_likely_match_movie,
-        normalize_allowed_formats, normalize_resolved_source_for_software_decode,
-        normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
-        parse_runtime_from_label_seconds, parse_seed_count, select_top_movie_candidates,
-        should_prefer_software_decode_source, sort_movie_candidates,
+        build_movie_resolve_lock_key, build_rd_torrent_cache_key, build_torrentio_stream_cache_key,
+        build_tv_resolve_lock_key, collect_episode_signatures, compute_torrentio_cache_deadlines,
+        does_filename_likely_match_movie, normalize_allowed_formats,
+        normalize_resolved_source_for_software_decode, normalize_source_audio_profile_filter,
+        normalize_source_hash, now_ms, parse_runtime_from_label_seconds, parse_seed_count,
+        select_top_movie_candidates, should_prefer_software_decode_source, sort_movie_candidates,
     };
 
     #[test]
@@ -3532,6 +3834,22 @@ mod tests {
     #[test]
     fn normalizes_allowed_formats_to_supported_video_containers() {
         assert_eq!(normalize_allowed_formats("mkv, mp4 avi"), vec!["mp4"]);
+    }
+
+    #[test]
+    fn normalizes_resolve_lock_keys() {
+        assert_eq!(
+            build_movie_resolve_lock_key(
+                " 123 ", "EN", "1080", "Off", "bad", "5", "mkv mp4", "EN", "single"
+            ),
+            "movie|tmdb:123|audio:en|sub:off|quality:1080p|hash:|min:5|formats:mp4|lang:en|profile:single"
+        );
+        assert_eq!(
+            build_tv_resolve_lock_key(
+                "123", "", "2", "", "7", "auto", "4k", "en", "mp4", "", "", "mp4", "auto", "multi"
+            ),
+            "tv|tmdb:123|s:2|e:7|audio:auto|sub:en|quality:2160p|container:mp4|hash:|min:0|formats:mp4|lang:any|profile:any"
+        );
     }
 
     #[test]
