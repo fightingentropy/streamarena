@@ -7508,15 +7508,34 @@ function isInteractiveTarget(target) {
   );
 }
 
+function shouldSurfaceTapOnlyRevealControls(event) {
+  if (event?.pointerType === "touch" || event?.pointerType === "pen") {
+    return true;
+  }
+
+  if (event?.sourceCapabilities?.firesTouchEvents) {
+    return true;
+  }
+
+  return Boolean(
+    window.matchMedia?.("(max-width: 920px), (hover: none) and (pointer: coarse)")
+      ?.matches,
+  );
+}
+
 trackListener(playerShell, "click", (event) => {
   showControls();
   scheduleControlsHide();
   playerShell.focus();
+  clearSingleClickPlaybackToggle();
   if (isInteractiveTarget(event.target)) {
     return;
   }
 
-  clearSingleClickPlaybackToggle();
+  if (shouldSurfaceTapOnlyRevealControls(event)) {
+    return;
+  }
+
   singleClickPlaybackToggleTimeout = window.setTimeout(() => {
     singleClickPlaybackToggleTimeout = null;
     void togglePlayback();
