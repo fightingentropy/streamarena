@@ -21,6 +21,8 @@ pub struct Config {
     pub remux_max_concurrent: usize,
     pub remux_queue_timeout_ms: u64,
     pub remux_process_timeout_seconds: u64,
+    pub resolver_max_concurrent: usize,
+    pub resolver_queue_timeout_ms: u64,
     pub hls_max_transcode_jobs: usize,
     pub hls_max_segment_renders: usize,
     pub hls_segment_queue_timeout_ms: u64,
@@ -61,6 +63,9 @@ impl Config {
             60,
             24 * 60 * 60,
         );
+        let resolver_max_concurrent = parse_usize_env("RESOLVER_MAX_CONCURRENT", 2, 1, 16);
+        let resolver_queue_timeout_ms =
+            parse_u64_env("RESOLVER_QUEUE_TIMEOUT_MS", 3_000, 100, 120_000);
         let hls_max_transcode_jobs = parse_usize_env("HLS_MAX_TRANSCODE_JOBS", 1, 1, 8);
         let hls_max_segment_renders = parse_usize_env("HLS_MAX_SEGMENT_RENDERS", 2, 1, 16);
         let hls_segment_queue_timeout_ms =
@@ -97,6 +102,8 @@ impl Config {
             remux_max_concurrent,
             remux_queue_timeout_ms,
             remux_process_timeout_seconds,
+            resolver_max_concurrent,
+            resolver_queue_timeout_ms,
             hls_max_transcode_jobs,
             hls_max_segment_renders,
             hls_segment_queue_timeout_ms,

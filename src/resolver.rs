@@ -9,8 +9,8 @@ use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
-use tokio::time::sleep;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::time::{sleep, timeout};
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
@@ -104,6 +104,7 @@ pub struct ResolverService {
     media: MediaService,
     resolve_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
     resolve_metrics: Arc<ResolverMetrics>,
+    external_resolver_permits: Arc<Semaphore>,
 }
 
 #[derive(Default)]
@@ -113,10 +114,21 @@ struct ResolverMetrics {
     coalesced_waits: AtomicI64,
     active_resolves: AtomicI64,
     lock_prunes: AtomicI64,
+    external_active: AtomicI64,
+    external_started: AtomicI64,
+    external_completed: AtomicI64,
+    external_failed: AtomicI64,
+    external_rejected: AtomicI64,
 }
 
 struct ResolverActiveGuard {
     metrics: Arc<ResolverMetrics>,
+}
+
+struct ResolverExternalGuard {
+    metrics: Arc<ResolverMetrics>,
+    _permit: OwnedSemaphorePermit,
+    finished: bool,
 }
 
 #[derive(Serialize)]
@@ -128,6 +140,13 @@ pub struct ResolverStats {
     active_resolves: i64,
     lock_keys: usize,
     lock_prunes: i64,
+    max_external_concurrent: usize,
+    external_queue_timeout_ms: u64,
+    external_active: i64,
+    external_started: i64,
+    external_completed: i64,
+    external_failed: i64,
+    external_rejected: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +238,7 @@ impl ResolverService {
         tmdb: TmdbService,
         media: MediaService,
     ) -> Self {
+        let external_resolver_permits = Arc::new(Semaphore::new(config.resolver_max_concurrent));
         Self {
             config,
             db,
@@ -227,6 +247,7 @@ impl ResolverService {
             media,
             resolve_locks: Arc::new(DashMap::new()),
             resolve_metrics: Arc::new(ResolverMetrics::default()),
+            external_resolver_permits,
         }
     }
 
@@ -238,6 +259,46 @@ impl ResolverService {
             active_resolves: self.resolve_metrics.active_resolves.load(Ordering::Relaxed),
             lock_keys: self.resolve_locks.len(),
             lock_prunes: self.resolve_metrics.lock_prunes.load(Ordering::Relaxed),
+            max_external_concurrent: self.config.resolver_max_concurrent,
+            external_queue_timeout_ms: self.config.resolver_queue_timeout_ms,
+            external_active: self.resolve_metrics.external_active.load(Ordering::Relaxed),
+            external_started: self
+                .resolve_metrics
+                .external_started
+                .load(Ordering::Relaxed),
+            external_completed: self
+                .resolve_metrics
+                .external_completed
+                .load(Ordering::Relaxed),
+            external_failed: self.resolve_metrics.external_failed.load(Ordering::Relaxed),
+            external_rejected: self
+                .resolve_metrics
+                .external_rejected
+                .load(Ordering::Relaxed),
+        }
+    }
+
+    async fn acquire_external_resolve_permit(&self) -> AppResult<ResolverExternalGuard> {
+        let wait = Duration::from_millis(self.config.resolver_queue_timeout_ms);
+        match timeout(wait, self.external_resolver_permits.clone().acquire_owned()).await {
+            Ok(Ok(permit)) => Ok(ResolverExternalGuard::new(
+                self.resolve_metrics.clone(),
+                permit,
+            )),
+            Ok(Err(_)) => {
+                self.resolve_metrics
+                    .external_rejected
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(ApiError::internal("Resolver limiter closed unexpectedly."))
+            }
+            Err(_) => {
+                self.resolve_metrics
+                    .external_rejected
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(ApiError::too_many_requests(
+                    "Server is busy resolving other titles. Please retry in a moment.",
+                ))
+            }
         }
     }
 
@@ -288,6 +349,7 @@ impl ResolverService {
             source_language: normalize_source_language_filter(source_language),
             source_audio_profile: normalize_source_audio_profile_filter(source_audio_profile),
         };
+        let mut external_guard = self.acquire_external_resolve_permit().await?;
 
         if media_type == "tv" {
             let season_number = normalize_episode_ordinal(
@@ -347,6 +409,7 @@ impl ResolverService {
                     )
                 })
                 .collect::<Vec<_>>();
+            external_guard.mark_completed();
             return Ok(json!({
                 "mediaType": "tv",
                 "tmdbId": tmdb_id.trim(),
@@ -386,6 +449,7 @@ impl ResolverService {
                 )
             })
             .collect::<Vec<_>>();
+        external_guard.mark_completed();
         Ok(json!({
             "mediaType": "movie",
             "tmdbId": tmdb_id.trim(),
@@ -499,6 +563,7 @@ impl ResolverService {
                 source_audio_profile: normalize_source_audio_profile_filter(source_audio_profile),
             },
         };
+        let mut external_guard = self.acquire_external_resolve_permit().await?;
         let metadata = self
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
@@ -506,6 +571,7 @@ impl ResolverService {
             .try_reuse_playback_session(&metadata, &preferences, &filters)
             .await?
         {
+            external_guard.mark_completed();
             return Ok(reused);
         }
         let streams = self
@@ -553,9 +619,13 @@ impl ResolverService {
                     Ok(resolved)
                 }) {
                 Ok(resolved) => {
-                    return self
+                    let result = self
                         .build_resolved_response(resolved, metadata, preferences, true)
                         .await;
+                    if result.is_ok() {
+                        external_guard.mark_completed();
+                    }
+                    return result;
                 }
                 Err(error) => last_error = Some(error),
             }
@@ -705,6 +775,7 @@ impl ResolverService {
             },
             1,
         );
+        let mut external_guard = self.acquire_external_resolve_permit().await?;
         let metadata = self
             .fetch_tv_episode_metadata(
                 tmdb_id,
@@ -718,6 +789,7 @@ impl ResolverService {
             .try_reuse_playback_session(&metadata, &preferences, &filters)
             .await?
         {
+            external_guard.mark_completed();
             return Ok(reused);
         }
         let streams = self
@@ -788,9 +860,13 @@ impl ResolverService {
                     Ok(resolved)
                 }) {
                 Ok(resolved) => {
-                    return self
+                    let result = self
                         .build_resolved_response(resolved, metadata, preferences, true)
                         .await;
+                    if result.is_ok() {
+                        external_guard.mark_completed();
+                    }
+                    return result;
                 }
                 Err(error) => last_error = Some(error),
             }
@@ -1867,6 +1943,36 @@ impl ResolverActiveGuard {
 impl Drop for ResolverActiveGuard {
     fn drop(&mut self) {
         self.metrics.active_resolves.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl ResolverExternalGuard {
+    fn new(metrics: Arc<ResolverMetrics>, permit: OwnedSemaphorePermit) -> Self {
+        metrics.external_started.fetch_add(1, Ordering::Relaxed);
+        metrics.external_active.fetch_add(1, Ordering::Relaxed);
+        Self {
+            metrics,
+            _permit: permit,
+            finished: false,
+        }
+    }
+
+    fn mark_completed(&mut self) {
+        if !self.finished {
+            self.metrics
+                .external_completed
+                .fetch_add(1, Ordering::Relaxed);
+            self.finished = true;
+        }
+    }
+}
+
+impl Drop for ResolverExternalGuard {
+    fn drop(&mut self) {
+        self.metrics.external_active.fetch_sub(1, Ordering::Relaxed);
+        if !self.finished {
+            self.metrics.external_failed.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -3804,13 +3910,17 @@ impl IfEmptyThen for String {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use serde_json::json;
+    use tokio::sync::Semaphore;
 
     use super::{
-        ResolveMetadata, ResolvedSource, SourceFilters, TorrentioBehaviorHints, TorrentioStream,
-        build_movie_resolve_lock_key, build_rd_torrent_cache_key, build_torrentio_stream_cache_key,
-        build_tv_resolve_lock_key, collect_episode_signatures, compute_torrentio_cache_deadlines,
+        ResolveMetadata, ResolvedSource, ResolverExternalGuard, ResolverMetrics, SourceFilters,
+        TorrentioBehaviorHints, TorrentioStream, build_movie_resolve_lock_key,
+        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_tv_resolve_lock_key,
+        collect_episode_signatures, compute_torrentio_cache_deadlines,
         does_filename_likely_match_movie, normalize_allowed_formats,
         normalize_resolved_source_for_software_decode, normalize_source_audio_profile_filter,
         normalize_source_hash, now_ms, parse_runtime_from_label_seconds, parse_seed_count,
@@ -3850,6 +3960,38 @@ mod tests {
             ),
             "tv|tmdb:123|s:2|e:7|audio:auto|sub:en|quality:2160p|container:mp4|hash:|min:0|formats:mp4|lang:any|profile:any"
         );
+    }
+
+    #[test]
+    fn tracks_external_resolver_guard_lifecycle() {
+        let metrics = Arc::new(ResolverMetrics::default());
+        let semaphore = Arc::new(Semaphore::new(1));
+        {
+            let permit = semaphore
+                .clone()
+                .try_acquire_owned()
+                .expect("acquire first resolver permit");
+            let mut guard = ResolverExternalGuard::new(metrics.clone(), permit);
+            assert_eq!(metrics.external_active.load(Ordering::Relaxed), 1);
+            assert_eq!(metrics.external_started.load(Ordering::Relaxed), 1);
+            guard.mark_completed();
+        }
+
+        assert_eq!(metrics.external_active.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.external_completed.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.external_failed.load(Ordering::Relaxed), 0);
+
+        {
+            let permit = semaphore
+                .try_acquire_owned()
+                .expect("acquire second resolver permit");
+            let _guard = ResolverExternalGuard::new(metrics.clone(), permit);
+        }
+
+        assert_eq!(metrics.external_active.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.external_started.load(Ordering::Relaxed), 2);
+        assert_eq!(metrics.external_completed.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.external_failed.load(Ordering::Relaxed), 1);
     }
 
     #[test]

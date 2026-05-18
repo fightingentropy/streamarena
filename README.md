@@ -253,6 +253,8 @@ Runtime:
 - `REMUX_MAX_CONCURRENT` (default `2`)
 - `REMUX_QUEUE_TIMEOUT_MS` (default `2000`)
 - `REMUX_PROCESS_TIMEOUT_SECONDS` (default `14400`)
+- `RESOLVER_MAX_CONCURRENT` (default `2`)
+- `RESOLVER_QUEUE_TIMEOUT_MS` (default `3000`)
 - `PLAYBACK_SESSIONS` (`0|1`)
 
 ## 7) Data, Cache, and Persistence
@@ -384,7 +386,7 @@ bun run bench:resolve -- \
   --output tmp/resolver-load.json
 ```
 
-The report includes success count, p50/p95 latency, unique resolved sources, and resolver deltas such as `coalescedWaits`.
+The report includes success count, p50/p95 latency, unique resolved sources, and resolver deltas such as `coalescedWaits`, `externalStarted`, and `externalRejected`.
 - `bun run dev:rust` -> Rust server
 - `bun run dev:vite` -> frontend-only Vite dev server
 - `bun run build` / `bun run preview` -> Vite build/preview flow
