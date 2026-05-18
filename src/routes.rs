@@ -167,7 +167,9 @@ pub async fn config_handler(
             "processTimeoutSeconds": state.config.remux_process_timeout_seconds
         },
         "hlsLimits": {
-            "maxTranscodeJobs": state.config.hls_max_transcode_jobs
+            "maxTranscodeJobs": state.config.hls_max_transcode_jobs,
+            "maxSegmentRenders": state.config.hls_max_segment_renders,
+            "segmentQueueTimeoutMs": state.config.hls_segment_queue_timeout_ms
         },
         "maxUploadBytes": state.config.max_upload_bytes,
         "hlsHwaccel": {

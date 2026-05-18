@@ -246,6 +246,8 @@ Runtime:
 - `MAX_UPLOAD_BYTES`
 - `HLS_HWACCEL` (`none|auto|videotoolbox|cuda|qsv`)
 - `HLS_MAX_TRANSCODE_JOBS` (default `1`)
+- `HLS_MAX_SEGMENT_RENDERS` (default `2`)
+- `HLS_SEGMENT_QUEUE_TIMEOUT_MS` (default `2000`)
 - `AUTO_AUDIO_SYNC` (`0|1`)
 - `REMUX_VIDEO_MODE` (`auto|copy|normalize`)
 - `REMUX_MAX_CONCURRENT` (default `2`)

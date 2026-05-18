@@ -1832,6 +1832,8 @@ mod tests {
             remux_queue_timeout_ms: 2_000,
             remux_process_timeout_seconds: 4 * 60 * 60,
             hls_max_transcode_jobs: 1,
+            hls_max_segment_renders: 2,
+            hls_segment_queue_timeout_ms: 2_000,
             hls_hwaccel_mode: "none".to_owned(),
             remux_hwaccel_mode: "none".to_owned(),
             auto_audio_sync_enabled: false,

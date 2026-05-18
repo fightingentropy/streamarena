@@ -5,16 +5,17 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{Response, StatusCode};
 use dashmap::DashMap;
 use futures_util::stream;
 use serde::Serialize;
-use tokio::fs;
+use tokio::fs::{self, File};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::{Instant as TokioInstant, sleep, sleep_until, timeout};
+use tokio_util::io::ReaderStream;
 use url::form_urlencoded::byte_serialize;
 
 use crate::config::Config;
@@ -49,6 +50,8 @@ pub struct StreamingService {
     hls_jobs: Arc<DashMap<String, Arc<HlsJob>>>,
     hls_job_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
     hls_job_permits: Arc<Semaphore>,
+    hls_segment_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    hls_segment_render_permits: Arc<Semaphore>,
     hls_metrics: Arc<HlsMetrics>,
     remux_permits: Arc<Semaphore>,
     remux_metrics: Arc<RemuxMetrics>,
@@ -78,6 +81,11 @@ struct HlsMetrics {
     segment_cache_hits: AtomicI64,
     segment_cache_misses: AtomicI64,
     on_demand_renders: AtomicI64,
+    active_segment_renders: AtomicI64,
+    segment_render_started: AtomicI64,
+    segment_render_completed: AtomicI64,
+    segment_render_failed: AtomicI64,
+    segment_render_rejected: AtomicI64,
     transcode_started: AtomicI64,
     transcode_completed: AtomicI64,
     transcode_failed: AtomicI64,
@@ -88,6 +96,12 @@ struct RemuxStreamGuard {
     metrics: Arc<RemuxMetrics>,
     active_jobs: Arc<DashMap<u64, i64>>,
     job_id: u64,
+    _permit: OwnedSemaphorePermit,
+    finished: bool,
+}
+
+struct HlsSegmentRenderGuard {
+    metrics: Arc<HlsMetrics>,
     _permit: OwnedSemaphorePermit,
     finished: bool,
 }
@@ -136,12 +150,19 @@ pub struct HlsStats {
     completed_jobs: usize,
     failed_jobs: usize,
     max_transcode_jobs: usize,
+    max_segment_renders: usize,
+    segment_queue_timeout_ms: u64,
     active_transcodes: i64,
     playlist_requests: i64,
     segment_requests: i64,
     segment_cache_hits: i64,
     segment_cache_misses: i64,
     on_demand_renders: i64,
+    active_segment_renders: i64,
+    segment_render_started: i64,
+    segment_render_completed: i64,
+    segment_render_failed: i64,
+    segment_render_rejected: i64,
     transcode_started: i64,
     transcode_completed: i64,
     transcode_failed: i64,
@@ -175,6 +196,7 @@ impl StreamingService {
     pub fn new(config: Config, runtime: RuntimeServices, media: MediaService) -> Self {
         let remux_max_concurrent = config.remux_max_concurrent;
         let hls_max_transcode_jobs = config.hls_max_transcode_jobs;
+        let hls_max_segment_renders = config.hls_max_segment_renders;
         Self {
             config,
             runtime,
@@ -182,6 +204,8 @@ impl StreamingService {
             hls_jobs: Arc::new(DashMap::new()),
             hls_job_locks: Arc::new(DashMap::new()),
             hls_job_permits: Arc::new(Semaphore::new(hls_max_transcode_jobs)),
+            hls_segment_locks: Arc::new(DashMap::new()),
+            hls_segment_render_permits: Arc::new(Semaphore::new(hls_max_segment_renders)),
             hls_metrics: Arc::new(HlsMetrics::default()),
             remux_permits: Arc::new(Semaphore::new(remux_max_concurrent)),
             remux_metrics: Arc::new(RemuxMetrics::default()),
@@ -241,6 +265,8 @@ impl StreamingService {
                 completed_jobs: completed_hls_jobs,
                 failed_jobs: failed_hls_jobs,
                 max_transcode_jobs: self.config.hls_max_transcode_jobs,
+                max_segment_renders: self.config.hls_max_segment_renders,
+                segment_queue_timeout_ms: self.config.hls_segment_queue_timeout_ms,
                 active_transcodes: self.hls_metrics.active_transcodes.load(Ordering::Relaxed),
                 playlist_requests: self.hls_metrics.playlist_requests.load(Ordering::Relaxed),
                 segment_requests: self.hls_metrics.segment_requests.load(Ordering::Relaxed),
@@ -250,6 +276,26 @@ impl StreamingService {
                     .segment_cache_misses
                     .load(Ordering::Relaxed),
                 on_demand_renders: self.hls_metrics.on_demand_renders.load(Ordering::Relaxed),
+                active_segment_renders: self
+                    .hls_metrics
+                    .active_segment_renders
+                    .load(Ordering::Relaxed),
+                segment_render_started: self
+                    .hls_metrics
+                    .segment_render_started
+                    .load(Ordering::Relaxed),
+                segment_render_completed: self
+                    .hls_metrics
+                    .segment_render_completed
+                    .load(Ordering::Relaxed),
+                segment_render_failed: self
+                    .hls_metrics
+                    .segment_render_failed
+                    .load(Ordering::Relaxed),
+                segment_render_rejected: self
+                    .hls_metrics
+                    .segment_render_rejected
+                    .load(Ordering::Relaxed),
                 transcode_started: self.hls_metrics.transcode_started.load(Ordering::Relaxed),
                 transcode_completed: self.hls_metrics.transcode_completed.load(Ordering::Relaxed),
                 transcode_failed: self.hls_metrics.transcode_failed.load(Ordering::Relaxed),
@@ -737,14 +783,20 @@ impl StreamingService {
         let segment_path = self
             .get_or_create_hls_segment(&source_input, segment_index.max(0), audio_stream_index)
             .await?;
-        let bytes = fs::read(&segment_path)
+        let file = File::open(&segment_path)
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
+        let file_size = file
+            .metadata()
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?
+            .len();
         Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "video/mp2t")
-            .header(CACHE_CONTROL, "public, max-age=60")
-            .body(Body::from(bytes))
+            .header(CACHE_CONTROL, "private, max-age=3600")
+            .header(CONTENT_LENGTH, file_size.to_string())
+            .body(Body::from_stream(ReaderStream::new(file)))
             .map_err(|error| ApiError::internal(error.to_string()))
     }
 
@@ -1057,9 +1109,6 @@ impl StreamingService {
         audio_stream_index: i64,
         output_path: Option<PathBuf>,
     ) -> AppResult<PathBuf> {
-        self.hls_metrics
-            .on_demand_renders
-            .fetch_add(1, Ordering::Relaxed);
         self.ensure_hls_cache_directory().await?;
         let safe_segment_index = segment_index.max(0);
         let safe_audio_stream_index = if audio_stream_index >= 0 {
@@ -1075,6 +1124,39 @@ impl StreamingService {
                 safe_segment_index,
             )
         });
+        let segment_lock_key = segment_path.to_string_lossy().to_string();
+        let segment_lock = key_lock(&self.hls_segment_locks, &segment_lock_key);
+        let _segment_guard = segment_lock.lock().await;
+        if let Ok(metadata) = fs::metadata(&segment_path).await
+            && metadata.is_file()
+            && metadata.len() > 0
+        {
+            self.hls_metrics
+                .segment_cache_hits
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(segment_path);
+        }
+        let render_permit = match timeout(
+            Duration::from_millis(self.config.hls_segment_queue_timeout_ms),
+            self.hls_segment_render_permits.clone().acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => return Err(ApiError::internal("HLS segment limiter is closed.")),
+            Err(_) => {
+                self.hls_metrics
+                    .segment_render_rejected
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(ApiError::too_many_requests(
+                    "Server is busy preparing video segments. Please retry in a moment.",
+                ));
+            }
+        };
+        let mut render_guard = HlsSegmentRenderGuard::new(self.hls_metrics.clone(), render_permit);
+        self.hls_metrics
+            .on_demand_renders
+            .fetch_add(1, Ordering::Relaxed);
         let segment_start_seconds = safe_segment_index * HLS_SEGMENT_DURATION_SECONDS;
         let build_segment_args = |encode_config: &VideoEncodeConfig| {
             let mut args = vec!["ffmpeg".to_owned(), "-v".to_owned(), "error".to_owned()];
@@ -1146,6 +1228,7 @@ impl StreamingService {
         fs::write(&segment_path, segment_bytes)
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
+        render_guard.mark_completed();
         Ok(segment_path)
     }
 
@@ -1690,6 +1773,44 @@ impl Drop for RemuxStreamGuard {
         self.metrics.active.fetch_sub(1, Ordering::Relaxed);
         if !self.finished {
             self.metrics.canceled.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl HlsSegmentRenderGuard {
+    fn new(metrics: Arc<HlsMetrics>, permit: OwnedSemaphorePermit) -> Self {
+        metrics
+            .segment_render_started
+            .fetch_add(1, Ordering::Relaxed);
+        metrics
+            .active_segment_renders
+            .fetch_add(1, Ordering::Relaxed);
+        Self {
+            metrics,
+            _permit: permit,
+            finished: false,
+        }
+    }
+
+    fn mark_completed(&mut self) {
+        if !self.finished {
+            self.metrics
+                .segment_render_completed
+                .fetch_add(1, Ordering::Relaxed);
+            self.finished = true;
+        }
+    }
+}
+
+impl Drop for HlsSegmentRenderGuard {
+    fn drop(&mut self) {
+        self.metrics
+            .active_segment_renders
+            .fetch_sub(1, Ordering::Relaxed);
+        if !self.finished {
+            self.metrics
+                .segment_render_failed
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 }
