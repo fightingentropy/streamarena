@@ -1729,8 +1729,8 @@ body.is-search-mode #myListRow {
 }
 
 @media (max-width: 980px) {
-    .optional,
-    .kids {
+    .top-nav nav a.optional,
+    .top-nav nav a.kids {
         display: none;
     }
 
@@ -1820,6 +1820,13 @@ body.is-search-mode #myListRow {
 
     .search-result-card-title {
         font-size: 0.88rem;
+    }
+}
+
+@media (hover: none) and (pointer: coarse) {
+    .top-nav nav a.optional,
+    .top-nav nav a.kids {
+        display: none !important;
     }
 }
 
