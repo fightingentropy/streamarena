@@ -419,6 +419,13 @@ impl StreamingService {
             remux_subtitle_stream_indexes.push(safe_subtitle_stream_index);
             selected_remux_subtitle_ordinal = Some(0);
         }
+        if should_force_accurate_seek_for_remux(
+            safe_start_seconds,
+            &requested_video_mode,
+            &resolved_video_mode,
+        ) {
+            resolved_video_mode = "normalize".to_owned();
+        }
 
         let mut effective_remux_hwaccel_mode = "none".to_owned();
         let mut remux_video_encode_config = build_remux_video_encode_config("none");
@@ -1446,20 +1453,18 @@ fn should_force_normalize_video_for_browser(probe: &MediaProbe, _source: &str) -
     // MP4/MOV containers use edit lists (elst atoms) to trim B-frame lead-in
     // and keep audio/video in sync.  Fragmented MP4 output (used by the remux
     // endpoint) cannot carry edit lists, so the raw video PTS is exposed and
-    // the first presentable frame starts later than audio.  When B-frames are
-    // present and the audio will be re-encoded (meaning it goes through the
-    // filter pipeline rather than stream-copy), force normalize mode so that
-    // setpts=PTS-STARTPTS resets video PTS to 0 and eliminates the gap.
-    if probe.videoBFrames > 0 {
-        let has_unsafe_audio = probe
-            .audioTracks
-            .iter()
-            .any(|track| !is_browser_safe_audio_codec(&track.codec));
-        if has_unsafe_audio {
-            return true;
-        }
-    }
-    false
+    // the first presentable frame starts later than audio.  The remux endpoint
+    // always re-encodes audio to AAC, so force normalize mode whenever B-frames
+    // are present and setpts=PTS-STARTPTS can eliminate the gap.
+    probe.videoBFrames > 0
+}
+
+fn should_force_accurate_seek_for_remux(
+    start_seconds: i64,
+    requested_video_mode: &str,
+    resolved_video_mode: &str,
+) -> bool {
+    start_seconds > 0 && requested_video_mode == "auto" && resolved_video_mode == "copy"
 }
 
 fn build_hls_video_encode_config(hwaccel_mode: &str) -> VideoEncodeConfig {
@@ -1872,13 +1877,47 @@ mod tests {
 
     use dashmap::DashMap;
 
-    use super::{build_hls_transcode_job_key, key_lock, normalize_remux_video_mode};
+    use crate::media::{AudioTrack, MediaProbe};
+
+    use super::{
+        build_hls_transcode_job_key, key_lock, normalize_remux_video_mode,
+        should_force_accurate_seek_for_remux, should_force_normalize_video_for_browser,
+    };
 
     #[test]
     fn normalizes_remux_video_modes() {
         assert_eq!(normalize_remux_video_mode("passthrough"), "copy");
         assert_eq!(normalize_remux_video_mode("rebuild"), "normalize");
         assert_eq!(normalize_remux_video_mode(""), "auto");
+    }
+
+    #[test]
+    fn normalizes_remux_when_b_frames_are_present_with_safe_audio() {
+        let probe = MediaProbe {
+            videoBFrames: 2,
+            audioTracks: vec![AudioTrack {
+                codec: "aac".to_owned(),
+                ..AudioTrack::default()
+            }],
+            ..MediaProbe::default()
+        };
+
+        assert!(should_force_normalize_video_for_browser(
+            &probe,
+            "movie.mp4"
+        ));
+    }
+
+    #[test]
+    fn normalizes_auto_remux_seeks_for_accurate_av_cuts() {
+        assert!(should_force_accurate_seek_for_remux(2579, "auto", "copy"));
+        assert!(!should_force_accurate_seek_for_remux(0, "auto", "copy"));
+        assert!(!should_force_accurate_seek_for_remux(2579, "copy", "copy"));
+        assert!(!should_force_accurate_seek_for_remux(
+            2579,
+            "auto",
+            "normalize"
+        ));
     }
 
     #[test]

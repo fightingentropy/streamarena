@@ -3,7 +3,7 @@ body.live-route {
 }
 
 body.live-route .page {
-    min-height: 100vh;
+    min-height: 100dvh;
     overflow: visible;
     background:
         linear-gradient(180deg, rgba(5, 5, 5, 0.3) 0%, #070707 72%),
@@ -11,8 +11,15 @@ body.live-route .page {
 }
 
 .live-main {
-    min-height: 100vh;
-    padding: 104px 48px 56px;
+    min-height: 100dvh;
+    padding: calc(104px + env(safe-area-inset-top)) 48px calc(56px + env(safe-area-inset-bottom));
+}
+
+@supports not (min-height: 100dvh) {
+    body.live-route .page,
+    .live-main {
+        min-height: 100vh;
+    }
 }
 
 .live-channel-section {

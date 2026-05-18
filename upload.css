@@ -80,9 +80,15 @@ code {
 
 .upload-page {
   width: min(1340px, 100%);
-  min-height: 100vh;
+  min-height: 100dvh;
   margin: 0 auto;
   padding: 24px clamp(18px, 3.5vw, 42px) 56px;
+}
+
+@supports not (min-height: 100dvh) {
+  .upload-page {
+    min-height: 100vh;
+  }
 }
 
 .upload-topbar,

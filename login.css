@@ -68,8 +68,18 @@ a:focus-visible {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 100vh;
-  padding: 24px 16px;
+  min-height: 100dvh;
+  padding:
+    calc(24px + env(safe-area-inset-top))
+    calc(16px + env(safe-area-inset-right))
+    calc(24px + env(safe-area-inset-bottom))
+    calc(16px + env(safe-area-inset-left));
+}
+
+@supports not (min-height: 100dvh) {
+  .login-page {
+    min-height: 100vh;
+  }
 }
 
 .login-card {

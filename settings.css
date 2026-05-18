@@ -77,9 +77,15 @@ a:focus-visible {
 
 .settings-page {
   width: min(1100px, 100%);
-  min-height: 100vh;
+  min-height: 100dvh;
   margin: 0 auto;
   padding: 0 clamp(16px, 3vw, 40px) 60px;
+}
+
+@supports not (min-height: 100dvh) {
+  .settings-page {
+    min-height: 100vh;
+  }
 }
 
 /* ─── Header ─── */

@@ -1,4 +1,6 @@
-const CACHE_VERSION = "netflix-pwa-v1";
+// Bump CACHE_VERSION when shell assets change so clients pick up updates.
+const CACHE_VERSION = "netflix-pwa-v2";
+const OFFLINE_URL = "/offline.html";
 const APP_SHELL_URLS = [
   "/",
   "/login.html",
@@ -7,6 +9,7 @@ const APP_SHELL_URLS = [
   "/live.html",
   "/new-popular.html",
   "/player.html",
+  OFFLINE_URL,
   "/manifest.webmanifest",
   "/assets/icons/netflix-n.svg",
   "/assets/icons/netflix-app-icon-180.png",
@@ -65,12 +68,16 @@ self.addEventListener("fetch", (event) => {
     } else if (url.pathname.endsWith(".html")) {
       fallbackUrl = url.pathname;
     }
-    event.respondWith(networkFirst(request, fallbackUrl));
+    event.respondWith(networkFirstNavigation(request, fallbackUrl));
+    return;
+  }
+
+  if (url.pathname.startsWith("/ui-assets/")) {
+    event.respondWith(staleWhileRevalidate(request));
     return;
   }
 
   if (
-    url.pathname.startsWith("/ui-assets/") ||
     url.pathname.startsWith("/assets/icons/") ||
     url.pathname === "/manifest.webmanifest"
   ) {
@@ -94,6 +101,31 @@ async function cacheFirst(request) {
   return response;
 }
 
+async function staleWhileRevalidate(request) {
+  const cache = await caches.open(CACHE_VERSION);
+  const cached = await caches.match(request);
+  const networkPromise = fetch(request)
+    .then((response) => {
+      if (response.ok) {
+        cache.put(request, response.clone());
+      }
+      return response;
+    })
+    .catch(() => null);
+
+  if (cached) {
+    void networkPromise;
+    return cached;
+  }
+
+  const network = await networkPromise;
+  if (network) {
+    return network;
+  }
+
+  return offlineResponse();
+}
+
 async function precacheUrls(cache, urls) {
   await Promise.allSettled(
     urls.map(async (url) => {
@@ -105,7 +137,24 @@ async function precacheUrls(cache, urls) {
   );
 }
 
-async function networkFirst(request, fallbackUrl = "") {
+async function networkFirst(request) {
+  const cache = await caches.open(CACHE_VERSION);
+  try {
+    const response = await fetch(request);
+    if (response.ok) {
+      cache.put(request, response.clone());
+    }
+    return response;
+  } catch {
+    const cached = await caches.match(request);
+    if (cached) {
+      return cached;
+    }
+    return offlineResponse();
+  }
+}
+
+async function networkFirstNavigation(request, fallbackUrl = "") {
   const cache = await caches.open(CACHE_VERSION);
   try {
     const response = await fetch(request);
@@ -124,6 +173,22 @@ async function networkFirst(request, fallbackUrl = "") {
         return fallback;
       }
     }
-    throw new Error("Offline and no cached response is available.");
+    const offline = await caches.match(OFFLINE_URL);
+    if (offline) {
+      return offline;
+    }
+    return offlineResponse();
   }
+}
+
+async function offlineResponse() {
+  const offline = await caches.match(OFFLINE_URL);
+  if (offline) {
+    return offline;
+  }
+  return new Response("You are offline.", {
+    status: 503,
+    statusText: "Offline",
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
 }

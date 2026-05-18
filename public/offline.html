@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#000000" />
+    <title>Offline · Netflix</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        font-family:
+          "Netflix Sans",
+          "Helvetica Neue",
+          "Segoe UI",
+          Roboto,
+          Ubuntu,
+          sans-serif;
+        background: #000;
+        color: #f5f5f5;
+      }
+
+      @supports not (min-height: 100dvh) {
+        html,
+        body {
+          min-height: 100vh;
+        }
+      }
+
+      main {
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding:
+          calc(24px + env(safe-area-inset-top))
+          calc(20px + env(safe-area-inset-right))
+          calc(24px + env(safe-area-inset-bottom))
+          calc(20px + env(safe-area-inset-left));
+        text-align: center;
+      }
+
+      @supports not (min-height: 100dvh) {
+        main {
+          min-height: 100vh;
+        }
+      }
+
+      .card {
+        width: min(420px, 100%);
+      }
+
+      img {
+        width: 72px;
+        height: 72px;
+        margin-bottom: 20px;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 1.5rem;
+        font-weight: 600;
+      }
+
+      p {
+        margin: 0 0 22px;
+        color: rgba(255, 255, 255, 0.72);
+        line-height: 1.5;
+      }
+
+      button {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 0 22px;
+        border: 0;
+        border-radius: 4px;
+        background: #e50914;
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      button:focus-visible {
+        outline: 2px solid rgba(255, 255, 255, 0.7);
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="card">
+        <img src="/assets/icons/netflix-app-icon-192.png" alt="" width="72" height="72" />
+        <h1>You are offline</h1>
+        <p>
+          Browse pages you opened recently may still work. Streaming needs a connection to your
+          server.
+        </p>
+        <button type="button" id="retryButton">Try again</button>
+      </div>
+    </main>
+    <script>
+      document.getElementById("retryButton")?.addEventListener("click", () => {
+        if (window.history.length > 1) {
+          window.location.reload();
+          return;
+        }
+        window.location.href = "/";
+      });
+    </script>
+  </body>
+</html>
