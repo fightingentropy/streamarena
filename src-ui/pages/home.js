@@ -4309,7 +4309,7 @@ export default function HomePage() {
           </a>
           <nav>
             <a href="#" class="is-active">Home</a>
-            <a href="/live" class="optional">Live</a>
+            <a href="/live">Live</a>
             <a href="#">Series</a>
             <a href="#">Films</a>
             <a href="#" class="optional">Games</a>

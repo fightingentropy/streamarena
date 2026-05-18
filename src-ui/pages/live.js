@@ -207,7 +207,7 @@ export default function LivePage() {
             </a>
             <nav>
               <a href="/">Home</a>
-              <a href="/live" class="optional is-active">Live</a>
+              <a href="/live" class="is-active">Live</a>
               <a href="#">Series</a>
               <a href="#">Films</a>
               <a href="#" class="optional">Games</a>

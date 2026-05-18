@@ -469,7 +469,7 @@ export default function NewPopularPage() {
           </a>
           <nav>
             <a href="/">Home</a>
-            <a href="/live" class="optional">Live</a>
+            <a href="/live">Live</a>
             <a href="#">Series</a>
             <a href="#">Films</a>
             <a href="#" class="optional">Games</a>
