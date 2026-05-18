@@ -51,7 +51,7 @@ const TORRENT_FATAL_STATUSES: &[&str] =
 const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "mp2", "opus", "vorbis", "flac", "alac"];
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
     &["ac3", "eac3", "dts", "dca", "truehd", "mlp", "pcm_", "wma"];
-const DEFAULT_ALLOWED_SOURCE_FORMATS: &[&str] = &["mp4"];
+const DEFAULT_ALLOWED_SOURCE_FORMATS: &[&str] = &["mp4", "mkv"];
 
 static SEED_COUNT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"👤\s*([0-9.,]+)").expect("valid seed regex"));
@@ -1431,7 +1431,9 @@ impl ResolverService {
                 .and_then(Value::as_str)
                 .or_else(|| payload.get("message").and_then(Value::as_str))
                 .unwrap_or("Real-Debrid request failed.");
-            return Err(ApiError::internal(message.to_owned()));
+            return Err(ApiError::bad_gateway(user_facing_real_debrid_error(
+                message,
+            )));
         }
         Ok(payload)
     }
@@ -2983,7 +2985,7 @@ fn normalize_allowed_formats(value: &str) -> Vec<String> {
         .split([',', ' '])
         .filter_map(|item| {
             let normalized = item.trim().to_lowercase();
-            if matches!(normalized.as_str(), "mp4") {
+            if matches!(normalized.as_str(), "mp4" | "mkv") {
                 Some(normalized)
             } else {
                 None
@@ -3172,6 +3174,17 @@ fn map_reqwest_error(error: reqwest::Error, timeout_message: &str) -> ApiError {
         ApiError::internal(timeout_message)
     } else {
         ApiError::internal(error.to_string())
+    }
+}
+
+fn user_facing_real_debrid_error(message: &str) -> String {
+    match message.trim() {
+        "infringing_file" => "Real-Debrid blocked this source.".to_owned(),
+        "too_many_requests" => {
+            "Real-Debrid is rate limiting requests. Try again shortly.".to_owned()
+        }
+        "" => "Real-Debrid request failed.".to_owned(),
+        other => other.to_owned(),
     }
 }
 
@@ -3925,6 +3938,7 @@ mod tests {
         normalize_resolved_source_for_software_decode, normalize_source_audio_profile_filter,
         normalize_source_hash, now_ms, parse_runtime_from_label_seconds, parse_seed_count,
         select_top_movie_candidates, should_prefer_software_decode_source, sort_movie_candidates,
+        user_facing_real_debrid_error,
     };
 
     #[test]
@@ -3943,7 +3957,22 @@ mod tests {
 
     #[test]
     fn normalizes_allowed_formats_to_supported_video_containers() {
-        assert_eq!(normalize_allowed_formats("mkv, mp4 avi"), vec!["mp4"]);
+        assert_eq!(
+            normalize_allowed_formats("mkv, mp4 avi"),
+            vec!["mkv", "mp4"]
+        );
+    }
+
+    #[test]
+    fn maps_real_debrid_provider_codes_to_readable_errors() {
+        assert_eq!(
+            user_facing_real_debrid_error("infringing_file"),
+            "Real-Debrid blocked this source."
+        );
+        assert_eq!(
+            user_facing_real_debrid_error("too_many_requests"),
+            "Real-Debrid is rate limiting requests. Try again shortly."
+        );
     }
 
     #[test]
@@ -3952,7 +3981,7 @@ mod tests {
             build_movie_resolve_lock_key(
                 " 123 ", "EN", "1080", "Off", "bad", "5", "mkv mp4", "EN", "single"
             ),
-            "movie|tmdb:123|audio:en|sub:off|quality:1080p|hash:|min:5|formats:mp4|lang:en|profile:single"
+            "movie|tmdb:123|audio:en|sub:off|quality:1080p|hash:|min:5|formats:mkv,mp4|lang:en|profile:single"
         );
         assert_eq!(
             build_tv_resolve_lock_key(

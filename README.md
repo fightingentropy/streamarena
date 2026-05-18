@@ -83,7 +83,7 @@ The app combines two media paths:
   - minimum seeders
   - results limit (1-20)
   - language filter (`en`, `any`, `fr`, `es`, `de`, `it`, `pt`)
-  - allowed container formats (currently MP4)
+  - allowed container formats (MP4 and MKV)
 - Preference-aware resolving (language/quality/filter params passed to resolve endpoints)
 
 ### Upload and local library

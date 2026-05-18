@@ -408,7 +408,7 @@ const SOURCE_AUDIO_SYNC_PREF_KEY_PREFIX = "netflix-source-audio-sync:";
 const DEFAULT_SOURCE_RESULTS_LIMIT = 5;
 const SOURCE_FETCH_BATCH_LIMIT = 20;
 const supportedQualityPreferences = new Set(["auto", "2160p", "1080p", "720p"]);
-const supportedSourceFormats = ["mp4"];
+const supportedSourceFormats = ["mp4", "mkv"];
 const supportedSourceFormatSet = new Set(supportedSourceFormats);
 const supportedSourceLanguages = new Set([
   "en",
@@ -2096,6 +2096,15 @@ function renderSourceOptionButtons() {
   const rankedSources = sortSourcesBySeeders(availablePlaybackSources, {
     preferContainer: getSourceListPreferredContainer(),
   });
+  const selectedSourceIndex = rankedSources.findIndex(
+    (option) =>
+      normalizeSourceHash(option?.sourceHash || option?.infoHash || "") ===
+      normalizeSourceHash(selectedSourceHash),
+  );
+  if (selectedSourceIndex > 0) {
+    const [selectedSource] = rankedSources.splice(selectedSourceIndex, 1);
+    rankedSources.unshift(selectedSource);
+  }
   for (const option of rankedSources) {
     if (seenHashes.size >= preferredSourceResultsLimit) {
       break;
@@ -2184,7 +2193,7 @@ function renderSourceOptionButtons() {
   }
   if (
     preferredDefaultSourceHash &&
-    (!sourceSelectionPinned || !hasSelectedInOptions)
+    (!normalizedSelectedSourceHash || !hasSelectedInOptions)
   ) {
     selectedSourceHash = preferredDefaultSourceHash;
     applyPreferredSourceAudioSync(selectedSourceHash);
