@@ -34,9 +34,15 @@ body.modal-open {
 
 .page {
     position: relative;
-    min-height: 100vh;
+    min-height: 100dvh;
     overflow: hidden;
     background: #000;
+}
+
+@supports not (min-height: 100dvh) {
+    .page {
+        min-height: 100vh;
+    }
 }
 
 .page:focus {
@@ -80,11 +86,11 @@ body.modal-open {
     right: 0;
     left: 0;
     z-index: 20;
-    height: 70px;
+    height: calc(70px + env(safe-area-inset-top));
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0 48px;
+    padding: env(safe-area-inset-top) 48px 0;
     background: linear-gradient(
         180deg,
         rgba(0, 0, 0, 0.66) 0%,
@@ -1625,7 +1631,7 @@ body.is-search-mode #myListRow {
 
 @media (max-width: 1260px) {
     .top-nav {
-        padding: 0 22px;
+        padding: env(safe-area-inset-top) 22px 0;
     }
 
     .top-nav nav a {
@@ -1730,7 +1736,8 @@ body.is-search-mode #myListRow {
 
 @media (max-width: 980px) {
     .top-nav nav a.optional,
-    .top-nav nav a.kids {
+    .top-nav nav a.kids,
+    .kids {
         display: none;
     }
 
@@ -1825,15 +1832,21 @@ body.is-search-mode #myListRow {
 
 @media (hover: none) and (pointer: coarse) {
     .top-nav nav a.optional,
-    .top-nav nav a.kids {
+    .top-nav nav a.kids,
+    .top-nav nav a.nav-secondary,
+    .kids {
         display: none !important;
     }
 }
 
 @media (max-width: 620px) {
     .top-nav {
-        height: 58px;
-        padding: 0 14px;
+        height: calc(58px + env(safe-area-inset-top));
+        padding: env(safe-area-inset-top) 14px 0;
+    }
+
+    .top-nav nav a.nav-secondary {
+        display: none;
     }
 
     .top-nav nav a {
@@ -1865,6 +1878,10 @@ body.is-search-mode #myListRow {
 
     .nav-left {
         gap: 11px;
+    }
+
+    .logo-wordmark-image {
+        width: 86px;
     }
 
     .hero-content {

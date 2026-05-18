@@ -470,8 +470,8 @@ export default function NewPopularPage() {
           <nav>
             <a href="/">Home</a>
             <a href="/live">Live</a>
-            <a href="#">Series</a>
-            <a href="#">Films</a>
+            <a href="#" class="nav-secondary">Series</a>
+            <a href="#" class="nav-secondary">Films</a>
             <a href="#" class="optional">Games</a>
             <a href="/new-popular" class="optional is-active">New &amp; Popular</a>
             <a href="/#myListRow" class="optional">My List</a>
