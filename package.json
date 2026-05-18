@@ -14,6 +14,7 @@
     "mini:backup": "./scripts/backup-mini.sh",
     "mini:install-agents": "./scripts/install-mini-agents.sh",
     "bench:playback": "node ./scripts/playback-benchmark.mjs",
+    "bench:load": "node ./scripts/playback-load-benchmark.mjs",
     "bench:playback:install": "playwright install chromium"
   },
   "dependencies": {

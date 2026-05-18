@@ -311,6 +311,7 @@ Scripts:
 - `bun run dev` -> Rust server
 - `bun run bench:playback:install` -> installs the Chromium browser used by the playback benchmark suite
 - `bun run bench:playback -- --source assets/videos/<file>.mp4` -> runs a headless playback comparison across direct, remux, and native-HLS transport paths
+- `bun run bench:load -- --source assets/videos/<file>.mp4` -> runs a multi-client HLS segment load benchmark against a running backend
 
 ### Playback Benchmark Suite
 
@@ -355,6 +356,19 @@ bun run bench:playback -- \
   --objective efficiency \
   --output tmp/playback-benchmark.json
 ```
+
+For server-side pressure testing, run the HLS load benchmark against an already-running backend:
+
+```bash
+bun run bench:load -- \
+  --base-url http://127.0.0.1:5173 \
+  --source assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4 \
+  --clients 4 \
+  --segments 6 \
+  --pattern staggered
+```
+
+Use `--pattern same` to verify duplicate clients collapse onto shared segment cache work, and `--output tmp/playback-load.json` to keep the full per-client report.
 - `bun run dev:rust` -> Rust server
 - `bun run dev:vite` -> frontend-only Vite dev server
 - `bun run build` / `bun run preview` -> Vite build/preview flow

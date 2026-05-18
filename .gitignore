@@ -16,6 +16,7 @@ target/
 
 # Local playback/cache artifacts
 cache/
+tmp/
 
 # Large local media files
 *.mkv
