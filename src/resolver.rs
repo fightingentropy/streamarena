@@ -3875,13 +3875,19 @@ fn normalize_resolved_source_for_software_decode(
         return normalized;
     }
     let mut next_fallbacks = Vec::new();
-    push_unique_url(&mut next_fallbacks, &current_playable);
+    let filename_hint = normalized.filename.clone();
+    let push_browser_safe_fallback = |target: &mut Vec<String>, value: &str| {
+        if is_playback_proxy_url(value) || is_likely_html5_playable_url(value, &filename_hint) {
+            push_unique_url(target, value);
+        }
+    };
+    push_browser_safe_fallback(&mut next_fallbacks, &current_playable);
     if source_input != current_playable {
-        push_unique_url(&mut next_fallbacks, source_input);
+        push_browser_safe_fallback(&mut next_fallbacks, source_input);
     }
     for url in &normalized.fallback_urls {
         if url != &preferred_remux {
-            push_unique_url(&mut next_fallbacks, url);
+            push_browser_safe_fallback(&mut next_fallbacks, url);
         }
     }
     normalized.playable_url = preferred_remux;
@@ -4100,6 +4106,25 @@ mod tests {
                 "/api/remux?input=https%3A%2F%2F126-4.download.real-debrid.com%2Fpath%2FThe.Matrix.1999.1080p.mp4"
             ]
         );
+    }
+
+    #[test]
+    fn omits_raw_mkv_fallback_when_remux_is_required() {
+        let raw = "https://126-4.download.real-debrid.com/path/Succession.S01E01.mkv";
+
+        let normalized = normalize_resolved_source_for_software_decode(
+            &ResolvedSource {
+                playable_url: raw.to_owned(),
+                filename: "Succession.S01E01.mkv".to_owned(),
+                fallback_urls: vec![raw.to_owned()],
+                ..ResolvedSource::default()
+            },
+            1,
+            -1,
+        );
+
+        assert!(normalized.playable_url.starts_with("/api/remux?"));
+        assert!(normalized.fallback_urls.is_empty());
     }
 
     #[test]

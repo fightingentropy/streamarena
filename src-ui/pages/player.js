@@ -4450,10 +4450,11 @@ async function adjustSourceAudioSync(deltaMs = 0) {
       : `Audio sync ${preferredAudioSyncMs > 0 ? "+" : ""}${preferredAudioSyncMs}ms.`,
     { showStatus: true },
   );
+  const restartAt = resumeFrom > 1 ? resumeFrom : 0;
   setVideoSource(
     buildSoftwareDecodeUrl(
       activeTranscodeInput,
-      0,
+      restartAt,
       selectedAudioStreamIndex,
       preferredAudioSyncMs,
       selectedSubtitleStreamIndex,
@@ -4463,9 +4464,6 @@ async function adjustSourceAudioSync(deltaMs = 0) {
   applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
   if (!wasPaused) {
     await tryPlay();
-  }
-  if (resumeFrom > 1) {
-    seekToAbsoluteTime(resumeFrom);
   }
   hideResolver();
   syncAudioState();
@@ -6848,12 +6846,13 @@ if (audioOptionsContainer) trackListener(audioOptionsContainer, "click", async (
     shouldUseSoftwareDecode(activeTrackSourceInput) ||
     shouldForceRemuxForEmbeddedAudio() ||
     shouldKeepEmbeddedSubtitle;
+  const restartAt = resumeFrom > 1 ? resumeFrom : 0;
   showResolver("Switching audio track...");
   if (shouldUseRemuxForAudioSwitch) {
     setVideoSource(
       buildSoftwareDecodeUrl(
         activeTrackSourceInput,
-        0,
+        restartAt,
         selectedAudioStreamIndex,
         activeAudioSyncMs || preferredAudioSyncMs,
         selectedSubtitleStreamIndex,
@@ -6869,7 +6868,7 @@ if (audioOptionsContainer) trackListener(audioOptionsContainer, "click", async (
   if (!wasPaused) {
     await tryPlay();
   }
-  if (resumeFrom > 1) {
+  if (resumeFrom > 1 && !shouldUseRemuxForAudioSwitch) {
     seekToAbsoluteTime(resumeFrom);
   }
 });
