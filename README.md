@@ -312,6 +312,7 @@ Scripts:
 - `bun run bench:playback:install` -> installs the Chromium browser used by the playback benchmark suite
 - `bun run bench:playback -- --source assets/videos/<file>.mp4` -> runs a headless playback comparison across direct, remux, and native-HLS transport paths
 - `bun run bench:load -- --source assets/videos/<file>.mp4` -> runs a multi-client HLS segment load benchmark against a running backend
+- `bun run bench:resolve -- --tmdb-id <id>` -> runs a multi-client resolver coalescing benchmark against a running backend
 
 ### Playback Benchmark Suite
 
@@ -369,6 +370,21 @@ bun run bench:load -- \
 ```
 
 Use `--pattern same` to verify duplicate clients collapse onto shared segment cache work, and `--output tmp/playback-load.json` to keep the full per-client report.
+
+To pressure-test the resolver path, run concurrent identical resolve requests and compare `/api/health.resolver` before and after:
+
+```bash
+bun run bench:resolve -- \
+  --base-url http://127.0.0.1:5173 \
+  --media-type movie \
+  --tmdb-id 4348 \
+  --title "Pride & Prejudice" \
+  --year 2005 \
+  --clients 4 \
+  --output tmp/resolver-load.json
+```
+
+The report includes success count, p50/p95 latency, unique resolved sources, and resolver deltas such as `coalescedWaits`.
 - `bun run dev:rust` -> Rust server
 - `bun run dev:vite` -> frontend-only Vite dev server
 - `bun run build` / `bun run preview` -> Vite build/preview flow
