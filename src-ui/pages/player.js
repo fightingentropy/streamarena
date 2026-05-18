@@ -48,6 +48,12 @@ import {
   shouldShowLiveStreamControls as shouldShowLiveStreamControlsForState,
   syncLiveStreamControls as syncLiveStreamControlsDom,
 } from "../player/live-streams.js";
+import {
+  findSeriesEntryBySlug,
+  loadWatchParams,
+  saveWatchParams,
+  slugifyTitle,
+} from "../lib/watch-params.js";
 
 export default function PlayerPage() {
   // ─── Ref declarations (replacing document.getElementById) ───
@@ -141,11 +147,7 @@ function trackListener(target, event, handler, options) {
 
 // ─── Clean URL support: /watch/<slug> or /watch/<slug>/<episodeIndex> ───
 function slugify(text) {
-  return String(text || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
+  return slugifyTitle(text);
 }
 function parseWatchPath() {
   const path = window.location.pathname;
@@ -156,16 +158,13 @@ function parseWatchPath() {
 const _watchPath = parseWatchPath();
 const _isCleanUrl = Boolean(_watchPath);
 
-// Hydrate params from sessionStorage (set by home/new-popular before navigation).
+// Hydrate params from session/local storage (set before navigation) or slug resolve.
 let _sessionParams = null;
 if (_isCleanUrl && _watchPath.slug) {
-  try {
-    const _stored = sessionStorage.getItem(`watch:${_watchPath.slug}`);
-    if (_stored) {
-      _sessionParams = new URLSearchParams(_stored);
-      sessionStorage.removeItem(`watch:${_watchPath.slug}`);
-    }
-  } catch {}
+  const _stored = loadWatchParams(_watchPath.slug);
+  if (_stored) {
+    _sessionParams = new URLSearchParams(_stored);
+  }
 }
 const params = _sessionParams || new URLSearchParams();
 const _needsSlugResolve = _isCleanUrl && _watchPath.slug && !_sessionParams;
@@ -3864,7 +3863,12 @@ function navigateToSeriesEpisode(nextIndex) {
 
   const _seriesSlug = slugify(activeSeries?.title || title);
   const _episodePath = _seriesSlug ? `/watch/${_seriesSlug}/${safeIndex}` : window.location.pathname;
-  try { if (_seriesSlug) sessionStorage.setItem(`watch:${_seriesSlug}`, nextParams.toString()); } catch {}
+  if (_seriesSlug) {
+    saveWatchParams(_seriesSlug, nextParams.toString(), {
+      seriesId: activeSeries?.id || requestedSeriesId,
+      tmdbId,
+    });
+  }
   window.location.href = _episodePath;
 }
 
@@ -6120,7 +6124,11 @@ async function initPlaybackSource() {
         const _movies = Array.isArray(_lib?.movies) ? _lib.movies : [];
         const _allSeries = Array.isArray(_lib?.series) ? _lib.series : [];
         const _movieMatch = _movies.find((m) => slugify(m.title) === _slug);
-        const _seriesMatch = _allSeries.find((s) => slugify(s.title) === _slug);
+        const _librarySeriesMatch = _allSeries.find((s) => slugify(s.title) === _slug);
+        const _staticSeriesLookup = findSeriesEntryBySlug(_slug, SERIES_LIBRARY);
+        const _seriesMatch = _librarySeriesMatch || (_staticSeriesLookup
+          ? { id: _staticSeriesLookup.id, ..._staticSeriesLookup.entry }
+          : null);
         const _liveMatch = LIVE_CHANNEL_PLAYBACK_FALLBACKS[_slug] || null;
         if (_liveMatch) {
           if (!params.has("title")) params.set("title", _liveMatch.title);
@@ -6243,6 +6251,12 @@ async function initPlaybackSource() {
     await hydrateTmdbTvEpisodeCatalog();
     hasSeriesEpisodeControls =
       isEpisodeListPlayback() && Boolean(seriesEpisodes.length > 1);
+  }
+  if (_isCleanUrl && _watchPath?.slug && params.toString()) {
+    saveWatchParams(_watchPath.slug, params.toString(), {
+      tmdbId,
+      seriesId: requestedSeriesId || activeSeries?.id || "",
+    });
   }
   sourceIdentity = isSeriesPlayback
     ? `series:${activeSeries.id}:episode:${seriesEpisodeIndex}`
@@ -6388,7 +6402,16 @@ async function initPlaybackSource() {
 
   if (!isTmdbResolvedPlayback) {
     expectedDurationSeconds = 0;
-    setVideoSource(src || DEFAULT_TRAILER_SOURCE);
+    if (!src) {
+      video.removeAttribute("src");
+      video.load();
+      showResolver(
+        "Unable to load this title. Open it again from the home screen or check that the video is in your library.",
+        { showStatus: true, isError: true },
+      );
+      return;
+    }
+    setVideoSource(src);
     hideResolver();
     await tryPlay();
     return;

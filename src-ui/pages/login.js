@@ -51,11 +51,14 @@ async function migrateLocalStorageToServer() {
     myList.length > 0;
   if (!hasData) return;
 
-  await fetch("/api/user/sync", {
+  const syncRes = await fetch("/api/user/sync", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ preferences, watchProgress, continueWatching, myList }),
   });
+  if (!syncRes.ok) {
+    console.warn("Failed to sync local data to server:", syncRes.status);
+  }
 }
 
 export default function LoginPage() {
@@ -119,7 +122,7 @@ export default function LoginPage() {
     <main class="login-page">
       <div class="login-card">
         <a href="/" class="login-logo">
-          <img src="assets/icons/netflix-n.svg" alt="Netflix" />
+          <img src="/assets/icons/netflix-n.svg" alt="Netflix" />
         </a>
         <h1>${() => (isSignUp() ? "Create Account" : "Sign In")}</h1>
         <form class="login-form" onSubmit=${handleSubmit}>

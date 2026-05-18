@@ -10,6 +10,7 @@ import {
 } from "../shared.js";
 import { signOut } from "../lib/auth.js";
 import { LIVE_CHANNELS } from "../lib/live-channels.js";
+import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
 
 function slugify(value) {
   return String(value || "live")
@@ -90,12 +91,8 @@ function buildPlayerUrl(channel) {
   }
   params.set("episode", "Live");
 
-  const slug = slugify(title);
-  try {
-    sessionStorage.setItem(`watch:${slug}`, params.toString());
-  } catch {
-    // Ignore storage failures; the clean URL will fall back to title-only.
-  }
+  const slug = slugifyTitle(title);
+  saveWatchParams(slug, params.toString());
   return `/watch/${slug}`;
 }
 

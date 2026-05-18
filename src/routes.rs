@@ -6,7 +6,8 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{Method, Response, Uri};
-use axum::routing::any;
+use axum::middleware::{self, Next};
+use axum::routing::{any, get, put};
 use serde_json::{Value, json};
 use url::Url;
 
@@ -51,12 +52,28 @@ pub struct AppState {
     pub started_at_ms: i64,
 }
 
+async fn api_auth_middleware(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response<Body>, ApiError> {
+    auth::require_auth(&state.db, &headers).await?;
+    Ok(next.run(request).await)
+}
+
 pub fn build_router(state: AppState) -> Router {
-    Router::new()
-        .route("/api/debug/cache", any(debug_cache))
-        .route("/api/config", any(config_handler))
+    let public_api = Router::new()
         .route("/api/health", any(health_handler))
-        .route("/api/library", any(library_handler))
+        .route("/api/config", any(config_handler))
+        .route("/api/library", get(library_get_handler))
+        .route("/api/auth/signup", any(auth_signup_handler))
+        .route("/api/auth/login", any(auth_login_handler))
+        .route("/api/auth/logout", any(auth_logout_handler));
+
+    let protected_api = Router::new()
+        .route("/api/library", put(library_put_handler))
+        .route("/api/debug/cache", any(debug_cache))
         .route("/api/title/preferences", any(title_preferences_handler))
         .route("/api/session/progress", any(session_progress_handler))
         .route("/api/tmdb/popular-movies", any(tmdb_popular_movies_handler))
@@ -96,9 +113,6 @@ pub fn build_router(state: AppState) -> Router {
             "/api/subtitles.external.vtt",
             any(subtitles_external_vtt_handler),
         )
-        .route("/api/auth/signup", any(auth_signup_handler))
-        .route("/api/auth/login", any(auth_login_handler))
-        .route("/api/auth/logout", any(auth_logout_handler))
         .route("/api/auth/me", any(auth_me_handler))
         .route("/api/user/preferences", any(user_preferences_handler))
         .route("/api/user/watch-progress", any(user_watch_progress_handler))
@@ -108,6 +122,14 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/user/my-list", any(user_my_list_handler))
         .route("/api/user/sync", any(user_sync_handler))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            api_auth_middleware,
+        ));
+
+    Router::new()
+        .merge(public_api)
+        .merge(protected_api)
         .fallback(any(serve_static))
         .with_state(state)
 }
@@ -202,35 +224,27 @@ pub async fn health_handler(
     })))
 }
 
-pub async fn library_handler(
+pub async fn library_get_handler(State(state): State<AppState>) -> AppResult<Response<Body>> {
+    let library = read_local_library(&state.config.local_library_path).await?;
+    Ok(json_response(
+        serde_json::to_value(library).unwrap_or_else(|_| json!({"movies": [], "series": []})),
+    ))
+}
+
+pub async fn library_put_handler(
     State(state): State<AppState>,
-    method: Method,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
-    match method {
-        Method::GET => {
-            let library = read_local_library(&state.config.local_library_path).await?;
-            Ok(json_response(
-                serde_json::to_value(library)
-                    .unwrap_or_else(|_| json!({"movies": [], "series": []})),
-            ))
-        }
-        Method::PUT => {
-            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-                .await
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-            let payload = serde_json::from_slice::<Value>(&bytes)
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-            let updated = write_local_library(&state.config.local_library_path, payload).await?;
-            Ok(json_response(json!({
-                "ok": true,
-                "library": updated
-            })))
-        }
-        _ => Err(ApiError::method_not_allowed(
-            "Method not allowed. Use GET or PUT.",
-        )),
-    }
+    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
+        .await
+        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = serde_json::from_slice::<Value>(&bytes)
+        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let updated = write_local_library(&state.config.local_library_path, payload).await?;
+    Ok(json_response(json!({
+        "ok": true,
+        "library": updated
+    })))
 }
 
 pub async fn title_preferences_handler(

@@ -28,6 +28,7 @@ import {
   getStoredStreamQualityPreference,
   getStoredAudioLangForTmdbMovie,
 } from "../lib/preferences.js";
+import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1692,13 +1693,12 @@ export default function HomePage() {
       params.set("src", JEFFREY_EPSTEIN_EPISODE_1_SOURCE);
     }
 
-    const _slug = (title || "Title")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
+    const _slug = slugifyTitle(title || "Title");
     const _epIdx = isSeriesLaunch && hasEpisodeIndex ? `/${Math.floor(parsedEpisodeIndex)}` : "";
-    try { sessionStorage.setItem(`watch:${_slug}`, params.toString()); } catch {}
+    saveWatchParams(_slug, params.toString(), {
+      tmdbId: params.get("tmdbId") || "",
+      seriesId: params.get("seriesId") || "",
+    });
     window.location.href = `/watch/${_slug}${_epIdx}`;
   }
 

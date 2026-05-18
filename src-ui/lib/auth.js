@@ -84,17 +84,19 @@ export async function hydrateFromServer() {
         : Array.isArray(continueData)
           ? continueData
           : [];
-      if (continueEntries.length > 0) {
-        const metaMap = {};
-        for (const entry of continueEntries) {
-          if (entry.sourceIdentity) {
-            metaMap[entry.sourceIdentity] = entry;
-            if (entry.resumeSeconds > 0) {
-              localStorage.setItem(`netflix-resume:${entry.sourceIdentity}`, String(entry.resumeSeconds));
-            }
+      const metaMap = {};
+      for (const entry of continueEntries) {
+        if (entry.sourceIdentity) {
+          metaMap[entry.sourceIdentity] = entry;
+          if (entry.resumeSeconds > 0) {
+            localStorage.setItem(`netflix-resume:${entry.sourceIdentity}`, String(entry.resumeSeconds));
           }
         }
+      }
+      if (Object.keys(metaMap).length > 0) {
         localStorage.setItem("netflix-continue-watching-meta", JSON.stringify(metaMap));
+      } else {
+        localStorage.removeItem("netflix-continue-watching-meta");
       }
     }
 
@@ -107,6 +109,8 @@ export async function hydrateFromServer() {
           : [];
       if (listEntries.length > 0) {
         localStorage.setItem("netflix-my-list-v1", JSON.stringify(listEntries));
+      } else {
+        localStorage.removeItem("netflix-my-list-v1");
       }
     }
   } catch {

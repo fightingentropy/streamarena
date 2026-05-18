@@ -59,7 +59,13 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (request.mode === "navigate") {
-    event.respondWith(networkFirst(request, "/"));
+    let fallbackUrl = "/";
+    if (url.pathname.startsWith("/watch")) {
+      fallbackUrl = "/player.html";
+    } else if (url.pathname.endsWith(".html")) {
+      fallbackUrl = url.pathname;
+    }
+    event.respondWith(networkFirst(request, fallbackUrl));
     return;
   }
 

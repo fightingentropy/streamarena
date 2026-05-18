@@ -23,6 +23,7 @@ import {
   getStoredStreamQualityPreference,
   getStoredAudioLangForTmdbMovie,
 } from "../lib/preferences.js";
+import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
 
 // --- Pure utility functions (no DOM) ---
 
@@ -100,12 +101,11 @@ function buildPlayerUrl(details) {
     params.set("audioLang", "en");
   }
 
-  const _slug = (details.title || "title")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-  try { sessionStorage.setItem(`watch:${_slug}`, params.toString()); } catch {}
+  const _slug = slugifyTitle(details.title || "title");
+  saveWatchParams(_slug, params.toString(), {
+    tmdbId: params.get("tmdbId") || "",
+    seriesId: params.get("seriesId") || "",
+  });
   return `/watch/${_slug}`;
 }
 
