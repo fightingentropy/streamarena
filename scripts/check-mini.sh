@@ -154,6 +154,9 @@ else
 fi
 
 public_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL" || true)"
-[[ "$public_status" == "302" ]] && pass "$PUBLIC_URL returns Cloudflare Access 302" || bad "$PUBLIC_URL returned HTTP $public_status"
+[[ "$public_status" == "200" ]] && pass "$PUBLIC_URL returns app HTTP 200" || bad "$PUBLIC_URL returned HTTP $public_status"
+
+public_auth_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL/api/auth/me" || true)"
+[[ "$public_auth_status" == "401" ]] && pass "$PUBLIC_URL keeps app login active" || bad "$PUBLIC_URL app auth returned HTTP $public_auth_status"
 
 exit "$fail"

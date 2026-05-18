@@ -482,7 +482,7 @@ Watchdog/self-healing:
 
 MacBook helper scripts:
 
-- `bun run mini:check` -> verifies the mini runtime, tunnel, public Access response, asset shape, env permissions, maintenance agents, and disk space.
+- `bun run mini:check` -> verifies the mini runtime, tunnel, public app response, app login, asset shape, env permissions, maintenance agents, and disk space.
 - `bun run mini:deploy` -> builds locally, syncs `dist`, the backend binary, and non-video assets, restarts the mini backend, then runs `mini:check`.
 - `bun run mini:deploy -- --skip-build` -> deploys existing local build artifacts and restarts/checks the mini.
 - `bun run mini:deploy -- --video assets/videos/<file>.mp4` -> copies that symlink target as a real file to the mini.
@@ -502,7 +502,8 @@ curl -sSI --max-time 10 https://fightingentropy.org | sed -n '1,8p'
 Expected results:
 
 - Mini local app: `200`
-- Public host with Cloudflare Access enabled: `HTTP/2 302`
+- Public host: `HTTP/2 200`
+- Public app auth when logged out: `401`
 
 Deploying code changes from the MacBook:
 
