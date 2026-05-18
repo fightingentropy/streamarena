@@ -4310,8 +4310,8 @@ export default function HomePage() {
           <nav>
             <a href="#" class="is-active">Home</a>
             <a href="/live">Live</a>
-            <a href="#">Series</a>
-            <a href="#">Films</a>
+            <a href="#" class="nav-secondary">Series</a>
+            <a href="#" class="nav-secondary">Films</a>
             <a href="#" class="optional">Games</a>
             <a href="/new-popular" class="optional">New &amp; Popular</a>
             <a href="#" id="navMyList" class="optional" onClick=${handleMyListNavClick}>My List</a>

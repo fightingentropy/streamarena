@@ -208,8 +208,8 @@ export default function LivePage() {
             <nav>
               <a href="/">Home</a>
               <a href="/live" class="is-active">Live</a>
-              <a href="#">Series</a>
-              <a href="#">Films</a>
+              <a href="#" class="nav-secondary">Series</a>
+              <a href="#" class="nav-secondary">Films</a>
               <a href="#" class="optional">Games</a>
               <a href="/new-popular" class="optional">New &amp; Popular</a>
               <a href="/#myListRow" class="optional">My List</a>
