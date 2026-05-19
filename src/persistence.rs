@@ -384,6 +384,40 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
+    pub async fn get_latest_healthy_playback_session_for_tmdb(
+        &self,
+        tmdb_id: String,
+    ) -> AppResult<Option<PlaybackSession>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let key = connection
+                .query_row(
+                    "
+                    SELECT session_key
+                    FROM playback_sessions
+                    WHERE tmdb_id = ?
+                      AND health_state != 'invalid'
+                      AND playable_url != ''
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    ",
+                    [tmdb_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            return_connection(&pool, connection);
+            match key {
+                Some(session_key) => get_playback_session_inner(&pool, &path, session_key),
+                None => Ok(None),
+            }
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
     pub async fn update_playback_session_progress(
         &self,
         session_key: String,
@@ -2447,6 +2481,61 @@ mod tests {
             .await
             .expect("invalidate source sessions again");
         assert_eq!(updated_again, 0);
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn latest_healthy_playback_session_skips_invalid_sessions() {
+        let path = unique_temp_db_path("latest-healthy-playback-session");
+        let db = setup_test_playback_session_db(&path).await;
+        for (session_key, audio_lang, quality, source_hash, filename) in [
+            (
+                "123:en:1080p",
+                "en",
+                "1080p",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "Healthy.mp4",
+            ),
+            (
+                "123:auto:720p",
+                "auto",
+                "720p",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "Invalid.mp4",
+            ),
+        ] {
+            db.persist_playback_session(PersistPlaybackSessionInput {
+                session_key: session_key.to_owned(),
+                tmdb_id: "123".to_owned(),
+                audio_lang: audio_lang.to_owned(),
+                preferred_quality: quality.to_owned(),
+                source_hash: source_hash.to_owned(),
+                selected_file: "1".to_owned(),
+                filename: filename.to_owned(),
+                playable_url: format!("https://download.real-debrid.com/{filename}"),
+                fallback_urls: Vec::new(),
+                metadata: json!({"tmdbId":"123","displayTitle":"Movie"}),
+            })
+            .await
+            .expect("persist session");
+        }
+
+        db.invalidate_playback_sessions_by_source_hash(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+            "Playback failed.".to_owned(),
+        )
+        .await
+        .expect("invalidate latest session");
+
+        let latest = db
+            .get_latest_healthy_playback_session_for_tmdb("123".to_owned())
+            .await
+            .expect("load latest healthy session")
+            .expect("healthy session exists");
+
+        assert_eq!(latest.session_key, "123:en:1080p");
+        assert_eq!(latest.filename, "Healthy.mp4");
 
         let _ = tokio::fs::remove_file(&path).await;
     }
