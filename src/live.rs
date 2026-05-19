@@ -17,7 +17,13 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "vs-hls-push-ww-live.akamaized.net",
     "jmp2.uk",
     "www.bloomberg.com",
+    "28585519.net",
 ];
+
+struct LiveHlsRequest {
+    source_url: Url,
+    referer: Option<String>,
+}
 
 pub async fn live_hls_handler(
     State(state): State<AppState>,
@@ -27,25 +33,16 @@ pub async fn live_hls_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    let params = query_pairs(uri.query().unwrap_or_default());
-    let request_url = absolute_request_url(&state, &uri)?;
-    let input = to_absolute_playback_url(
-        params.get("input").map(String::as_str).unwrap_or_default(),
-        &request_url,
-    );
-    if input.trim().is_empty() {
-        return Err(ApiError::bad_request("Missing input query parameter."));
-    }
-    let source_url =
-        Url::parse(&input).map_err(|_| ApiError::bad_request("Invalid live HLS URL."))?;
-    if !is_allowed_live_hls_url(&source_url) {
-        return Err(ApiError::bad_request("Unsupported live HLS URL."));
-    }
+    let live_request = live_hls_request_input(&state, &uri)?;
 
-    let response = state
+    let mut request = state
         .http_client
-        .get(source_url.clone())
-        .header(reqwest::header::USER_AGENT, "netflix-rust-backend")
+        .get(live_request.source_url.clone())
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0");
+    if let Some(referer) = live_request.referer.as_deref() {
+        request = request.header(reqwest::header::REFERER, referer);
+    }
+    let response = request
         .send()
         .await
         .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
@@ -65,7 +62,8 @@ pub async fn live_hls_handler(
         .text()
         .await
         .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
-    let rewritten = rewrite_live_hls_playlist(&final_url, &playlist);
+    let rewritten =
+        rewrite_live_hls_playlist(&final_url, &playlist, live_request.referer.as_deref());
 
     Response::builder()
         .status(200)
@@ -75,6 +73,57 @@ pub async fn live_hls_handler(
         )
         .header("cache-control", "no-store")
         .body(Body::from(rewritten))
+        .map_err(|error| ApiError::internal(error.to_string()))
+}
+
+pub async fn live_hls_resource_handler(
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed."));
+    }
+    let live_request = live_hls_request_input(&state, &uri)?;
+    let mut request = state
+        .http_client
+        .get(live_request.source_url.clone())
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0");
+    if let Some(referer) = live_request.referer.as_deref() {
+        request = request.header(reqwest::header::REFERER, referer);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(ApiError::bad_gateway(format!(
+            "Live HLS resource request failed with status {}.",
+            response.status()
+        )));
+    }
+    let final_url = response.url().clone();
+    if !is_allowed_live_hls_url(&final_url) {
+        return Err(ApiError::bad_gateway(
+            "Live HLS resource redirected to an unsupported host.",
+        ));
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+
+    Response::builder()
+        .status(200)
+        .header("content-type", content_type)
+        .header("cache-control", "no-store")
+        .body(Body::from(bytes))
         .map_err(|error| ApiError::internal(error.to_string()))
 }
 
@@ -92,12 +141,68 @@ fn absolute_request_url(state: &AppState, uri: &Uri) -> AppResult<Url> {
     .map_err(|error| ApiError::internal(error.to_string()))
 }
 
+fn live_hls_request_input(state: &AppState, uri: &Uri) -> AppResult<LiveHlsRequest> {
+    let params = query_pairs(uri.query().unwrap_or_default());
+    let request_url = absolute_request_url(state, uri)?;
+    let input = to_absolute_playback_url(
+        params.get("input").map(String::as_str).unwrap_or_default(),
+        &request_url,
+    );
+    if input.trim().is_empty() {
+        return Err(ApiError::bad_request("Missing input query parameter."));
+    }
+    let source_url =
+        Url::parse(&input).map_err(|_| ApiError::bad_request("Invalid live HLS URL."))?;
+    if !is_allowed_live_hls_url(&source_url) {
+        return Err(ApiError::bad_request("Unsupported live HLS URL."));
+    }
+    let referer = params
+        .get("referer")
+        .and_then(|value| normalize_hls_referer(value));
+    Ok(LiveHlsRequest {
+        source_url,
+        referer,
+    })
+}
+
+fn normalize_hls_referer(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > 2048 {
+        return None;
+    }
+    if trimmed
+        .chars()
+        .any(|ch| ch.is_ascii_control() || ch == '\u{7f}')
+    {
+        return None;
+    }
+    let url = Url::parse(trimmed).ok()?;
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return None;
+    }
+    url.host_str()?;
+    Some(url.to_string())
+}
+
 fn encode_query_value(value: &str) -> String {
     byte_serialize(value.as_bytes()).collect::<String>()
 }
 
-fn live_hls_proxy_playlist_url(input: &str) -> String {
-    format!("/api/live/hls.m3u8?input={}", encode_query_value(input))
+fn live_hls_proxy_playlist_url(input: &str, referer: Option<&str>) -> String {
+    live_hls_proxy_url("/api/live/hls.m3u8", input, referer)
+}
+
+fn live_hls_proxy_resource_url(input: &str, referer: Option<&str>) -> String {
+    live_hls_proxy_url("/api/live/hls-resource", input, referer)
+}
+
+fn live_hls_proxy_url(path: &str, input: &str, referer: Option<&str>) -> String {
+    let mut url = format!("{path}?input={}", encode_query_value(input));
+    if let Some(referer) = referer.and_then(normalize_hls_referer) {
+        url.push_str("&referer=");
+        url.push_str(&encode_query_value(&referer));
+    }
+    url
 }
 
 fn resolve_hls_uri(base_url: &Url, value: &str) -> Option<String> {
@@ -122,7 +227,7 @@ fn is_allowed_live_hls_url(url: &Url) -> bool {
         .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
 }
 
-fn rewrite_live_hls_playlist(base_url: &Url, playlist: &str) -> String {
+fn rewrite_live_hls_playlist(base_url: &Url, playlist: &str, referer: Option<&str>) -> String {
     let lines: Vec<&str> = playlist.lines().collect();
     let is_master_playlist = lines
         .iter()
@@ -132,15 +237,19 @@ fn rewrite_live_hls_playlist(base_url: &Url, playlist: &str) -> String {
         .any(|line| line.trim_start().starts_with("#EXTINF"));
 
     if is_master_playlist {
-        return rewrite_live_hls_master_playlist(base_url, &lines);
+        return rewrite_live_hls_master_playlist(base_url, &lines, referer);
     }
     if is_media_playlist {
-        return rewrite_live_hls_media_playlist(base_url, &lines);
+        return rewrite_live_hls_media_playlist(base_url, &lines, referer);
     }
     playlist.to_owned()
 }
 
-fn rewrite_live_hls_master_playlist(base_url: &Url, lines: &[&str]) -> String {
+fn rewrite_live_hls_master_playlist(
+    base_url: &Url,
+    lines: &[&str],
+    referer: Option<&str>,
+) -> String {
     let mut rewritten = Vec::with_capacity(lines.len());
     for raw_line in lines {
         let line = raw_line.trim_end();
@@ -150,7 +259,7 @@ fn rewrite_live_hls_master_playlist(base_url: &Url, lines: &[&str]) -> String {
         }
 
         if let Some(absolute_uri) = resolve_hls_uri(base_url, line) {
-            rewritten.push(live_hls_proxy_playlist_url(&absolute_uri));
+            rewritten.push(live_hls_proxy_playlist_url(&absolute_uri, referer));
         } else {
             rewritten.push(line.to_owned());
         }
@@ -158,7 +267,11 @@ fn rewrite_live_hls_master_playlist(base_url: &Url, lines: &[&str]) -> String {
     rewritten.join("\n")
 }
 
-fn rewrite_live_hls_media_playlist(base_url: &Url, lines: &[&str]) -> String {
+fn rewrite_live_hls_media_playlist(
+    base_url: &Url,
+    lines: &[&str],
+    referer: Option<&str>,
+) -> String {
     let mut header = Vec::new();
     let mut pending_block = Vec::new();
     let mut segment_blocks: Vec<Vec<String>> = Vec::new();
@@ -190,13 +303,15 @@ fn rewrite_live_hls_media_playlist(base_url: &Url, lines: &[&str]) -> String {
             {
                 header.push(line.to_owned());
             } else {
-                pending_block.push(rewrite_hls_uri_attribute(base_url, line));
+                pending_block.push(rewrite_hls_uri_attribute(base_url, line, referer));
             }
             continue;
         }
 
         saw_segment = true;
-        let segment_uri = resolve_hls_uri(base_url, line).unwrap_or_else(|| line.to_owned());
+        let segment_uri = resolve_hls_uri(base_url, line)
+            .map(|absolute_uri| live_hls_proxy_resource_url(&absolute_uri, referer))
+            .unwrap_or_else(|| line.to_owned());
         pending_block.push(segment_uri);
         segment_blocks.push(std::mem::take(&mut pending_block));
     }
@@ -224,7 +339,7 @@ fn rewrite_live_hls_media_playlist(base_url: &Url, lines: &[&str]) -> String {
     rewritten.join("\n")
 }
 
-fn rewrite_hls_uri_attribute(base_url: &Url, line: &str) -> String {
+fn rewrite_hls_uri_attribute(base_url: &Url, line: &str, referer: Option<&str>) -> String {
     let Some(uri_start) = line.find("URI=\"") else {
         return line.to_owned();
     };
@@ -237,10 +352,11 @@ fn rewrite_hls_uri_attribute(base_url: &Url, line: &str) -> String {
     let Some(absolute_uri) = resolve_hls_uri(base_url, uri_value) else {
         return line.to_owned();
     };
+    let proxied_uri = live_hls_proxy_resource_url(&absolute_uri, referer);
     format!(
         "{}{}{}",
         &line[..value_start],
-        absolute_uri,
+        proxied_uri,
         &line[value_end..]
     )
 }
@@ -278,9 +394,23 @@ mod tests {
             .parse()
             .expect("base url");
         let playlist = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nchild/main.m3u8\n";
-        let rewritten = rewrite_live_hls_playlist(&base, playlist);
+        let rewritten = rewrite_live_hls_playlist(&base, playlist, None);
 
         assert!(rewritten.contains("/api/live/hls.m3u8?input="));
         assert!(rewritten.contains("child%2Fmain.m3u8"));
+    }
+
+    #[test]
+    fn rewrites_media_playlist_segments_and_referer_through_live_proxy() {
+        let base: url::Url = "https://media.example.28585519.net/hls/live.m3u8"
+            .parse()
+            .expect("base url");
+        let playlist = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:4\n#EXTINF:4.0,\nseg-1.ts\n";
+        let rewritten =
+            rewrite_live_hls_playlist(&base, playlist, Some("https://helpless.click/e/player"));
+
+        assert!(rewritten.contains("/api/live/hls-resource?input="));
+        assert!(rewritten.contains("seg-1.ts"));
+        assert!(rewritten.contains("referer=https%3A%2F%2Fhelpless.click%2Fe%2Fplayer"));
     }
 }

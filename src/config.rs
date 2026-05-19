@@ -17,6 +17,12 @@ pub struct Config {
     pub tmdb_api_key: String,
     pub real_debrid_token: String,
     pub torrentio_base_url: String,
+    pub torznab_api_url: String,
+    pub torznab_api_key: String,
+    pub torznab_movie_categories: Vec<String>,
+    pub torznab_tv_categories: Vec<String>,
+    pub torznab_limit: usize,
+    pub torznab_timeout_ms: u64,
     pub remux_video_mode: String,
     pub remux_max_concurrent: usize,
     pub remux_queue_timeout_ms: u64,
@@ -66,6 +72,8 @@ impl Config {
         let resolver_max_concurrent = parse_usize_env("RESOLVER_MAX_CONCURRENT", 2, 1, 16);
         let resolver_queue_timeout_ms =
             parse_u64_env("RESOLVER_QUEUE_TIMEOUT_MS", 3_000, 100, 120_000);
+        let torznab_limit = parse_usize_env("TORZNAB_LIMIT", 50, 1, 100);
+        let torznab_timeout_ms = parse_u64_env("TORZNAB_TIMEOUT_MS", 15_000, 3_000, 65_000);
         let hls_max_transcode_jobs = parse_usize_env("HLS_MAX_TRANSCODE_JOBS", 1, 1, 8);
         let hls_max_segment_renders = parse_usize_env("HLS_MAX_SEGMENT_RENDERS", 2, 1, 16);
         let hls_segment_queue_timeout_ms =
@@ -96,6 +104,24 @@ impl Config {
                 .trim()
                 .trim_end_matches('/')
                 .to_owned(),
+            torznab_api_url: env::var("TORZNAB_API_URL")
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
+            torznab_api_key: env::var("TORZNAB_API_KEY")
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
+            torznab_movie_categories: parse_csv_env(
+                "TORZNAB_MOVIE_CATEGORIES",
+                &["2000", "2040", "2045"],
+            ),
+            torznab_tv_categories: parse_csv_env(
+                "TORZNAB_TV_CATEGORIES",
+                &["5000", "5040", "5045"],
+            ),
+            torznab_limit,
+            torznab_timeout_ms,
             remux_video_mode: normalize_remux_video_mode(
                 env::var("REMUX_VIDEO_MODE").unwrap_or_else(|_| "auto".to_owned()),
             ),
@@ -149,6 +175,30 @@ fn parse_u64_env(name: &str, fallback: u64, min: u64, max: u64) -> u64 {
         .clamp(min, max)
 }
 
+fn parse_csv_env(name: &str, fallback: &[&str]) -> Vec<String> {
+    let values = env::var(name).unwrap_or_else(|_| fallback.join(","));
+    let mut seen = std::collections::HashSet::new();
+    let mut normalized = values
+        .split(',')
+        .filter_map(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() || !trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+                return None;
+            }
+            let normalized = trimmed.to_owned();
+            if seen.insert(normalized.clone()) {
+                Some(normalized)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    if normalized.is_empty() {
+        normalized = fallback.iter().map(|value| (*value).to_owned()).collect();
+    }
+    normalized
+}
+
 fn normalize_bool_flag(value: String) -> bool {
     !matches!(
         value.trim().to_lowercase().as_str(),
@@ -177,5 +227,41 @@ fn normalize_hwaccel_mode(value: String) -> String {
         "cuda" => "cuda".to_owned(),
         "qsv" => "qsv".to_owned(),
         _ => "none".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_csv_env, parse_u64_env, parse_usize_env};
+
+    #[test]
+    fn clamps_torznab_numeric_config() {
+        unsafe {
+            std::env::set_var("TORZNAB_LIMIT_TEST", "500");
+            std::env::set_var("TORZNAB_TIMEOUT_TEST", "1000");
+        }
+        assert_eq!(parse_usize_env("TORZNAB_LIMIT_TEST", 50, 1, 100), 100);
+        assert_eq!(
+            parse_u64_env("TORZNAB_TIMEOUT_TEST", 15_000, 3_000, 65_000),
+            3_000
+        );
+        unsafe {
+            std::env::remove_var("TORZNAB_LIMIT_TEST");
+            std::env::remove_var("TORZNAB_TIMEOUT_TEST");
+        }
+    }
+
+    #[test]
+    fn normalizes_torznab_category_lists() {
+        unsafe {
+            std::env::set_var("TORZNAB_CATEGORY_TEST", " 2000,2040,bad,2000,,5045 ");
+        }
+        assert_eq!(
+            parse_csv_env("TORZNAB_CATEGORY_TEST", &["2000"]),
+            vec!["2000", "2040", "5045"]
+        );
+        unsafe {
+            std::env::remove_var("TORZNAB_CATEGORY_TEST");
+        }
     }
 }

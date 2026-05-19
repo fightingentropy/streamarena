@@ -4239,6 +4239,7 @@ export default function HomePage() {
             <a href="#" class="optional">Series</a>
             <a href="#" class="optional">Films</a>
             <a href="/live" class=${() => activeView() === "live" ? "is-active" : ""} onClick=${handleLiveNavClick}>Live</a>
+            <a href="/football" class="optional">Football</a>
             <a href="/new-popular" class="optional">New &amp; Popular</a>
             <a href="#" id="navMyList" class="optional" onClick=${handleMyListNavClick}>My List</a>
             <a href="#" class="optional nav-secondary">Browse by Language</a>

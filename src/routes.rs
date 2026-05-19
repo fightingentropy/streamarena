@@ -16,12 +16,13 @@ use axum::http::HeaderMap;
 use crate::auth;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult, json_response};
+use crate::football::{football_matches_handler, football_stream_resolve_handler};
 use crate::library::{
     normalize_upload_content_type, normalize_upload_episode_ordinal, normalize_whitespace,
     normalize_year, read_local_library, strip_file_extension, title_from_filename_token,
     write_local_library,
 };
-use crate::live::live_hls_handler;
+use crate::live::{live_hls_handler, live_hls_resource_handler};
 use crate::media::{
     MediaProbe, MediaService, choose_audio_track_from_probe, choose_subtitle_track_from_probe,
     merge_preferred_subtitle_tracks,
@@ -66,9 +67,13 @@ pub fn build_router(state: AppState) -> Router {
     let public_api = Router::new()
         .route("/api/health", any(health_handler))
         .route("/api/config", any(config_handler))
+        .route("/api/football/matches", get(football_matches_handler))
+        .route("/api/football/stream", get(football_stream_resolve_handler))
         .route("/api/library", get(library_get_handler))
         .route("/api/hls/master.m3u8", any(hls_master_handler))
         .route("/api/hls/segment.ts", any(hls_segment_handler))
+        .route("/api/live/hls.m3u8", any(live_hls_handler))
+        .route("/api/live/hls-resource", any(live_hls_resource_handler))
         .route("/api/auth/signup", any(auth_signup_handler))
         .route("/api/auth/login", any(auth_login_handler))
         .route("/api/auth/logout", any(auth_logout_handler));
@@ -102,7 +107,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/resolve/movie", any(resolve_movie_handler))
         .route("/api/resolve/tv", any(resolve_tv_handler))
         .route("/api/remux", any(remux_handler))
-        .route("/api/live/hls.m3u8", any(live_hls_handler))
         .route("/api/media/tracks", any(media_tracks_handler))
         .route("/api/subtitles.vtt", any(subtitles_vtt_handler))
         .route(
@@ -179,6 +183,7 @@ pub async fn config_handler(
     let ffmpeg = state.runtime.get_ffmpeg_capabilities(false).await;
     Ok(json_response(json!({
         "realDebridConfigured": !state.config.real_debrid_token.is_empty(),
+        "torznabConfigured": !state.config.torznab_api_url.is_empty(),
         "tmdbConfigured": !state.config.tmdb_api_key.is_empty(),
         "playbackSessionsEnabled": state.config.playback_sessions_enabled,
         "autoAudioSyncEnabled": state.config.auto_audio_sync_enabled,
