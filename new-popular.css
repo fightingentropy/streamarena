@@ -1,5 +1,20 @@
-body.new-popular-route .page {
+body.new-popular-route .page.home-page {
     overflow: visible;
+    padding-top: 0;
+    background: #080808;
+}
+
+body.new-popular-route .new-popular-view {
+    min-height: 100dvh;
+    background: #080808;
+}
+
+body.new-popular-route .new-popular-hero {
+    position: relative;
+    min-height: 100dvh;
+    overflow: hidden;
+    isolation: isolate;
+    background: #000;
 }
 
 body.new-popular-route .hero-video.new-popular-backdrop {
@@ -62,7 +77,7 @@ body.new-popular-route #featuredRow .card {
 }
 
 body.new-popular-route #libraryMatchesRow .popular-cards .card,
-body.new-popular-route #popularRow .popular-cards .card {
+body.new-popular-route #newPopularRow .popular-cards .card {
     width: min(320px, 24vw);
 }
 
@@ -82,7 +97,7 @@ body.new-popular-route .popular-row:first-of-type {
 
     body.new-popular-route #featuredRow .card,
     body.new-popular-route #libraryMatchesRow .popular-cards .card,
-    body.new-popular-route #popularRow .popular-cards .card {
+    body.new-popular-route #newPopularRow .popular-cards .card {
         width: min(300px, 42vw);
     }
 }

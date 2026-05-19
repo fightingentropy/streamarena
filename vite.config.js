@@ -8,7 +8,6 @@ const pages = {
   player: resolve(__dirname, "player.html"),
   settings: resolve(__dirname, "settings.html"),
   upload: resolve(__dirname, "upload.html"),
-  "new-popular": resolve(__dirname, "new-popular.html"),
   live: resolve(__dirname, "live.html"),
   football: resolve(__dirname, "football.html"),
 };
@@ -32,8 +31,11 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use((req, _res, next) => {
           if (req.url?.startsWith("/watch")) {
-            const [path, query] = req.url.split("?");
+            const [, query] = req.url.split("?");
             req.url = `/player.html${query ? `?${query}` : ""}`;
+          } else if (req.url?.startsWith("/new-popular")) {
+            const [, query] = req.url.split("?");
+            req.url = `/index.html${query ? `?${query}` : ""}`;
           }
           next();
         });

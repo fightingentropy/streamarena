@@ -1,5 +1,5 @@
 // Bump CACHE_VERSION when shell assets change so clients pick up updates.
-const CACHE_VERSION = "netflix-pwa-v7";
+const CACHE_VERSION = "netflix-pwa-v9";
 const OFFLINE_URL = "/offline.html";
 const APP_SHELL_URLS = [
   "/",
@@ -7,7 +7,6 @@ const APP_SHELL_URLS = [
   "/settings.html",
   "/upload.html",
   "/live.html",
-  "/new-popular.html",
   "/player.html",
   OFFLINE_URL,
   "/manifest.webmanifest",

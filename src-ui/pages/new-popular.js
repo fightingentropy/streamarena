@@ -1,24 +1,8 @@
 import html from "solid-js/html";
 import { createSignal, onMount, onCleanup } from "solid-js";
+import { escapeHtml, TMDB_IMAGE_BASE } from "../shared.js";
 import {
-  STREAM_QUALITY_PREF_KEY,
-  supportedStreamQualityPreferences,
-  avatarStyleClassNames,
-  normalizeAvatarStyle,
-  normalizeAvatarMode,
-  sanitizeAvatarImageData,
-  getStoredAvatarStylePreference,
-  getStoredAvatarModePreference,
-  getStoredAvatarImagePreference,
-  escapeHtml,
-  TMDB_IMAGE_BASE,
-} from "../shared.js";
-import {
-  AUDIO_LANG_PREF_KEY_PREFIX,
   DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
-  supportedAudioLangs,
-  supportedDefaultAudioLanguages,
-  normalizeStreamQualityPreference,
   normalizeDefaultAudioLanguage,
   getStoredStreamQualityPreference,
   getStoredAudioLangForTmdbMovie,
@@ -164,44 +148,12 @@ export default function NewPopularPage() {
   const [showFeaturedEmpty, setShowFeaturedEmpty] = createSignal(false);
   const [featuredEmptyText, setFeaturedEmptyText] = createSignal("No popular movies are available right now.");
   const [showLibraryRow, setShowLibraryRow] = createSignal(false);
-  const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
   const [genreMapRef, setGenreMapRef] = createSignal(new Map());
   const [imageBaseRef, setImageBaseRef] = createSignal(TMDB_IMAGE_BASE);
 
-  // Avatar state
-  const [avatarClass, setAvatarClass] = createSignal("avatar avatar-style-blue");
-  const [avatarCustomStyle, setAvatarCustomStyle] = createSignal("");
-
   // Refs
-  let accountMenuEl;
   let popularRowEl;
   let cleanupHorizontalRailScrollers = () => {};
-
-  // --- Avatar logic ---
-  function applyAvatarStyle(style, mode, imageData) {
-    const normalizedStyle = normalizeAvatarStyle(style);
-    const normalizedMode = normalizeAvatarMode(mode);
-    const safeImage = sanitizeAvatarImageData(imageData);
-
-    if (normalizedMode === "custom" && safeImage) {
-      setAvatarClass("avatar avatar-custom-image");
-      setAvatarCustomStyle(`--avatar-image: url("${safeImage}"); background-image: var(--avatar-image)`);
-      return;
-    }
-
-    setAvatarClass(`avatar avatar-style-${normalizedStyle}`);
-    setAvatarCustomStyle("");
-  }
-
-  // --- Account menu ---
-  function toggleAccountMenu(event) {
-    event.stopPropagation();
-    setAccountMenuOpen((prev) => !prev);
-  }
-
-  function closeAccountMenu() {
-    setAccountMenuOpen(false);
-  }
 
   // --- Hero configuration ---
   function configureHero(item, genreMap, imageBase) {
@@ -345,22 +297,6 @@ export default function NewPopularPage() {
     popularRowEl?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  function handleOpenSearch() {
-    window.location.href = "/";
-  }
-
-  function handleDocumentClick(event) {
-    if (accountMenuEl && !accountMenuEl.contains(event.target)) {
-      closeAccountMenu();
-    }
-  }
-
-  function handleDocumentKeydown(event) {
-    if (event.key === "Escape") {
-      closeAccountMenu();
-    }
-  }
-
   // --- Card click handler ---
   function handleCardClick(details) {
     openPlayerPage(details);
@@ -375,23 +311,12 @@ export default function NewPopularPage() {
 
   // --- Lifecycle ---
   onMount(() => {
-    applyAvatarStyle(
-      getStoredAvatarStylePreference(),
-      getStoredAvatarModePreference(),
-      getStoredAvatarImagePreference(),
-    );
     cleanupHorizontalRailScrollers = bindHorizontalRailScrollers();
-
-    document.addEventListener("click", handleDocumentClick);
-    document.addEventListener("keydown", handleDocumentKeydown);
-
     void loadNewPopularPage();
   });
 
   onCleanup(() => {
     cleanupHorizontalRailScrollers();
-    document.removeEventListener("click", handleDocumentClick);
-    document.removeEventListener("keydown", handleDocumentKeydown);
   });
 
   // --- Card rendering helper ---
@@ -457,120 +382,8 @@ export default function NewPopularPage() {
   }
 
   // --- Template ---
-  return html`<div data-solid-page-root="" style="display: contents">
-    <div class="page" tabindex="0">
-      <header class="top-nav">
-        <div class="nav-left">
-          <a href="/" class="nav-logo" aria-label="Go to homepage">
-            <img
-              src="assets/icons/netflix-logo-clean.png"
-              class="logo-wordmark-image"
-              alt="Netflix"
-            />
-          </a>
-          <nav>
-            <a href="/">Home</a>
-            <a href="/live">Live</a>
-            <a href="/football" class="optional">Football</a>
-            <a href="/new-popular" class="optional is-active">New &amp; Popular</a>
-            <a href="/#myListRow" class="optional">My List</a>
-          </nav>
-        </div>
-        <div class="nav-right">
-          <div id="navSearchBox" class="nav-search-box" hidden>
-            <label class="nav-search-field" for="navSearchInput">
-              <svg viewBox="0 0 20 20" aria-hidden="true">
-                <path d="M14.33 12.9 19.71 18.28a1 1 0 0 1-1.42 1.42l-5.38-5.38a8 8 0 1 1 1.42-1.42Zm-6.33 1.1a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"></path>
-              </svg>
-              <input
-                id="navSearchInput"
-                type="search"
-                inputmode="search"
-                autocomplete="off"
-                autocorrect="off"
-                autocapitalize="off"
-                spellcheck="false"
-                placeholder="Titles, people, genres"
-                aria-label="Search titles, people, genres"
-              />
-            </label>
-            <button
-              class="nav-search-close"
-              type="button"
-              aria-label="Close search"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="m6 6 12 12M18 6 6 18"
-                  fill="none"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                ></path>
-              </svg>
-            </button>
-          </div>
-          <button
-            class="icon-btn"
-            aria-label="Search"
-            aria-expanded="false"
-            onClick=${handleOpenSearch}
-          >
-            <svg viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M14.33 12.9 19.71 18.28a1 1 0 0 1-1.42 1.42l-5.38-5.38a8 8 0 1 1 1.42-1.42Zm-6.33 1.1a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"></path>
-            </svg>
-          </button>
-          <div class="account-menu" ref=${(el) => { accountMenuEl = el; }}>
-            <button
-              class="account-avatar-btn"
-              aria-label="Account menu"
-              aria-haspopup="menu"
-              aria-controls="accountMenuPanel"
-              aria-expanded=${() => accountMenuOpen() ? "true" : "false"}
-              onClick=${toggleAccountMenu}
-            >
-              <div
-                class=${() => avatarClass()}
-                style=${() => avatarCustomStyle()}
-                aria-hidden="true"
-              ></div>
-            </button>
-            <button
-              class="icon-btn account-menu-toggle"
-              aria-label="Account menu"
-              aria-haspopup="menu"
-              aria-expanded=${() => accountMenuOpen() ? "true" : "false"}
-              onClick=${toggleAccountMenu}
-            >
-              <svg viewBox="0 0 12 8" aria-hidden="true">
-                <path
-                  d="M1 1.5 6 6.5l5-5"
-                  stroke="currentColor"
-                  stroke-width="1.8"
-                  fill="none"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                ></path>
-              </svg>
-            </button>
-            <div
-              id="accountMenuPanel"
-              class="account-menu-panel"
-              role="menu"
-              style=${() => accountMenuOpen() ? "" : "display:none"}
-            >
-              <a
-                class="account-menu-item account-menu-item--muted"
-                href="#"
-                role="menuitem"
-                tabindex="-1"
-              >Erlin</a>
-              <a class="account-menu-item" href="/settings" role="menuitem">Upload Media</a>
-              <a class="account-menu-item" href="/settings" role="menuitem">Settings</a>
-            </div>
-          </div>
-        </div>
-      </header>
-
+  return html`<div class="new-popular-view">
+    <section class="new-popular-hero" tabindex="0" aria-label="New and popular">
       <img
         class="hero-video new-popular-backdrop"
         src=${() => heroBackdropUrl()}
@@ -636,9 +449,9 @@ export default function NewPopularPage() {
         <span class="rating">${() => heroRatingText()}</span>
       </div>
 
-      <section class="continue-row">
+      <section id="featuredRow" class="continue-row new-popular-featured-row">
         <h2>Popular Right Now</h2>
-        <div class="cards">
+        <div class="cards popular-cards">
           ${() => featuredItems().map((item, i) => renderCard(item, i, featuredItems().length))}
         </div>
         <p
@@ -648,9 +461,10 @@ export default function NewPopularPage() {
           ${() => featuredEmptyText()}
         </p>
       </section>
-    </div>
+    </section>
 
     <section
+      id="libraryMatchesRow"
       class="popular-row"
       style=${() => showLibraryRow() ? "" : "display:none"}
     >
@@ -662,7 +476,7 @@ export default function NewPopularPage() {
       </div>
     </section>
 
-    <section class="popular-row" ref=${(el) => { popularRowEl = el; }}>
+    <section id="newPopularRow" class="popular-row" ref=${(el) => { popularRowEl = el; }}>
       <div class="popular-row-inner">
         <h2>More Popular Movies</h2>
         <div class="cards popular-cards">

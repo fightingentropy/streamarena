@@ -1,4 +1,4 @@
-const OVERFLOW_LINK_SELECTOR = "a.nav-secondary, a.optional";
+const OVERFLOW_LINK_SELECTOR = "a.optional";
 
 export function wireBrowseNavMore() {
   const nav = document.querySelector(".top-nav nav");

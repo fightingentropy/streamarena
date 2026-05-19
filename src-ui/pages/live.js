@@ -96,7 +96,6 @@ export default function LivePage() {
               <a href="/football">Football</a>
               <a href="/new-popular" class="optional">New &amp; Popular</a>
               <a href="/#myListRow" class="optional">My List</a>
-              <a href="#" class="optional nav-secondary">Browse by Language</a>
             </nav>
           </div>
           <div class="nav-right">

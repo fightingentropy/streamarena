@@ -126,6 +126,9 @@ fn resolve_local_path(frontend_dir: &Path, repo_root: &Path, pathname: &str) -> 
     if decoded.starts_with("/watch/") || decoded == "/watch" {
         return Some(frontend_dir.join("player.html"));
     }
+    if decoded == "/new-popular" {
+        return Some(frontend_dir.join("index.html"));
+    }
     if decoded.starts_with("/assets/") {
         let normalized = normalize_path(decoded.trim_start_matches('/'))?;
         let file_path = repo_root.join(normalized);
@@ -250,6 +253,17 @@ mod tests {
         let path =
             resolve_local_path(Path::new("/tmp/app"), Path::new("/tmp/app"), "/settings").unwrap();
         assert!(path.ends_with("settings.html"));
+    }
+
+    #[test]
+    fn maps_new_popular_route_to_index_shell() {
+        let path = resolve_local_path(
+            Path::new("/tmp/app/dist"),
+            Path::new("/tmp/app"),
+            "/new-popular",
+        )
+        .unwrap();
+        assert!(path.ends_with("index.html"));
     }
 
     #[test]
