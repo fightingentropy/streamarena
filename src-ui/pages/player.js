@@ -5226,7 +5226,11 @@ async function requestJson(url, options = {}, timeoutMs = 20000) {
         payload?.message ||
         buildHttpErrorMessage(response, rawText) ||
         `Request failed (${response.status})`;
-      throw new Error(message);
+      const error = new Error(message);
+      error.status = response.status;
+      error.statusText = response.statusText;
+      error.url = url;
+      throw error;
     }
 
     return payload;
@@ -5240,6 +5244,47 @@ async function requestJson(url, options = {}, timeoutMs = 20000) {
       window.clearTimeout(timeoutId);
     }
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+  });
+}
+
+function isTransientResolveError(error) {
+  const status = Number(error?.status || 0);
+  if (status === 502 || status === 503 || status === 504) {
+    return true;
+  }
+
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    message.includes("bad gateway") ||
+    message.includes("request timed out") ||
+    message.includes("real-debrid request timed out") ||
+    message.includes("torrentio request failed") ||
+    message.includes("failed to fetch")
+  );
+}
+
+async function requestResolveJson(url, timeoutMs = 95000) {
+  const retryDelays = [900, 1800];
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    try {
+      return await requestJson(url, {}, timeoutMs);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= retryDelays.length || !isTransientResolveError(error)) {
+        throw error;
+      }
+      await sleep(retryDelays[attempt]);
+    }
+  }
+
+  throw lastError || new Error("Unable to resolve this stream.");
 }
 
 function buildHttpErrorMessage(response, rawText = "") {
@@ -5481,17 +5526,13 @@ async function resolveTmdbMovieViaBackend(
   query.set("sourceAudioProfile", preferredSourceAudioProfile);
 
   try {
-    return await requestJson(
-      `/api/resolve/movie?${query.toString()}`,
-      {},
-      95000,
-    );
+    return await requestResolveJson(`/api/resolve/movie?${query.toString()}`);
   } catch (error) {
     if (!allowSourceFallback || !pinnedSourceHash) {
       throw error;
     }
     query.delete("sourceHash");
-    return requestJson(`/api/resolve/movie?${query.toString()}`, {}, 95000);
+    return requestResolveJson(`/api/resolve/movie?${query.toString()}`);
   }
 }
 
@@ -5538,10 +5579,8 @@ async function resolveTmdbTvEpisodeViaBackend(
 
   const pinnedSourceHash = getPinnedSourceHashForRequests();
   try {
-    return await requestJson(
+    return await requestResolveJson(
       `/api/resolve/tv?${buildQuery(preferredContainer, pinnedSourceHash).toString()}`,
-      {},
-      95000,
     );
   } catch (error) {
     let lastError = error;
@@ -5574,10 +5613,8 @@ async function resolveTmdbTvEpisodeViaBackend(
 
     for (const [fallbackContainer, fallbackSource] of fallbackAttempts) {
       try {
-        return await requestJson(
+        return await requestResolveJson(
           `/api/resolve/tv?${buildQuery(fallbackContainer, fallbackSource).toString()}`,
-          {},
-          95000,
         );
       } catch (fallbackError) {
         lastError = fallbackError;
@@ -5628,7 +5665,7 @@ async function resolveTmdbSourceForGallerySave(sourceHash = "") {
   query.set("sourceAudioProfile", preferredSourceAudioProfile);
 
   const endpoint = isTmdbTvPlayback ? "/api/resolve/tv" : "/api/resolve/movie";
-  const resolved = await requestJson(`${endpoint}?${query.toString()}`, {}, 95000);
+  const resolved = await requestResolveJson(`${endpoint}?${query.toString()}`);
   const resolvedSourceHash = normalizeSourceHash(resolved?.sourceHash || "");
   if (resolvedSourceHash !== normalizedSourceHash) {
     throw new Error("Selected source is unavailable right now. Try another source.");
