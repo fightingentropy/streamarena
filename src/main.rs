@@ -1,6 +1,7 @@
 mod auth;
 mod config;
 mod error;
+mod football;
 mod library;
 mod live;
 mod media;

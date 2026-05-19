@@ -141,6 +141,7 @@ const reportedPlaybackFailureKeys = new Set();
 let liveStreamOptions = [];
 let selectedLiveStreamId = "";
 let isLivePlayback = false;
+let shouldResolveFootballEmbedSource = false;
 let lastRequestedPlaybackSource = "";
 let lastRequestedAbsolutePlaybackSource = "";
 let activeHlsController = null;
@@ -196,6 +197,18 @@ let _seriesLibraryReady = fetchLocalSeriesLibrary().then((local) => {
 let rawSourceParam = String(params.get("src") || "").trim();
 let normalizedRawSourceParam = normalizePlaybackSourceValue(rawSourceParam);
 
+function isTruthyParamValue(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  return (
+    normalized === "1" ||
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "on"
+  );
+}
+
 function refreshLiveStreamStateFromParams(queryParams = params) {
   const nextState = deriveLiveStreamStateFromParams(
     queryParams,
@@ -204,6 +217,8 @@ function refreshLiveStreamStateFromParams(queryParams = params) {
   liveStreamOptions = nextState.options;
   selectedLiveStreamId = nextState.selectedStreamId;
   isLivePlayback = nextState.isLivePlayback;
+  shouldResolveFootballEmbedSource =
+    isLivePlayback && isTruthyParamValue(queryParams.get("liveEmbed"));
   if (nextState.selectedSource) {
     rawSourceParam = nextState.selectedSource;
     normalizedRawSourceParam = nextState.selectedSource;
@@ -3128,7 +3143,10 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
   if (playbackBenchmark) {
     playbackBenchmark._recordSourceChange(absoluteSource);
   }
-  const isHlsSource = absoluteSource.includes("/api/hls/master.m3u8");
+  const isHlsSource =
+    absoluteSource.includes("/api/hls/master.m3u8") ||
+    absoluteSource.includes("/api/live/hls.m3u8") ||
+    absoluteSource.toLowerCase().includes(".m3u8");
 
   if (isHlsSource) {
     const hlsMeta = parseHlsMasterSource(sourceWithAudioSync);
@@ -4587,6 +4605,16 @@ function syncMuteState() {
   syncVolumeSliderState();
 }
 
+function enableAudiblePlaybackByDefault() {
+  lastAudibleVolume = 1;
+  if (!video) {
+    return;
+  }
+  video.volume = 1;
+  video.muted = false;
+  syncMuteState();
+}
+
 function setPlayerVolume(nextVolume) {
   const clampedVolume = clampPlayerVolume(nextVolume);
   const isMuted = clampedVolume <= 0.001;
@@ -4657,6 +4685,28 @@ function renderLiveStreamOptions() {
   syncLiveStreamControls();
 }
 
+async function resolveLivePlaybackSource(source) {
+  const normalizedSource = normalizePlaybackSourceValue(source);
+  if (!normalizedSource) {
+    throw new Error("Missing live stream source.");
+  }
+  if (!shouldResolveFootballEmbedSource) {
+    return getLivePlaybackSource(normalizedSource, isLivePlayback);
+  }
+
+  const query = new URLSearchParams({ url: normalizedSource });
+  const payload = await requestJson(`/api/football/stream?${query.toString()}`, {}, 20000);
+  const playbackUrl = normalizePlaybackSourceValue(
+    payload?.playbackUrl || payload?.streamUrl || "",
+  );
+  if (!playbackUrl) {
+    throw new Error("Could not resolve this live stream.");
+  }
+  return getLivePlaybackSource(playbackUrl, true, {
+    referer: payload?.playerPage || normalizedSource,
+  });
+}
+
 function openLiveStreamPopover() {
   if (!liveStreamControl || !shouldShowLiveStreamControls() || isResolvingSource()) {
     return;
@@ -4666,6 +4716,8 @@ function openLiveStreamPopover() {
   closeAudioPopover();
   closeSpeedPopover(false);
   window.clearTimeout(liveStreamPopoverCloseTimeout);
+  showControls();
+  clearControlsHideTimer();
   liveStreamControl.classList.add("is-open");
   toggleLiveStream?.setAttribute("aria-expanded", "true");
 }
@@ -4717,10 +4769,18 @@ async function switchLiveStream(streamId) {
   hideAllSubtitleTracks();
   rebuildTrackOptionButtons();
   syncLiveStreamControls();
-  setVideoSource(getLivePlaybackSource(nextStream.source, isLivePlayback));
-  hideResolver();
-  if (!wasPaused) {
-    await tryPlay();
+  showResolver("Loading live stream...");
+  try {
+    const playbackSource = await resolveLivePlaybackSource(nextStream.source);
+    setVideoSource(playbackSource);
+    hideResolver();
+    if (!wasPaused) {
+      await tryPlay();
+    }
+  } catch (error) {
+    showResolver(error?.message || "Unable to load this live stream.", {
+      isError: true,
+    });
   }
   syncPlayState();
   syncDurationText();
@@ -6817,7 +6877,10 @@ async function initPlaybackSource() {
       clearSubtitleTrack();
       hideAllSubtitleTracks();
       rebuildTrackOptionButtons();
-      setVideoSource(getLivePlaybackSource(src, isLivePlayback));
+      showResolver("Loading live stream...");
+      const playbackSource = await resolveLivePlaybackSource(src);
+      setVideoSource(playbackSource);
+      hideResolver();
       await tryPlay();
       cleanUrlIfNeeded();
       return;
@@ -6961,6 +7024,8 @@ async function initPlaybackSource() {
     }
 
     // Deferred to after initPlaybackSource resolves (needs series library)
+
+enableAudiblePlaybackByDefault();
 
 trackListener(goBack, "click", () => {
   persistResumeTime(true);
@@ -7128,12 +7193,7 @@ if (toggleLiveStream) {
       return;
     }
 
-    const shouldOpen = !liveStreamControl.classList.contains("is-open");
-    if (shouldOpen) {
-      openLiveStreamPopover();
-    } else {
-      closeLiveStreamPopover();
-    }
+    openLiveStreamPopover();
   });
 }
 

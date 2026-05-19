@@ -143,7 +143,7 @@ export function shouldShowLiveStreamControls(isLivePlayback, options) {
   return Boolean(isLivePlayback && options.length > 1);
 }
 
-export function getLivePlaybackSource(source, isLivePlayback) {
+export function getLivePlaybackSource(source, isLivePlayback, options = {}) {
   const normalizedSource = normalizePlaybackSourceValue(source);
   const shouldProxy =
     isLivePlayback &&
@@ -153,6 +153,10 @@ export function getLivePlaybackSource(source, isLivePlayback) {
     return normalizedSource;
   }
   const query = new URLSearchParams({ input: normalizedSource });
+  const referer = normalizePlaybackSourceValue(options?.referer);
+  if (/^https?:\/\//i.test(referer)) {
+    query.set("referer", referer);
+  }
   return `/api/live/hls.m3u8?${query.toString()}`;
 }
 

@@ -8,10 +8,10 @@ import {
   getStoredAvatarModePreference,
   getStoredAvatarImagePreference,
 } from "../shared.js";
-import LiveChannelsView from "../components/live-channels-view.js";
+import FootballScheduleView from "../components/football-schedule-view.js";
 import { signOut } from "../lib/auth.js";
 
-export default function LivePage() {
+export default function FootballPage() {
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
   const [avatarClass, setAvatarClass] = createSignal("avatar avatar-style-blue");
   const [avatarCustomStyle, setAvatarCustomStyle] = createSignal("");
@@ -78,7 +78,7 @@ export default function LivePage() {
 
   return html`
     <div data-solid-page-root="" style="display: contents">
-      <div class="page home-page live-page" tabindex="0">
+      <div class="page home-page football-page" tabindex="0">
         <header class="top-nav">
           <div class="nav-left">
             <a href="/" class="nav-logo" aria-label="Go to homepage">
@@ -92,11 +92,10 @@ export default function LivePage() {
               <a href="/">Home</a>
               <a href="#" class="optional">Series</a>
               <a href="#" class="optional">Films</a>
-              <a href="/live" class="is-active">Live</a>
-              <a href="/football">Football</a>
+              <a href="/live">Live</a>
+              <a href="/football" class="is-active">Football</a>
               <a href="/new-popular" class="optional">New &amp; Popular</a>
               <a href="/#myListRow" class="optional">My List</a>
-              <a href="#" class="optional nav-secondary">Browse by Language</a>
             </nav>
           </div>
           <div class="nav-right">
@@ -176,7 +175,7 @@ export default function LivePage() {
           </div>
         </header>
 
-        <${LiveChannelsView} />
+        <${FootballScheduleView} />
       </div>
     </div>
   `;

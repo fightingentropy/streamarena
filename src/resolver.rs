@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
+use quick_xml::Reader;
+use quick_xml::events::Event;
 use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
@@ -37,6 +39,8 @@ const TORRENTIO_REQUEST_RETRY_DELAY_MS: u64 = 1_200;
 const TORRENTIO_RETRY_MAX_ELAPSED_MS: i64 = 25_000;
 const TORRENTIO_CACHE_MAX_AGE_DEFAULT_SECONDS: i64 = 60 * 60;
 const TORRENTIO_CACHE_STALE_WINDOW_DEFAULT_SECONDS: i64 = 4 * 60 * 60;
+const TORZNAB_CACHE_MAX_AGE_SECONDS: i64 = 30 * 60;
+const TORZNAB_CACHE_STALE_WINDOW_SECONDS: i64 = 2 * 60 * 60;
 const RD_TORRENT_CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const RD_SELECTED_FILE_MISMATCH_ERROR: &str =
     "Real-Debrid returned a cached torrent with a different selected file.";
@@ -165,8 +169,8 @@ struct ResolveMetadata {
 }
 
 #[allow(non_snake_case)]
-#[derive(Debug, Clone, Deserialize)]
-struct TorrentioStream {
+#[derive(Debug, Clone, Default, Deserialize)]
+struct DiscoveryStream {
     #[serde(default)]
     infoHash: String,
     #[serde(default)]
@@ -176,14 +180,31 @@ struct TorrentioStream {
     #[serde(default)]
     description: String,
     #[serde(default)]
-    behaviorHints: TorrentioBehaviorHints,
+    behaviorHints: DiscoveryBehaviorHints,
     #[serde(default)]
     sources: Vec<String>,
+    #[serde(default)]
+    magnetUrl: String,
+    #[serde(default)]
+    discoveryProvider: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TorznabItem {
+    title: String,
+    link: String,
+    enclosure_url: String,
+    info_hash: String,
+    magnet_url: String,
+    seeders: i64,
+    size_bytes: i64,
+    release_group: String,
+    indexer: String,
 }
 
 #[allow(non_snake_case)]
 #[derive(Debug, Clone, Default, Deserialize)]
-struct TorrentioBehaviorHints {
+struct DiscoveryBehaviorHints {
     #[serde(default)]
     filename: String,
 }
@@ -380,38 +401,83 @@ impl ResolverService {
                     episode_number,
                 )
                 .await?;
-            let streams = self
+            let torrentio_result = self
                 .fetch_torrentio_episode_streams(
                     &metadata.imdb_id,
                     metadata.season_number,
                     metadata.episode_number,
                 )
-                .await?;
-            let health_scores = self.compute_source_health_scores(&streams).await?;
-            let candidates = select_top_episode_candidates(
-                &streams,
-                &metadata,
-                &normalized_audio_lang,
-                &normalized_quality,
-                &normalized_container,
-                &normalized_source_hash,
-                normalized_limit as usize,
-                &source_filters,
-                &health_scores,
-            );
-            let sources = candidates
-                .iter()
-                .filter_map(|candidate| {
-                    summarize_stream_candidate_for_client(
-                        candidate,
-                        &metadata,
-                        &normalized_audio_lang,
-                        &normalized_quality,
-                        &source_filters,
-                        &health_scores,
-                    )
-                })
-                .collect::<Vec<_>>();
+                .await;
+            let sources = match torrentio_result {
+                Ok(streams) => {
+                    let sources = self
+                        .summarize_episode_sources_from_streams(
+                            &streams,
+                            &metadata,
+                            &normalized_audio_lang,
+                            &normalized_quality,
+                            &normalized_container,
+                            &normalized_source_hash,
+                            normalized_limit as usize,
+                            &source_filters,
+                        )
+                        .await?;
+                    let pinned_missing = !normalized_source_hash.is_empty()
+                        && !stream_list_contains_hash(&streams, &normalized_source_hash);
+                    if should_try_torznab_discovery(
+                        false,
+                        sources.is_empty(),
+                        pinned_missing,
+                        false,
+                    ) {
+                        let torznab_streams = self.fetch_torznab_episode_streams(&metadata).await?;
+                        let torznab_sources = self
+                            .summarize_episode_sources_from_streams(
+                                &torznab_streams,
+                                &metadata,
+                                &normalized_audio_lang,
+                                &normalized_quality,
+                                &normalized_container,
+                                &normalized_source_hash,
+                                normalized_limit as usize,
+                                &source_filters,
+                            )
+                            .await?;
+                        if !torznab_sources.is_empty()
+                            && (!pinned_missing
+                                || stream_list_contains_hash(
+                                    &torznab_streams,
+                                    &normalized_source_hash,
+                                ))
+                        {
+                            torznab_sources
+                        } else {
+                            sources
+                        }
+                    } else {
+                        sources
+                    }
+                }
+                Err(error) => {
+                    let torznab_streams = self.fetch_torznab_episode_streams(&metadata).await?;
+                    let torznab_sources = self
+                        .summarize_episode_sources_from_streams(
+                            &torznab_streams,
+                            &metadata,
+                            &normalized_audio_lang,
+                            &normalized_quality,
+                            &normalized_container,
+                            &normalized_source_hash,
+                            normalized_limit as usize,
+                            &source_filters,
+                        )
+                        .await?;
+                    if torznab_sources.is_empty() {
+                        return Err(error);
+                    }
+                    torznab_sources
+                }
+            };
             external_guard.mark_completed();
             return Ok(json!({
                 "mediaType": "tv",
@@ -425,33 +491,66 @@ impl ResolverService {
         let metadata = self
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
-        let streams = self
-            .fetch_torrentio_movie_streams(&metadata.imdb_id)
-            .await?;
-        let health_scores = self.compute_source_health_scores(&streams).await?;
-        let candidates = select_top_movie_candidates(
-            &streams,
-            &metadata,
-            &normalized_audio_lang,
-            &normalized_quality,
-            &normalized_source_hash,
-            normalized_limit as usize,
-            &source_filters,
-            &health_scores,
-        );
-        let sources = candidates
-            .iter()
-            .filter_map(|candidate| {
-                summarize_stream_candidate_for_client(
-                    candidate,
-                    &metadata,
-                    &normalized_audio_lang,
-                    &normalized_quality,
-                    &source_filters,
-                    &health_scores,
-                )
-            })
-            .collect::<Vec<_>>();
+        let torrentio_result = self.fetch_torrentio_movie_streams(&metadata.imdb_id).await;
+        let sources = match torrentio_result {
+            Ok(streams) => {
+                let sources = self
+                    .summarize_movie_sources_from_streams(
+                        &streams,
+                        &metadata,
+                        &normalized_audio_lang,
+                        &normalized_quality,
+                        &normalized_source_hash,
+                        normalized_limit as usize,
+                        &source_filters,
+                    )
+                    .await?;
+                let pinned_missing = !normalized_source_hash.is_empty()
+                    && !stream_list_contains_hash(&streams, &normalized_source_hash);
+                if should_try_torznab_discovery(false, sources.is_empty(), pinned_missing, false) {
+                    let torznab_streams = self.fetch_torznab_movie_streams(&metadata).await?;
+                    let torznab_sources = self
+                        .summarize_movie_sources_from_streams(
+                            &torznab_streams,
+                            &metadata,
+                            &normalized_audio_lang,
+                            &normalized_quality,
+                            &normalized_source_hash,
+                            normalized_limit as usize,
+                            &source_filters,
+                        )
+                        .await?;
+                    if !torznab_sources.is_empty()
+                        && (!pinned_missing
+                            || stream_list_contains_hash(&torznab_streams, &normalized_source_hash))
+                    {
+                        torznab_sources
+                    } else {
+                        sources
+                    }
+                } else {
+                    sources
+                }
+            }
+            Err(error) => {
+                let torznab_streams = self.fetch_torznab_movie_streams(&metadata).await?;
+                let torznab_sources = self
+                    .summarize_movie_sources_from_streams(
+                        &torznab_streams,
+                        &metadata,
+                        &normalized_audio_lang,
+                        &normalized_quality,
+                        &normalized_source_hash,
+                        normalized_limit as usize,
+                        &source_filters,
+                    )
+                    .await?;
+                if torznab_sources.is_empty() {
+                    return Err(error);
+                }
+                torznab_sources
+            }
+        };
         external_guard.mark_completed();
         Ok(json!({
             "mediaType": "movie",
@@ -586,70 +685,92 @@ impl ResolverService {
             external_guard.mark_completed();
             return Ok(reused);
         }
-        let streams = self
-            .fetch_torrentio_movie_streams(&metadata.imdb_id)
-            .await?;
-        let health_scores = self.compute_source_health_scores(&streams).await?;
-        let candidates = select_top_movie_candidates(
-            &streams,
-            &metadata,
-            &preferences.audio_lang,
-            &preferences.quality,
-            &filters.source_hash,
-            10,
-            &filters.source_filters,
-            &health_scores,
-        );
-        if candidates.is_empty() {
-            return Err(ApiError::internal(
-                "No stream candidates were returned for this movie.",
-            ));
+        let mut last_error;
+        match self.fetch_torrentio_movie_streams(&metadata.imdb_id).await {
+            Ok(streams) => {
+                let health_scores = self.compute_source_health_scores(&streams).await?;
+                let candidates = select_top_movie_candidates(
+                    &streams,
+                    &metadata,
+                    &preferences.audio_lang,
+                    &preferences.quality,
+                    &filters.source_hash,
+                    10,
+                    &filters.source_filters,
+                    &health_scores,
+                );
+                let pinned_missing = !filters.source_hash.is_empty()
+                    && !stream_list_contains_hash(&streams, &filters.source_hash);
+                if pinned_missing {
+                    let torznab_streams = self.fetch_torznab_movie_streams(&metadata).await?;
+                    if stream_list_contains_hash(&torznab_streams, &filters.source_hash) {
+                        let health_scores =
+                            self.compute_source_health_scores(&torznab_streams).await?;
+                        let torznab_candidates = select_top_movie_candidates(
+                            &torznab_streams,
+                            &metadata,
+                            &preferences.audio_lang,
+                            &preferences.quality,
+                            &filters.source_hash,
+                            10,
+                            &filters.source_filters,
+                            &health_scores,
+                        );
+                        match self
+                            .resolve_movie_candidates(torznab_candidates, &metadata, &preferences)
+                            .await
+                        {
+                            Ok(result) => {
+                                external_guard.mark_completed();
+                                return Ok(result);
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                }
+                if !candidates.is_empty() {
+                    match self
+                        .resolve_movie_candidates(candidates, &metadata, &preferences)
+                        .await
+                    {
+                        Ok(result) => {
+                            external_guard.mark_completed();
+                            return Ok(result);
+                        }
+                        Err(error) => last_error = Some(error),
+                    }
+                } else {
+                    last_error = Some(ApiError::internal(
+                        "No stream candidates were returned for this movie.",
+                    ));
+                }
+            }
+            Err(error) => last_error = Some(error),
         }
 
-        let resolution_started_at = now_ms();
-        let mut last_error = None;
-        for candidate in candidates {
-            let elapsed_ms = now_ms() - resolution_started_at;
-            if elapsed_ms >= RESOLVE_MAX_MS {
-                break;
-            }
-            let fallback_name = normalize_whitespace(
-                format!("{} {}", metadata.display_title, metadata.display_year).trim(),
+        let torznab_streams = self.fetch_torznab_movie_streams(&metadata).await?;
+        if !torznab_streams.is_empty() {
+            let health_scores = self.compute_source_health_scores(&torznab_streams).await?;
+            let torznab_candidates = select_top_movie_candidates(
+                &torznab_streams,
+                &metadata,
+                &preferences.audio_lang,
+                &preferences.quality,
+                &filters.source_hash,
+                10,
+                &filters.source_filters,
+                &health_scores,
             );
-            let remaining_ms = (RESOLVE_MAX_MS - elapsed_ms).max(1) as u64;
-            let resolved_result = match timeout(
-                Duration::from_millis(remaining_ms),
-                self.resolve_candidate_stream(candidate, &fallback_name),
-            )
-            .await
-            {
-                Ok(result) => result.and_then(|resolved| {
-                    if !does_filename_likely_match_movie(
-                        &resolved.filename,
-                        &metadata.display_title,
-                        &metadata.display_year,
-                    ) {
-                        return Err(ApiError::internal(
-                            "Resolved stream filename did not match requested title.",
-                        ));
-                    }
-                    Ok(resolved)
-                }),
-                Err(_) => Err(ApiError::bad_gateway("Resolving stream timed out.")),
-            };
-            match resolved_result {
-                Ok(resolved) => {
-                    let result = self
-                        .build_resolved_response(resolved, metadata, preferences, true)
-                        .await;
-                    if result.is_ok() {
+            if !torznab_candidates.is_empty() {
+                match self
+                    .resolve_movie_candidates(torznab_candidates, &metadata, &preferences)
+                    .await
+                {
+                    Ok(result) => {
                         external_guard.mark_completed();
+                        return Ok(result);
                     }
-                    return result;
-                }
-                Err(error) => {
-                    self.record_source_resolve_failure(candidate, &error).await;
-                    last_error = Some(error);
+                    Err(error) => last_error = Some(error),
                 }
             }
         }
@@ -825,31 +946,183 @@ impl ResolverService {
             external_guard.mark_completed();
             return Ok(reused);
         }
-        let streams = self
+        let mut last_error;
+        match self
             .fetch_torrentio_episode_streams(
                 &metadata.imdb_id,
                 metadata.season_number,
                 metadata.episode_number,
             )
-            .await?;
-        let health_scores = self.compute_source_health_scores(&streams).await?;
-        let candidates = select_top_episode_candidates(
-            &streams,
-            &metadata,
-            &preferences.audio_lang,
-            &preferences.quality,
-            &normalized_preferred_container,
-            &filters.source_hash,
-            10,
-            &filters.source_filters,
-            &health_scores,
-        );
+            .await
+        {
+            Ok(streams) => {
+                let health_scores = self.compute_source_health_scores(&streams).await?;
+                let candidates = select_top_episode_candidates(
+                    &streams,
+                    &metadata,
+                    &preferences.audio_lang,
+                    &preferences.quality,
+                    &normalized_preferred_container,
+                    &filters.source_hash,
+                    10,
+                    &filters.source_filters,
+                    &health_scores,
+                );
+                let pinned_missing = !filters.source_hash.is_empty()
+                    && !stream_list_contains_hash(&streams, &filters.source_hash);
+                if pinned_missing {
+                    let torznab_streams = self.fetch_torznab_episode_streams(&metadata).await?;
+                    if stream_list_contains_hash(&torznab_streams, &filters.source_hash) {
+                        let health_scores =
+                            self.compute_source_health_scores(&torznab_streams).await?;
+                        let torznab_candidates = select_top_episode_candidates(
+                            &torznab_streams,
+                            &metadata,
+                            &preferences.audio_lang,
+                            &preferences.quality,
+                            &normalized_preferred_container,
+                            &filters.source_hash,
+                            10,
+                            &filters.source_filters,
+                            &health_scores,
+                        );
+                        match self
+                            .resolve_episode_candidates(torznab_candidates, &metadata, &preferences)
+                            .await
+                        {
+                            Ok(result) => {
+                                external_guard.mark_completed();
+                                return Ok(result);
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                }
+                if !candidates.is_empty() {
+                    match self
+                        .resolve_episode_candidates(candidates, &metadata, &preferences)
+                        .await
+                    {
+                        Ok(result) => {
+                            external_guard.mark_completed();
+                            return Ok(result);
+                        }
+                        Err(error) => last_error = Some(error),
+                    }
+                } else {
+                    last_error = Some(ApiError::internal(
+                        "No stream candidates were returned for this episode.",
+                    ));
+                }
+            }
+            Err(error) => last_error = Some(error),
+        }
+
+        let torznab_streams = self.fetch_torznab_episode_streams(&metadata).await?;
+        if !torznab_streams.is_empty() {
+            let health_scores = self.compute_source_health_scores(&torznab_streams).await?;
+            let torznab_candidates = select_top_episode_candidates(
+                &torznab_streams,
+                &metadata,
+                &preferences.audio_lang,
+                &preferences.quality,
+                &normalized_preferred_container,
+                &filters.source_hash,
+                10,
+                &filters.source_filters,
+                &health_scores,
+            );
+            if !torznab_candidates.is_empty() {
+                match self
+                    .resolve_episode_candidates(torznab_candidates, &metadata, &preferences)
+                    .await
+                {
+                    Ok(result) => {
+                        external_guard.mark_completed();
+                        return Ok(result);
+                    }
+                    Err(error) => last_error = Some(error),
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
+    }
+
+    async fn resolve_movie_candidates(
+        &self,
+        candidates: Vec<&DiscoveryStream>,
+        metadata: &ResolveMetadata,
+        preferences: &ResolvePreferences,
+    ) -> AppResult<Value> {
+        if candidates.is_empty() {
+            return Err(ApiError::internal(
+                "No stream candidates were returned for this movie.",
+            ));
+        }
+        let resolution_started_at = now_ms();
+        let mut last_error = None;
+        for candidate in candidates {
+            let elapsed_ms = now_ms() - resolution_started_at;
+            if elapsed_ms >= RESOLVE_MAX_MS {
+                break;
+            }
+            let fallback_name = normalize_whitespace(
+                format!("{} {}", metadata.display_title, metadata.display_year).trim(),
+            );
+            let remaining_ms = (RESOLVE_MAX_MS - elapsed_ms).max(1) as u64;
+            let resolved_result = match timeout(
+                Duration::from_millis(remaining_ms),
+                self.resolve_candidate_stream(candidate, &fallback_name),
+            )
+            .await
+            {
+                Ok(result) => result.and_then(|resolved| {
+                    if !does_filename_likely_match_movie(
+                        &resolved.filename,
+                        &metadata.display_title,
+                        &metadata.display_year,
+                    ) {
+                        return Err(ApiError::internal(
+                            "Resolved stream filename did not match requested title.",
+                        ));
+                    }
+                    Ok(resolved)
+                }),
+                Err(_) => Err(ApiError::bad_gateway("Resolving stream timed out.")),
+            };
+            match resolved_result {
+                Ok(resolved) => {
+                    return self
+                        .build_resolved_response(
+                            resolved,
+                            metadata.clone(),
+                            preferences.clone(),
+                            true,
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    self.record_source_resolve_failure(candidate, &error).await;
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
+    }
+
+    async fn resolve_episode_candidates(
+        &self,
+        candidates: Vec<&DiscoveryStream>,
+        metadata: &ResolveMetadata,
+        preferences: &ResolvePreferences,
+    ) -> AppResult<Value> {
         if candidates.is_empty() {
             return Err(ApiError::internal(
                 "No stream candidates were returned for this episode.",
             ));
         }
-
         let resolution_started_at = now_ms();
         let mut last_error = None;
         for candidate in candidates {
@@ -901,13 +1174,14 @@ impl ResolverService {
             };
             match resolved_result {
                 Ok(resolved) => {
-                    let result = self
-                        .build_resolved_response(resolved, metadata, preferences, true)
+                    return self
+                        .build_resolved_response(
+                            resolved,
+                            metadata.clone(),
+                            preferences.clone(),
+                            true,
+                        )
                         .await;
-                    if result.is_ok() {
-                        external_guard.mark_completed();
-                    }
-                    return result;
                 }
                 Err(error) => {
                     self.record_source_resolve_failure(candidate, &error).await;
@@ -1053,7 +1327,7 @@ impl ResolverService {
 
     async fn resolve_candidate_stream(
         &self,
-        stream: &TorrentioStream,
+        stream: &DiscoveryStream,
         fallback_name: &str,
     ) -> AppResult<ResolvedSource> {
         let magnet = build_magnet_uri(stream, fallback_name)?;
@@ -1126,7 +1400,7 @@ impl ResolverService {
         &self,
         torrent_id: &str,
         info_hash: &str,
-        stream: &TorrentioStream,
+        stream: &DiscoveryStream,
         fallback_name: &str,
     ) -> AppResult<ResolvedSource> {
         let info = self
@@ -1347,7 +1621,7 @@ impl ResolverService {
             .await
     }
 
-    async fn record_source_resolve_failure(&self, stream: &TorrentioStream, error: &ApiError) {
+    async fn record_source_resolve_failure(&self, stream: &DiscoveryStream, error: &ApiError) {
         if !is_persistent_source_resolve_error(error) {
             return;
         }
@@ -1867,7 +2141,7 @@ impl ResolverService {
     async fn fetch_torrentio_movie_streams(
         &self,
         imdb_id: &str,
-    ) -> AppResult<Vec<TorrentioStream>> {
+    ) -> AppResult<Vec<DiscoveryStream>> {
         self.fetch_torrentio_streams(&format!("/stream/movie/{}.json", imdb_id.trim()))
             .await
     }
@@ -1877,7 +2151,7 @@ impl ResolverService {
         imdb_id: &str,
         season_number: i64,
         episode_number: i64,
-    ) -> AppResult<Vec<TorrentioStream>> {
+    ) -> AppResult<Vec<DiscoveryStream>> {
         self.fetch_torrentio_streams(&format!(
             "/stream/series/{}:{}:{}.json",
             url::form_urlencoded::byte_serialize(imdb_id.trim().as_bytes()).collect::<String>(),
@@ -1889,7 +2163,7 @@ impl ResolverService {
         .await
     }
 
-    async fn fetch_torrentio_streams(&self, path: &str) -> AppResult<Vec<TorrentioStream>> {
+    async fn fetch_torrentio_streams(&self, path: &str) -> AppResult<Vec<DiscoveryStream>> {
         let url = format!("{}{}", self.config.torrentio_base_url, path);
         let cache_key = build_torrentio_stream_cache_key(&self.config.torrentio_base_url, path);
         let cached = self.db.get_resolved_stream_cache(cache_key.clone()).await?;
@@ -1971,9 +2245,241 @@ impl ResolverService {
             .unwrap_or_else(|| ApiError::bad_gateway("Torrentio request failed after retrying.")))
     }
 
+    async fn fetch_torznab_movie_streams(
+        &self,
+        metadata: &ResolveMetadata,
+    ) -> AppResult<Vec<DiscoveryStream>> {
+        if !self.is_torznab_configured() {
+            return Ok(Vec::new());
+        }
+        let imdb_id = metadata.imdb_id.trim();
+        let categories = self.config.torznab_movie_categories.join(",");
+        let limit = self.config.torznab_limit.to_string();
+        let title_query = normalize_whitespace(
+            format!("{} {}", metadata.display_title, metadata.display_year).trim(),
+        );
+        let search_params = vec![
+            ("t", "search".to_owned()),
+            ("q", title_query),
+            ("cat", categories.clone()),
+            ("limit", limit.clone()),
+            ("extended", "1".to_owned()),
+        ];
+        if imdb_id.is_empty() {
+            return self.fetch_torznab_streams(&search_params).await;
+        }
+
+        let primary_params = vec![
+            ("t", "movie".to_owned()),
+            ("imdbid", imdb_id.to_owned()),
+            ("cat", categories),
+            ("limit", limit),
+            ("extended", "1".to_owned()),
+        ];
+        match self.fetch_torznab_streams(&primary_params).await {
+            Ok(streams) if !streams.is_empty() => Ok(streams),
+            Ok(_) => self.fetch_torznab_streams(&search_params).await,
+            Err(primary_error) => match self.fetch_torznab_streams(&search_params).await {
+                Ok(streams) if !streams.is_empty() => Ok(streams),
+                _ => Err(primary_error),
+            },
+        }
+    }
+
+    async fn fetch_torznab_episode_streams(
+        &self,
+        metadata: &ResolveMetadata,
+    ) -> AppResult<Vec<DiscoveryStream>> {
+        if !self.is_torznab_configured() {
+            return Ok(Vec::new());
+        }
+        let imdb_id = metadata.imdb_id.trim();
+        let categories = self.config.torznab_tv_categories.join(",");
+        let limit = self.config.torznab_limit.to_string();
+        let episode_query = format!(
+            "{} S{:02}E{:02}",
+            metadata.display_title, metadata.season_number, metadata.episode_number
+        );
+        let search_params = vec![
+            ("t", "search".to_owned()),
+            ("q", normalize_whitespace(&episode_query)),
+            ("cat", categories.clone()),
+            ("limit", limit.clone()),
+            ("extended", "1".to_owned()),
+        ];
+        if imdb_id.is_empty() {
+            return self.fetch_torznab_streams(&search_params).await;
+        }
+
+        let primary_params = vec![
+            ("t", "tvsearch".to_owned()),
+            ("imdbid", imdb_id.to_owned()),
+            ("season", metadata.season_number.to_string()),
+            ("ep", metadata.episode_number.to_string()),
+            ("cat", categories),
+            ("limit", limit),
+            ("extended", "1".to_owned()),
+        ];
+        match self.fetch_torznab_streams(&primary_params).await {
+            Ok(streams) if !streams.is_empty() => Ok(streams),
+            Ok(_) => self.fetch_torznab_streams(&search_params).await,
+            Err(primary_error) => match self.fetch_torznab_streams(&search_params).await {
+                Ok(streams) if !streams.is_empty() => Ok(streams),
+                _ => Err(primary_error),
+            },
+        }
+    }
+
+    async fn fetch_torznab_streams(
+        &self,
+        params: &[(&str, String)],
+    ) -> AppResult<Vec<DiscoveryStream>> {
+        if !self.is_torznab_configured() {
+            return Ok(Vec::new());
+        }
+        let cache_key = build_torznab_stream_cache_key(&self.config.torznab_api_url, params);
+        let cached = self.db.get_resolved_stream_cache(cache_key.clone()).await?;
+        let now = now_ms();
+        if let Some((payload, _, next_validation_at)) = cached.as_ref()
+            && *next_validation_at > now
+        {
+            return parse_torznab_streams_payload(payload);
+        }
+
+        let request_url = build_torznab_request_url(
+            &self.config.torznab_api_url,
+            &self.config.torznab_api_key,
+            params,
+        )?;
+        let response = self
+            .client
+            .get(request_url)
+            .timeout(Duration::from_millis(self.config.torznab_timeout_ms))
+            .send()
+            .await;
+        match response {
+            Ok(response) => {
+                let status = response.status();
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|error| ApiError::internal(error.to_string()))?;
+                if !status.is_success() {
+                    if let Some((payload, expires_at, _)) = cached
+                        && expires_at > now_ms()
+                    {
+                        return parse_torznab_streams_payload(&payload);
+                    }
+                    return Err(ApiError::bad_gateway(format!(
+                        "Torznab request failed ({status})."
+                    )));
+                }
+                let payload = json!({ "xml": body });
+                let (expires_at, next_validation_at) = compute_torznab_cache_deadlines();
+                self.db
+                    .set_resolved_stream_cache(
+                        cache_key,
+                        payload.clone(),
+                        expires_at,
+                        next_validation_at,
+                    )
+                    .await?;
+                parse_torznab_streams_payload(&payload)
+            }
+            Err(error) => {
+                if let Some((payload, expires_at, _)) = cached
+                    && expires_at > now_ms()
+                {
+                    return parse_torznab_streams_payload(&payload);
+                }
+                Err(map_reqwest_error(error, "Torznab request timed out."))
+            }
+        }
+    }
+
+    fn is_torznab_configured(&self) -> bool {
+        !self.config.torznab_api_url.trim().is_empty()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn summarize_movie_sources_from_streams(
+        &self,
+        streams: &[DiscoveryStream],
+        metadata: &ResolveMetadata,
+        normalized_audio_lang: &str,
+        normalized_quality: &str,
+        normalized_source_hash: &str,
+        limit: usize,
+        source_filters: &SourceFilters,
+    ) -> AppResult<Vec<SourceSummary>> {
+        let health_scores = self.compute_source_health_scores(streams).await?;
+        let candidates = select_top_movie_candidates(
+            streams,
+            metadata,
+            normalized_audio_lang,
+            normalized_quality,
+            normalized_source_hash,
+            limit,
+            source_filters,
+            &health_scores,
+        );
+        Ok(candidates
+            .iter()
+            .filter_map(|candidate| {
+                summarize_stream_candidate_for_client(
+                    candidate,
+                    metadata,
+                    normalized_audio_lang,
+                    normalized_quality,
+                    source_filters,
+                    &health_scores,
+                )
+            })
+            .collect())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn summarize_episode_sources_from_streams(
+        &self,
+        streams: &[DiscoveryStream],
+        metadata: &ResolveMetadata,
+        normalized_audio_lang: &str,
+        normalized_quality: &str,
+        normalized_container: &str,
+        normalized_source_hash: &str,
+        limit: usize,
+        source_filters: &SourceFilters,
+    ) -> AppResult<Vec<SourceSummary>> {
+        let health_scores = self.compute_source_health_scores(streams).await?;
+        let candidates = select_top_episode_candidates(
+            streams,
+            metadata,
+            normalized_audio_lang,
+            normalized_quality,
+            normalized_container,
+            normalized_source_hash,
+            limit,
+            source_filters,
+            &health_scores,
+        );
+        Ok(candidates
+            .iter()
+            .filter_map(|candidate| {
+                summarize_stream_candidate_for_client(
+                    candidate,
+                    metadata,
+                    normalized_audio_lang,
+                    normalized_quality,
+                    source_filters,
+                    &health_scores,
+                )
+            })
+            .collect())
+    }
+
     async fn compute_source_health_scores(
         &self,
-        streams: &[TorrentioStream],
+        streams: &[DiscoveryStream],
     ) -> AppResult<HashMap<String, i64>> {
         let mut scores = HashMap::new();
         let mut seen = HashSet::new();
@@ -2146,7 +2652,7 @@ impl Drop for ResolverExternalGuard {
 
 #[allow(clippy::too_many_arguments)]
 fn select_top_movie_candidates<'a>(
-    streams: &'a [TorrentioStream],
+    streams: &'a [DiscoveryStream],
     metadata: &ResolveMetadata,
     preferred_audio_lang: &str,
     preferred_quality: &str,
@@ -2154,7 +2660,7 @@ fn select_top_movie_candidates<'a>(
     limit: usize,
     source_filters: &SourceFilters,
     health_scores: &HashMap<String, i64>,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let ranked_pool = streams
         .iter()
         .filter(|stream| !get_stream_info_hash(stream).is_empty())
@@ -2190,7 +2696,7 @@ fn select_top_movie_candidates<'a>(
 
 #[allow(clippy::too_many_arguments)]
 fn select_top_episode_candidates<'a>(
-    streams: &'a [TorrentioStream],
+    streams: &'a [DiscoveryStream],
     metadata: &ResolveMetadata,
     preferred_audio_lang: &str,
     preferred_quality: &str,
@@ -2199,7 +2705,7 @@ fn select_top_episode_candidates<'a>(
     limit: usize,
     source_filters: &SourceFilters,
     health_scores: &HashMap<String, i64>,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let ranked_pool = streams
         .iter()
         .filter(|stream| !get_stream_info_hash(stream).is_empty())
@@ -2243,7 +2749,7 @@ fn select_top_episode_candidates<'a>(
 }
 
 fn summarize_stream_candidate_for_client(
-    stream: &TorrentioStream,
+    stream: &DiscoveryStream,
     metadata: &ResolveMetadata,
     preferred_audio_lang: &str,
     preferred_quality: &str,
@@ -2301,9 +2807,9 @@ fn summarize_stream_candidate_for_client(
 }
 
 fn apply_source_stream_filters<'a>(
-    streams: Vec<&'a TorrentioStream>,
+    streams: Vec<&'a DiscoveryStream>,
     source_filters: &SourceFilters,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let effective_allowed_formats = if source_filters.allowed_formats.is_empty() {
         DEFAULT_ALLOWED_SOURCE_FORMATS
             .iter()
@@ -2342,9 +2848,9 @@ fn apply_source_stream_filters<'a>(
 }
 
 fn filter_streams_by_quality_preference<'a>(
-    streams: Vec<&'a TorrentioStream>,
+    streams: Vec<&'a DiscoveryStream>,
     preferred_quality: &str,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let normalized_quality = normalize_preferred_stream_quality(preferred_quality);
     if normalized_quality == "auto" {
         return streams;
@@ -2388,13 +2894,13 @@ fn filter_streams_by_quality_preference<'a>(
 }
 
 fn sort_movie_candidates<'a>(
-    streams: Vec<&'a TorrentioStream>,
+    streams: Vec<&'a DiscoveryStream>,
     metadata: &ResolveMetadata,
     preferred_audio_lang: &str,
     preferred_quality: &str,
     source_filters: &SourceFilters,
     health_scores: &HashMap<String, i64>,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let mut sorted = streams;
     sorted.sort_by(|left, right| {
         let right_score = score_stream_quality(
@@ -2422,13 +2928,13 @@ fn sort_movie_candidates<'a>(
 }
 
 fn sort_episode_candidates<'a>(
-    streams: Vec<&'a TorrentioStream>,
+    streams: Vec<&'a DiscoveryStream>,
     metadata: &ResolveMetadata,
     preferred_audio_lang: &str,
     preferred_quality: &str,
     source_filters: &SourceFilters,
     health_scores: &HashMap<String, i64>,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let mut sorted = streams;
     sorted.sort_by(|left, right| {
         let right_score =
@@ -2458,7 +2964,7 @@ fn sort_episode_candidates<'a>(
 }
 
 fn score_stream_quality(
-    stream: &TorrentioStream,
+    stream: &DiscoveryStream,
     metadata: &ResolveMetadata,
     preferred_audio_lang: &str,
     preferred_quality: &str,
@@ -2483,18 +2989,18 @@ fn score_stream_quality(
 }
 
 fn prioritize_candidates_by_source_hash<'a>(
-    candidates: Vec<&'a TorrentioStream>,
-    ranked_pool: Vec<&'a TorrentioStream>,
+    candidates: Vec<&'a DiscoveryStream>,
+    ranked_pool: Vec<&'a DiscoveryStream>,
     source_hash: &str,
     limit: usize,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let normalized_hash = normalize_source_hash(source_hash);
     let safe_limit = limit.max(1);
     if normalized_hash.is_empty() {
         return candidates.into_iter().take(safe_limit).collect();
     }
 
-    let dedup_by_hash = |list: Vec<&'a TorrentioStream>| {
+    let dedup_by_hash = |list: Vec<&'a DiscoveryStream>| {
         let mut seen = HashSet::new();
         let mut output = Vec::new();
         for item in list {
@@ -2534,12 +3040,12 @@ fn prioritize_candidates_by_source_hash<'a>(
 }
 
 fn apply_mp4_default_candidate_rule<'a>(
-    candidates: Vec<&'a TorrentioStream>,
-    ranked_pool: Vec<&'a TorrentioStream>,
+    candidates: Vec<&'a DiscoveryStream>,
+    ranked_pool: Vec<&'a DiscoveryStream>,
     source_hash: &str,
     limit: usize,
     source_language: &str,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let with_mp4 = ensure_at_least_one_container_candidate(
         candidates,
         ranked_pool.clone(),
@@ -2567,12 +3073,12 @@ fn apply_mp4_default_candidate_rule<'a>(
 }
 
 fn ensure_at_least_one_container_candidate<'a>(
-    candidates: Vec<&'a TorrentioStream>,
-    ranked_pool: Vec<&'a TorrentioStream>,
+    candidates: Vec<&'a DiscoveryStream>,
+    ranked_pool: Vec<&'a DiscoveryStream>,
     container: &str,
     limit: usize,
     source_language: &str,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let safe_limit = limit.max(1);
     let mut current = candidates.into_iter().take(safe_limit).collect::<Vec<_>>();
     if current.is_empty() {
@@ -2604,10 +3110,10 @@ fn ensure_at_least_one_container_candidate<'a>(
 }
 
 fn pick_best_container_candidate<'a>(
-    candidates: &[&'a TorrentioStream],
+    candidates: &[&'a DiscoveryStream],
     container: &str,
     source_language: &str,
-) -> Option<&'a TorrentioStream> {
+) -> Option<&'a DiscoveryStream> {
     let mut container_candidates = candidates
         .iter()
         .copied()
@@ -2619,8 +3125,8 @@ fn pick_best_container_candidate<'a>(
 }
 
 fn compare_container_default_candidates(
-    left: &TorrentioStream,
-    right: &TorrentioStream,
+    left: &DiscoveryStream,
+    right: &DiscoveryStream,
     source_language: &str,
 ) -> std::cmp::Ordering {
     let left_language_score = score_container_default_language(left, source_language);
@@ -2637,9 +3143,9 @@ fn compare_container_default_candidates(
 }
 
 fn move_container_candidates_to_front<'a>(
-    candidates: Vec<&'a TorrentioStream>,
+    candidates: Vec<&'a DiscoveryStream>,
     container: &str,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let mut preferred = Vec::new();
     let mut rest = Vec::new();
     for candidate in candidates {
@@ -2653,7 +3159,7 @@ fn move_container_candidates_to_front<'a>(
     preferred
 }
 
-fn score_container_default_language(stream: &TorrentioStream, source_language: &str) -> i64 {
+fn score_container_default_language(stream: &DiscoveryStream, source_language: &str) -> i64 {
     let normalized_source_language = normalize_source_language_filter(source_language);
     if normalized_source_language == "any" {
         return 0;
@@ -2669,7 +3175,7 @@ fn score_container_default_language(stream: &TorrentioStream, source_language: &
 }
 
 fn score_stream_source_audio_profile(
-    stream: &TorrentioStream,
+    stream: &DiscoveryStream,
     source_language: &str,
     source_audio_profile: &str,
 ) -> i64 {
@@ -2706,7 +3212,7 @@ fn score_stream_source_audio_profile(
     0
 }
 
-fn score_stream_seeders(stream: &TorrentioStream) -> i64 {
+fn score_stream_seeders(stream: &DiscoveryStream) -> i64 {
     let seed_count = parse_seed_count(if stream.title.is_empty() {
         stream.name.as_str()
     } else {
@@ -2718,7 +3224,7 @@ fn score_stream_seeders(stream: &TorrentioStream) -> i64 {
     ((((seed_count + 1) as f64).log10() * 320.0).round() as i64).min(900)
 }
 
-fn score_stream_language_preference(stream: &TorrentioStream, preferred_audio_lang: &str) -> i64 {
+fn score_stream_language_preference(stream: &DiscoveryStream, preferred_audio_lang: &str) -> i64 {
     let preferred = normalize_preferred_audio_lang(preferred_audio_lang);
     if preferred == "auto" {
         return 0;
@@ -2748,7 +3254,7 @@ fn score_stream_language_preference(stream: &TorrentioStream, preferred_audio_la
     score
 }
 
-fn score_stream_quality_preference(stream: &TorrentioStream, preferred_quality: &str) -> i64 {
+fn score_stream_quality_preference(stream: &DiscoveryStream, preferred_quality: &str) -> i64 {
     let normalized_quality = normalize_preferred_stream_quality(preferred_quality);
     if normalized_quality == "auto" {
         return 0;
@@ -2767,7 +3273,7 @@ fn score_stream_quality_preference(stream: &TorrentioStream, preferred_quality: 
     -300 - (target_height - candidate_height).min(700)
 }
 
-fn score_stream_title_year_match(stream: &TorrentioStream, metadata: &ResolveMetadata) -> i64 {
+fn score_stream_title_year_match(stream: &DiscoveryStream, metadata: &ResolveMetadata) -> i64 {
     let stream_text = normalize_text_for_match(&build_stream_text_raw(stream));
     if stream_text.is_empty() {
         return 0;
@@ -2795,7 +3301,7 @@ fn score_stream_title_year_match(stream: &TorrentioStream, metadata: &ResolveMet
     -600
 }
 
-fn score_stream_runtime_match(stream: &TorrentioStream, metadata: &ResolveMetadata) -> i64 {
+fn score_stream_runtime_match(stream: &DiscoveryStream, metadata: &ResolveMetadata) -> i64 {
     let target_runtime_seconds = metadata.runtime_seconds.max(0);
     if target_runtime_seconds < 1800 {
         return 0;
@@ -2819,7 +3325,7 @@ fn score_stream_runtime_match(stream: &TorrentioStream, metadata: &ResolveMetada
     -360
 }
 
-fn score_stream_release_quality(stream: &TorrentioStream) -> i64 {
+fn score_stream_release_quality(stream: &DiscoveryStream) -> i64 {
     let stream_text = build_stream_release_text(stream);
     if stream_text.is_empty() {
         return 0;
@@ -2834,7 +3340,7 @@ fn score_stream_release_quality(stream: &TorrentioStream) -> i64 {
 }
 
 fn score_stream_episode_match(
-    stream: &TorrentioStream,
+    stream: &DiscoveryStream,
     season_number: i64,
     episode_number: i64,
 ) -> i64 {
@@ -2963,7 +3469,7 @@ fn parse_runtime_from_label_seconds(value: &str) -> i64 {
     0
 }
 
-fn parse_stream_vertical_resolution(stream: &TorrentioStream) -> i64 {
+fn parse_stream_vertical_resolution(stream: &DiscoveryStream) -> i64 {
     let stream_text = build_stream_text(stream);
     if stream_text.is_empty() {
         return 0;
@@ -2995,7 +3501,7 @@ fn parse_stream_vertical_resolution(stream: &TorrentioStream) -> i64 {
     0
 }
 
-fn infer_stream_container_label(stream: &TorrentioStream) -> String {
+fn infer_stream_container_label(stream: &DiscoveryStream) -> String {
     let stream_text = [
         stream.behaviorHints.filename.as_str(),
         stream.title.as_str(),
@@ -3028,10 +3534,13 @@ fn infer_stream_container_label(stream: &TorrentioStream) -> String {
     if stream_text.contains(".ts") {
         return "ts".to_owned();
     }
+    if stream.discoveryProvider == "torznab" {
+        return "mkv".to_owned();
+    }
     String::new()
 }
 
-fn is_stream_likely_container(stream: &TorrentioStream, container: &str) -> bool {
+fn is_stream_likely_container(stream: &DiscoveryStream, container: &str) -> bool {
     let inferred = infer_stream_container_label(stream);
     if !inferred.is_empty() {
         return inferred == container;
@@ -3039,7 +3548,7 @@ fn is_stream_likely_container(stream: &TorrentioStream, container: &str) -> bool
     false
 }
 
-fn matches_source_language_filter(stream: &TorrentioStream, source_language: &str) -> bool {
+fn matches_source_language_filter(stream: &DiscoveryStream, source_language: &str) -> bool {
     let safe_source_language = normalize_source_language_filter(source_language);
     if safe_source_language == "any" {
         return true;
@@ -3051,7 +3560,7 @@ fn matches_source_language_filter(stream: &TorrentioStream, source_language: &st
     safe_source_language == SOURCE_LANGUAGE_FILTER_DEFAULT && matched.is_empty()
 }
 
-fn get_detected_stream_languages(stream: &TorrentioStream) -> HashSet<String> {
+fn get_detected_stream_languages(stream: &DiscoveryStream) -> HashSet<String> {
     let stream_text_raw = build_stream_text_raw(stream);
     let normalized_stream_text = normalize_text_for_match(&stream_text_raw);
     let stream_text = format!(" {} ", normalized_stream_text.trim());
@@ -3071,7 +3580,7 @@ fn get_detected_stream_languages(stream: &TorrentioStream) -> HashSet<String> {
     matched
 }
 
-fn extract_stream_title_lines(stream: &TorrentioStream) -> Vec<String> {
+fn extract_stream_title_lines(stream: &DiscoveryStream) -> Vec<String> {
     stream
         .title
         .lines()
@@ -3080,7 +3589,7 @@ fn extract_stream_title_lines(stream: &TorrentioStream) -> Vec<String> {
         .collect()
 }
 
-fn extract_stream_size_label(stream: &TorrentioStream) -> String {
+fn extract_stream_size_label(stream: &DiscoveryStream) -> String {
     STREAM_SIZE_RE
         .captures(&stream.title)
         .and_then(|captures| captures.get(1))
@@ -3088,7 +3597,7 @@ fn extract_stream_size_label(stream: &TorrentioStream) -> String {
         .unwrap_or_default()
 }
 
-fn extract_stream_release_group(stream: &TorrentioStream) -> String {
+fn extract_stream_release_group(stream: &DiscoveryStream) -> String {
     STREAM_RELEASE_GROUP_RE
         .captures(&stream.title)
         .and_then(|captures| captures.get(1))
@@ -3125,8 +3634,28 @@ fn normalize_source_hash(value: &str) -> String {
     }
 }
 
-fn get_stream_info_hash(stream: &TorrentioStream) -> String {
+fn get_stream_info_hash(stream: &DiscoveryStream) -> String {
     normalize_source_hash(&stream.infoHash)
+}
+
+fn stream_list_contains_hash(streams: &[DiscoveryStream], source_hash: &str) -> bool {
+    let normalized_hash = normalize_source_hash(source_hash);
+    !normalized_hash.is_empty()
+        && streams
+            .iter()
+            .any(|stream| get_stream_info_hash(stream) == normalized_hash)
+}
+
+fn should_try_torznab_discovery(
+    torrentio_failed: bool,
+    torrentio_candidates_empty: bool,
+    pinned_source_missing: bool,
+    torrentio_candidates_failed: bool,
+) -> bool {
+    torrentio_failed
+        || torrentio_candidates_empty
+        || pinned_source_missing
+        || torrentio_candidates_failed
 }
 
 fn normalize_preferred_container(value: &str) -> String {
@@ -3240,11 +3769,11 @@ fn count_matching_title_tokens(normalized_value: &str, title_tokens: &[String]) 
         .count()
 }
 
-fn build_stream_text(stream: &TorrentioStream) -> String {
+fn build_stream_text(stream: &DiscoveryStream) -> String {
     build_stream_text_raw(stream).to_lowercase()
 }
 
-fn build_stream_release_text(stream: &TorrentioStream) -> String {
+fn build_stream_release_text(stream: &DiscoveryStream) -> String {
     normalize_text_for_match(
         &[
             stream.name.as_str(),
@@ -3258,7 +3787,7 @@ fn build_stream_release_text(stream: &TorrentioStream) -> String {
     )
 }
 
-fn build_stream_text_raw(stream: &TorrentioStream) -> String {
+fn build_stream_text_raw(stream: &DiscoveryStream) -> String {
     [
         stream.name.as_str(),
         stream.title.as_str(),
@@ -3275,7 +3804,7 @@ fn normalize_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn has_explicit_multi_audio_marker(stream: &TorrentioStream) -> bool {
+fn has_explicit_multi_audio_marker(stream: &DiscoveryStream) -> bool {
     let release_text = build_stream_release_text(stream);
     !release_text.is_empty() && MULTI_AUDIO_RELEASE_RE.is_match(&release_text)
 }
@@ -3288,17 +3817,95 @@ fn build_torrentio_stream_cache_key(base_url: &str, path: &str) -> String {
     )
 }
 
+fn build_torznab_stream_cache_key(base_url: &str, params: &[(&str, String)]) -> String {
+    let param_text = params
+        .iter()
+        .filter(|(key, _)| !key.eq_ignore_ascii_case("apikey"))
+        .map(|(key, value)| format!("{}={}", key.trim(), value.trim()))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!(
+        "torznab:{}?{}",
+        sanitize_torznab_base_url_for_cache(base_url),
+        param_text
+    )
+}
+
+fn sanitize_torznab_base_url_for_cache(base_url: &str) -> String {
+    let trimmed = base_url.trim();
+    let Ok(mut url) = url::Url::parse(trimmed) else {
+        return trimmed.to_owned();
+    };
+    let retained_pairs = url
+        .query_pairs()
+        .filter(|(key, _)| !key.eq_ignore_ascii_case("apikey"))
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    if !retained_pairs.is_empty() {
+        let mut pairs = url.query_pairs_mut();
+        for (key, value) in retained_pairs {
+            pairs.append_pair(&key, &value);
+        }
+    }
+    url.to_string()
+}
+
+fn build_torznab_request_url(
+    base_url: &str,
+    api_key: &str,
+    params: &[(&str, String)],
+) -> AppResult<String> {
+    let mut url = url::Url::parse(base_url.trim())
+        .map_err(|_| ApiError::internal("TORZNAB_API_URL is not a valid URL."))?;
+    let retained_pairs = url
+        .query_pairs()
+        .filter(|(key, _)| !key.eq_ignore_ascii_case("apikey"))
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    {
+        let mut pairs = url.query_pairs_mut();
+        for (key, value) in retained_pairs {
+            pairs.append_pair(&key, &value);
+        }
+        if !api_key.trim().is_empty() {
+            pairs.append_pair("apikey", api_key.trim());
+        }
+        for (key, value) in params {
+            if !key.trim().is_empty() && !value.trim().is_empty() {
+                pairs.append_pair(key.trim(), value.trim());
+            }
+        }
+    }
+    Ok(url.to_string())
+}
+
 fn build_rd_torrent_cache_key(info_hash: &str) -> String {
     format!("rd-torrent:{}", normalize_source_hash(info_hash))
 }
 
-fn parse_torrentio_streams_payload(payload: &Value) -> AppResult<Vec<TorrentioStream>> {
+fn parse_torrentio_streams_payload(payload: &Value) -> AppResult<Vec<DiscoveryStream>> {
     let streams = payload
         .get("streams")
         .cloned()
         .unwrap_or_else(|| Value::Array(Vec::new()));
-    serde_json::from_value::<Vec<TorrentioStream>>(streams)
-        .map_err(|error| ApiError::internal(error.to_string()))
+    let mut parsed = serde_json::from_value::<Vec<DiscoveryStream>>(streams)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    for stream in &mut parsed {
+        if stream.discoveryProvider.trim().is_empty() {
+            stream.discoveryProvider = "torrentio".to_owned();
+        }
+    }
+    Ok(parsed)
+}
+
+fn parse_torznab_streams_payload(payload: &Value) -> AppResult<Vec<DiscoveryStream>> {
+    let xml = payload
+        .get("xml")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    parse_torznab_xml(xml)
 }
 
 fn compute_torrentio_cache_deadlines(payload: &Value) -> (i64, i64) {
@@ -3327,12 +3934,276 @@ fn compute_torrentio_cache_deadlines(payload: &Value) -> (i64, i64) {
     (expires_at.max(next_validation_at), next_validation_at)
 }
 
+fn compute_torznab_cache_deadlines() -> (i64, i64) {
+    let now = now_ms();
+    let next_validation_at = now + TORZNAB_CACHE_MAX_AGE_SECONDS * 1_000;
+    let expires_at = next_validation_at + TORZNAB_CACHE_STALE_WINDOW_SECONDS * 1_000;
+    (expires_at, next_validation_at)
+}
+
 fn torrentio_cache_seconds(payload: &Value, key: &str, default_seconds: i64) -> i64 {
     payload
         .get(key)
         .and_then(Value::as_i64)
         .unwrap_or(default_seconds)
         .max(0)
+}
+
+fn parse_torznab_xml(xml: &str) -> AppResult<Vec<DiscoveryStream>> {
+    if xml.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut reader = Reader::from_str(xml);
+    reader.trim_text(true);
+    let mut buf = Vec::new();
+    let mut current_item = None::<TorznabItem>;
+    let mut current_element = String::new();
+    let mut items = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(event)) => {
+                let name = xml_event_name(event.name().as_ref());
+                if name == "item" {
+                    current_item = Some(TorznabItem::default());
+                } else if name == "enclosure" {
+                    if let Some(item) = current_item.as_mut() {
+                        apply_torznab_enclosure(item, &collect_xml_attributes(&event));
+                    }
+                } else if is_torznab_attr_element(&name) {
+                    if let Some(item) = current_item.as_mut() {
+                        apply_torznab_attr(item, &collect_xml_attributes(&event));
+                    }
+                } else {
+                    current_element = name;
+                }
+            }
+            Ok(Event::Empty(event)) => {
+                let name = xml_event_name(event.name().as_ref());
+                if let Some(item) = current_item.as_mut() {
+                    if name == "enclosure" {
+                        apply_torznab_enclosure(item, &collect_xml_attributes(&event));
+                    } else if is_torznab_attr_element(&name) {
+                        apply_torznab_attr(item, &collect_xml_attributes(&event));
+                    }
+                }
+            }
+            Ok(Event::Text(text)) => {
+                if let Some(item) = current_item.as_mut()
+                    && let Ok(value) = text.unescape()
+                {
+                    apply_torznab_element_text(item, &current_element, &value);
+                }
+            }
+            Ok(Event::CData(text)) => {
+                if let Some(item) = current_item.as_mut() {
+                    let value = String::from_utf8_lossy(text.as_ref());
+                    apply_torznab_element_text(item, &current_element, &value);
+                }
+            }
+            Ok(Event::End(event)) => {
+                let name = xml_event_name(event.name().as_ref());
+                if name == "item" {
+                    if let Some(item) = current_item.take() {
+                        items.push(item);
+                    }
+                }
+                if current_element == name {
+                    current_element.clear();
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => return Err(ApiError::internal(error.to_string())),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(items
+        .into_iter()
+        .filter_map(torznab_item_to_stream)
+        .collect())
+}
+
+fn xml_event_name(value: &[u8]) -> String {
+    String::from_utf8_lossy(value).to_lowercase()
+}
+
+fn collect_xml_attributes(event: &quick_xml::events::BytesStart<'_>) -> HashMap<String, String> {
+    let mut output = HashMap::new();
+    for attr in event.attributes().with_checks(false).flatten() {
+        let key = String::from_utf8_lossy(attr.key.as_ref()).to_lowercase();
+        let value = attr
+            .unescape_value()
+            .map(|value| value.into_owned())
+            .unwrap_or_default();
+        output.insert(key, value);
+    }
+    output
+}
+
+fn is_torznab_attr_element(name: &str) -> bool {
+    name == "torznab:attr" || name.ends_with(":attr") || name == "attr"
+}
+
+fn apply_torznab_enclosure(item: &mut TorznabItem, attrs: &HashMap<String, String>) {
+    if let Some(url) = attrs.get("url") {
+        item.enclosure_url = url.trim().to_owned();
+    }
+}
+
+fn apply_torznab_attr(item: &mut TorznabItem, attrs: &HashMap<String, String>) {
+    let attr_name = attrs
+        .get("name")
+        .map(|value| value.trim().to_lowercase())
+        .unwrap_or_default();
+    let attr_value = attrs.get("value").map(String::as_str).unwrap_or_default();
+    match attr_name.as_str() {
+        "infohash" | "info_hash" | "hash" => item.info_hash = attr_value.trim().to_owned(),
+        "magneturl" | "magnet_url" | "magneturi" | "magnet_uri" => {
+            item.magnet_url = attr_value.trim().to_owned()
+        }
+        "seeders" | "seeds" | "seed" => item.seeders = parse_i64(attr_value),
+        "size" => item.size_bytes = parse_i64(attr_value),
+        "team" | "releasegroup" | "release_group" | "group" => {
+            item.release_group = normalize_whitespace(attr_value)
+        }
+        "indexer" | "tracker" => item.indexer = normalize_whitespace(attr_value),
+        _ => {}
+    }
+}
+
+fn apply_torznab_element_text(item: &mut TorznabItem, element: &str, value: &str) {
+    let normalized = normalize_whitespace(value);
+    if normalized.is_empty() {
+        return;
+    }
+    match element {
+        "title" => item.title = normalized,
+        "link" => item.link = normalized,
+        "size" => item.size_bytes = parse_i64(&normalized),
+        "jackettindexer" | "prowlarrindexer" | "indexer" => item.indexer = normalized,
+        _ => {}
+    }
+}
+
+fn torznab_item_to_stream(item: TorznabItem) -> Option<DiscoveryStream> {
+    let candidate_magnet = [
+        item.magnet_url.as_str(),
+        item.link.as_str(),
+        item.enclosure_url.as_str(),
+    ]
+    .into_iter()
+    .find_map(normalize_magnet_url)
+    .unwrap_or_default();
+    let info_hash = [
+        item.info_hash.as_str(),
+        candidate_magnet.as_str(),
+        item.link.as_str(),
+        item.enclosure_url.as_str(),
+    ]
+    .into_iter()
+    .find_map(extract_info_hash_from_source)
+    .unwrap_or_default();
+    if info_hash.is_empty() && candidate_magnet.is_empty() {
+        return None;
+    }
+
+    let title = normalize_whitespace(&item.title).if_empty_then(|| "Torznab source".to_owned());
+    let release_group = normalize_whitespace(&item.release_group);
+    let mut title_lines = vec![title.clone()];
+    if item.size_bytes > 0 {
+        title_lines.push(format!("💾 {}", format_size_bytes(item.size_bytes)));
+    }
+    if !release_group.is_empty() {
+        title_lines.push(format!("⚙ {release_group}"));
+    }
+    if item.seeders > 0 {
+        title_lines.push(format!("👤 {}", item.seeders));
+    }
+
+    let provider = if item.indexer.trim().is_empty() {
+        "Torznab".to_owned()
+    } else {
+        format!("Torznab - {}", normalize_whitespace(&item.indexer))
+    };
+    Some(DiscoveryStream {
+        infoHash: info_hash,
+        name: provider,
+        title: title_lines.join("\n"),
+        description: String::new(),
+        behaviorHints: DiscoveryBehaviorHints { filename: title },
+        sources: Vec::new(),
+        magnetUrl: candidate_magnet,
+        discoveryProvider: "torznab".to_owned(),
+    })
+}
+
+fn normalize_magnet_url(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.to_lowercase().starts_with("magnet:?")
+        && !extract_info_hash_from_magnet(trimmed).is_empty()
+    {
+        Some(trimmed.to_owned())
+    } else {
+        None
+    }
+}
+
+fn extract_info_hash_from_source(value: &str) -> Option<String> {
+    let direct = normalize_source_hash(value);
+    if !direct.is_empty() {
+        return Some(direct);
+    }
+    let from_magnet = extract_info_hash_from_magnet(value);
+    if !from_magnet.is_empty() {
+        return Some(from_magnet);
+    }
+    None
+}
+
+fn extract_info_hash_from_magnet(value: &str) -> String {
+    let Ok(url) = url::Url::parse(value.trim()) else {
+        return String::new();
+    };
+    if url.scheme() != "magnet" {
+        return String::new();
+    }
+    for (key, value) in url.query_pairs() {
+        if key != "xt" {
+            continue;
+        }
+        let Some(hash) = value.strip_prefix("urn:btih:") else {
+            continue;
+        };
+        let normalized = normalize_source_hash(hash);
+        if !normalized.is_empty() {
+            return normalized;
+        }
+    }
+    String::new()
+}
+
+fn parse_i64(value: &str) -> i64 {
+    value.trim().parse::<i64>().ok().unwrap_or_default().max(0)
+}
+
+fn format_size_bytes(bytes: i64) -> String {
+    if bytes <= 0 {
+        return String::new();
+    }
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit_index = 0;
+    while size >= 1024.0 && unit_index + 1 < units.len() {
+        size /= 1024.0;
+        unit_index += 1;
+    }
+    if unit_index == 0 {
+        format!("{} {}", bytes, units[unit_index])
+    } else {
+        format!("{size:.1} {}", units[unit_index])
+    }
 }
 
 fn map_reqwest_error(error: reqwest::Error, timeout_message: &str) -> ApiError {
@@ -3414,7 +4285,10 @@ enum PlayableUrlVerification {
     Uncertain,
 }
 
-fn build_magnet_uri(stream: &TorrentioStream, fallback_name: &str) -> AppResult<String> {
+fn build_magnet_uri(stream: &DiscoveryStream, fallback_name: &str) -> AppResult<String> {
+    if let Some(magnet_url) = normalize_magnet_url(&stream.magnetUrl) {
+        return Ok(magnet_url);
+    }
     let info_hash = get_stream_info_hash(stream);
     if info_hash.is_empty() {
         return Err(ApiError::internal("Missing torrent info hash."));
@@ -3781,7 +4655,7 @@ fn does_filename_likely_match_tv_episode(
     matched_token_count >= 1 && has_expected_year
 }
 
-fn stream_candidate_match_name(stream: &TorrentioStream) -> String {
+fn stream_candidate_match_name(stream: &DiscoveryStream) -> String {
     let filename = normalize_whitespace(&stream.behaviorHints.filename);
     if !filename.is_empty() {
         return filename;
@@ -3801,9 +4675,9 @@ fn stream_candidate_match_name(stream: &TorrentioStream) -> String {
 }
 
 fn prefer_movie_title_matched_candidates<'a>(
-    streams: Vec<&'a TorrentioStream>,
+    streams: Vec<&'a DiscoveryStream>,
     metadata: &ResolveMetadata,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let matched = streams
         .iter()
         .copied()
@@ -3819,9 +4693,9 @@ fn prefer_movie_title_matched_candidates<'a>(
 }
 
 fn prefer_episode_title_matched_candidates<'a>(
-    streams: Vec<&'a TorrentioStream>,
+    streams: Vec<&'a DiscoveryStream>,
     metadata: &ResolveMetadata,
-) -> Vec<&'a TorrentioStream> {
+) -> Vec<&'a DiscoveryStream> {
     let matched = streams
         .iter()
         .copied()
@@ -4147,16 +5021,18 @@ mod tests {
     use crate::error::ApiError;
 
     use super::{
-        RD_SELECTED_FILE_MISMATCH_ERROR, ResolveMetadata, ResolvedSource, ResolverExternalGuard,
-        ResolverMetrics, SourceFilters, TorrentioBehaviorHints, TorrentioStream,
+        DiscoveryBehaviorHints, DiscoveryStream, RD_SELECTED_FILE_MISMATCH_ERROR, ResolveMetadata,
+        ResolvedSource, ResolverExternalGuard, ResolverMetrics, SourceFilters,
         build_movie_resolve_lock_key, build_rd_torrent_cache_key, build_torrentio_stream_cache_key,
-        build_tv_resolve_lock_key, collect_episode_signatures, compute_torrentio_cache_deadlines,
-        does_filename_likely_match_movie, is_persistent_source_resolve_error,
-        normalize_allowed_formats, normalize_resolved_source_for_software_decode,
-        normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
-        parse_runtime_from_label_seconds, parse_seed_count, ready_info_has_selected_file_id,
-        select_top_movie_candidates, should_prefer_software_decode_source, sort_movie_candidates,
-        user_facing_real_debrid_error,
+        build_torznab_request_url, build_torznab_stream_cache_key, build_tv_resolve_lock_key,
+        collect_episode_signatures, compute_torrentio_cache_deadlines,
+        does_filename_likely_match_movie, extract_info_hash_from_magnet,
+        is_persistent_source_resolve_error, normalize_allowed_formats,
+        normalize_resolved_source_for_software_decode, normalize_source_audio_profile_filter,
+        normalize_source_hash, now_ms, parse_runtime_from_label_seconds, parse_seed_count,
+        parse_torznab_xml, ready_info_has_selected_file_id, select_top_movie_candidates,
+        should_prefer_software_decode_source, should_try_torznab_discovery, sort_movie_candidates,
+        stream_list_contains_hash, user_facing_real_debrid_error,
     };
 
     #[test]
@@ -4270,15 +5146,16 @@ mod tests {
 
     #[test]
     fn extracts_stream_filename() {
-        let stream = TorrentioStream {
+        let stream = DiscoveryStream {
             infoHash: "0123456789abcdef0123456789abcdef01234567".to_owned(),
             name: "Torrentio".to_owned(),
             title: String::new(),
             description: String::new(),
-            behaviorHints: TorrentioBehaviorHints {
+            behaviorHints: DiscoveryBehaviorHints {
                 filename: "Movie.2024.mp4".to_owned(),
             },
             sources: Vec::new(),
+            ..DiscoveryStream::default()
         };
         assert_eq!(stream.behaviorHints.filename, "Movie.2024.mp4");
     }
@@ -4292,6 +5169,90 @@ mod tests {
             ),
             "torrentio:https://torrentio.strem.fun/stream/movie/tt1.json"
         );
+    }
+
+    #[test]
+    fn builds_torznab_urls_without_leaking_api_keys_to_cache_keys() {
+        let params = vec![
+            ("t", "movie".to_owned()),
+            ("imdbid", "tt1234567".to_owned()),
+            ("cat", "2000,2040".to_owned()),
+            ("limit", "50".to_owned()),
+            ("extended", "1".to_owned()),
+        ];
+        let request_url = build_torznab_request_url(
+            "http://127.0.0.1:9696/1/api?apikey=old-key&profile=default",
+            "new-key",
+            &params,
+        )
+        .expect("build torznab url");
+        assert!(request_url.contains("profile=default"));
+        assert!(request_url.contains("apikey=new-key"));
+        assert!(!request_url.contains("old-key"));
+        assert!(request_url.contains("t=movie"));
+        assert!(request_url.contains("imdbid=tt1234567"));
+
+        let cache_key = build_torznab_stream_cache_key(
+            "http://127.0.0.1:9696/1/api?apikey=old-key&profile=default",
+            &params,
+        );
+        assert!(cache_key.starts_with("torznab:http://127.0.0.1:9696/1/api?"));
+        assert!(cache_key.contains("profile=default"));
+        assert!(cache_key.contains("imdbid=tt1234567"));
+        assert!(!cache_key.contains("apikey"));
+        assert!(!cache_key.contains("old-key"));
+    }
+
+    #[test]
+    fn extracts_info_hash_from_magnet_urls() {
+        assert_eq!(
+            extract_info_hash_from_magnet(
+                "magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01&dn=Movie"
+            ),
+            "abcdef0123456789abcdef0123456789abcdef01"
+        );
+        assert!(extract_info_hash_from_magnet("https://example.com/file.torrent").is_empty());
+    }
+
+    #[test]
+    fn parses_torznab_xml_into_discovery_streams() {
+        let xml = r#"
+            <rss>
+              <channel>
+                <item>
+                  <title>The Housemaid 2025 1080p WEB-DL x264-GROUP</title>
+                  <link>magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01&amp;dn=The.Housemaid</link>
+                  <jackettindexer>ExampleIndexer</jackettindexer>
+                  <torznab:attr name="seeders" value="321" />
+                  <torznab:attr name="size" value="1610612736" />
+                  <torznab:attr name="team" value="GROUP" />
+                </item>
+                <item>
+                  <title>No usable hash</title>
+                  <link>https://example.com/file.torrent</link>
+                </item>
+              </channel>
+            </rss>
+        "#;
+        let streams = parse_torznab_xml(xml).expect("parse torznab");
+        assert_eq!(streams.len(), 1);
+        let stream = &streams[0];
+        assert_eq!(stream.infoHash, "abcdef0123456789abcdef0123456789abcdef01");
+        assert_eq!(stream.name, "Torznab - ExampleIndexer");
+        assert_eq!(stream.discoveryProvider, "torznab");
+        assert!(stream.magnetUrl.starts_with("magnet:?"));
+        assert_eq!(parse_seed_count(&stream.title), 321);
+        assert!(stream.title.contains("💾 1.5 GB"));
+        assert!(stream.title.contains("⚙ GROUP"));
+    }
+
+    #[test]
+    fn torznab_fallback_decision_matches_failure_only_policy() {
+        assert!(!should_try_torznab_discovery(false, false, false, false));
+        assert!(should_try_torznab_discovery(true, false, false, false));
+        assert!(should_try_torznab_discovery(false, true, false, false));
+        assert!(should_try_torznab_discovery(false, false, true, false));
+        assert!(should_try_torznab_discovery(false, false, false, true));
     }
 
     #[test]
@@ -4394,14 +5355,15 @@ mod tests {
         }
     }
 
-    fn sample_stream(title: &str, info_hash: &str) -> TorrentioStream {
-        TorrentioStream {
+    fn sample_stream(title: &str, info_hash: &str) -> DiscoveryStream {
+        DiscoveryStream {
             infoHash: info_hash.to_owned(),
             name: "Torrentio".to_owned(),
             title: title.to_owned(),
             description: "English audio • 1h 52m • 👤 950".to_owned(),
-            behaviorHints: TorrentioBehaviorHints::default(),
+            behaviorHints: DiscoveryBehaviorHints::default(),
             sources: Vec::new(),
+            ..DiscoveryStream::default()
         }
     }
 
@@ -4513,6 +5475,63 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].infoHash, good.infoHash);
+    }
+
+    #[test]
+    fn torznab_candidates_use_existing_filters_and_hash_pinning() {
+        let metadata = sample_movie_metadata();
+        let torznab = DiscoveryStream {
+            infoHash: "7777777777777777777777777777777777777777".to_owned(),
+            name: "Torznab - ExampleIndexer".to_owned(),
+            title: "The Housemaid 2025 1080p WEB-DL x264-GROUP\n💾 1.5 GB\n⚙ GROUP\n👤 80"
+                .to_owned(),
+            behaviorHints: DiscoveryBehaviorHints {
+                filename: "The Housemaid 2025 1080p WEB-DL x264-GROUP".to_owned(),
+            },
+            discoveryProvider: "torznab".to_owned(),
+            ..DiscoveryStream::default()
+        };
+        let low_seed = DiscoveryStream {
+            infoHash: "8888888888888888888888888888888888888888".to_owned(),
+            name: "Torznab - ExampleIndexer".to_owned(),
+            title: "The Housemaid 2025 1080p WEB-DL x264-LOW\n👤 3".to_owned(),
+            behaviorHints: DiscoveryBehaviorHints {
+                filename: "The Housemaid 2025 1080p WEB-DL x264-LOW".to_owned(),
+            },
+            discoveryProvider: "torznab".to_owned(),
+            ..DiscoveryStream::default()
+        };
+        let streams = vec![low_seed, torznab];
+        let filters = SourceFilters {
+            min_seeders: 50,
+            allowed_formats: vec!["mkv".to_owned()],
+            source_language: "en".to_owned(),
+            source_audio_profile: "single".to_owned(),
+        };
+        let selected = select_top_movie_candidates(
+            &streams,
+            &metadata,
+            "en",
+            "1080p",
+            "7777777777777777777777777777777777777777",
+            5,
+            &filters,
+            &HashMap::new(),
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0].infoHash,
+            "7777777777777777777777777777777777777777"
+        );
+        assert!(stream_list_contains_hash(
+            &streams,
+            "7777777777777777777777777777777777777777"
+        ));
+        assert!(!stream_list_contains_hash(
+            &streams,
+            "9999999999999999999999999999999999999999"
+        ));
     }
 
     #[test]

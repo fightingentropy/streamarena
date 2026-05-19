@@ -28,7 +28,7 @@ This project is a local Netflix-style streaming app with:
 The app combines two media paths:
 
 - Remote resolver path:
-  - TMDB metadata + Torrentio stream candidates + Real-Debrid unrestricted links
+  - TMDB metadata + Torrentio stream candidates + optional Torznab fallback + Real-Debrid unrestricted links
   - Server selects candidates, probes tracks, and returns a playable source
 - Local media path:
   - You upload `.mp4` / `.mkv`
@@ -241,6 +241,12 @@ Required integrations:
 Runtime:
 
 - `TORRENTIO_BASE_URL`
+- `TORZNAB_API_URL` (optional fallback discovery endpoint; empty disables it)
+- `TORZNAB_API_KEY` (optional)
+- `TORZNAB_MOVIE_CATEGORIES` (default `2000,2040,2045`)
+- `TORZNAB_TV_CATEGORIES` (default `5000,5040,5045`)
+- `TORZNAB_LIMIT` (default `50`, max `100`)
+- `TORZNAB_TIMEOUT_MS` (default `15000`)
 - `HOST`
 - `PORT`
 - `MAX_UPLOAD_BYTES`
@@ -256,6 +262,13 @@ Runtime:
 - `RESOLVER_MAX_CONCURRENT` (default `2`)
 - `RESOLVER_QUEUE_TIMEOUT_MS` (default `3000`)
 - `PLAYBACK_SESSIONS` (`0|1`)
+
+Torznab fallback notes:
+
+- The primary discovery backend remains Torrentio. Torznab is only queried when Torrentio fails, returns no usable candidates, all Torrentio candidates fail to resolve, or a pinned `sourceHash` is missing from Torrentio.
+- Use a generic Torznab URL from Prowlarr, Jackett, or another compatible indexer. Examples: `http://127.0.0.1:9696/1/api` for Prowlarr or `http://127.0.0.1:9117/api/v2.0/indexers/yts/results/torznab/api` for Jackett.
+- Prefer a filtered/specific indexer endpoint over Jackett's broad `all` endpoint so searches stay fast and relevant.
+- Torznab is discovery-only. Real-Debrid still resolves the selected magnet/info hash into a playable link.
 
 ## 7) Data, Cache, and Persistence
 
@@ -569,7 +582,7 @@ Restore outline for a replacement Mac mini:
 ## 10) Troubleshooting
 
 - `TMDB`/resolver errors:
-  - verify `TMDB_API_KEY`, `REAL_DEBRID_TOKEN`, network access
+  - verify `TMDB_API_KEY`, `REAL_DEBRID_TOKEN`, optional `TORZNAB_API_URL` / `TORZNAB_API_KEY`, and network access
 - Upload fails:
   - ensure file is `.mp4`/`.mkv`
   - check `MAX_UPLOAD_BYTES`
