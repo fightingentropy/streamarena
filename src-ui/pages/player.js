@@ -4282,14 +4282,14 @@ function renderSeriesEpisodePreview() {
       : `${episodeEntry.title} (Unavailable)`;
     main.appendChild(heading);
 
+    let thumb = null;
     if (isPreviewedEpisode) {
-      const thumb = document.createElement("img");
+      thumb = document.createElement("img");
       thumb.className = "episode-preview-thumb";
       const thumbUrl = String(episodeEntry.thumb || DEFAULT_EPISODE_THUMBNAIL);
       thumb.src = thumbUrl.startsWith("/") || thumbUrl.startsWith("http") ? thumbUrl : `/${thumbUrl}`;
       thumb.alt = `Episode ${index + 1} preview`;
       thumb.loading = "lazy";
-      main.appendChild(thumb);
     }
 
     const description = document.createElement("p");
@@ -4304,7 +4304,11 @@ function renderSeriesEpisodePreview() {
     progress.className = "episode-preview-progress";
     progress.setAttribute("aria-hidden", "true");
 
-    item.append(number, main, description, progress);
+    if (thumb) {
+      item.append(number, main, thumb, description, progress);
+    } else {
+      item.append(number, main, description, progress);
+    }
     episodesList.appendChild(item);
   });
 }
