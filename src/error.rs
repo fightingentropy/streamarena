@@ -43,6 +43,10 @@ impl ApiError {
         Self::new(StatusCode::GATEWAY_TIMEOUT, message)
     }
 
+    pub fn message(&self) -> Option<&str> {
+        self.payload.get("error").and_then(Value::as_str)
+    }
+
     pub fn payload_too_large(message: impl Into<String>) -> Self {
         Self::new(StatusCode::PAYLOAD_TOO_LARGE, message)
     }
