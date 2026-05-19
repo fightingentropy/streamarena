@@ -153,7 +153,6 @@ export default function NewPopularPage() {
   const [featuredMovie, setFeaturedMovie] = createSignal(null);
   const [heroBackdropUrl, setHeroBackdropUrl] = createSignal("assets/images/thumbnail.jpg");
   const [heroTitleText, setHeroTitleText] = createSignal("Loading");
-  const [heroRankText, setHeroRankText] = createSignal("Popular on TMDB today");
   const [heroDescriptionText, setHeroDescriptionText] = createSignal("Loading the latest popular movies.");
   const [heroSubtitleLabelText, setHeroSubtitleLabelText] = createSignal("TRENDING NOW");
   const [heroSubtitleTextVal, setHeroSubtitleTextVal] = createSignal("Fresh from TMDB's popular movie list.");
@@ -220,7 +219,6 @@ export default function NewPopularPage() {
       .map((id) => genreMap.get(id))
       .filter(Boolean)
       .slice(0, 3);
-    const rankText = `No. 1 in Movies Today${year ? ` \u2022 ${year}` : ""}`;
     const subtitleText = genreNames.length
       ? genreNames.join(" \u2022 ")
       : "Fresh from TMDB's popular movie list.";
@@ -235,7 +233,6 @@ export default function NewPopularPage() {
     setFeaturedMovie(details);
     setHeroBackdropUrl(heroUrl);
     setHeroTitleText(title);
-    setHeroRankText(rankText);
     setHeroDescriptionText(item.overview || "Browse the latest popular movie picks from TMDB.");
     setHeroSubtitleLabelText("POPULAR NOW");
     setHeroSubtitleTextVal(subtitleText);
@@ -470,12 +467,8 @@ export default function NewPopularPage() {
           <nav>
             <a href="/">Home</a>
             <a href="/live">Live</a>
-            <a href="#" class="nav-secondary">Series</a>
-            <a href="#" class="nav-secondary">Films</a>
-            <a href="#" class="optional">Games</a>
             <a href="/new-popular" class="optional is-active">New &amp; Popular</a>
             <a href="/#myListRow" class="optional">My List</a>
-            <a href="#" class="optional">Browse by Language</a>
           </nav>
         </div>
         <div class="nav-right">
@@ -521,12 +514,6 @@ export default function NewPopularPage() {
               <path d="M14.33 12.9 19.71 18.28a1 1 0 0 1-1.42 1.42l-5.38-5.38a8 8 0 1 1 1.42-1.42Zm-6.33 1.1a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"></path>
             </svg>
           </button>
-          <span class="kids">Kids</span>
-          <button class="icon-btn" aria-label="Notifications">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 24a3 3 0 0 0 2.82-2H9.18A3 3 0 0 0 12 24Zm8-6-2-2V10a6 6 0 1 0-12 0v6l-2 2v2h16v-2Z"></path>
-            </svg>
-          </button>
           <div class="account-menu" ref=${(el) => { accountMenuEl = el; }}>
             <button
               class="account-avatar-btn"
@@ -543,7 +530,7 @@ export default function NewPopularPage() {
               ></div>
             </button>
             <button
-              class="icon-btn"
+              class="icon-btn account-menu-toggle"
               aria-label="Account menu"
               aria-haspopup="menu"
               aria-expanded=${() => accountMenuOpen() ? "true" : "false"}
@@ -599,10 +586,6 @@ export default function NewPopularPage() {
           onClick=${handleHeroTitleClick}
           style="cursor: pointer"
         >${() => heroTitleText()}</h1>
-        <div class="rank-line">
-          <span class="top10">TOP 10</span>
-          <p>${() => heroRankText()}</p>
-        </div>
         <p class="description">
           ${() => heroDescriptionText()}
         </p>

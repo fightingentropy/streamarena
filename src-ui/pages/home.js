@@ -28,6 +28,7 @@ import {
   getStoredStreamQualityPreference,
   getStoredAudioLangForTmdbMovie,
 } from "../lib/preferences.js";
+import LiveChannelsView from "../components/live-channels-view.js";
 import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
 
 // ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ const SEARCH_MIN_QUERY_LENGTH = 2;
 const SEARCH_RESULTS_LIMIT = 40;
 const SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:movie:";
 const SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:movie:";
-const HERO_TRAILER_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
+const HERO_PREVIEW_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
 const RESUME_STORAGE_PREFIX = "netflix-resume:";
 const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
 const JEFFREY_EPSTEIN_SERIES_ID = "jeffrey-epstein-filthy-rich";
@@ -51,17 +52,16 @@ const PRIDE_PREJUDICE_THUMBNAIL = "assets/images/pride-prejudice-thumb.jpg";
 const DEFAULT_LOCAL_THUMBNAIL = "assets/images/thumbnail.jpg";
 const HERO_TRAILER_SOURCE = "assets/videos/project-hail-mary-2026-trailer.mp4";
 const HERO_TRAILER_POSTER = "assets/images/project-hail-mary-thumb.jpg";
-const HERO_TRAILER_AUTOPLAY_DELAY_MS = 1200;
 const HIDDEN_LOCAL_SERIES_TMDB_IDS = new Set(["103506", "1396"]);
 
 // ---------------------------------------------------------------------------
 // Pure utility functions (no signals needed)
 // ---------------------------------------------------------------------------
 
-function getStoredHeroTrailerMutedPreference() {
+function getStoredHeroPreviewMutedPreference() {
   try {
     const rawValue = String(
-      localStorage.getItem(HERO_TRAILER_MUTED_PREF_KEY) || "",
+      localStorage.getItem(HERO_PREVIEW_MUTED_PREF_KEY) || "",
     )
       .trim()
       .toLowerCase();
@@ -79,18 +79,19 @@ function getStoredHeroTrailerMutedPreference() {
       rawValue === "no" ||
       rawValue === "off"
     ) {
-      return false;
+      localStorage.removeItem(HERO_PREVIEW_MUTED_PREF_KEY);
+      return true;
     }
   } catch {
     // Ignore localStorage failures.
   }
-  return false;
+  return true;
 }
 
-function setStoredHeroTrailerMutedPreference(isMuted) {
+function setStoredHeroPreviewMutedPreference(isMuted) {
   try {
     localStorage.setItem(
-      HERO_TRAILER_MUTED_PREF_KEY,
+      HERO_PREVIEW_MUTED_PREF_KEY,
       isMuted ? "true" : "false",
     );
   } catch {
@@ -1477,9 +1478,7 @@ function setTmdbDetailsCache(key, value) {
 // ---------------------------------------------------------------------------
 export default function HomePage() {
   // ---- Refs ----
-  let introVideoRef;
-  let heroTrailerAutoplayTimer = null;
-  let heroTrailerIdleCallbackId = null;
+  let heroPreviewVideoRef;
   let pageRootRef;
   let continueCardsRef;
   let cardsContainerRef;
@@ -1494,7 +1493,7 @@ export default function HomePage() {
   let searchContextMenuRef;
 
   // ---- Signals ----
-  const [isMuted, setIsMuted] = createSignal(getStoredHeroTrailerMutedPreference());
+  const [isMuted, setIsMuted] = createSignal(getStoredHeroPreviewMutedPreference());
   const [isSearchModeActive, setIsSearchModeActive] = createSignal(false);
   const [searchStatusText, setSearchStatusText] = createSignal("Start typing to search TMDB titles.");
   const [searchStatusTone, setSearchStatusTone] = createSignal("");
@@ -1506,9 +1505,10 @@ export default function HomePage() {
   const [continueRowVisible, setContinueRowVisible] = createSignal(false);
   const [continueEmptyVisible, setContinueEmptyVisible] = createSignal(false);
   const [popularRowVisible, setPopularRowVisible] = createSignal(true);
-  const [popularRowTitle, setPopularRowTitle] = createSignal("Today's Top Picks for You");
+  const [popularRowTitle, setPopularRowTitle] = createSignal("Bingeworthy Series");
   const [myListRowVisible, setMyListRowVisible] = createSignal(false);
   const [myListEmptyVisible, setMyListEmptyVisible] = createSignal(false);
+  const [activeView, setActiveView] = createSignal("home");
 
   const [detailsModalVisible, setDetailsModalVisible] = createSignal(false);
   const [detailsModalOpen, setDetailsModalOpen] = createSignal(false);
@@ -2394,9 +2394,6 @@ export default function HomePage() {
               <button class="hover-round hover-my-list" type="button" aria-label="Add to my list">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
               </button>
-              <button class="hover-round" type="button" aria-label="Rate thumbs up">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20H5.8A1.8 1.8 0 0 1 4 18.2V10a1.8 1.8 0 0 1 1.8-1.8H8V20Zm2 0h6a3.5 3.5 0 0 0 3.4-2.8l.8-4A2.5 2.5 0 0 0 17.75 10H14V6.6A2.6 2.6 0 0 0 11.4 4L10 9.3V20Z" /></svg>
-              </button>
             </div>
             <button class="hover-round hover-details" type="button" aria-label="More details">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
@@ -2474,12 +2471,72 @@ export default function HomePage() {
     actions.appendChild(editButton);
   }
 
+  function positionCardHover(card) {
+    if (!(card instanceof HTMLElement)) {
+      return;
+    }
+    const hover = card.querySelector(".card-hover");
+    if (!(hover instanceof HTMLElement)) {
+      return;
+    }
+
+    const cardRect = card.getBoundingClientRect();
+    const hoverWidth = hover.offsetWidth || Math.min(470, window.innerWidth * 0.34);
+    const hoverHeight = hover.offsetHeight || Math.round((hoverWidth * 9) / 16);
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+    const gutter = 12;
+
+    const preferredLeft = card.classList.contains("card--align-right")
+      ? cardRect.right - hoverWidth
+      : cardRect.left;
+    const maxLeft = Math.max(gutter, viewportWidth - hoverWidth - gutter);
+    const left = Math.max(gutter, Math.min(preferredLeft, maxLeft));
+
+    const preferredTop = cardRect.bottom - hoverHeight;
+    const maxTop = Math.max(gutter, viewportHeight - hoverHeight - gutter);
+    const top = Math.max(gutter, Math.min(preferredTop, maxTop));
+
+    hover.style.setProperty("--card-hover-left", `${left}px`);
+    hover.style.setProperty("--card-hover-top", `${top}px`);
+  }
+
+  function showCardHover(card) {
+    if (!(card instanceof HTMLElement)) {
+      return;
+    }
+    card.closest(".continue-row, .popular-row")?.classList.add("is-card-hovering");
+    positionCardHover(card);
+    card.classList.add("is-hovering");
+    requestAnimationFrame(() => positionCardHover(card));
+  }
+
+  function hideCardHover(card) {
+    if (!(card instanceof HTMLElement) || card.matches(":focus-within")) {
+      return;
+    }
+    card.classList.remove("is-hovering");
+    card.closest(".continue-row, .popular-row")?.classList.remove("is-card-hovering");
+  }
+
   function attachCardInteractions(card) {
     if (!card || card.dataset.interactionsBound === "true") {
       return;
     }
     ensureCardLibraryEditButton(card);
     card.dataset.interactionsBound = "true";
+
+    card.addEventListener("pointerenter", () => showCardHover(card));
+    card.addEventListener("pointerleave", () => hideCardHover(card));
+    card.addEventListener("focusin", () => showCardHover(card));
+    card.addEventListener("focusout", () => {
+      window.setTimeout(() => {
+        if (!card.matches(":focus-within")) {
+          card.classList.remove("is-hovering");
+          card.closest(".continue-row, .popular-row")?.classList.remove("is-card-hovering");
+        }
+      }, 0);
+    });
 
     card.addEventListener("click", (event) => {
       if (event.target.closest("button")) {
@@ -2702,9 +2759,6 @@ export default function HomePage() {
               <button class="hover-round hover-remove" type="button" aria-label="Remove ${safeTitle} from continue watching">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg>
               </button>
-              <button class="hover-round" type="button" aria-label="Rate thumbs up">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20H5.8A1.8 1.8 0 0 1 4 18.2V10a1.8 1.8 0 0 1 1.8-1.8H8V20Zm2 0h6a3.5 3.5 0 0 0 3.4-2.8l.8-4A2.5 2.5 0 0 0 17.75 10H14V6.6A2.6 2.6 0 0 0 11.4 4L10 9.3V20Z" /></svg>
-              </button>
               ${editButtonMarkup}
             </div>
             <button class="hover-round hover-details" type="button" aria-label="More details">
@@ -2786,12 +2840,6 @@ export default function HomePage() {
               </button>
               <button class="hover-round" type="button" aria-label="Added to my list">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-              </button>
-              <button class="hover-round" type="button" aria-label="Remove from continue watching">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg>
-              </button>
-              <button class="hover-round" type="button" aria-label="Rate thumbs up">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20H5.8A1.8 1.8 0 0 1 4 18.2V10a1.8 1.8 0 0 1 1.8-1.8H8V20Zm2 0h6a3.5 3.5 0 0 0 3.4-2.8l.8-4A2.5 2.5 0 0 0 17.75 10H14V6.6A2.6 2.6 0 0 0 11.4 4L10 9.3V20Z" /></svg>
               </button>
             </div>
             <button class="hover-round hover-details" type="button" aria-label="More details">
@@ -2880,12 +2928,6 @@ export default function HomePage() {
               <button class="hover-round" type="button" aria-label="Added to my list">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
               </button>
-              <button class="hover-round" type="button" aria-label="Remove from continue watching">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg>
-              </button>
-              <button class="hover-round" type="button" aria-label="Rate thumbs up">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20H5.8A1.8 1.8 0 0 1 4 18.2V10a1.8 1.8 0 0 1 1.8-1.8H8V20Zm2 0h6a3.5 3.5 0 0 0 3.4-2.8l.8-4A2.5 2.5 0 0 0 17.75 10H14V6.6A2.6 2.6 0 0 0 11.4 4L10 9.3V20Z" /></svg>
-              </button>
             </div>
             <button class="hover-round hover-details" type="button" aria-label="More details">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
@@ -2950,12 +2992,6 @@ export default function HomePage() {
               </button>
               <button class="hover-round" type="button" aria-label="Added to my list">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-              </button>
-              <button class="hover-round" type="button" aria-label="Remove from continue watching">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg>
-              </button>
-              <button class="hover-round" type="button" aria-label="Rate thumbs up">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20H5.8A1.8 1.8 0 0 1 4 18.2V10a1.8 1.8 0 0 1 1.8-1.8H8V20Zm2 0h6a3.5 3.5 0 0 0 3.4-2.8l.8-4A2.5 2.5 0 0 0 17.75 10H14V6.6A2.6 2.6 0 0 0 11.4 4L10 9.3V20Z" /></svg>
               </button>
             </div>
             <button class="hover-round hover-details" type="button" aria-label="More details">
@@ -3062,12 +3098,6 @@ export default function HomePage() {
               </button>
               <button class="hover-round" type="button" aria-label="Added to my list">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-              </button>
-              <button class="hover-round" type="button" aria-label="Remove from continue watching">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg>
-              </button>
-              <button class="hover-round" type="button" aria-label="Rate thumbs up">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20H5.8A1.8 1.8 0 0 1 4 18.2V10a1.8 1.8 0 0 1 1.8-1.8H8V20Zm2 0h6a3.5 3.5 0 0 0 3.4-2.8l.8-4A2.5 2.5 0 0 0 17.75 10H14V6.6A2.6 2.6 0 0 0 11.4 4L10 9.3V20Z" /></svg>
               </button>
               ${editButtonMarkup}
             </div>
@@ -3216,12 +3246,6 @@ export default function HomePage() {
               </button>
               <button class="hover-round" type="button" aria-label="Added to my list">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-              </button>
-              <button class="hover-round" type="button" aria-label="Remove from continue watching">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg>
-              </button>
-              <button class="hover-round" type="button" aria-label="Rate thumbs up">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20H5.8A1.8 1.8 0 0 1 4 18.2V10a1.8 1.8 0 0 1 1.8-1.8H8V20Zm2 0h6a3.5 3.5 0 0 0 3.4-2.8l.8-4A2.5 2.5 0 0 0 17.75 10H14V6.6A2.6 2.6 0 0 0 11.4 4L10 9.3V20Z" /></svg>
               </button>
               ${editButtonMarkup}
             </div>
@@ -3383,7 +3407,7 @@ export default function HomePage() {
         );
       });
 
-      setPopularRowTitle("Today's Top Picks for You");
+      setPopularRowTitle("Bingeworthy Series");
       setPopularRowVisible(cardsToRender.length > 0);
     } catch (error) {
       console.error("Failed to load local downloaded titles:", error);
@@ -3785,102 +3809,33 @@ export default function HomePage() {
   }
 
   // ---- Hero ----
-  function shouldSkipHeroTrailerAutoplay() {
-    try {
-      if (navigator.connection?.saveData) {
-        return true;
-      }
-      return window.matchMedia?.("(prefers-reduced-data: reduce)")?.matches || false;
-    } catch {
-      return false;
+  function applyHeroPreviewMutedState(nextMuted) {
+    if (heroPreviewVideoRef instanceof HTMLVideoElement) {
+      heroPreviewVideoRef.muted = nextMuted;
+      heroPreviewVideoRef.defaultMuted = nextMuted;
     }
+    setIsMuted(nextMuted);
   }
 
-  function loadHeroTrailerSource() {
-    if (!(introVideoRef instanceof HTMLVideoElement)) {
-      return false;
-    }
-    if (introVideoRef.currentSrc || introVideoRef.getAttribute("src")) {
-      return true;
-    }
-    const source = String(introVideoRef.dataset.src || "").trim();
-    if (!source) {
-      return false;
-    }
-    introVideoRef.setAttribute("src", source);
-    introVideoRef.load();
-    return true;
-  }
-
-  function cancelHeroTrailerAutoplay() {
-    if (heroTrailerAutoplayTimer) {
-      window.clearTimeout(heroTrailerAutoplayTimer);
-      heroTrailerAutoplayTimer = null;
-    }
-    if (
-      heroTrailerIdleCallbackId !== null &&
-      typeof window.cancelIdleCallback === "function"
-    ) {
-      window.cancelIdleCallback(heroTrailerIdleCallbackId);
-      heroTrailerIdleCallbackId = null;
-    }
-  }
-
-  function scheduleHeroTrailerAutoplay() {
-    if (!(introVideoRef instanceof HTMLVideoElement) || shouldSkipHeroTrailerAutoplay()) {
+  function playHeroPreview() {
+    if (!(heroPreviewVideoRef instanceof HTMLVideoElement)) {
       return;
     }
-    const startTrailer = () => {
-      heroTrailerAutoplayTimer = null;
-      heroTrailerIdleCallbackId = null;
-      if (!loadHeroTrailerSource()) {
-        return;
-      }
-      applyStoredHeroTrailerAudioPreference({ shouldPlay: true });
-    };
-    if (typeof window.requestIdleCallback === "function") {
-      heroTrailerIdleCallbackId = window.requestIdleCallback(startTrailer, {
-        timeout: HERO_TRAILER_AUTOPLAY_DELAY_MS,
-      });
-      return;
-    }
-    heroTrailerAutoplayTimer = window.setTimeout(
-      startTrailer,
-      HERO_TRAILER_AUTOPLAY_DELAY_MS,
-    );
+    applyHeroPreviewMutedState(true);
+    void heroPreviewVideoRef.play().catch(() => {
+      // Browser autoplay can still be blocked until user interaction.
+    });
   }
 
-  function syncMuteUI() {
-    if (!introVideoRef) return;
-    setIsMuted(introVideoRef.muted);
-  }
-
-  function applyStoredHeroTrailerAudioPreference({ shouldPlay = false } = {}) {
-    if (!(introVideoRef instanceof HTMLVideoElement)) {
-      return;
-    }
-    const preferredMuted = getStoredHeroTrailerMutedPreference();
-    introVideoRef.muted = preferredMuted;
-    setIsMuted(preferredMuted);
-    if (!shouldPlay || !introVideoRef.paused) {
-      return;
-    }
-    void introVideoRef.play().catch(() => {});
-  }
-
-  async function handleMuteToggle() {
-    if (!introVideoRef) return;
-    cancelHeroTrailerAutoplay();
-    loadHeroTrailerSource();
-    introVideoRef.muted = !introVideoRef.muted;
-    setStoredHeroTrailerMutedPreference(introVideoRef.muted);
-    syncMuteUI();
-    if (introVideoRef.paused) {
-      try {
-        await introVideoRef.play();
-      } catch (error) {
-        // Ignore autoplay restrictions when manually unmuting.
-      }
+  function handleMuteToggle() {
+    const nextMuted =
+      heroPreviewVideoRef instanceof HTMLVideoElement
+        ? !heroPreviewVideoRef.muted
+        : !isMuted();
+    applyHeroPreviewMutedState(nextMuted);
+    setStoredHeroPreviewMutedPreference(nextMuted);
+    if (heroPreviewVideoRef instanceof HTMLVideoElement && heroPreviewVideoRef.paused) {
+      void heroPreviewVideoRef.play().catch(() => {});
     }
   }
 
@@ -3989,11 +3944,50 @@ export default function HomePage() {
     });
   }
 
+  function showHomeView({ push = true } = {}) {
+    if (isSearchModeActive()) {
+      closeSearchMode({ clearInput: false });
+    }
+    setActiveView("home");
+    if (push && window.location.pathname !== "/") {
+      window.history.pushState({ view: "home" }, "", "/");
+    }
+    playHeroPreview();
+  }
+
+  function showLiveView({ push = true } = {}) {
+    if (isSearchModeActive()) {
+      closeSearchMode({ clearInput: false });
+    }
+    setActiveView("live");
+    if (push && window.location.pathname !== "/live") {
+      window.history.pushState({ view: "live" }, "", "/live");
+    }
+    if (heroPreviewVideoRef instanceof HTMLVideoElement) {
+      heroPreviewVideoRef.pause();
+    }
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }
+
+  function handleHomeNavClick(event) {
+    event.preventDefault();
+    showHomeView();
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }
+
+  function handleLiveNavClick(event) {
+    event.preventDefault();
+    showLiveView();
+  }
+
   // ---- My List nav link ----
   function handleMyListNavClick(event) {
     event.preventDefault();
     if (isSearchModeActive()) {
       closeSearchMode({ clearInput: false });
+    }
+    if (activeView() === "live") {
+      showHomeView();
     }
     const myListRowEl = document.getElementById("myListRow");
     if (myListRowEl && !myListRowEl.hidden) {
@@ -4154,16 +4148,16 @@ export default function HomePage() {
 
   // ---- onMount: initialize everything ----
   onMount(() => {
-    // Apply initial preferences
-    applyStoredHeroTrailerAudioPreference();
-    syncMuteUI();
-    scheduleHeroTrailerAutoplay();
+    playHeroPreview();
     applyLibraryEditModeClass();
     renderMyListRow();
     void loadContinueWatching();
     loadPopularTitles();
     applyAccountAvatarStyle();
     closeAccountMenu();
+    if (window.location.pathname === "/live") {
+      showLiveView({ push: false });
+    }
 
     // Handle initial search query
     const initialSearchQuery = normalizeSearchQuery(
@@ -4228,6 +4222,9 @@ export default function HomePage() {
 
     const handleGlobalResize = () => {
       hideSearchContextMenu();
+      document
+        .querySelectorAll(".card:hover, .card:focus-within")
+        .forEach((card) => positionCardHover(card));
     };
 
     const handleStorage = (event) => {
@@ -4258,9 +4255,8 @@ export default function HomePage() {
         syncAllMyListButtons();
       }
 
-      if (event.key === HERO_TRAILER_MUTED_PREF_KEY) {
-        applyStoredHeroTrailerAudioPreference();
-        syncMuteUI();
+      if (event.key === HERO_PREVIEW_MUTED_PREF_KEY) {
+        applyHeroPreviewMutedState(getStoredHeroPreviewMutedPreference());
       }
 
       if (event.key === LIBRARY_EDIT_MODE_PREF_KEY) {
@@ -4272,12 +4268,21 @@ export default function HomePage() {
       applyLibraryEditModeClass();
     };
 
+    const handlePopstate = () => {
+      if (window.location.pathname === "/live") {
+        showLiveView({ push: false });
+      } else {
+        showHomeView({ push: false });
+      }
+    };
+
     document.addEventListener("keydown", handleGlobalKeydown);
     document.addEventListener("pointerdown", handleGlobalPointerdownContextMenu);
     document.addEventListener("pointerdown", handleGlobalPointerdownAccountMenu);
     window.addEventListener("resize", handleGlobalResize);
     window.addEventListener("storage", handleStorage);
     window.addEventListener("pageshow", handlePageshow);
+    window.addEventListener("popstate", handlePopstate);
 
     onCleanup(() => {
       document.removeEventListener("keydown", handleGlobalKeydown);
@@ -4286,10 +4291,10 @@ export default function HomePage() {
       window.removeEventListener("resize", handleGlobalResize);
       window.removeEventListener("storage", handleStorage);
       window.removeEventListener("pageshow", handlePageshow);
+      window.removeEventListener("popstate", handlePopstate);
 
       if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
       if (searchBoxHideTimer) clearTimeout(searchBoxHideTimer);
-      cancelHeroTrailerAutoplay();
       if (closeModalTimer) clearTimeout(closeModalTimer);
       if (libraryEditModalCloseTimer) clearTimeout(libraryEditModalCloseTimer);
     });
@@ -4297,7 +4302,7 @@ export default function HomePage() {
 
   // ---- Template ----
   return html`<div data-solid-page-root="" style="display: contents">
-    <div class="page" tabindex="0" ref=${(el) => (pageRootRef = el)}>
+    <div class="page home-page" tabindex="0" ref=${(el) => (pageRootRef = el)}>
       <header class="top-nav">
         <div class="nav-left">
           <a href="/" class="nav-logo" aria-label="Go to homepage">
@@ -4308,14 +4313,13 @@ export default function HomePage() {
             />
           </a>
           <nav>
-            <a href="#" class="is-active">Home</a>
-            <a href="/live">Live</a>
-            <a href="#" class="nav-secondary">Series</a>
-            <a href="#" class="nav-secondary">Films</a>
-            <a href="#" class="optional">Games</a>
+            <a href="/" class=${() => activeView() === "home" ? "is-active" : ""} onClick=${handleHomeNavClick}>Home</a>
+            <a href="#" class="optional">Series</a>
+            <a href="#" class="optional">Films</a>
+            <a href="/live" class=${() => activeView() === "live" ? "is-active" : ""} onClick=${handleLiveNavClick}>Live</a>
             <a href="/new-popular" class="optional">New &amp; Popular</a>
             <a href="#" id="navMyList" class="optional" onClick=${handleMyListNavClick}>My List</a>
-            <a href="#" class="optional">Browse by Language</a>
+            <a href="#" class="optional nav-secondary">Browse by Language</a>
           </nav>
         </div>
         <div class="nav-right">
@@ -4373,10 +4377,10 @@ export default function HomePage() {
               <path d="M14.33 12.9 19.71 18.28a1 1 0 0 1-1.42 1.42l-5.38-5.38a8 8 0 1 1 1.42-1.42Zm-6.33 1.1a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"></path>
             </svg>
           </button>
-          <span class="kids">Kids</span>
-          <button class="icon-btn" aria-label="Notifications">
+          <a href="#" class="kids">Kids</a>
+          <button class="icon-btn notification-btn" type="button" aria-label="Notifications">
             <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 24a3 3 0 0 0 2.82-2H9.18A3 3 0 0 0 12 24Zm8-6-2-2V10a6 6 0 1 0-12 0v6l-2 2v2h16v-2Z"></path>
+              <path d="M12 22a2.6 2.6 0 0 0 2.45-1.72h-4.9A2.6 2.6 0 0 0 12 22Zm7.1-5.2-1.45-1.84V10a5.68 5.68 0 0 0-4.48-5.56V3a1.17 1.17 0 1 0-2.34 0v1.44A5.68 5.68 0 0 0 6.35 10v4.96L4.9 16.8a1 1 0 0 0 .78 1.62h12.64a1 1 0 0 0 .78-1.62Z"></path>
             </svg>
           </button>
           <div id="accountMenu" class="account-menu">
@@ -4398,7 +4402,7 @@ export default function HomePage() {
             </button>
             <button
               id="accountMenuToggle"
-              class="icon-btn"
+              class="icon-btn account-menu-toggle"
               aria-label="Account menu"
               aria-haspopup="menu"
               aria-expanded=${() => accountMenuOpen() ? "true" : "false"}
@@ -4480,107 +4484,134 @@ export default function HomePage() {
         ></div>
       </section>
 
-      <video
-        id="introVideo"
-        ref=${(el) => (introVideoRef = el)}
-        class="hero-video"
-        data-src=${HERO_TRAILER_SOURCE}
-        poster=${HERO_TRAILER_POSTER}
-        loop
-        playsinline
-        preload="metadata"
-        aria-label="Project Hail Mary trailer"
-      ></video>
+      <div
+        id="liveTabView"
+        class="live-tab-view"
+        style=${() => activeView() === "live" && !showSearchExperience() ? "" : "display:none"}
+      >
+        <${LiveChannelsView} />
+      </div>
 
-      <div class="hero-shade" aria-hidden="true"></div>
+      <section
+        class="featured-hero"
+        aria-label="Featured title"
+        style=${() => activeView() === "home" ? "" : "display:none"}
+      >
+        <video
+          id="heroPreview"
+          ref=${(el) => (heroPreviewVideoRef = el)}
+          class="hero-video"
+          src=${HERO_TRAILER_SOURCE}
+          poster=${HERO_TRAILER_POSTER}
+          muted
+          loop
+          autoplay
+          playsinline
+          preload="metadata"
+          aria-label="Project Hail Mary trailer preview"
+          onCanPlay=${playHeroPreview}
+          onVolumeChange=${() => {
+            if (heroPreviewVideoRef instanceof HTMLVideoElement) {
+              setIsMuted(heroPreviewVideoRef.muted);
+            }
+          }}
+        ></video>
 
-      <section class="hero-content">
-        <img
-          src="assets/icons/netflix-logo-clean.png"
-          class="brand-mark-image"
-          alt="Netflix"
-        />
-        <h1
-          id="heroTitle"
-          tabindex="0"
-          aria-label="Open Project Hail Mary player"
-          style="cursor: pointer"
-          onClick=${handleHeroTitleClick}
-          onKeydown=${handleHeroTitleKeydown}
-        >
-          PROJECT
-          <br />
-          HAIL
-          <br />
-          <span>MARY</span>
-        </h1>
-        <div class="rank-line">
-          <span class="top10">TOP 10</span>
-          <p>No. 1 in Films Today</p>
+        <div class="hero-shade" aria-hidden="true"></div>
+
+        <div class="hero-top-row">
+          <img
+            src="assets/icons/netflix-logo-clean.png"
+            class="featured-logo-mark"
+            alt="Netflix"
+          />
+          <div class="hero-controls">
+            <button
+              id="muteToggle"
+              class=${() => `control-btn${isMuted() ? " muted" : ""}`}
+              type="button"
+              aria-label=${() => isMuted() ? "Unmute trailer" : "Mute trailer"}
+              onClick=${handleMuteToggle}
+            >
+              <svg class="icon-on" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14 5.2v13.6a1 1 0 0 1-1.68.74L7.6 15H5a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2.6l4.72-4.54A1 1 0 0 1 14 5.2Zm3.72 2.18a1 1 0 1 1 1.56-1.24 10.25 10.25 0 0 1 0 11.72 1 1 0 1 1-1.56-1.24 8.25 8.25 0 0 0 0-9.24Zm-2.8 2.26a1 1 0 0 1 1.56-1.24 5.8 5.8 0 0 1 0 7.2 1 1 0 1 1-1.56-1.24 3.8 3.8 0 0 0 0-4.72Z"></path>
+              </svg>
+              <svg class="icon-off" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14 5.2v13.6a1 1 0 0 1-1.68.74L7.6 15H5a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2.6l4.72-4.54A1 1 0 0 1 14 5.2Zm6.3 3.1a1 1 0 0 1 0 1.4L18.01 12l2.3 2.3a1 1 0 0 1-1.42 1.4L16.6 13.4l-2.3 2.3a1 1 0 0 1-1.4-1.42l2.3-2.28-2.3-2.3a1 1 0 0 1 1.4-1.4l2.3 2.3 2.29-2.3a1 1 0 0 1 1.41 0Z"></path>
+              </svg>
+            </button>
+          </div>
         </div>
-        <p class="description">
-          A lone astronaut wakes up on a spaceship with no memory and
-          must solve the mystery of a substance killing the sun — with
-          help from an unexpected alien friend.
-        </p>
-        <div class="hero-actions">
-          <button id="heroPlay" class="cta cta-play" type="button" onClick=${handleHeroPlay}>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M5 3.5v17L20 12 5 3.5Z"></path>
-            </svg>
-            Play
-          </button>
-          <button id="heroInfo" class="cta cta-info" type="button" onClick=${handleHeroInfo}>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <circle
-                cx="12"
-                cy="12"
-                r="9.25"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.2"
-              ></circle>
-              <line
-                x1="12"
-                y1="10.5"
-                x2="12"
-                y2="16.25"
-                stroke="currentColor"
-                stroke-width="2.2"
-                stroke-linecap="round"
-              ></line>
-              <circle cx="12" cy="7.5" r="1.25"></circle>
-            </svg>
-            More Info
-          </button>
-        </div>
+
+        <section class="hero-content" aria-labelledby="heroTitle">
+          <h1
+            id="heroTitle"
+            class="hero-title-stacked"
+            tabindex="0"
+            aria-label="Open Project Hail Mary player"
+            onClick=${handleHeroTitleClick}
+            onKeydown=${handleHeroTitleKeydown}
+          >
+            PROJECT
+            <br />
+            HAIL MARY
+          </h1>
+          <div class="hero-meta" aria-label="Title details">
+            <span>Movie</span>
+            <span aria-hidden="true">•</span>
+            <span>2026</span>
+            <span aria-hidden="true">•</span>
+            <span>1h 56m</span>
+            <span aria-hidden="true">•</span>
+            <span class="maturity-badge">13+</span>
+          </div>
+          <p class="description">
+            A lone astronaut awakens on a desperate mission to save Earth, with only
+            fragments of memory and an unexpected ally light-years from home.
+          </p>
+          <div class="hero-actions">
+            <button id="heroPlay" class="cta cta-play" type="button" onClick=${handleHeroPlay}>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 3.5v17L20 12 5 3.5Z"></path>
+              </svg>
+              Play
+            </button>
+            <button id="heroInfo" class="cta cta-info" type="button" onClick=${handleHeroInfo}>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="9.25"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                ></circle>
+                <line
+                  x1="12"
+                  y1="10.5"
+                  x2="12"
+                  y2="16.25"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                  stroke-linecap="round"
+                ></line>
+                <circle cx="12" cy="7.5" r="1.25"></circle>
+              </svg>
+              More Info
+            </button>
+          </div>
+          <div class="hero-callouts" aria-label="Featured badges">
+            <span>Recently added</span>
+            <span>Epic sci-fi survival</span>
+          </div>
+        </section>
+
       </section>
-
-      <div class="subtitle">
-      </div>
-
-      <div class="hero-controls">
-        <button
-          id="muteToggle"
-          class=${() => `control-btn${isMuted() ? " muted" : ""}`}
-          type="button"
-          aria-label=${() => isMuted() ? "Unmute trailer" : "Mute trailer"}
-          onClick=${handleMuteToggle}
-        >
-          <svg class="icon-on" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M14 5.2v13.6a1 1 0 0 1-1.68.74L7.6 15H5a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2.6l4.72-4.54A1 1 0 0 1 14 5.2Zm3.72 2.18a1 1 0 1 1 1.56-1.24 10.25 10.25 0 0 1 0 11.72 1 1 0 1 1-1.56-1.24 8.25 8.25 0 0 0 0-9.24Zm-2.8 2.26a1 1 0 0 1 1.56-1.24 5.8 5.8 0 0 1 0 7.2 1 1 0 1 1-1.56-1.24 3.8 3.8 0 0 0 0-4.72Z"></path>
-          </svg>
-          <svg class="icon-off" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M14 5.2v13.6a1 1 0 0 1-1.68.74L7.6 15H5a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2.6l4.72-4.54A1 1 0 0 1 14 5.2Zm6.3 3.1a1 1 0 0 1 0 1.4L18.01 12l2.3 2.3a1 1 0 0 1-1.42 1.4L16.6 13.4l-2.3 2.3a1 1 0 0 1-1.4-1.42l2.3-2.28-2.3-2.3a1 1 0 0 1 1.4-1.4l2.3 2.3 2.29-2.3a1 1 0 0 1 1.41 0Z"></path>
-          </svg>
-        </button>
-        <span class="rating">PG-13</span>
-      </div>
 
       <section
         id="continueRow"
         class="continue-row"
-        style=${() => continueRowVisible() ? "" : "display:none"}
+        style=${() => activeView() === "home" && continueRowVisible() ? "" : "display:none"}
       >
         <h2>Continue watching for <span id="continueWatchingName">${displayName || "you"}</span></h2>
         <div
@@ -4600,11 +4631,13 @@ export default function HomePage() {
 
     <section
       id="popularRow"
-      class="popular-row"
-      style=${() => popularRowVisible() ? "" : "display:none"}
+      class="popular-row home-popular-row"
+      style=${() => activeView() === "home" && popularRowVisible() ? "" : "display:none"}
     >
       <div class="popular-row-inner">
-        <h2 id="popularRowTitle">${() => popularRowTitle()}</h2>
+        <div class="rail-header">
+          <h2 id="popularRowTitle">${() => popularRowTitle()}</h2>
+        </div>
         <div
           id="cardsContainer"
           class="cards popular-cards"
@@ -4616,7 +4649,7 @@ export default function HomePage() {
     <section
       id="myListRow"
       class="popular-row"
-      style=${() => myListRowVisible() ? "" : "display:none"}
+      style=${() => activeView() === "home" && myListRowVisible() ? "" : "display:none"}
     >
       <div class="popular-row-inner">
         <h2>My List</h2>
@@ -4634,6 +4667,52 @@ export default function HomePage() {
         </p>
       </div>
     </section>
+
+    <footer
+      class="member-footer home-member-footer"
+      aria-label="Netflix footer"
+      style=${() => activeView() === "home" ? "" : "display:none"}
+    >
+      <div class="member-footer-social">
+        <a href="#" aria-label="Facebook">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M13.6 21v-7.7h2.6l.4-3h-3V8.4c0-.9.3-1.5 1.6-1.5h1.6V4.2c-.8-.1-1.7-.2-2.5-.2-2.5 0-4.2 1.5-4.2 4.3v2.4H7.8v3h2.8V21h3Z"></path>
+          </svg>
+        </a>
+        <a href="#" aria-label="Instagram">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M7.4 2.8h9.2a4.6 4.6 0 0 1 4.6 4.6v9.2a4.6 4.6 0 0 1-4.6 4.6H7.4a4.6 4.6 0 0 1-4.6-4.6V7.4a4.6 4.6 0 0 1 4.6-4.6Zm0 2A2.6 2.6 0 0 0 4.8 7.4v9.2a2.6 2.6 0 0 0 2.6 2.6h9.2a2.6 2.6 0 0 0 2.6-2.6V7.4a2.6 2.6 0 0 0-2.6-2.6H7.4Zm4.6 3a4.2 4.2 0 1 1 0 8.4 4.2 4.2 0 0 1 0-8.4Zm0 2a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4Zm4.5-2.35a1.05 1.05 0 1 1 0 2.1 1.05 1.05 0 0 1 0-2.1Z"></path>
+          </svg>
+        </a>
+        <a href="#" aria-label="Twitter">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M18.9 2.8h3.3l-7.3 8.3 8.5 10.1h-6.7l-5.2-6.2-6 6.2H2.2l7.8-8.2L1.8 2.8h6.8l4.7 5.8 5.6-5.8Zm-1.2 16.6h1.8L7.6 4.5H5.7l12 14.9Z"></path>
+          </svg>
+        </a>
+        <a href="#" aria-label="YouTube">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21.5 7.1a3 3 0 0 0-2.1-2.1C17.5 4.5 12 4.5 12 4.5s-5.5 0-7.4.5a3 3 0 0 0-2.1 2.1A31 31 0 0 0 2 12a31 31 0 0 0 .5 4.9 3 3 0 0 0 2.1 2.1c1.9.5 7.4.5 7.4.5s5.5 0 7.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 22 12a31 31 0 0 0-.5-4.9ZM10 15.4V8.6l5.8 3.4L10 15.4Z"></path>
+          </svg>
+        </a>
+      </div>
+      <ul class="member-footer-links">
+        <li><a href="#">Audio Description</a></li>
+        <li><a href="#">Help Centre</a></li>
+        <li><a href="#">Gift Cards</a></li>
+        <li><a href="#">Media Centre</a></li>
+        <li><a href="#">Investor Relations</a></li>
+        <li><a href="#">Jobs</a></li>
+        <li><a href="#">Terms of Use</a></li>
+        <li><a href="#">Privacy</a></li>
+        <li><a href="#">Legal Notices</a></li>
+        <li><a href="#">Cookie Preferences</a></li>
+        <li><a href="#">Corporate Information</a></li>
+        <li><a href="#">Contact Us</a></li>
+        <li><a href="#">Speed Test</a></li>
+        <li><a href="#">Only on Netflix</a></li>
+      </ul>
+      <p class="member-footer-copyright">&copy; 1997-2026 Netflix, Inc.</p>
+    </footer>
 
     <div
       id="detailsModal"

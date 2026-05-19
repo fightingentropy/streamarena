@@ -8,93 +8,8 @@ import {
   getStoredAvatarModePreference,
   getStoredAvatarImagePreference,
 } from "../shared.js";
+import LiveChannelsView from "../components/live-channels-view.js";
 import { signOut } from "../lib/auth.js";
-import { LIVE_CHANNELS } from "../lib/live-channels.js";
-import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
-
-function slugify(value) {
-  return String(value || "live")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
-function normalizePlaybackSource(value) {
-  const raw = String(value || "").trim();
-  if (!raw) {
-    return "";
-  }
-  if (/^(https?:)?\/\//i.test(raw) || raw.startsWith("/")) {
-    return raw;
-  }
-  return raw.startsWith("assets/") ? `/${raw}` : raw;
-}
-
-function normalizeStreamOption(option, index = 0) {
-  const source = normalizePlaybackSource(option?.source);
-  if (!source) {
-    return null;
-  }
-  const id =
-    slugify(option?.id || option?.label || option?.quality || `stream-${index + 1}`) ||
-    `stream-${index + 1}`;
-  return {
-    id,
-    label: String(option?.label || option?.quality || `Stream ${index + 1}`).trim(),
-    source,
-    quality: String(option?.quality || "").trim(),
-  };
-}
-
-function getChannelStreamOptions(channel) {
-  const explicitStreams = Array.isArray(channel?.streams)
-    ? channel.streams.map(normalizeStreamOption).filter(Boolean)
-    : [];
-  if (explicitStreams.length) {
-    return explicitStreams;
-  }
-  const source = normalizePlaybackSource(channel?.source);
-  if (!source) {
-    return [];
-  }
-  return [
-    {
-      id: "default",
-      label: "Default",
-      source,
-      quality: String(channel?.quality || "").trim(),
-    },
-  ];
-}
-
-function buildPlayerUrl(channel) {
-  const streams = getChannelStreamOptions(channel);
-  const defaultStream =
-    streams.find((stream) => stream.id === channel?.defaultStreamId) ||
-    streams[0] ||
-    null;
-  const source = normalizePlaybackSource(defaultStream?.source || channel?.source);
-  const title = String(channel?.title || "Live").trim() || "Live";
-  const params = new URLSearchParams({ title });
-
-  if (source) {
-    params.set("src", source);
-  }
-  if (streams.length > 0) {
-    params.set("live", "1");
-    params.set("liveStreamId", defaultStream?.id || streams[0].id);
-    params.set("liveStreams", JSON.stringify(streams));
-  }
-  if (channel?.artwork) {
-    params.set("thumb", channel.artwork);
-  }
-  params.set("episode", "Live");
-
-  const slug = slugifyTitle(title);
-  saveWatchParams(slug, params.toString());
-  return `/watch/${slug}`;
-}
 
 export default function LivePage() {
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
@@ -141,38 +56,9 @@ export default function LivePage() {
     }
   }
 
-  function openLiveChannel(channel) {
-    window.location.href = buildPlayerUrl(channel);
-  }
-
   async function handleSignOut(event) {
     event.preventDefault();
     await signOut();
-  }
-
-  function renderChannelCard(channel) {
-    return html`
-      <button
-        class="live-channel-card"
-        type="button"
-        onClick=${() => openLiveChannel(channel)}
-        aria-label=${`Play ${channel.title}`}
-      >
-        <img src=${channel.artwork} alt=${`${channel.title} artwork`} loading="lazy" />
-        <span class="live-channel-play" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
-        </span>
-        <span class="live-channel-body">
-          <span class="live-channel-title">${channel.title}</span>
-          <span class="live-channel-meta">
-            <span>Live</span>
-            <span>${channel.region}</span>
-            <span>${channel.genre}</span>
-            <span>${channel.quality}</span>
-          </span>
-        </span>
-      </button>
-    `;
   }
 
   onMount(() => {
@@ -192,7 +78,7 @@ export default function LivePage() {
 
   return html`
     <div data-solid-page-root="" style="display: contents">
-      <div class="page" tabindex="0">
+      <div class="page home-page live-page" tabindex="0">
         <header class="top-nav">
           <div class="nav-left">
             <a href="/" class="nav-logo" aria-label="Go to homepage">
@@ -204,13 +90,12 @@ export default function LivePage() {
             </a>
             <nav>
               <a href="/">Home</a>
+              <a href="#" class="optional">Series</a>
+              <a href="#" class="optional">Films</a>
               <a href="/live" class="is-active">Live</a>
-              <a href="#" class="nav-secondary">Series</a>
-              <a href="#" class="nav-secondary">Films</a>
-              <a href="#" class="optional">Games</a>
               <a href="/new-popular" class="optional">New &amp; Popular</a>
               <a href="/#myListRow" class="optional">My List</a>
-              <a href="#" class="optional">Browse by Language</a>
+              <a href="#" class="optional nav-secondary">Browse by Language</a>
             </nav>
           </div>
           <div class="nav-right">
@@ -226,10 +111,10 @@ export default function LivePage() {
                 <path d="M14.33 12.9 19.71 18.28a1 1 0 0 1-1.42 1.42l-5.38-5.38a8 8 0 1 1 1.42-1.42Zm-6.33 1.1a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"></path>
               </svg>
             </button>
-            <span class="kids">Kids</span>
-            <button class="icon-btn" aria-label="Notifications">
+            <a href="#" class="kids">Kids</a>
+            <button class="icon-btn notification-btn" type="button" aria-label="Notifications">
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 24a3 3 0 0 0 2.82-2H9.18A3 3 0 0 0 12 24Zm8-6-2-2V10a6 6 0 1 0-12 0v6l-2 2v2h16v-2Z"></path>
+                <path d="M12 22a2.6 2.6 0 0 0 2.45-1.72h-4.9A2.6 2.6 0 0 0 12 22Zm7.1-5.2-1.45-1.84V10a5.68 5.68 0 0 0-4.48-5.56V3a1.17 1.17 0 1 0-2.34 0v1.44A5.68 5.68 0 0 0 6.35 10v4.96L4.9 16.8a1 1 0 0 0 .78 1.62h12.64a1 1 0 0 0 .78-1.62Z"></path>
               </svg>
             </button>
             <div class="account-menu" ref=${(el) => { accountMenuEl = el; }}>
@@ -248,7 +133,7 @@ export default function LivePage() {
                 ></div>
               </button>
               <button
-                class="icon-btn"
+                class="icon-btn account-menu-toggle"
                 aria-label="Account menu"
                 aria-haspopup="menu"
                 aria-expanded=${() => (accountMenuOpen() ? "true" : "false")}
@@ -290,14 +175,7 @@ export default function LivePage() {
           </div>
         </header>
 
-        <main class="live-main">
-          <section class="live-channel-section">
-            <h2>Live Channels</h2>
-            <div class="live-channel-grid">
-              ${LIVE_CHANNELS.map((channel) => renderChannelCard(channel))}
-            </div>
-          </section>
-        </main>
+        <${LiveChannelsView} />
       </div>
     </div>
   `;

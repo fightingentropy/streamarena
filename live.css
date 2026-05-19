@@ -12,7 +12,15 @@ body.live-route .page {
 
 .live-main {
     min-height: 100dvh;
-    padding: calc(104px + env(safe-area-inset-top)) 48px calc(56px + env(safe-area-inset-bottom));
+    padding:
+        calc(var(--nflx-header-height, 88px) + 32px + env(safe-area-inset-top))
+        var(--home-side-padding, 48px)
+        calc(56px + env(safe-area-inset-bottom));
+}
+
+.live-tab-view {
+    min-height: 100dvh;
+    background: #141414;
 }
 
 @supports not (min-height: 100dvh) {
@@ -119,13 +127,19 @@ body.live-route .page {
 
 @media (max-width: 980px) {
     .live-main {
-        padding: 96px 24px 44px;
+        padding:
+            calc(var(--nflx-header-height, 64px) + 28px + env(safe-area-inset-top))
+            var(--home-side-padding, 24px)
+            44px;
     }
 }
 
 @media (max-width: 640px) {
     .live-main {
-        padding: 88px 18px 36px;
+        padding:
+            calc(var(--nflx-header-height, 58px) + 24px + env(safe-area-inset-top))
+            var(--home-side-padding, 18px)
+            36px;
     }
 
     .live-channel-grid {
