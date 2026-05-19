@@ -40,7 +40,8 @@ const SEARCH_MIN_QUERY_LENGTH = 2;
 const SEARCH_RESULTS_LIMIT = 40;
 const SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:movie:";
 const SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:movie:";
-const LEGACY_HERO_PREVIEW_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
+const STALE_HERO_PREVIEW_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
+const HERO_PREVIEW_HOVER_DELAY_MS = 2000;
 const RESUME_STORAGE_PREFIX = "netflix-resume:";
 const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
 const JEFFREY_EPSTEIN_SERIES_ID = "jeffrey-epstein-filthy-rich";
@@ -58,13 +59,12 @@ const POPULAR_TITLES_LIMIT = 10;
 // Pure utility functions (no signals needed)
 // ---------------------------------------------------------------------------
 
-function getStoredHeroPreviewMutedPreference() {
+function clearStaleHeroPreviewMutedPreference() {
   try {
-    localStorage.removeItem(LEGACY_HERO_PREVIEW_MUTED_PREF_KEY);
+    localStorage.removeItem(STALE_HERO_PREVIEW_MUTED_PREF_KEY);
   } catch {
     // Ignore localStorage failures.
   }
-  return false;
 }
 
 function isLibraryEditModeEnabled() {
@@ -1447,8 +1447,7 @@ function setTmdbDetailsCache(key, value) {
 export default function HomePage() {
   // ---- Refs ----
   let heroPreviewVideoRef;
-  let heroPreviewPreferredMuted = getStoredHeroPreviewMutedPreference();
-  let heroPreviewAudioUnlockArmed = false;
+  let heroPreviewHoverTimer = 0;
   let heroPreviewPlayRequestId = 0;
   let pageRootRef;
   let continueCardsRef;
@@ -1465,7 +1464,7 @@ export default function HomePage() {
   let searchContextMenuRef;
 
   // ---- Signals ----
-  const [isMuted, setIsMuted] = createSignal(heroPreviewPreferredMuted);
+  const [isMuted, setIsMuted] = createSignal(true);
   const [isSearchModeActive, setIsSearchModeActive] = createSignal(false);
   const [searchStatusText, setSearchStatusText] = createSignal("Start typing to search TMDB titles.");
   const [searchStatusTone, setSearchStatusTone] = createSignal("");
@@ -3595,6 +3594,7 @@ export default function HomePage() {
       clearTimeout(searchBoxHideTimer);
       searchBoxHideTimer = null;
     }
+    stopHeroPreview();
     setIsSearchModeActive(true);
     hideSearchContextMenu();
     document.body.classList.add("is-search-mode");
@@ -3673,57 +3673,71 @@ export default function HomePage() {
     setIsMuted(nextMuted);
   }
 
-  function prefersMutedHeroPreview() {
-    return heroPreviewPreferredMuted;
-  }
-
-  function armHeroPreviewAudioUnlock() {
-    heroPreviewAudioUnlockArmed = !prefersMutedHeroPreview();
-  }
-
-  async function restoreHeroPreviewAudioAfterInteraction() {
-    if (
-      prefersMutedHeroPreview() ||
-      !(heroPreviewVideoRef instanceof HTMLVideoElement)
-    ) {
+  function clearHeroPreviewHoverTimer() {
+    if (!heroPreviewHoverTimer) {
       return;
     }
-    if (!heroPreviewAudioUnlockArmed && !heroPreviewVideoRef.muted) {
+    window.clearTimeout(heroPreviewHoverTimer);
+    heroPreviewHoverTimer = 0;
+  }
+
+  function canPlayHeroPreview() {
+    return activeView() === "home" && !showSearchExperience() && !document.hidden;
+  }
+
+  function ensureHeroPreviewSource() {
+    if (!(heroPreviewVideoRef instanceof HTMLVideoElement)) {
       return;
     }
+    if (heroPreviewVideoRef.getAttribute("src") === HERO_TRAILER_SOURCE) {
+      return;
+    }
+    heroPreviewVideoRef.setAttribute("src", HERO_TRAILER_SOURCE);
+    heroPreviewVideoRef.load();
+  }
 
-    applyHeroPreviewMutedState(false);
-    try {
-      await heroPreviewVideoRef.play();
-      heroPreviewAudioUnlockArmed = false;
-    } catch {
-      armHeroPreviewAudioUnlock();
+  function stopHeroPreview() {
+    clearHeroPreviewHoverTimer();
+    heroPreviewPlayRequestId += 1;
+    if (!(heroPreviewVideoRef instanceof HTMLVideoElement)) {
+      return;
+    }
+    heroPreviewVideoRef.pause();
+    if (heroPreviewVideoRef.getAttribute("src")) {
+      heroPreviewVideoRef.removeAttribute("src");
+      heroPreviewVideoRef.load();
     }
   }
 
   function playHeroPreview() {
-    if (!(heroPreviewVideoRef instanceof HTMLVideoElement)) {
+    if (!(heroPreviewVideoRef instanceof HTMLVideoElement) || !canPlayHeroPreview()) {
+      stopHeroPreview();
       return;
     }
+    clearHeroPreviewHoverTimer();
     const playRequestId = ++heroPreviewPlayRequestId;
-    const shouldMute = prefersMutedHeroPreview();
-    heroPreviewAudioUnlockArmed = false;
-    applyHeroPreviewMutedState(shouldMute);
-    void heroPreviewVideoRef.play().then(() => {
-      if (playRequestId !== heroPreviewPlayRequestId || shouldMute) {
+    ensureHeroPreviewSource();
+    applyHeroPreviewMutedState(isMuted());
+    void heroPreviewVideoRef.play().catch(() => {
+      if (playRequestId !== heroPreviewPlayRequestId) {
         return;
       }
-      heroPreviewAudioUnlockArmed = heroPreviewVideoRef.muted;
-    }).catch(() => {
-      if (playRequestId !== heroPreviewPlayRequestId || shouldMute) {
-        return;
-      }
-      armHeroPreviewAudioUnlock();
       applyHeroPreviewMutedState(true);
       void heroPreviewVideoRef.play().catch(() => {
-        // Browser autoplay can still be blocked until user interaction.
+        // Keep the static poster if the browser still blocks preview playback.
       });
     });
+  }
+
+  function scheduleHeroPreviewPlayback() {
+    if (!canPlayHeroPreview()) {
+      return;
+    }
+    clearHeroPreviewHoverTimer();
+    heroPreviewHoverTimer = window.setTimeout(() => {
+      heroPreviewHoverTimer = 0;
+      playHeroPreview();
+    }, HERO_PREVIEW_HOVER_DELAY_MS);
   }
 
   function handleMuteToggle() {
@@ -3731,12 +3745,7 @@ export default function HomePage() {
       heroPreviewVideoRef instanceof HTMLVideoElement
         ? !heroPreviewVideoRef.muted
         : !isMuted();
-    heroPreviewPreferredMuted = nextMuted;
     applyHeroPreviewMutedState(nextMuted);
-    heroPreviewAudioUnlockArmed = false;
-    if (heroPreviewVideoRef instanceof HTMLVideoElement && heroPreviewVideoRef.paused) {
-      void heroPreviewVideoRef.play().catch(() => {});
-    }
   }
 
   function handleHeroPlay() {
@@ -3852,7 +3861,7 @@ export default function HomePage() {
     if (push && window.location.pathname !== "/") {
       window.history.pushState({ view: "home" }, "", "/");
     }
-    playHeroPreview();
+    stopHeroPreview();
   }
 
   function showLiveView({ push = true } = {}) {
@@ -3863,9 +3872,7 @@ export default function HomePage() {
     if (push && window.location.pathname !== "/live") {
       window.history.pushState({ view: "live" }, "", "/live");
     }
-    if (heroPreviewVideoRef instanceof HTMLVideoElement) {
-      heroPreviewVideoRef.pause();
-    }
+    stopHeroPreview();
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }
 
@@ -4048,7 +4055,7 @@ export default function HomePage() {
 
   // ---- onMount: initialize everything ----
   onMount(() => {
-    playHeroPreview();
+    clearStaleHeroPreviewMutedPreference();
     const cleanupHorizontalRailScrollers = bindHorizontalRailScrollers();
     applyLibraryEditModeClass();
     renderMyListRow();
@@ -4156,10 +4163,10 @@ export default function HomePage() {
         syncAllMyListButtons();
       }
 
-      if (event.key === LEGACY_HERO_PREVIEW_MUTED_PREF_KEY) {
-        getStoredHeroPreviewMutedPreference();
-        heroPreviewPreferredMuted = false;
-        playHeroPreview();
+      if (event.key === STALE_HERO_PREVIEW_MUTED_PREF_KEY) {
+        clearStaleHeroPreviewMutedPreference();
+        applyHeroPreviewMutedState(true);
+        stopHeroPreview();
       }
 
       if (event.key === LIBRARY_EDIT_MODE_PREF_KEY) {
@@ -4169,10 +4176,13 @@ export default function HomePage() {
 
     const handlePageshow = () => {
       applyLibraryEditModeClass();
+      stopHeroPreview();
     };
 
-    const handleHeroPreviewInteraction = () => {
-      void restoreHeroPreviewAudioAfterInteraction();
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stopHeroPreview();
+      }
     };
 
     const handlePopstate = () => {
@@ -4186,34 +4196,23 @@ export default function HomePage() {
     document.addEventListener("keydown", handleGlobalKeydown);
     document.addEventListener("pointerdown", handleGlobalPointerdownContextMenu);
     document.addEventListener("pointerdown", handleGlobalPointerdownAccountMenu);
-    document.addEventListener("pointerdown", handleHeroPreviewInteraction);
-    document.addEventListener("click", handleHeroPreviewInteraction);
-    document.addEventListener("keydown", handleHeroPreviewInteraction);
-    document.addEventListener("wheel", handleHeroPreviewInteraction, { passive: true });
-    document.addEventListener("scroll", handleHeroPreviewInteraction, true);
-    document.addEventListener("touchstart", handleHeroPreviewInteraction, { passive: true });
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("resize", handleGlobalResize);
     window.addEventListener("storage", handleStorage);
     window.addEventListener("pageshow", handlePageshow);
     window.addEventListener("popstate", handlePopstate);
-    window.addEventListener("scroll", handleHeroPreviewInteraction, { passive: true });
 
     onCleanup(() => {
       cleanupHorizontalRailScrollers();
+      stopHeroPreview();
       document.removeEventListener("keydown", handleGlobalKeydown);
       document.removeEventListener("pointerdown", handleGlobalPointerdownContextMenu);
       document.removeEventListener("pointerdown", handleGlobalPointerdownAccountMenu);
-      document.removeEventListener("pointerdown", handleHeroPreviewInteraction);
-      document.removeEventListener("click", handleHeroPreviewInteraction);
-      document.removeEventListener("keydown", handleHeroPreviewInteraction);
-      document.removeEventListener("wheel", handleHeroPreviewInteraction);
-      document.removeEventListener("scroll", handleHeroPreviewInteraction, true);
-      document.removeEventListener("touchstart", handleHeroPreviewInteraction);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("resize", handleGlobalResize);
       window.removeEventListener("storage", handleStorage);
       window.removeEventListener("pageshow", handlePageshow);
       window.removeEventListener("popstate", handlePopstate);
-      window.removeEventListener("scroll", handleHeroPreviewInteraction);
 
       if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
       if (searchBoxHideTimer) clearTimeout(searchBoxHideTimer);
@@ -4419,19 +4418,19 @@ export default function HomePage() {
         class="featured-hero"
         aria-label="Featured title"
         style=${() => activeView() === "home" ? "" : "display:none"}
+        onPointerEnter=${scheduleHeroPreviewPlayback}
+        onPointerLeave=${stopHeroPreview}
       >
         <video
           id="heroPreview"
           ref=${(el) => (heroPreviewVideoRef = el)}
           class="hero-video"
-          src=${HERO_TRAILER_SOURCE}
           poster=${HERO_TRAILER_POSTER}
           loop
-          autoplay
+          muted
           playsinline
-          preload="metadata"
+          preload="none"
           aria-label="Project Hail Mary trailer preview"
-          onCanPlay=${playHeroPreview}
           onVolumeChange=${() => {
             if (heroPreviewVideoRef instanceof HTMLVideoElement) {
               setIsMuted(heroPreviewVideoRef.muted);
