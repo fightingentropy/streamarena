@@ -16,7 +16,6 @@ async function migrateLocalStorageToServer() {
     "netflix-source-filter-language",
     "netflix-source-filter-audio-profile",
     "netflix-remux-video-mode",
-    "netflix-hero-trailer-muted-v2",
   ];
   for (const key of PREF_KEYS) {
     const val = localStorage.getItem(key);

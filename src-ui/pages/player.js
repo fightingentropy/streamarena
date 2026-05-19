@@ -62,6 +62,7 @@ export default function PlayerPage() {
   let toggleMutePlayer, toggleFullscreen, toggleSpeed, speedControl;
   let toggleLiveStream, liveStreamControl, liveStreamMenu, liveStreamOptionsContainer;
   let nextEpisode, toggleEpisodes, episodesControl, episodesList, episodesPopoverTitle;
+  let episodesBackToSeasons, episodesOverline;
   let autoPlayOverlay, autoPlayThumb, autoPlayTitle, autoPlayEpLabel;
   let autoPlayCountdownText, autoPlayProgressRing, autoPlayBtn, autoPlayCancel;
   let toggleAudio, audioControl, audioMenu, audioOptionsContainer, subtitleOptionsContainer;
@@ -80,6 +81,7 @@ let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
 let liveStreamPopoverCloseTimeout = null;
 let episodesPopoverCloseTimeout = null;
+let episodesPopoverSticky = false;
 let audioPopoverCloseTimeout = null;
 let streamStallRecoveryTimeout = null;
 let controlsHideTimeout = null;
@@ -121,6 +123,8 @@ let subtitleOptions = [];
 let activeAudioTab = "subtitles";
 let seriesEpisodeThumbHydrationTask = null;
 let hasHydratedSeriesEpisodeThumbs = false;
+let episodesMenuMode = "episodes";
+let selectedEpisodesSeasonNumber = 1;
 let hasQueuedGallerySave = false;
 let autoPlayCountdownInterval = null;
 let autoPlayCountdownSeconds = 0;
@@ -3686,6 +3690,73 @@ function getSeriesEpisodeOrdinalNumber(episodeEntry, index) {
   return Math.max(1, Math.floor(parsed));
 }
 
+function getSeriesSeasonLabel(seasonNumber, seriesEntry = activeSeries) {
+  const seasonLabel =
+    String(seriesEntry?.contentKind || "")
+      .trim()
+      .toLowerCase() === "course"
+      ? "Module"
+      : "Season";
+  return `${seasonLabel} ${Math.max(1, Math.floor(Number(seasonNumber) || 1))}`;
+}
+
+function getSeriesSeasonGroups() {
+  const groupsBySeason = new Map();
+  const episodes = Array.isArray(seriesEpisodes) ? seriesEpisodes : [];
+  episodes.forEach((episodeEntry, index) => {
+    const season = getSeriesEpisodeSeasonNumber(episodeEntry);
+    if (!groupsBySeason.has(season)) {
+      groupsBySeason.set(season, {
+        seasonNumber: season,
+        firstEpisodeIndex: index,
+        episodes: [],
+      });
+    }
+    groupsBySeason.get(season).episodes.push({ episodeEntry, index });
+  });
+  return Array.from(groupsBySeason.values()).sort(
+    (left, right) => left.seasonNumber - right.seasonNumber,
+  );
+}
+
+function getActiveSeriesEpisodeSeasonNumber() {
+  return getSeriesEpisodeSeasonNumber(
+    activeSeriesEpisode || seriesEpisodes[seriesEpisodeIndex] || seriesEpisodes[0],
+  );
+}
+
+function ensureSelectedEpisodesSeason(groups = getSeriesSeasonGroups()) {
+  if (!groups.length) {
+    selectedEpisodesSeasonNumber = 1;
+    return selectedEpisodesSeasonNumber;
+  }
+
+  const hasSelectedSeason = groups.some(
+    (group) => group.seasonNumber === selectedEpisodesSeasonNumber,
+  );
+  if (!hasSelectedSeason) {
+    const activeSeasonNumber = getActiveSeriesEpisodeSeasonNumber();
+    const activeGroup = groups.find(
+      (group) => group.seasonNumber === activeSeasonNumber,
+    );
+    selectedEpisodesSeasonNumber =
+      activeGroup?.seasonNumber || groups[0].seasonNumber;
+  }
+  return selectedEpisodesSeasonNumber;
+}
+
+function setEpisodesMenuHeader({ overline = "Episodes", title = "Episodes", showBack = false } = {}) {
+  if (episodesOverline) {
+    episodesOverline.textContent = overline;
+  }
+  if (episodesPopoverTitle) {
+    episodesPopoverTitle.textContent = title;
+  }
+  if (episodesBackToSeasons) {
+    episodesBackToSeasons.hidden = !showBack;
+  }
+}
+
 function buildSeriesEpisodeIdentityKey(season, episode) {
   return `s${Math.max(1, Math.floor(Number(season) || 1))}e${Math.max(1, Math.floor(Number(episode) || 1))}`;
 }
@@ -4087,26 +4158,99 @@ function renderSeriesEpisodePreview() {
   }
 
   episodesList.innerHTML = "";
+  episodesList.classList.remove("is-season-list", "is-season-episodes");
   if (!hasSeriesEpisodeControls || !activeSeries) {
+    setEpisodesMenuHeader();
     return;
   }
 
-  if (episodesPopoverTitle) {
-    episodesPopoverTitle.textContent = activeSeries.title;
+  const seasonGroups = getSeriesSeasonGroups();
+  const selectedSeason = ensureSelectedEpisodesSeason(seasonGroups);
+  const hasMultipleSeasons = seasonGroups.length > 1;
+
+  if (episodesMenuMode === "seasons" && hasMultipleSeasons) {
+    setEpisodesMenuHeader({
+      overline: "Seasons",
+      title: activeSeries.title || "Series",
+      showBack: false,
+    });
+    episodesList.classList.add("is-season-list");
+
+    const activeSeasonNumber = getActiveSeriesEpisodeSeasonNumber();
+    const fragment = document.createDocumentFragment();
+    seasonGroups.forEach((group) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "episode-season-item";
+      item.dataset.seasonNumber = String(group.seasonNumber);
+      item.setAttribute("role", "listitem");
+      item.setAttribute(
+        "aria-label",
+        `${getSeriesSeasonLabel(group.seasonNumber)} (${group.episodes.length} episode${group.episodes.length === 1 ? "" : "s"})`,
+      );
+      if (group.seasonNumber === selectedSeason) {
+        item.classList.add("is-selected");
+        item.setAttribute("aria-current", "true");
+      }
+      if (group.seasonNumber === activeSeasonNumber) {
+        item.classList.add("is-current-season");
+      }
+
+      const check = document.createElement("span");
+      check.className = "episode-season-check";
+      check.innerHTML =
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+
+      const body = document.createElement("span");
+      body.className = "episode-season-body";
+
+      const titleEl = document.createElement("span");
+      titleEl.className = "episode-season-title";
+      titleEl.textContent = getSeriesSeasonLabel(group.seasonNumber);
+
+      const meta = document.createElement("span");
+      meta.className = "episode-season-meta";
+      meta.textContent = `${group.episodes.length} episode${group.episodes.length === 1 ? "" : "s"}`;
+
+      body.append(titleEl, meta);
+      item.append(check, body);
+      fragment.appendChild(item);
+    });
+    episodesList.appendChild(fragment);
+    return;
   }
 
-  const hasMultipleSeasons =
-    new Set(
-      seriesEpisodes.map((episodeEntry) =>
-        getSeriesEpisodeSeasonNumber(episodeEntry),
-      ),
-    ).size > 1;
+  episodesMenuMode = "episodes";
+  const selectedGroup =
+    seasonGroups.find((group) => group.seasonNumber === selectedSeason) ||
+    seasonGroups[0];
+  const selectedEpisodePairs = selectedGroup?.episodes || [];
+  const activeSeasonNumber = getActiveSeriesEpisodeSeasonNumber();
+  const previewEpisodeIndex =
+    selectedSeason === activeSeasonNumber && seriesEpisodeIndex >= 0
+      ? seriesEpisodeIndex
+      : selectedEpisodePairs[0]?.index;
 
-  seriesEpisodes.forEach((episodeEntry, index) => {
+  setEpisodesMenuHeader({
+    overline: hasMultipleSeasons ? "Episodes" : activeSeries.title || "Episodes",
+    title: hasMultipleSeasons
+      ? getSeriesSeasonLabel(selectedSeason)
+      : activeSeries.title || "Episodes",
+    showBack: hasMultipleSeasons,
+  });
+  episodesList.classList.add("is-season-episodes");
+
+  selectedEpisodePairs.forEach(({ episodeEntry, index }) => {
     const isPlayable = isSeriesEpisodePlayable(episodeEntry);
+    const isCurrentEpisode = index === seriesEpisodeIndex;
+    const isPreviewedEpisode = index === previewEpisodeIndex;
+    const itemEpisodeNumber = getSeriesEpisodeOrdinalNumber(episodeEntry, index);
     const item = document.createElement("button");
     item.type = "button";
     item.className = "episode-preview-item";
+    if (isPreviewedEpisode) {
+      item.classList.add("is-previewed");
+    }
     if (!isPlayable) {
       item.classList.add("is-unavailable");
       item.disabled = true;
@@ -4116,24 +4260,17 @@ function renderSeriesEpisodePreview() {
     item.setAttribute(
       "aria-label",
       isPlayable
-        ? `Episode ${index + 1}: ${episodeEntry.title}`
-        : `Episode ${index + 1}: ${episodeEntry.title} (Unavailable)`,
+        ? `Episode ${itemEpisodeNumber}: ${episodeEntry.title}`
+        : `Episode ${itemEpisodeNumber}: ${episodeEntry.title} (Unavailable)`,
     );
-    if (index === seriesEpisodeIndex) {
+    if (isCurrentEpisode) {
       item.classList.add("is-active");
       item.setAttribute("aria-current", "true");
     }
 
     const number = document.createElement("p");
     number.className = "episode-preview-number";
-    const itemSeasonNumber = getSeriesEpisodeSeasonNumber(episodeEntry);
-    const itemEpisodeNumber = getSeriesEpisodeOrdinalNumber(episodeEntry, index);
-    if (hasMultipleSeasons) {
-      number.classList.add("is-season-label");
-      number.textContent = `S${itemSeasonNumber} E${itemEpisodeNumber}`;
-    } else {
-      number.textContent = String(itemEpisodeNumber);
-    }
+    number.textContent = String(itemEpisodeNumber);
 
     const main = document.createElement("div");
     main.className = "episode-preview-main";
@@ -4145,26 +4282,34 @@ function renderSeriesEpisodePreview() {
       : `${episodeEntry.title} (Unavailable)`;
     main.appendChild(heading);
 
-    const thumb = document.createElement("img");
-    thumb.className = "episode-preview-thumb";
-    const thumbUrl = String(episodeEntry.thumb || DEFAULT_EPISODE_THUMBNAIL);
-    thumb.src = thumbUrl.startsWith("/") || thumbUrl.startsWith("http") ? thumbUrl : `/${thumbUrl}`;
-    thumb.alt = `Episode ${index + 1} preview`;
-    thumb.loading = "lazy";
-    main.appendChild(thumb);
+    if (isPreviewedEpisode) {
+      const thumb = document.createElement("img");
+      thumb.className = "episode-preview-thumb";
+      const thumbUrl = String(episodeEntry.thumb || DEFAULT_EPISODE_THUMBNAIL);
+      thumb.src = thumbUrl.startsWith("/") || thumbUrl.startsWith("http") ? thumbUrl : `/${thumbUrl}`;
+      thumb.alt = `Episode ${index + 1} preview`;
+      thumb.loading = "lazy";
+      main.appendChild(thumb);
+    }
 
     const description = document.createElement("p");
     description.className = "episode-preview-desc";
-    description.textContent = isPlayable
-      ? String(episodeEntry.description || "")
-      : "Unavailable until MP4 source is added.";
+    if (isPreviewedEpisode) {
+      description.textContent = isPlayable
+        ? String(episodeEntry.description || "")
+        : "Unavailable until MP4 source is added.";
+    }
 
-    item.append(number, main, description);
+    const progress = document.createElement("span");
+    progress.className = "episode-preview-progress";
+    progress.setAttribute("aria-hidden", "true");
+
+    item.append(number, main, description, progress);
     episodesList.appendChild(item);
   });
 }
 
-function openEpisodesPopover() {
+function openEpisodesPopover({ sticky = false } = {}) {
   if (!episodesControl || !hasSeriesEpisodeControls || isResolvingSource()) {
     return;
   }
@@ -4176,6 +4321,14 @@ function openEpisodesPopover() {
   const wasAlreadyOpen = episodesControl.classList.contains("is-open");
   episodesControl.classList.add("is-open");
   toggleEpisodes?.setAttribute("aria-expanded", "true");
+  if (sticky) {
+    episodesPopoverSticky = true;
+  }
+  if (!wasAlreadyOpen) {
+    episodesMenuMode = "episodes";
+    selectedEpisodesSeasonNumber = getActiveSeriesEpisodeSeasonNumber();
+    renderSeriesEpisodePreview();
+  }
 
   // Auto-scroll to the currently active episode only on first open
   if (!wasAlreadyOpen) {
@@ -4193,16 +4346,20 @@ function closeEpisodesPopover(withDelay = false) {
 
   window.clearTimeout(episodesPopoverCloseTimeout);
 
-  const close = () => {
-    if (episodesControl.matches(":hover, :focus-within")) {
+  const close = ({ respectInteractivity = true } = {}) => {
+    if (respectInteractivity && episodesPopoverSticky) {
       return;
     }
+    if (respectInteractivity && episodesControl.matches(":hover, :focus-within")) {
+      return;
+    }
+    episodesPopoverSticky = false;
     episodesControl.classList.remove("is-open");
     toggleEpisodes?.setAttribute("aria-expanded", "false");
   };
 
   if (!withDelay) {
-    close();
+    close({ respectInteractivity: false });
     return;
   }
 
@@ -4237,16 +4394,20 @@ function syncSeriesControls() {
 
   if (episodesControl) {
     episodesControl.hidden = !shouldShowControls;
-    if (!shouldShowControls) {
+  if (!shouldShowControls) {
       episodesControl.classList.remove("is-open");
       toggleEpisodes?.setAttribute("aria-expanded", "false");
     }
   }
 
   if (toggleEpisodes && shouldShowControls) {
+    const activeSeasonNumber = getActiveSeriesEpisodeSeasonNumber();
+    const seasonGroups = getSeriesSeasonGroups();
+    const seasonSuffix =
+      seasonGroups.length > 1 ? `, ${getSeriesSeasonLabel(activeSeasonNumber)}` : "";
     toggleEpisodes.setAttribute(
       "aria-label",
-      `Episodes (${seriesEpisodeIndex + 1} of ${seriesEpisodes.length})`,
+      `Episodes (${seriesEpisodeIndex + 1} of ${seriesEpisodes.length}${seasonSuffix})`,
     );
   }
 }
@@ -6937,10 +7098,22 @@ if (toggleEpisodes) {
 
     const shouldOpen = !episodesControl.classList.contains("is-open");
     if (shouldOpen) {
-      openEpisodesPopover();
+      openEpisodesPopover({ sticky: true });
     } else {
       closeEpisodesPopover();
     }
+  });
+}
+
+if (episodesBackToSeasons) {
+  trackListener(episodesBackToSeasons, "click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!hasSeriesEpisodeControls || isResolvingSource()) {
+      return;
+    }
+    episodesMenuMode = "seasons";
+    renderSeriesEpisodePreview();
   });
 }
 
@@ -7083,6 +7256,21 @@ speedOptions.forEach((option) => {
 
 if (episodesList) trackListener(episodesList, "click", (event) => {
   if (!(event.target instanceof Element)) {
+    return;
+  }
+
+  const seasonOption = event.target.closest(".episode-season-item");
+  if (seasonOption) {
+    const nextSeasonNumber = Number(seasonOption.dataset.seasonNumber || 0);
+    if (Number.isFinite(nextSeasonNumber) && nextSeasonNumber > 0) {
+      selectedEpisodesSeasonNumber = Math.floor(nextSeasonNumber);
+      episodesMenuMode = "episodes";
+      renderSeriesEpisodePreview();
+      const firstPreviewedEpisode = episodesList.querySelector(
+        ".episode-preview-item.is-previewed",
+      );
+      firstPreviewedEpisode?.scrollIntoView({ block: "nearest", behavior: "instant" });
+    }
     return;
   }
 
@@ -8309,14 +8497,39 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
                     aria-label="Episodes"
                   >
                     <div class="episodes-popover-head">
-                      <p class="episodes-overline">Episodes</p>
-                      <h2
-                        id="episodesPopoverTitle"
-                        ref=${el => episodesPopoverTitle = el}
-                        class="episodes-popover-title"
+                      <button
+                        id="episodesBackToSeasons"
+                        ref=${el => episodesBackToSeasons = el}
+                        class="episodes-back-button"
+                        type="button"
+                        aria-label="Show seasons"
+                        hidden
                       >
-                        Episodes
-                      </h2>
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path
+                            d="M15 5 8 12l7 7"
+                            fill="none"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          ></path>
+                        </svg>
+                      </button>
+                      <div class="episodes-heading">
+                        <p
+                          id="episodesOverline"
+                          ref=${el => episodesOverline = el}
+                          class="episodes-overline"
+                        >
+                          Episodes
+                        </p>
+                        <h2
+                          id="episodesPopoverTitle"
+                          ref=${el => episodesPopoverTitle = el}
+                          class="episodes-popover-title"
+                        >
+                          Episodes
+                        </h2>
+                      </div>
                     </div>
                     <div
                       id="episodesList"

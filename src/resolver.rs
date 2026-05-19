@@ -576,14 +576,13 @@ impl ResolverService {
             external_guard.mark_completed();
             return Ok(reused);
         }
-        if should_allow_latest_playback_session_fallback(&filters) {
-            if let Some(reused) = self
+        if should_allow_latest_playback_session_fallback(&filters)
+            && let Some(reused) = self
                 .try_reuse_latest_healthy_playback_session(&metadata, &preferences)
                 .await?
-            {
-                external_guard.mark_completed();
-                return Ok(reused);
-            }
+        {
+            external_guard.mark_completed();
+            return Ok(reused);
         }
         let streams = self
             .fetch_torrentio_movie_streams(&metadata.imdb_id)
@@ -813,14 +812,13 @@ impl ResolverService {
             external_guard.mark_completed();
             return Ok(reused);
         }
-        if should_allow_latest_playback_session_fallback(&filters) {
-            if let Some(reused) = self
+        if should_allow_latest_playback_session_fallback(&filters)
+            && let Some(reused) = self
                 .try_reuse_latest_healthy_playback_session(&metadata, &preferences)
                 .await?
-            {
-                external_guard.mark_completed();
-                return Ok(reused);
-            }
+        {
+            external_guard.mark_completed();
+            return Ok(reused);
         }
         let streams = self
             .fetch_torrentio_episode_streams(
