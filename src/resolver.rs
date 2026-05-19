@@ -38,6 +38,8 @@ const TORRENTIO_RETRY_MAX_ELAPSED_MS: i64 = 25_000;
 const TORRENTIO_CACHE_MAX_AGE_DEFAULT_SECONDS: i64 = 60 * 60;
 const TORRENTIO_CACHE_STALE_WINDOW_DEFAULT_SECONDS: i64 = 4 * 60 * 60;
 const RD_TORRENT_CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+const RD_SELECTED_FILE_MISMATCH_ERROR: &str =
+    "Real-Debrid returned a cached torrent with a different selected file.";
 const EXTERNAL_SUBTITLE_STREAM_INDEX_BASE: i64 = 2_000_000;
 const RESOLVE_LOCK_MAX_ENTRIES: usize = 1024;
 const DEFAULT_TRACKERS: &[&str] = &[
@@ -645,7 +647,10 @@ impl ResolverService {
                     }
                     return result;
                 }
-                Err(error) => last_error = Some(error),
+                Err(error) => {
+                    self.record_source_resolve_failure(candidate, &error).await;
+                    last_error = Some(error);
+                }
             }
         }
 
@@ -904,7 +909,10 @@ impl ResolverService {
                     }
                     return result;
                 }
-                Err(error) => last_error = Some(error),
+                Err(error) => {
+                    self.record_source_resolve_failure(candidate, &error).await;
+                    last_error = Some(error);
+                }
             }
         }
 
@@ -1063,40 +1071,55 @@ impl ResolverService {
                         .await;
                     return Ok(resolved);
                 }
-                Err(_) => {
+                Err(error) => {
+                    if is_rd_selected_file_mismatch_error(&error) {
+                        let _ = self.safe_delete_torrent(&reusable_torrent_id).await;
+                    }
                     let _ = self.delete_cached_rd_torrent_id(&info_hash).await;
                 }
             }
         }
-        let add_magnet = self
-            .rd_fetch_form(
-                "/torrents/addMagnet",
-                reqwest::Method::POST,
-                &[("magnet", magnet.as_str())],
-                12_000,
-            )
-            .await?;
-        let torrent_id = stringify_json(add_magnet.get("id"));
-        if torrent_id.is_empty() {
-            return Err(ApiError::internal(
-                "Real-Debrid did not return a torrent id.",
-            ));
+
+        let mut last_error = None;
+        for attempt in 0..2 {
+            let add_magnet = self
+                .rd_fetch_form(
+                    "/torrents/addMagnet",
+                    reqwest::Method::POST,
+                    &[("magnet", magnet.as_str())],
+                    12_000,
+                )
+                .await?;
+            let torrent_id = stringify_json(add_magnet.get("id"));
+            if torrent_id.is_empty() {
+                return Err(ApiError::internal(
+                    "Real-Debrid did not return a torrent id.",
+                ));
+            }
+
+            let result = self
+                .resolve_from_torrent_id(&torrent_id, &info_hash, stream, fallback_name)
+                .await;
+            match result {
+                Ok(resolved) => {
+                    let _ = self.set_cached_rd_torrent_id(&info_hash, &torrent_id).await;
+                    return Ok(resolved);
+                }
+                Err(error) => {
+                    let retry_after_stale_selected_file =
+                        attempt == 0 && is_rd_selected_file_mismatch_error(&error);
+                    let _ = self.safe_delete_torrent(&torrent_id).await;
+                    let _ = self.delete_cached_rd_torrent_id(&info_hash).await;
+                    if retry_after_stale_selected_file {
+                        last_error = Some(error);
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
         }
 
-        let result = self
-            .resolve_from_torrent_id(&torrent_id, &info_hash, stream, fallback_name)
-            .await;
-        match result {
-            Ok(resolved) => {
-                let _ = self.set_cached_rd_torrent_id(&info_hash, &torrent_id).await;
-                Ok(resolved)
-            }
-            Err(error) => {
-                let _ = self.safe_delete_torrent(&torrent_id).await;
-                let _ = self.delete_cached_rd_torrent_id(&info_hash).await;
-                Err(error)
-            }
-        }
+        Err(last_error.unwrap_or_else(|| ApiError::internal("Unable to resolve this source.")))
     }
 
     async fn resolve_from_torrent_id(
@@ -1146,6 +1169,9 @@ impl ResolverService {
         .await?;
 
         let ready_info = self.wait_for_torrent_to_be_ready(torrent_id).await?;
+        if !ready_info_has_selected_file_id(&ready_info, file_ids[0]) {
+            return Err(ApiError::internal(RD_SELECTED_FILE_MISMATCH_ERROR));
+        }
         let download_links = ready_info
             .get("links")
             .and_then(Value::as_array)
@@ -1319,6 +1345,24 @@ impl ResolverService {
         self.db
             .delete_movie_quick_start_cache(build_rd_torrent_cache_key(&normalized_hash))
             .await
+    }
+
+    async fn record_source_resolve_failure(&self, stream: &TorrentioStream, error: &ApiError) {
+        if !is_persistent_source_resolve_error(error) {
+            return;
+        }
+        let source_hash = get_stream_info_hash(stream);
+        if source_hash.is_empty() {
+            return;
+        }
+        let message = error
+            .message()
+            .unwrap_or("Source failed during resolve.")
+            .to_owned();
+        let _ = self
+            .db
+            .record_source_health_event(source_hash, "playback_error".to_owned(), message)
+            .await;
     }
 
     async fn wait_for_torrent_to_be_ready(&self, torrent_id: &str) -> AppResult<Value> {
@@ -3467,6 +3511,44 @@ fn pick_video_file_ids(files: &[Value], preferred_filename: &str, fallback_name:
         .unwrap_or_default()
 }
 
+fn ready_info_has_selected_file_id(info: &Value, selected_file_id: i64) -> bool {
+    if selected_file_id <= 0 {
+        return true;
+    }
+    let Some(files) = info.get("files").and_then(Value::as_array) else {
+        return true;
+    };
+    if files.is_empty() {
+        return true;
+    }
+    files.iter().any(|file| {
+        file.get("id").and_then(Value::as_i64) == Some(selected_file_id)
+            && file
+                .get("selected")
+                .and_then(Value::as_i64)
+                .unwrap_or_default()
+                != 0
+    })
+}
+
+fn is_rd_selected_file_mismatch_error(error: &ApiError) -> bool {
+    error.message() == Some(RD_SELECTED_FILE_MISMATCH_ERROR)
+}
+
+fn is_persistent_source_resolve_error(error: &ApiError) -> bool {
+    let Some(message) = error.message() else {
+        return false;
+    };
+    matches!(
+        message,
+        "Real-Debrid blocked this source."
+            | RD_SELECTED_FILE_MISMATCH_ERROR
+            | "No supported video file was found in this torrent."
+            | "No playable Real-Debrid stream URL was available."
+            | "Real-Debrid returned no downloadable link."
+    ) || message.starts_with("Resolved stream is unavailable")
+}
+
 fn has_url_like_container_extension(value: &str, container: &str) -> bool {
     let normalized = value.trim().to_lowercase();
     if normalized.is_empty() {
@@ -4062,14 +4144,17 @@ mod tests {
     use serde_json::json;
     use tokio::sync::Semaphore;
 
+    use crate::error::ApiError;
+
     use super::{
-        ResolveMetadata, ResolvedSource, ResolverExternalGuard, ResolverMetrics, SourceFilters,
-        TorrentioBehaviorHints, TorrentioStream, build_movie_resolve_lock_key,
-        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_tv_resolve_lock_key,
-        collect_episode_signatures, compute_torrentio_cache_deadlines,
-        does_filename_likely_match_movie, normalize_allowed_formats,
-        normalize_resolved_source_for_software_decode, normalize_source_audio_profile_filter,
-        normalize_source_hash, now_ms, parse_runtime_from_label_seconds, parse_seed_count,
+        RD_SELECTED_FILE_MISMATCH_ERROR, ResolveMetadata, ResolvedSource, ResolverExternalGuard,
+        ResolverMetrics, SourceFilters, TorrentioBehaviorHints, TorrentioStream,
+        build_movie_resolve_lock_key, build_rd_torrent_cache_key, build_torrentio_stream_cache_key,
+        build_tv_resolve_lock_key, collect_episode_signatures, compute_torrentio_cache_deadlines,
+        does_filename_likely_match_movie, is_persistent_source_resolve_error,
+        normalize_allowed_formats, normalize_resolved_source_for_software_decode,
+        normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
+        parse_runtime_from_label_seconds, parse_seed_count, ready_info_has_selected_file_id,
         select_top_movie_candidates, should_prefer_software_decode_source, sort_movie_candidates,
         user_facing_real_debrid_error,
     };
@@ -4106,6 +4191,19 @@ mod tests {
             user_facing_real_debrid_error("too_many_requests"),
             "Real-Debrid is rate limiting requests. Try again shortly."
         );
+    }
+
+    #[test]
+    fn classifies_persistent_source_resolve_failures() {
+        assert!(is_persistent_source_resolve_error(&ApiError::bad_gateway(
+            "Real-Debrid blocked this source."
+        )));
+        assert!(is_persistent_source_resolve_error(&ApiError::internal(
+            RD_SELECTED_FILE_MISMATCH_ERROR
+        )));
+        assert!(!is_persistent_source_resolve_error(&ApiError::bad_gateway(
+            "Real-Debrid is rate limiting requests. Try again shortly."
+        )));
     }
 
     #[test]
@@ -4202,6 +4300,21 @@ mod tests {
             build_rd_torrent_cache_key("ABCDEF0123456789ABCDEF0123456789ABCDEF01"),
             "rd-torrent:abcdef0123456789abcdef0123456789abcdef01"
         );
+    }
+
+    #[test]
+    fn detects_real_debrid_selected_file_mismatch() {
+        let ready_info = json!({
+            "status": "downloaded",
+            "files": [
+                {"id": 2, "path": "/Succession.S01E01.mp4", "selected": 1},
+                {"id": 3, "path": "/Succession.S01E02.mp4", "selected": 0}
+            ],
+            "links": ["https://real-debrid.example/file"]
+        });
+
+        assert!(!ready_info_has_selected_file_id(&ready_info, 3));
+        assert!(ready_info_has_selected_file_id(&ready_info, 2));
     }
 
     #[test]
