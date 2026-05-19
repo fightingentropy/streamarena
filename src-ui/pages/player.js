@@ -5499,41 +5499,71 @@ async function resolveTmdbMovieViaBackend(
   tmdbMovieId,
   { allowSourceFallback = true } = {},
 ) {
-  const query = new URLSearchParams({
-    tmdbId: tmdbMovieId,
-    title,
-    year,
-    audioLang: preferredAudioLang,
-    quality: preferredQuality,
-  });
-  if (preferredSubtitleLang) {
-    query.set("subtitleLang", preferredSubtitleLang);
-  }
-  const pinnedSourceHash = getPinnedSourceHashForRequests();
-  if (pinnedSourceHash) {
-    query.set("sourceHash", pinnedSourceHash);
-  }
-  if (preferredSourceMinSeeders > 0) {
-    query.set("minSeeders", String(preferredSourceMinSeeders));
-  }
-  if (
-    preferredSourceFormats.length > 0 &&
-    preferredSourceFormats.length < supportedSourceFormats.length
-  ) {
-    query.set("allowedFormats", preferredSourceFormats.join(","));
-  }
-  query.set("sourceLang", preferredSourceLanguage);
-  query.set("sourceAudioProfile", preferredSourceAudioProfile);
-
-  try {
-    return await requestResolveJson(`/api/resolve/movie?${query.toString()}`);
-  } catch (error) {
-    if (!allowSourceFallback || !pinnedSourceHash) {
-      throw error;
+  const buildQuery = ({
+    sourceHash = "",
+    includeSourceFilters = true,
+    audioLang = preferredAudioLang,
+    quality = preferredQuality,
+  } = {}) => {
+    const query = new URLSearchParams({
+      tmdbId: tmdbMovieId,
+      title,
+      year,
+      audioLang,
+      quality,
+    });
+    if (preferredSubtitleLang) {
+      query.set("subtitleLang", preferredSubtitleLang);
     }
-    query.delete("sourceHash");
-    return requestResolveJson(`/api/resolve/movie?${query.toString()}`);
+    if (sourceHash) {
+      query.set("sourceHash", sourceHash);
+    }
+    if (includeSourceFilters) {
+      if (preferredSourceMinSeeders > 0) {
+        query.set("minSeeders", String(preferredSourceMinSeeders));
+      }
+      if (
+        preferredSourceFormats.length > 0 &&
+        preferredSourceFormats.length < supportedSourceFormats.length
+      ) {
+        query.set("allowedFormats", preferredSourceFormats.join(","));
+      }
+      query.set("sourceLang", preferredSourceLanguage);
+      query.set("sourceAudioProfile", preferredSourceAudioProfile);
+    }
+    return query;
+  };
+
+  const pinnedSourceHash = getPinnedSourceHashForRequests();
+  let lastError = null;
+  try {
+    return await requestResolveJson(
+      `/api/resolve/movie?${buildQuery({ sourceHash: pinnedSourceHash }).toString()}`,
+    );
+  } catch (error) {
+    lastError = error;
+    if (allowSourceFallback && pinnedSourceHash) {
+      try {
+        return await requestResolveJson(
+          `/api/resolve/movie?${buildQuery().toString()}`,
+        );
+      } catch (fallbackError) {
+        lastError = fallbackError;
+      }
+    }
   }
+
+  if (allowSourceFallback && isTransientResolveError(lastError)) {
+    return requestResolveJson(
+      `/api/resolve/movie?${buildQuery({
+        includeSourceFilters: false,
+        audioLang: "auto",
+        quality: DEFAULT_STREAM_QUALITY_PREFERENCE,
+      }).toString()}`,
+    );
+  }
+
+  throw lastError;
 }
 
 async function resolveTmdbTvEpisodeViaBackend(
@@ -5542,7 +5572,15 @@ async function resolveTmdbTvEpisodeViaBackend(
   episodeOrdinal,
   { allowContainerFallback = true, allowSourceFallback = true } = {},
 ) {
-  const buildQuery = (containerPreference = "", sourceHash = "") => {
+  const buildQuery = (
+    containerPreference = "",
+    sourceHash = "",
+    {
+      includeSourceFilters = true,
+      audioLang = preferredAudioLang,
+      quality = preferredQuality,
+    } = {},
+  ) => {
     const query = new URLSearchParams({
       tmdbId: tmdbSeriesId,
       title,
@@ -5551,8 +5589,8 @@ async function resolveTmdbTvEpisodeViaBackend(
       episodeNumber: String(
         Math.max(1, Math.floor(Number(episodeOrdinal) || 1)),
       ),
-      audioLang: preferredAudioLang,
-      quality: preferredQuality,
+      audioLang,
+      quality,
     });
     if (preferredSubtitleLang) {
       query.set("subtitleLang", preferredSubtitleLang);
@@ -5563,17 +5601,19 @@ async function resolveTmdbTvEpisodeViaBackend(
     if (sourceHash) {
       query.set("sourceHash", sourceHash);
     }
-    if (preferredSourceMinSeeders > 0) {
-      query.set("minSeeders", String(preferredSourceMinSeeders));
+    if (includeSourceFilters) {
+      if (preferredSourceMinSeeders > 0) {
+        query.set("minSeeders", String(preferredSourceMinSeeders));
+      }
+      if (
+        preferredSourceFormats.length > 0 &&
+        preferredSourceFormats.length < supportedSourceFormats.length
+      ) {
+        query.set("allowedFormats", preferredSourceFormats.join(","));
+      }
+      query.set("sourceLang", preferredSourceLanguage);
+      query.set("sourceAudioProfile", preferredSourceAudioProfile);
     }
-    if (
-      preferredSourceFormats.length > 0 &&
-      preferredSourceFormats.length < supportedSourceFormats.length
-    ) {
-      query.set("allowedFormats", preferredSourceFormats.join(","));
-    }
-    query.set("sourceLang", preferredSourceLanguage);
-    query.set("sourceAudioProfile", preferredSourceAudioProfile);
     return query;
   };
 
@@ -5619,6 +5659,16 @@ async function resolveTmdbTvEpisodeViaBackend(
       } catch (fallbackError) {
         lastError = fallbackError;
       }
+    }
+
+    if (allowSourceFallback && isTransientResolveError(lastError)) {
+      return requestResolveJson(
+        `/api/resolve/tv?${buildQuery("", "", {
+          includeSourceFilters: false,
+          audioLang: "auto",
+          quality: DEFAULT_STREAM_QUALITY_PREFERENCE,
+        }).toString()}`,
+      );
     }
 
     throw lastError;
