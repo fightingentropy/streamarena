@@ -23,6 +23,7 @@ import {
   getStoredStreamQualityPreference,
   getStoredAudioLangForTmdbMovie,
 } from "../lib/preferences.js";
+import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
 import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
 
 // --- Pure utility functions (no DOM) ---
@@ -174,6 +175,7 @@ export default function NewPopularPage() {
   // Refs
   let accountMenuEl;
   let popularRowEl;
+  let cleanupHorizontalRailScrollers = () => {};
 
   // --- Avatar logic ---
   function applyAvatarStyle(style, mode, imageData) {
@@ -378,6 +380,7 @@ export default function NewPopularPage() {
       getStoredAvatarModePreference(),
       getStoredAvatarImagePreference(),
     );
+    cleanupHorizontalRailScrollers = bindHorizontalRailScrollers();
 
     document.addEventListener("click", handleDocumentClick);
     document.addEventListener("keydown", handleDocumentKeydown);
@@ -386,6 +389,7 @@ export default function NewPopularPage() {
   });
 
   onCleanup(() => {
+    cleanupHorizontalRailScrollers();
     document.removeEventListener("click", handleDocumentClick);
     document.removeEventListener("keydown", handleDocumentKeydown);
   });

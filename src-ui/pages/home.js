@@ -28,6 +28,7 @@ import {
   getStoredStreamQualityPreference,
   getStoredAudioLangForTmdbMovie,
 } from "../lib/preferences.js";
+import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
 import LiveChannelsView from "../components/live-channels-view.js";
 import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
 
@@ -4048,6 +4049,7 @@ export default function HomePage() {
   // ---- onMount: initialize everything ----
   onMount(() => {
     playHeroPreview();
+    const cleanupHorizontalRailScrollers = bindHorizontalRailScrollers();
     applyLibraryEditModeClass();
     renderMyListRow();
     void loadContinueWatching();
@@ -4197,6 +4199,7 @@ export default function HomePage() {
     window.addEventListener("scroll", handleHeroPreviewInteraction, { passive: true });
 
     onCleanup(() => {
+      cleanupHorizontalRailScrollers();
       document.removeEventListener("keydown", handleGlobalKeydown);
       document.removeEventListener("pointerdown", handleGlobalPointerdownContextMenu);
       document.removeEventListener("pointerdown", handleGlobalPointerdownAccountMenu);

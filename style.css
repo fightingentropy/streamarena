@@ -1618,10 +1618,16 @@ body.is-search-mode #myListRow {
     overscroll-behavior-y: none;
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
+    cursor: grab;
+    user-select: none;
 }
 
 .cards.popular-cards::-webkit-scrollbar {
     display: none;
+}
+
+.cards.popular-cards.is-rail-dragging {
+    cursor: grabbing;
 }
 
 .card {
