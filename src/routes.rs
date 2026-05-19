@@ -67,6 +67,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/health", any(health_handler))
         .route("/api/config", any(config_handler))
         .route("/api/library", get(library_get_handler))
+        .route("/api/hls/master.m3u8", any(hls_master_handler))
+        .route("/api/hls/segment.ts", any(hls_segment_handler))
         .route("/api/auth/signup", any(auth_signup_handler))
         .route("/api/auth/login", any(auth_login_handler))
         .route("/api/auth/logout", any(auth_logout_handler));
@@ -101,8 +103,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/resolve/tv", any(resolve_tv_handler))
         .route("/api/remux", any(remux_handler))
         .route("/api/live/hls.m3u8", any(live_hls_handler))
-        .route("/api/hls/master.m3u8", any(hls_master_handler))
-        .route("/api/hls/segment.ts", any(hls_segment_handler))
         .route("/api/media/tracks", any(media_tracks_handler))
         .route("/api/subtitles.vtt", any(subtitles_vtt_handler))
         .route(
@@ -470,6 +470,11 @@ pub async fn session_progress_handler(
         .unwrap_or_default()
         .trim()
         .to_lowercase();
+    let last_error_text = payload
+        .get("lastError")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
 
     if health_state == "invalid" {
         state
@@ -477,27 +482,26 @@ pub async fn session_progress_handler(
             .invalidate_all_movie_resolve_caches_for_tmdb(tmdb_id.clone())
             .await?;
         if !source_hash.is_empty() {
-            let inferred_event = if payload
-                .get("lastError")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_lowercase()
-                .contains("decode")
-            {
-                "decode_failure".to_owned()
-            } else {
-                "playback_error".to_owned()
+            let inferred_event = match event_type.as_str() {
+                "decode_failure" | "ended_early" | "playback_error" => event_type.clone(),
+                _ if last_error_text.to_lowercase().contains("decode") => {
+                    "decode_failure".to_owned()
+                }
+                _ => "playback_error".to_owned(),
             };
             state
                 .db
                 .record_source_health_event(
                     source_hash.clone(),
                     inferred_event,
-                    payload
-                        .get("lastError")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
+                    last_error_text.clone(),
+                )
+                .await?;
+            state
+                .db
+                .invalidate_playback_sessions_by_source_hash(
+                    source_hash.clone(),
+                    last_error_text.if_empty_then(|| "Playback source failed.".to_owned()),
                 )
                 .await?;
         }
@@ -509,15 +513,7 @@ pub async fn session_progress_handler(
     {
         state
             .db
-            .record_source_health_event(
-                source_hash,
-                event_type,
-                payload
-                    .get("lastError")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-            )
+            .record_source_health_event(source_hash, event_type, last_error_text)
             .await?;
     }
 

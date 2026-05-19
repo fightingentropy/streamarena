@@ -227,6 +227,7 @@ struct ResolvePreferences {
 #[derive(Debug, Clone)]
 struct ResolveFilters {
     source_hash: String,
+    preferred_container: String,
     source_filters: SourceFilters,
 }
 
@@ -556,6 +557,7 @@ impl ResolverService {
         };
         let filters = ResolveFilters {
             source_hash: normalize_source_hash(source_hash),
+            preferred_container: String::new(),
             source_filters: SourceFilters {
                 min_seeders: normalize_minimum_seeders(min_seeders),
                 allowed_formats: normalize_allowed_formats(allowed_formats),
@@ -597,16 +599,21 @@ impl ResolverService {
         let resolution_started_at = now_ms();
         let mut last_error = None;
         for candidate in candidates {
-            if now_ms() - resolution_started_at > RESOLVE_MAX_MS {
+            let elapsed_ms = now_ms() - resolution_started_at;
+            if elapsed_ms >= RESOLVE_MAX_MS {
                 break;
             }
             let fallback_name = normalize_whitespace(
                 format!("{} {}", metadata.display_title, metadata.display_year).trim(),
             );
-            match self
-                .resolve_candidate_stream(candidate, &fallback_name)
-                .await
-                .and_then(|resolved| {
+            let remaining_ms = (RESOLVE_MAX_MS - elapsed_ms).max(1) as u64;
+            let resolved_result = match timeout(
+                Duration::from_millis(remaining_ms),
+                self.resolve_candidate_stream(candidate, &fallback_name),
+            )
+            .await
+            {
+                Ok(result) => result.and_then(|resolved| {
                     if !does_filename_likely_match_movie(
                         &resolved.filename,
                         &metadata.display_title,
@@ -617,7 +624,10 @@ impl ResolverService {
                         ));
                     }
                     Ok(resolved)
-                }) {
+                }),
+                Err(_) => Err(ApiError::bad_gateway("Resolving stream timed out.")),
+            };
+            match resolved_result {
                 Ok(resolved) => {
                     let result = self
                         .build_resolved_response(resolved, metadata, preferences, true)
@@ -750,8 +760,10 @@ impl ResolverService {
             ),
             quality: normalize_preferred_stream_quality(preferred_quality),
         };
+        let normalized_preferred_container = normalize_preferred_container(preferred_container);
         let filters = ResolveFilters {
             source_hash: normalize_source_hash(source_hash),
+            preferred_container: normalized_preferred_container.clone(),
             source_filters: SourceFilters {
                 min_seeders: normalize_minimum_seeders(min_seeders),
                 allowed_formats: normalize_allowed_formats(allowed_formats),
@@ -805,7 +817,7 @@ impl ResolverService {
             &metadata,
             &preferences.audio_lang,
             &preferences.quality,
-            preferred_container,
+            &normalized_preferred_container,
             &filters.source_hash,
             10,
             &filters.source_filters,
@@ -820,7 +832,8 @@ impl ResolverService {
         let resolution_started_at = now_ms();
         let mut last_error = None;
         for candidate in candidates {
-            if now_ms() - resolution_started_at > RESOLVE_MAX_MS {
+            let elapsed_ms = now_ms() - resolution_started_at;
+            if elapsed_ms >= RESOLVE_MAX_MS {
                 break;
             }
             let fallback_name = if metadata.episode_title.is_empty() {
@@ -837,10 +850,14 @@ impl ResolverService {
                     metadata.episode_title
                 )
             };
-            match self
-                .resolve_candidate_stream(candidate, &fallback_name)
-                .await
-                .and_then(|resolved| {
+            let remaining_ms = (RESOLVE_MAX_MS - elapsed_ms).max(1) as u64;
+            let resolved_result = match timeout(
+                Duration::from_millis(remaining_ms),
+                self.resolve_candidate_stream(candidate, &fallback_name),
+            )
+            .await
+            {
+                Ok(result) => result.and_then(|resolved| {
                     let episode_match_name = if !resolved.selected_file_path.trim().is_empty() {
                         resolved.selected_file_path.clone()
                     } else {
@@ -858,7 +875,10 @@ impl ResolverService {
                         ));
                     }
                     Ok(resolved)
-                }) {
+                }),
+                Err(_) => Err(ApiError::bad_gateway("Resolving stream timed out.")),
+            };
+            match resolved_result {
                 Ok(resolved) => {
                     let result = self
                         .build_resolved_response(resolved, metadata, preferences, true)
@@ -3024,9 +3044,9 @@ fn compute_source_health_score(stats: &SourceHealthStats) -> i64 {
     let success_rate = stats.success_count as f64 / attempts as f64;
     let confidence_factor = (attempts as f64 / 6.0).min(1.0);
     let mut score = ((success_rate - 0.55) * 2800.0 * confidence_factor).round() as i64;
-    score -= (stats.decode_failure_count * 800).min(2400);
-    score -= (stats.ended_early_count * 550).min(2000);
-    score -= (stats.playback_error_count * 260).min(1200);
+    score -= (stats.decode_failure_count * 1400).min(3200);
+    score -= (stats.ended_early_count * 1000).min(2600);
+    score -= (stats.playback_error_count * 900).min(2400);
     score
 }
 
@@ -3388,6 +3408,7 @@ fn resolve_effective_preferred_subtitle_lang(
 
 fn should_skip_playback_session_reuse(filters: &ResolveFilters) -> bool {
     !filters.source_hash.is_empty()
+        || !filters.preferred_container.is_empty()
         || filters.source_filters.min_seeders > 0
         || !filters.source_filters.allowed_formats.is_empty()
         || filters.source_filters.source_language != SOURCE_LANGUAGE_FILTER_DEFAULT

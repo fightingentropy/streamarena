@@ -133,11 +133,14 @@ const MAX_TMDB_EPISODE_LIST_EPISODES = 300;
 let lastAudibleVolume = 1;
 const sourceSaveStateByHash = new Map();
 const sourceSaveResetTimeoutByHash = new Map();
+const reportedPlaybackFailureKeys = new Set();
 let liveStreamOptions = [];
 let selectedLiveStreamId = "";
 let isLivePlayback = false;
 let lastRequestedPlaybackSource = "";
 let lastRequestedAbsolutePlaybackSource = "";
+let activeHlsController = null;
+let hlsConstructorPromise = null;
 
 const _cleanups = [];
 function trackListener(target, event, handler, options) {
@@ -2279,14 +2282,82 @@ function extractPlaybackSourceInput(source) {
   return String(source || "").trim();
 }
 
+function getNativeHlsSupport() {
+  try {
+    return String(video?.canPlayType?.("application/vnd.apple.mpegURL") || "");
+  } catch {
+    return "";
+  }
+}
+
+function isAppleNativeVideoEnvironment() {
+  const nav = window.navigator || {};
+  const userAgent = String(nav.userAgent || "");
+  const platform = String(nav.platform || "");
+  return (
+    /\b(iPad|iPhone|iPod)\b/i.test(userAgent) ||
+    (platform === "MacIntel" && Number(nav.maxTouchPoints || 0) > 1)
+  );
+}
+
+function hasNativeHlsPlaybackSupport() {
+  const support = getNativeHlsSupport();
+  return (
+    support === "maybe" ||
+    support === "probably" ||
+    isAppleNativeVideoEnvironment()
+  );
+}
+
+function hasHlsJsPlaybackSupport() {
+  try {
+    const MediaSourceCtor = window.MediaSource || window.WebKitMediaSource;
+    return Boolean(
+      MediaSourceCtor &&
+        typeof MediaSourceCtor.isTypeSupported === "function" &&
+        MediaSourceCtor.isTypeSupported(
+          'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+        ),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasHlsPlaybackSupport() {
+  return hasNativeHlsPlaybackSupport() || hasHlsJsPlaybackSupport();
+}
+
+function loadHlsConstructor() {
+  if (!hlsConstructorPromise) {
+    hlsConstructorPromise = import("hls.js").then(
+      (module) => module.default || module.Hls || module,
+    );
+  }
+  return hlsConstructorPromise;
+}
+
+function destroyActiveHlsController() {
+  if (!activeHlsController) {
+    return;
+  }
+  try {
+    activeHlsController.destroy();
+  } catch {
+    // Ignore teardown failures while switching streams.
+  }
+  activeHlsController = null;
+}
+
+function shouldAvoidRemuxFallbackForHls() {
+  return isTmdbResolvedPlayback || isAppleNativeVideoEnvironment();
+}
+
 function shouldPreferBrowserHlsPlayback(
   source,
   subtitleStreamIndex = selectedSubtitleStreamIndex,
 ) {
-  const hasNativeHls =
-    video.canPlayType("application/vnd.apple.mpegURL") === "maybe" ||
-    video.canPlayType("application/vnd.apple.mpegURL") === "probably";
-  if (!hasNativeHls) {
+  if (!hasHlsPlaybackSupport()) {
     return false;
   }
   const normalizedSource = String(source || "").toLowerCase();
@@ -2817,10 +2888,7 @@ function rebuildTrackOptionButtons() {
 function shouldUseSoftwareDecode(source) {
   const value = String(source || "").toLowerCase();
   if (value.includes(".m3u8")) {
-    return !(
-      video.canPlayType("application/vnd.apple.mpegURL") === "maybe" ||
-      video.canPlayType("application/vnd.apple.mpegURL") === "probably"
-    );
+    return !hasHlsPlaybackSupport();
   }
   return (
     value.includes(".mkv") ||
@@ -3008,6 +3076,7 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
 
   clearStreamStallRecovery();
   clearSubtitleTrack();
+  destroyActiveHlsController();
 
   // Explicitly tear down the previous source to close the HTTP connection
   // and let the server kill the old ffmpeg process (kill_on_drop).
@@ -3058,15 +3127,29 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
   const isHlsSource = absoluteSource.includes("/api/hls/master.m3u8");
 
   if (isHlsSource) {
-    // Use native HLS — supported in Safari, Chrome 142+, Edge 142+.
-    video.setAttribute("src", absoluteSource);
-    video.load();
-
-    // If native HLS fails, fall back to server-side remux.
     const hlsMeta = parseHlsMasterSource(sourceWithAudioSync);
-    const onNativeHlsError = () => {
-      video.removeEventListener("error", onNativeHlsError);
-      if (hlsMeta?.input) {
+
+    const handleHlsPlaybackFailure = (message) => {
+      destroyActiveHlsController();
+      const fallbackMessage =
+        String(message || "").trim() || "HLS playback failed.";
+      if (attemptTmdbRecovery("Trying alternate source...")) {
+        return;
+      }
+      showResolver(fallbackMessage, { isError: true });
+      reportCurrentTmdbPlaybackFailure(fallbackMessage);
+    };
+
+    if (hasNativeHlsPlaybackSupport()) {
+      video.setAttribute("src", absoluteSource);
+      video.load();
+
+      const onNativeHlsError = () => {
+        video.removeEventListener("error", onNativeHlsError);
+        if (shouldAvoidRemuxFallbackForHls() || !hlsMeta?.input) {
+          handleHlsPlaybackFailure("HLS playback failed.");
+          return;
+        }
         const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
         const remuxFallback = buildSoftwareDecodeUrl(
           hlsMeta.input,
@@ -3081,12 +3164,100 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
         );
         video.load();
         void tryPlay();
-      }
-    };
-    video.addEventListener("error", onNativeHlsError, { once: true });
+      };
+      video.addEventListener("error", onNativeHlsError, { once: true });
 
-    void tryPlay();
-    scheduleStreamStallRecovery("Stream stalled, trying another source...");
+      void tryPlay();
+      scheduleStreamStallRecovery("Stream stalled, trying another source...");
+      return;
+    }
+
+    if (hasHlsJsPlaybackSupport()) {
+      void loadHlsConstructor()
+        .then((HlsConstructor) => {
+          if (lastRequestedAbsolutePlaybackSource !== absoluteSource) {
+            return;
+          }
+          if (!HlsConstructor?.isSupported?.()) {
+            handleHlsPlaybackFailure("This browser cannot play the HLS stream.");
+            return;
+          }
+
+          const hls = new HlsConstructor({
+            backBufferLength: 90,
+            maxBufferLength: 60,
+          });
+          let hlsRecoveryAttempts = 0;
+          activeHlsController = hls;
+
+          hls.on(HlsConstructor.Events.ERROR, (_event, data = {}) => {
+            if (activeHlsController !== hls || !data?.fatal) {
+              return;
+            }
+            if (
+              data.type === HlsConstructor.ErrorTypes.NETWORK_ERROR &&
+              hlsRecoveryAttempts < 1
+            ) {
+              hlsRecoveryAttempts += 1;
+              hls.startLoad();
+              return;
+            }
+            if (
+              data.type === HlsConstructor.ErrorTypes.MEDIA_ERROR &&
+              hlsRecoveryAttempts < 2
+            ) {
+              hlsRecoveryAttempts += 1;
+              hls.recoverMediaError();
+              return;
+            }
+            handleHlsPlaybackFailure(
+              data.details
+                ? `HLS playback failed (${data.details}).`
+                : "HLS playback failed.",
+            );
+          });
+          hls.on(HlsConstructor.Events.MEDIA_ATTACHED, () => {
+            if (activeHlsController === hls) {
+              hls.loadSource(absoluteSource);
+            }
+          });
+          hls.on(HlsConstructor.Events.MANIFEST_PARSED, () => {
+            if (activeHlsController === hls) {
+              void tryPlay();
+            }
+          });
+          hls.attachMedia(video);
+        })
+        .catch(() => {
+          if (lastRequestedAbsolutePlaybackSource === absoluteSource) {
+            handleHlsPlaybackFailure("Unable to load HLS playback support.");
+          }
+        });
+
+      scheduleStreamStallRecovery("Stream stalled, trying another source...");
+      return;
+    }
+
+    if (hlsMeta?.input) {
+      const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
+      const remuxFallback = buildSoftwareDecodeUrl(
+        hlsMeta.input,
+        resumeAt,
+        hlsMeta.audioStreamIndex,
+        preferredAudioSyncMs,
+        hlsMeta.subtitleStreamIndex,
+      );
+      video.setAttribute(
+        "src",
+        new URL(remuxFallback, window.location.origin).toString(),
+      );
+      video.load();
+      void tryPlay();
+      scheduleStreamStallRecovery("Stream stalled, trying another source...");
+      return;
+    }
+
+    handleHlsPlaybackFailure("This browser cannot play the HLS stream.");
     return;
   }
 
@@ -3116,6 +3287,33 @@ function setTmdbSourceQueue(primaryUrl, fallbackUrls = []) {
 
   tmdbSourceQueue = queue;
   tmdbSourceAttemptIndex = queue.length > 0 ? 1 : 0;
+}
+
+function reportCurrentTmdbPlaybackFailure(message, eventType = "playback_error") {
+  const sourceHash = normalizeSourceHash(selectedSourceHash);
+  if (!isTmdbResolvedPlayback || !tmdbId || !sourceHash) {
+    return;
+  }
+  const failureKey = `${tmdbId}:${sourceHash}:${eventType}`;
+  if (reportedPlaybackFailureKeys.has(failureKey)) {
+    return;
+  }
+  reportedPlaybackFailureKeys.add(failureKey);
+  fetch("/api/session/progress", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      tmdbId,
+      audioLang: preferredAudioLang || "auto",
+      quality: preferredQuality || DEFAULT_STREAM_QUALITY_PREFERENCE,
+      positionSeconds: Math.max(0, getEffectiveCurrentTime()),
+      healthState: "invalid",
+      sourceHash,
+      eventType,
+      lastError: String(message || "Playback failed.").slice(0, 500),
+    }),
+    keepalive: true,
+  }).catch(() => {});
 }
 
 async function tryNextTmdbSource() {
@@ -3319,11 +3517,22 @@ async function resolveTmdbSourcesAndPlay({
     selectedAudioStreamIndex,
     selectedSubtitleStreamIndex,
   );
+  const shouldSkipRemuxFallback =
+    preferredBrowserSource &&
+    preferredBrowserSource !== nativePreferredSource &&
+    shouldAvoidRemuxFallbackForHls();
   setTmdbSourceQueue(
     preferredBrowserSource,
     preferredBrowserSource &&
       preferredBrowserSource !== nativePreferredSource
-      ? [nativePreferredSource, ...(resolved?.fallbackUrls || [])]
+      ? [
+          ...(shouldSkipRemuxFallback ? [] : [nativePreferredSource]),
+          ...(resolved?.fallbackUrls || []).filter(
+            (url) =>
+              !shouldSkipRemuxFallback ||
+              !String(url || "").includes("/api/remux"),
+          ),
+        ]
       : resolved.fallbackUrls,
   );
   void queueGallerySaveIfRequested(resolved);
@@ -5005,7 +5214,9 @@ async function requestJson(url, options = {}, timeoutMs = 20000) {
       try {
         payload = JSON.parse(rawText);
       } catch {
-        payload = { message: rawText };
+        payload = {
+          message: buildHttpErrorMessage(response, rawText) || rawText,
+        };
       }
     }
 
@@ -5013,6 +5224,7 @@ async function requestJson(url, options = {}, timeoutMs = 20000) {
       const message =
         payload?.error ||
         payload?.message ||
+        buildHttpErrorMessage(response, rawText) ||
         `Request failed (${response.status})`;
       throw new Error(message);
     }
@@ -5028,6 +5240,34 @@ async function requestJson(url, options = {}, timeoutMs = 20000) {
       window.clearTimeout(timeoutId);
     }
   }
+}
+
+function buildHttpErrorMessage(response, rawText = "") {
+  const status = Number(response?.status || 0);
+  const statusText = String(response?.statusText || "").trim();
+  const statusLabel = status
+    ? `Request failed (${status}${statusText ? ` ${statusText}` : ""}).`
+    : "Request failed.";
+  const contentType = String(response?.headers?.get?.("content-type") || "")
+    .trim()
+    .toLowerCase();
+  const text = String(rawText || "");
+  const looksLikeHtml =
+    contentType.includes("text/html") ||
+    /^\s*<!doctype\b/i.test(text) ||
+    /<html[\s>]/i.test(text);
+
+  if (!looksLikeHtml) {
+    return "";
+  }
+
+  const normalized = text.toLowerCase();
+  if (normalized.includes("cloudflare") && normalized.includes("bad gateway")) {
+    return status
+      ? `Cloudflare returned ${status}${statusText ? ` ${statusText}` : " Bad Gateway"}.`
+      : "Cloudflare returned a bad gateway response.";
+  }
+  return statusLabel;
 }
 
 function getGallerySavePlayableCandidates(resolvedPayload = {}) {
@@ -7478,12 +7718,12 @@ trackListener(video, "ended", () => {
     effectiveCurrent < expectedDuration - 45;
 
   if (endedTooEarly) {
-    const recovered = attemptTmdbRecovery(
-      "Stream ended early, trying another source...",
-    );
+    const message = "Stream ended early, trying another source...";
+    const recovered = attemptTmdbRecovery(message);
     if (recovered) {
       return;
     }
+    reportCurrentTmdbPlaybackFailure(message, "ended_early");
   }
 
   try {
@@ -7527,6 +7767,7 @@ trackListener(video, "error", () => {
   }
 
   showResolver(message, { isError: true });
+  reportCurrentTmdbPlaybackFailure(message);
 });
 
 function isInteractiveTarget(target) {
@@ -7798,6 +8039,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     clearSingleClickPlaybackToggle();
     clearStreamStallRecovery();
     clearSeekLoadingTimeout();
+    destroyActiveHlsController();
     stopSubtitleRafLoop();
     if (speedPopoverCloseTimeout) clearTimeout(speedPopoverCloseTimeout);
     if (liveStreamPopoverCloseTimeout) clearTimeout(liveStreamPopoverCloseTimeout);

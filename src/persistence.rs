@@ -447,6 +447,47 @@ impl Db {
         .map_err(|error: rusqlite::Error| ApiError::internal(error.to_string()))
     }
 
+    pub async fn invalidate_playback_sessions_by_source_hash(
+        &self,
+        source_hash: String,
+        reason: String,
+    ) -> AppResult<usize> {
+        let normalized_source_hash = source_hash.trim().to_lowercase();
+        if normalized_source_hash.is_empty() {
+            return Ok(0);
+        }
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            let updated = connection.execute(
+                "
+                UPDATE playback_sessions
+                SET
+                  health_state = 'invalid',
+                  health_fail_count = health_fail_count + 1,
+                  last_error = ?,
+                  updated_at = ?,
+                  last_accessed_at = ?
+                WHERE source_hash = ?
+                  AND health_state != 'invalid'
+                ",
+                params![
+                    reason.chars().take(500).collect::<String>(),
+                    now,
+                    now,
+                    normalized_source_hash,
+                ],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<usize, rusqlite::Error>(updated)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error: rusqlite::Error| ApiError::internal(error.to_string()))
+    }
+
     pub async fn refresh_playback_session_validation_window(
         &self,
         session_key: String,
@@ -2341,6 +2382,71 @@ mod tests {
                 .expect("load auto session")
                 .is_none()
         );
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn invalidates_playback_sessions_by_source_hash() {
+        let path = unique_temp_db_path("playback-session-source-invalidate");
+        let db = setup_test_playback_session_db(&path).await;
+        for (session_key, tmdb_id, source_hash) in [
+            ("123:en:1080p", "123", "abc"),
+            ("456:en:1080p", "456", "abc"),
+            ("789:en:1080p", "789", "def"),
+        ] {
+            db.persist_playback_session(PersistPlaybackSessionInput {
+                session_key: session_key.to_owned(),
+                tmdb_id: tmdb_id.to_owned(),
+                audio_lang: "en".to_owned(),
+                preferred_quality: "1080p".to_owned(),
+                source_hash: source_hash.to_owned(),
+                selected_file: "1".to_owned(),
+                filename: "Movie.mp4".to_owned(),
+                playable_url: "https://download.real-debrid.com/movie.mp4".to_owned(),
+                fallback_urls: Vec::new(),
+                metadata: json!({"tmdbId": tmdb_id, "displayTitle": "Movie"}),
+            })
+            .await
+            .expect("persist session");
+        }
+
+        let updated = db
+            .invalidate_playback_sessions_by_source_hash(
+                "abc".to_owned(),
+                "Playback failed.".to_owned(),
+            )
+            .await
+            .expect("invalidate source sessions");
+        assert_eq!(updated, 2);
+
+        for session_key in ["123:en:1080p", "456:en:1080p"] {
+            let session = db
+                .get_playback_session(session_key.to_owned())
+                .await
+                .expect("load invalidated session")
+                .expect("session exists");
+            assert_eq!(session.health_state, "invalid");
+            assert_eq!(session.health_fail_count, 1);
+            assert_eq!(session.last_error, "Playback failed.");
+        }
+
+        let untouched = db
+            .get_playback_session("789:en:1080p".to_owned())
+            .await
+            .expect("load untouched session")
+            .expect("session exists");
+        assert_eq!(untouched.health_state, "healthy");
+        assert_eq!(untouched.health_fail_count, 0);
+
+        let updated_again = db
+            .invalidate_playback_sessions_by_source_hash(
+                "abc".to_owned(),
+                "Playback failed again.".to_owned(),
+            )
+            .await
+            .expect("invalidate source sessions again");
+        assert_eq!(updated_again, 0);
 
         let _ = tokio::fs::remove_file(&path).await;
     }

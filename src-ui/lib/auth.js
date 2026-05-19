@@ -41,9 +41,30 @@ export async function signOut() {
   window.location.href = "/login.html";
 }
 
+const RESUME_STORAGE_PREFIX = "netflix-resume:";
+const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
+const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
+
+function pruneLocalResumeKeys(serverResumeSources) {
+  if (!(serverResumeSources instanceof Set)) return;
+  const keys = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (key?.startsWith(RESUME_STORAGE_PREFIX)) {
+      keys.push(key);
+    }
+  }
+  keys.forEach((key) => {
+    const sourceIdentity = key.slice(RESUME_STORAGE_PREFIX.length);
+    if (!serverResumeSources.has(sourceIdentity)) {
+      localStorage.removeItem(key);
+    }
+  });
+}
+
 /**
  * Hydrate localStorage from server data on page load.
- * Server is the source of truth; this populates the local cache.
+ * Server is the source of truth; this replaces the local cache.
  */
 export async function hydrateFromServer() {
   try {
@@ -63,7 +84,11 @@ export async function hydrateFromServer() {
       }
     }
 
-    if (progressRes.ok) {
+    const serverResumeSources = new Set();
+    const didLoadProgress = progressRes.ok;
+    const didLoadContinueWatching = continueRes.ok;
+
+    if (didLoadProgress) {
       const progress = await progressRes.json();
       const progressEntries = Array.isArray(progress?.entries)
         ? progress.entries
@@ -72,12 +97,13 @@ export async function hydrateFromServer() {
           : [];
       for (const entry of progressEntries) {
         if (entry.sourceIdentity && entry.resumeSeconds > 0) {
-          localStorage.setItem(`netflix-resume:${entry.sourceIdentity}`, String(entry.resumeSeconds));
+          serverResumeSources.add(entry.sourceIdentity);
+          localStorage.setItem(`${RESUME_STORAGE_PREFIX}${entry.sourceIdentity}`, String(entry.resumeSeconds));
         }
       }
     }
 
-    if (continueRes.ok) {
+    if (didLoadContinueWatching) {
       const continueData = await continueRes.json();
       const continueEntries = Array.isArray(continueData?.entries)
         ? continueData.entries
@@ -87,17 +113,22 @@ export async function hydrateFromServer() {
       const metaMap = {};
       for (const entry of continueEntries) {
         if (entry.sourceIdentity) {
+          serverResumeSources.add(entry.sourceIdentity);
           metaMap[entry.sourceIdentity] = entry;
           if (entry.resumeSeconds > 0) {
-            localStorage.setItem(`netflix-resume:${entry.sourceIdentity}`, String(entry.resumeSeconds));
+            localStorage.setItem(`${RESUME_STORAGE_PREFIX}${entry.sourceIdentity}`, String(entry.resumeSeconds));
           }
         }
       }
       if (Object.keys(metaMap).length > 0) {
-        localStorage.setItem("netflix-continue-watching-meta", JSON.stringify(metaMap));
+        localStorage.setItem(CONTINUE_WATCHING_META_KEY, JSON.stringify(metaMap));
       } else {
-        localStorage.removeItem("netflix-continue-watching-meta");
+        localStorage.removeItem(CONTINUE_WATCHING_META_KEY);
       }
+    }
+
+    if (didLoadProgress && didLoadContinueWatching) {
+      pruneLocalResumeKeys(serverResumeSources);
     }
 
     if (listRes.ok) {
@@ -108,9 +139,9 @@ export async function hydrateFromServer() {
           ? list
           : [];
       if (listEntries.length > 0) {
-        localStorage.setItem("netflix-my-list-v1", JSON.stringify(listEntries));
+        localStorage.setItem(MY_LIST_STORAGE_KEY, JSON.stringify(listEntries));
       } else {
-        localStorage.removeItem("netflix-my-list-v1");
+        localStorage.removeItem(MY_LIST_STORAGE_KEY);
       }
     }
   } catch {
