@@ -1,4 +1,4 @@
-const OVERFLOW_LINK_SELECTOR = "a.optional";
+const OVERFLOW_LINK_SELECTOR = "a.optional:not(.nav-mobile-primary)";
 
 export function wireBrowseNavMore() {
   const nav = document.querySelector(".top-nav nav");

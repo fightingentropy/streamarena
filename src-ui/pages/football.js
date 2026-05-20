@@ -92,8 +92,8 @@ export default function FootballPage() {
               <a href="/">Home</a>
               <a href="#" class="optional">Series</a>
               <a href="#" class="optional">Films</a>
-              <a href="/live">Live</a>
-              <a href="/football" class="is-active">Football</a>
+              <a href="/live" class="nav-mobile-primary">Live</a>
+              <a href="/football" class="nav-mobile-primary is-active">Football</a>
               <a href="/#myListRow" class="optional">My List</a>
             </nav>
           </div>

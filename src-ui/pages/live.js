@@ -92,8 +92,8 @@ export default function LivePage() {
               <a href="/">Home</a>
               <a href="#" class="optional">Series</a>
               <a href="#" class="optional">Films</a>
-              <a href="/live" class="is-active">Live</a>
-              <a href="/football">Football</a>
+              <a href="/live" class="nav-mobile-primary is-active">Live</a>
+              <a href="/football" class="nav-mobile-primary">Football</a>
               <a href="/#myListRow" class="optional">My List</a>
             </nav>
           </div>

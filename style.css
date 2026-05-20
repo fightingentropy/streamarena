@@ -618,7 +618,7 @@ body.is-search-mode .home-member-footer {
         width: 86px;
     }
 
-    .home-page .top-nav nav a:not(.is-active) {
+    .home-page .top-nav nav a:not(.is-active):not(.nav-mobile-primary) {
         display: none;
     }
 
@@ -2520,7 +2520,7 @@ body.is-search-mode #myListRow {
         display: inline-flex;
     }
 
-    .top-nav nav a.optional {
+    .top-nav nav a.optional:not(.nav-mobile-primary) {
         display: none;
     }
 
@@ -2614,7 +2614,7 @@ body.is-search-mode #myListRow {
 }
 
 @media (hover: none) and (pointer: coarse) {
-    .top-nav nav a.optional {
+    .top-nav nav a.optional:not(.nav-mobile-primary) {
         display: none !important;
     }
 }
