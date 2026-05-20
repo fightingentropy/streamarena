@@ -125,6 +125,7 @@
     isolation: isolate;
 }
 
+.home-page .hero-poster,
 .home-page .hero-video {
     position: absolute;
     inset: 0;
@@ -134,6 +135,18 @@
     object-position: center top;
     filter: saturate(0.96) brightness(0.92);
     transform: none;
+}
+
+.home-page .hero-poster {
+    display: block;
+}
+
+.home-page .hero-video {
+    transition: opacity 180ms ease;
+}
+
+.home-page .hero-video:not([src]) {
+    opacity: 0;
 }
 
 .home-page .hero-shade {

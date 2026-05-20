@@ -1,6 +1,5 @@
 import "../../style.css";
 import "../../live.css";
-import "../../new-popular.css";
 
 import { requireAuth, hydrateFromServer } from "../lib/auth.js";
 
