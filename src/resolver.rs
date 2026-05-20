@@ -1786,9 +1786,11 @@ impl ResolverService {
                 .and_then(Value::as_str)
                 .or_else(|| payload.get("message").and_then(Value::as_str))
                 .unwrap_or("Real-Debrid request failed.");
-            return Err(ApiError::bad_gateway(user_facing_real_debrid_error(
-                message,
-            )));
+            let user_message = user_facing_real_debrid_error(message);
+            if is_real_debrid_blocked_source_message(&user_message) {
+                return Err(ApiError::failed_dependency(user_message));
+            }
+            return Err(ApiError::bad_gateway(user_message));
         }
         Ok(payload)
     }
@@ -4252,6 +4254,10 @@ fn user_facing_real_debrid_error(message: &str) -> String {
     }
 }
 
+fn is_real_debrid_blocked_source_message(message: &str) -> bool {
+    message.trim() == "Real-Debrid blocked this source."
+}
+
 fn is_retryable_torrentio_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 408 | 429) || status.is_server_error()
 }
@@ -5099,6 +5105,9 @@ mod tests {
 
     #[test]
     fn classifies_persistent_source_resolve_failures() {
+        assert!(is_persistent_source_resolve_error(
+            &ApiError::failed_dependency("Real-Debrid blocked this source.")
+        ));
         assert!(is_persistent_source_resolve_error(&ApiError::bad_gateway(
             "Real-Debrid blocked this source."
         )));

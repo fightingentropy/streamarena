@@ -39,6 +39,10 @@ impl ApiError {
         Self::new(StatusCode::BAD_GATEWAY, message)
     }
 
+    pub fn failed_dependency(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FAILED_DEPENDENCY, message)
+    }
+
     pub fn gateway_timeout(message: impl Into<String>) -> Self {
         Self::new(StatusCode::GATEWAY_TIMEOUT, message)
     }
