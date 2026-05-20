@@ -8048,6 +8048,9 @@ trackListener(video, "pause", () => {
   persistResumeTime(true);
 });
 trackListener(video, "ended", () => {
+  clearControlsHideTimer();
+  showControls();
+
   const expectedDuration = getDisplayDurationSeconds();
   const effectiveCurrent = getEffectiveCurrentTime();
   const endedTooEarly =

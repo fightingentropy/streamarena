@@ -211,6 +211,11 @@ body {
     opacity: 0;
 }
 
+.player-shell.controls-hidden,
+.player-shell.controls-hidden * {
+    cursor: none !important;
+}
+
 .custom-subtitle-overlay {
     position: absolute;
     left: 50%;
