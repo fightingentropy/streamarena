@@ -42,6 +42,7 @@ const TORRENTIO_CACHE_STALE_WINDOW_DEFAULT_SECONDS: i64 = 4 * 60 * 60;
 const TORZNAB_CACHE_MAX_AGE_SECONDS: i64 = 30 * 60;
 const TORZNAB_CACHE_STALE_WINDOW_SECONDS: i64 = 2 * 60 * 60;
 const RD_TORRENT_CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+const SOURCE_HEALTH_AVOID_SCORE: i64 = -6_000;
 const RD_SELECTED_FILE_MISMATCH_ERROR: &str =
     "Real-Debrid returned a cached torrent with a different selected file.";
 const EXTERNAL_SUBTITLE_STREAM_INDEX_BASE: i64 = 2_000_000;
@@ -2691,6 +2692,7 @@ fn select_top_movie_candidates<'a>(
         source_hash,
         limit,
         &source_filters.source_language,
+        health_scores,
     )
 }
 
@@ -2742,6 +2744,7 @@ fn select_top_episode_candidates<'a>(
             source_hash,
             limit,
             &source_filters.source_language,
+            health_scores,
         )
     } else {
         selected
@@ -3045,6 +3048,7 @@ fn apply_mp4_default_candidate_rule<'a>(
     source_hash: &str,
     limit: usize,
     source_language: &str,
+    health_scores: &HashMap<String, i64>,
 ) -> Vec<&'a DiscoveryStream> {
     let with_mp4 = ensure_at_least_one_container_candidate(
         candidates,
@@ -3052,6 +3056,7 @@ fn apply_mp4_default_candidate_rule<'a>(
         "mp4",
         limit,
         source_language,
+        health_scores,
     );
     if with_mp4.is_empty() {
         return with_mp4;
@@ -3060,7 +3065,9 @@ fn apply_mp4_default_candidate_rule<'a>(
         return with_mp4;
     }
 
-    let Some(best_mp4) = pick_best_container_candidate(&with_mp4, "mp4", source_language) else {
+    let Some(best_mp4) =
+        pick_best_container_candidate(&with_mp4, "mp4", source_language, health_scores)
+    else {
         return move_container_candidates_to_front(with_mp4, "mp4");
     };
     let mut next = vec![best_mp4];
@@ -3078,16 +3085,17 @@ fn ensure_at_least_one_container_candidate<'a>(
     container: &str,
     limit: usize,
     source_language: &str,
+    health_scores: &HashMap<String, i64>,
 ) -> Vec<&'a DiscoveryStream> {
     let safe_limit = limit.max(1);
     let mut current = candidates.into_iter().take(safe_limit).collect::<Vec<_>>();
     if current.is_empty() {
         return current;
     }
-    if current
-        .iter()
-        .any(|candidate| is_stream_likely_container(candidate, container))
-    {
+    if current.iter().any(|candidate| {
+        is_stream_likely_container(candidate, container)
+            && is_candidate_healthy_enough_for_default(candidate, health_scores)
+    }) {
         return current;
     }
     let current_hashes = current
@@ -3095,7 +3103,8 @@ fn ensure_at_least_one_container_candidate<'a>(
         .map(|candidate| get_stream_info_hash(candidate))
         .filter(|hash| !hash.is_empty())
         .collect::<HashSet<_>>();
-    let Some(fallback) = pick_best_container_candidate(&ranked_pool, container, source_language)
+    let Some(fallback) =
+        pick_best_container_candidate(&ranked_pool, container, source_language, health_scores)
     else {
         return current;
     };
@@ -3113,15 +3122,27 @@ fn pick_best_container_candidate<'a>(
     candidates: &[&'a DiscoveryStream],
     container: &str,
     source_language: &str,
+    health_scores: &HashMap<String, i64>,
 ) -> Option<&'a DiscoveryStream> {
     let mut container_candidates = candidates
         .iter()
         .copied()
-        .filter(|candidate| is_stream_likely_container(candidate, container))
+        .filter(|candidate| {
+            is_stream_likely_container(candidate, container)
+                && is_candidate_healthy_enough_for_default(candidate, health_scores)
+        })
         .collect::<Vec<_>>();
     container_candidates
         .sort_by(|left, right| compare_container_default_candidates(left, right, source_language));
     container_candidates.first().copied()
+}
+
+fn is_candidate_healthy_enough_for_default(
+    candidate: &DiscoveryStream,
+    health_scores: &HashMap<String, i64>,
+) -> bool {
+    let source_hash = get_stream_info_hash(candidate);
+    health_scores.get(&source_hash).copied().unwrap_or_default() > SOURCE_HEALTH_AVOID_SCORE
 }
 
 fn compare_container_default_candidates(
@@ -3715,6 +3736,12 @@ fn compute_source_health_score(stats: &SourceHealthStats) -> i64 {
     let attempts = stats.success_count + stats.failure_count;
     if attempts <= 0 {
         return 0;
+    }
+    if stats.success_count == 0 && stats.playback_error_count > 0 {
+        return SOURCE_HEALTH_AVOID_SCORE - (stats.playback_error_count * 1_000).min(4_000);
+    }
+    if stats.success_count == 0 && stats.failure_count > 0 {
+        return SOURCE_HEALTH_AVOID_SCORE - 500;
     }
     let success_rate = stats.success_count as f64 / attempts as f64;
     let confidence_factor = (attempts as f64 / 6.0).min(1.0);
@@ -5022,10 +5049,11 @@ mod tests {
 
     use super::{
         DiscoveryBehaviorHints, DiscoveryStream, RD_SELECTED_FILE_MISMATCH_ERROR, ResolveMetadata,
-        ResolvedSource, ResolverExternalGuard, ResolverMetrics, SourceFilters,
-        build_movie_resolve_lock_key, build_rd_torrent_cache_key, build_torrentio_stream_cache_key,
-        build_torznab_request_url, build_torznab_stream_cache_key, build_tv_resolve_lock_key,
-        collect_episode_signatures, compute_torrentio_cache_deadlines,
+        ResolvedSource, ResolverExternalGuard, ResolverMetrics, SOURCE_HEALTH_AVOID_SCORE,
+        SourceFilters, SourceHealthStats, build_movie_resolve_lock_key, build_rd_torrent_cache_key,
+        build_torrentio_stream_cache_key, build_torznab_request_url,
+        build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
+        compute_source_health_score, compute_torrentio_cache_deadlines,
         does_filename_likely_match_movie, extract_info_hash_from_magnet,
         is_persistent_source_resolve_error, normalize_allowed_formats,
         normalize_resolved_source_for_software_decode, normalize_source_audio_profile_filter,
@@ -5475,6 +5503,50 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].infoHash, good.infoHash);
+    }
+
+    #[test]
+    fn avoids_failed_mp4_default_candidate_when_health_is_bad() {
+        let metadata = sample_movie_metadata();
+        let bad_mp4 = sample_stream(
+            "The Housemaid 2025 1080p BluRay x265-GROUP.mp4\n👤 1000",
+            "9999999999999999999999999999999999999999",
+        );
+        let good_mkv = sample_stream(
+            "The Housemaid 2025 1080p BluRay x265-GROUP.mkv\n👤 5",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        let streams = vec![bad_mp4.clone(), good_mkv.clone()];
+        let health_scores = HashMap::from([(
+            "9999999999999999999999999999999999999999".to_owned(),
+            SOURCE_HEALTH_AVOID_SCORE - 1_000,
+        )]);
+
+        let selected = select_top_movie_candidates(
+            &streams,
+            &metadata,
+            "en",
+            "1080p",
+            "",
+            1,
+            &sample_source_filters(),
+            &health_scores,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].infoHash, good_mkv.infoHash);
+    }
+
+    #[test]
+    fn strongly_penalizes_persistent_source_resolve_failures() {
+        let score = compute_source_health_score(&SourceHealthStats {
+            success_count: 0,
+            failure_count: 1,
+            playback_error_count: 1,
+            ..SourceHealthStats::default()
+        });
+
+        assert!(score < SOURCE_HEALTH_AVOID_SCORE);
     }
 
     #[test]
