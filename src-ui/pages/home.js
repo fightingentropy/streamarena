@@ -2282,6 +2282,12 @@ export default function HomePage() {
   }
 
   // ---- My List ----
+  function myListIconMarkup(isActive) {
+    return isActive
+      ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg>`
+      : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke-linecap="round" /></svg>`;
+  }
+
   function setMyListButtonState(button, isActive) {
     if (!(button instanceof HTMLButtonElement)) {
       return;
@@ -2291,6 +2297,8 @@ export default function HomePage() {
       "aria-label",
       isActive ? "Remove from my list" : "Add to my list",
     );
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    button.innerHTML = myListIconMarkup(isActive);
   }
 
   function syncCardMyListButton(card) {
@@ -2362,8 +2370,8 @@ export default function HomePage() {
               <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
               </button>
-              <button class="hover-round hover-my-list" type="button" aria-label="Add to my list">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              <button class="hover-round hover-my-list" type="button" aria-label="Add to my list" aria-pressed="false">
+                ${myListIconMarkup(false)}
               </button>
             </div>
             <button class="hover-round hover-details" type="button" aria-label="More details">
@@ -2750,8 +2758,8 @@ export default function HomePage() {
               <button class="hover-round hover-play" type="button" aria-label="Resume ${safeTitle}">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
               </button>
-              <button class="hover-round" type="button" aria-label="Added to my list">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              <button class="hover-round hover-my-list" type="button" aria-label="Add to my list" aria-pressed="false">
+                ${myListIconMarkup(false)}
               </button>
               <button class="hover-round hover-remove" type="button" aria-label="Remove ${safeTitle} from continue watching">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg>
@@ -2835,8 +2843,8 @@ export default function HomePage() {
               <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
               </button>
-              <button class="hover-round" type="button" aria-label="Added to my list">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              <button class="hover-round hover-my-list" type="button" aria-label="Add to my list" aria-pressed="false">
+                ${myListIconMarkup(false)}
               </button>
             </div>
             <button class="hover-round hover-details" type="button" aria-label="More details">
@@ -2941,8 +2949,8 @@ export default function HomePage() {
               <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
               </button>
-              <button class="hover-round" type="button" aria-label="Added to my list">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              <button class="hover-round hover-my-list" type="button" aria-label="Add to my list" aria-pressed="false">
+                ${myListIconMarkup(false)}
               </button>
               ${editButtonMarkup}
             </div>
@@ -3089,8 +3097,8 @@ export default function HomePage() {
               <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
               </button>
-              <button class="hover-round" type="button" aria-label="Added to my list">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 12.5 5 5L19.5 7.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              <button class="hover-round hover-my-list" type="button" aria-label="Add to my list" aria-pressed="false">
+                ${myListIconMarkup(false)}
               </button>
               ${editButtonMarkup}
             </div>
@@ -4702,7 +4710,7 @@ export default function HomePage() {
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path
-                    d="M12 5v14M5 12h14"
+                    d=${() => detailsMyListActive() ? "m6 6 12 12M18 6 6 18" : "M12 5v14M5 12h14"}
                     fill="none"
                     stroke-linecap="round"
                   ></path>
