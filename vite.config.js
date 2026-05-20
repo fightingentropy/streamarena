@@ -33,9 +33,6 @@ export default defineConfig({
           if (req.url?.startsWith("/watch")) {
             const [, query] = req.url.split("?");
             req.url = `/player.html${query ? `?${query}` : ""}`;
-          } else if (req.url?.startsWith("/new-popular")) {
-            const [, query] = req.url.split("?");
-            req.url = `/index.html${query ? `?${query}` : ""}`;
           }
           next();
         });

@@ -1,5 +1,5 @@
 import html from "solid-js/html";
-import { createEffect, createSignal, onMount, onCleanup } from "solid-js";
+import { createSignal, onMount, onCleanup } from "solid-js";
 import {
   STREAM_QUALITY_PREF_KEY,
   PROFILE_AVATAR_STYLE_PREF_KEY,
@@ -30,7 +30,6 @@ import {
 } from "../lib/preferences.js";
 import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
 import LiveChannelsView from "../components/live-channels-view.js";
-import NewPopularPage from "./new-popular.js";
 import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
 
 // ---------------------------------------------------------------------------
@@ -3877,18 +3876,6 @@ export default function HomePage() {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }
 
-  function showNewPopularView({ push = true } = {}) {
-    if (isSearchModeActive()) {
-      closeSearchMode({ clearInput: false });
-    }
-    setActiveView("new-popular");
-    if (push && window.location.pathname !== "/new-popular") {
-      window.history.pushState({ view: "new-popular" }, "", "/new-popular");
-    }
-    stopHeroPreview();
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-  }
-
   function handleHomeNavClick(event) {
     event.preventDefault();
     showHomeView();
@@ -3898,11 +3885,6 @@ export default function HomePage() {
   function handleLiveNavClick(event) {
     event.preventDefault();
     showLiveView();
-  }
-
-  function handleNewPopularNavClick(event) {
-    event.preventDefault();
-    showNewPopularView();
   }
 
   // ---- My List nav link ----
@@ -4071,13 +4053,6 @@ export default function HomePage() {
     }
   }
 
-  createEffect(() => {
-    document.body.classList.toggle(
-      "new-popular-route",
-      activeView() === "new-popular",
-    );
-  });
-
   // ---- onMount: initialize everything ----
   onMount(() => {
     clearStaleHeroPreviewMutedPreference();
@@ -4090,8 +4065,6 @@ export default function HomePage() {
     closeAccountMenu();
     if (window.location.pathname === "/live") {
       showLiveView({ push: false });
-    } else if (window.location.pathname === "/new-popular") {
-      showNewPopularView({ push: false });
     }
 
     // Handle initial search query
@@ -4215,8 +4188,6 @@ export default function HomePage() {
     const handlePopstate = () => {
       if (window.location.pathname === "/live") {
         showLiveView({ push: false });
-      } else if (window.location.pathname === "/new-popular") {
-        showNewPopularView({ push: false });
       } else {
         showHomeView({ push: false });
       }
@@ -4247,7 +4218,6 @@ export default function HomePage() {
       if (searchBoxHideTimer) clearTimeout(searchBoxHideTimer);
       if (closeModalTimer) clearTimeout(closeModalTimer);
       if (libraryEditModalCloseTimer) clearTimeout(libraryEditModalCloseTimer);
-      document.body.classList.remove("new-popular-route");
     });
   });
 
@@ -4269,7 +4239,6 @@ export default function HomePage() {
             <a href="#" class="optional">Films</a>
             <a href="/live" class=${() => activeView() === "live" ? "is-active" : ""} onClick=${handleLiveNavClick}>Live</a>
             <a href="/football" class="optional">Football</a>
-            <a href="/new-popular" class=${() => activeView() === "new-popular" ? "optional is-active" : "optional"} onClick=${handleNewPopularNavClick}>New &amp; Popular</a>
             <a href="#" id="navMyList" class="optional" onClick=${handleMyListNavClick}>My List</a>
           </nav>
         </div>
@@ -4443,10 +4412,6 @@ export default function HomePage() {
         <${LiveChannelsView} />
       </div>
 
-      ${() => activeView() === "new-popular" && !showSearchExperience()
-        ? html`<${NewPopularPage} />`
-        : null}
-
       <section
         class="featured-hero"
         aria-label="Featured title"
@@ -4454,6 +4419,14 @@ export default function HomePage() {
         onPointerEnter=${scheduleHeroPreviewPlayback}
         onPointerLeave=${stopHeroPreview}
       >
+        <img
+          class="hero-poster"
+          src=${HERO_TRAILER_POSTER}
+          alt=""
+          aria-hidden="true"
+          decoding="async"
+          loading="eager"
+        />
         <video
           id="heroPreview"
           ref=${(el) => (heroPreviewVideoRef = el)}

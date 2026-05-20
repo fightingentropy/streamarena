@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Shared preference normalization helpers.
-// These functions are used across settings, player, home, and new-popular pages.
+// These functions are used across settings, player, and home pages.
 // ---------------------------------------------------------------------------
 
 import {
