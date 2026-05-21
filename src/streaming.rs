@@ -36,7 +36,7 @@ const HLS_SEGMENT_WAIT_POLL_MS: u64 = 180;
 const REMUX_ACCURATE_SEEK_PREROLL_SECONDS: i64 = 12;
 const FFMPEG_STDERR_MAX_LINES: usize = 80;
 const FFMPEG_STDERR_MAX_BYTES: usize = 16 * 1024;
-const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v2";
+const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v4";
 
 const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "mp2", "opus", "vorbis", "flac", "alac"];
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
@@ -1164,40 +1164,6 @@ impl StreamingService {
         self.hls_metrics
             .on_demand_renders
             .fetch_add(1, Ordering::Relaxed);
-        let segment_start_seconds = safe_segment_index * HLS_SEGMENT_DURATION_SECONDS;
-        let build_segment_args = |encode_config: &VideoEncodeConfig| {
-            let mut args = vec!["ffmpeg".to_owned(), "-v".to_owned(), "error".to_owned()];
-            args.extend(encode_config.pre_input_args.clone());
-            args.extend([
-                "-ss".to_owned(),
-                segment_start_seconds.to_string(),
-                "-i".to_owned(),
-                source_input.to_owned(),
-                "-t".to_owned(),
-                HLS_SEGMENT_DURATION_SECONDS.to_string(),
-                "-map".to_owned(),
-                "0:v:0".to_owned(),
-                "-map".to_owned(),
-                if safe_audio_stream_index >= 0 {
-                    format!("0:{safe_audio_stream_index}?")
-                } else {
-                    "0:a:0?".to_owned()
-                },
-                "-sn".to_owned(),
-            ]);
-            args.extend(encode_config.video_encode_args.clone());
-            args.extend([
-                "-c:a".to_owned(),
-                "aac".to_owned(),
-                "-b:a".to_owned(),
-                "160k".to_owned(),
-                "-f".to_owned(),
-                "mpegts".to_owned(),
-                "pipe:1".to_owned(),
-            ]);
-            args
-        };
-
         let ffmpeg = self.runtime.get_ffmpeg_capabilities(false).await;
         let preferred_mode = if ffmpeg.checkedAt > 0 {
             ffmpeg.effectiveHlsHwaccel
@@ -1206,7 +1172,12 @@ impl StreamingService {
         };
         let primary_encode_config = build_hls_video_encode_config(&preferred_mode);
         let segment_bytes = match run_process_capture_bytes(
-            &build_segment_args(&primary_encode_config),
+            &build_hls_on_demand_segment_args(
+                source_input,
+                safe_segment_index,
+                safe_audio_stream_index,
+                &primary_encode_config,
+            ),
             20_000,
         )
         .await
@@ -1218,7 +1189,12 @@ impl StreamingService {
                     primary_encode_config.mode, error
                 );
                 run_process_capture_bytes(
-                    &build_segment_args(&build_hls_video_encode_config("none")),
+                    &build_hls_on_demand_segment_args(
+                        source_input,
+                        safe_segment_index,
+                        safe_audio_stream_index,
+                        &build_hls_video_encode_config("none"),
+                    ),
                     20_000,
                 )
                 .await
@@ -1677,6 +1653,53 @@ fn build_hls_on_demand_segment_path(
     ))
 }
 
+fn build_hls_on_demand_segment_args(
+    source_input: &str,
+    segment_index: i64,
+    audio_stream_index: i64,
+    encode_config: &VideoEncodeConfig,
+) -> Vec<String> {
+    let safe_segment_index = segment_index.max(0);
+    let safe_audio_stream_index = if audio_stream_index >= 0 {
+        audio_stream_index
+    } else {
+        -1
+    };
+    let segment_start_seconds = safe_segment_index * HLS_SEGMENT_DURATION_SECONDS;
+    let mut args = vec!["ffmpeg".to_owned(), "-v".to_owned(), "error".to_owned()];
+    args.extend(encode_config.pre_input_args.clone());
+    args.extend([
+        "-ss".to_owned(),
+        segment_start_seconds.to_string(),
+        "-i".to_owned(),
+        source_input.to_owned(),
+        "-t".to_owned(),
+        HLS_SEGMENT_DURATION_SECONDS.to_string(),
+        "-map".to_owned(),
+        "0:v:0".to_owned(),
+        "-map".to_owned(),
+        if safe_audio_stream_index >= 0 {
+            format!("0:{safe_audio_stream_index}?")
+        } else {
+            "0:a:0?".to_owned()
+        },
+        "-sn".to_owned(),
+    ]);
+    args.extend(encode_config.video_encode_args.clone());
+    args.extend([
+        "-c:a".to_owned(),
+        "aac".to_owned(),
+        "-b:a".to_owned(),
+        "160k".to_owned(),
+        "-output_ts_offset".to_owned(),
+        segment_start_seconds.to_string(),
+        "-f".to_owned(),
+        "mpegts".to_owned(),
+        "pipe:1".to_owned(),
+    ]);
+    args
+}
+
 fn build_hls_transcode_args(
     source_input: &str,
     audio_stream_index: i64,
@@ -1710,6 +1733,8 @@ fn build_hls_transcode_args(
     ]);
     args.extend(encode_config.video_encode_args.clone());
     args.extend([
+        "-force_key_frames".to_owned(),
+        format!("expr:gte(t,n_forced*{HLS_SEGMENT_DURATION_SECONDS})"),
         "-c:a".to_owned(),
         "aac".to_owned(),
         "-ac".to_owned(),
@@ -1728,8 +1753,6 @@ fn build_hls_transcode_args(
         "0".to_owned(),
         "-segment_list".to_owned(),
         format!("{output_prefix}.m3u8"),
-        "-reset_timestamps".to_owned(),
-        "1".to_owned(),
         format!("{output_prefix}-%06d.ts"),
     ]);
     args
@@ -1904,7 +1927,8 @@ mod tests {
     use crate::media::{AudioTrack, MediaProbe};
 
     use super::{
-        build_hls_transcode_job_key, key_lock, normalize_remux_video_mode,
+        build_hls_on_demand_segment_args, build_hls_transcode_args, build_hls_transcode_job_key,
+        build_hls_video_encode_config, key_lock, normalize_remux_video_mode,
         should_force_accurate_seek_for_remux, should_force_normalize_video_for_browser,
     };
 
@@ -1947,6 +1971,48 @@ mod tests {
     #[test]
     fn builds_hls_job_keys() {
         assert_eq!(build_hls_transcode_job_key("movie.mp4", 2), "movie.mp4|a:2");
+    }
+
+    #[test]
+    fn hls_transcode_args_keep_continuous_segment_timestamps() {
+        let args = build_hls_transcode_args(
+            "movie.mp4",
+            -1,
+            &build_hls_video_encode_config("none"),
+            "/tmp/movie",
+        );
+
+        assert!(!args.iter().any(|arg| arg == "-reset_timestamps"));
+        let force_keyframes_index = args
+            .iter()
+            .position(|arg| arg == "-force_key_frames")
+            .expect("forced keyframe argument");
+        assert_eq!(
+            args.get(force_keyframes_index + 1).map(String::as_str),
+            Some("expr:gte(t,n_forced*6)")
+        );
+    }
+
+    #[test]
+    fn hls_on_demand_args_offset_segment_timestamps_to_playlist_position() {
+        let args = build_hls_on_demand_segment_args(
+            "movie.mp4",
+            3,
+            -1,
+            &build_hls_video_encode_config("none"),
+        );
+
+        let seek_index = args
+            .iter()
+            .position(|arg| arg == "-ss")
+            .expect("seek argument");
+        assert_eq!(args.get(seek_index + 1).map(String::as_str), Some("18"));
+
+        let offset_index = args
+            .iter()
+            .position(|arg| arg == "-output_ts_offset")
+            .expect("timestamp offset argument");
+        assert_eq!(args.get(offset_index + 1).map(String::as_str), Some("18"));
     }
 
     #[test]

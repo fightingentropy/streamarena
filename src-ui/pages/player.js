@@ -2390,7 +2390,7 @@ function destroyActiveHlsController() {
 }
 
 function shouldAvoidRemuxFallbackForHls() {
-  return isTmdbResolvedPlayback || isAppleMobileOrTabletVideoEnvironment();
+  return isAppleMobileOrTabletVideoEnvironment();
 }
 
 function shouldPreferBrowserHlsPlayback(
