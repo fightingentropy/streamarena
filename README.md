@@ -414,10 +414,10 @@ The report includes success count, p50/p95 latency, unique resolved sources, and
   - audio-only AAC transcode can be applied when enabled and needed
 - Cache clear from Settings applies globally (all titles/sources).
 
-### Mac mini private server deployment
+### Mac mini direct server deployment
 
-The Mac mini at `m4mini.local` is the private always-on server for this app.
-The MacBook checkout remains the development repo.
+The Mac mini at `m4mini.local` is the always-on server for this app. The MacBook
+checkout remains the development repo.
 
 Development machine:
 
@@ -432,8 +432,9 @@ Server machine:
 - Host: `hermes@m4mini.local`
 - Runtime path: `/Users/hermes/Developer/netflix`
 - Public hostnames: `fightingentropy.org` and `www.fightingentropy.org`
-- Public ingress: Cloudflare Tunnel named `netflix`
-- Local listener: `127.0.0.1:5173`
+- Public ingress: Cloudflare DNS-only `A` records -> home public IP -> router TCP `80`/`443` -> Mac mini `192.168.1.189`
+- Reverse proxy: Caddy on `:80` and `:443`
+- Backend listener: `127.0.0.1:5173`
 - Runtime tree only:
   - `assets`
   - `bin`
@@ -444,20 +445,20 @@ Server machine:
 Server processes are supervised by system LaunchDaemons:
 
 - `/Library/LaunchDaemons/com.fightingentropy.netflix-app.plist`
-- `/Library/LaunchDaemons/com.cloudflare.cloudflared.netflix.plist`
+- `/Library/LaunchDaemons/com.fightingentropy.netflix-caddy.plist`
 
 The app daemon runs:
 
 - Working directory: `/Users/hermes/Developer/netflix`
 - Backend binary: `/Users/hermes/Developer/netflix/bin/netflix-rust-backend`
-- Launcher script: `/Users/hermes/.cloudflared/run-netflix-app.sh`
+- Launcher script: `/Users/hermes/.local/bin/netflix-run-backend`
 
-The Cloudflare daemon runs:
+The Caddy daemon runs:
 
-- Binary: `/Users/hermes/.local/bin/cloudflared`
-- Version currently deployed: `2026.5.0`
-- Config: `/Users/hermes/.cloudflared/config.yml`
-- Credentials: `/Users/hermes/.cloudflared/81e9ea9c-bd0a-4177-8fe9-b12431c3b0b3.json`
+- Binary: `/usr/local/bin/caddy`
+- Config: `/Users/hermes/.config/caddy/Caddyfile`
+- TLS: Caddy-managed public certificates
+- Data dir: `/var/db/netflix-caddy`
 
 Secrets on the server live outside the deploy tree:
 
@@ -467,10 +468,11 @@ Secrets on the server live outside the deploy tree:
 
 Server logs:
 
-- App stdout: `/Users/hermes/.cloudflared/netflix-app.log`
-- App stderr: `/Users/hermes/.cloudflared/netflix-app.err.log`
-- Tunnel stdout: `/Users/hermes/.cloudflared/netflix-tunnel.log`
-- Tunnel stderr: `/Users/hermes/.cloudflared/netflix-tunnel.err.log`
+- Backend stdout: `/Users/hermes/.local/state/netflix/backend.log`
+- Backend stderr: `/Users/hermes/.local/state/netflix/backend.err.log`
+- Caddy stdout: `/Users/hermes/.local/state/netflix/caddy.log`
+- Caddy stderr: `/Users/hermes/.local/state/netflix/caddy.err.log`
+- Caddy access log: `/Users/hermes/.local/state/netflix/caddy-access.log`
 - Log rotation script: `/Users/hermes/.local/bin/netflix-rotate-logs`
 - Log rotation LaunchAgent: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-log-rotation.plist`
 - Rotation schedule: daily at `03:17`
@@ -490,12 +492,15 @@ Watchdog/self-healing:
 - Schedule: every `60` seconds and at load
 - Probe: `GET http://127.0.0.1:5173/api/library`
 - Restart threshold: `3` consecutive failed probes
-- Restart behavior: logs the failed probe reason, kills stale `ffmpeg` processes, stops the backend, then restarts it through the app LaunchDaemon or `/Users/hermes/.cloudflared/run-netflix-app.sh`
+- Restart behavior: logs the failed probe reason, kills stale `ffmpeg` processes, stops the backend, then restarts it through the app LaunchDaemon or `/Users/hermes/.local/bin/netflix-run-backend`
 - Log: `/Users/hermes/.local/state/netflix/watchdog.log`
 
 MacBook helper scripts:
 
-- `bun run mini:check` -> verifies the mini runtime, tunnel, public app response, app login, asset shape, env permissions, maintenance agents, and disk space.
+- `bun run mini:install-server` -> installs/updates Caddy, the backend runner, and the app/Caddy LaunchDaemons.
+- `bun run mini:map-ports` -> creates router UPnP forwards for TCP `80` and `443` to the mini.
+- `CF_API_TOKEN=... bun run mini:update-dns` -> sets DNS-only `A` records for the mini's current home public IP.
+- `bun run mini:check` -> verifies the mini runtime, Caddy, public app response, app login, asset shape, env permissions, maintenance agents, disk space, and that the old Cloudflare Tunnel is gone.
 - `bun run mini:deploy` -> builds locally, syncs `dist`, the backend binary, and non-video assets, restarts the mini backend, then runs `mini:check`.
 - `bun run mini:deploy -- --skip-build` -> deploys existing local build artifacts and restarts/checks the mini.
 - `bun run mini:deploy -- --video assets/videos/<file>.mp4` -> copies that symlink target as a real file to the mini.
@@ -509,12 +514,16 @@ Health checks:
 ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
   'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1:5173'
 
+ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
+  'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1/api/library'
+
 curl -sSI --max-time 10 https://fightingentropy.org | sed -n '1,8p'
 ```
 
 Expected results:
 
-- Mini local app: `200`
+- Mini backend: `200`
+- Mini Caddy proxy: `200`
 - Public host: `HTTP/2 200`
 - Public app auth when logged out: `401`
 
@@ -572,11 +581,11 @@ Restore outline for a replacement Mac mini:
 
 1. Copy `runtime/{assets,bin,cache,dist}` from the latest backup to `/Users/hermes/Developer/netflix`.
 2. Restore `config/env` to `/Users/hermes/.config/netflix/env` and set permissions to `600`.
-3. Restore the `cloudflared` config/credentials to `/Users/hermes/.cloudflared`.
-4. Restore `local-bin/cloudflared`, `local-bin/netflix-rotate-logs`, `local-bin/netflix-disk-monitor`, and `local-bin/netflix-watchdog` to `/Users/hermes/.local/bin` and make them executable.
-5. Restore the app/tunnel LaunchDaemons to `/Library/LaunchDaemons`.
-6. Run `bun run mini:install-agents` from the MacBook checkout to reinstall the user LaunchAgents.
-7. Load the app/tunnel LaunchDaemons or reboot the mini.
+3. Restore `caddy/` to `/Users/hermes/.config/caddy`.
+4. Restore `local-bin/netflix-run-backend`, `local-bin/netflix-rotate-logs`, `local-bin/netflix-disk-monitor`, and `local-bin/netflix-watchdog` to `/Users/hermes/.local/bin` and make them executable.
+5. Run `bun run mini:install-server` and `bun run mini:install-agents` from the MacBook checkout.
+6. Run `bun run mini:map-ports` or configure router forwards manually.
+7. Verify Cloudflare DNS-only `A` records point at the current home public IP.
 8. Run `bun run mini:check` from the MacBook checkout.
 
 ## 10) Troubleshooting

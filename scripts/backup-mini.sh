@@ -16,12 +16,12 @@ large volume for full backups because assets are about 153G.
 Backed up by default:
   - /Users/hermes/Developer/netflix/{assets,bin,cache,dist}
   - /Users/hermes/.config/netflix/env
-  - /Users/hermes/.cloudflared config/credentials/scripts, excluding logs
+  - /Users/hermes/.config/caddy config
   - /Users/hermes/.local/bin server helper scripts
-  - LaunchDaemon and LaunchAgent plists for the app/tunnel/maintenance jobs
+  - LaunchDaemon and LaunchAgent plists for the app/Caddy/maintenance jobs
 
 Options:
-  --config-only   Back up secrets, Cloudflare config, scripts, and plists only.
+  --config-only   Back up secrets, Caddy config, scripts, and plists only.
   -h, --help      Show this help.
 USAGE
 }
@@ -96,24 +96,26 @@ if [[ "$INCLUDE_RUNTIME" -eq 1 ]]; then
   rsync_remote_dir "$REMOTE_APP/dist" "$snapshot/runtime/dist" "${previous:+$previous/runtime/dist}"
 fi
 
-mkdir -p "$snapshot/config" "$snapshot/cloudflared" "$snapshot/local-bin" "$snapshot/plists"
+mkdir -p "$snapshot/config" "$snapshot/caddy" "$snapshot/local-bin" "$snapshot/plists"
 rsync_remote "/Users/hermes/.config/netflix/env" "$snapshot/config/env"
-rsync -a --exclude='*.log' --exclude='*.err.log' -e "$RSYNC_SSH" "$MINI_HOST:/Users/hermes/.cloudflared/" "$snapshot/cloudflared/"
-rsync_remote "/Users/hermes/.local/bin/cloudflared" "$snapshot/local-bin/cloudflared"
+rsync -a --exclude='*.log' --exclude='*.err.log' -e "$RSYNC_SSH" "$MINI_HOST:/Users/hermes/.config/caddy/" "$snapshot/caddy/"
+rsync_remote "/Users/hermes/.local/bin/netflix-run-backend" "$snapshot/local-bin/netflix-run-backend"
 rsync_remote "/Users/hermes/.local/bin/netflix-rotate-logs" "$snapshot/local-bin/netflix-rotate-logs"
 rsync_remote "/Users/hermes/.local/bin/netflix-disk-monitor" "$snapshot/local-bin/netflix-disk-monitor"
+rsync_remote "/Users/hermes/.local/bin/netflix-watchdog" "$snapshot/local-bin/netflix-watchdog"
 rsync_remote "/Library/LaunchDaemons/com.fightingentropy.netflix-app.plist" "$snapshot/plists/com.fightingentropy.netflix-app.plist"
-rsync_remote "/Library/LaunchDaemons/com.cloudflare.cloudflared.netflix.plist" "$snapshot/plists/com.cloudflare.cloudflared.netflix.plist"
+rsync_remote "/Library/LaunchDaemons/com.fightingentropy.netflix-caddy.plist" "$snapshot/plists/com.fightingentropy.netflix-caddy.plist"
 rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-log-rotation.plist" "$snapshot/plists/com.fightingentropy.netflix-log-rotation.plist"
 rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-disk-monitor.plist" "$snapshot/plists/com.fightingentropy.netflix-disk-monitor.plist"
+rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-watchdog.plist" "$snapshot/plists/com.fightingentropy.netflix-watchdog.plist"
 
 "${SSH_BASE[@]}" "$MINI_HOST" "REMOTE_APP='$REMOTE_APP' bash -s" > "$snapshot/manifest.txt" <<'REMOTE'
 set -euo pipefail
 printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf 'host=%s\n' "$(hostname)"
 printf 'runtime_path=%s\n' "$REMOTE_APP"
-printf 'cloudflared='
-/Users/hermes/.local/bin/cloudflared --version
+printf 'caddy='
+/usr/local/bin/caddy version | awk '{print $1}'
 printf 'runtime_tree='
 find "$REMOTE_APP" -maxdepth 1 -mindepth 1 -exec basename {} \; | sort | paste -sd, -
 printf '\nasset_files='

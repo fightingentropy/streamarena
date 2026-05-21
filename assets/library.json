@@ -1,6 +1,16 @@
 {
   "movies": [
     {
+      "id": "local-movie-fantozzi-1975",
+      "title": "Fantozzi",
+      "tmdbId": "25606",
+      "year": "1975",
+      "src": "assets/videos/fantozzi-1975-1080p-h264-aac-4k-restored.mp4",
+      "thumb": "assets/images/fantozzi-1975-thumb.jpg",
+      "description": "A good-natured but unlucky Italian accountant endures absurd workplace humiliation and a string of comic misfortunes.",
+      "uploadedAt": 1779389121000
+    },
+    {
       "id": "local-movie-project-hail-mary-2026",
       "title": "Project Hail Mary",
       "tmdbId": "687163",

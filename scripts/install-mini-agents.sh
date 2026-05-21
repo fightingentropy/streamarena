@@ -26,12 +26,12 @@ cat > "$bin_dir/netflix-rotate-logs" <<'SCRIPT'
 #!/bin/bash
 set -euo pipefail
 
-log_dir="/Users/hermes/.cloudflared"
+log_dir="/Users/hermes/.local/state/netflix"
 keep=7
 max_bytes=$((5 * 1024 * 1024))
 force="${1:-}"
 
-for name in netflix-app.log netflix-app.err.log netflix-tunnel.log netflix-tunnel.err.log; do
+for name in backend.log backend.err.log caddy.log caddy.err.log caddy-access.log disk-monitor.log watchdog.log; do
   file="$log_dir/$name"
   [[ -f "$file" ]] || continue
   size=$(stat -f %z "$file" 2>/dev/null || echo 0)
@@ -92,7 +92,7 @@ url="__WATCHDOG_URL__"
 timeout_seconds="__WATCHDOG_TIMEOUT_SECONDS__"
 failure_threshold="__WATCHDOG_FAILURE_THRESHOLD__"
 app="__REMOTE_APP__"
-launcher="/Users/hermes/.cloudflared/run-netflix-app.sh"
+launcher="/Users/hermes/.local/bin/netflix-run-backend"
 state_dir="/Users/hermes/.local/state/netflix"
 log_file="$state_dir/watchdog.log"
 fail_file="$state_dir/watchdog.failures"
@@ -195,7 +195,7 @@ restart_backend() {
       log "restart failed launcher_missing=$launcher"
       return 1
     fi
-    nohup "$launcher" >> /Users/hermes/.cloudflared/netflix-app.log 2>> /Users/hermes/.cloudflared/netflix-app.err.log &
+    nohup "$launcher" >> "$state_dir/backend.log" 2>> "$state_dir/backend.err.log" &
     log "restart launched=script path=$launcher pid=$!"
   fi
 
