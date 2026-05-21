@@ -253,7 +253,7 @@ async function clearServerTitleMemory(tmdbId, mediaType = "movie") {
   }
 }
 
-function inferContinueMediaType(
+export function inferContinueMediaType(
   sourceIdentity,
   explicitMediaType = "",
   explicitSeriesId = "",

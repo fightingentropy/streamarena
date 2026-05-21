@@ -95,7 +95,20 @@ function apiPayload(url, method) {
   }
   if (path === "/api/user/preferences") return {};
   if (path === "/api/user/watch-progress") return { entries: [] };
-  if (path === "/api/user/continue-watching") return { entries: [] };
+  if (path === "/api/user/continue-watching") {
+    return {
+      entries: [
+        {
+          sourceIdentity: smokeVideo,
+          title: "Smoke Movie",
+          src: smokeVideo,
+          mediaType: "movie",
+          resumeSeconds: 120,
+          updatedAt: Date.now(),
+        },
+      ],
+    };
+  }
   if (path === "/api/user/my-list") return { entries: [] };
   if (path === "/api/tmdb/popular-movies") return { results: [] };
   if (path === "/api/tmdb/search") return { results: [] };

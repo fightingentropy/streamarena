@@ -38,6 +38,7 @@ import {
   formatRuntime,
   getContinueWatchingEntries,
   getFallbackThumbnailForSource,
+  inferContinueMediaType,
   isLikelyLocalMediaSource,
   mergeContinueWatchingEntries,
   normalizeArtworkPath,
