@@ -1,12 +1,6 @@
 import "../../style.css";
 import "../../live.css";
 
-import { requireAuth, hydrateFromServer } from "../lib/auth.js";
+import { mountAuthenticatedPage } from "../lib/page-entry.js";
 
-await requireAuth();
-await hydrateFromServer();
-
-const { mountPage } = await import("../lib/mount-page.js");
-const { default: HomePage } = await import("../pages/home.js");
-
-mountPage(HomePage);
+await mountAuthenticatedPage(() => import("../pages/home.js"));

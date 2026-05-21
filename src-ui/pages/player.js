@@ -2309,7 +2309,7 @@ function getNativeHlsSupport() {
   }
 }
 
-function isAppleNativeVideoEnvironment() {
+function isAppleMobileOrTabletVideoEnvironment() {
   const nav = window.navigator || {};
   const userAgent = String(nav.userAgent || "");
   const platform = String(nav.platform || "");
@@ -2319,12 +2319,33 @@ function isAppleNativeVideoEnvironment() {
   );
 }
 
+function isDesktopSafariVideoEnvironment() {
+  const nav = window.navigator || {};
+  const userAgent = String(nav.userAgent || "");
+  const vendor = String(nav.vendor || "");
+  const platform = String(nav.platform || "");
+  const isSafari =
+    /\bSafari\//i.test(userAgent) &&
+    /\bApple\b/i.test(vendor) &&
+    !/\b(Chrome|Chromium|CriOS|FxiOS|Edg|EdgiOS|OPR|Opera)\b/i.test(userAgent);
+  const isDesktopApple = /\bMac\b/i.test(platform) || /\bMacintosh\b/i.test(userAgent);
+  return isSafari && isDesktopApple && !isAppleMobileOrTabletVideoEnvironment();
+}
+
+function isAppleNativeHlsEnvironment() {
+  return (
+    isAppleMobileOrTabletVideoEnvironment() ||
+    isDesktopSafariVideoEnvironment()
+  );
+}
+
 function hasNativeHlsPlaybackSupport() {
   const support = getNativeHlsSupport();
   return (
-    support === "maybe" ||
-    support === "probably" ||
-    isAppleNativeVideoEnvironment()
+    isAppleNativeHlsEnvironment() &&
+    (support === "maybe" ||
+      support === "probably" ||
+      isAppleMobileOrTabletVideoEnvironment())
   );
 }
 
@@ -2369,7 +2390,7 @@ function destroyActiveHlsController() {
 }
 
 function shouldAvoidRemuxFallbackForHls() {
-  return isTmdbResolvedPlayback || isAppleNativeVideoEnvironment();
+  return isTmdbResolvedPlayback || isAppleMobileOrTabletVideoEnvironment();
 }
 
 function shouldPreferBrowserHlsPlayback(
