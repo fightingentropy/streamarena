@@ -4975,6 +4975,15 @@ function paintSeekProgress(progressValue, bufferedValue = null) {
 }
 
 function syncDurationText(elapsedSeconds = getEffectiveCurrentTime()) {
+  if (isLivePlayback) {
+    durationText.classList.add("is-live");
+    durationText.setAttribute("aria-label", "Live stream");
+    durationText.textContent = "LIVE";
+    return;
+  }
+
+  durationText.classList.remove("is-live");
+  durationText.setAttribute("aria-label", "Time remaining");
   const safeElapsedSeconds = Number(elapsedSeconds);
   const displayDurationSeconds = getDisplayDurationSeconds();
   const clampedElapsedSeconds = Math.max(
@@ -6869,6 +6878,7 @@ async function initPlaybackSource() {
     expectedDurationSeconds = 0;
     hideResolver();
     if (isLivePlayback) {
+      syncDurationText();
       availableAudioTracks = [];
       availableSubtitleTracks = [];
       selectedAudioStreamIndex = -1;
@@ -8346,6 +8356,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     }
     showControls();
     paintSeekProgress(seekBar.value);
+    syncDurationText();
     scheduleControlsHide();
     initPlaybackSource().then(() => {
       setEpisodeLabel(title, episode);
@@ -8437,7 +8448,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
                 <span id="seekPreviewTime" ref=${el => seekPreviewTime = el} class="seek-preview-time">00:00</span>
               </div>
             </div>
-            <span id="durationText" ref=${el => durationText = el} class="duration">00:00</span>
+            <span id="durationText" ref=${el => durationText = el} class="duration" aria-label="Time remaining">00:00</span>
           </div>
 
           <div class="controls-row">

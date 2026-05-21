@@ -17,6 +17,45 @@ use crate::utils::now_ms;
 
 const SUPER_LEAGUE_FOOTBALL_URL: &str = "https://super.league.st/index.php?sport=Football";
 const FOOTBALL_STREAM_USER_AGENT: &str = "Mozilla/5.0";
+const HIGH_PRIORITY_FOOTBALL_LEAGUES: &[&str] = &[
+    "england premier league",
+    "england fa cup",
+    "england efl cup",
+    "england league cup",
+    "england community shield",
+    "france coupe de france",
+    "france ligue 1",
+    "france trophee des champions",
+    "germany bundesliga",
+    "germany dfb pokal",
+    "germany super cup",
+    "italy coppa italia",
+    "italy serie a",
+    "italy super cup",
+    "spain copa del rey",
+    "spain la liga",
+    "spain super cup",
+    "world club world cup",
+    "world cup",
+    "world fifa club world cup",
+    "world fifa world cup",
+];
+const HIGH_PRIORITY_FOOTBALL_LEAGUE_KEYWORDS: &[&str] = &[
+    "euro qualification",
+    "euro qualifiers",
+    "fifa club world cup",
+    "fifa world cup",
+    "uefa champions league",
+    "uefa conference league",
+    "uefa euro",
+    "uefa europa conference league",
+    "uefa europa league",
+    "uefa nations league",
+    "uefa super cup",
+    "uefa women s champions league",
+    "world cup qualification",
+    "world cup qualifiers",
+];
 
 #[derive(Debug, Deserialize)]
 struct SourceChannel {
@@ -159,6 +198,7 @@ pub async fn football_matches_handler(State(state): State<AppState>) -> AppResul
             match_item.start_timestamp > 0
                 && match_item.duration > 0
                 && !match_item.slug.trim().is_empty()
+                && is_high_priority_football_match(match_item)
                 && match_item
                     .start_timestamp
                     .saturating_add(match_item.duration.saturating_mul(60_000))
@@ -395,6 +435,45 @@ fn extract_source_matches(html: &str) -> AppResult<Vec<SourceMatch>> {
     })
 }
 
+fn is_high_priority_football_match(match_item: &SourceMatch) -> bool {
+    let sport = match_item.sport.trim();
+    if !sport.is_empty() && !sport.eq_ignore_ascii_case("Football") {
+        return false;
+    }
+
+    is_high_priority_football_league(&match_item.league)
+}
+
+fn is_high_priority_football_league(league: &str) -> bool {
+    let normalized_league = normalize_football_league_name(league);
+    if HIGH_PRIORITY_FOOTBALL_LEAGUES
+        .iter()
+        .any(|important_league| normalized_league == *important_league)
+    {
+        return true;
+    }
+
+    HIGH_PRIORITY_FOOTBALL_LEAGUE_KEYWORDS
+        .iter()
+        .any(|important_league| normalized_league.contains(important_league))
+}
+
+fn normalize_football_league_name(league: &str) -> String {
+    league
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn normalize_match(match_item: SourceMatch) -> serde_json::Value {
     let link_count = match_item
         .channels
@@ -485,7 +564,7 @@ fn normalize_match(match_item: SourceMatch) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_source_matches;
+    use super::{SourceMatch, extract_source_matches, is_high_priority_football_match};
 
     #[test]
     fn extracts_embedded_matches_json() {
@@ -521,5 +600,70 @@ mod tests {
             matches[0].channels[0].links,
             vec!["https://example.test/1".to_owned()]
         );
+    }
+
+    #[test]
+    fn keeps_high_priority_football_competitions() {
+        for league in [
+            "England Premier League",
+            "Spain La Liga",
+            "Italy Serie A",
+            "Germany Bundesliga",
+            "France Ligue 1",
+            "Germany DFB Pokal",
+            "Europe UEFA Women's Champions League",
+            "World FIFA World Cup",
+        ] {
+            assert!(
+                is_high_priority_football_match(&source_match_with_league(league)),
+                "{league} should be visible"
+            );
+        }
+    }
+
+    #[test]
+    fn drops_lower_priority_football_competitions() {
+        for league in [
+            "South America Copa Libertadores",
+            "South America Copa Sudamericana",
+            "Belgium Pro League",
+            "Netherlands Eredivisie",
+            "Switzerland Super League",
+            "Germany Bundesliga 2",
+            "England Championship",
+            "USA/Canada Major League Soccer",
+        ] {
+            assert!(
+                !is_high_priority_football_match(&source_match_with_league(league)),
+                "{league} should be hidden"
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_non_football_sports() {
+        let mut match_item = source_match_with_league("England Premier League");
+        match_item.sport = "Basketball".to_owned();
+
+        assert!(!is_high_priority_football_match(&match_item));
+    }
+
+    fn source_match_with_league(league: &str) -> SourceMatch {
+        SourceMatch {
+            match_text: String::new(),
+            title: "A vs B".to_owned(),
+            time: String::new(),
+            league: league.to_owned(),
+            sport: "Football".to_owned(),
+            team1: "A".to_owned(),
+            team2: "B".to_owned(),
+            channel: String::new(),
+            important: false,
+            match_date: String::new(),
+            channels: Vec::new(),
+            slug: "a-b".to_owned(),
+            start_timestamp: 1000,
+            duration: 120,
+        }
     }
 }
