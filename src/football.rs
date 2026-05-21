@@ -7,7 +7,7 @@ use axum::http::Response;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::json;
 use url::Url;
 
@@ -20,43 +20,59 @@ const FOOTBALL_STREAM_USER_AGENT: &str = "Mozilla/5.0";
 
 #[derive(Debug, Deserialize)]
 struct SourceChannel {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     language: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_links")]
     links: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SourceMatch {
-    #[serde(default, rename = "matchText")]
+    #[serde(
+        default,
+        rename = "matchText",
+        deserialize_with = "deserialize_default_on_null"
+    )]
     match_text: String,
-    #[serde(default, rename = "matchstr")]
+    #[serde(
+        default,
+        rename = "matchstr",
+        deserialize_with = "deserialize_default_on_null"
+    )]
     title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     time: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     league: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     sport: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     team1: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     team2: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     channel: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     important: bool,
-    #[serde(default, rename = "matchDate")]
+    #[serde(
+        default,
+        rename = "matchDate",
+        deserialize_with = "deserialize_default_on_null"
+    )]
     match_date: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_channels")]
     channels: Vec<SourceChannel>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     slug: String,
-    #[serde(default, rename = "startTimestamp")]
+    #[serde(
+        default,
+        rename = "startTimestamp",
+        deserialize_with = "deserialize_default_on_null"
+    )]
     start_timestamp: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     duration: i64,
 }
 
@@ -77,6 +93,38 @@ struct EmbeddedPlayerConfig {
     stream_url: String,
     #[serde(default)]
     stream_url_nop2p: String,
+}
+
+fn deserialize_default_on_null<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn deserialize_links<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<Vec<Option<String>>>::deserialize(deserializer)?
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+fn deserialize_channels<'de, D>(deserializer: D) -> Result<Vec<SourceChannel>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(
+        Option::<Vec<Option<SourceChannel>>>::deserialize(deserializer)?
+            .unwrap_or_default()
+            .into_iter()
+            .flatten()
+            .collect(),
+    )
 }
 
 pub async fn football_matches_handler(State(state): State<AppState>) -> AppResult<Response<Body>> {
@@ -450,5 +498,28 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].title, "A vs B");
         assert_eq!(matches[0].channels[0].links.len(), 1);
+    }
+
+    #[test]
+    fn treats_provider_nulls_as_missing_values() {
+        let html = r#"
+            <script>
+              window.matches = JSON.parse(`[{"matchstr":"A vs B","team1":"A","team2":null,"channel":null,"important":null,"matchDate":null,"slug":"a-b","startTimestamp":1000,"duration":120,"channels":[null,{"name":null,"language":null,"links":["https://example.test/1",null]}]}]`);
+            </script>
+        "#;
+        let matches = extract_source_matches(html).unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].team2, "");
+        assert_eq!(matches[0].channel, "");
+        assert!(!matches[0].important);
+        assert_eq!(matches[0].match_date, "");
+        assert_eq!(matches[0].channels.len(), 1);
+        assert_eq!(matches[0].channels[0].name, "");
+        assert_eq!(matches[0].channels[0].language, "");
+        assert_eq!(
+            matches[0].channels[0].links,
+            vec!["https://example.test/1".to_owned()]
+        );
     }
 }
