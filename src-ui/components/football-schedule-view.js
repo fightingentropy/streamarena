@@ -130,10 +130,20 @@ function openFootballPlayer(match) {
   }
 }
 
-function renderPlayButton(match) {
+function renderPlayButton(match, now) {
+  const live = isLive(match, now);
+  const disabledIcon = html`
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>
+  `;
+
   if (!match.streams.length) {
     return html`<span class="football-play-button is-disabled" aria-label="No source page">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>
+      ${disabledIcon}
+    </span>`;
+  }
+  if (!live) {
+    return html`<span class="football-play-button is-disabled" aria-label="Match is not live" title="Available when live">
+      ${disabledIcon}
     </span>`;
   }
   return html`
@@ -144,7 +154,7 @@ function renderPlayButton(match) {
       aria-label=${`Play ${match.title} in Netflix`}
       title="Play in Netflix"
     >
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>
+      ${disabledIcon}
     </button>
   `;
 }
@@ -170,7 +180,7 @@ function renderMatchRow(match, now) {
         </div>
       </div>
       <div class="football-time-pill">${formatTime(match.startTimestamp)}</div>
-      ${renderPlayButton(match)}
+      ${renderPlayButton(match, now)}
     </article>
   `;
 }
