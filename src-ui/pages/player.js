@@ -5523,6 +5523,19 @@ function isTransientResolveError(error) {
   );
 }
 
+function isSourceFallbackResolveError(error) {
+  const status = Number(error?.status || 0);
+  if (status === 424) {
+    return true;
+  }
+
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    message.includes("real-debrid blocked this source") ||
+    message.includes("all stream candidates failed")
+  );
+}
+
 async function requestResolveJson(url, timeoutMs = 95000) {
   const retryDelays = [900, 1800];
   let lastError = null;
@@ -5808,7 +5821,10 @@ async function resolveTmdbMovieViaBackend(
     }
   }
 
-  if (allowSourceFallback && isTransientResolveError(lastError)) {
+  if (
+    allowSourceFallback &&
+    (isTransientResolveError(lastError) || isSourceFallbackResolveError(lastError))
+  ) {
     return requestResolveJson(
       `/api/resolve/movie?${buildQuery({
         includeSourceFilters: false,
@@ -5916,7 +5932,10 @@ async function resolveTmdbTvEpisodeViaBackend(
       }
     }
 
-    if (allowSourceFallback && isTransientResolveError(lastError)) {
+    if (
+      allowSourceFallback &&
+      (isTransientResolveError(lastError) || isSourceFallbackResolveError(lastError))
+    ) {
       return requestResolveJson(
         `/api/resolve/tv?${buildQuery("", "", {
           includeSourceFilters: false,
