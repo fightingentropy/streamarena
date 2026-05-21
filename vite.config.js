@@ -43,6 +43,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     assetsDir: "ui-assets",
+    chunkSizeWarningLimit: 700,
     rollupOptions: {
       input: pages,
     },

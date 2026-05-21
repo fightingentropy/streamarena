@@ -1,11 +1,5 @@
 import "../../settings.css";
 
-import { requireAuth, hydrateFromServer } from "../lib/auth.js";
+import { mountAuthenticatedPage } from "../lib/page-entry.js";
 
-await requireAuth();
-await hydrateFromServer();
-
-const { mountPage } = await import("../lib/mount-page.js");
-const { default: SettingsPage } = await import("../pages/settings.js");
-
-mountPage(SettingsPage);
+await mountAuthenticatedPage(() => import("../pages/settings.js"));

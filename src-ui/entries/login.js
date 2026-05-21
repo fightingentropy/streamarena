@@ -1,6 +1,5 @@
 import "../../login.css";
 
-import { mountPage } from "../lib/mount-page.js";
-import LoginPage from "../pages/login.js";
+import { mountPublicPage } from "../lib/page-entry.js";
 
-mountPage(LoginPage);
+await mountPublicPage(() => import("../pages/login.js"));

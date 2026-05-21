@@ -1,11 +1,5 @@
 import "../../player.css";
 
-import { requireAuth, hydrateFromServer } from "../lib/auth.js";
+import { mountAuthenticatedPage } from "../lib/page-entry.js";
 
-await requireAuth();
-await hydrateFromServer();
-
-const { mountPage } = await import("../lib/mount-page.js");
-const { default: PlayerPage } = await import("../pages/player.js");
-
-mountPage(PlayerPage);
+await mountAuthenticatedPage(() => import("../pages/player.js"));
