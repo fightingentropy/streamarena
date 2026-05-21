@@ -1,14 +1,12 @@
 import html from "solid-js/html";
-import { createSignal, onMount, onCleanup } from "solid-js";
+import { createSignal, onCleanup } from "solid-js";
 import UploadSection from "../components/upload-section.js";
 import {
   STREAM_QUALITY_PREF_KEY,
   PROFILE_AVATAR_STYLE_PREF_KEY,
   PROFILE_AVATAR_MODE_PREF_KEY,
   PROFILE_AVATAR_IMAGE_PREF_KEY,
-  supportedStreamQualityPreferences,
   supportedAvatarStyles,
-  avatarStyleClassNames,
   normalizeAvatarStyle,
   normalizeAvatarMode,
   sanitizeAvatarImageData,
@@ -59,6 +57,63 @@ function normalizeAvatarChoice(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (supportedAvatarChoices.has(normalized)) return normalized;
   return DEFAULT_AVATAR_STYLE;
+}
+
+function labelFromMap(value, labels, fallback) {
+  return labels[String(value || "").trim().toLowerCase()] || fallback;
+}
+
+function getQualityLabel(value) {
+  return labelFromMap(value, {
+    auto: "Auto",
+    "2160p": "4K (2160p)",
+    "1080p": "Full HD (1080p)",
+    "720p": "HD (720p)",
+  }, "Full HD (1080p)");
+}
+
+function getLanguageLabel(value) {
+  return labelFromMap(value, {
+    auto: "Auto",
+    any: "Any",
+    en: "English",
+    ja: "Japanese",
+    ko: "Korean",
+    zh: "Chinese",
+    fr: "French",
+    es: "Spanish",
+    de: "German",
+    it: "Italian",
+    pt: "Portuguese",
+    nl: "Dutch",
+    ro: "Romanian",
+  }, "English");
+}
+
+function getAudioProfileLabel(value) {
+  return labelFromMap(value, {
+    single: "Single audio",
+    any: "Multi / dubbed",
+  }, "Single audio");
+}
+
+function getRemuxVideoModeLabel(value) {
+  return labelFromMap(value, {
+    auto: "Auto",
+    copy: "Copy video",
+    normalize: "Normalize video",
+  }, "Auto");
+}
+
+function getAvatarChoiceLabel(value) {
+  return labelFromMap(value, {
+    blue: "Blue",
+    crimson: "Crimson",
+    emerald: "Emerald",
+    violet: "Violet",
+    amber: "Amber",
+    custom: "Custom",
+  }, "Blue");
 }
 
 // ─── localStorage getters ───────────────────────────────────────────────────
@@ -428,6 +483,10 @@ export default function SettingsPage() {
     setSourceAudioProfile(normalizeSourceAudioProfile(e.target.value));
   }
 
+  function handleRemuxVideoModeChange(value) {
+    setRemuxVideoMode(normalizeRemuxVideoMode(value));
+  }
+
   function handleAvatarChoiceChange(value) {
     const nextChoice = normalizeAvatarChoice(value);
     setAvatarChoice(nextChoice);
@@ -544,327 +603,484 @@ export default function SettingsPage() {
       id="settingsToast"
     >${() => toastMessage()}</div>
 
-    <main class="settings-page">
-      <header class="settings-header">
-        <div class="settings-header-brand">
-          <a
-            class="settings-logo-link"
-            href="/"
-            aria-label="Back to home"
-          >
-            <img
-              src="assets/icons/netflix-n.svg"
-              alt="Netflix"
-              class="settings-logo"
-            />
+    <header class="settings-topbar">
+      <a class="settings-wordmark-link" href="/" aria-label="Back to browse">
+        <img
+          src="assets/icons/netflix-logo-clean.png"
+          alt="Netflix"
+          class="settings-wordmark"
+        />
+      </a>
+      <a class="settings-profile-control" href="/" aria-label="Back to browse">
+        <span
+          class=${() => `${computeAvatarPreviewClass()} settings-topbar-avatar`}
+          style=${computeAvatarPreviewStyle}
+          aria-hidden="true"
+        ></span>
+        <span class="settings-profile-caret" aria-hidden="true"></span>
+      </a>
+    </header>
+
+    <main class="settings-shell">
+      <aside class="settings-side-nav" aria-label="Settings navigation">
+        <a class="settings-back-link" href="/">
+          <span class="settings-back-arrow" aria-hidden="true"></span>
+          <span>Back to Browse</span>
+        </a>
+        <nav class="settings-nav-list">
+          <a class="settings-nav-item is-active" href="#playbackSection" aria-current="page">
+            <span class="settings-nav-glyph settings-nav-glyph--playback" aria-hidden="true"></span>
+            <span>Playback</span>
           </a>
-          <a class="settings-back-link" href="/">Back to Browse</a>
+          <a class="settings-nav-item" href="#sourcesSection">
+            <span class="settings-nav-glyph settings-nav-glyph--sources" aria-hidden="true"></span>
+            <span>Sources</span>
+          </a>
+          <a class="settings-nav-item" href="#profileSection">
+            <span class="settings-nav-glyph settings-nav-glyph--profile" aria-hidden="true"></span>
+            <span>Profile</span>
+          </a>
+          <a class="settings-nav-item" href="#uploadSection">
+            <span class="settings-nav-glyph settings-nav-glyph--upload" aria-hidden="true"></span>
+            <span>Uploads</span>
+          </a>
+          <a class="settings-nav-item" href="#maintenanceSection">
+            <span class="settings-nav-glyph settings-nav-glyph--maintenance" aria-hidden="true"></span>
+            <span>Maintenance</span>
+          </a>
+        </nav>
+      </aside>
+
+      <section class="settings-content" aria-labelledby="settingsPageTitle">
+        <div class="settings-notice">
+          <div class="settings-notice-copy">
+            <span>Local profile</span>
+            <strong>Playback and library preferences for this browser</strong>
+          </div>
+          <span
+            class=${() => `${computeAvatarPreviewClass()} settings-notice-avatar`}
+            style=${computeAvatarPreviewStyle}
+            aria-hidden="true"
+          ></span>
+          <span class="settings-row-chevron" aria-hidden="true"></span>
         </div>
-        <h1 class="settings-title">Settings</h1>
-      </header>
 
-      <div class="settings-layout">
-        <section
-          class="settings-card settings-card--main"
-          aria-labelledby="settingsDefaultsTitle"
-        >
-          <form class="quality-form" onSubmit=${handleFormSubmit}>
-            <h2 class="settings-section-title">Playback Quality</h2>
-            <label class="quality-option">
-              <input
-                type="radio"
-                name="quality"
-                value="auto"
-                checked=${() => selectedQuality() === "auto"}
-                onChange=${() => handleQualityChange("auto")}
-              />
-              <span class="quality-option-label">Auto</span>
-            </label>
+        <form class="quality-form" onSubmit=${handleFormSubmit}>
+          <div class="settings-page-heading">
+            <h1 id="settingsPageTitle">Settings</h1>
+            <p>Media preferences</p>
+          </div>
 
-            <label class="quality-option">
-              <input
-                type="radio"
-                name="quality"
-                value="2160p"
-                checked=${() => selectedQuality() === "2160p"}
-                onChange=${() => handleQualityChange("2160p")}
-              />
-              <span class="quality-option-label">4K (2160p)</span>
-            </label>
-
-            <label class="quality-option">
-              <input
-                type="radio"
-                name="quality"
-                value="1080p"
-                checked=${() => selectedQuality() === "1080p"}
-                onChange=${() => handleQualityChange("1080p")}
-              />
-              <span class="quality-option-label">Full HD (1080p)</span>
-            </label>
-
-            <section class="settings-group" aria-labelledby="defaultAudioTitle">
-              <h2 id="defaultAudioTitle" class="settings-section-title">
-                Default Audio
-              </h2>
-
-              <label class="source-language-filter" for="defaultAudioLanguage">
-                <span class="source-filter-label">Language</span>
-                <select
-                  id="defaultAudioLanguage"
-                  name="defaultAudioLanguage"
-                  onChange=${handleDefaultAudioLangChange}
+          <section
+            class="settings-section-block"
+            id="playbackSection"
+            aria-labelledby="playbackTitle"
+          >
+            <h2 id="playbackTitle" class="settings-section-title">
+              Playback
+            </h2>
+            <div class="settings-list-card">
+              <section class="settings-list-row">
+                <span class="settings-row-icon settings-row-icon--quality" aria-hidden="true"></span>
+                <div class="settings-row-copy">
+                  <h3>Playback quality</h3>
+                  <p>${() => getQualityLabel(selectedQuality())}</p>
+                </div>
+                <div
+                  class="settings-row-control settings-segmented-control quality-choice-group"
+                  role="radiogroup"
+                  aria-label="Playback quality"
                 >
-                  <option value="en" selected=${() => defaultAudioLang() === "en"}>English</option>
-                  <option value="auto" selected=${() => defaultAudioLang() === "auto"}>Auto</option>
-                  <option value="ja" selected=${() => defaultAudioLang() === "ja"}>Japanese</option>
-                  <option value="ko" selected=${() => defaultAudioLang() === "ko"}>Korean</option>
-                  <option value="zh" selected=${() => defaultAudioLang() === "zh"}>Chinese</option>
-                  <option value="fr" selected=${() => defaultAudioLang() === "fr"}>French</option>
-                  <option value="es" selected=${() => defaultAudioLang() === "es"}>Spanish</option>
-                  <option value="de" selected=${() => defaultAudioLang() === "de"}>German</option>
-                  <option value="it" selected=${() => defaultAudioLang() === "it"}>Italian</option>
-                  <option value="pt" selected=${() => defaultAudioLang() === "pt"}>Portuguese</option>
-                  <option value="nl" selected=${() => defaultAudioLang() === "nl"}>Dutch</option>
-                  <option value="ro" selected=${() => defaultAudioLang() === "ro"}>Romanian</option>
-                </select>
-              </label>
-            </section>
+                  <label class="quality-option">
+                    <input
+                      type="radio"
+                      name="quality"
+                      value="auto"
+                      checked=${() => selectedQuality() === "auto"}
+                      onChange=${() => handleQualityChange("auto")}
+                    />
+                    <span>Auto</span>
+                  </label>
+                  <label class="quality-option">
+                    <input
+                      type="radio"
+                      name="quality"
+                      value="2160p"
+                      checked=${() => selectedQuality() === "2160p"}
+                      onChange=${() => handleQualityChange("2160p")}
+                    />
+                    <span>4K</span>
+                  </label>
+                  <label class="quality-option">
+                    <input
+                      type="radio"
+                      name="quality"
+                      value="1080p"
+                      checked=${() => selectedQuality() === "1080p"}
+                      onChange=${() => handleQualityChange("1080p")}
+                    />
+                    <span>1080p</span>
+                  </label>
+                </div>
+                <span class="settings-row-chevron" aria-hidden="true"></span>
+              </section>
 
-            <section class="settings-group" aria-labelledby="sourceFilterTitle">
-              <h2 id="sourceFilterTitle" class="settings-section-title">
-                Source Defaults
-              </h2>
-
-              <div class="source-filter-stack">
-                <label class="source-min-seeds" for="sourceMinSeeders">
-                  <span class="source-filter-label">Min seeds</span>
-                  <input
-                    id="sourceMinSeeders"
-                    name="sourceMinSeeders"
-                    type="number"
-                    min="0"
-                    max="50000"
-                    step="1"
-                    value=${() => String(sourceMinSeeders())}
-                    onChange=${handleSourceMinSeedersChange}
-                  />
-                </label>
-
-                <label class="source-language-filter" for="sourceLanguage">
+              <section class="settings-list-row">
+                <span class="settings-row-icon settings-row-icon--audio" aria-hidden="true"></span>
+                <div class="settings-row-copy">
+                  <h3>Default audio</h3>
+                  <p>${() => getLanguageLabel(defaultAudioLang())}</p>
+                </div>
+                <label class="settings-row-control source-language-filter" for="defaultAudioLanguage">
                   <span class="source-filter-label">Language</span>
                   <select
-                    id="sourceLanguage"
-                    name="sourceLanguage"
-                    onChange=${handleSourceLangChange}
+                    id="defaultAudioLanguage"
+                    name="defaultAudioLanguage"
+                    onChange=${handleDefaultAudioLangChange}
                   >
-                    <option value="en" selected=${() => sourceLang() === "en"}>English</option>
-                    <option value="any" selected=${() => sourceLang() === "any"}>Any</option>
-                    <option value="fr" selected=${() => sourceLang() === "fr"}>French</option>
-                    <option value="es" selected=${() => sourceLang() === "es"}>Spanish</option>
-                    <option value="de" selected=${() => sourceLang() === "de"}>German</option>
-                    <option value="it" selected=${() => sourceLang() === "it"}>Italian</option>
-                    <option value="pt" selected=${() => sourceLang() === "pt"}>Portuguese</option>
+                    <option value="en" selected=${() => defaultAudioLang() === "en"}>English</option>
+                    <option value="auto" selected=${() => defaultAudioLang() === "auto"}>Auto</option>
+                    <option value="ja" selected=${() => defaultAudioLang() === "ja"}>Japanese</option>
+                    <option value="ko" selected=${() => defaultAudioLang() === "ko"}>Korean</option>
+                    <option value="zh" selected=${() => defaultAudioLang() === "zh"}>Chinese</option>
+                    <option value="fr" selected=${() => defaultAudioLang() === "fr"}>French</option>
+                    <option value="es" selected=${() => defaultAudioLang() === "es"}>Spanish</option>
+                    <option value="de" selected=${() => defaultAudioLang() === "de"}>German</option>
+                    <option value="it" selected=${() => defaultAudioLang() === "it"}>Italian</option>
+                    <option value="pt" selected=${() => defaultAudioLang() === "pt"}>Portuguese</option>
+                    <option value="nl" selected=${() => defaultAudioLang() === "nl"}>Dutch</option>
+                    <option value="ro" selected=${() => defaultAudioLang() === "ro"}>Romanian</option>
                   </select>
                 </label>
-
-                <label class="source-language-filter" for="sourceAudioProfile">
-                  <span class="source-filter-label">Audio mix</span>
-                  <select
-                    id="sourceAudioProfile"
-                    name="sourceAudioProfile"
-                    onChange=${handleSourceAudioProfileChange}
-                  >
-                    <option value="single" selected=${() => sourceAudioProfile() === "single"}>Single audio</option>
-                    <option value="any" selected=${() => sourceAudioProfile() === "any"}>Multi / dubbed</option>
-                  </select>
-                </label>
-              </div>
-            </section>
-
-            <section
-              class="settings-group"
-              aria-labelledby="subtitleColorTitle"
-            >
-              <h2 id="subtitleColorTitle" class="settings-section-title">
-                Subtitles
-              </h2>
-              <div class="subtitle-color-controls">
-                <label class="subtitle-color-picker-label" for="subtitleColorInput">Color</label>
-                <input
-                  id="subtitleColorInput"
-                  name="subtitleColor"
-                  type="color"
-                  value=${() => subtitleColor()}
-                  onInput=${handleSubtitleColorInput}
-                />
-                <button
-                  class="subtitle-color-reset-btn"
-                  type="button"
-                  onClick=${handleSubtitleColorReset}
-                >
-                  Reset
-                </button>
-              </div>
-              <p class="subtitle-color-preview" style=${() => `color: ${subtitleColor()}`}>
-                Sample subtitle text
-              </p>
-            </section>
-
-            <section class="settings-group" aria-labelledby="avatarStyleTitle">
-              <h2 id="avatarStyleTitle" class="settings-section-title">
-                Avatar
-              </h2>
-
-              <div class="avatar-style-preview-wrap">
-                <div
-                  ref=${(el) => { avatarPreviewRef = el; }}
-                  class=${computeAvatarPreviewClass}
-                  style=${computeAvatarPreviewStyle}
-                  aria-hidden="true"
-                ></div>
-              </div>
-
-              <div
-                class="avatar-style-options"
-                role="radiogroup"
-                aria-label="Profile icon style"
-              >
-                <label class="avatar-style-option">
-                  <input
-                    type="radio"
-                    name="avatarStyle"
-                    value="blue"
-                    checked=${() => avatarChoice() === "blue"}
-                    onChange=${() => handleAvatarChoiceChange("blue")}
-                  />
-                  <span class="avatar-style-swatch avatar-style-blue" aria-hidden="true"></span>
-                  <span>Blue</span>
-                </label>
-                <label class="avatar-style-option">
-                  <input
-                    type="radio"
-                    name="avatarStyle"
-                    value="crimson"
-                    checked=${() => avatarChoice() === "crimson"}
-                    onChange=${() => handleAvatarChoiceChange("crimson")}
-                  />
-                  <span class="avatar-style-swatch avatar-style-crimson" aria-hidden="true"></span>
-                  <span>Crimson</span>
-                </label>
-                <label class="avatar-style-option">
-                  <input
-                    type="radio"
-                    name="avatarStyle"
-                    value="emerald"
-                    checked=${() => avatarChoice() === "emerald"}
-                    onChange=${() => handleAvatarChoiceChange("emerald")}
-                  />
-                  <span class="avatar-style-swatch avatar-style-emerald" aria-hidden="true"></span>
-                  <span>Emerald</span>
-                </label>
-                <label class="avatar-style-option">
-                  <input
-                    type="radio"
-                    name="avatarStyle"
-                    value="violet"
-                    checked=${() => avatarChoice() === "violet"}
-                    onChange=${() => handleAvatarChoiceChange("violet")}
-                  />
-                  <span class="avatar-style-swatch avatar-style-violet" aria-hidden="true"></span>
-                  <span>Violet</span>
-                </label>
-                <label class="avatar-style-option">
-                  <input
-                    type="radio"
-                    name="avatarStyle"
-                    value="amber"
-                    checked=${() => avatarChoice() === "amber"}
-                    onChange=${() => handleAvatarChoiceChange("amber")}
-                  />
-                  <span class="avatar-style-swatch avatar-style-amber" aria-hidden="true"></span>
-                  <span>Amber</span>
-                </label>
-                <label class="avatar-style-option avatar-style-option--custom">
-                  <input
-                    type="radio"
-                    name="avatarStyle"
-                    value="custom"
-                    checked=${() => avatarChoice() === "custom"}
-                    onChange=${() => handleAvatarChoiceChange("custom")}
-                  />
-                  <span
-                    ref=${(el) => { avatarCustomThumbRef = el; }}
-                    class=${computeCustomThumbClass}
-                    style=${computeCustomThumbStyle}
-                    aria-hidden="true"
-                  ></span>
-                  <span>Custom</span>
-                </label>
-              </div>
-
-              <div class="avatar-upload-controls">
-                <label class="avatar-upload-btn" for="avatarImageInput">Upload image</label>
-                <input
-                  id="avatarImageInput"
-                  type="file"
-                  accept="image/*"
-                  ref=${(el) => { avatarImageInputRef = el; }}
-                  onChange=${handleAvatarImageChange}
-                />
-                <span class="avatar-upload-hint">
-                  ${() => avatarUploadHint()}
-                </span>
-              </div>
-            </section>
-
-            <div class="settings-actions">
-              <button class="save-btn" type="submit">
-                Save
-              </button>
-              <p
-                class="save-status"
-                role="status"
-                aria-live="polite"
-              ></p>
+                <span class="settings-row-chevron" aria-hidden="true"></span>
+              </section>
             </div>
-          </form>
-        </section>
+          </section>
 
-        ${UploadSection}
+          <section
+            class="settings-section-block"
+            id="sourcesSection"
+            aria-labelledby="sourcesTitle"
+          >
+            <h2 id="sourcesTitle" class="settings-section-title">
+              Sources
+            </h2>
+            <div class="settings-list-card">
+              <section class="settings-list-row settings-list-row--stacked">
+                <span class="settings-row-icon settings-row-icon--sources" aria-hidden="true"></span>
+                <div class="settings-row-copy">
+                  <h3>Source defaults</h3>
+                  <p>${() => `${sourceMinSeeders()} min seeds, ${getLanguageLabel(sourceLang())}, ${getAudioProfileLabel(sourceAudioProfile())}`}</p>
+                </div>
+                <div class="settings-row-control source-filter-stack">
+                  <label class="source-min-seeds" for="sourceMinSeeders">
+                    <span class="source-filter-label">Min seeds</span>
+                    <input
+                      id="sourceMinSeeders"
+                      name="sourceMinSeeders"
+                      type="number"
+                      min="0"
+                      max="50000"
+                      step="1"
+                      value=${() => String(sourceMinSeeders())}
+                      onChange=${handleSourceMinSeedersChange}
+                    />
+                  </label>
+
+                  <label class="source-language-filter" for="sourceLanguage">
+                    <span class="source-filter-label">Language</span>
+                    <select
+                      id="sourceLanguage"
+                      name="sourceLanguage"
+                      onChange=${handleSourceLangChange}
+                    >
+                      <option value="en" selected=${() => sourceLang() === "en"}>English</option>
+                      <option value="any" selected=${() => sourceLang() === "any"}>Any</option>
+                      <option value="fr" selected=${() => sourceLang() === "fr"}>French</option>
+                      <option value="es" selected=${() => sourceLang() === "es"}>Spanish</option>
+                      <option value="de" selected=${() => sourceLang() === "de"}>German</option>
+                      <option value="it" selected=${() => sourceLang() === "it"}>Italian</option>
+                      <option value="pt" selected=${() => sourceLang() === "pt"}>Portuguese</option>
+                    </select>
+                  </label>
+
+                  <label class="source-language-filter" for="sourceAudioProfile">
+                    <span class="source-filter-label">Audio mix</span>
+                    <select
+                      id="sourceAudioProfile"
+                      name="sourceAudioProfile"
+                      onChange=${handleSourceAudioProfileChange}
+                    >
+                      <option value="single" selected=${() => sourceAudioProfile() === "single"}>Single audio</option>
+                      <option value="any" selected=${() => sourceAudioProfile() === "any"}>Multi / dubbed</option>
+                    </select>
+                  </label>
+                </div>
+                <span class="settings-row-chevron" aria-hidden="true"></span>
+              </section>
+
+              <section class="settings-list-row">
+                <span class="settings-row-icon settings-row-icon--remux" aria-hidden="true"></span>
+                <div class="settings-row-copy">
+                  <h3>Remux video mode</h3>
+                  <p>${() => getRemuxVideoModeLabel(remuxVideoMode())}</p>
+                </div>
+                <div
+                  class="settings-row-control settings-segmented-control remux-mode-options"
+                  role="radiogroup"
+                  aria-label="Remux video mode"
+                >
+                  <label class="remux-mode-option">
+                    <input
+                      type="radio"
+                      name="remuxVideoMode"
+                      value="auto"
+                      checked=${() => remuxVideoMode() === "auto"}
+                      onChange=${() => handleRemuxVideoModeChange("auto")}
+                    />
+                    <span>Auto</span>
+                  </label>
+                  <label class="remux-mode-option">
+                    <input
+                      type="radio"
+                      name="remuxVideoMode"
+                      value="copy"
+                      checked=${() => remuxVideoMode() === "copy"}
+                      onChange=${() => handleRemuxVideoModeChange("copy")}
+                    />
+                    <span>Copy</span>
+                  </label>
+                  <label class="remux-mode-option">
+                    <input
+                      type="radio"
+                      name="remuxVideoMode"
+                      value="normalize"
+                      checked=${() => remuxVideoMode() === "normalize"}
+                      onChange=${() => handleRemuxVideoModeChange("normalize")}
+                    />
+                    <span>Normalize</span>
+                  </label>
+                </div>
+                <span class="settings-row-chevron" aria-hidden="true"></span>
+              </section>
+            </div>
+          </section>
+
+          <section
+            class="settings-section-block"
+            id="profileSection"
+            aria-labelledby="profileTitle"
+          >
+            <h2 id="profileTitle" class="settings-section-title">
+              Profile
+            </h2>
+            <div class="settings-list-card">
+              <section class="settings-list-row">
+                <span class="settings-row-icon settings-row-icon--subtitles" aria-hidden="true"></span>
+                <div class="settings-row-copy">
+                  <h3>Subtitles</h3>
+                  <p>${() => subtitleColor()}</p>
+                </div>
+                <div class="settings-row-control subtitle-color-controls">
+                  <label class="subtitle-color-picker-label" for="subtitleColorInput">Color</label>
+                  <input
+                    id="subtitleColorInput"
+                    name="subtitleColor"
+                    type="color"
+                    value=${() => subtitleColor()}
+                    onInput=${handleSubtitleColorInput}
+                  />
+                  <button
+                    class="subtitle-color-reset-btn"
+                    type="button"
+                    onClick=${handleSubtitleColorReset}
+                  >
+                    Reset
+                  </button>
+                  <p class="subtitle-color-preview" style=${() => `color: ${subtitleColor()}`}>
+                    Sample subtitle text
+                  </p>
+                </div>
+                <span class="settings-row-chevron" aria-hidden="true"></span>
+              </section>
+
+              <section class="settings-list-row settings-list-row--avatar">
+                <span class="settings-row-icon settings-row-icon--avatar" aria-hidden="true"></span>
+                <div class="settings-row-copy">
+                  <h3>Avatar</h3>
+                  <p>${() => getAvatarChoiceLabel(avatarChoice())}</p>
+                </div>
+                <div class="settings-row-control avatar-settings-panel">
+                  <div class="avatar-style-preview-wrap">
+                    <div
+                      ref=${(el) => { avatarPreviewRef = el; }}
+                      class=${computeAvatarPreviewClass}
+                      style=${computeAvatarPreviewStyle}
+                      aria-hidden="true"
+                    ></div>
+                  </div>
+
+                  <div
+                    class="avatar-style-options"
+                    role="radiogroup"
+                    aria-label="Profile icon style"
+                  >
+                    <label class="avatar-style-option">
+                      <input
+                        type="radio"
+                        name="avatarStyle"
+                        value="blue"
+                        checked=${() => avatarChoice() === "blue"}
+                        onChange=${() => handleAvatarChoiceChange("blue")}
+                      />
+                      <span class="avatar-style-swatch avatar-style-blue" aria-hidden="true"></span>
+                      <span>Blue</span>
+                    </label>
+                    <label class="avatar-style-option">
+                      <input
+                        type="radio"
+                        name="avatarStyle"
+                        value="crimson"
+                        checked=${() => avatarChoice() === "crimson"}
+                        onChange=${() => handleAvatarChoiceChange("crimson")}
+                      />
+                      <span class="avatar-style-swatch avatar-style-crimson" aria-hidden="true"></span>
+                      <span>Crimson</span>
+                    </label>
+                    <label class="avatar-style-option">
+                      <input
+                        type="radio"
+                        name="avatarStyle"
+                        value="emerald"
+                        checked=${() => avatarChoice() === "emerald"}
+                        onChange=${() => handleAvatarChoiceChange("emerald")}
+                      />
+                      <span class="avatar-style-swatch avatar-style-emerald" aria-hidden="true"></span>
+                      <span>Emerald</span>
+                    </label>
+                    <label class="avatar-style-option">
+                      <input
+                        type="radio"
+                        name="avatarStyle"
+                        value="violet"
+                        checked=${() => avatarChoice() === "violet"}
+                        onChange=${() => handleAvatarChoiceChange("violet")}
+                      />
+                      <span class="avatar-style-swatch avatar-style-violet" aria-hidden="true"></span>
+                      <span>Violet</span>
+                    </label>
+                    <label class="avatar-style-option">
+                      <input
+                        type="radio"
+                        name="avatarStyle"
+                        value="amber"
+                        checked=${() => avatarChoice() === "amber"}
+                        onChange=${() => handleAvatarChoiceChange("amber")}
+                      />
+                      <span class="avatar-style-swatch avatar-style-amber" aria-hidden="true"></span>
+                      <span>Amber</span>
+                    </label>
+                    <label class="avatar-style-option avatar-style-option--custom">
+                      <input
+                        type="radio"
+                        name="avatarStyle"
+                        value="custom"
+                        checked=${() => avatarChoice() === "custom"}
+                        onChange=${() => handleAvatarChoiceChange("custom")}
+                      />
+                      <span
+                        ref=${(el) => { avatarCustomThumbRef = el; }}
+                        class=${computeCustomThumbClass}
+                        style=${computeCustomThumbStyle}
+                        aria-hidden="true"
+                      ></span>
+                      <span>Custom</span>
+                    </label>
+                  </div>
+
+                  <div class="avatar-upload-controls">
+                    <label class="avatar-upload-btn" for="avatarImageInput">Upload image</label>
+                    <input
+                      id="avatarImageInput"
+                      type="file"
+                      accept="image/*"
+                      ref=${(el) => { avatarImageInputRef = el; }}
+                      onChange=${handleAvatarImageChange}
+                    />
+                    <span class="avatar-upload-hint">
+                      ${() => avatarUploadHint()}
+                    </span>
+                  </div>
+                </div>
+                <span class="settings-row-chevron" aria-hidden="true"></span>
+              </section>
+            </div>
+          </section>
+
+          <div class="settings-actions">
+            <button class="save-btn" type="submit">
+              Save Settings
+            </button>
+            <p
+              class="save-status"
+              role="status"
+              aria-live="polite"
+            ></p>
+          </div>
+        </form>
 
         <section
-          class="settings-card settings-card--compact"
+          class="settings-section-block settings-section-block--upload"
+          id="uploadSection"
+          aria-labelledby="uploadSectionTitle"
+        >
+          <h2 id="uploadSectionTitle" class="settings-section-title">
+            Uploads
+          </h2>
+          ${UploadSection}
+        </section>
+
+        <section
+          class="settings-section-block"
+          id="maintenanceSection"
           aria-labelledby="maintenanceTitle"
         >
-          <div class="maintenance-row">
-            <h2 id="maintenanceTitle" class="settings-section-title">
-              Cache
-            </h2>
-            <div class="maintenance-inline">
-              <button
-                class="clear-cache-btn"
-                type="button"
-                disabled=${() => isClearingCaches()}
-                onClick=${handleClearAllCaches}
-              >
-                Clear All Caches
-              </button>
-              <p
-                class=${() => {
-                  let cls = "cache-clear-status";
-                  const tone = cacheClearTone();
-                  if (tone === "success") cls += " status-success";
-                  else if (tone === "error") cls += " status-error";
-                  return cls;
-                }}
-                role="status"
-                aria-live="polite"
-              >${() => cacheClearStatus()}</p>
-            </div>
+          <h2 id="maintenanceTitle" class="settings-section-title">
+            Maintenance
+          </h2>
+          <div class="settings-list-card">
+            <section class="settings-list-row">
+              <span class="settings-row-icon settings-row-icon--cache" aria-hidden="true"></span>
+              <div class="settings-row-copy">
+                <h3>Cache</h3>
+                <p>${() => cacheClearStatus() || "Server metadata and source cache"}</p>
+              </div>
+              <div class="settings-row-control maintenance-inline">
+                <button
+                  class="clear-cache-btn"
+                  type="button"
+                  disabled=${() => isClearingCaches()}
+                  onClick=${handleClearAllCaches}
+                >
+                  Clear All Caches
+                </button>
+                <p
+                  class=${() => {
+                    let cls = "cache-clear-status";
+                    const tone = cacheClearTone();
+                    if (tone === "success") cls += " status-success";
+                    else if (tone === "error") cls += " status-error";
+                    return cls;
+                  }}
+                  role="status"
+                  aria-live="polite"
+                >${() => cacheClearStatus()}</p>
+              </div>
+              <span class="settings-row-chevron" aria-hidden="true"></span>
+            </section>
           </div>
         </section>
-      </div>
+      </section>
     </main>
   </div>`;
 }

@@ -365,7 +365,11 @@ impl ResolverService {
     ) -> AppResult<Value> {
         let normalized_audio_lang = normalize_preferred_audio_lang(preferred_audio_lang);
         let normalized_quality = normalize_preferred_stream_quality(preferred_quality);
-        let normalized_container = normalize_preferred_container(preferred_container);
+        let normalized_container = if media_type == "tv" {
+            normalize_tv_preferred_container(preferred_container)
+        } else {
+            normalize_preferred_container(preferred_container)
+        };
         let normalized_source_hash = normalize_source_hash(source_hash);
         let normalized_limit = limit.trim().parse::<i64>().ok().unwrap_or(10).clamp(1, 20);
         let source_filters = SourceFilters {
@@ -680,7 +684,7 @@ impl ResolverService {
         }
         if should_allow_latest_playback_session_fallback(&filters)
             && let Some(reused) = self
-                .try_reuse_latest_healthy_playback_session(&metadata, &preferences)
+                .try_reuse_latest_healthy_playback_session(&metadata, &preferences, &filters)
                 .await?
         {
             external_guard.mark_completed();
@@ -895,7 +899,7 @@ impl ResolverService {
             ),
             quality: normalize_preferred_stream_quality(preferred_quality),
         };
-        let normalized_preferred_container = normalize_preferred_container(preferred_container);
+        let normalized_preferred_container = normalize_tv_preferred_container(preferred_container);
         let filters = ResolveFilters {
             source_hash: normalize_source_hash(source_hash),
             preferred_container: normalized_preferred_container.clone(),
@@ -941,7 +945,7 @@ impl ResolverService {
         }
         if should_allow_latest_playback_session_fallback(&filters)
             && let Some(reused) = self
-                .try_reuse_latest_healthy_playback_session(&metadata, &preferences)
+                .try_reuse_latest_healthy_playback_session(&metadata, &preferences, &filters)
                 .await?
         {
             external_guard.mark_completed();
@@ -1860,6 +1864,9 @@ impl ResolverService {
         {
             return Ok(None);
         }
+        if !playback_session_matches_preferred_container(&session, filters) {
+            return Ok(None);
+        }
 
         let match_name = playback_session_match_name(&session);
         let is_valid_match = if metadata.media_type == "tv" {
@@ -1930,6 +1937,7 @@ impl ResolverService {
         &self,
         metadata: &ResolveMetadata,
         preferences: &ResolvePreferences,
+        filters: &ResolveFilters,
     ) -> AppResult<Option<Value>> {
         if !self.config.playback_sessions_enabled || metadata.tmdb_id.trim().is_empty() {
             return Ok(None);
@@ -1944,6 +1952,9 @@ impl ResolverService {
         };
 
         if session.tmdb_id != metadata.tmdb_id || session.playable_url.trim().is_empty() {
+            return Ok(None);
+        }
+        if !playback_session_matches_preferred_container(&session, filters) {
             return Ok(None);
         }
 
@@ -2584,7 +2595,7 @@ fn build_tv_resolve_lock_key(
         normalize_preferred_audio_lang(preferred_audio_lang),
         normalize_subtitle_preference(preferred_subtitle_lang),
         normalize_preferred_stream_quality(preferred_quality),
-        normalize_preferred_container(preferred_container),
+        normalize_tv_preferred_container(preferred_container),
         normalize_source_hash(source_hash),
         build_source_filter_lock_key(
             min_seeders,
@@ -2739,7 +2750,7 @@ fn select_top_episode_candidates<'a>(
         source_hash,
         limit,
     );
-    if preferred_container == "mp4" {
+    if should_prefer_mp4_episode_candidate(preferred_container, source_hash) {
         apply_mp4_default_candidate_rule(
             selected,
             sorted,
@@ -2750,6 +2761,14 @@ fn select_top_episode_candidates<'a>(
         )
     } else {
         selected
+    }
+}
+
+fn should_prefer_mp4_episode_candidate(preferred_container: &str, source_hash: &str) -> bool {
+    match normalize_preferred_container(preferred_container).as_str() {
+        "mp4" => true,
+        "mkv" => false,
+        _ => normalize_source_hash(source_hash).is_empty(),
     }
 }
 
@@ -3067,18 +3086,48 @@ fn apply_mp4_default_candidate_rule<'a>(
         return with_mp4;
     }
 
-    let Some(best_mp4) =
-        pick_best_container_candidate(&with_mp4, "mp4", source_language, health_scores)
-    else {
+    let mut mp4_candidates = ranked_pool
+        .iter()
+        .copied()
+        .filter(|candidate| {
+            is_stream_likely_container(candidate, "mp4")
+                && is_candidate_healthy_enough_for_default(candidate, health_scores)
+        })
+        .collect::<Vec<_>>();
+    if mp4_candidates.is_empty() {
         return move_container_candidates_to_front(with_mp4, "mp4");
-    };
-    let mut next = vec![best_mp4];
-    next.extend(
-        with_mp4
-            .into_iter()
-            .filter(|candidate| !std::ptr::eq(*candidate, best_mp4)),
-    );
+    }
+
+    mp4_candidates
+        .sort_by(|left, right| compare_container_default_candidates(left, right, source_language));
+
+    let safe_limit = limit.max(1);
+    let mut seen_hashes = HashSet::new();
+    let mut next = Vec::new();
+    for candidate in mp4_candidates {
+        push_unique_candidate(&mut next, &mut seen_hashes, candidate);
+        if next.len() >= safe_limit {
+            return next;
+        }
+    }
+    for candidate in with_mp4 {
+        push_unique_candidate(&mut next, &mut seen_hashes, candidate);
+        if next.len() >= safe_limit {
+            break;
+        }
+    }
     next
+}
+
+fn push_unique_candidate<'a>(
+    output: &mut Vec<&'a DiscoveryStream>,
+    seen_hashes: &mut HashSet<String>,
+    candidate: &'a DiscoveryStream,
+) {
+    let hash = get_stream_info_hash(candidate);
+    if hash.is_empty() || seen_hashes.insert(hash) {
+        output.push(candidate);
+    }
 }
 
 fn ensure_at_least_one_container_candidate<'a>(
@@ -3686,6 +3735,13 @@ fn normalize_preferred_container(value: &str) -> String {
         "mp4" => "mp4".to_owned(),
         "mkv" => "mkv".to_owned(),
         _ => "auto".to_owned(),
+    }
+}
+
+fn normalize_tv_preferred_container(value: &str) -> String {
+    match normalize_preferred_container(value).as_str() {
+        "mkv" => "mkv".to_owned(),
+        _ => "mp4".to_owned(),
     }
 }
 
@@ -4599,6 +4655,35 @@ fn playback_session_match_name(session: &PlaybackSession) -> String {
     }
 }
 
+fn playback_session_matches_preferred_container(
+    session: &PlaybackSession,
+    filters: &ResolveFilters,
+) -> bool {
+    match normalize_preferred_container(&filters.preferred_container).as_str() {
+        "mp4" => playback_session_looks_like_container(session, "mp4"),
+        "mkv" => playback_session_looks_like_container(session, "mkv"),
+        _ => true,
+    }
+}
+
+fn playback_session_looks_like_container(session: &PlaybackSession, container: &str) -> bool {
+    let normalized_container = container.trim().trim_start_matches('.').to_lowercase();
+    if normalized_container.is_empty() {
+        return true;
+    }
+    let needle = format!(".{normalized_container}");
+    let source_input = extract_playable_source_input(&session.playable_url);
+    let selected_file_path = playback_session_selected_file_path(session);
+    [
+        source_input.as_str(),
+        session.playable_url.as_str(),
+        session.filename.as_str(),
+        selected_file_path.as_str(),
+    ]
+    .iter()
+    .any(|value| value.to_lowercase().contains(&needle))
+}
+
 fn does_filename_likely_match_movie(filename: &str, movie_title: &str, movie_year: &str) -> bool {
     let normalized_filename = normalize_text_for_match(filename);
     if normalized_filename.is_empty() {
@@ -5054,19 +5139,21 @@ mod tests {
     use crate::error::ApiError;
 
     use super::{
-        DiscoveryBehaviorHints, DiscoveryStream, RD_SELECTED_FILE_MISMATCH_ERROR, ResolveMetadata,
-        ResolvedSource, ResolverExternalGuard, ResolverMetrics, SOURCE_HEALTH_AVOID_SCORE,
-        SourceFilters, SourceHealthStats, build_movie_resolve_lock_key, build_rd_torrent_cache_key,
-        build_torrentio_stream_cache_key, build_torznab_request_url,
+        DiscoveryBehaviorHints, DiscoveryStream, PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR,
+        ResolveFilters, ResolveMetadata, ResolvedSource, ResolverExternalGuard, ResolverMetrics,
+        SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats, build_movie_resolve_lock_key,
+        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_torznab_request_url,
         build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
         compute_source_health_score, compute_torrentio_cache_deadlines,
         does_filename_likely_match_movie, extract_info_hash_from_magnet,
         is_persistent_source_resolve_error, normalize_allowed_formats,
         normalize_resolved_source_for_software_decode, normalize_source_audio_profile_filter,
         normalize_source_hash, now_ms, parse_runtime_from_label_seconds, parse_seed_count,
-        parse_torznab_xml, ready_info_has_selected_file_id, select_top_movie_candidates,
-        should_prefer_software_decode_source, should_try_torznab_discovery, sort_movie_candidates,
-        stream_list_contains_hash, user_facing_real_debrid_error,
+        parse_torznab_xml, playback_session_matches_preferred_container,
+        ready_info_has_selected_file_id, select_top_episode_candidates,
+        select_top_movie_candidates, should_prefer_software_decode_source,
+        should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
+        user_facing_real_debrid_error,
     };
 
     #[test]
@@ -5392,6 +5479,20 @@ mod tests {
         }
     }
 
+    fn sample_tv_metadata() -> ResolveMetadata {
+        ResolveMetadata {
+            tmdb_id: "76331".to_owned(),
+            imdb_id: "tt7660850".to_owned(),
+            display_title: "Succession".to_owned(),
+            display_year: "2018".to_owned(),
+            runtime_seconds: 3_840,
+            season_number: 1,
+            episode_number: 1,
+            episode_title: "Celebration".to_owned(),
+            media_type: "tv".to_owned(),
+        }
+    }
+
     fn sample_stream(title: &str, info_hash: &str) -> DiscoveryStream {
         DiscoveryStream {
             infoHash: info_hash.to_owned(),
@@ -5544,6 +5645,135 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].infoHash, good_mkv.infoHash);
+    }
+
+    #[test]
+    fn prefers_mp4_for_tv_episode_auto_container_when_unpinned() {
+        let metadata = sample_tv_metadata();
+        let high_seed_mkv = sample_stream(
+            "Succession S01E01 Celebration 1080p AMZN WEB-DL DDP5.1 H.264-NTb.mkv\n👤 900",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+        let direct_mp4 = sample_stream(
+            "Succession.S01E01.1080p.BluRay.x265-RARBG.mp4\n👤 5",
+            "cccccccccccccccccccccccccccccccccccccccc",
+        );
+        let streams = vec![high_seed_mkv.clone(), direct_mp4.clone()];
+
+        let selected = select_top_episode_candidates(
+            &streams,
+            &metadata,
+            "en",
+            "1080p",
+            "auto",
+            "",
+            2,
+            &sample_source_filters(),
+            &HashMap::new(),
+        );
+
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].infoHash, direct_mp4.infoHash);
+        assert_eq!(selected[1].infoHash, high_seed_mkv.infoHash);
+    }
+
+    #[test]
+    fn keeps_mp4_alternates_ahead_of_mkv_for_tv_default() {
+        let metadata = sample_tv_metadata();
+        let high_seed_mkv = sample_stream(
+            "Succession S01E01 Celebration 1080p AMZN WEB-DL DDP5.1 H.264-NTb.mkv\n👤 900",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+        let first_mp4 = sample_stream(
+            "Succession S01E01 1080p.mp4\n👤 42",
+            "cccccccccccccccccccccccccccccccccccccccc",
+        );
+        let second_mp4 = sample_stream(
+            "Succession.S01E01.1080p.BluRay.x265-RARBG.mp4\n👤 9",
+            "dddddddddddddddddddddddddddddddddddddddd",
+        );
+        let streams = vec![high_seed_mkv.clone(), first_mp4.clone(), second_mp4.clone()];
+
+        let selected = select_top_episode_candidates(
+            &streams,
+            &metadata,
+            "en",
+            "1080p",
+            "auto",
+            "",
+            3,
+            &sample_source_filters(),
+            &HashMap::new(),
+        );
+
+        assert_eq!(selected.len(), 3);
+        assert_eq!(selected[0].infoHash, first_mp4.infoHash);
+        assert_eq!(selected[1].infoHash, second_mp4.infoHash);
+        assert_eq!(selected[2].infoHash, high_seed_mkv.infoHash);
+    }
+
+    #[test]
+    fn keeps_pinned_tv_episode_source_ahead_of_default_mp4() {
+        let metadata = sample_tv_metadata();
+        let pinned_mkv = sample_stream(
+            "Succession S01E01 Celebration 1080p AMZN WEB-DL DDP5.1 H.264-NTb.mkv\n👤 900",
+            "dddddddddddddddddddddddddddddddddddddddd",
+        );
+        let direct_mp4 = sample_stream(
+            "Succession.S01E01.1080p.BluRay.x265-RARBG.mp4\n👤 5",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        );
+        let streams = vec![direct_mp4.clone(), pinned_mkv.clone()];
+
+        let selected = select_top_episode_candidates(
+            &streams,
+            &metadata,
+            "en",
+            "1080p",
+            "auto",
+            &pinned_mkv.infoHash,
+            2,
+            &sample_source_filters(),
+            &HashMap::new(),
+        );
+
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].infoHash, pinned_mkv.infoHash);
+    }
+
+    #[test]
+    fn skips_non_mp4_playback_session_for_mp4_container_preference() {
+        let filters = ResolveFilters {
+            source_hash: String::new(),
+            preferred_container: "mp4".to_owned(),
+            source_filters: sample_source_filters(),
+        };
+        let mkv_session = PlaybackSession {
+            filename: "Succession.S01E01.1080p.WEB-DL.mkv".to_owned(),
+            playable_url:
+                "/api/remux?input=https%3A%2F%2Fdownload.real-debrid.com%2FSuccession.S01E01.mkv"
+                    .to_owned(),
+            metadata: json!({
+                "subtitleTargetFilePath": "/Succession.S01E01.1080p.WEB-DL.mkv"
+            }),
+            ..PlaybackSession::default()
+        };
+        let mp4_session = PlaybackSession {
+            filename: "Succession.S01E01.1080p.BluRay.x265-RARBG.mp4".to_owned(),
+            playable_url:
+                "https://download.real-debrid.com/Succession.S01E01.1080p.BluRay.x265-RARBG.mp4"
+                    .to_owned(),
+            ..PlaybackSession::default()
+        };
+
+        assert!(!playback_session_matches_preferred_container(
+            &mkv_session,
+            &filters
+        ));
+        assert!(playback_session_matches_preferred_container(
+            &mp4_session,
+            &filters
+        ));
     }
 
     #[test]
