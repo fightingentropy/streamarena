@@ -11,6 +11,8 @@ const baseUrl = `http://127.0.0.1:${port}`;
 const viteBin = resolve(rootDir, "node_modules/.bin/vite");
 const smokeVideo = "assets/videos/fantozzi-1975-1080p-h264-aac-4k-restored.mp4";
 const hevcSmokeVideo = "assets/videos/project-hail-mary-2026-2160p-hevc.mp4";
+const sourceSwitchHashA = "a".repeat(40);
+const sourceSwitchHashB = "b".repeat(40);
 
 if (!existsSync(viteBin)) {
   console.error("Missing Vite binary. Run bun install first.");
@@ -118,6 +120,65 @@ function apiPayload(url, method) {
   if (path === "/api/tmdb/search") return { results: [] };
   if (path === "/api/tmdb/details") return { title: "Smoke Movie", year: "1975" };
   if (path === "/api/tmdb/tv/season") return { episodes: [] };
+  if (path === "/api/resolve/sources") {
+    return {
+      sources: [
+        {
+          sourceHash: sourceSwitchHashA,
+          infoHash: sourceSwitchHashA,
+          primary: "Off.Campus.S01E01.1080p.WEB.h264",
+          filename: "Off.Campus.S01E01.1080p.WEB.h264.mkv",
+          provider: "Torrentio",
+          qualityLabel: "1080p",
+          container: "mkv",
+          seeders: 490,
+          size: "632 MB",
+        },
+        {
+          sourceHash: sourceSwitchHashB,
+          infoHash: sourceSwitchHashB,
+          primary: "Off.Campus.S01E01.MULTI.2160p.WEB.h265",
+          filename: "Off.Campus.S01E01.MULTI.2160p.WEB.h265.mkv",
+          provider: "Torrentio",
+          qualityLabel: "4K HDR",
+          container: "mkv",
+          seeders: 377,
+          size: "7.35 GB",
+        },
+      ],
+    };
+  }
+  if (path === "/api/resolve/tv") {
+    const sourceHash = url.searchParams.get("sourceHash") || sourceSwitchHashA;
+    return {
+      sourceHash,
+      sourceInput: `mock://${sourceHash}`,
+      playableUrl: `${smokeVideo}?source=${sourceHash}`,
+      fallbackUrls: [],
+      tracks: {
+        audioTracks: [
+          {
+            streamIndex: 0,
+            language: "en",
+            title: "English",
+            codec: "aac",
+            isDefault: true,
+          },
+        ],
+        subtitleTracks: [],
+      },
+      selectedAudioStreamIndex: 0,
+      selectedSubtitleStreamIndex: -1,
+      preferences: { audioLang: "en", subtitleLang: "" },
+      metadata: {
+        displayTitle: "Off Campus",
+        seasonNumber: 1,
+        episodeNumber: 1,
+        episodeTitle: "The Deal",
+        runtimeSeconds: 3600,
+      },
+    };
+  }
   if (path === "/api/football/matches") return { matches: [] };
   if (path === "/api/football/stream") return { streams: [] };
   if (path === "/api/basketball/matches") return { matches: [] };
@@ -155,6 +216,11 @@ const pages = [
     contextOptions: devices["iPhone 13"],
     expectHlsMaster: true,
   },
+  {
+    path: "/player.html?tmdbId=source-switch-tv&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1",
+    selector: ".player-shell",
+    expectSourceSwitch: true,
+  },
 ];
 
 async function runSmoke() {
@@ -170,6 +236,7 @@ async function runSmoke() {
       const failures = [];
       let sawHlsMasterRequest = false;
       let sawRemuxRequest = false;
+      let sawSourceSwitchResolveHash = "";
 
       page.on("pageerror", (error) => {
         failures.push(`page error: ${error.message}`);
@@ -196,6 +263,12 @@ async function runSmoke() {
         }
         if (url.pathname === "/api/remux") {
           sawRemuxRequest = true;
+        }
+        if (pageSpec.expectSourceSwitch && url.pathname === "/api/resolve/tv") {
+          const sourceHash = url.searchParams.get("sourceHash") || "";
+          if (sourceHash) {
+            sawSourceSwitchResolveHash = sourceHash;
+          }
         }
         if (pageSpec.path === "/login.html" && url.pathname === "/api/auth/me") {
           await route.fulfill(jsonResponse({ error: "Not authenticated." }, 401));
@@ -244,6 +317,57 @@ async function runSmoke() {
         }
         if (!sawHlsMasterRequest) {
           throw new Error(`${pageSpec.path}\nHEVC/HDR source did not use HLS fallback.`);
+        }
+      }
+
+      if (pageSpec.expectSourceSwitch) {
+        await page.click("#toggleAudio");
+        await page.click("#audioTabSources");
+        await page.waitForSelector(
+          `.source-option[data-source-hash="${sourceSwitchHashB}"]`,
+          { timeout: 8_000 },
+        );
+        await page.click(`.source-option[data-source-hash="${sourceSwitchHashB}"]`);
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          const switched = await page.evaluate((expectedHash) => {
+            const selectedHash =
+              document.querySelector(".source-option[aria-selected='true']")
+                ?.dataset.sourceHash || "";
+            const videoSource = document.querySelector("video")?.getAttribute("src") || "";
+            const audioPopoverOpen =
+              document.querySelector("#audioControl")?.classList.contains("is-open") ||
+              false;
+            return (
+              selectedHash === expectedHash &&
+              videoSource.includes(expectedHash) &&
+              !audioPopoverOpen
+            );
+          }, sourceSwitchHashB);
+          if (switched) {
+            break;
+          }
+          await delay(100);
+        }
+        const switchState = await page.evaluate(() => ({
+          selectedHash:
+            document.querySelector(".source-option[aria-selected='true']")
+              ?.dataset.sourceHash || "",
+          videoSource: document.querySelector("video")?.getAttribute("src") || "",
+          audioPopoverOpen:
+            document.querySelector("#audioControl")?.classList.contains("is-open") || false,
+        }));
+        if (
+          sawSourceSwitchResolveHash !== sourceSwitchHashB ||
+          switchState.selectedHash !== sourceSwitchHashB ||
+          !switchState.videoSource.includes(sourceSwitchHashB) ||
+          switchState.audioPopoverOpen
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nSource switch failed.\n${JSON.stringify({
+              sawSourceSwitchResolveHash,
+              switchState,
+            })}`,
+          );
         }
       }
 
