@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" role="img" aria-label="Netflix">
+  <rect width="800" height="800" fill="#050505" />
   <rect width="800" height="800" rx="128" fill="#050505" />
-  <g transform="translate(112 56) scale(.72)">
+  <g transform="translate(112 104) scale(.72)">
     <polygon points="180,2 340,2 340,785 180,800" fill="#c80013" />
     <polygon points="460,2 620,2 620,800 460,785" fill="#c80013" />
     <polygon points="180,2 338,2 620,800 462,785" fill="#f30017" />
