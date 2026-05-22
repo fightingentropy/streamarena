@@ -1656,9 +1656,8 @@ body {
         height: 48px;
     }
 
-    /* Hide volume (use hardware) and fullscreen (already fullscreen) */
-    #volumeControl,
-    #toggleFullscreen {
+    /* Hide volume on mobile; hardware controls are more reliable there. */
+    #volumeControl {
         display: none !important;
     }
 
