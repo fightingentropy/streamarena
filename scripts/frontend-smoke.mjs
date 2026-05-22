@@ -120,6 +120,8 @@ function apiPayload(url, method) {
   if (path === "/api/tmdb/tv/season") return { episodes: [] };
   if (path === "/api/football/matches") return { matches: [] };
   if (path === "/api/football/stream") return { streams: [] };
+  if (path === "/api/basketball/matches") return { matches: [] };
+  if (path === "/api/basketball/stream") return { streams: [] };
   if (path === "/api/live/hls-resource") return { ok: true };
   if (path === "/api/live/hls.m3u8") return "#EXTM3U\n";
   if (path === "/api/hls/master.m3u8") {
@@ -135,6 +137,7 @@ const pages = [
   { path: "/upload.html", selector: ".upload-page" },
   { path: "/live.html", selector: ".live-page" },
   { path: "/football.html", selector: ".football-page" },
+  { path: "/basketball.html", selector: ".basketball-page" },
   { path: "/index.html", selector: ".home-page" },
   {
     path: `/player.html?src=${encodeURIComponent(smokeVideo)}&title=Smoke%20Movie&year=1975`,

@@ -2,7 +2,27 @@ import html from "solid-js/html";
 import { createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
 
-const FOOTBALL_API_URL = "/api/football/matches";
+const DEFAULT_SPORT_CONFIG = {
+  apiUrl: "/api/football/matches",
+  sportName: "Football",
+  streamResolver: "football",
+  slugFallback: "football",
+};
+
+function resolveSportConfig(options = {}) {
+  const sportName = String(options.sportName || DEFAULT_SPORT_CONFIG.sportName).trim();
+  const streamResolver = String(
+    options.streamResolver || sportName || DEFAULT_SPORT_CONFIG.streamResolver,
+  )
+    .trim()
+    .toLowerCase();
+  return {
+    apiUrl: String(options.apiUrl || DEFAULT_SPORT_CONFIG.apiUrl).trim(),
+    sportName,
+    streamResolver,
+    slugFallback: String(options.slugFallback || streamResolver || "sport").trim(),
+  };
+}
 
 function getLocalTimeZone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "Local";
@@ -52,7 +72,7 @@ function formatClock(timestamp) {
   }).format(new Date(timestamp));
 }
 
-function normalizeMatches(payload) {
+function normalizeMatches(payload, sportName) {
   const matches = Array.isArray(payload?.matches) ? payload.matches : [];
   return matches
     .filter((match) => Number.isFinite(Number(match?.startTimestamp)))
@@ -61,9 +81,9 @@ function normalizeMatches(payload) {
       const endsAtTimestamp = Number(match.endsAtTimestamp || 0);
       return {
         id: String(match.id || `${match.title}-${startTimestamp}`),
-        title: String(match.title || "Football match").trim(),
-        league: String(match.league || "Football").trim(),
-        sport: String(match.sport || "Football").trim(),
+        title: String(match.title || `${sportName} match`).trim(),
+        league: String(match.league || sportName).trim(),
+        sport: String(match.sport || sportName).trim(),
         sourceMatchDate: String(match.sourceMatchDate || "").trim(),
         startTimestamp,
         endsAtTimestamp,
@@ -92,30 +112,35 @@ function isUpcoming(match, now) {
   return match.endsAtTimestamp > now;
 }
 
-function footballIcon() {
+function sportsIcon(sportName) {
+  const isBasketball = String(sportName || "").toLowerCase() === "basketball";
+  const iconPath = isBasketball
+    ? "M12 2.4a9.6 9.6 0 1 0 0 19.2 9.6 9.6 0 0 0 0-19.2Zm0 2.1c.9 0 1.75.17 2.54.49a13.7 13.7 0 0 0-1.5 3.28 14.6 14.6 0 0 1-3.77-.9A7.5 7.5 0 0 1 12 4.5Zm-4.28 4.4a16.7 16.7 0 0 0 4.9 1.34 15.7 15.7 0 0 0-.2 3.52 16.1 16.1 0 0 0-6.94 2.62A7.46 7.46 0 0 1 7.72 8.9Zm-.92 9.16a13.9 13.9 0 0 1 5.94-2.25 13.6 13.6 0 0 0 1.77 3.68A7.47 7.47 0 0 1 6.8 18.06Zm9.55.1a11.6 11.6 0 0 1-1.56-2.58 16 16 0 0 1 3.76.66 7.54 7.54 0 0 1-2.2 1.92Zm3.35-3.8a18.3 18.3 0 0 0-5.5-.9 13.2 13.2 0 0 1 .21-3.05 16 16 0 0 0 4.27-.4 7.45 7.45 0 0 1 1.02 4.35Zm-2.36-6.18a13.3 13.3 0 0 1-2.32.2c.33-.83.75-1.62 1.26-2.36.38.28.73.6 1.06.96Z"
+    : "M12 2.4a9.6 9.6 0 1 0 0 19.2 9.6 9.6 0 0 0 0-19.2Zm0 4.1 3.1 2.25-1.18 3.65h-3.84L8.9 8.75 12 6.5Zm-5.68 5.35 2.98 2.18-.9 3.24a7 7 0 0 1-3.1-4.92l1.02-.5Zm3.22 6.76.86-3.08h3.2l.86 3.08a7.05 7.05 0 0 1-4.92 0Zm6.06-1.34-.9-3.24 2.98-2.18 1.02.5a7 7 0 0 1-3.1 4.92Z";
   return html`
     <span class="football-ball-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24">
-        <path d="M12 2.4a9.6 9.6 0 1 0 0 19.2 9.6 9.6 0 0 0 0-19.2Zm0 4.1 3.1 2.25-1.18 3.65h-3.84L8.9 8.75 12 6.5Zm-5.68 5.35 2.98 2.18-.9 3.24a7 7 0 0 1-3.1-4.92l1.02-.5Zm3.22 6.76.86-3.08h3.2l.86 3.08a7.05 7.05 0 0 1-4.92 0Zm6.06-1.34-.9-3.24 2.98-2.18 1.02.5a7 7 0 0 1-3.1 4.92Z" />
+        <path d=${iconPath} />
       </svg>
     </span>
   `;
 }
 
-function buildFootballPlayerUrl(match) {
+function buildSportsPlayerUrl(match, config) {
   const streams = Array.isArray(match.streams) ? match.streams : [];
   const defaultStream = streams[0] || null;
   if (!defaultStream?.source) {
     return "";
   }
 
-  const slug = slugifyTitle(match.title || match.id || "football");
+  const slug = slugifyTitle(match.title || match.id || config.slugFallback);
   const params = new URLSearchParams({
-    title: match.title || "Football",
+    title: match.title || config.sportName,
     episode: match.league || "Live",
     src: defaultStream.source,
     live: "1",
     liveEmbed: "1",
+    liveResolver: config.streamResolver,
     liveStreamId: defaultStream.id || "stream-1",
     liveStreams: JSON.stringify(streams),
   });
@@ -123,14 +148,14 @@ function buildFootballPlayerUrl(match) {
   return `/watch/${slug}`;
 }
 
-function openFootballPlayer(match) {
-  const playerUrl = buildFootballPlayerUrl(match);
+function openSportsPlayer(match, config) {
+  const playerUrl = buildSportsPlayerUrl(match, config);
   if (playerUrl) {
     window.location.href = playerUrl;
   }
 }
 
-function renderPlayButton(match, now) {
+function renderPlayButton(match, now, config) {
   const live = isLive(match, now);
   const disabledIcon = html`
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>
@@ -150,7 +175,7 @@ function renderPlayButton(match, now) {
     <button
       class="football-play-button"
       type="button"
-      onClick=${() => openFootballPlayer(match)}
+      onClick=${() => openSportsPlayer(match, config)}
       aria-label=${`Play ${match.title} in Netflix`}
       title="Play in Netflix"
     >
@@ -159,14 +184,14 @@ function renderPlayButton(match, now) {
   `;
 }
 
-function renderMatchRow(match, now) {
+function renderMatchRow(match, now, config) {
   const live = isLive(match, now);
   const linksLabel = `${match.linkCount} ${match.linkCount === 1 ? "link" : "links"}`;
 
   return html`
     <article class=${`football-match-row${live ? " is-live" : ""}`}>
       <div class="football-match-main">
-        ${footballIcon()}
+        ${sportsIcon(config.sportName)}
         <div class="football-match-copy">
           <h3>${match.title}</h3>
           <p>
@@ -180,12 +205,13 @@ function renderMatchRow(match, now) {
         </div>
       </div>
       <div class="football-time-pill">${formatTime(match.startTimestamp)}</div>
-      ${renderPlayButton(match, now)}
+      ${renderPlayButton(match, now, config)}
     </article>
   `;
 }
 
-export default function FootballScheduleView() {
+export default function SportsScheduleView(options = {}) {
+  const config = resolveSportConfig(options);
   const [matches, setMatches] = createSignal([]);
   const [selectedDate, setSelectedDate] = createSignal("");
   const [filterMode, setFilterMode] = createSignal("all");
@@ -226,12 +252,12 @@ export default function FootballScheduleView() {
     setStatus("loading");
     setErrorText("");
     try {
-      const response = await fetch(FOOTBALL_API_URL, { cache: "no-store" });
+      const response = await fetch(config.apiUrl, { cache: "no-store" });
       const payload = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(payload?.error || `Football schedule failed (${response.status})`);
+        throw new Error(payload?.error || `${config.sportName} schedule failed (${response.status})`);
       }
-      const nextMatches = normalizeMatches(payload);
+      const nextMatches = normalizeMatches(payload, config.sportName);
       setMatches(nextMatches);
       setFetchedAt(Number(payload?.fetchedAt || Date.now()));
 
@@ -245,7 +271,7 @@ export default function FootballScheduleView() {
       });
       setStatus("ready");
     } catch (error) {
-      setErrorText(error?.message || "Could not load football matches.");
+      setErrorText(error?.message || `Could not load ${config.sportName.toLowerCase()} matches.`);
       setStatus("error");
     }
   }
@@ -278,26 +304,26 @@ export default function FootballScheduleView() {
       return html`
         <div class="football-empty-state">
           ${filterMode() === "live"
-            ? "No football matches are live for this date."
-            : "No upcoming football matches for this date."}
+            ? `No ${config.sportName.toLowerCase()} matches are live for this date.`
+            : `No upcoming ${config.sportName.toLowerCase()} matches for this date.`}
         </div>
       `;
     }
 
     if (groupMode() !== "league") {
-      return items.map((match) => renderMatchRow(match, now()));
+      return items.map((match) => renderMatchRow(match, now(), config));
     }
 
     const groups = new Map();
     items.forEach((match) => {
-      const key = match.league || "Football";
+      const key = match.league || config.sportName;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(match);
     });
     return Array.from(groups.entries()).map(([league, leagueMatches]) => html`
       <section class="football-league-group">
         <h3>${league}</h3>
-        ${leagueMatches.map((match) => renderMatchRow(match, now()))}
+        ${leagueMatches.map((match) => renderMatchRow(match, now(), config))}
       </section>
     `);
   }
@@ -313,7 +339,17 @@ export default function FootballScheduleView() {
 
   return html`
     <main class="football-main">
-      <section class="football-board" aria-label="Football schedule">
+      <nav class="sports-switcher" aria-label="Sports">
+        <a
+          href="/football"
+          class=${config.streamResolver === "football" ? "is-active" : ""}
+        >Football</a>
+        <a
+          href="/basketball"
+          class=${config.streamResolver === "basketball" ? "is-active" : ""}
+        >Basketball</a>
+      </nav>
+      <section class="football-board" aria-label=${`${config.sportName} schedule`}>
         <div class="football-date-strip">
           <button
             class="football-date-arrow"
@@ -376,7 +412,7 @@ export default function FootballScheduleView() {
 
         ${() =>
           status() === "loading"
-            ? html`<div class="football-loading-state">Fetching football matches...</div>`
+            ? html`<div class="football-loading-state">Fetching ${config.sportName.toLowerCase()} matches...</div>`
             : status() === "error"
               ? html`
                 <div class="football-error-state">

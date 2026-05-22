@@ -16,7 +16,10 @@ use axum::http::HeaderMap;
 use crate::auth;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult, json_response};
-use crate::football::{football_matches_handler, football_stream_resolve_handler};
+use crate::football::{
+    basketball_matches_handler, basketball_stream_resolve_handler, football_matches_handler,
+    football_stream_resolve_handler,
+};
 use crate::library::{
     normalize_upload_content_type, normalize_upload_episode_ordinal, normalize_whitespace,
     normalize_year, read_local_library, strip_file_extension, title_from_filename_token,
@@ -69,6 +72,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/config", any(config_handler))
         .route("/api/football/matches", get(football_matches_handler))
         .route("/api/football/stream", get(football_stream_resolve_handler))
+        .route("/api/basketball/matches", get(basketball_matches_handler))
+        .route(
+            "/api/basketball/stream",
+            get(basketball_stream_resolve_handler),
+        )
         .route("/api/library", get(library_get_handler))
         .route("/api/hls/master.m3u8", any(hls_master_handler))
         .route("/api/hls/segment.ts", any(hls_segment_handler))

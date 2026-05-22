@@ -10,6 +10,7 @@ const pages = {
   upload: resolve(__dirname, "upload.html"),
   live: resolve(__dirname, "live.html"),
   football: resolve(__dirname, "football.html"),
+  basketball: resolve(__dirname, "basketball.html"),
 };
 
 export default defineConfig({

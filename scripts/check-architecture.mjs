@@ -58,7 +58,16 @@ async function checkViteShape() {
   if (!/appType:\s*["']mpa["']/.test(viteConfig)) {
     fail("vite.config.js should keep appType: \"mpa\" for route-level bundles.");
   }
-  for (const page of ["index", "login", "player", "settings", "upload", "live", "football"]) {
+  for (const page of [
+    "index",
+    "login",
+    "player",
+    "settings",
+    "upload",
+    "live",
+    "football",
+    "basketball",
+  ]) {
     if (!new RegExp(`${page}:\\s*resolve\\(`).test(viteConfig)) {
       fail(`vite.config.js is missing the ${page} HTML entry.`);
     }
