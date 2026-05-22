@@ -186,7 +186,7 @@ if (_isCleanUrl && _watchPath.slug) {
     _sessionParams = new URLSearchParams(_stored);
   }
 }
-const params = _sessionParams || new URLSearchParams();
+const params = _sessionParams || new URLSearchParams(window.location.search);
 const _needsSlugResolve = _isCleanUrl && _watchPath.slug && !_sessionParams;
 
 const benchmarkModeEnabled = new Set(["1", "true", "yes", "on"]).has(
@@ -2462,11 +2462,13 @@ function shouldPreferBrowserHlsPlayback(
   const normalizedSource = String(source || "").toLowerCase();
   const isRemuxCandidate = normalizedSource.includes("/api/remux");
   const sourceInput = extractPlaybackSourceInput(source).toLowerCase();
+  const hasBrowserUnsafeVideoHint = looksLikeBrowserUnsafeVideoSource(sourceInput);
   if (
     !sourceInput ||
-    ![".mkv", ".mk3d", ".webm", ".avi", ".wmv", ".ts"].some((needle) =>
-      sourceInput.includes(needle),
-    )
+    (!hasBrowserUnsafeVideoHint &&
+      ![".mkv", ".mk3d", ".webm", ".avi", ".wmv", ".ts"].some((needle) =>
+        sourceInput.includes(needle),
+      ))
   ) {
     return false;
   }
@@ -2475,23 +2477,41 @@ function shouldPreferBrowserHlsPlayback(
     return false;
   }
 
-  const normalizedText = sourceInput
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
+  const normalizedText = getNormalizedPlaybackSourceText(sourceInput);
   if (!normalizedText) {
     return false;
+  }
+
+  if (hasBrowserUnsafeVideoHint) {
+    return true;
   }
 
   if (isRemuxCandidate) {
     return true;
   }
 
-  if (/\b(remux|bdremux|bluray remux|bdrip x264|bluray x264|avc)\b/.test(normalizedText)) {
+  if (/\b(bdrip x264|bluray x264|h264|x264|avc)\b/.test(normalizedText)) {
     return false;
   }
 
-  return /\b(hevc|x265|h265|10bit|hdr|dolby vision|dv)\b/.test(normalizedText);
+  return /\b(hevc|x265|h265|h 265|10bit|10 bit|hdr|dolby vision|dv|av1)\b/.test(
+    normalizedText,
+  );
+}
+
+function getNormalizedPlaybackSourceText(source) {
+  return String(source || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function looksLikeBrowserUnsafeVideoSource(source) {
+  const normalizedText = getNormalizedPlaybackSourceText(source);
+  return /\b(hevc|x265|h265|h 265|10bit|10 bit|hdr|dolby vision|dv|av1)\b/.test(
+    normalizedText,
+  );
 }
 
 function buildPreferredBrowserPlaybackSource(
@@ -2990,6 +3010,7 @@ function shouldUseSoftwareDecode(source) {
     return !hasHlsPlaybackSupport();
   }
   return (
+    looksLikeBrowserUnsafeVideoSource(value) ||
     value.includes(".mkv") ||
     value.includes(".avi") ||
     value.includes(".wmv") ||
