@@ -11,7 +11,7 @@ import {
 import SportsScheduleView from "../components/football-schedule-view.js";
 import { signOut } from "../lib/auth.js";
 
-export default function FootballPage() {
+export default function BasketballPage() {
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
   const [avatarClass, setAvatarClass] = createSignal("avatar avatar-style-blue");
   const [avatarCustomStyle, setAvatarCustomStyle] = createSignal("");
@@ -78,7 +78,7 @@ export default function FootballPage() {
 
   return html`
     <div data-solid-page-root="" style="display: contents">
-      <div class="page home-page football-page" tabindex="0">
+      <div class="page home-page football-page basketball-page" tabindex="0">
         <header class="top-nav">
           <div class="nav-left">
             <a href="/" class="nav-logo" aria-label="Go to homepage">
@@ -93,8 +93,8 @@ export default function FootballPage() {
               <a href="#" class="optional">Series</a>
               <a href="#" class="optional">Films</a>
               <a href="/live" class="nav-mobile-primary">Live</a>
-              <a href="/football" class="nav-mobile-primary is-active">Football</a>
-              <a href="/basketball" class="optional">Basketball</a>
+              <a href="/football" class="nav-mobile-primary">Football</a>
+              <a href="/basketball" class="optional is-active">Basketball</a>
               <a href="/#myListRow" class="optional">My List</a>
             </nav>
           </div>
@@ -175,7 +175,12 @@ export default function FootballPage() {
           </div>
         </header>
 
-        <${SportsScheduleView} />
+        <${SportsScheduleView}
+          apiUrl="/api/basketball/matches"
+          sportName="Basketball"
+          streamResolver="basketball"
+          slugFallback="basketball"
+        />
       </div>
     </div>
   `;

@@ -16,7 +16,8 @@ use crate::routes::AppState;
 use crate::utils::now_ms;
 
 const SUPER_LEAGUE_FOOTBALL_URL: &str = "https://super.league.st/index.php?sport=Football";
-const FOOTBALL_STREAM_USER_AGENT: &str = "Mozilla/5.0";
+const SUPER_LEAGUE_BASKETBALL_URL: &str = "https://super.league.st/index.php?sport=Basketball";
+const SUPER_LEAGUE_STREAM_USER_AGENT: &str = "Mozilla/5.0";
 const HIGH_PRIORITY_FOOTBALL_LEAGUES: &[&str] = &[
     "england premier league",
     "england fa cup",
@@ -167,30 +168,57 @@ where
 }
 
 pub async fn football_matches_handler(State(state): State<AppState>) -> AppResult<Response<Body>> {
+    super_league_matches_response(
+        &state,
+        SUPER_LEAGUE_FOOTBALL_URL,
+        "Football",
+        is_high_priority_football_match,
+    )
+    .await
+}
+
+pub async fn basketball_matches_handler(
+    State(state): State<AppState>,
+) -> AppResult<Response<Body>> {
+    super_league_matches_response(
+        &state,
+        SUPER_LEAGUE_BASKETBALL_URL,
+        "Basketball",
+        is_basketball_match,
+    )
+    .await
+}
+
+async fn super_league_matches_response(
+    state: &AppState,
+    source_url: &'static str,
+    sport_name: &'static str,
+    include_match: fn(&SourceMatch) -> bool,
+) -> AppResult<Response<Body>> {
     let response = state
         .http_client
-        .get(SUPER_LEAGUE_FOOTBALL_URL)
+        .get(source_url)
         .send()
         .await
         .map_err(|error| {
             if error.is_timeout() {
-                ApiError::gateway_timeout("Timed out fetching football schedule.")
+                ApiError::gateway_timeout(format!("Timed out fetching {sport_name} schedule."))
             } else {
-                ApiError::bad_gateway(format!("Failed to fetch football schedule: {error}"))
+                ApiError::bad_gateway(format!("Failed to fetch {sport_name} schedule: {error}"))
             }
         })?;
 
     if !response.status().is_success() {
         return Err(ApiError::bad_gateway(format!(
-            "Football schedule returned HTTP {}.",
-            response.status()
+            "{sport_name} schedule returned HTTP {}.",
+            response.status(),
         )));
     }
 
     let html = response.text().await.map_err(|error| {
-        ApiError::bad_gateway(format!("Failed to read football schedule: {error}"))
+        ApiError::bad_gateway(format!("Failed to read {sport_name} schedule: {error}"))
     })?;
-    let source_matches = extract_source_matches(&html)?;
+    let source_matches = extract_source_matches(&html, sport_name)?;
     let now = now_ms();
     let matches: Vec<_> = source_matches
         .into_iter()
@@ -198,7 +226,7 @@ pub async fn football_matches_handler(State(state): State<AppState>) -> AppResul
             match_item.start_timestamp > 0
                 && match_item.duration > 0
                 && !match_item.slug.trim().is_empty()
-                && is_high_priority_football_match(match_item)
+                && include_match(match_item)
                 && match_item
                     .start_timestamp
                     .saturating_add(match_item.duration.saturating_mul(60_000))
@@ -208,7 +236,8 @@ pub async fn football_matches_handler(State(state): State<AppState>) -> AppResul
         .collect();
 
     Ok(json_response(json!({
-        "source": SUPER_LEAGUE_FOOTBALL_URL,
+        "source": source_url,
+        "sport": sport_name,
         "fetchedAt": now_ms(),
         "matches": matches
     })))
@@ -218,10 +247,24 @@ pub async fn football_stream_resolve_handler(
     State(state): State<AppState>,
     Query(query): Query<ResolveFootballStreamQuery>,
 ) -> AppResult<Response<Body>> {
+    super_league_stream_resolve_response(&state, query).await
+}
+
+pub async fn basketball_stream_resolve_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResolveFootballStreamQuery>,
+) -> AppResult<Response<Body>> {
+    super_league_stream_resolve_response(&state, query).await
+}
+
+async fn super_league_stream_resolve_response(
+    state: &AppState,
+    query: ResolveFootballStreamQuery,
+) -> AppResult<Response<Body>> {
     let source_url = Url::parse(query.url.trim())
-        .map_err(|_| ApiError::bad_request("Invalid football stream URL."))?;
-    let player_page_url = resolve_embed_player_page_url(&state, &source_url).await?;
-    let stream_url = resolve_player_hls_url(&state, &player_page_url, source_url.as_str()).await?;
+        .map_err(|_| ApiError::bad_request("Invalid live stream URL."))?;
+    let player_page_url = resolve_embed_player_page_url(state, &source_url).await?;
+    let stream_url = resolve_player_hls_url(state, &player_page_url, source_url.as_str()).await?;
     let stream_url_text = stream_url.to_string();
 
     Ok(json_response(json!({
@@ -242,36 +285,36 @@ async fn resolve_embed_player_page_url(state: &AppState, source_url: &Url) -> Ap
             if source_url.path().starts_with("/e/") {
                 Ok(source_url.clone())
             } else {
-                Err(ApiError::bad_request("Unsupported football stream page."))
+                Err(ApiError::bad_request("Unsupported live stream page."))
             }
         }
-        _ => Err(ApiError::bad_request("Unsupported football stream host.")),
+        _ => Err(ApiError::bad_request("Unsupported live stream host.")),
     }
 }
 
 async fn resolve_channel_player_page_url(state: &AppState, source_url: &Url) -> AppResult<Url> {
     if source_url.path() != "/ch" {
-        return Err(ApiError::bad_request("Unsupported football stream page."));
+        return Err(ApiError::bad_request("Unsupported live stream page."));
     }
     let Some(id) = source_url
         .query_pairs()
         .find_map(|(key, value)| (key == "id").then(|| value.into_owned()))
         .filter(|value| !value.trim().is_empty())
     else {
-        return Err(ApiError::bad_request("Missing football stream id."));
+        return Err(ApiError::bad_request("Missing live stream id."));
     };
 
     let api_origin = match source_url.host_str().unwrap_or_default() {
         "glisco.link" | "www.glisco.link" => "https://glisco.link",
         "sansat.link" | "www.sansat.link" => "https://sansat.link",
-        _ => return Err(ApiError::bad_request("Unsupported football stream host.")),
+        _ => return Err(ApiError::bad_request("Unsupported live stream host.")),
     };
     let api_url = Url::parse_with_params(&format!("{api_origin}/api/player.php"), [("id", id)])
         .map_err(|error| ApiError::internal(error.to_string()))?;
     let response = state
         .http_client
         .get(api_url)
-        .header(reqwest::header::USER_AGENT, FOOTBALL_STREAM_USER_AGENT)
+        .header(reqwest::header::USER_AGENT, SUPER_LEAGUE_STREAM_USER_AGENT)
         .header(reqwest::header::REFERER, source_url.as_str())
         .send()
         .await
@@ -306,13 +349,13 @@ async fn resolve_player_hls_url(
     referer: &str,
 ) -> AppResult<Url> {
     if !is_supported_embedded_player_url(player_page_url) {
-        return Err(ApiError::bad_request("Unsupported football stream player."));
+        return Err(ApiError::bad_request("Unsupported live stream player."));
     }
 
     let response = state
         .http_client
         .get(player_page_url.clone())
-        .header(reqwest::header::USER_AGENT, FOOTBALL_STREAM_USER_AGENT)
+        .header(reqwest::header::USER_AGENT, SUPER_LEAGUE_STREAM_USER_AGENT)
         .header(reqwest::header::REFERER, referer)
         .send()
         .await
@@ -418,20 +461,22 @@ fn is_supported_hls_stream_url(url: &Url) -> bool {
     url.path().to_lowercase().ends_with(".m3u8")
 }
 
-fn extract_source_matches(html: &str) -> AppResult<Vec<SourceMatch>> {
+fn extract_source_matches(html: &str, sport_name: &str) -> AppResult<Vec<SourceMatch>> {
     static MATCHES_RE: OnceLock<Regex> = OnceLock::new();
     let regex = MATCHES_RE.get_or_init(|| {
         Regex::new(r#"window\.matches\s*=\s*JSON\.parse\(`([\s\S]*?)`\)"#)
-            .expect("valid football matches regex")
+            .expect("valid source matches regex")
     });
     let raw_matches = regex
         .captures(html)
         .and_then(|captures| captures.get(1))
         .map(|value| value.as_str())
-        .ok_or_else(|| ApiError::bad_gateway("Football schedule did not include match data."))?;
+        .ok_or_else(|| {
+            ApiError::bad_gateway(format!("{sport_name} schedule did not include match data."))
+        })?;
 
     serde_json::from_str::<Vec<SourceMatch>>(raw_matches).map_err(|error| {
-        ApiError::bad_gateway(format!("Failed to parse football schedule: {error}"))
+        ApiError::bad_gateway(format!("Failed to parse {sport_name} schedule: {error}"))
     })
 }
 
@@ -442,6 +487,11 @@ fn is_high_priority_football_match(match_item: &SourceMatch) -> bool {
     }
 
     is_high_priority_football_league(&match_item.league)
+}
+
+fn is_basketball_match(match_item: &SourceMatch) -> bool {
+    let sport = match_item.sport.trim();
+    sport.is_empty() || sport.eq_ignore_ascii_case("Basketball")
 }
 
 fn is_high_priority_football_league(league: &str) -> bool {
@@ -564,7 +614,9 @@ fn normalize_match(match_item: SourceMatch) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{SourceMatch, extract_source_matches, is_high_priority_football_match};
+    use super::{
+        SourceMatch, extract_source_matches, is_basketball_match, is_high_priority_football_match,
+    };
 
     #[test]
     fn extracts_embedded_matches_json() {
@@ -573,7 +625,7 @@ mod tests {
               window.matches = JSON.parse(`[{"matchstr":"A vs B","slug":"a-b","startTimestamp":1000,"duration":120,"channels":[{"name":"One","language":"GB","links":["https://example.test/1"]}]}]`);
             </script>
         "#;
-        let matches = extract_source_matches(html).unwrap();
+        let matches = extract_source_matches(html, "Football").unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].title, "A vs B");
         assert_eq!(matches[0].channels[0].links.len(), 1);
@@ -586,7 +638,7 @@ mod tests {
               window.matches = JSON.parse(`[{"matchstr":"A vs B","team1":"A","team2":null,"channel":null,"important":null,"matchDate":null,"slug":"a-b","startTimestamp":1000,"duration":120,"channels":[null,{"name":null,"language":null,"links":["https://example.test/1",null]}]}]`);
             </script>
         "#;
-        let matches = extract_source_matches(html).unwrap();
+        let matches = extract_source_matches(html, "Football").unwrap();
 
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].team2, "");
@@ -646,6 +698,21 @@ mod tests {
         match_item.sport = "Basketball".to_owned();
 
         assert!(!is_high_priority_football_match(&match_item));
+    }
+
+    #[test]
+    fn keeps_basketball_sport_matches() {
+        let mut match_item = source_match_with_league("NBA");
+        match_item.sport = "Basketball".to_owned();
+
+        assert!(is_basketball_match(&match_item));
+    }
+
+    #[test]
+    fn basketball_filter_ignores_other_sports() {
+        let match_item = source_match_with_league("England Premier League");
+
+        assert!(!is_basketball_match(&match_item));
     }
 
     fn source_match_with_league(league: &str) -> SourceMatch {

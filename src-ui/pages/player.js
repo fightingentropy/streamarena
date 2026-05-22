@@ -153,7 +153,8 @@ const reportedPlaybackFailureKeys = new Set();
 let liveStreamOptions = [];
 let selectedLiveStreamId = "";
 let isLivePlayback = false;
-let shouldResolveFootballEmbedSource = false;
+let shouldResolveLiveEmbedSource = false;
+let liveEmbedResolver = "football";
 let lastRequestedPlaybackSource = "";
 let lastRequestedAbsolutePlaybackSource = "";
 let activeHlsController = null;
@@ -221,6 +222,13 @@ function isTruthyParamValue(value) {
   );
 }
 
+function normalizeLiveEmbedResolver(value) {
+  const resolver = String(value || "football")
+    .trim()
+    .toLowerCase();
+  return resolver === "basketball" ? "basketball" : "football";
+}
+
 function refreshLiveStreamStateFromParams(queryParams = params) {
   const nextState = deriveLiveStreamStateFromParams(
     queryParams,
@@ -229,8 +237,9 @@ function refreshLiveStreamStateFromParams(queryParams = params) {
   liveStreamOptions = nextState.options;
   selectedLiveStreamId = nextState.selectedStreamId;
   isLivePlayback = nextState.isLivePlayback;
-  shouldResolveFootballEmbedSource =
+  shouldResolveLiveEmbedSource =
     isLivePlayback && isTruthyParamValue(queryParams.get("liveEmbed"));
+  liveEmbedResolver = normalizeLiveEmbedResolver(queryParams.get("liveResolver"));
   if (nextState.selectedSource) {
     rawSourceParam = nextState.selectedSource;
     normalizedRawSourceParam = nextState.selectedSource;
@@ -4830,12 +4839,16 @@ async function resolveLivePlaybackSource(source) {
   if (!normalizedSource) {
     throw new Error("Missing live stream source.");
   }
-  if (!shouldResolveFootballEmbedSource) {
+  if (!shouldResolveLiveEmbedSource) {
     return getLivePlaybackSource(normalizedSource, isLivePlayback);
   }
 
   const query = new URLSearchParams({ url: normalizedSource });
-  const payload = await requestJson(`/api/football/stream?${query.toString()}`, {}, 20000);
+  const payload = await requestJson(
+    `/api/${liveEmbedResolver}/stream?${query.toString()}`,
+    {},
+    20000,
+  );
   const playbackUrl = normalizePlaybackSourceValue(
     payload?.playbackUrl || payload?.streamUrl || "",
   );

@@ -2453,7 +2453,7 @@ body.is-search-mode #myListRow {
 }
 
 @media (max-width: 980px) {
-    .top-nav nav a.optional:not(.nav-mobile-primary) {
+    .top-nav nav a.optional:not(.nav-mobile-primary):not(.is-active) {
         display: none;
     }
 
@@ -2547,7 +2547,7 @@ body.is-search-mode #myListRow {
 }
 
 @media (hover: none) and (pointer: coarse) {
-    .top-nav nav a.optional:not(.nav-mobile-primary) {
+    .top-nav nav a.optional:not(.nav-mobile-primary):not(.is-active) {
         display: none !important;
     }
 }
