@@ -147,8 +147,6 @@ const AUTO_PLAY_SHOW_BEFORE_END_SECONDS = 10;
 const MAX_TMDB_EPISODE_LIST_SEASONS = 12;
 const MAX_TMDB_EPISODE_LIST_EPISODES = 300;
 let lastAudibleVolume = 1;
-const sourceSaveStateByHash = new Map();
-const sourceSaveResetTimeoutByHash = new Map();
 const reportedPlaybackFailureKeys = new Set();
 let liveStreamOptions = [];
 let selectedLiveStreamId = "";
@@ -159,6 +157,7 @@ let lastRequestedPlaybackSource = "";
 let lastRequestedAbsolutePlaybackSource = "";
 let activeHlsController = null;
 let hlsConstructorPromise = null;
+let pendingHlsJsPlaybackSource = "";
 
 const _cleanups = [];
 function trackListener(target, event, handler, options) {
@@ -1867,104 +1866,6 @@ function getSourceOptionByHash(sourceHash) {
   );
 }
 
-function getSourceSaveState(sourceHash = "") {
-  const normalizedHash = normalizeSourceHash(sourceHash);
-  if (!normalizedHash) {
-    return "idle";
-  }
-  return sourceSaveStateByHash.get(normalizedHash) || "idle";
-}
-
-function applySourceSaveButtonState(button, state = "idle") {
-  if (!(button instanceof HTMLButtonElement)) {
-    return;
-  }
-
-  const iconByState = {
-    idle: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10a1 1 0 0 1 1 1v15l-6-3.5L6 20V5a1 1 0 0 1 1-1Z"></path></svg>',
-    saving: '<span class="source-save-spinner" aria-hidden="true"></span>',
-    saved: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7"></path></svg>',
-    error: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v7"></path><path d="M12 17.5v.5"></path></svg>',
-  };
-  const labelByState = {
-    idle: "Save source to gallery",
-    saving: "Saving source",
-    saved: "Source saved",
-    error: "Retry saving source",
-  };
-  const normalizedState = iconByState[state] ? state : "idle";
-  button.innerHTML = iconByState[normalizedState];
-  button.setAttribute("aria-label", labelByState[normalizedState]);
-  button.title = labelByState[normalizedState];
-  if (state === "saving") {
-    button.disabled = true;
-  } else if (state === "saved") {
-    button.disabled = true;
-  } else if (state === "error") {
-    button.disabled = false;
-  } else {
-    button.disabled = false;
-  }
-  button.dataset.saveState = state;
-}
-
-function syncSourceSaveButtonsForHash(sourceHash = "") {
-  if (!(sourceOptionsContainer instanceof HTMLElement)) {
-    return;
-  }
-  const normalizedHash = normalizeSourceHash(sourceHash);
-  if (!normalizedHash) {
-    return;
-  }
-  const nextState = getSourceSaveState(normalizedHash);
-  const saveButtons = Array.from(
-    sourceOptionsContainer.querySelectorAll(
-      `.source-save-button[data-source-hash="${normalizedHash}"]`,
-    ),
-  );
-  saveButtons.forEach((saveButton) => {
-    applySourceSaveButtonState(saveButton, nextState);
-  });
-}
-
-function setSourceSaveState(sourceHash = "", state = "idle") {
-  const normalizedHash = normalizeSourceHash(sourceHash);
-  if (!normalizedHash) {
-    return;
-  }
-  if (state !== "error") {
-    const existingTimeout = sourceSaveResetTimeoutByHash.get(normalizedHash);
-    if (existingTimeout) {
-      window.clearTimeout(existingTimeout);
-      sourceSaveResetTimeoutByHash.delete(normalizedHash);
-    }
-  }
-  if (state === "idle") {
-    sourceSaveStateByHash.delete(normalizedHash);
-  } else {
-    sourceSaveStateByHash.set(normalizedHash, state);
-  }
-  syncSourceSaveButtonsForHash(normalizedHash);
-}
-
-function scheduleSourceSaveRetryReset(sourceHash = "", delayMs = 2200) {
-  const normalizedHash = normalizeSourceHash(sourceHash);
-  if (!normalizedHash) {
-    return;
-  }
-  const existingTimeout = sourceSaveResetTimeoutByHash.get(normalizedHash);
-  if (existingTimeout) {
-    window.clearTimeout(existingTimeout);
-  }
-  const timeoutId = window.setTimeout(() => {
-    sourceSaveResetTimeoutByHash.delete(normalizedHash);
-    if (getSourceSaveState(normalizedHash) === "error") {
-      setSourceSaveState(normalizedHash, "idle");
-    }
-  }, Math.max(800, Number(delayMs) || 2200));
-  sourceSaveResetTimeoutByHash.set(normalizedHash, timeoutId);
-}
-
 // parseSourceOptionVerticalResolution, getDetectedSourceOptionLanguages — imported from ./src-ui/player/sources.js
 
 function scoreSourceOptionLanguageForDefault(
@@ -2218,9 +2119,6 @@ function renderSourceOptionButtons() {
     }
     seenHashes.add(sourceHash);
 
-    const sourceOptionRow = document.createElement("div");
-    sourceOptionRow.className = "source-option-row";
-
     const sourceOptionButton = document.createElement("button");
     sourceOptionButton.className = "audio-option source-option";
     sourceOptionButton.type = "button";
@@ -2253,16 +2151,7 @@ function renderSourceOptionButtons() {
     }
 
     sourceOptionButton.prepend(nameLine);
-    sourceOptionRow.appendChild(sourceOptionButton);
-
-    const sourceSaveButton = document.createElement("button");
-    sourceSaveButton.className = "source-save-button";
-    sourceSaveButton.type = "button";
-    sourceSaveButton.dataset.sourceHash = sourceHash;
-    applySourceSaveButtonState(sourceSaveButton, getSourceSaveState(sourceHash));
-    sourceOptionRow.appendChild(sourceSaveButton);
-
-    fragment.appendChild(sourceOptionRow);
+    fragment.appendChild(sourceOptionButton);
     displayedSources.push(option);
   }
 
@@ -2469,6 +2358,31 @@ function hasHlsPlaybackSupport() {
   return hasNativeHlsPlaybackSupport() || hasHlsJsPlaybackSupport();
 }
 
+function isHlsPlaybackSource(source) {
+  if (!source) {
+    return false;
+  }
+
+  try {
+    const absoluteSource = new URL(source, window.location.origin).toString();
+    return (
+      absoluteSource.includes("/api/hls/master.m3u8") ||
+      absoluteSource.includes("/api/live/hls.m3u8") ||
+      absoluteSource.toLowerCase().includes(".m3u8")
+    );
+  } catch {
+    return String(source || "").toLowerCase().includes(".m3u8");
+  }
+}
+
+function shouldUseHlsJsForSource(source) {
+  return (
+    isHlsPlaybackSource(source) &&
+    !hasNativeHlsPlaybackSupport() &&
+    hasHlsJsPlaybackSupport()
+  );
+}
+
 function loadHlsConstructor() {
   if (!hlsConstructorPromise) {
     hlsConstructorPromise = import("hls.js").then(
@@ -2479,6 +2393,7 @@ function loadHlsConstructor() {
 }
 
 function destroyActiveHlsController() {
+  pendingHlsJsPlaybackSource = "";
   if (!activeHlsController) {
     return;
   }
@@ -3289,10 +3204,7 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
   if (playbackBenchmark) {
     playbackBenchmark._recordSourceChange(absoluteSource);
   }
-  const isHlsSource =
-    absoluteSource.includes("/api/hls/master.m3u8") ||
-    absoluteSource.includes("/api/live/hls.m3u8") ||
-    absoluteSource.toLowerCase().includes(".m3u8");
+  const isHlsSource = isHlsPlaybackSource(absoluteSource);
 
   if (isHlsSource) {
     const hlsMeta = parseHlsMasterSource(sourceWithAudioSync);
@@ -3345,11 +3257,13 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
     }
 
     if (hasHlsJsPlaybackSupport()) {
+      pendingHlsJsPlaybackSource = absoluteSource;
       void loadHlsConstructor()
         .then((HlsConstructor) => {
           if (lastRequestedAbsolutePlaybackSource !== absoluteSource) {
             return;
           }
+          pendingHlsJsPlaybackSource = "";
           if (!HlsConstructor?.isSupported?.()) {
             handleHlsPlaybackFailure("This browser cannot play the HLS stream.");
             return;
@@ -3409,6 +3323,7 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
         })
         .catch(() => {
           if (lastRequestedAbsolutePlaybackSource === absoluteSource) {
+            pendingHlsJsPlaybackSource = "";
             handleHlsPlaybackFailure("Unable to load HLS playback support.");
           }
         });
@@ -5470,6 +5385,25 @@ async function tryPlay() {
       video.ended ||
       video.networkState === 0);
 
+  if (
+    restoreSource &&
+    !hasActiveSource() &&
+    shouldUseHlsJsForSource(restoreSource)
+  ) {
+    const absoluteRestoreSource = new URL(
+      restoreSource,
+      window.location.origin,
+    ).toString();
+    if (
+      !activeHlsController &&
+      pendingHlsJsPlaybackSource !== absoluteRestoreSource
+    ) {
+      setVideoSource(restoreSource, { resetInitialResume: false });
+    }
+    syncPlayState();
+    return;
+  }
+
   if (hasStoppedOrEndedSource) {
     video.pause();
     video.removeAttribute("src");
@@ -6384,54 +6318,6 @@ async function resolveTmdbTvEpisodeViaBackend(
 
     throw lastError;
   }
-}
-
-async function resolveTmdbSourceForGallerySave(sourceHash = "") {
-  const normalizedSourceHash = normalizeSourceHash(sourceHash);
-  if (!normalizedSourceHash || !isTmdbResolvedPlayback || !tmdbId) {
-    throw new Error("Unable to save this source right now.");
-  }
-
-  const query = new URLSearchParams({
-    tmdbId,
-    title,
-    year,
-    audioLang: preferredAudioLang,
-    quality: preferredQuality,
-    sourceHash: normalizedSourceHash,
-  });
-  if (preferredSubtitleLang) {
-    query.set("subtitleLang", preferredSubtitleLang);
-  }
-  if (isTmdbTvPlayback) {
-    query.set("seasonNumber", String(Math.max(1, Math.floor(seasonNumber || 1))));
-    query.set(
-      "episodeNumber",
-      String(Math.max(1, Math.floor(episodeNumber || 1))),
-    );
-    if (preferredContainer) {
-      query.set("preferredContainer", preferredContainer);
-    }
-  }
-  if (preferredSourceMinSeeders > 0) {
-    query.set("minSeeders", String(preferredSourceMinSeeders));
-  }
-  if (
-    preferredSourceFormats.length > 0 &&
-    preferredSourceFormats.length < supportedSourceFormats.length
-  ) {
-    query.set("allowedFormats", preferredSourceFormats.join(","));
-  }
-  query.set("sourceLang", preferredSourceLanguage);
-  query.set("sourceAudioProfile", preferredSourceAudioProfile);
-
-  const endpoint = isTmdbTvPlayback ? "/api/resolve/tv" : "/api/resolve/movie";
-  const resolved = await requestResolveJson(`${endpoint}?${query.toString()}`);
-  const resolvedSourceHash = normalizeSourceHash(resolved?.sourceHash || "");
-  if (resolvedSourceHash !== normalizedSourceHash) {
-    throw new Error("Selected source is unavailable right now. Try another source.");
-  }
-  return resolved;
 }
 
 async function fetchTmdbSourceOptionsViaBackend() {
@@ -8085,31 +7971,6 @@ async function handleSourceOptionSelection(nextSourceHash) {
   }
 }
 
-async function handleSourceOptionSaveRequest(nextSourceHash) {
-  const normalizedNextSourceHash = normalizeSourceHash(nextSourceHash);
-  if (!normalizedNextSourceHash || !isTmdbResolvedPlayback || isResolvingSource()) {
-    return;
-  }
-
-  const existingState = getSourceSaveState(normalizedNextSourceHash);
-  if (existingState === "saving" || existingState === "saved") {
-    return;
-  }
-
-  setSourceSaveState(normalizedNextSourceHash, "saving");
-  try {
-    const resolved = await resolveTmdbSourceForGallerySave(normalizedNextSourceHash);
-    await queueGallerySaveFromResolvedPayload(resolved, {
-      sourceOption: getSourceOptionByHash(normalizedNextSourceHash),
-    });
-    setSourceSaveState(normalizedNextSourceHash, "saved");
-  } catch (error) {
-    console.error("Failed to queue gallery save for source:", error);
-    setSourceSaveState(normalizedNextSourceHash, "error");
-    scheduleSourceSaveRetryReset(normalizedNextSourceHash);
-  }
-}
-
 if (audioTabSubtitles) trackListener(audioTabSubtitles, "click", () => {
   if (isResolvingSource()) {
     return;
@@ -8156,14 +8017,6 @@ if (audioTabSources) trackListener(audioTabSources, "click", () => {
 
 if (sourceOptionsContainer) trackListener(sourceOptionsContainer, "click", (event) => {
   if (!(event.target instanceof Element)) {
-    return;
-  }
-
-  const sourceSaveButton = event.target.closest(".source-save-button");
-  if (sourceSaveButton instanceof HTMLButtonElement) {
-    event.preventDefault();
-    event.stopPropagation();
-    void handleSourceOptionSaveRequest(sourceSaveButton.dataset.sourceHash || "");
     return;
   }
 
@@ -8902,8 +8755,6 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     if (episodesPopoverCloseTimeout) clearTimeout(episodesPopoverCloseTimeout);
     if (audioPopoverCloseTimeout) clearTimeout(audioPopoverCloseTimeout);
     if (seekLoadingTimeout) clearTimeout(seekLoadingTimeout);
-    for (const t of sourceSaveResetTimeoutByHash.values()) window.clearTimeout(t);
-    sourceSaveResetTimeoutByHash.clear();
   });
 
 

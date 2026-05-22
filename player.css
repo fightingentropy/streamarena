@@ -1296,11 +1296,6 @@ body {
     gap: 8px;
 }
 
-.source-option-row {
-    position: relative;
-    display: block;
-}
-
 .audio-option.source-option {
     display: flex;
     flex-direction: column;
@@ -1308,7 +1303,7 @@ body {
     width: 100%;
     min-width: 0;
     min-height: 76px;
-    padding: 12px 48px 12px 40px;
+    padding: 12px 14px 12px 40px;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 7px;
     background: rgba(255, 255, 255, 0.035);
@@ -1328,76 +1323,6 @@ body {
     background:
         linear-gradient(90deg, rgba(229, 9, 20, 0.2), transparent 38%),
         rgba(255, 255, 255, 0.07);
-}
-
-.source-save-button {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 32px;
-    min-width: 32px;
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    border-radius: 999px;
-    background: rgba(0, 0, 0, 0.22);
-    color: #fff;
-    padding: 0;
-    font-family: inherit;
-    font-size: 0;
-    cursor: pointer;
-    transition:
-        background-color 140ms ease,
-        border-color 140ms ease,
-        opacity 140ms ease;
-}
-
-.source-save-button:hover,
-.source-save-button:focus-visible {
-    background: rgba(255, 255, 255, 0.18);
-    border-color: rgba(255, 255, 255, 0.32);
-}
-
-.source-save-button:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.48);
-    outline-offset: 2px;
-}
-
-.source-save-button svg {
-    width: 17px;
-    height: 17px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-}
-
-.source-save-spinner {
-    width: 15px;
-    height: 15px;
-    border: 2px solid rgba(255, 255, 255, 0.28);
-    border-top-color: currentColor;
-    border-radius: 999px;
-    animation: source-save-spin 0.8s linear infinite;
-}
-
-@keyframes source-save-spin {
-    to {
-        transform: rotate(360deg);
-    }
-}
-
-.source-save-button[data-save-state="saving"],
-.source-save-button[data-save-state="saved"] {
-    opacity: 0.72;
-    cursor: default;
-}
-
-.source-save-button[data-save-state="error"] {
-    border-color: rgba(255, 122, 122, 0.56);
-    color: #ffd9d9;
 }
 
 .audio-option.source-option::before {
@@ -1991,21 +1916,8 @@ body {
 
     .audio-option.source-option {
         min-height: 66px;
-        padding: 10px 42px 10px 34px;
+        padding: 10px 12px 10px 34px;
         border-radius: 7px;
-    }
-
-    .source-save-button {
-        top: 8px;
-        right: 8px;
-        width: 28px;
-        height: 28px;
-        min-width: 28px;
-    }
-
-    .source-save-button svg {
-        width: 15px;
-        height: 15px;
     }
 
     .audio-option.source-option::before {
