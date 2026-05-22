@@ -7472,21 +7472,141 @@ if (volumeControl) {
   });
 }
 
-async function toggleFullscreenMode() {
-  if (!document.fullscreenElement) {
-    try {
-      await document.documentElement.requestFullscreen();
-    } catch {
-      // Ignore fullscreen errors in restricted environments.
-    }
+function getFullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function isNativeVideoFullscreenActive() {
+  return Boolean(
+    video?.webkitDisplayingFullscreen ||
+      video?.webkitPresentationMode === "fullscreen",
+  );
+}
+
+function isFullscreenActive() {
+  return Boolean(getFullscreenElement() || isNativeVideoFullscreenActive());
+}
+
+function syncFullscreenControlState() {
+  if (!toggleFullscreen) {
     return;
+  }
+  const label = isFullscreenActive() ? "Exit fullscreen" : "Fullscreen";
+  toggleFullscreen.setAttribute("aria-label", label);
+  toggleFullscreen.setAttribute("title", label);
+}
+
+function getFullscreenRequest(element) {
+  return (
+    element?.requestFullscreen ||
+    element?.webkitRequestFullscreen ||
+    element?.msRequestFullscreen ||
+    null
+  );
+}
+
+async function requestPlayerFullscreen() {
+  const target = playerShell || document.documentElement;
+  const requestFullscreen = getFullscreenRequest(target);
+  if (!requestFullscreen) {
+    return false;
   }
 
   try {
-    await document.exitFullscreen();
+    const result = requestFullscreen.call(target);
+    if (result && typeof result.then === "function") {
+      await result;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function exitDocumentFullscreen() {
+  const exitFullscreen =
+    document.exitFullscreen ||
+    document.webkitExitFullscreen ||
+    document.msExitFullscreen;
+  if (!exitFullscreen) {
+    return false;
+  }
+
+  try {
+    const result = exitFullscreen.call(document);
+    if (result && typeof result.then === "function") {
+      await result;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function enterNativeVideoFullscreen() {
+  try {
+    if (typeof video?.webkitEnterFullscreen === "function") {
+      video.webkitEnterFullscreen();
+      return true;
+    }
+    if (
+      typeof video?.webkitSetPresentationMode === "function" &&
+      video.webkitPresentationMode !== "fullscreen"
+    ) {
+      video.webkitSetPresentationMode("fullscreen");
+      return true;
+    }
   } catch {
     // Ignore fullscreen errors in restricted environments.
   }
+  return false;
+}
+
+function exitNativeVideoFullscreen() {
+  try {
+    if (typeof video?.webkitExitFullscreen === "function") {
+      video.webkitExitFullscreen();
+      return true;
+    }
+    if (
+      typeof video?.webkitSetPresentationMode === "function" &&
+      video.webkitPresentationMode === "fullscreen"
+    ) {
+      video.webkitSetPresentationMode("inline");
+      return true;
+    }
+  } catch {
+    // Ignore fullscreen errors in restricted environments.
+  }
+  return false;
+}
+
+async function toggleFullscreenMode() {
+  if (isNativeVideoFullscreenActive()) {
+    exitNativeVideoFullscreen();
+    syncFullscreenControlState();
+    return;
+  }
+
+  if (getFullscreenElement()) {
+    await exitDocumentFullscreen();
+    syncFullscreenControlState();
+    return;
+  }
+
+  const supportsElementFullscreen = Boolean(
+    getFullscreenRequest(playerShell || document.documentElement),
+  );
+  if (!supportsElementFullscreen && enterNativeVideoFullscreen()) {
+    syncFullscreenControlState();
+    return;
+  }
+
+  const enteredDocumentFullscreen = await requestPlayerFullscreen();
+  if (!enteredDocumentFullscreen) {
+    enterNativeVideoFullscreen();
+  }
+  syncFullscreenControlState();
 }
 
 trackListener(toggleFullscreen, "click", async () => {
@@ -8321,7 +8441,16 @@ if (
   });
 }
 trackListener(window, "resize", refreshActiveSubtitlePlacement);
-trackListener(document, "fullscreenchange", refreshActiveSubtitlePlacement);
+trackListener(document, "fullscreenchange", () => {
+  refreshActiveSubtitlePlacement();
+  syncFullscreenControlState();
+});
+trackListener(document, "webkitfullscreenchange", () => {
+  refreshActiveSubtitlePlacement();
+  syncFullscreenControlState();
+});
+trackListener(video, "webkitbeginfullscreen", syncFullscreenControlState);
+trackListener(video, "webkitendfullscreen", syncFullscreenControlState);
 
 trackListener(video, "timeupdate", syncSeekState);
 trackListener(video, "loadedmetadata", applyPendingRecoverySeek);
@@ -9228,6 +9357,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
                   class="control-btn"
                   type="button"
                   aria-label="Fullscreen"
+                  title="Fullscreen"
                 >
                   <img
                     src="/assets/icons/player-controls/right-fullscreen.svg"
