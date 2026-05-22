@@ -13,6 +13,10 @@ const smokeVideo = "assets/videos/fantozzi-1975-1080p-h264-aac-4k-restored.mp4";
 const hevcSmokeVideo = "assets/videos/project-hail-mary-2026-2160p-hevc.mp4";
 const sourceSwitchHashA = "a".repeat(40);
 const sourceSwitchHashB = "b".repeat(40);
+const hlsManagedTmdbId = "273240";
+const hlsManagedSourceHash = "3b77214a7852eace6248758affc3ed060579a216";
+const hlsManagedSourceInput =
+  "https://example.test/Off.Campus.2026.S01E01.720p.HEVC.x265-MeGusta.mkv";
 
 if (!existsSync(viteBin)) {
   console.error("Missing Vite binary. Run bun install first.");
@@ -149,6 +153,39 @@ function apiPayload(url, method) {
     };
   }
   if (path === "/api/resolve/tv") {
+    const tmdbId = url.searchParams.get("tmdbId") || "";
+    if (tmdbId === hlsManagedTmdbId) {
+      return {
+        sourceHash: hlsManagedSourceHash,
+        sourceInput: hlsManagedSourceInput,
+        playableUrl: `/api/remux?input=${encodeURIComponent(hlsManagedSourceInput)}&audioStream=1`,
+        fallbackUrls: [],
+        filename: "Off.Campus.2026.S01E01.720p.HEVC.x265-MeGusta.mkv",
+        tracks: {
+          audioTracks: [
+            {
+              streamIndex: 1,
+              language: "en",
+              title: "English",
+              codec: "eac3",
+              isDefault: true,
+            },
+          ],
+          subtitleTracks: [],
+        },
+        selectedAudioStreamIndex: 1,
+        selectedSubtitleStreamIndex: -1,
+        preferences: { audioLang: "en", subtitleLang: "" },
+        metadata: {
+          displayTitle: "Off Campus",
+          displayYear: "2026",
+          seasonNumber: 1,
+          episodeNumber: 1,
+          episodeTitle: "The Deal",
+          runtimeSeconds: 3180,
+        },
+      };
+    }
     const sourceHash = url.searchParams.get("sourceHash") || sourceSwitchHashA;
     return {
       sourceHash,
@@ -217,6 +254,13 @@ const pages = [
     expectHlsMaster: true,
   },
   {
+    path: `/player.html?tmdbId=${hlsManagedTmdbId}&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1`,
+    selector: ".player-shell",
+    delayHlsImport: true,
+    expectHlsManagedDuringImport: true,
+    expectHlsMaster: true,
+  },
+  {
     path: "/player.html?tmdbId=source-switch-tv&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1",
     selector: ".player-shell",
     expectSourceSwitch: true,
@@ -237,6 +281,9 @@ async function runSmoke() {
       let sawHlsMasterRequest = false;
       let sawRemuxRequest = false;
       let sawSourceSwitchResolveHash = "";
+      let sawHlsManagedResolve = false;
+      let hlsBundleRequested = false;
+      let hlsBundleReleased = false;
 
       page.on("pageerror", (error) => {
         failures.push(`page error: ${error.message}`);
@@ -255,6 +302,21 @@ async function runSmoke() {
         }
       });
 
+      if (pageSpec.delayHlsImport) {
+        await page.route(/.*(?:hls|hls__js).*\.js(?:\?.*)?$/, async (route) => {
+          hlsBundleRequested = true;
+          const response = await route.fetch();
+          const body = await response.body();
+          await delay(700);
+          hlsBundleReleased = true;
+          await route.fulfill({
+            status: response.status(),
+            headers: response.headers(),
+            body,
+          });
+        });
+      }
+
       await page.route("**/api/**", async (route) => {
         const request = route.request();
         const url = new URL(request.url());
@@ -269,6 +331,12 @@ async function runSmoke() {
           if (sourceHash) {
             sawSourceSwitchResolveHash = sourceHash;
           }
+        }
+        if (
+          pageSpec.expectHlsManagedDuringImport &&
+          url.pathname === "/api/resolve/tv"
+        ) {
+          sawHlsManagedResolve = true;
         }
         if (pageSpec.path === "/login.html" && url.pathname === "/api/auth/me") {
           await route.fulfill(jsonResponse({ error: "Not authenticated." }, 401));
@@ -296,6 +364,39 @@ async function runSmoke() {
 
       await page.goto(`${baseUrl}${pageSpec.path}`, { waitUntil: "domcontentloaded" });
       await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
+
+      if (pageSpec.expectHlsManagedDuringImport) {
+        for (
+          let attempt = 0;
+          attempt < 100 && (!sawHlsManagedResolve || !hlsBundleRequested);
+          attempt += 1
+        ) {
+          await delay(50);
+        }
+        const earlyVideoSource = await page.evaluate(
+          () => document.querySelector("video")?.getAttribute("src") || "",
+        );
+        if (!sawHlsManagedResolve || !hlsBundleRequested) {
+          throw new Error(
+            `${pageSpec.path}\nHLS-managed source setup did not start.\n${JSON.stringify({
+              sawHlsManagedResolve,
+              hlsBundleRequested,
+              hlsBundleReleased,
+              earlyVideoSource,
+              failures,
+            })}`,
+          );
+        }
+        if (hlsBundleReleased) {
+          throw new Error(`${pageSpec.path}\nHLS import was not held for the race check.`);
+        }
+        if (earlyVideoSource.includes("/api/hls/master.m3u8")) {
+          throw new Error(
+            `${pageSpec.path}\nHLS.js-managed source was assigned directly to video.src before hls.js attached.`,
+          );
+        }
+      }
+
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
 
       if (pageSpec.expectDirectVideo) {
