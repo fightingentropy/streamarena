@@ -2391,6 +2391,31 @@ function isDesktopSafariVideoEnvironment() {
   return isSafari && isDesktopApple && !isAppleMobileOrTabletVideoEnvironment();
 }
 
+function isMobileOrTabletVideoEnvironment() {
+  if (isAppleMobileOrTabletVideoEnvironment()) {
+    return true;
+  }
+
+  const nav = window.navigator || {};
+  const userAgent = String(nav.userAgent || "");
+  const platform = String(nav.platform || "");
+  if (/\b(Android|Mobile|Phone|Tablet|Silk|Kindle)\b/i.test(userAgent)) {
+    return true;
+  }
+  if (/\b(Android|iPad|iPhone|iPod)\b/i.test(platform)) {
+    return true;
+  }
+
+  try {
+    return Boolean(
+      window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches &&
+        window.matchMedia?.("(max-width: 1180px)")?.matches,
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isAppleNativeHlsEnvironment() {
   return (
     isAppleMobileOrTabletVideoEnvironment() ||
@@ -2462,10 +2487,12 @@ function shouldPreferBrowserHlsPlayback(
   const normalizedSource = String(source || "").toLowerCase();
   const isRemuxCandidate = normalizedSource.includes("/api/remux");
   const sourceInput = extractPlaybackSourceInput(source).toLowerCase();
-  const hasBrowserUnsafeVideoHint = looksLikeBrowserUnsafeVideoSource(sourceInput);
+  const shouldConvertUnsafeVideo =
+    isMobileOrTabletVideoEnvironment() &&
+    looksLikeBrowserUnsafeVideoSource(sourceInput);
   if (
     !sourceInput ||
-    (!hasBrowserUnsafeVideoHint &&
+    (!shouldConvertUnsafeVideo &&
       ![".mkv", ".mk3d", ".webm", ".avi", ".wmv", ".ts"].some((needle) =>
         sourceInput.includes(needle),
       ))
@@ -2482,7 +2509,7 @@ function shouldPreferBrowserHlsPlayback(
     return false;
   }
 
-  if (hasBrowserUnsafeVideoHint) {
+  if (shouldConvertUnsafeVideo) {
     return true;
   }
 
@@ -3010,7 +3037,8 @@ function shouldUseSoftwareDecode(source) {
     return !hasHlsPlaybackSupport();
   }
   return (
-    looksLikeBrowserUnsafeVideoSource(value) ||
+    (isMobileOrTabletVideoEnvironment() &&
+      looksLikeBrowserUnsafeVideoSource(value)) ||
     value.includes(".mkv") ||
     value.includes(".avi") ||
     value.includes(".wmv") ||

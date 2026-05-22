@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { chromium } from "playwright";
+import { chromium, devices } from "playwright";
 
 const rootDir = resolve(new URL("..", import.meta.url).pathname);
 const port = Number(process.env.FRONTEND_SMOKE_PORT || 4174);
@@ -144,6 +144,12 @@ const pages = [
   {
     path: `/player.html?src=${encodeURIComponent(hevcSmokeVideo)}&title=Project%20Hail%20Mary&year=2026`,
     selector: ".player-shell",
+    expectDirectVideo: true,
+  },
+  {
+    path: `/player.html?src=${encodeURIComponent(hevcSmokeVideo)}&title=Project%20Hail%20Mary&year=2026`,
+    selector: ".player-shell",
+    contextOptions: devices["iPhone 13"],
     expectHlsMaster: true,
   },
 ];
@@ -154,9 +160,13 @@ async function runSmoke() {
   const browser = await chromium.launch({ headless: true });
   try {
     for (const pageSpec of pages) {
-      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      const context = await browser.newContext(
+        pageSpec.contextOptions || { viewport: { width: 1280, height: 900 } },
+      );
+      const page = await context.newPage();
       const failures = [];
       let sawHlsMasterRequest = false;
+      let sawRemuxRequest = false;
 
       page.on("pageerror", (error) => {
         failures.push(`page error: ${error.message}`);
@@ -180,6 +190,9 @@ async function runSmoke() {
         const url = new URL(request.url());
         if (url.pathname === "/api/hls/master.m3u8") {
           sawHlsMasterRequest = true;
+        }
+        if (url.pathname === "/api/remux") {
+          sawRemuxRequest = true;
         }
         if (pageSpec.path === "/login.html" && url.pathname === "/api/auth/me") {
           await route.fulfill(jsonResponse({ error: "Not authenticated." }, 401));
@@ -208,6 +221,19 @@ async function runSmoke() {
       await page.goto(`${baseUrl}${pageSpec.path}`, { waitUntil: "domcontentloaded" });
       await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+
+      if (pageSpec.expectDirectVideo) {
+        for (
+          let attempt = 0;
+          attempt < 10 && !sawHlsMasterRequest && !sawRemuxRequest;
+          attempt += 1
+        ) {
+          await delay(100);
+        }
+        if (sawHlsMasterRequest || sawRemuxRequest) {
+          throw new Error(`${pageSpec.path}\nDesktop HEVC source should stay direct.`);
+        }
+      }
 
       if (pageSpec.expectHlsMaster) {
         for (let attempt = 0; attempt < 40 && !sawHlsMasterRequest; attempt += 1) {
@@ -244,7 +270,7 @@ async function runSmoke() {
       }
 
       console.log(`smoke ok: ${pageSpec.path}`);
-      await page.close();
+      await context.close();
     }
   } finally {
     await browser.close();
