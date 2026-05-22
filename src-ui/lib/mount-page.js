@@ -1,13 +1,8 @@
 import { render } from "solid-js/web";
 
-import { wireBrowseNavMore } from "./browse-nav-more.js";
-
 export function mountPage(Page, options = {}) {
   document.body.className = options.bodyClass || "";
   render(Page, document.body);
-  queueMicrotask(() => {
-    wireBrowseNavMore();
-  });
   registerServiceWorker();
 }
 
