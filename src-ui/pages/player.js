@@ -1880,17 +1880,29 @@ function applySourceSaveButtonState(button, state = "idle") {
     return;
   }
 
+  const iconByState = {
+    idle: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10a1 1 0 0 1 1 1v15l-6-3.5L6 20V5a1 1 0 0 1 1-1Z"></path></svg>',
+    saving: '<span class="source-save-spinner" aria-hidden="true"></span>',
+    saved: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7"></path></svg>',
+    error: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v7"></path><path d="M12 17.5v.5"></path></svg>',
+  };
+  const labelByState = {
+    idle: "Save source to gallery",
+    saving: "Saving source",
+    saved: "Source saved",
+    error: "Retry saving source",
+  };
+  const normalizedState = iconByState[state] ? state : "idle";
+  button.innerHTML = iconByState[normalizedState];
+  button.setAttribute("aria-label", labelByState[normalizedState]);
+  button.title = labelByState[normalizedState];
   if (state === "saving") {
-    button.textContent = "Saving...";
     button.disabled = true;
   } else if (state === "saved") {
-    button.textContent = "Saved";
     button.disabled = true;
   } else if (state === "error") {
-    button.textContent = "Retry";
     button.disabled = false;
   } else {
-    button.textContent = "Save";
     button.disabled = false;
   }
   button.dataset.saveState = state;
@@ -2247,10 +2259,6 @@ function renderSourceOptionButtons() {
     sourceSaveButton.className = "source-save-button";
     sourceSaveButton.type = "button";
     sourceSaveButton.dataset.sourceHash = sourceHash;
-    sourceSaveButton.setAttribute(
-      "aria-label",
-      `Save ${getSourceDisplayName(option)} to gallery`,
-    );
     applySourceSaveButtonState(sourceSaveButton, getSourceSaveState(sourceHash));
     sourceOptionRow.appendChild(sourceSaveButton);
 

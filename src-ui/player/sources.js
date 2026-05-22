@@ -99,16 +99,16 @@ export function getSourceDisplayMeta(option = {}) {
   const releaseGroup = String(option.releaseGroup || "").trim();
 
   if (Number.isFinite(seeders) && seeders > 0) {
-    meta.push(`\uD83D\uDC64 ${seeders}`);
+    meta.push(`${seeders} seeders`);
   }
   if (size) {
-    meta.push(`\uD83D\uDCBE ${size}`);
+    meta.push(size);
   }
   if (releaseGroup) {
-    meta.push(`\u2699 ${releaseGroup}`);
+    meta.push(releaseGroup);
   }
 
-  return meta.join(" ");
+  return meta.join(" \u2022 ");
 }
 
 // -------------------------------------------------------------------------

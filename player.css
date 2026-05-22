@@ -1284,51 +1284,68 @@ body {
 }
 
 .audio-source-title {
-    margin: 0 0 8px;
+    display: none;
 }
 
 .source-options {
     flex: 1;
-    max-height: min(44vh, 420px);
+    max-height: min(48vh, 460px);
     min-height: 0;
     padding-right: 8px;
     margin-right: -4px;
-    gap: 6px;
+    gap: 8px;
 }
 
 .source-option-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-    align-items: stretch;
+    position: relative;
+    display: block;
 }
 
 .audio-option.source-option {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 5px;
     width: 100%;
     min-width: 0;
-    min-height: 0;
-    padding: 10px 12px 10px 34px;
+    min-height: 76px;
+    padding: 12px 48px 12px 40px;
     border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.02);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.035);
     justify-content: center;
     overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.audio-option.source-option:hover,
+.audio-option.source-option:focus-visible {
+    border-color: rgba(255, 255, 255, 0.24);
+    background: rgba(255, 255, 255, 0.075);
+}
+
+.audio-option.source-option[aria-selected="true"] {
+    border-color: rgba(229, 9, 20, 0.72);
+    background:
+        linear-gradient(90deg, rgba(229, 9, 20, 0.2), transparent 38%),
+        rgba(255, 255, 255, 0.07);
 }
 
 .source-save-button {
-    min-width: 66px;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.07);
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.22);
     color: #fff;
-    padding: 0 12px;
+    padding: 0;
     font-family: inherit;
-    font-size: clamp(0.68rem, 0.86vw, 0.76rem);
-    font-weight: 600;
-    letter-spacing: 0.01em;
+    font-size: 0;
     cursor: pointer;
     transition:
         background-color 140ms ease,
@@ -1343,7 +1360,33 @@ body {
 }
 
 .source-save-button:focus-visible {
-    outline: none;
+    outline: 2px solid rgba(255, 255, 255, 0.48);
+    outline-offset: 2px;
+}
+
+.source-save-button svg {
+    width: 17px;
+    height: 17px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.source-save-spinner {
+    width: 15px;
+    height: 15px;
+    border: 2px solid rgba(255, 255, 255, 0.28);
+    border-top-color: currentColor;
+    border-radius: 999px;
+    animation: source-save-spin 0.8s linear infinite;
+}
+
+@keyframes source-save-spin {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .source-save-button[data-save-state="saving"],
@@ -1358,12 +1401,12 @@ body {
 }
 
 .audio-option.source-option::before {
-    left: 10px;
-    font-size: 1.05rem;
+    left: 13px;
+    font-size: 1.08rem;
 }
 
 .source-option-name {
-    font-size: clamp(0.92rem, 1.12vw, 1.05rem);
+    font-size: clamp(0.92rem, 1.08vw, 1rem);
     line-height: 1.24;
     color: #fff;
     white-space: normal;
@@ -1378,7 +1421,7 @@ body {
 
 .source-option-hint {
     display: block;
-    font-size: clamp(0.76rem, 0.95vw, 0.88rem);
+    font-size: clamp(0.74rem, 0.9vw, 0.84rem);
     line-height: 1.2;
     color: rgba(245, 245, 245, 0.82);
     white-space: nowrap;
@@ -1388,7 +1431,7 @@ body {
 
 .source-option-meta {
     display: block;
-    font-size: clamp(0.7rem, 0.9vw, 0.82rem);
+    font-size: clamp(0.68rem, 0.84vw, 0.78rem);
     line-height: 1.15;
     color: rgba(245, 245, 245, 0.7);
     white-space: nowrap;
@@ -1943,28 +1986,30 @@ body {
 
     .source-options {
         max-height: min(38vh, 280px);
-        gap: 6px;
-    }
-
-    .source-option-row {
-        gap: 6px;
+        gap: 7px;
     }
 
     .audio-option.source-option {
-        min-height: 0;
-        padding: 8px 10px 8px 30px;
+        min-height: 66px;
+        padding: 10px 42px 10px 34px;
         border-radius: 7px;
     }
 
     .source-save-button {
-        min-width: 58px;
-        border-radius: 7px;
-        padding: 0 10px;
-        font-size: clamp(0.62rem, 2.4vw, 0.7rem);
+        top: 8px;
+        right: 8px;
+        width: 28px;
+        height: 28px;
+        min-width: 28px;
+    }
+
+    .source-save-button svg {
+        width: 15px;
+        height: 15px;
     }
 
     .audio-option.source-option::before {
-        left: 8px;
+        left: 10px;
         font-size: 0.98rem;
     }
 
