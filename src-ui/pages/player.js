@@ -49,6 +49,15 @@ import {
   syncLiveStreamControls as syncLiveStreamControlsDom,
 } from "../player/live-streams.js";
 import {
+  isHlsPlaybackSource,
+  shouldUseHlsJsForPlayback,
+} from "../player/hls-playback.js";
+import {
+  attachFullscreenControl,
+  isFullscreenActive,
+  toggleFullscreenMode as togglePlayerFullscreenMode,
+} from "../player/fullscreen.js";
+import {
   findSeriesEntryBySlug,
   loadWatchParams,
   saveWatchParams,
@@ -2358,29 +2367,15 @@ function hasHlsPlaybackSupport() {
   return hasNativeHlsPlaybackSupport() || hasHlsJsPlaybackSupport();
 }
 
-function isHlsPlaybackSource(source) {
-  if (!source) {
-    return false;
-  }
-
-  try {
-    const absoluteSource = new URL(source, window.location.origin).toString();
-    return (
-      absoluteSource.includes("/api/hls/master.m3u8") ||
-      absoluteSource.includes("/api/live/hls.m3u8") ||
-      absoluteSource.toLowerCase().includes(".m3u8")
-    );
-  } catch {
-    return String(source || "").toLowerCase().includes(".m3u8");
-  }
+function shouldUseHlsJsForSource(source) {
+  return shouldUseHlsJsForPlayback(source, {
+    hasNativeHlsPlaybackSupport,
+    hasHlsJsPlaybackSupport,
+  });
 }
 
-function shouldUseHlsJsForSource(source) {
-  return (
-    isHlsPlaybackSource(source) &&
-    !hasNativeHlsPlaybackSupport() &&
-    hasHlsJsPlaybackSupport()
-  );
+function getFullscreenContext() {
+  return { video, playerShell, toggleFullscreen };
 }
 
 function loadHlsConstructor() {
@@ -2964,10 +2959,10 @@ function rebuildTrackOptionButtons() {
 }
 
 function shouldUseSoftwareDecode(source) {
-  const value = String(source || "").toLowerCase();
-  if (value.includes(".m3u8")) {
+  if (isHlsPlaybackSource(source)) {
     return !hasHlsPlaybackSupport();
   }
+  const value = String(source || "").toLowerCase();
   return (
     (isMobileOrTabletVideoEnvironment() &&
       looksLikeBrowserUnsafeVideoSource(value)) ||
@@ -7472,145 +7467,10 @@ if (volumeControl) {
   });
 }
 
-function getFullscreenElement() {
-  return document.fullscreenElement || document.webkitFullscreenElement || null;
-}
-
-function isNativeVideoFullscreenActive() {
-  return Boolean(
-    video?.webkitDisplayingFullscreen ||
-      video?.webkitPresentationMode === "fullscreen",
-  );
-}
-
-function isFullscreenActive() {
-  return Boolean(getFullscreenElement() || isNativeVideoFullscreenActive());
-}
-
-function syncFullscreenControlState() {
-  if (!toggleFullscreen) {
-    return;
-  }
-  const label = isFullscreenActive() ? "Exit fullscreen" : "Fullscreen";
-  toggleFullscreen.setAttribute("aria-label", label);
-  toggleFullscreen.setAttribute("title", label);
-}
-
-function getFullscreenRequest(element) {
-  return (
-    element?.requestFullscreen ||
-    element?.webkitRequestFullscreen ||
-    element?.msRequestFullscreen ||
-    null
-  );
-}
-
-async function requestPlayerFullscreen() {
-  const target = playerShell || document.documentElement;
-  const requestFullscreen = getFullscreenRequest(target);
-  if (!requestFullscreen) {
-    return false;
-  }
-
-  try {
-    const result = requestFullscreen.call(target);
-    if (result && typeof result.then === "function") {
-      await result;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function exitDocumentFullscreen() {
-  const exitFullscreen =
-    document.exitFullscreen ||
-    document.webkitExitFullscreen ||
-    document.msExitFullscreen;
-  if (!exitFullscreen) {
-    return false;
-  }
-
-  try {
-    const result = exitFullscreen.call(document);
-    if (result && typeof result.then === "function") {
-      await result;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function enterNativeVideoFullscreen() {
-  try {
-    if (typeof video?.webkitEnterFullscreen === "function") {
-      video.webkitEnterFullscreen();
-      return true;
-    }
-    if (
-      typeof video?.webkitSetPresentationMode === "function" &&
-      video.webkitPresentationMode !== "fullscreen"
-    ) {
-      video.webkitSetPresentationMode("fullscreen");
-      return true;
-    }
-  } catch {
-    // Ignore fullscreen errors in restricted environments.
-  }
-  return false;
-}
-
-function exitNativeVideoFullscreen() {
-  try {
-    if (typeof video?.webkitExitFullscreen === "function") {
-      video.webkitExitFullscreen();
-      return true;
-    }
-    if (
-      typeof video?.webkitSetPresentationMode === "function" &&
-      video.webkitPresentationMode === "fullscreen"
-    ) {
-      video.webkitSetPresentationMode("inline");
-      return true;
-    }
-  } catch {
-    // Ignore fullscreen errors in restricted environments.
-  }
-  return false;
-}
-
-async function toggleFullscreenMode() {
-  if (isNativeVideoFullscreenActive()) {
-    exitNativeVideoFullscreen();
-    syncFullscreenControlState();
-    return;
-  }
-
-  if (getFullscreenElement()) {
-    await exitDocumentFullscreen();
-    syncFullscreenControlState();
-    return;
-  }
-
-  const supportsElementFullscreen = Boolean(
-    getFullscreenRequest(playerShell || document.documentElement),
-  );
-  if (!supportsElementFullscreen && enterNativeVideoFullscreen()) {
-    syncFullscreenControlState();
-    return;
-  }
-
-  const enteredDocumentFullscreen = await requestPlayerFullscreen();
-  if (!enteredDocumentFullscreen) {
-    enterNativeVideoFullscreen();
-  }
-  syncFullscreenControlState();
-}
-
-trackListener(toggleFullscreen, "click", async () => {
-  await toggleFullscreenMode();
+attachFullscreenControl({
+  getContext: getFullscreenContext,
+  trackListener,
+  onLayoutChange: refreshActiveSubtitlePlacement,
 });
 
 if (nextEpisode) {
@@ -8441,17 +8301,6 @@ if (
   });
 }
 trackListener(window, "resize", refreshActiveSubtitlePlacement);
-trackListener(document, "fullscreenchange", () => {
-  refreshActiveSubtitlePlacement();
-  syncFullscreenControlState();
-});
-trackListener(document, "webkitfullscreenchange", () => {
-  refreshActiveSubtitlePlacement();
-  syncFullscreenControlState();
-});
-trackListener(video, "webkitbeginfullscreen", syncFullscreenControlState);
-trackListener(video, "webkitendfullscreen", syncFullscreenControlState);
-
 trackListener(video, "timeupdate", syncSeekState);
 trackListener(video, "loadedmetadata", applyPendingRecoverySeek);
 trackListener(video, "play", startSubtitleRafLoop);
@@ -8654,7 +8503,7 @@ trackListener(playerShell, "dblclick", (event) => {
   }
   event.preventDefault();
   clearSingleClickPlaybackToggle();
-  void toggleFullscreenMode();
+  void togglePlayerFullscreenMode(getFullscreenContext());
 });
 
 trackListener(playerShell, "mousemove", handleUserActivity);
@@ -8715,7 +8564,7 @@ async function handleKeydown(event) {
     if (isInteractiveTarget(event.target)) {
       return;
     }
-    await toggleFullscreenMode();
+    await togglePlayerFullscreenMode(getFullscreenContext());
   }
 
   if (event.key === "[" || event.key === "]") {
@@ -8732,7 +8581,7 @@ async function handleKeydown(event) {
     return;
   }
 
-  if (event.key === "Escape" && !document.fullscreenElement) {
+  if (event.key === "Escape" && !isFullscreenActive(getFullscreenContext())) {
     if (liveStreamControl?.classList.contains("is-open")) {
       closeLiveStreamPopover();
       return;

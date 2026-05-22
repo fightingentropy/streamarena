@@ -10,6 +10,7 @@ import {
 } from "../shared.js";
 import LiveChannelsView from "../components/live-channels-view.js";
 import { signOut } from "../lib/auth.js";
+import { liveNavClass, sportsNavClass } from "../lib/browse-nav.js";
 
 export default function LivePage() {
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
@@ -90,8 +91,8 @@ export default function LivePage() {
             </a>
             <nav>
               <a href="/">Home</a>
-              <a href="/live" class="nav-mobile-primary is-active">Live</a>
-              <a href="/football" class="nav-mobile-primary">Sports</a>
+              <a href="/live" class=${liveNavClass("live")}>Live</a>
+              <a href="/football" class=${sportsNavClass("")}>Sports</a>
               <a href="/#myListRow" class="optional">My List</a>
             </nav>
           </div>
