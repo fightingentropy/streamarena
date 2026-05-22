@@ -10,6 +10,7 @@ import {
 } from "../shared.js";
 import SportsScheduleView from "../components/football-schedule-view.js";
 import { signOut } from "../lib/auth.js";
+import { liveNavClass, sportsNavClass } from "../lib/browse-nav.js";
 
 export default function BasketballPage() {
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
@@ -90,8 +91,8 @@ export default function BasketballPage() {
             </a>
             <nav>
               <a href="/">Home</a>
-              <a href="/live" class="nav-mobile-primary">Live</a>
-              <a href="/football" class="nav-mobile-primary is-active">Sports</a>
+              <a href="/live" class=${liveNavClass("")}>Live</a>
+              <a href="/football" class=${sportsNavClass("basketball")}>Sports</a>
               <a href="/#myListRow" class="optional">My List</a>
             </nav>
           </div>

@@ -1,3 +1,5 @@
+import { isHlsPlaybackSource } from "./hls-playback.js";
+
 function slugify(value) {
   return String(value || "")
     .trim()
@@ -147,7 +149,7 @@ export function getLivePlaybackSource(source, isLivePlayback, options = {}) {
   const normalizedSource = normalizePlaybackSourceValue(source);
   const shouldProxy =
     isLivePlayback &&
-    normalizedSource.toLowerCase().includes(".m3u8") &&
+    isHlsPlaybackSource(normalizedSource) &&
     /^https?:\/\//i.test(normalizedSource);
   if (!shouldProxy) {
     return normalizedSource;

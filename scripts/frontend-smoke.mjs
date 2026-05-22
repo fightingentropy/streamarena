@@ -252,6 +252,7 @@ const pages = [
     selector: ".player-shell",
     contextOptions: devices["iPhone 13"],
     expectHlsMaster: true,
+    expectMobileFullscreenToggle: true,
   },
   {
     path: `/player.html?tmdbId=${hlsManagedTmdbId}&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1`,
@@ -285,6 +286,7 @@ async function runSmoke() {
       let hlsBundleRequested = false;
       let hlsBundleReleased = false;
 
+      let hlsBundleHoldActive = false;
       page.on("pageerror", (error) => {
         failures.push(`page error: ${error.message}`);
       });
@@ -305,9 +307,11 @@ async function runSmoke() {
       if (pageSpec.delayHlsImport) {
         await page.route(/.*(?:hls|hls__js).*\.js(?:\?.*)?$/, async (route) => {
           hlsBundleRequested = true;
+          hlsBundleHoldActive = true;
           const response = await route.fetch();
           const body = await response.body();
-          await delay(700);
+          await delay(2000);
+          hlsBundleHoldActive = false;
           hlsBundleReleased = true;
           await route.fulfill({
             status: response.status(),
@@ -366,29 +370,28 @@ async function runSmoke() {
       await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
 
       if (pageSpec.expectHlsManagedDuringImport) {
-        for (
-          let attempt = 0;
-          attempt < 100 && (!sawHlsManagedResolve || !hlsBundleRequested);
-          attempt += 1
-        ) {
-          await delay(50);
+        let managedImportReady = false;
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          if (sawHlsManagedResolve && hlsBundleHoldActive) {
+            managedImportReady = true;
+            break;
+          }
+          await delay(25);
         }
         const earlyVideoSource = await page.evaluate(
           () => document.querySelector("video")?.getAttribute("src") || "",
         );
-        if (!sawHlsManagedResolve || !hlsBundleRequested) {
+        if (!managedImportReady) {
           throw new Error(
             `${pageSpec.path}\nHLS-managed source setup did not start.\n${JSON.stringify({
               sawHlsManagedResolve,
               hlsBundleRequested,
+              hlsBundleHoldActive,
               hlsBundleReleased,
               earlyVideoSource,
               failures,
             })}`,
           );
-        }
-        if (hlsBundleReleased) {
-          throw new Error(`${pageSpec.path}\nHLS import was not held for the race check.`);
         }
         if (earlyVideoSource.includes("/api/hls/master.m3u8")) {
           throw new Error(
@@ -491,6 +494,51 @@ async function runSmoke() {
         await page.evaluate(() => {
           window.dispatchEvent(new Event("online"));
         });
+      }
+
+      if (pageSpec.expectMobileFullscreenToggle) {
+        const fullscreenButton = page.locator("#toggleFullscreen");
+        await fullscreenButton.waitFor({ state: "visible", timeout: 4_000 });
+        const readFullscreenLabel = () => fullscreenButton.getAttribute("aria-label");
+        const clickFullscreenToggle = () =>
+          page.evaluate(() => {
+            document.querySelector("#toggleFullscreen")?.click();
+          });
+
+        const enterLabel = await readFullscreenLabel();
+        if (enterLabel !== "Fullscreen") {
+          throw new Error(
+            `${pageSpec.path}\nMobile fullscreen button should start in enter mode.\n${enterLabel}`,
+          );
+        }
+        await clickFullscreenToggle();
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          const exitLabel = await readFullscreenLabel();
+          if (exitLabel === "Exit fullscreen") {
+            break;
+          }
+          await delay(100);
+        }
+        const activeLabel = await readFullscreenLabel();
+        if (activeLabel !== "Exit fullscreen") {
+          throw new Error(
+            `${pageSpec.path}\nMobile fullscreen toggle did not enter fullscreen.\n${activeLabel}`,
+          );
+        }
+        await clickFullscreenToggle();
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          const resetLabel = await readFullscreenLabel();
+          if (resetLabel === "Fullscreen") {
+            break;
+          }
+          await delay(100);
+        }
+        const finalLabel = await readFullscreenLabel();
+        if (finalLabel !== "Fullscreen") {
+          throw new Error(
+            `${pageSpec.path}\nMobile fullscreen toggle did not exit fullscreen.\n${finalLabel}`,
+          );
+        }
       }
 
       if (failures.length > 0) {
