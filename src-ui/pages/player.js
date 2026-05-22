@@ -8050,6 +8050,7 @@ async function handleSourceOptionSelection(nextSourceHash) {
   const resumeFrom = getEffectiveCurrentTime();
   const wasPaused = video.paused;
   tmdbResolveRetries = 0;
+  closeAudioPopover(false, { force: true });
   showResolver("Switching source...");
   try {
     const result = await resolveTmdbSourcesAndPlay({
