@@ -36,7 +36,7 @@ const HLS_SEGMENT_WAIT_POLL_MS: u64 = 180;
 const REMUX_ACCURATE_SEEK_PREROLL_SECONDS: i64 = 12;
 const FFMPEG_STDERR_MAX_LINES: usize = 80;
 const FFMPEG_STDERR_MAX_BYTES: usize = 16 * 1024;
-const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v4";
+const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v5";
 
 const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "mp2", "opus", "vorbis", "flac", "alac"];
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
@@ -1529,6 +1529,13 @@ fn build_hls_video_encode_config(hwaccel_mode: &str) -> VideoEncodeConfig {
     }
 }
 
+fn build_hls_mobile_safe_video_filter_args() -> Vec<String> {
+    vec![
+        "-vf".to_owned(),
+        "scale=w=min(1920\\,iw):h=min(1080\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1".to_owned(),
+    ]
+}
+
 fn build_remux_video_encode_config(hwaccel_mode: &str) -> VideoEncodeConfig {
     match hwaccel_mode.trim().to_lowercase().as_str() {
         "videotoolbox" => VideoEncodeConfig {
@@ -1685,6 +1692,7 @@ fn build_hls_on_demand_segment_args(
         },
         "-sn".to_owned(),
     ]);
+    args.extend(build_hls_mobile_safe_video_filter_args());
     args.extend(encode_config.video_encode_args.clone());
     args.extend([
         "-c:a".to_owned(),
@@ -1731,6 +1739,7 @@ fn build_hls_transcode_args(
         },
         "-sn".to_owned(),
     ]);
+    args.extend(build_hls_mobile_safe_video_filter_args());
     args.extend(encode_config.video_encode_args.clone());
     args.extend([
         "-force_key_frames".to_owned(),
@@ -1991,6 +2000,33 @@ mod tests {
             args.get(force_keyframes_index + 1).map(String::as_str),
             Some("expr:gte(t,n_forced*6)")
         );
+    }
+
+    #[test]
+    fn hls_outputs_are_downscaled_for_mobile_safe_h264() {
+        let transcode_args = build_hls_transcode_args(
+            "movie.mp4",
+            -1,
+            &build_hls_video_encode_config("none"),
+            "/tmp/movie",
+        );
+        let segment_args = build_hls_on_demand_segment_args(
+            "movie.mp4",
+            0,
+            -1,
+            &build_hls_video_encode_config("none"),
+        );
+
+        for args in [transcode_args, segment_args] {
+            let filter_index = args
+                .iter()
+                .position(|arg| arg == "-vf")
+                .expect("video filter argument");
+            let filter = args.get(filter_index + 1).expect("video filter expression");
+            assert!(filter.contains("min(1920\\,iw)"));
+            assert!(filter.contains("min(1080\\,ih)"));
+            assert!(filter.contains("force_divisible_by=2"));
+        }
     }
 
     #[test]
