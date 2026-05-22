@@ -4,6 +4,8 @@ export const BBC_NEWS_STREAM_URL =
   "https://vs-hls-push-ww-live.akamaized.net/x=4/i=urn:bbc:pips:service:bbc_news_channel_hd/mobile_wifi_main_hd_abr_v2.m3u8";
 export const BBC_NEWS_ROKU_STREAM_URL =
   "https://jmp2.uk/rok-6183f9f73a64394cf3c55690605af2a7.m3u8";
+export const SKY_NEWS_STREAM_URL =
+  "https://linear417-gb-hls1-prd-ak.cdn.skycdp.com/100e/Content/HLS_001_1080_30/Live/channel(skynews)/index_1080-30.m3u8";
 
 export const LIVE_CHANNELS = Object.freeze([
   {
@@ -47,6 +49,24 @@ export const LIVE_CHANNELS = Object.freeze([
     genre: "News",
     region: "UK",
     quality: "720p HLS + 1080p option",
+  },
+  {
+    id: "sky-news",
+    title: "Sky News",
+    source: SKY_NEWS_STREAM_URL,
+    defaultStreamId: "sky-hd",
+    streams: [
+      {
+        id: "sky-hd",
+        label: "Sky News HD",
+        source: SKY_NEWS_STREAM_URL,
+        quality: "1080p HLS",
+      },
+    ],
+    artwork: "assets/images/sky-news-live.svg",
+    genre: "News",
+    region: "UK",
+    quality: "1080p HLS",
   },
 ]);
 

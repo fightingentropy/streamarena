@@ -18,6 +18,7 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "jmp2.uk",
     "www.bloomberg.com",
     "28585519.net",
+    "cdn.skycdp.com",
 ];
 
 struct LiveHlsRequest {
@@ -253,8 +254,25 @@ fn rewrite_live_hls_master_playlist(
     let mut rewritten = Vec::with_capacity(lines.len());
     for raw_line in lines {
         let line = raw_line.trim_end();
-        if line.trim().is_empty() || line.starts_with('#') {
+        if line.trim().is_empty() {
             rewritten.push(line.to_owned());
+            continue;
+        }
+
+        if line.starts_with('#') {
+            let proxy_url_builder = if line.starts_with("#EXT-X-MEDIA:")
+                || line.starts_with("#EXT-X-I-FRAME-STREAM-INF:")
+            {
+                live_hls_proxy_playlist_url
+            } else {
+                live_hls_proxy_resource_url
+            };
+            rewritten.push(rewrite_hls_uri_attribute(
+                base_url,
+                line,
+                referer,
+                proxy_url_builder,
+            ));
             continue;
         }
 
@@ -301,9 +319,19 @@ fn rewrite_live_hls_media_playlist(
                 && !line.starts_with("#EXT-X-PROGRAM-DATE-TIME")
                 && !line.starts_with("#EXT-X-DISCONTINUITY")
             {
-                header.push(line.to_owned());
+                header.push(rewrite_hls_uri_attribute(
+                    base_url,
+                    line,
+                    referer,
+                    live_hls_proxy_resource_url,
+                ));
             } else {
-                pending_block.push(rewrite_hls_uri_attribute(base_url, line, referer));
+                pending_block.push(rewrite_hls_uri_attribute(
+                    base_url,
+                    line,
+                    referer,
+                    live_hls_proxy_resource_url,
+                ));
             }
             continue;
         }
@@ -339,7 +367,12 @@ fn rewrite_live_hls_media_playlist(
     rewritten.join("\n")
 }
 
-fn rewrite_hls_uri_attribute(base_url: &Url, line: &str, referer: Option<&str>) -> String {
+fn rewrite_hls_uri_attribute(
+    base_url: &Url,
+    line: &str,
+    referer: Option<&str>,
+    proxy_url_builder: fn(&str, Option<&str>) -> String,
+) -> String {
     let Some(uri_start) = line.find("URI=\"") else {
         return line.to_owned();
     };
@@ -352,7 +385,7 @@ fn rewrite_hls_uri_attribute(base_url: &Url, line: &str, referer: Option<&str>) 
     let Some(absolute_uri) = resolve_hls_uri(base_url, uri_value) else {
         return line.to_owned();
     };
-    let proxied_uri = live_hls_proxy_resource_url(&absolute_uri, referer);
+    let proxied_uri = proxy_url_builder(&absolute_uri, referer);
     format!(
         "{}{}{}",
         &line[..value_start],
@@ -376,6 +409,9 @@ mod tests {
         let bloomberg_akamai_variant: url::Url = "https://liveproduseast.akamaized.net/us/Channel-USTV-AWS-virginia-2/Source-USTV-10000-1-slxdlg-BP-HD-7-oQALjcQ9CJcP_live.m3u8"
             .parse()
             .expect("bloomberg akamai variant url");
+        let sky_news: url::Url = "https://linear417-gb-hls1-prd-ak.cdn.skycdp.com/100e/Content/HLS_001_1080_30/Live/channel(skynews)/index_1080-30.m3u8"
+            .parse()
+            .expect("sky news url");
         let disallowed: url::Url = "https://example.com/live.m3u8"
             .parse()
             .expect("disallowed url");
@@ -384,6 +420,7 @@ mod tests {
         assert!(is_allowed_live_hls_url(&allowed));
         assert!(is_allowed_live_hls_url(&bloomberg_variant));
         assert!(is_allowed_live_hls_url(&bloomberg_akamai_variant));
+        assert!(is_allowed_live_hls_url(&sky_news));
         assert!(!is_allowed_live_hls_url(&disallowed));
         assert!(!is_allowed_live_hls_url(&local));
     }
@@ -398,6 +435,20 @@ mod tests {
 
         assert!(rewritten.contains("/api/live/hls.m3u8?input="));
         assert!(rewritten.contains("child%2Fmain.m3u8"));
+    }
+
+    #[test]
+    fn rewrites_master_playlist_uri_attributes_through_live_proxy() {
+        let base: url::Url = "https://linear417-gb-hls1-prd-ak.cdn.skycdp.com/100e/Content/HLS_001_1080_30/Live/channel(skynews)/index_1080-30.m3u8"
+            .parse()
+            .expect("base url");
+        let playlist = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio1\",URI=\"08_1080-30.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1\n07_1080-30.m3u8\n";
+        let rewritten = rewrite_live_hls_playlist(&base, playlist, None);
+
+        assert!(rewritten.contains("/api/live/hls.m3u8?input="));
+        assert!(rewritten.contains("08_1080-30.m3u8"));
+        assert!(rewritten.contains("07_1080-30.m3u8"));
+        assert!(!rewritten.contains("URI=\"08_1080-30.m3u8\""));
     }
 
     #[test]

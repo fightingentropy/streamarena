@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Sky News live channel artwork</title>
+  <desc id="desc">A Sky News branded live channel slate.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="0.46" stop-color="#102d52"/>
+      <stop offset="1" stop-color="#08090c"/>
+    </linearGradient>
+    <linearGradient id="signal" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.38" stop-color="#0072ce"/>
+      <stop offset="0.68" stop-color="#d71920"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1280" height="720" fill="#000" opacity="0.18"/>
+  <path d="M0 540c138-72 278-84 420-38 168 55 312 58 474 6 166-53 276-44 386 32v180H0Z" fill="#050608" opacity="0.72"/>
+  <rect x="78" y="78" width="154" height="54" rx="27" fill="#d71920"/>
+  <text x="155" y="114" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="700" fill="#fff">LIVE</text>
+  <circle cx="1068" cy="176" r="132" fill="#0072ce" opacity="0.12"/>
+  <circle cx="1068" cy="176" r="82" fill="#0072ce" opacity="0.18"/>
+  <circle cx="1068" cy="176" r="26" fill="#fff" opacity="0.82"/>
+  <g font-family="Helvetica Neue, Arial, sans-serif" font-weight="800">
+    <rect x="84" y="286" width="186" height="88" rx="8" fill="#fff"/>
+    <rect x="270" y="286" width="272" height="88" rx="8" fill="#d71920"/>
+    <text x="177" y="348" text-anchor="middle" font-size="66" fill="#111">sky</text>
+    <text x="406" y="348" text-anchor="middle" font-size="66" fill="#fff">news</text>
+    <text x="88" y="468" font-size="34" font-weight="500" fill="#dce9f7">Live headlines, politics and breaking news</text>
+  </g>
+  <rect x="86" y="560" width="730" height="10" rx="5" fill="url(#signal)"/>
+  <g fill="#fff" opacity="0.32">
+    <rect x="928" y="488" width="42" height="138" rx="8"/>
+    <rect x="994" y="436" width="42" height="190" rx="8"/>
+    <rect x="1060" y="384" width="42" height="242" rx="8"/>
+    <rect x="1126" y="516" width="42" height="110" rx="8"/>
+  </g>
+</svg>
