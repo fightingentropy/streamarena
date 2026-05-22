@@ -10,6 +10,7 @@ const port = Number(process.env.FRONTEND_SMOKE_PORT || 4174);
 const baseUrl = `http://127.0.0.1:${port}`;
 const viteBin = resolve(rootDir, "node_modules/.bin/vite");
 const smokeVideo = "assets/videos/fantozzi-1975-1080p-h264-aac-4k-restored.mp4";
+const hevcSmokeVideo = "assets/videos/project-hail-mary-2026-2160p-hevc.mp4";
 
 if (!existsSync(viteBin)) {
   console.error("Missing Vite binary. Run bun install first.");
@@ -121,6 +122,9 @@ function apiPayload(url, method) {
   if (path === "/api/football/stream") return { streams: [] };
   if (path === "/api/live/hls-resource") return { ok: true };
   if (path === "/api/live/hls.m3u8") return "#EXTM3U\n";
+  if (path === "/api/hls/master.m3u8") {
+    return "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.000,\n/api/hls/segment.ts?index=0\n#EXT-X-ENDLIST\n";
+  }
   if (path === "/api/upload/infer" && method !== "GET") return {};
   return {};
 }
@@ -135,6 +139,12 @@ const pages = [
   {
     path: `/player.html?src=${encodeURIComponent(smokeVideo)}&title=Smoke%20Movie&year=1975`,
     selector: ".player-shell",
+    expectOfflineRecovery: true,
+  },
+  {
+    path: `/player.html?src=${encodeURIComponent(hevcSmokeVideo)}&title=Project%20Hail%20Mary&year=2026`,
+    selector: ".player-shell",
+    expectHlsMaster: true,
   },
 ];
 
@@ -146,6 +156,7 @@ async function runSmoke() {
     for (const pageSpec of pages) {
       const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
       const failures = [];
+      let sawHlsMasterRequest = false;
 
       page.on("pageerror", (error) => {
         failures.push(`page error: ${error.message}`);
@@ -167,16 +178,27 @@ async function runSmoke() {
       await page.route("**/api/**", async (route) => {
         const request = route.request();
         const url = new URL(request.url());
+        if (url.pathname === "/api/hls/master.m3u8") {
+          sawHlsMasterRequest = true;
+        }
         if (pageSpec.path === "/login.html" && url.pathname === "/api/auth/me") {
           await route.fulfill(jsonResponse({ error: "Not authenticated." }, 401));
           return;
         }
         const payload = apiPayload(url, request.method());
-        if (url.pathname === "/api/live/hls.m3u8") {
+        if (url.pathname === "/api/live/hls.m3u8" || url.pathname === "/api/hls/master.m3u8") {
           await route.fulfill({
             status: 200,
             contentType: "application/vnd.apple.mpegurl",
             body: String(payload),
+          });
+          return;
+        }
+        if (url.pathname === "/api/hls/segment.ts") {
+          await route.fulfill({
+            status: 200,
+            contentType: "video/mp2t",
+            body: "",
           });
           return;
         }
@@ -187,7 +209,16 @@ async function runSmoke() {
       await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
 
-      if (pageSpec.path.startsWith("/player.html")) {
+      if (pageSpec.expectHlsMaster) {
+        for (let attempt = 0; attempt < 40 && !sawHlsMasterRequest; attempt += 1) {
+          await delay(100);
+        }
+        if (!sawHlsMasterRequest) {
+          throw new Error(`${pageSpec.path}\nHEVC/HDR source did not use HLS fallback.`);
+        }
+      }
+
+      if (pageSpec.expectOfflineRecovery) {
         await page.context().setOffline(true);
         await page.evaluate(() => {
           window.dispatchEvent(new Event("offline"));
