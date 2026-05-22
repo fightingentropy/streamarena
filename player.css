@@ -163,9 +163,80 @@ body {
     max-width: 420px;
 }
 
+.resolver-title {
+    margin: 0;
+    color: #fff;
+    font-size: clamp(1.18rem, 2.1vw, 1.62rem);
+    font-weight: 800;
+    line-height: 1.1;
+    text-align: center;
+}
+
+.resolver-detail,
+.resolver-countdown {
+    margin: 0;
+    color: rgba(245, 245, 245, 0.72);
+    font-size: 0.92rem;
+    line-height: 1.35;
+    text-align: center;
+    max-width: 420px;
+}
+
+.resolver-countdown {
+    color: rgba(245, 245, 245, 0.9);
+    font-weight: 700;
+}
+
+.resolver-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 4px;
+}
+
+.resolver-action {
+    min-height: 42px;
+    border: 1px solid rgba(255, 255, 255, 0.32);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    padding: 0 18px;
+    font: inherit;
+    font-size: 0.92rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.resolver-action:hover,
+.resolver-action:focus-visible {
+    border-color: rgba(255, 255, 255, 0.7);
+    background: rgba(255, 255, 255, 0.2);
+    outline: none;
+}
+
+.resolver-action-primary {
+    border-color: #e50914;
+    background: #e50914;
+}
+
+.resolver-action-primary:hover,
+.resolver-action-primary:focus-visible {
+    border-color: #f40612;
+    background: #f40612;
+}
+
 .resolver-overlay.is-error .resolver-card {
     display: grid;
     border-color: rgba(255, 118, 118, 0.62);
+}
+
+.resolver-overlay.is-recovery .resolver-card {
+    display: grid;
+}
+
+.resolver-overlay.is-recovery {
+    pointer-events: auto;
 }
 
 .resolver-overlay.is-error {

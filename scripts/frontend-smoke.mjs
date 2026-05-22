@@ -78,6 +78,9 @@ function apiPayload(url, method) {
       remuxMaxConcurrent: 1,
     };
   }
+  if (path === "/api/health") {
+    return { ok: true };
+  }
   if (path === "/api/library") {
     return {
       movies: [
@@ -183,6 +186,27 @@ async function runSmoke() {
       await page.goto(`${baseUrl}${pageSpec.path}`, { waitUntil: "domcontentloaded" });
       await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+
+      if (pageSpec.path.startsWith("/player.html")) {
+        await page.context().setOffline(true);
+        await page.evaluate(() => {
+          window.dispatchEvent(new Event("offline"));
+        });
+        await page.waitForSelector(".resolver-overlay.is-recovery:not([hidden])", {
+          timeout: 4_000,
+        });
+        const recoveryText = await page.$eval(
+          ".resolver-card",
+          (node) => node.textContent || "",
+        );
+        if (!/No connection|offline|Retry now/i.test(recoveryText)) {
+          throw new Error(`Player offline recovery overlay missing.\n${recoveryText}`);
+        }
+        await page.context().setOffline(false);
+        await page.evaluate(() => {
+          window.dispatchEvent(new Event("online"));
+        });
+      }
 
       if (failures.length > 0) {
         throw new Error(`${pageSpec.path}\n${failures.join("\n")}`);

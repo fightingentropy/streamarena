@@ -69,6 +69,8 @@ export default function PlayerPage() {
   let audioStatusBadge, subtitlePanel, audioTabSubtitles, audioTabSources;
   let sourcePanel, sourceOptionsContainer, sourceOptionDetails, episodeLabel;
   let subtitleOverlay, resolverOverlay, resolverStatus, resolverLoader;
+  let resolverTitle, resolverDetail, resolverCountdown;
+  let resolverRetryButton, resolverAlternateButton;
   let seekLoadingOverlay, playerShell;
   let speedOptions = [];
 
@@ -76,6 +78,10 @@ const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const controlsHideDelayMs = 3000;
 const singleClickToggleDelayMs = 220;
 const seekLoadingTimeoutMs = 9000;
+const playbackRecoveryStallDelayMs = 8000;
+const playbackRecoveryServerTimeoutMs = 3500;
+const playbackRecoveryInitialDelayMs = 3000;
+const playbackRecoveryMaxDelayMs = 10000;
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
@@ -84,6 +90,12 @@ let episodesPopoverCloseTimeout = null;
 let episodesPopoverSticky = false;
 let audioPopoverCloseTimeout = null;
 let streamStallRecoveryTimeout = null;
+let playbackRecoveryTimeout = null;
+let playbackRecoveryCountdownInterval = null;
+let playbackRecoveryMode = "";
+let playbackRecoveryAttemptCount = 0;
+let playbackRecoverySequence = 0;
+let pendingRecoverySeekSeconds = null;
 let controlsHideTimeout = null;
 let singleClickPlaybackToggleTimeout = null;
 let seekLoadingTimeout = null;
@@ -1337,7 +1349,19 @@ function hideSeekLoadingIndicator() {
   seekLoadingOverlay.hidden = true;
 }
 
-function showResolver(message, { isError = false, showStatus = isError } = {}) {
+function showResolver(
+  message,
+  {
+    isError = false,
+    showStatus = isError,
+    isRecovery = false,
+    title = "",
+    detail = "",
+    countdown = "",
+    showRetry = false,
+    showAlternate = false,
+  } = {},
+) {
   if (hasExplicitSource && !showStatus && !isError) {
     hideResolver();
     return;
@@ -1350,14 +1374,33 @@ function showResolver(message, { isError = false, showStatus = isError } = {}) {
   if (resolverStatus) {
     resolverStatus.textContent =
       String(message || "").trim() || "Unable to load this video.";
-    resolverStatus.hidden = !showStatus;
+    resolverStatus.hidden = !(showStatus || isRecovery);
+  }
+  if (resolverTitle) {
+    resolverTitle.textContent = String(title || "").trim();
+    resolverTitle.hidden = !isRecovery || !resolverTitle.textContent;
+  }
+  if (resolverDetail) {
+    resolverDetail.textContent = String(detail || "").trim();
+    resolverDetail.hidden = !isRecovery || !resolverDetail.textContent;
+  }
+  if (resolverCountdown) {
+    resolverCountdown.textContent = String(countdown || "").trim();
+    resolverCountdown.hidden = !isRecovery || !resolverCountdown.textContent;
+  }
+  if (resolverRetryButton) {
+    resolverRetryButton.hidden = !isRecovery || !showRetry;
+  }
+  if (resolverAlternateButton) {
+    resolverAlternateButton.hidden = !isRecovery || !showAlternate;
   }
   if (resolverLoader) {
-    resolverLoader.hidden = showStatus || isError;
+    resolverLoader.hidden = showStatus || isError || isRecovery;
   }
   hideSeekLoadingIndicator();
   resolverOverlay.hidden = false;
   resolverOverlay.classList.toggle("is-error", isError);
+  resolverOverlay.classList.toggle("is-recovery", isRecovery);
 }
 
 function hideResolver() {
@@ -1367,11 +1410,27 @@ function hideResolver() {
 
   resolverOverlay.hidden = true;
   resolverOverlay.classList.remove("is-error");
+  resolverOverlay.classList.remove("is-recovery");
   if (resolverLoader) {
     resolverLoader.hidden = false;
   }
   if (resolverStatus) {
     resolverStatus.hidden = true;
+  }
+  if (resolverTitle) {
+    resolverTitle.hidden = true;
+  }
+  if (resolverDetail) {
+    resolverDetail.hidden = true;
+  }
+  if (resolverCountdown) {
+    resolverCountdown.hidden = true;
+  }
+  if (resolverRetryButton) {
+    resolverRetryButton.hidden = true;
+  }
+  if (resolverAlternateButton) {
+    resolverAlternateButton.hidden = true;
   }
 }
 
@@ -3176,6 +3235,10 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
       destroyActiveHlsController();
       const fallbackMessage =
         String(message || "").trim() || "HLS playback failed.";
+      if (isBrowserOffline()) {
+        schedulePlaybackRecovery("offline", "", { resetAttempts: true });
+        return;
+      }
       if (attemptTmdbRecovery("Trying alternate source...")) {
         return;
       }
@@ -3211,7 +3274,7 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
       video.addEventListener("error", onNativeHlsError, { once: true });
 
       void tryPlay();
-      scheduleStreamStallRecovery("Stream stalled, trying another source...");
+      scheduleStreamStallRecovery();
       return;
     }
 
@@ -3243,6 +3306,13 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
             ) {
               hlsRecoveryAttempts += 1;
               hls.startLoad();
+              return;
+            }
+            if (data.type === HlsConstructor.ErrorTypes.NETWORK_ERROR) {
+              schedulePlaybackRecovery(
+                isBrowserOffline() ? "offline" : "buffering",
+                "Network interrupted. Retrying stream...",
+              );
               return;
             }
             if (
@@ -3277,7 +3347,7 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
           }
         });
 
-      scheduleStreamStallRecovery("Stream stalled, trying another source...");
+      scheduleStreamStallRecovery();
       return;
     }
 
@@ -3296,7 +3366,7 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
       );
       video.load();
       void tryPlay();
-      scheduleStreamStallRecovery("Stream stalled, trying another source...");
+      scheduleStreamStallRecovery();
       return;
     }
 
@@ -3306,7 +3376,7 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
 
   video.setAttribute("src", absoluteSource);
   video.load();
-  scheduleStreamStallRecovery("Stream stalled, trying another source...");
+  scheduleStreamStallRecovery();
 }
 
 function getActiveSubtitleVttUrl() {
@@ -5119,7 +5189,7 @@ function clearStreamStallRecovery() {
 }
 
 function scheduleStreamStallRecovery(
-  message = "Stream stalled, trying another source...",
+  message = "Playback stalled. Retrying from here...",
 ) {
   if (!isTmdbResolvedPlayback || video.paused) {
     return;
@@ -5138,8 +5208,11 @@ function scheduleStreamStallRecovery(
       return;
     }
 
-    attemptTmdbRecovery(message);
-  }, 8000);
+    schedulePlaybackRecovery(
+      isBrowserOffline() ? "offline" : "buffering",
+      message,
+    );
+  }, playbackRecoveryStallDelayMs);
 }
 
 function clearControlsHideTimer() {
@@ -5505,6 +5578,300 @@ function sleep(ms) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
   });
+}
+
+function isBrowserOffline() {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
+}
+
+function clearPlaybackRecoveryTimers() {
+  if (playbackRecoveryTimeout !== null) {
+    window.clearTimeout(playbackRecoveryTimeout);
+    playbackRecoveryTimeout = null;
+  }
+  if (playbackRecoveryCountdownInterval !== null) {
+    window.clearInterval(playbackRecoveryCountdownInterval);
+    playbackRecoveryCountdownInterval = null;
+  }
+}
+
+function clearPlaybackRecovery({ hideOverlay = true } = {}) {
+  clearPlaybackRecoveryTimers();
+  playbackRecoveryMode = "";
+  playbackRecoveryAttemptCount = 0;
+  playbackRecoverySequence += 1;
+  pendingRecoverySeekSeconds = null;
+  if (
+    hideOverlay &&
+    resolverOverlay &&
+    resolverOverlay.classList.contains("is-recovery")
+  ) {
+    hideResolver();
+  }
+}
+
+function getPlaybackRecoveryCopy(mode) {
+  if (mode === "offline") {
+    return {
+      title: "No connection",
+      message: "You appear to be offline. Playback will resume when the connection returns.",
+    };
+  }
+  if (mode === "server") {
+    return {
+      title: "Server unavailable",
+      message: "Your server is not responding. Retrying automatically...",
+    };
+  }
+  return {
+    title: "Connection is slow",
+    message: "Playback stalled. Retrying the stream from here...",
+  };
+}
+
+function getPlaybackRecoveryDelayMs(mode) {
+  if (mode === "offline" || mode === "server") {
+    return 5000;
+  }
+  return Math.min(
+    playbackRecoveryMaxDelayMs,
+    playbackRecoveryInitialDelayMs + playbackRecoveryAttemptCount * 2000,
+  );
+}
+
+function updatePlaybackRecoveryCountdown(deadlineMs) {
+  if (!resolverCountdown) {
+    return;
+  }
+  const remainingSeconds = Math.max(
+    1,
+    Math.ceil((deadlineMs - Date.now()) / 1000),
+  );
+  resolverCountdown.textContent = `Retrying in ${remainingSeconds}s`;
+  resolverCountdown.hidden = false;
+}
+
+function showPlaybackRecoveryOverlay(mode, message, delayMs) {
+  const copy = getPlaybackRecoveryCopy(mode);
+  const canTryAlternate = isTmdbResolvedPlayback && mode !== "offline";
+  const detail =
+    mode === "offline"
+      ? "Keep this screen open. We will reconnect automatically."
+      : "Your position is saved for this retry.";
+  showResolver(message || copy.message, {
+    isRecovery: true,
+    showStatus: true,
+    title: copy.title,
+    detail,
+    countdown: `Retrying in ${Math.max(1, Math.ceil(delayMs / 1000))}s`,
+    showRetry: true,
+    showAlternate: canTryAlternate,
+  });
+}
+
+function schedulePlaybackRecovery(
+  mode,
+  message = "",
+  { delayMs = null, resetAttempts = false } = {},
+) {
+  if (!playerShell && !hasRecoverablePlaybackSource() && !isTmdbResolvedPlayback) {
+    return false;
+  }
+
+  const normalizedMode = mode || (isBrowserOffline() ? "offline" : "buffering");
+  if (resetAttempts || playbackRecoveryMode !== normalizedMode) {
+    playbackRecoveryAttemptCount = 0;
+  }
+  playbackRecoveryMode = normalizedMode;
+  const effectiveDelayMs =
+    delayMs === null ? getPlaybackRecoveryDelayMs(normalizedMode) : delayMs;
+  const sequence = (playbackRecoverySequence += 1);
+  const deadlineMs = Date.now() + effectiveDelayMs;
+
+  clearPlaybackRecoveryTimers();
+  showPlaybackRecoveryOverlay(normalizedMode, message, effectiveDelayMs);
+  updatePlaybackRecoveryCountdown(deadlineMs);
+  playbackRecoveryCountdownInterval = window.setInterval(() => {
+    if (sequence !== playbackRecoverySequence) {
+      return;
+    }
+    updatePlaybackRecoveryCountdown(deadlineMs);
+  }, 250);
+  playbackRecoveryTimeout = window.setTimeout(() => {
+    if (sequence !== playbackRecoverySequence) {
+      return;
+    }
+    void runPlaybackRecoveryAttempt(sequence, normalizedMode);
+  }, effectiveDelayMs);
+  return true;
+}
+
+async function checkPlaybackServerHealth() {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, playbackRecoveryServerTimeoutMs);
+  try {
+    const response = await fetch("/api/health", {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function applyPendingRecoverySeek() {
+  if (pendingRecoverySeekSeconds === null || isTranscodeSourceActive()) {
+    return;
+  }
+  const targetSeconds = Math.max(0, Number(pendingRecoverySeekSeconds) || 0);
+  if (targetSeconds <= 1 || !hasActiveSource()) {
+    pendingRecoverySeekSeconds = null;
+    return;
+  }
+  try {
+    if (Number.isFinite(video.duration) && video.duration > 0) {
+      video.currentTime = Math.min(video.duration - 0.25, targetSeconds);
+    } else {
+      video.currentTime = targetSeconds;
+    }
+    pendingRecoverySeekSeconds = null;
+  } catch {
+    // Try again on the next metadata/canplay event.
+  }
+}
+
+function retryCurrentPlaybackFromSavedPosition() {
+  const requestedSource =
+    lastRequestedPlaybackSource ||
+    lastRequestedAbsolutePlaybackSource ||
+    video.currentSrc ||
+    video.getAttribute("src") ||
+    "";
+  if (!requestedSource) {
+    return false;
+  }
+
+  const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
+  if (isTranscodeSourceActive() && activeTranscodeInput) {
+    setVideoSource(
+      buildSoftwareDecodeUrl(
+        activeTranscodeInput,
+        resumeAt,
+        activeAudioStreamIndex,
+        activeAudioSyncMs || preferredAudioSyncMs,
+        selectedSubtitleStreamIndex,
+      ),
+      { resetInitialResume: false },
+    );
+  } else {
+    pendingRecoverySeekSeconds = resumeAt;
+    setVideoSource(requestedSource, { resetInitialResume: false });
+  }
+  void tryPlay();
+  return true;
+}
+
+async function runPlaybackRecoveryAttempt(sequence, mode) {
+  clearPlaybackRecoveryTimers();
+  if (sequence !== playbackRecoverySequence) {
+    return;
+  }
+  playbackRecoveryAttemptCount += 1;
+
+  if (isBrowserOffline()) {
+    schedulePlaybackRecovery("offline", "", { delayMs: 5000 });
+    return;
+  }
+
+  showResolver("Checking connection...", {
+    isRecovery: true,
+    showStatus: true,
+    title: "Reconnecting",
+    detail: "Checking your server before resuming playback.",
+    countdown: "",
+    showRetry: true,
+    showAlternate: isTmdbResolvedPlayback && mode !== "offline",
+  });
+
+  const serverHealthy = await checkPlaybackServerHealth();
+  if (sequence !== playbackRecoverySequence) {
+    return;
+  }
+  if (!serverHealthy) {
+    schedulePlaybackRecovery("server", "", { delayMs: 5000 });
+    return;
+  }
+
+  if (
+    mode === "buffering" &&
+    playbackRecoveryAttemptCount >= 3 &&
+    attemptTmdbRecovery("Trying another source...")
+  ) {
+    clearPlaybackRecovery({ hideOverlay: false });
+    return;
+  }
+
+  if (retryCurrentPlaybackFromSavedPosition()) {
+    showResolver("Reconnecting stream...", {
+      isRecovery: true,
+      showStatus: true,
+      title: "Resuming",
+      detail: "Trying again from your current position.",
+      countdown: "",
+      showRetry: true,
+      showAlternate: isTmdbResolvedPlayback,
+    });
+    return;
+  }
+
+  if (attemptTmdbRecovery("Trying another source...")) {
+    clearPlaybackRecovery({ hideOverlay: false });
+    return;
+  }
+
+  showResolver("Unable to resume this stream. Try again.", { isError: true });
+}
+
+function retryPlaybackRecoveryNow() {
+  const mode = playbackRecoveryMode || (isBrowserOffline() ? "offline" : "buffering");
+  const sequence = (playbackRecoverySequence += 1);
+  clearPlaybackRecoveryTimers();
+  void runPlaybackRecoveryAttempt(sequence, mode);
+}
+
+function tryAlternatePlaybackSourceNow() {
+  clearPlaybackRecovery({ hideOverlay: false });
+  if (attemptTmdbRecovery("Trying another source...")) {
+    return;
+  }
+  retryPlaybackRecoveryNow();
+}
+
+async function handlePlaybackErrorRecovery(message) {
+  const fallbackMessage =
+    String(message || "").trim() || "Resolved stream could not be played.";
+  if (isBrowserOffline()) {
+    schedulePlaybackRecovery("offline", "", { resetAttempts: true });
+    return true;
+  }
+
+  const serverHealthy = await checkPlaybackServerHealth();
+  if (!serverHealthy) {
+    schedulePlaybackRecovery("server", "", { resetAttempts: true });
+    return true;
+  }
+
+  if (attemptTmdbRecovery("Trying alternate source...")) {
+    return true;
+  }
+
+  showResolver(fallbackMessage, { isError: true });
+  return false;
 }
 
 function isTransientResolveError(error) {
@@ -7048,11 +7415,12 @@ async function initPlaybackSource() {
   function handleGlobalMousemove() { handleUserActivity(); }
   function handleGlobalBeforeunload() {
     clearSingleClickPlaybackToggle();
-    hideSeekLoadingIndicator();
-    clearControlsHideTimer();
-    clearStreamStallRecovery();
-    persistResumeTime(true);
-  }
+  hideSeekLoadingIndicator();
+  clearControlsHideTimer();
+  clearStreamStallRecovery();
+  clearPlaybackRecovery();
+  persistResumeTime(true);
+}
   function handleDocumentVisibilityChange() {
     if (document.visibilityState === "hidden") {
       handleGlobalBeforeunload();
@@ -7193,6 +7561,26 @@ if (autoPlayCancel) {
     cancelAutoPlay();
   });
 }
+
+if (resolverRetryButton) {
+  trackListener(resolverRetryButton, "click", () => {
+    retryPlaybackRecoveryNow();
+  });
+}
+if (resolverAlternateButton) {
+  trackListener(resolverAlternateButton, "click", () => {
+    tryAlternatePlaybackSourceNow();
+  });
+}
+
+trackListener(window, "offline", () => {
+  schedulePlaybackRecovery("offline", "", { resetAttempts: true });
+});
+trackListener(window, "online", () => {
+  if (playbackRecoveryMode === "offline" || playbackRecoveryMode === "server") {
+    retryPlaybackRecoveryNow();
+  }
+});
 
 trackListener(toggleSpeed, "click", (event) => {
   event.preventDefault();
@@ -8012,6 +8400,7 @@ trackListener(window, "resize", refreshActiveSubtitlePlacement);
 trackListener(document, "fullscreenchange", refreshActiveSubtitlePlacement);
 
 trackListener(video, "timeupdate", syncSeekState);
+trackListener(video, "loadedmetadata", applyPendingRecoverySeek);
 trackListener(video, "play", startSubtitleRafLoop);
 trackListener(video, "playing", startSubtitleRafLoop);
 trackListener(video, "pause", stopSubtitleRafLoop);
@@ -8023,10 +8412,10 @@ trackListener(video, "seeking", () => {
 trackListener(video, "progress", syncSeekState);
 trackListener(video, "durationchange", syncSeekState);
 trackListener(video, "waiting", () => {
-  scheduleStreamStallRecovery("Stream stalled, trying another source...");
+  scheduleStreamStallRecovery();
 });
 trackListener(video, "stalled", () => {
-  scheduleStreamStallRecovery("Stream stalled, trying another source...");
+  scheduleStreamStallRecovery();
 });
 trackListener(video, "seeked", () => {
   renderCustomSubtitleOverlay();
@@ -8035,6 +8424,8 @@ trackListener(video, "seeked", () => {
   }
 });
 trackListener(video, "canplay", () => {
+  applyPendingRecoverySeek();
+  clearPlaybackRecovery();
   clearStreamStallRecovery();
   hideSeekLoadingIndicator();
   if (!applyInitialResumeIfReady()) {
@@ -8042,6 +8433,7 @@ trackListener(video, "canplay", () => {
   }
 });
 trackListener(video, "playing", () => {
+  clearPlaybackRecovery();
   clearStreamStallRecovery();
   hideSeekLoadingIndicator();
   if (!applyInitialResumeIfReady()) {
@@ -8050,6 +8442,7 @@ trackListener(video, "playing", () => {
 });
 trackListener(video, "timeupdate", () => {
   if (getEffectiveCurrentTime() > 0.5) {
+    clearPlaybackRecovery();
     clearStreamStallRecovery();
   }
   if (!applyInitialResumeIfReady()) {
@@ -8084,7 +8477,7 @@ trackListener(video, "timeupdate", () => {
 });
 trackListener(video, "play", syncPlayState);
 trackListener(video, "play", () => {
-  scheduleStreamStallRecovery("Stream stalled, trying another source...");
+  scheduleStreamStallRecovery();
   showControls();
   scheduleControlsHide();
 });
@@ -8146,20 +8539,16 @@ trackListener(video, "canplay", () => {
 });
 trackListener(video, "error", () => {
   hideSeekLoadingIndicator();
-  if (!isTmdbResolvedPlayback) {
-    return;
-  }
 
   const mediaError = video.error;
   const message =
     mediaError?.message || "Resolved stream could not be played. Try again.";
 
-  if (attemptTmdbRecovery("Trying alternate source...")) {
-    return;
-  }
-
-  showResolver(message, { isError: true });
-  reportCurrentTmdbPlaybackFailure(message);
+  void handlePlaybackErrorRecovery(message).then((recovered) => {
+    if (!recovered && isTmdbResolvedPlayback) {
+      reportCurrentTmdbPlaybackFailure(message);
+    }
+  });
 });
 
 function isInteractiveTarget(target) {
@@ -8354,6 +8743,7 @@ trackListener(window, "beforeunload", () => {
   hideSeekLoadingIndicator();
   clearControlsHideTimer();
   clearStreamStallRecovery();
+  clearPlaybackRecovery();
   persistResumeTime(true);
 });
 trackListener(window, "pagehide", () => {
@@ -8361,6 +8751,7 @@ trackListener(window, "pagehide", () => {
   hideSeekLoadingIndicator();
   clearControlsHideTimer();
   clearStreamStallRecovery();
+  clearPlaybackRecovery();
   persistResumeTime(true);
 });
 trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
@@ -8431,6 +8822,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     clearControlsHideTimer();
     clearSingleClickPlaybackToggle();
     clearStreamStallRecovery();
+    clearPlaybackRecovery();
     clearSeekLoadingTimeout();
     destroyActiveHlsController();
     stopSubtitleRafLoop();
@@ -8990,9 +9382,47 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
           <span class="seek-netflix-spinner" aria-hidden="true"></span>
         </div>
         <div class="resolver-card" role="status" aria-live="polite">
+          <h2
+            id="resolverTitle"
+            ref=${el => resolverTitle = el}
+            class="resolver-title"
+            hidden
+          ></h2>
           <p id="resolverStatus" ref=${el => resolverStatus = el} class="resolver-status" hidden>
             Unable to resolve this stream.
           </p>
+          <p
+            id="resolverDetail"
+            ref=${el => resolverDetail = el}
+            class="resolver-detail"
+            hidden
+          ></p>
+          <p
+            id="resolverCountdown"
+            ref=${el => resolverCountdown = el}
+            class="resolver-countdown"
+            hidden
+          ></p>
+          <div class="resolver-actions">
+            <button
+              id="resolverRetryButton"
+              ref=${el => resolverRetryButton = el}
+              class="resolver-action resolver-action-primary"
+              type="button"
+              hidden
+            >
+              Retry now
+            </button>
+            <button
+              id="resolverAlternateButton"
+              ref=${el => resolverAlternateButton = el}
+              class="resolver-action"
+              type="button"
+              hidden
+            >
+              Try another source
+            </button>
+          </div>
         </div>
       </div>
 
