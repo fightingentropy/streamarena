@@ -25,6 +25,7 @@ use tracing::info;
 
 use crate::config::Config;
 use crate::error::AppResult;
+use crate::football::SportsScheduleCache;
 use crate::media::MediaService;
 use crate::persistence::Db;
 use crate::process::RuntimeServices;
@@ -106,6 +107,7 @@ async fn main() -> AppResult<()> {
         streaming,
         upload,
         runtime,
+        sports_schedule_cache: SportsScheduleCache::new(),
         started_at_ms,
     };
 

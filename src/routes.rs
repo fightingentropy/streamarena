@@ -17,8 +17,8 @@ use crate::auth;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult, json_response};
 use crate::football::{
-    basketball_matches_handler, basketball_stream_resolve_handler, football_matches_handler,
-    football_stream_resolve_handler,
+    SportsScheduleCache, basketball_matches_handler, basketball_stream_resolve_handler,
+    football_matches_handler, football_stream_resolve_handler,
 };
 use crate::library::{
     normalize_upload_content_type, normalize_upload_episode_ordinal, normalize_whitespace,
@@ -53,6 +53,7 @@ pub struct AppState {
     pub streaming: StreamingService,
     pub upload: UploadService,
     pub runtime: RuntimeServices,
+    pub sports_schedule_cache: SportsScheduleCache,
     pub started_at_ms: i64,
 }
 
