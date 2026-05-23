@@ -55,12 +55,13 @@ const SEARCH_MIN_QUERY_LENGTH = 2;
 const SEARCH_RESULTS_LIMIT = 40;
 const STALE_HERO_PREVIEW_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
 const HERO_PREVIEW_HOVER_DELAY_MS = 2000;
+const FEATURED_HERO_ROTATION_MS = 24 * 60 * 60 * 1000;
+const FEATURED_HERO_STORAGE_KEY = "netflix-featured-hero-v1";
+const FEATURED_HERO_CANDIDATE_LIMIT = 10;
 const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
 const JEFFREY_EPSTEIN_SERIES_ID = "jeffrey-epstein-filthy-rich";
 const JEFFREY_EPSTEIN_EPISODE_1_SOURCE =
   "assets/videos/jeffrey-epstein-filthy-rich-s01e01-2160p-hevc.mp4";
-const HERO_TRAILER_SOURCE = "assets/videos/project-hail-mary-2026-trailer.mp4";
-const HERO_TRAILER_POSTER = "assets/images/project-hail-mary-thumb.jpg";
 const POPULAR_TITLES_LIMIT = 10;
 
 // ---------------------------------------------------------------------------
@@ -370,6 +371,247 @@ function normalizeSearchQuery(value) {
     .trim();
 }
 
+function createDefaultFeaturedHero() {
+  return {
+    title: "Popular Movies",
+    tmdbId: "",
+    mediaType: "movie",
+    year: "",
+    runtime: "Movie",
+    maturity: "13+",
+    description: "Current top movies from around the world.",
+    poster: "assets/images/thumbnail-top10-h.jpg",
+    thumb: "assets/images/thumbnail-top10-h.jpg",
+    src: "",
+    trailerKey: "",
+    callouts: ["Top global movies", "Popular now"],
+    ready: false,
+  };
+}
+
+function normalizeHeroTitle(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getFeaturedHeroDisplayTitle(feature) {
+  return normalizeHeroTitle(feature?.title || "Popular Movies").toUpperCase();
+}
+
+function getFeaturedHeroTitleLines(feature) {
+  const words = getFeaturedHeroDisplayTitle(feature)
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter(Boolean);
+  if (words.length <= 2) {
+    return words.length ? words : ["POPULAR", "MOVIES"];
+  }
+  const maxLines = words.length > 4 ? 3 : 2;
+  const lines = [];
+  let cursor = 0;
+  while (cursor < words.length && lines.length < maxLines) {
+    const remainingWords = words.length - cursor;
+    const remainingLines = maxLines - lines.length;
+    const take = Math.ceil(remainingWords / remainingLines);
+    lines.push(words.slice(cursor, cursor + take).join(" "));
+    cursor += take;
+  }
+  return lines;
+}
+
+function getFeaturedHeroCallouts(feature) {
+  const values = Array.isArray(feature?.callouts) ? feature.callouts : [];
+  return values
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .slice(0, 2);
+}
+
+function findLocalMovieForTmdbId(localLibrary, tmdbId) {
+  const normalizedTmdbId = String(tmdbId || "").trim();
+  if (!normalizedTmdbId) {
+    return null;
+  }
+  return (
+    (Array.isArray(localLibrary?.movies) ? localLibrary.movies : []).find(
+      (movie) => String(movie?.tmdbId || "").trim() === normalizedTmdbId,
+    ) || null
+  );
+}
+
+function createFeaturedHeroFromTmdbItem(
+  item,
+  genreMap,
+  imageBase = TMDB_IMAGE_BASE,
+  localLibrary = null,
+) {
+  const tmdbId = String(item?.id || "").trim();
+  const title = normalizeHeroTitle(item?.title || item?.name || "Popular Movie");
+  const releaseDate = String(item?.release_date || item?.first_air_date || "").trim();
+  const year = releaseDate ? releaseDate.slice(0, 4) : "";
+  const posterPath = String(item?.poster_path || "").trim();
+  const backdropPath = String(item?.backdrop_path || posterPath || "").trim();
+  const poster = backdropPath
+    ? `${imageBase}/original${backdropPath}`
+    : posterPath
+      ? `${imageBase}/w780${posterPath}`
+      : "assets/images/thumbnail-top10-h.jpg";
+  const genreNames = (Array.isArray(item?.genre_ids) ? item.genre_ids : [])
+    .map((id) => genreMap.get(id))
+    .filter(Boolean)
+    .slice(0, 2);
+  const localMovie = findLocalMovieForTmdbId(localLibrary, tmdbId);
+  const localSrc = String(localMovie?.src || "").trim();
+  return {
+    title,
+    tmdbId,
+    mediaType: "movie",
+    year,
+    runtime: "Movie",
+    maturity: item?.adult ? "18+" : "13+",
+    description:
+      String(item?.overview || "").trim() || "No description available.",
+    poster,
+    thumb: poster,
+    src: localSrc,
+    trailerKey: "",
+    callouts: [
+      localSrc ? "Available locally" : "Top global movie",
+      genreNames.length ? genreNames.join(" / ") : "Popular now",
+    ],
+    ready: true,
+  };
+}
+
+function buildFeaturedHeroCandidates(payload, localLibrary = null) {
+  const genreMap = new Map();
+  (Array.isArray(payload?.genres) ? payload.genres : []).forEach((genre) => {
+    genreMap.set(genre.id, genre.name);
+  });
+  const imageBase = payload?.imageBase || TMDB_IMAGE_BASE;
+  const seenIds = new Set();
+  return (Array.isArray(payload?.results) ? payload.results : [])
+    .map((item) =>
+      createFeaturedHeroFromTmdbItem(item, genreMap, imageBase, localLibrary),
+    )
+    .filter((item) => {
+      if (!item.tmdbId || seenIds.has(item.tmdbId)) {
+        return false;
+      }
+      seenIds.add(item.tmdbId);
+      return Boolean(item.poster && item.title);
+    })
+    .slice(0, FEATURED_HERO_CANDIDATE_LIMIT);
+}
+
+function readFeaturedHeroRotation() {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(FEATURED_HERO_STORAGE_KEY) || "null",
+    );
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    const tmdbId = String(parsed.tmdbId || "").trim();
+    const expiresAt = Number(parsed.expiresAt || 0);
+    return tmdbId && Number.isFinite(expiresAt) ? { tmdbId, expiresAt } : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeFeaturedHeroRotation(tmdbId, expiresAt) {
+  try {
+    localStorage.setItem(
+      FEATURED_HERO_STORAGE_KEY,
+      JSON.stringify({ tmdbId: String(tmdbId || "").trim(), expiresAt }),
+    );
+  } catch {
+    // Ignore storage failures; the wall-clock fallback still keeps reloads stable.
+  }
+}
+
+function selectFeaturedHeroCandidate(candidates) {
+  const validCandidates = Array.isArray(candidates) ? candidates : [];
+  if (!validCandidates.length) {
+    return null;
+  }
+  const now = Date.now();
+  const stored = readFeaturedHeroRotation();
+  const storedCandidate =
+    stored && stored.expiresAt > now
+      ? validCandidates.find((item) => item.tmdbId === stored.tmdbId)
+      : null;
+  if (storedCandidate) {
+    return storedCandidate;
+  }
+
+  const nextPool =
+    stored?.tmdbId && validCandidates.length > 1
+      ? validCandidates.filter((item) => item.tmdbId !== stored.tmdbId)
+      : validCandidates;
+  const rotationIndex = Math.floor(now / FEATURED_HERO_ROTATION_MS);
+  const selected = nextPool[rotationIndex % nextPool.length] || validCandidates[0];
+  writeFeaturedHeroRotation(selected.tmdbId, now + FEATURED_HERO_ROTATION_MS);
+  return selected;
+}
+
+function selectFeaturedHeroTrailerKey(details) {
+  const videos = Array.isArray(details?.videos?.results)
+    ? details.videos.results
+    : [];
+  const youtubeVideos = videos.filter((video) => {
+    const site = String(video?.site || "").trim().toLowerCase();
+    const key = String(video?.key || "").trim();
+    return site === "youtube" && key;
+  });
+  if (!youtubeVideos.length) {
+    return "";
+  }
+  const scoreVideo = (video) => {
+    const type = String(video?.type || "").trim().toLowerCase();
+    const name = String(video?.name || "").trim().toLowerCase();
+    let score = 0;
+    if (type === "trailer") score += 50;
+    if (video?.official) score += 20;
+    if (name.includes("official trailer")) score += 15;
+    if (name.includes("trailer")) score += 8;
+    if (type === "teaser") score += 4;
+    return score;
+  };
+  return String(
+    [...youtubeVideos].sort((left, right) => scoreVideo(right) - scoreVideo(left))[0]
+      ?.key || "",
+  ).trim();
+}
+
+function buildYoutubeTrailerEmbedUrl(key, muted) {
+  const trailerKey = String(key || "").trim();
+  if (!trailerKey) {
+    return "";
+  }
+  const params = new URLSearchParams({
+    autoplay: "1",
+    mute: muted ? "1" : "0",
+    controls: "0",
+    disablekb: "1",
+    fs: "0",
+    iv_load_policy: "3",
+    loop: "1",
+    modestbranding: "1",
+    playsinline: "1",
+    rel: "0",
+    playlist: trailerKey,
+  });
+  try {
+    params.set("origin", window.location.origin);
+  } catch {
+    // Ignore origin when unavailable.
+  }
+  return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(trailerKey)}?${params.toString()}`;
+}
+
 function createSearchResultDetails(item, imageBase = TMDB_IMAGE_BASE) {
   const mediaType =
     String(item?.mediaType || "")
@@ -646,7 +888,7 @@ function setTmdbDetailsCache(key, value) {
 // ---------------------------------------------------------------------------
 export default function HomePage() {
   // ---- Refs ----
-  let heroPreviewVideoRef;
+  let heroPreviewFrameRef;
   let heroPreviewHoverTimer = 0;
   let heroPreviewPlayRequestId = 0;
   let pageRootRef;
@@ -672,6 +914,7 @@ export default function HomePage() {
   const [showSearchBox, setShowSearchBox] = createSignal(false);
   const [searchBoxOpen, setSearchBoxOpen] = createSignal(false);
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
+  const [featuredHero, setFeaturedHero] = createSignal(createDefaultFeaturedHero());
 
   const [continueRowVisible, setContinueRowVisible] = createSignal(false);
   const [continueEmptyVisible, setContinueEmptyVisible] = createSignal(false);
@@ -726,6 +969,7 @@ export default function HomePage() {
   let continueWatchingLoadVersion = 0;
   let searchDebounceTimer = null;
   let activeSearchRequestToken = 0;
+  let featuredHeroDetailsRequestVersion = 0;
   let searchAbortController = null;
   let searchContextTarget = null;
   let searchBoxHideTimer = null;
@@ -874,13 +1118,17 @@ export default function HomePage() {
   }
 
   function getHeroDestination() {
+    const hero = featuredHero();
+    if (!hero?.tmdbId && !hero?.src) {
+      return null;
+    }
     return {
-      title: "Project Hail Mary",
-      src: "assets/videos/project-hail-mary-2026-2160p-hevc.mp4",
+      title: hero.title || "Popular Movie",
+      src: hero.src || "",
       mediaType: "movie",
-      tmdbId: "687163",
-      year: "2026",
-      thumb: "assets/images/project-hail-mary-thumb.jpg",
+      tmdbId: hero.tmdbId || "",
+      year: hero.year || "",
+      thumb: hero.thumb || hero.poster || "assets/images/thumbnail.jpg",
     };
   }
 
@@ -2452,6 +2700,89 @@ export default function HomePage() {
       .map((item) => buildCardFromTmdbElement(item, genreMap, imageBase));
   }
 
+  function applyFeaturedHeroFromPopularPayload(payload, localLibrary = null) {
+    const selected = selectFeaturedHeroCandidate(
+      buildFeaturedHeroCandidates(payload, localLibrary),
+    );
+    if (!selected) {
+      setFeaturedHero(createDefaultFeaturedHero());
+      stopHeroPreview();
+      return;
+    }
+    const currentTmdbId = String(featuredHero()?.tmdbId || "").trim();
+    if (currentTmdbId && currentTmdbId !== selected.tmdbId) {
+      stopHeroPreview();
+    }
+    setFeaturedHero(selected);
+    void hydrateFeaturedHeroFromTmdb(selected);
+  }
+
+  async function hydrateFeaturedHeroFromTmdb(hero) {
+    const tmdbId = String(hero?.tmdbId || "").trim();
+    if (!tmdbId) {
+      return;
+    }
+    const requestVersion = ++featuredHeroDetailsRequestVersion;
+    try {
+      const details = await apiFetchWithTimeout(
+        "/api/tmdb/details",
+        {
+          tmdbId,
+          mediaType: "movie",
+        },
+        TMDB_DETAILS_MODAL_TIMEOUT_MS,
+      );
+      if (
+        requestVersion !== featuredHeroDetailsRequestVersion ||
+        String(featuredHero()?.tmdbId || "").trim() !== tmdbId
+      ) {
+        return;
+      }
+      const releaseDate = String(details?.release_date || "").trim();
+      const year = releaseDate ? releaseDate.slice(0, 4) : hero.year;
+      const genreNames = (Array.isArray(details?.genres) ? details.genres : [])
+        .map((genre) => String(genre?.name || "").trim())
+        .filter(Boolean)
+        .slice(0, 2);
+      const backdropPath = String(
+        details?.backdrop_path || details?.poster_path || "",
+      ).trim();
+      const poster = backdropPath
+        ? `${TMDB_IMAGE_BASE}/original${backdropPath}`
+        : hero.poster;
+      const trailerKey = selectFeaturedHeroTrailerKey(details);
+      setFeaturedHero((current) => {
+        if (String(current?.tmdbId || "").trim() !== tmdbId) {
+          return current;
+        }
+        return {
+          ...current,
+          title: normalizeHeroTitle(details?.title || current.title),
+          year,
+          runtime: formatRuntime(details?.runtime) || current.runtime || "Movie",
+          maturity: details?.adult ? "18+" : current.maturity || "13+",
+          description:
+            String(details?.overview || "").trim() ||
+            current.description ||
+            "No description available.",
+          poster,
+          thumb: poster || current.thumb,
+          trailerKey,
+          callouts: [
+            current.src ? "Available locally" : "Top global movie",
+            genreNames.length ? genreNames.join(" / ") : current.callouts?.[1],
+          ].filter(Boolean),
+          ready: true,
+        };
+      });
+      if (heroPreviewFrameRef?.getAttribute("src")) {
+        ensureHeroPreviewSource();
+      }
+    } catch (error) {
+      console.error("Failed to load featured hero details:", error);
+    }
+  }
+
   // ---- Load popular titles ----
   async function loadPopularTitles() {
     if (!cardsContainerRef) return;
@@ -2475,6 +2806,10 @@ export default function HomePage() {
       return;
     }
 
+    applyFeaturedHeroFromPopularPayload(
+      popularResult.value,
+      libraryResult.status === "fulfilled" ? libraryResult.value : null,
+    );
     const cardsToRender = buildPopularTitleCards(popularResult.value);
     setPopularRowTitle(`Top ${POPULAR_TITLES_LIMIT} Popular Titles`);
     setPopularRowVisible(cardsToRender.length > 0);
@@ -2874,11 +3209,13 @@ export default function HomePage() {
 
   // ---- Hero ----
   function applyHeroPreviewMutedState(nextMuted) {
-    if (heroPreviewVideoRef instanceof HTMLVideoElement) {
-      heroPreviewVideoRef.muted = nextMuted;
-      heroPreviewVideoRef.defaultMuted = nextMuted;
-    }
     setIsMuted(nextMuted);
+    if (heroPreviewFrameRef instanceof HTMLIFrameElement) {
+      const currentSrc = heroPreviewFrameRef.getAttribute("src");
+      if (currentSrc) {
+        ensureHeroPreviewSource();
+      }
+    }
   }
 
   function clearHeroPreviewHoverTimer() {
@@ -2894,47 +3231,40 @@ export default function HomePage() {
   }
 
   function ensureHeroPreviewSource() {
-    if (!(heroPreviewVideoRef instanceof HTMLVideoElement)) {
+    if (!(heroPreviewFrameRef instanceof HTMLIFrameElement)) {
       return;
     }
-    if (heroPreviewVideoRef.getAttribute("src") === HERO_TRAILER_SOURCE) {
+    const trailerUrl = buildYoutubeTrailerEmbedUrl(
+      featuredHero()?.trailerKey,
+      isMuted(),
+    );
+    if (!trailerUrl) {
+      heroPreviewFrameRef.removeAttribute("src");
       return;
     }
-    heroPreviewVideoRef.setAttribute("src", HERO_TRAILER_SOURCE);
-    heroPreviewVideoRef.load();
+    if (heroPreviewFrameRef.getAttribute("src") === trailerUrl) {
+      return;
+    }
+    heroPreviewFrameRef.setAttribute("src", trailerUrl);
   }
 
   function stopHeroPreview() {
     clearHeroPreviewHoverTimer();
     heroPreviewPlayRequestId += 1;
-    if (!(heroPreviewVideoRef instanceof HTMLVideoElement)) {
+    if (!(heroPreviewFrameRef instanceof HTMLIFrameElement)) {
       return;
     }
-    heroPreviewVideoRef.pause();
-    if (heroPreviewVideoRef.getAttribute("src")) {
-      heroPreviewVideoRef.removeAttribute("src");
-      heroPreviewVideoRef.load();
-    }
+    heroPreviewFrameRef.removeAttribute("src");
   }
 
   function playHeroPreview() {
-    if (!(heroPreviewVideoRef instanceof HTMLVideoElement) || !canPlayHeroPreview()) {
+    if (!(heroPreviewFrameRef instanceof HTMLIFrameElement) || !canPlayHeroPreview()) {
       stopHeroPreview();
       return;
     }
     clearHeroPreviewHoverTimer();
-    const playRequestId = ++heroPreviewPlayRequestId;
+    heroPreviewPlayRequestId += 1;
     ensureHeroPreviewSource();
-    applyHeroPreviewMutedState(isMuted());
-    void heroPreviewVideoRef.play().catch(() => {
-      if (playRequestId !== heroPreviewPlayRequestId) {
-        return;
-      }
-      applyHeroPreviewMutedState(true);
-      void heroPreviewVideoRef.play().catch(() => {
-        // Keep the static poster if the browser still blocks preview playback.
-      });
-    });
   }
 
   function scheduleHeroPreviewPlayback() {
@@ -2949,32 +3279,63 @@ export default function HomePage() {
   }
 
   function handleMuteToggle() {
-    const nextMuted =
-      heroPreviewVideoRef instanceof HTMLVideoElement
-        ? !heroPreviewVideoRef.muted
-        : !isMuted();
-    applyHeroPreviewMutedState(nextMuted);
+    applyHeroPreviewMutedState(!isMuted());
   }
 
   function handleHeroPlay() {
-    openPlayerPage(getHeroDestination());
-  }
-
-  function handleHeroInfo() {
-    const row = document.getElementById("continueRow");
-    if (row) {
-      row.scrollIntoView({ behavior: "smooth", block: "center" });
+    const destination = getHeroDestination();
+    if (destination) {
+      openPlayerPage(destination);
     }
   }
 
+  function handleHeroInfo() {
+    const destination = getHeroDestination();
+    if (!destination) {
+      return;
+    }
+    const hero = featuredHero();
+    activeDetails = {
+      ...destination,
+      thumb: hero.poster || destination.thumb,
+      runtime: hero.runtime || "Movie",
+      maturity: hero.maturity || "13+",
+      quality: "HD",
+      audio: "Stereo",
+      description: hero.description || "No description available.",
+      cast: "Loading cast...",
+      genres: getFeaturedHeroCallouts(hero).slice(1).join(", ") || "Popular title",
+      vibe: getFeaturedHeroCallouts(hero).join(", "),
+    };
+    detailsTrigger = null;
+    populateDetailsModal(activeDetails);
+    setDetailsMyListActive(isMyListEntryActive(activeDetails));
+    if (detailsMoreGridRef) {
+      detailsMoreGridRef.innerHTML = "";
+    }
+    setDetailsMoreVisible(false);
+    setDetailsModalVisible(true);
+    requestAnimationFrame(() => {
+      setDetailsModalOpen(true);
+    });
+    syncBodyModalLock();
+    detailsCloseButtonRef?.focus({ preventScroll: true });
+  }
+
   function handleHeroTitleClick() {
-    openPlayerPage(getHeroDestination());
+    const destination = getHeroDestination();
+    if (destination) {
+      openPlayerPage(destination);
+    }
   }
 
   function handleHeroTitleKeydown(event) {
     if (event.key === "Enter") {
       event.preventDefault();
-      openPlayerPage(getHeroDestination());
+      const destination = getHeroDestination();
+      if (destination) {
+        openPlayerPage(destination);
+      }
     }
   }
 
@@ -3627,28 +3988,22 @@ export default function HomePage() {
       >
         <img
           class="hero-poster"
-          src=${HERO_TRAILER_POSTER}
+          src=${() => featuredHero().poster}
           alt=""
           aria-hidden="true"
           decoding="async"
           loading="eager"
         />
-        <video
+        <iframe
           id="heroPreview"
-          ref=${(el) => (heroPreviewVideoRef = el)}
-          class="hero-video"
-          poster=${HERO_TRAILER_POSTER}
-          loop
-          muted
-          playsinline
-          preload="none"
-          aria-label="Project Hail Mary trailer preview"
-          onVolumeChange=${() => {
-            if (heroPreviewVideoRef instanceof HTMLVideoElement) {
-              setIsMuted(heroPreviewVideoRef.muted);
-            }
-          }}
-        ></video>
+          ref=${(el) => (heroPreviewFrameRef = el)}
+          class="hero-trailer-frame"
+          title=${() => `${featuredHero().title || "Featured movie"} trailer preview`}
+          allow="autoplay; encrypted-media; picture-in-picture"
+          referrerpolicy="strict-origin-when-cross-origin"
+          tabindex="-1"
+          aria-hidden="true"
+        ></iframe>
 
         <div class="hero-shade" aria-hidden="true"></div>
 
@@ -3664,6 +4019,7 @@ export default function HomePage() {
               class=${() => `control-btn${isMuted() ? " muted" : ""}`}
               type="button"
               aria-label=${() => isMuted() ? "Unmute trailer" : "Mute trailer"}
+              disabled=${() => !featuredHero().trailerKey}
               onClick=${handleMuteToggle}
             >
               <svg class="icon-on" viewBox="0 0 24 24" aria-hidden="true">
@@ -3681,35 +4037,47 @@ export default function HomePage() {
             id="heroTitle"
             class="hero-title-stacked"
             tabindex="0"
-            aria-label="Open Project Hail Mary player"
+            aria-label=${() => `Open ${featuredHero().title || "featured movie"} player`}
             onClick=${handleHeroTitleClick}
             onKeydown=${handleHeroTitleKeydown}
           >
-            PROJECT
-            <br />
-            HAIL MARY
+            ${() =>
+              getFeaturedHeroTitleLines(featuredHero()).map(
+                (line) => html`<span>${line}</span>`,
+              )}
           </h1>
           <div class="hero-meta" aria-label="Title details">
             <span>Movie</span>
             <span aria-hidden="true">•</span>
-            <span>2026</span>
+            <span>${() => featuredHero().year || "Popular"}</span>
             <span aria-hidden="true">•</span>
-            <span>1h 56m</span>
+            <span>${() => featuredHero().runtime || "Movie"}</span>
             <span aria-hidden="true">•</span>
-            <span class="maturity-badge">13+</span>
+            <span class="maturity-badge">${() => featuredHero().maturity || "13+"}</span>
           </div>
           <p class="description">
-            A lone astronaut awakens on a desperate mission to save Earth, with only
-            fragments of memory and an unexpected ally light-years from home.
+            ${() => featuredHero().description || "No description available."}
           </p>
           <div class="hero-actions">
-            <button id="heroPlay" class="cta cta-play" type="button" onClick=${handleHeroPlay}>
+            <button
+              id="heroPlay"
+              class="cta cta-play"
+              type="button"
+              disabled=${() => !getHeroDestination()}
+              onClick=${handleHeroPlay}
+            >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M5 3.5v17L20 12 5 3.5Z"></path>
               </svg>
               Play
             </button>
-            <button id="heroInfo" class="cta cta-info" type="button" onClick=${handleHeroInfo}>
+            <button
+              id="heroInfo"
+              class="cta cta-info"
+              type="button"
+              disabled=${() => !getHeroDestination()}
+              onClick=${handleHeroInfo}
+            >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <circle
                   cx="12"
@@ -3734,8 +4102,8 @@ export default function HomePage() {
             </button>
           </div>
           <div class="hero-callouts" aria-label="Featured badges">
-            <span>Recently added</span>
-            <span>Epic sci-fi survival</span>
+            <span>${() => getFeaturedHeroCallouts(featuredHero())[0] || "Top global movie"}</span>
+            <span>${() => getFeaturedHeroCallouts(featuredHero())[1] || "Popular now"}</span>
           </div>
         </section>
 

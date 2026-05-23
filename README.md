@@ -119,9 +119,9 @@ The app combines two media paths:
 
 ### Home (`index.html` + `script.js`)
 
-- Hero trailer section with:
+- Rotating featured hero sourced from current TMDB popular movies with:
   - play button -> opens player
-  - info button -> scrolls to rows/details context
+  - info button -> opens details context
   - mute toggle
 - Continue watching row built from resume metadata
 - Popular/content rows hydrated from backend + local library items
