@@ -920,7 +920,7 @@ export default function HomePage() {
   let searchContextMenuRef;
 
   // ---- Signals ----
-  const [isMuted, setIsMuted] = createSignal(true);
+  const [isMuted, setIsMuted] = createSignal(false);
   const [isSearchModeActive, setIsSearchModeActive] = createSignal(false);
   const [searchStatusText, setSearchStatusText] = createSignal("Start typing to search TMDB titles.");
   const [searchStatusTone, setSearchStatusTone] = createSignal("");
