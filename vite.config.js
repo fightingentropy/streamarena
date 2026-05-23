@@ -9,8 +9,7 @@ const pages = {
   settings: resolve(__dirname, "settings.html"),
   upload: resolve(__dirname, "upload.html"),
   live: resolve(__dirname, "live.html"),
-  football: resolve(__dirname, "football.html"),
-  basketball: resolve(__dirname, "basketball.html"),
+  sports: resolve(__dirname, "sports.html"),
 };
 
 export default defineConfig({
@@ -34,6 +33,9 @@ export default defineConfig({
           if (req.url?.startsWith("/watch")) {
             const [, query] = req.url.split("?");
             req.url = `/player.html${query ? `?${query}` : ""}`;
+          } else if (req.url === "/sports" || req.url?.startsWith("/sports?")) {
+            const [, query] = req.url.split("?");
+            req.url = `/sports.html${query ? `?${query}` : ""}`;
           }
           next();
         });
