@@ -275,11 +275,6 @@ export default function SettingsPage() {
   const [pendingCustomImage, setPendingCustomImage] = createSignal(storedAvatarImage);
   const [avatarUploadHint, setAvatarUploadHint] = createSignal("");
 
-  // Cache clearing state
-  const [isClearingCaches, setIsClearingCaches] = createSignal(false);
-  const [cacheClearStatus, setCacheClearStatus] = createSignal("");
-  const [cacheClearTone, setCacheClearTone] = createSignal("");
-
   // Toast state
   const [toastMessage, setToastMessage] = createSignal("");
   const [toastVisible, setToastVisible] = createSignal(false);
@@ -422,42 +417,6 @@ export default function SettingsPage() {
     showToast("Settings saved");
   }
 
-  async function handleClearAllCaches() {
-    if (isClearingCaches()) return;
-
-    const shouldProceed = window.confirm("Clear all server caches for every title?");
-    if (!shouldProceed) return;
-
-    setIsClearingCaches(true);
-    setCacheClearStatus("Clearing caches...");
-    setCacheClearTone("");
-
-    try {
-      const response = await fetch(`/api/debug/cache?clear=1&t=${Date.now()}`, {
-        method: "POST",
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const errorMessage = payload?.error || payload?.message || `Request failed (${response.status})`;
-        throw new Error(errorMessage);
-      }
-
-      const persistent = payload?.caches?.persistentDb || {};
-      const sourceCount = Number(persistent.resolvedStreamSize || 0);
-      const tmdbCount = Number(persistent.tmdbResponseSize || 0);
-      setCacheClearStatus(`Done. Server cache cleared (sources ${sourceCount}, TMDB ${tmdbCount}).`);
-      setCacheClearTone("success");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to clear cache.";
-      setCacheClearStatus(message);
-      setCacheClearTone("error");
-    } finally {
-      setIsClearingCaches(false);
-    }
-  }
-
   // ── Template ────────────────────────────────────────────────────────────
 
   return html`<div data-solid-page-root="" style="display: contents">
@@ -498,10 +457,6 @@ export default function SettingsPage() {
           <a class="settings-nav-item" href="#profileSection">
             <span class="settings-nav-glyph settings-nav-glyph--profile" aria-hidden="true"></span>
             <span>Profile</span>
-          </a>
-          <a class="settings-nav-item" href="#maintenanceSection">
-            <span class="settings-nav-glyph settings-nav-glyph--maintenance" aria-hidden="true"></span>
-            <span>Maintenance</span>
           </a>
         </nav>
       </aside>
@@ -774,47 +729,6 @@ export default function SettingsPage() {
             ></p>
           </div>
         </form>
-
-        <section
-          class="settings-section-block"
-          id="maintenanceSection"
-          aria-labelledby="maintenanceTitle"
-        >
-          <h2 id="maintenanceTitle" class="settings-section-title">
-            Maintenance
-          </h2>
-          <div class="settings-list-card">
-            <section class="settings-list-row">
-              <span class="settings-row-icon settings-row-icon--cache" aria-hidden="true"></span>
-              <div class="settings-row-copy">
-                <h3>Cache</h3>
-                <p>${() => cacheClearStatus() || "Server metadata and source cache"}</p>
-              </div>
-              <div class="settings-row-control maintenance-inline">
-                <button
-                  class="clear-cache-btn"
-                  type="button"
-                  disabled=${() => isClearingCaches()}
-                  onClick=${handleClearAllCaches}
-                >
-                  Clear All Caches
-                </button>
-                <p
-                  class=${() => {
-                    let cls = "cache-clear-status";
-                    const tone = cacheClearTone();
-                    if (tone === "success") cls += " status-success";
-                    else if (tone === "error") cls += " status-error";
-                    return cls;
-                  }}
-                  role="status"
-                  aria-live="polite"
-                >${() => cacheClearStatus()}</p>
-              </div>
-              <span class="settings-row-chevron" aria-hidden="true"></span>
-            </section>
-          </div>
-        </section>
       </section>
     </main>
   </div>`;

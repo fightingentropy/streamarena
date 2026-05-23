@@ -273,14 +273,6 @@ a:focus-visible {
   transform: translateY(-5px);
 }
 
-.settings-nav-glyph--maintenance::after {
-  width: 4px;
-  height: 14px;
-  border-radius: 2px;
-  background: currentColor;
-  box-shadow: 8px 0 0 currentColor, -8px 0 0 currentColor;
-}
-
 .settings-content {
   width: min(100%, 1220px);
   padding: 30px clamp(22px, 5vw, 66px) 64px;
@@ -480,14 +472,6 @@ a:focus-visible {
   transform: translateY(-5px);
 }
 
-.settings-row-icon--cache::after {
-  width: 4px;
-  height: 16px;
-  border-radius: 2px;
-  background: currentColor;
-  box-shadow: 8px 0 0 currentColor, -8px 0 0 currentColor;
-}
-
 .settings-row-copy {
   min-width: 0;
 }
@@ -625,8 +609,7 @@ a:focus-visible {
 }
 
 .subtitle-color-reset-btn,
-.avatar-upload-btn,
-.clear-cache-btn {
+.avatar-upload-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -647,8 +630,7 @@ a:focus-visible {
 }
 
 .subtitle-color-reset-btn:hover,
-.avatar-upload-btn:hover,
-.clear-cache-btn:hover {
+.avatar-upload-btn:hover {
   border-color: #a8a8a8;
   background: var(--surface);
 }
@@ -816,38 +798,11 @@ a:focus-visible {
   transform: translateY(1px);
 }
 
-.save-status,
-.cache-clear-status {
+.save-status {
   margin: 0;
   min-height: 1.2em;
   color: var(--muted);
   font-size: 0.86rem;
-}
-
-.cache-clear-status.status-success {
-  color: var(--success);
-}
-
-.cache-clear-status.status-error {
-  color: var(--danger);
-}
-
-.maintenance-inline {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 10px;
-  max-width: 420px;
-}
-
-.clear-cache-btn {
-  width: fit-content;
-}
-
-.clear-cache-btn:disabled {
-  opacity: 0.45;
-  cursor: wait;
 }
 
 .toast {
@@ -1000,14 +955,12 @@ a:focus-visible {
   }
 
   .subtitle-color-controls,
-  .avatar-settings-panel,
-  .maintenance-inline {
+  .avatar-settings-panel {
     width: 100%;
     max-width: none;
   }
 
-  .subtitle-color-controls,
-  .maintenance-inline {
+  .subtitle-color-controls {
     justify-content: flex-start;
   }
 
@@ -1056,7 +1009,4 @@ a:focus-visible {
     width: 100%;
   }
 
-  .clear-cache-btn {
-    width: 100%;
-  }
 }
