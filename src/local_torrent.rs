@@ -27,7 +27,8 @@ use crate::persistence::Db;
 use crate::resolver::pick_video_file_ids;
 use crate::utils::now_ms;
 
-const LOCAL_TORRENT_CACHE_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+const LOCAL_TORRENT_RECENT_RETENTION_MS: i64 = 3 * 24 * 60 * 60 * 1000;
+const LOCAL_TORRENT_ACCESS_MARKER: &str = ".last-accessed";
 const CACHE_CONTROL_STREAM: &str = "no-store";
 
 #[derive(Clone)]
@@ -142,7 +143,7 @@ impl LocalTorrentService {
         self.ensure_cache_has_room(selected.length, &source_hash)
             .await?;
 
-        let entry = LocalTorrentCacheEntry {
+        let mut entry = LocalTorrentCacheEntry {
             source_hash: source_hash.clone(),
             magnet_uri: request.magnet_uri.trim().to_owned(),
             file_id: selected.file_id,
@@ -154,7 +155,7 @@ impl LocalTorrentService {
         };
         let handle = self.ensure_handle(session, &entry).await?;
         self.wait_for_first_byte(handle, entry.file_id).await?;
-        self.persist_entry(&entry).await?;
+        self.refresh_entry_access(&mut entry).await?;
 
         Ok(LocalTorrentResolvedSource {
             playable_url: local_torrent_stream_url(&entry.source_hash, entry.file_id),
@@ -178,12 +179,13 @@ impl LocalTorrentService {
         let (source_hash, file_id) = validate_local_torrent_stream_params(source_hash, file_id)?;
         let lock = local_torrent_key_lock(&self.locks, &source_hash);
         let _guard = lock.lock().await;
-        let entry = self
+        let mut entry = self
             .load_entry(&source_hash, file_id)
             .await?
             .ok_or_else(|| ApiError::not_found("Local torrent stream was not found."))?;
         let session = self.session().await?;
         let handle = self.ensure_handle(session, &entry).await?;
+        self.refresh_entry_access_best_effort(&mut entry).await;
         let mut stream = handle.clone().stream(file_id).map_err(|error| {
             ApiError::bad_gateway(format!("Local torrent stream failed: {error}"))
         })?;
@@ -434,9 +436,33 @@ impl LocalTorrentService {
             .set_movie_quick_start_cache(
                 local_torrent_cache_key(&entry.source_hash, entry.file_id),
                 serde_json::to_value(entry).unwrap_or_else(|_| json!({})),
-                now_ms() + LOCAL_TORRENT_CACHE_TTL_MS,
+                now_ms() + LOCAL_TORRENT_RECENT_RETENTION_MS,
             )
             .await
+    }
+
+    async fn refresh_entry_access(&self, entry: &mut LocalTorrentCacheEntry) -> AppResult<()> {
+        entry.updated_at_ms = now_ms();
+        self.persist_entry(entry).await?;
+        let _ = self.touch_access_marker(entry).await;
+        Ok(())
+    }
+
+    async fn refresh_entry_access_best_effort(&self, entry: &mut LocalTorrentCacheEntry) {
+        let _ = self.refresh_entry_access(entry).await;
+    }
+
+    async fn touch_access_marker(&self, entry: &LocalTorrentCacheEntry) -> AppResult<()> {
+        let output_folder = self.output_folder_for_hash(&entry.source_hash);
+        tokio::fs::create_dir_all(&output_folder)
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        tokio::fs::write(
+            output_folder.join(LOCAL_TORRENT_ACCESS_MARKER),
+            entry.updated_at_ms.to_string(),
+        )
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))
     }
 
     async fn load_entry(
@@ -515,13 +541,24 @@ impl LocalTorrentService {
             .collect::<HashSet<_>>();
         active_hashes.insert(keep_hash.to_owned());
         tokio::task::spawn_blocking(move || {
-            let mut entries = collect_cache_dir_entries(&cache_dir)?;
+            let entries = collect_cache_dir_entries(&cache_dir)?;
             let mut total = entries.iter().map(|entry| entry.size).sum::<u64>();
+            let stale_cutoff_ms = now_ms().saturating_sub(LOCAL_TORRENT_RECENT_RETENTION_MS);
+            let mut retained = Vec::new();
+            for entry in entries {
+                if entry.modified_ms <= stale_cutoff_ms && !active_hashes.contains(&entry.name) {
+                    if fs::remove_dir_all(&entry.path).is_ok() {
+                        total = total.saturating_sub(entry.size);
+                    }
+                    continue;
+                }
+                retained.push(entry);
+            }
             if total <= target_total {
                 return Ok::<(), std::io::Error>(());
             }
-            entries.sort_by_key(|entry| entry.modified_ms);
-            for entry in entries {
+            retained.sort_by_key(|entry| entry.modified_ms);
+            for entry in retained {
                 if total <= target_total {
                     break;
                 }
@@ -684,39 +721,47 @@ fn collect_cache_dir_entries(cache_dir: &Path) -> std::io::Result<Vec<CacheDirEn
         Err(error) => return Err(error),
     };
     for item in read_dir.flatten() {
-        let metadata = match item.metadata() {
-            Ok(metadata) if metadata.is_dir() => metadata,
+        match item.metadata() {
+            Ok(metadata) if metadata.is_dir() => {}
             _ => continue,
-        };
+        }
         let name = item.file_name().to_string_lossy().to_string();
         if normalize_torrent_hash(&name).is_empty() {
             continue;
         }
+        let (size, modified_ms) = dir_size_and_latest_modified_ms(&item.path())?;
         entries.push(CacheDirEntry {
             path: item.path(),
             name,
-            size: dir_size(&item.path())?,
-            modified_ms: system_time_ms(metadata.modified().unwrap_or(UNIX_EPOCH)),
+            size,
+            modified_ms,
         });
     }
     Ok(entries)
 }
 
 fn dir_size(path: &Path) -> std::io::Result<u64> {
+    dir_size_and_latest_modified_ms(path).map(|(size, _)| size)
+}
+
+fn dir_size_and_latest_modified_ms(path: &Path) -> std::io::Result<(u64, i64)> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
         Err(error) => return Err(error),
     };
+    let mut latest_modified_ms = system_time_ms(metadata.modified().unwrap_or(UNIX_EPOCH));
     if metadata.is_file() {
-        return Ok(metadata.len());
+        return Ok((metadata.len(), latest_modified_ms));
     }
     let mut total = 0_u64;
     for item in fs::read_dir(path)? {
         let item = item?;
-        total = total.saturating_add(dir_size(&item.path())?);
+        let (size, modified_ms) = dir_size_and_latest_modified_ms(&item.path())?;
+        total = total.saturating_add(size);
+        latest_modified_ms = latest_modified_ms.max(modified_ms);
     }
-    Ok(total)
+    Ok((total, latest_modified_ms))
 }
 
 fn system_time_ms(value: SystemTime) -> i64 {
