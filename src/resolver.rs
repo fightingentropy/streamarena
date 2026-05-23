@@ -1292,8 +1292,8 @@ impl ResolverService {
         if include_session {
             payload["session"] =
                 if self.config.playback_sessions_enabled && !metadata.tmdb_id.is_empty() {
-                    let session_key = build_playback_session_key(
-                        &metadata.tmdb_id,
+                    let session_key = build_playback_session_key_for_metadata(
+                        &metadata,
                         &response_audio_lang,
                         &response_quality,
                     );
@@ -1850,12 +1850,19 @@ impl ResolverService {
             return Ok(None);
         }
 
-        let session_key = build_playback_session_key(
-            &metadata.tmdb_id,
+        let session_keys = build_playback_session_lookup_keys(
+            metadata,
             &preferences.audio_lang,
             &preferences.quality,
         );
-        let Some(session) = self.db.get_playback_session(session_key).await? else {
+        let mut session = None;
+        for session_key in session_keys {
+            if let Some(candidate) = self.db.get_playback_session(session_key).await? {
+                session = Some(candidate);
+                break;
+            }
+        }
+        let Some(session) = session else {
             return Ok(None);
         };
         if session.tmdb_id != metadata.tmdb_id
@@ -1885,11 +1892,13 @@ impl ResolverService {
             )
         };
         if !is_valid_match {
-            self.invalidate_playback_session(
-                &session,
-                "Playback session filename mismatched the requested title.",
-            )
-            .await;
+            if metadata.media_type != "tv" {
+                self.invalidate_playback_session(
+                    &session,
+                    "Playback session filename mismatched the requested title.",
+                )
+                .await;
+            }
             return Ok(None);
         }
 
@@ -1943,84 +1952,91 @@ impl ResolverService {
             return Ok(None);
         }
 
-        let Some(session) = self
+        let sessions = self
             .db
-            .get_latest_healthy_playback_session_for_tmdb(metadata.tmdb_id.clone())
-            .await?
-        else {
-            return Ok(None);
-        };
-
-        if session.tmdb_id != metadata.tmdb_id || session.playable_url.trim().is_empty() {
-            return Ok(None);
-        }
-        if !playback_session_matches_preferred_container(&session, filters) {
+            .get_latest_healthy_playback_sessions_for_tmdb(metadata.tmdb_id.clone(), 20)
+            .await?;
+        if sessions.is_empty() {
             return Ok(None);
         }
 
-        let match_name = playback_session_match_name(&session);
-        let is_valid_match = if metadata.media_type == "tv" {
-            does_filename_likely_match_tv_episode(
-                &match_name,
-                &metadata.display_title,
-                &metadata.display_year,
-                metadata.season_number,
-                metadata.episode_number,
-            )
-        } else {
-            does_filename_likely_match_movie(
-                &match_name,
-                &metadata.display_title,
-                &metadata.display_year,
-            )
-        };
-        if !is_valid_match {
-            self.invalidate_playback_session(
-                &session,
-                "Playback session filename mismatched the requested title.",
-            )
-            .await;
-            return Ok(None);
-        }
-
-        let verifiable_url = extract_playable_source_input(&session.playable_url);
-        let needs_revalidation = session.next_validation_at > 0
-            && session.next_validation_at <= now_ms()
-            && looks_like_http_url(&verifiable_url);
-        if needs_revalidation {
-            if self
-                .verify_playable_url(&verifiable_url, 3_000)
-                .await
-                .is_err()
-            {
-                self.invalidate_playback_session(
-                    &session,
-                    "Playback session validation failed for the stored stream URL.",
-                )
-                .await;
-                return Ok(None);
+        for session in sessions {
+            if session.tmdb_id != metadata.tmdb_id || session.playable_url.trim().is_empty() {
+                continue;
             }
-            let _ = self
-                .db
-                .refresh_playback_session_validation_window(session.session_key.clone())
-                .await;
+            if !playback_session_matches_preferred_container(&session, filters) {
+                continue;
+            }
+
+            let match_name = playback_session_match_name(&session);
+            let is_valid_match = if metadata.media_type == "tv" {
+                does_filename_likely_match_tv_episode(
+                    &match_name,
+                    &metadata.display_title,
+                    &metadata.display_year,
+                    metadata.season_number,
+                    metadata.episode_number,
+                )
+            } else {
+                does_filename_likely_match_movie(
+                    &match_name,
+                    &metadata.display_title,
+                    &metadata.display_year,
+                )
+            };
+            if !is_valid_match {
+                if metadata.media_type != "tv" {
+                    self.invalidate_playback_session(
+                        &session,
+                        "Playback session filename mismatched the requested title.",
+                    )
+                    .await;
+                }
+                continue;
+            }
+
+            let verifiable_url = extract_playable_source_input(&session.playable_url);
+            let needs_revalidation = session.next_validation_at > 0
+                && session.next_validation_at <= now_ms()
+                && looks_like_http_url(&verifiable_url);
+            if needs_revalidation {
+                if self
+                    .verify_playable_url(&verifiable_url, 3_000)
+                    .await
+                    .is_err()
+                {
+                    self.invalidate_playback_session(
+                        &session,
+                        "Playback session validation failed for the stored stream URL.",
+                    )
+                    .await;
+                    continue;
+                }
+                let _ = self
+                    .db
+                    .refresh_playback_session_validation_window(session.session_key.clone())
+                    .await;
+            }
+
+            return self
+                .build_resolved_response(
+                    ResolvedSource {
+                        playable_url: session.playable_url.clone(),
+                        fallback_urls: session.fallback_urls.clone(),
+                        filename: session.filename.clone(),
+                        source_hash: session.source_hash.clone(),
+                        selected_file: session.selected_file.clone(),
+                        selected_file_path: playback_session_selected_file_path(&session),
+                    },
+                    metadata.clone(),
+                    preferences.clone(),
+                    true,
+                )
+                .await
+                .map(Some);
         }
 
-        self.build_resolved_response(
-            ResolvedSource {
-                playable_url: session.playable_url.clone(),
-                fallback_urls: session.fallback_urls.clone(),
-                filename: session.filename.clone(),
-                source_hash: session.source_hash.clone(),
-                selected_file: session.selected_file.clone(),
-                selected_file_path: playback_session_selected_file_path(&session),
-            },
-            metadata.clone(),
-            preferences.clone(),
-            true,
-        )
-        .await
-        .map(Some)
+        Ok(None)
     }
 
     async fn invalidate_playback_session(&self, session: &PlaybackSession, reason: &str) {
@@ -4563,7 +4579,7 @@ fn should_skip_playback_session_reuse(filters: &ResolveFilters) -> bool {
 }
 
 fn should_allow_latest_playback_session_fallback(filters: &ResolveFilters) -> bool {
-    filters.source_hash.is_empty() && should_skip_playback_session_reuse(filters)
+    filters.source_hash.is_empty()
 }
 
 fn looks_like_http_url(value: &str) -> bool {
@@ -4577,6 +4593,55 @@ fn build_playback_session_key(tmdb_id: &str, audio_lang: &str, quality: &str) ->
         normalize_preferred_audio_lang(audio_lang),
         normalize_preferred_stream_quality(quality)
     )
+}
+
+fn build_tv_playback_session_key(
+    tmdb_id: &str,
+    season_number: i64,
+    episode_number: i64,
+    audio_lang: &str,
+    quality: &str,
+) -> String {
+    format!(
+        "tv:{}:s{}:e{}:{}:{}",
+        tmdb_id.trim(),
+        season_number.max(1),
+        episode_number.max(1),
+        normalize_preferred_audio_lang(audio_lang),
+        normalize_preferred_stream_quality(quality)
+    )
+}
+
+fn build_playback_session_key_for_metadata(
+    metadata: &ResolveMetadata,
+    audio_lang: &str,
+    quality: &str,
+) -> String {
+    if metadata.media_type == "tv" {
+        build_tv_playback_session_key(
+            &metadata.tmdb_id,
+            metadata.season_number,
+            metadata.episode_number,
+            audio_lang,
+            quality,
+        )
+    } else {
+        build_playback_session_key(&metadata.tmdb_id, audio_lang, quality)
+    }
+}
+
+fn build_playback_session_lookup_keys(
+    metadata: &ResolveMetadata,
+    audio_lang: &str,
+    quality: &str,
+) -> Vec<String> {
+    let primary = build_playback_session_key_for_metadata(metadata, audio_lang, quality);
+    let legacy = build_playback_session_key(&metadata.tmdb_id, audio_lang, quality);
+    if primary == legacy {
+        vec![primary]
+    } else {
+        vec![primary, legacy]
+    }
 }
 
 fn build_playback_session_payload(session: &PlaybackSession) -> Value {
@@ -5142,7 +5207,8 @@ mod tests {
         DiscoveryBehaviorHints, DiscoveryStream, PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR,
         ResolveFilters, ResolveMetadata, ResolvedSource, ResolverExternalGuard, ResolverMetrics,
         SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats, build_movie_resolve_lock_key,
-        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_torznab_request_url,
+        build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
+        build_torrentio_stream_cache_key, build_torznab_request_url,
         build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
         compute_source_health_score, compute_torrentio_cache_deadlines,
         does_filename_likely_match_movie, extract_info_hash_from_magnet,
@@ -5151,9 +5217,9 @@ mod tests {
         normalize_source_hash, now_ms, parse_runtime_from_label_seconds, parse_seed_count,
         parse_torznab_xml, playback_session_matches_preferred_container,
         ready_info_has_selected_file_id, select_top_episode_candidates,
-        select_top_movie_candidates, should_prefer_software_decode_source,
-        should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
-        user_facing_real_debrid_error,
+        select_top_movie_candidates, should_allow_latest_playback_session_fallback,
+        should_prefer_software_decode_source, should_try_torznab_discovery, sort_movie_candidates,
+        stream_list_contains_hash, user_facing_real_debrid_error,
     };
 
     #[test]
@@ -5220,6 +5286,31 @@ mod tests {
             ),
             "tv|tmdb:123|s:2|e:7|audio:auto|sub:en|quality:2160p|container:mp4|hash:|min:0|formats:mp4|lang:any|profile:any"
         );
+    }
+
+    #[test]
+    fn builds_episode_scoped_tv_playback_session_keys() {
+        assert_eq!(
+            build_playback_session_key_for_metadata(&sample_tv_metadata(), "EN", "1080"),
+            "tv:76331:s1:e1:en:1080p"
+        );
+        assert_eq!(
+            build_playback_session_key_for_metadata(&sample_movie_metadata(), "EN", "1080"),
+            "1368166:en:1080p"
+        );
+    }
+
+    #[test]
+    fn latest_playback_session_fallback_allows_unpinned_requests() {
+        let mut filters = ResolveFilters {
+            source_hash: String::new(),
+            preferred_container: String::new(),
+            source_filters: sample_source_filters(),
+        };
+        assert!(should_allow_latest_playback_session_fallback(&filters));
+
+        filters.source_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned();
+        assert!(!should_allow_latest_playback_session_fallback(&filters));
     }
 
     #[test]

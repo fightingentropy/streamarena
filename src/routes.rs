@@ -416,23 +416,40 @@ pub async fn session_progress_handler(
             .unwrap_or_default(),
     );
 
-    let mut session_key =
-        build_playback_session_key(&tmdb_id, &preferred_audio_lang, &preferred_quality);
+    let requested_session_key = payload
+        .get("sessionKey")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let mut session_key = if requested_session_key.is_empty() {
+        build_playback_session_key(&tmdb_id, &preferred_audio_lang, &preferred_quality)
+    } else {
+        requested_session_key.clone()
+    };
     let mut existing = state.db.get_playback_session(session_key.clone()).await?;
-    if existing.is_none() && preferred_audio_lang == "auto" {
-        let effective_audio_lang =
-            resolve_effective_preferred_audio_lang(&state, &tmdb_id, &preferred_audio_lang).await?;
-        session_key =
-            build_playback_session_key(&tmdb_id, &effective_audio_lang, &preferred_quality);
-        existing = state.db.get_playback_session(session_key.clone()).await?;
+    if let Some(ref session) = existing
+        && session.tmdb_id != tmdb_id
+    {
+        existing = None;
     }
-    if existing.is_none() {
-        existing = state
-            .db
-            .get_latest_playback_session_for_tmdb(tmdb_id.clone())
-            .await?;
-        if let Some(ref latest) = existing {
-            session_key = latest.session_key.clone();
+    if existing.is_none() && requested_session_key.is_empty() {
+        if preferred_audio_lang == "auto" {
+            let effective_audio_lang =
+                resolve_effective_preferred_audio_lang(&state, &tmdb_id, &preferred_audio_lang)
+                    .await?;
+            session_key =
+                build_playback_session_key(&tmdb_id, &effective_audio_lang, &preferred_quality);
+            existing = state.db.get_playback_session(session_key.clone()).await?;
+        }
+        if existing.is_none() {
+            existing = state
+                .db
+                .get_latest_playback_session_for_tmdb(tmdb_id.clone())
+                .await?;
+            if let Some(ref latest) = existing {
+                session_key = latest.session_key.clone();
+            }
         }
     }
     let Some(existing) = existing else {
