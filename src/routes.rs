@@ -697,7 +697,7 @@ pub async fn tmdb_details_handler(
         ));
     }
     let mut detail_params = BTreeMap::new();
-    detail_params.insert("append_to_response".to_owned(), "credits".to_owned());
+    detail_params.insert("append_to_response".to_owned(), "credits,videos".to_owned());
     let details = state
         .tmdb
         .fetch(&format!("/{media_type}/{tmdb_id}"), detail_params, 20_000)
