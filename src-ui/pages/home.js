@@ -550,6 +550,81 @@ function createFeaturedHeroFromTmdbItem(
   };
 }
 
+function createFeaturedHeroFromLocalEntry(entry) {
+  const source = entry && typeof entry === "object" ? entry : {};
+  const item = source.item && typeof source.item === "object" ? source.item : {};
+  const entryType = String(source.type || "").trim().toLowerCase();
+  const isSeries = entryType === "series";
+  const episodes = Array.isArray(item.episodes) ? item.episodes : [];
+  const firstEpisode = isSeries
+    ? episodes.find((episode) => String(episode?.src || "").trim()) ||
+      episodes[0]
+    : null;
+  const contentKind = String(item.contentKind || "")
+    .trim()
+    .toLowerCase();
+  const isCourse =
+    isSeries &&
+    (contentKind === "course" ||
+      /\b(course|lesson|module|class|lecture|webinar)\b/i.test(
+        `${item.title || ""} ${item.id || ""}`.trim(),
+      ));
+  const title = isSeries
+    ? String(item.title || (isCourse ? "Local Course" : "Local Series")).trim()
+    : normalizeLocalMovieDisplayTitle(item.title || "Local Movie");
+  const src = String(isSeries ? firstEpisode?.src || "" : item.src || "").trim();
+  const storedThumb = String(
+    isSeries ? firstEpisode?.thumb || "" : item.thumb || "",
+  ).trim();
+  const fallbackThumb = getFallbackThumbnailForSource(src) || DEFAULT_LOCAL_THUMBNAIL;
+  const poster = normalizeArtworkPath(storedThumb || fallbackThumb);
+  const episodeIndex = isSeries
+    ? Math.max(0, episodes.indexOf(firstEpisode))
+    : -1;
+  const runtime = isSeries ? (isCourse ? "Course" : "Series") : "Movie";
+  const description =
+    String(
+      isSeries
+        ? firstEpisode?.description || item.description || ""
+        : item.description || "",
+    ).trim() ||
+    (isSeries
+      ? isCourse
+        ? "Uploaded lessons from your local library."
+        : "Uploaded episodes from your local library."
+      : "Uploaded from your local library.");
+  const year = String(item.year || "").trim() || "Local";
+
+  return {
+    title,
+    tmdbId: String(item.tmdbId || "").trim(),
+    mediaType: isSeries ? "tv" : "movie",
+    year,
+    runtime,
+    maturity: "13+",
+    tagline: isSeries
+      ? isCourse
+        ? "Continue a saved course from your library."
+        : "Continue a saved series from your library."
+      : "Available from your local library.",
+    description,
+    poster,
+    thumb: poster,
+    src,
+    seriesId: isSeries ? String(item.id || "").trim() : "",
+    episode: isSeries ? String(firstEpisode?.title || "").trim() : "",
+    episodeIndex,
+    seasonNumber: isSeries ? Number(firstEpisode?.seasonNumber || 1) : 0,
+    episodeNumber: isSeries ? Number(firstEpisode?.episodeNumber || episodeIndex + 1) : 0,
+    trailerKey: "",
+    callouts: [
+      "Available locally",
+      isSeries ? (isCourse ? "Course" : "Series") : "Movie",
+    ],
+    ready: true,
+  };
+}
+
 function buildFeaturedHeroCandidates(payload, localLibrary = null) {
   const genreMap = new Map();
   (Array.isArray(payload?.genres) ? payload.genres : []).forEach((genre) => {
@@ -1201,16 +1276,27 @@ export default function HomePage() {
 
   function getHeroDestination() {
     const hero = featuredHero();
-    if (!hero?.tmdbId && !hero?.src) {
+    if (!hero?.tmdbId && !hero?.src && !hero?.seriesId) {
       return null;
     }
     return {
       title: hero.title || "Popular Movie",
+      episode: hero.episode || "",
       src: hero.src || "",
-      mediaType: "movie",
+      mediaType: hero.mediaType || "movie",
       tmdbId: hero.tmdbId || "",
       year: hero.year || "",
       thumb: hero.thumb || hero.poster || "assets/images/thumbnail.jpg",
+      seriesId: hero.seriesId || "",
+      episodeIndex: Number.isFinite(Number(hero.episodeIndex))
+        ? Number(hero.episodeIndex)
+        : -1,
+      seasonNumber: Number.isFinite(Number(hero.seasonNumber))
+        ? Number(hero.seasonNumber)
+        : 0,
+      episodeNumber: Number.isFinite(Number(hero.episodeNumber))
+        ? Number(hero.episodeNumber)
+        : 0,
     };
   }
 
@@ -2816,6 +2902,39 @@ export default function HomePage() {
       .map((item, index) => buildCardFromTmdbElement(item, genreMap, imageBase, index));
   }
 
+  function buildLocalFallbackCards(entries) {
+    return (Array.isArray(entries) ? entries : [])
+      .slice(0, POPULAR_TITLES_LIMIT)
+      .map((entry) =>
+        entry.type === "series"
+          ? buildCardFromLocalSeriesElement(entry.item)
+          : buildCardFromLocalMovieElement(entry.item),
+      );
+  }
+
+  function applyLocalLibraryFallbackHome(localLibrary) {
+    const localEntries = buildLibraryMyListEntries(localLibrary);
+    const localHero = createFeaturedHeroFromLocalEntry(localEntries[0]);
+    const localCards = buildLocalFallbackCards(localEntries);
+
+    stopHeroCarouselTimer();
+    setFeaturedHeroCandidates([]);
+    setFeaturedHeroIndex(0);
+    stopHeroPreview();
+
+    if (localHero.title && (localHero.src || localHero.seriesId || localHero.tmdbId)) {
+      setFeaturedHero(localHero);
+      setFeaturedHeroReady(true);
+    } else {
+      setFeaturedHeroReady(false);
+      setFeaturedHero(createDefaultFeaturedHero());
+    }
+
+    setPopularRowTitle("Recently Added");
+    setPopularRowVisible(localCards.length > 0);
+    renderPopularCards(localCards);
+  }
+
   function applyFeaturedHeroCandidate(selected) {
     if (!selected) {
       setFeaturedHeroReady(false);
@@ -2972,36 +3091,65 @@ export default function HomePage() {
       return;
     }
 
-    const [libraryResult, popularResult] = await Promise.allSettled([
-      apiFetch("/api/library"),
-      apiFetchWithTimeout("/api/tmdb/popular-movies", { page: "1" }, 15000),
-    ]);
+    const libraryRequest = apiFetch("/api/library").then(
+      (value) => ({ status: "fulfilled", value }),
+      (reason) => ({ status: "rejected", reason }),
+    );
+    const popularRequest = apiFetchWithTimeout(
+      "/api/tmdb/popular-movies",
+      { page: "1" },
+      22000,
+    ).then(
+      (value) => ({ status: "fulfilled", value }),
+      (reason) => ({ status: "rejected", reason }),
+    );
+
+    const libraryResult = await libraryRequest;
+    let hasLocalFallback = false;
 
     if (libraryResult.status === "fulfilled") {
       myListLibraryEntries = buildLibraryMyListEntries(libraryResult.value);
+      hasLocalFallback = myListLibraryEntries.length > 0;
     } else {
       console.error("Failed to load local library titles:", libraryResult.reason);
       myListLibraryEntries = [];
     }
     renderMyListRow();
 
+    if (libraryResult.status === "fulfilled") {
+      applyLocalLibraryFallbackHome(libraryResult.value);
+    }
+
+    const popularResult = await popularRequest;
+
     if (popularResult.status !== "fulfilled") {
-      console.error("Failed to load TMDB popular titles:", popularResult.reason);
+      const logPopularFailure = hasLocalFallback ? console.warn : console.error;
+      logPopularFailure(
+        hasLocalFallback
+          ? "Using local library because TMDB popular titles failed:"
+          : "Failed to load TMDB popular titles:",
+        popularResult.reason,
+      );
       if (allowRetry) {
         await new Promise((resolve) => window.setTimeout(resolve, 1500));
         return loadPopularTitles({ allowRetry: false });
       }
-      setFeaturedHeroReady(false);
-      setPopularRowVisible(false);
-      renderPopularCards([]);
+      if (!hasLocalFallback) {
+        setFeaturedHeroReady(false);
+        setPopularRowVisible(false);
+        renderPopularCards([]);
+      }
       return;
     }
 
+    const cardsToRender = buildPopularTitleCards(popularResult.value);
+    if (!cardsToRender.length && hasLocalFallback) {
+      return;
+    }
     applyFeaturedHeroFromPopularPayload(
       popularResult.value,
       libraryResult.status === "fulfilled" ? libraryResult.value : null,
     );
-    const cardsToRender = buildPopularTitleCards(popularResult.value);
     setPopularRowTitle(getPopularRowTitle(popularResult.value));
     setPopularRowVisible(cardsToRender.length > 0);
     renderPopularCards(cardsToRender);
