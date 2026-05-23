@@ -234,8 +234,7 @@ const pages = [
   { path: "/settings.html", selector: ".settings-content" },
   { path: "/upload.html", selector: ".upload-page" },
   { path: "/live.html", selector: ".live-page" },
-  { path: "/football.html", selector: ".football-page" },
-  { path: "/basketball.html", selector: ".basketball-page" },
+  { path: "/sports", selector: ".sports-page", expectSportsTabs: true },
   { path: "/index.html", selector: ".home-page" },
   {
     path: `/player.html?src=${encodeURIComponent(smokeVideo)}&title=Smoke%20Movie&year=1975`,
@@ -283,6 +282,8 @@ async function runSmoke() {
       let sawRemuxRequest = false;
       let sawSourceSwitchResolveHash = "";
       let sawHlsManagedResolve = false;
+      let sawSportsBasketballMatches = false;
+      let sawHlsManagedImportHold = false;
       let hlsBundleRequested = false;
       let hlsBundleReleased = false;
 
@@ -342,6 +343,9 @@ async function runSmoke() {
         ) {
           sawHlsManagedResolve = true;
         }
+        if (pageSpec.expectSportsTabs && url.pathname === "/api/basketball/matches") {
+          sawSportsBasketballMatches = true;
+        }
         if (pageSpec.path === "/login.html" && url.pathname === "/api/auth/me") {
           await route.fulfill(jsonResponse({ error: "Not authenticated." }, 401));
           return;
@@ -367,24 +371,26 @@ async function runSmoke() {
       });
 
       await page.goto(`${baseUrl}${pageSpec.path}`, { waitUntil: "domcontentloaded" });
-      await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
-
       if (pageSpec.expectHlsManagedDuringImport) {
-        let managedImportReady = false;
         for (let attempt = 0; attempt < 200; attempt += 1) {
           if (sawHlsManagedResolve && hlsBundleHoldActive) {
-            managedImportReady = true;
+            sawHlsManagedImportHold = true;
             break;
           }
           await delay(25);
         }
+      }
+      await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
+
+      if (pageSpec.expectHlsManagedDuringImport) {
         const earlyVideoSource = await page.evaluate(
           () => document.querySelector("video")?.getAttribute("src") || "",
         );
-        if (!managedImportReady) {
+        if (!sawHlsManagedImportHold) {
           throw new Error(
             `${pageSpec.path}\nHLS-managed source setup did not start.\n${JSON.stringify({
               sawHlsManagedResolve,
+              sawHlsManagedImportHold,
               hlsBundleRequested,
               hlsBundleHoldActive,
               hlsBundleReleased,
@@ -401,6 +407,35 @@ async function runSmoke() {
       }
 
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+
+      if (pageSpec.expectSportsTabs) {
+        await page.getByRole("button", { name: "Basketball" }).click();
+        await page.waitForFunction(() => new URL(window.location.href).searchParams.get("sport") === "basketball");
+        await page.waitForFunction(() => {
+          const football = document.querySelector(".sports-switcher button:first-child");
+          const basketball = document.querySelector(".sports-switcher button:last-child");
+          return (
+            football?.getAttribute("aria-pressed") === "false" &&
+            basketball?.getAttribute("aria-pressed") === "true"
+          );
+        });
+        for (let attempt = 0; attempt < 20 && !sawSportsBasketballMatches; attempt += 1) {
+          await delay(100);
+        }
+        const sportsUrl = new URL(page.url());
+        if (
+          sportsUrl.pathname !== "/sports" ||
+          sportsUrl.searchParams.get("sport") !== "basketball" ||
+          !sawSportsBasketballMatches
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nSports tabs should stay on /sports and load basketball data.\n${JSON.stringify({
+              url: page.url(),
+              sawSportsBasketballMatches,
+            })}`,
+          );
+        }
+      }
 
       if (pageSpec.expectDirectVideo) {
         for (

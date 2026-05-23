@@ -2,26 +2,50 @@ import html from "solid-js/html";
 import { createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
 
-const DEFAULT_SPORT_CONFIG = {
-  apiUrl: "/api/football/matches",
-  sportName: "Football",
-  streamResolver: "football",
-  slugFallback: "football",
-};
+const SPORT_CONFIGS = Object.freeze({
+  football: Object.freeze({
+    apiUrl: "/api/football/matches",
+    sportName: "Football",
+    streamResolver: "football",
+    slugFallback: "football",
+  }),
+  basketball: Object.freeze({
+    apiUrl: "/api/basketball/matches",
+    sportName: "Basketball",
+    streamResolver: "basketball",
+    slugFallback: "basketball",
+  }),
+});
 
-function resolveSportConfig(options = {}) {
-  const sportName = String(options.sportName || DEFAULT_SPORT_CONFIG.sportName).trim();
-  const streamResolver = String(
-    options.streamResolver || sportName || DEFAULT_SPORT_CONFIG.streamResolver,
-  )
-    .trim()
-    .toLowerCase();
-  return {
-    apiUrl: String(options.apiUrl || DEFAULT_SPORT_CONFIG.apiUrl).trim(),
-    sportName,
-    streamResolver,
-    slugFallback: String(options.slugFallback || streamResolver || "sport").trim(),
-  };
+function normalizeSport(value) {
+  return String(value || "").trim().toLowerCase() === "basketball" ? "basketball" : "football";
+}
+
+function readInitialSport(options = {}) {
+  const optionSport = normalizeSport(options.initialSport);
+  if (optionSport === "basketball") return optionSport;
+  try {
+    return normalizeSport(new URLSearchParams(window.location.search).get("sport"));
+  } catch {
+    return "football";
+  }
+}
+
+function updateSportsUrl(sport) {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.pathname.endsWith(".html")) {
+      url.pathname = "/sports";
+    }
+    if (sport === "basketball") {
+      url.searchParams.set("sport", "basketball");
+    } else {
+      url.searchParams.delete("sport");
+    }
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // History updates are progressive enhancement; tab switching still works without them.
+  }
 }
 
 function getLocalTimeZone() {
@@ -118,7 +142,7 @@ function sportsIcon(sportName) {
     ? "M12 2.4a9.6 9.6 0 1 0 0 19.2 9.6 9.6 0 0 0 0-19.2Zm0 2.1c.9 0 1.75.17 2.54.49a13.7 13.7 0 0 0-1.5 3.28 14.6 14.6 0 0 1-3.77-.9A7.5 7.5 0 0 1 12 4.5Zm-4.28 4.4a16.7 16.7 0 0 0 4.9 1.34 15.7 15.7 0 0 0-.2 3.52 16.1 16.1 0 0 0-6.94 2.62A7.46 7.46 0 0 1 7.72 8.9Zm-.92 9.16a13.9 13.9 0 0 1 5.94-2.25 13.6 13.6 0 0 0 1.77 3.68A7.47 7.47 0 0 1 6.8 18.06Zm9.55.1a11.6 11.6 0 0 1-1.56-2.58 16 16 0 0 1 3.76.66 7.54 7.54 0 0 1-2.2 1.92Zm3.35-3.8a18.3 18.3 0 0 0-5.5-.9 13.2 13.2 0 0 1 .21-3.05 16 16 0 0 0 4.27-.4 7.45 7.45 0 0 1 1.02 4.35Zm-2.36-6.18a13.3 13.3 0 0 1-2.32.2c.33-.83.75-1.62 1.26-2.36.38.28.73.6 1.06.96Z"
     : "M12 2.4a9.6 9.6 0 1 0 0 19.2 9.6 9.6 0 0 0 0-19.2Zm0 4.1 3.1 2.25-1.18 3.65h-3.84L8.9 8.75 12 6.5Zm-5.68 5.35 2.98 2.18-.9 3.24a7 7 0 0 1-3.1-4.92l1.02-.5Zm3.22 6.76.86-3.08h3.2l.86 3.08a7.05 7.05 0 0 1-4.92 0Zm6.06-1.34-.9-3.24 2.98-2.18 1.02.5a7 7 0 0 1-3.1 4.92Z";
   return html`
-    <span class="football-ball-icon" aria-hidden="true">
+    <span class="sports-ball-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24">
         <path d=${iconPath} />
       </svg>
@@ -162,18 +186,18 @@ function renderPlayButton(match, now, config) {
   `;
 
   if (!match.streams.length) {
-    return html`<span class="football-play-button is-disabled" aria-label="No source page">
+    return html`<span class="sports-play-button is-disabled" aria-label="No source page">
       ${disabledIcon}
     </span>`;
   }
   if (!live) {
-    return html`<span class="football-play-button is-disabled" aria-label="Match is not live" title="Available when live">
+    return html`<span class="sports-play-button is-disabled" aria-label="Match is not live" title="Available when live">
       ${disabledIcon}
     </span>`;
   }
   return html`
     <button
-      class="football-play-button"
+      class="sports-play-button"
       type="button"
       onClick=${() => openSportsPlayer(match, config)}
       aria-label=${`Play ${match.title} in Netflix`}
@@ -189,29 +213,29 @@ function renderMatchRow(match, now, config) {
   const linksLabel = `${match.linkCount} ${match.linkCount === 1 ? "link" : "links"}`;
 
   return html`
-    <article class=${`football-match-row${live ? " is-live" : ""}`}>
-      <div class="football-match-main">
+    <article class=${`sports-match-row${live ? " is-live" : ""}`}>
+      <div class="sports-match-main">
         ${sportsIcon(config.sportName)}
-        <div class="football-match-copy">
+        <div class="sports-match-copy">
           <h3>${match.title}</h3>
           <p>
-            <span class="football-sport">${match.sport}</span>
+            <span class="sports-sport">${match.sport}</span>
             <span aria-hidden="true">•</span>
             <span>${match.league}</span>
             <span aria-hidden="true">•</span>
             <span>${linksLabel}</span>
-            ${live ? html`<span class="football-live-pill">Live</span>` : ""}
+            ${live ? html`<span class="sports-live-pill">Live</span>` : ""}
           </p>
         </div>
       </div>
-      <div class="football-time-pill">${formatTime(match.startTimestamp)}</div>
+      <div class="sports-time-pill">${formatTime(match.startTimestamp)}</div>
       ${renderPlayButton(match, now, config)}
     </article>
   `;
 }
 
 export default function SportsScheduleView(options = {}) {
-  const config = resolveSportConfig(options);
+  const [selectedSport, setSelectedSport] = createSignal(readInitialSport(options));
   const [matches, setMatches] = createSignal([]);
   const [selectedDate, setSelectedDate] = createSignal("");
   const [filterMode, setFilterMode] = createSignal("all");
@@ -221,7 +245,9 @@ export default function SportsScheduleView(options = {}) {
   const [fetchedAt, setFetchedAt] = createSignal(0);
   const [now, setNow] = createSignal(Date.now());
   const timeZone = getLocalTimeZone();
+  const config = createMemo(() => SPORT_CONFIGS[selectedSport()] || SPORT_CONFIGS.football);
   let intervalId;
+  let loadSequence = 0;
 
   const dates = createMemo(() => {
     const uniqueDates = new Set();
@@ -249,15 +275,20 @@ export default function SportsScheduleView(options = {}) {
   });
 
   async function loadMatches() {
+    const requestId = ++loadSequence;
+    const activeConfig = config();
     setStatus("loading");
     setErrorText("");
     try {
-      const response = await fetch(config.apiUrl, { cache: "no-store" });
+      const response = await fetch(activeConfig.apiUrl, { cache: "no-store" });
       const payload = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(payload?.error || `${config.sportName} schedule failed (${response.status})`);
+        throw new Error(
+          payload?.error || `${activeConfig.sportName} schedule failed (${response.status})`,
+        );
       }
-      const nextMatches = normalizeMatches(payload, config.sportName);
+      const nextMatches = normalizeMatches(payload, activeConfig.sportName);
+      if (requestId !== loadSequence) return;
       setMatches(nextMatches);
       setFetchedAt(Number(payload?.fetchedAt || Date.now()));
 
@@ -271,9 +302,25 @@ export default function SportsScheduleView(options = {}) {
       });
       setStatus("ready");
     } catch (error) {
-      setErrorText(error?.message || `Could not load ${config.sportName.toLowerCase()} matches.`);
+      if (requestId !== loadSequence) return;
+      setErrorText(
+        error?.message || `Could not load ${activeConfig.sportName.toLowerCase()} matches.`,
+      );
       setStatus("error");
     }
+  }
+
+  function switchSport(sport) {
+    const nextSport = normalizeSport(sport);
+    if (selectedSport() === nextSport) return;
+    setSelectedSport(nextSport);
+    setMatches([]);
+    setSelectedDate("");
+    setFilterMode("all");
+    setGroupMode("match");
+    setFetchedAt(0);
+    updateSportsUrl(nextSport);
+    void loadMatches();
   }
 
   function moveSelectedDate(delta) {
@@ -288,7 +335,7 @@ export default function SportsScheduleView(options = {}) {
     const active = selectedDate() === dateKey;
     return html`
       <button
-        class=${`football-date-tab${active ? " is-active" : ""}`}
+        class=${`sports-date-tab${active ? " is-active" : ""}`}
         type="button"
         onClick=${() => setSelectedDate(dateKey)}
       >
@@ -299,36 +346,38 @@ export default function SportsScheduleView(options = {}) {
   }
 
   function renderGroupedMatches() {
+    const activeConfig = config();
     const items = visibleMatches();
     if (!items.length) {
       return html`
-        <div class="football-empty-state">
+        <div class="sports-empty-state">
           ${filterMode() === "live"
-            ? `No ${config.sportName.toLowerCase()} matches are live for this date.`
-            : `No upcoming ${config.sportName.toLowerCase()} matches for this date.`}
+            ? `No ${activeConfig.sportName.toLowerCase()} matches are live for this date.`
+            : `No upcoming ${activeConfig.sportName.toLowerCase()} matches for this date.`}
         </div>
       `;
     }
 
     if (groupMode() !== "league") {
-      return items.map((match) => renderMatchRow(match, now(), config));
+      return items.map((match) => renderMatchRow(match, now(), activeConfig));
     }
 
     const groups = new Map();
     items.forEach((match) => {
-      const key = match.league || config.sportName;
+      const key = match.league || activeConfig.sportName;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(match);
     });
     return Array.from(groups.entries()).map(([league, leagueMatches]) => html`
-      <section class="football-league-group">
+      <section class="sports-league-group">
         <h3>${league}</h3>
-        ${leagueMatches.map((match) => renderMatchRow(match, now(), config))}
+        ${leagueMatches.map((match) => renderMatchRow(match, now(), activeConfig))}
       </section>
     `);
   }
 
   onMount(() => {
+    updateSportsUrl(selectedSport());
     void loadMatches();
     intervalId = window.setInterval(() => setNow(Date.now()), 1000);
   });
@@ -338,21 +387,25 @@ export default function SportsScheduleView(options = {}) {
   });
 
   return html`
-    <main class="football-main">
+    <main class="sports-main">
       <nav class="sports-switcher" aria-label="Sports">
-        <a
-          href="/football"
-          class=${config.streamResolver === "football" ? "is-active" : ""}
-        >Football</a>
-        <a
-          href="/basketball"
-          class=${config.streamResolver === "basketball" ? "is-active" : ""}
-        >Basketball</a>
+        <button
+          type="button"
+          class=${() => (selectedSport() === "football" ? "is-active" : "")}
+          aria-pressed=${() => (selectedSport() === "football" ? "true" : "false")}
+          onClick=${() => switchSport("football")}
+        >Football</button>
+        <button
+          type="button"
+          class=${() => (selectedSport() === "basketball" ? "is-active" : "")}
+          aria-pressed=${() => (selectedSport() === "basketball" ? "true" : "false")}
+          onClick=${() => switchSport("basketball")}
+        >Basketball</button>
       </nav>
-      <section class="football-board" aria-label=${`${config.sportName} schedule`}>
-        <div class="football-date-strip">
+      <section class="sports-board" aria-label=${() => `${config().sportName} schedule`}>
+        <div class="sports-date-strip">
           <button
-            class="football-date-arrow"
+            class="sports-date-arrow"
             type="button"
             aria-label="Previous date"
             disabled=${() => dates().indexOf(selectedDate()) <= 0}
@@ -360,11 +413,11 @@ export default function SportsScheduleView(options = {}) {
           >
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
           </button>
-          <div class="football-date-tabs">
+          <div class="sports-date-tabs">
             ${() => dates().map(renderDateTab)}
           </div>
           <button
-            class="football-date-arrow"
+            class="sports-date-arrow"
             type="button"
             aria-label="Next date"
             disabled=${() => dates().indexOf(selectedDate()) >= dates().length - 1}
@@ -374,15 +427,15 @@ export default function SportsScheduleView(options = {}) {
           </button>
         </div>
 
-        <div class="football-toolbar">
-          <div class="football-toolbar-left">
+        <div class="sports-toolbar">
+          <div class="sports-toolbar-left">
             <h2>Event</h2>
-            <span class="football-count-pill">All: ${() => selectedStats().all}</span>
-            <span class="football-count-pill">Live: <strong>${() => selectedStats().live}</strong></span>
-            <span class="football-clock-pill">
+            <span class="sports-count-pill">All: ${() => selectedStats().all}</span>
+            <span class="sports-count-pill">Live: <strong>${() => selectedStats().live}</strong></span>
+            <span class="sports-clock-pill">
               ${() => `${formatClock(now())} • ${timeZone}`}
             </span>
-            <div class="football-segmented" aria-label="Schedule filter">
+            <div class="sports-segmented" aria-label="Schedule filter">
               <button
                 type="button"
                 class=${() => (filterMode() === "all" ? "is-active" : "")}
@@ -395,7 +448,7 @@ export default function SportsScheduleView(options = {}) {
               >Live</button>
             </div>
             <select
-              class="football-group-select"
+              class="sports-group-select"
               aria-label="Group matches"
               value=${() => groupMode()}
               onInput=${(event) => setGroupMode(event.currentTarget.value)}
@@ -404,7 +457,7 @@ export default function SportsScheduleView(options = {}) {
               <option value="league">By league</option>
             </select>
           </div>
-          <div class="football-toolbar-right">
+          <div class="sports-toolbar-right">
             <span>Time</span>
             <span>Play</span>
           </div>
@@ -412,17 +465,17 @@ export default function SportsScheduleView(options = {}) {
 
         ${() =>
           status() === "loading"
-            ? html`<div class="football-loading-state">Fetching ${config.sportName.toLowerCase()} matches...</div>`
+            ? html`<div class="sports-loading-state">Fetching ${config().sportName.toLowerCase()} matches...</div>`
             : status() === "error"
               ? html`
-                <div class="football-error-state">
+                <div class="sports-error-state">
                   <p>${errorText()}</p>
                   <button type="button" onClick=${loadMatches}>Retry</button>
                 </div>
               `
-              : html`<div class="football-match-list">${renderGroupedMatches()}</div>`}
+              : html`<div class="sports-match-list">${renderGroupedMatches()}</div>`}
 
-        <div class="football-source-row">
+        <div class="sports-source-row">
           <span>Fetched from super.league.st</span>
           <span>${() => (fetchedAt() ? `Updated ${formatTime(fetchedAt())}` : "")}</span>
           <button type="button" onClick=${loadMatches}>Refresh</button>

@@ -11,17 +11,15 @@ export function liveNavClass(activePage) {
 }
 
 /**
- * @param {"football"|"basketball"|""} activePage
+ * @param {"sports"|""} activePage
  * @returns {string}
  */
 export function sportsNavClass(activePage) {
-  return activePage === "football" || activePage === "basketball"
-    ? "nav-mobile-primary is-active"
-    : "nav-mobile-primary";
+  return activePage === "sports" ? "nav-mobile-primary is-active" : "nav-mobile-primary";
 }
 
 /**
- * @param {"football"|"basketball"|""} activePage
+ * @param {"sports"|""} activePage
  * @returns {string}
  */
 export function sportsNavLinkClass(activePage) {

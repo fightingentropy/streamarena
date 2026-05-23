@@ -65,8 +65,7 @@ async function checkViteShape() {
     "settings",
     "upload",
     "live",
-    "football",
-    "basketball",
+    "sports",
   ]) {
     if (!new RegExp(`${page}:\\s*resolve\\(`).test(viteConfig)) {
       fail(`vite.config.js is missing the ${page} HTML entry.`);

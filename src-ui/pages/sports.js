@@ -8,11 +8,11 @@ import {
   getStoredAvatarModePreference,
   getStoredAvatarImagePreference,
 } from "../shared.js";
-import SportsScheduleView from "../components/football-schedule-view.js";
+import SportsScheduleView from "../components/sports-schedule-view.js";
 import { signOut } from "../lib/auth.js";
 import { liveNavClass, sportsNavClass } from "../lib/browse-nav.js";
 
-export default function FootballPage() {
+export default function SportsPage() {
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
   const [avatarClass, setAvatarClass] = createSignal("avatar avatar-style-blue");
   const [avatarCustomStyle, setAvatarCustomStyle] = createSignal("");
@@ -79,7 +79,7 @@ export default function FootballPage() {
 
   return html`
     <div data-solid-page-root="" style="display: contents">
-      <div class="page home-page football-page" tabindex="0">
+      <div class="page home-page sports-page" tabindex="0">
         <header class="top-nav">
           <div class="nav-left">
             <a href="/" class="nav-logo" aria-label="Go to homepage">
@@ -92,7 +92,7 @@ export default function FootballPage() {
             <nav>
               <a href="/">Home</a>
               <a href="/live" class=${liveNavClass("")}>Live</a>
-              <a href="/football" class=${sportsNavClass("football")}>Sports</a>
+              <a href="/sports" class=${sportsNavClass("sports")}>Sports</a>
               <a href="/#myListRow" class="optional">My List</a>
             </nav>
           </div>
