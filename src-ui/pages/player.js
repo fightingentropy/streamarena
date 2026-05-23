@@ -457,7 +457,7 @@ const supportedSourceFormatSet = new Set(supportedSourceFormats);
 const DEFAULT_SOURCE_MIN_SEEDERS = 0;
 const DEFAULT_SOURCE_LANGUAGE = "en";
 const DEFAULT_SOURCE_AUDIO_PROFILE = "single";
-const DEFAULT_RESOLVER_PROVIDER = "real-debrid";
+const DEFAULT_RESOLVER_PROVIDER = "local-torrent";
 const DEFAULT_REMUX_VIDEO_MODE = "auto";
 // SOURCE_LANGUAGE_TOKENS — imported from ./src-ui/player/sources.js
 const AUDIO_SYNC_MIN_MS = -2500;

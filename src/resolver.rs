@@ -3873,8 +3873,13 @@ fn normalize_source_hash(value: &str) -> String {
 
 pub(crate) fn normalize_resolver_provider(value: &str) -> ResolverProvider {
     match value.trim().to_lowercase().as_str() {
-        "local-torrent" | "local_torrent" | "local" | "torrent" => ResolverProvider::LocalTorrent,
-        _ => ResolverProvider::RealDebrid,
+        "real-debrid" | "real_debrid" | "realdebrid" | "debrid" | "rd" => {
+            ResolverProvider::RealDebrid
+        }
+        "" | "default" | "local-torrent" | "local_torrent" | "local" | "torrent" => {
+            ResolverProvider::LocalTorrent
+        }
+        _ => ResolverProvider::LocalTorrent,
     }
 }
 
@@ -5454,12 +5459,20 @@ mod tests {
     #[test]
     fn normalizes_resolver_provider_preference() {
         assert_eq!(
+            normalize_resolver_provider(""),
+            ResolverProvider::LocalTorrent
+        );
+        assert_eq!(
             normalize_resolver_provider("local-torrent"),
             ResolverProvider::LocalTorrent
         );
         assert_eq!(
-            normalize_resolver_provider("unexpected"),
+            normalize_resolver_provider("real-debrid"),
             ResolverProvider::RealDebrid
+        );
+        assert_eq!(
+            normalize_resolver_provider("unexpected"),
+            ResolverProvider::LocalTorrent
         );
         assert!(ResolverProvider::RealDebrid.is_real_debrid());
         assert!(!ResolverProvider::LocalTorrent.is_real_debrid());
