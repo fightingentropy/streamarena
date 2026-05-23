@@ -4284,7 +4284,6 @@ export default function HomePage() {
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 22a2.6 2.6 0 0 0 2.45-1.72h-4.9A2.6 2.6 0 0 0 12 22Zm7.1-5.2-1.45-1.84V10a5.68 5.68 0 0 0-4.48-5.56V3a1.17 1.17 0 1 0-2.34 0v1.44A5.68 5.68 0 0 0 6.35 10v4.96L4.9 16.8a1 1 0 0 0 .78 1.62h12.64a1 1 0 0 0 .78-1.62Z"></path>
             </svg>
-            <span class="notification-badge" aria-hidden="true">4</span>
           </button>
           <div id="accountMenu" class="account-menu">
             <button
