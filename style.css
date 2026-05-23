@@ -1774,21 +1774,15 @@ body.is-search-mode #myListRow {
     transform-origin: right bottom;
 }
 
-.card:hover,
-.card:focus-within,
 .card.is-hovering {
     z-index: 40;
 }
 
-.card:hover .card-base,
-.card:focus-within .card-base,
 .card.is-hovering .card-base {
     opacity: 0;
     transform: scale(0.94);
 }
 
-.card:hover .card-hover,
-.card:focus-within .card-hover,
 .card.is-hovering .card-hover {
     position: fixed;
     left: var(--card-hover-left);

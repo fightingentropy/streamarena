@@ -3786,8 +3786,20 @@ export default function HomePage() {
     const handleGlobalResize = () => {
       hideSearchContextMenu();
       document
-        .querySelectorAll(".card:hover, .card:focus-within, .card.is-hovering")
+        .querySelectorAll(".card.is-hovering")
         .forEach((card) => positionCardHover(card));
+    };
+
+    const dismissCardHoversOnScroll = (event) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(".cards.popular-cards")
+      ) {
+        return;
+      }
+      document.querySelectorAll(".card.is-hovering").forEach((card) => {
+        hideCardHover(card);
+      });
     };
 
     const handleStorage = (event) => {
@@ -3853,6 +3865,10 @@ export default function HomePage() {
     document.addEventListener("pointerdown", handleGlobalPointerdownAccountMenu);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("resize", handleGlobalResize);
+    document.addEventListener("scroll", dismissCardHoversOnScroll, {
+      passive: true,
+      capture: true,
+    });
     window.addEventListener("storage", handleStorage);
     window.addEventListener("pageshow", handlePageshow);
     window.addEventListener("popstate", handlePopstate);
@@ -3866,6 +3882,7 @@ export default function HomePage() {
       document.removeEventListener("pointerdown", handleGlobalPointerdownAccountMenu);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("resize", handleGlobalResize);
+      document.removeEventListener("scroll", dismissCardHoversOnScroll, true);
       window.removeEventListener("storage", handleStorage);
       window.removeEventListener("pageshow", handlePageshow);
       window.removeEventListener("popstate", handlePopstate);
