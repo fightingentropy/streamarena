@@ -523,7 +523,7 @@ curl -sSI --max-time 10 https://fightingentropy.org | sed -n '1,8p'
 Expected results:
 
 - Mini backend: `200`
-- Mini Caddy proxy: `200`
+- Mini Caddy proxy API route: `401` (unauthenticated)
 - Public host: `HTTP/2 200`
 - Public app auth when logged out: `401`
 
