@@ -278,41 +278,6 @@ a:focus-visible {
   padding: 30px clamp(22px, 5vw, 66px) 64px;
 }
 
-.settings-notice {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 18px;
-  align-items: center;
-  gap: 22px;
-  min-height: 112px;
-  margin-bottom: 28px;
-  padding: 22px 28px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-card);
-  background:
-    linear-gradient(105deg, rgba(247, 247, 255, 0.96), rgba(255, 246, 246, 0.96)) padding-box,
-    linear-gradient(105deg, rgba(87, 120, 255, 0.56), rgba(229, 9, 20, 0.48)) border-box;
-}
-
-.settings-notice-copy {
-  display: grid;
-  gap: 3px;
-}
-
-.settings-notice-copy span {
-  color: var(--muted);
-  font-size: 0.84rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.settings-notice-copy strong {
-  color: #111111;
-  font-size: clamp(1.05rem, 1.45vw, 1.28rem);
-  font-weight: 650;
-  line-height: 1.3;
-}
-
 .settings-page-heading {
   margin-bottom: 24px;
 }
@@ -676,13 +641,6 @@ a:focus-visible {
   border-radius: 7px;
 }
 
-.settings-notice-avatar.avatar-style-preview {
-  width: 54px;
-  height: 54px;
-  border-radius: 8px;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
-}
-
 .avatar-style-swatch {
   width: 22px;
   height: 22px;
@@ -918,11 +876,6 @@ a:focus-visible {
     padding: 18px 16px 44px;
   }
 
-  .settings-notice {
-    min-height: 92px;
-    padding: 18px;
-  }
-
   .settings-page-heading h1 {
     font-size: 2.6rem;
   }
@@ -976,14 +929,6 @@ a:focus-visible {
 @media (max-width: 560px) {
   .settings-topbar-avatar,
   .settings-profile-caret {
-    display: none;
-  }
-
-  .settings-notice {
-    grid-template-columns: minmax(0, 1fr) 14px;
-  }
-
-  .settings-notice-avatar {
     display: none;
   }
 

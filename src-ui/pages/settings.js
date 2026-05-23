@@ -462,19 +462,6 @@ export default function SettingsPage() {
       </aside>
 
       <section class="settings-content" aria-labelledby="settingsPageTitle">
-        <div class="settings-notice">
-          <div class="settings-notice-copy">
-            <span>Local profile</span>
-            <strong>Playback and library preferences for this browser</strong>
-          </div>
-          <span
-            class=${() => `${computeAvatarPreviewClass()} settings-notice-avatar`}
-            style=${computeAvatarPreviewStyle}
-            aria-hidden="true"
-          ></span>
-          <span class="settings-row-chevron" aria-hidden="true"></span>
-        </div>
-
         <form class="quality-form" onSubmit=${handleFormSubmit}>
           <div class="settings-page-heading">
             <h1 id="settingsPageTitle">Settings</h1>
