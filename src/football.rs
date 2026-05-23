@@ -20,8 +20,8 @@ use crate::utils::now_ms;
 const SUPER_LEAGUE_FOOTBALL_URL: &str = "https://super.league.st/index.php?sport=Football";
 const SUPER_LEAGUE_BASKETBALL_URL: &str = "https://super.league.st/index.php?sport=Basketball";
 const SUPER_LEAGUE_STREAM_USER_AGENT: &str = "Mozilla/5.0";
-const SPORTS_SCHEDULE_CACHE_TTL_MS: i64 = 30 * 60 * 1000;
-const SPORTS_SCHEDULE_STALE_IF_ERROR_MS: i64 = 6 * 60 * 60 * 1000;
+const SPORTS_SCHEDULE_CACHE_TTL_MS: i64 = 6 * 60 * 60 * 1000;
+const SPORTS_SCHEDULE_STALE_IF_ERROR_MS: i64 = 24 * 60 * 60 * 1000;
 const HIGH_PRIORITY_FOOTBALL_LEAGUES: &[&str] = &[
     "england premier league",
     "england fa cup",
