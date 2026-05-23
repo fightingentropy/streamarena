@@ -133,6 +133,11 @@ body {
     background: rgba(10, 10, 10, 0.48);
 }
 
+.seek-loading-indicator[hidden],
+.resolver-loader[hidden] {
+    display: none !important;
+}
+
 .seek-netflix-spinner {
     width: 42px;
     height: 42px;
@@ -229,6 +234,14 @@ body {
 .resolver-overlay.is-error .resolver-card {
     display: grid;
     border-color: rgba(255, 118, 118, 0.62);
+}
+
+.resolver-overlay.has-status .resolver-card {
+    display: grid;
+}
+
+.resolver-overlay.has-status .resolver-loader {
+    display: none;
 }
 
 .resolver-overlay.is-recovery .resolver-card {
