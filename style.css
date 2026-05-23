@@ -334,6 +334,17 @@
     transition: opacity 180ms ease;
 }
 
+.home-page .featured-hero:not(.is-hero-ready) .hero-content,
+.home-page .featured-hero:not(.is-hero-ready) .hero-bottom-controls {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.home-page .hero-content.is-loading {
+    visibility: hidden;
+    pointer-events: none;
+}
+
 .home-page .hero-content h1 {
     display: inline-block;
     margin: 0;

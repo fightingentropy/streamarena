@@ -991,6 +991,7 @@ export default function HomePage() {
   const [searchBoxOpen, setSearchBoxOpen] = createSignal(false);
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
   const [featuredHero, setFeaturedHero] = createSignal(createDefaultFeaturedHero());
+  const [featuredHeroReady, setFeaturedHeroReady] = createSignal(false);
   const [featuredHeroCandidates, setFeaturedHeroCandidates] = createSignal([]);
   const [featuredHeroIndex, setFeaturedHeroIndex] = createSignal(0);
   const [heroPreviewActive, setHeroPreviewActive] = createSignal(false);
@@ -998,7 +999,7 @@ export default function HomePage() {
 
   const [continueRowVisible, setContinueRowVisible] = createSignal(false);
   const [continueEmptyVisible, setContinueEmptyVisible] = createSignal(false);
-  const [popularRowVisible, setPopularRowVisible] = createSignal(true);
+  const [popularRowVisible, setPopularRowVisible] = createSignal(false);
   const [popularRowTitle, setPopularRowTitle] = createSignal("Trending Now");
   const [myListRowVisible, setMyListRowVisible] = createSignal(false);
   const [myListEmptyVisible, setMyListEmptyVisible] = createSignal(false);
@@ -2671,9 +2672,22 @@ export default function HomePage() {
   }
 
   // ---- Render popular cards ----
+  function getPopularCardsContainer() {
+    if (cardsContainerRef instanceof HTMLElement) {
+      return cardsContainerRef;
+    }
+    const container = document.getElementById("cardsContainer");
+    if (container instanceof HTMLElement) {
+      cardsContainerRef = container;
+      return container;
+    }
+    return null;
+  }
+
   function renderPopularCards(cardsToRender) {
-    if (!cardsContainerRef) return;
-    cardsContainerRef.innerHTML = "";
+    const container = getPopularCardsContainer();
+    if (!container) return;
+    container.innerHTML = "";
     const fragment = document.createDocumentFragment();
     cardsToRender.forEach((card, index) => {
       if (index >= Math.max(1, cardsToRender.length - 2)) {
@@ -2682,7 +2696,7 @@ export default function HomePage() {
       fragment.appendChild(card);
       attachCardInteractions(card);
     });
-    cardsContainerRef.appendChild(fragment);
+    container.appendChild(fragment);
   }
 
   function normalizeLibraryTitleKey(value) {
@@ -2804,6 +2818,7 @@ export default function HomePage() {
 
   function applyFeaturedHeroCandidate(selected) {
     if (!selected) {
+      setFeaturedHeroReady(false);
       setFeaturedHero(createDefaultFeaturedHero());
       stopHeroPreview();
       return;
@@ -2812,6 +2827,7 @@ export default function HomePage() {
     if (currentTmdbId && currentTmdbId !== selected.tmdbId) {
       stopHeroPreview({ preserveHover: true });
     }
+    setFeaturedHeroReady(true);
     setFeaturedHero(selected);
     void hydrateFeaturedHeroFromTmdb(selected);
   }
@@ -2945,11 +2961,20 @@ export default function HomePage() {
   }
 
   // ---- Load popular titles ----
-  async function loadPopularTitles() {
-    if (!cardsContainerRef) return;
+  async function loadPopularTitles({ allowRetry = true } = {}) {
+    const container = getPopularCardsContainer();
+    if (!container) {
+      if (allowRetry) {
+        requestAnimationFrame(() => {
+          void loadPopularTitles({ allowRetry: false });
+        });
+      }
+      return;
+    }
+
     const [libraryResult, popularResult] = await Promise.allSettled([
       apiFetch("/api/library"),
-      apiFetch("/api/tmdb/popular-movies", { page: "1" }),
+      apiFetchWithTimeout("/api/tmdb/popular-movies", { page: "1" }, 15000),
     ]);
 
     if (libraryResult.status === "fulfilled") {
@@ -2962,6 +2987,11 @@ export default function HomePage() {
 
     if (popularResult.status !== "fulfilled") {
       console.error("Failed to load TMDB popular titles:", popularResult.reason);
+      if (allowRetry) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        return loadPopularTitles({ allowRetry: false });
+      }
+      setFeaturedHeroReady(false);
       setPopularRowVisible(false);
       renderPopularCards([]);
       return;
@@ -4008,10 +4038,11 @@ export default function HomePage() {
     applyLibraryEditModeClass();
     renderMyListRow();
     void loadContinueWatching();
-    loadPopularTitles();
+    queueMicrotask(() => {
+      void loadPopularTitles();
+    });
     applyAccountAvatarStyle();
     closeAccountMenu();
-    startHeroPreviewOnLoad();
     if (window.location.pathname === "/live") {
       showLiveView({ push: false });
     }
@@ -4396,7 +4427,7 @@ export default function HomePage() {
 
       <section
         class=${() =>
-          `featured-hero${heroPreviewActive() ? " is-preview-active" : ""}${heroPreviewPlaying() ? " is-preview-playing" : ""}`}
+          `featured-hero${featuredHeroReady() ? " is-hero-ready" : ""}${heroPreviewActive() ? " is-preview-active" : ""}${heroPreviewPlaying() ? " is-preview-playing" : ""}`}
         ref=${(el) => (heroSectionRef = el)}
         aria-label="Featured title"
         style=${() => activeView() === "home" ? "" : "display:none"}
@@ -4469,7 +4500,11 @@ export default function HomePage() {
           </div>
         </div>
 
-        <section class="hero-content" aria-labelledby="heroTitle">
+        <section
+          class=${() =>
+            `hero-content${featuredHeroReady() ? "" : " is-loading"}`}
+          aria-labelledby="heroTitle"
+        >
           <img
             src="assets/icons/netflix-logo-clean.png"
             class="featured-logo-mark"
