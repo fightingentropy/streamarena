@@ -256,6 +256,10 @@ body {
     pointer-events: none;
 }
 
+.resolver-overlay.is-error.has-actions {
+    pointer-events: auto;
+}
+
 .resolver-overlay.is-error .resolver-loader {
     display: none;
 }
