@@ -659,27 +659,6 @@
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
 }
 
-.home-page .notification-btn {
-    position: relative;
-}
-
-.home-page .notification-badge {
-    position: absolute;
-    top: 8px;
-    right: 0;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 4px;
-    border-radius: 999px;
-    background: var(--netflix-red);
-    color: #fff;
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 16px;
-    text-align: center;
-    pointer-events: none;
-}
-
 .home-page .continue-row .card-base .progress {
     height: 3px;
     background: rgba(255, 255, 255, 0.24);
@@ -696,10 +675,20 @@
 
 .home-member-footer {
     color: grey;
-    max-width: 980px;
-    margin: 20px auto 0;
-    padding: 0 4% 24px;
+    width: 100%;
+    max-width: none;
+    margin: 20px 0 0;
+    padding: 32px 4% 24px;
     background: #000;
+    box-sizing: border-box;
+}
+
+.home-member-footer .member-footer-social,
+.home-member-footer .member-footer-links,
+.home-member-footer .member-footer-copyright {
+    max-width: 980px;
+    margin-left: auto;
+    margin-right: auto;
 }
 
 .member-footer-social {
