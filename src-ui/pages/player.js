@@ -5846,8 +5846,12 @@ function isSourceFallbackResolveError(error) {
   );
 }
 
-async function requestResolveJson(url, timeoutMs = 95000) {
-  const retryDelays = [900, 1800];
+async function requestResolveJson(
+  url,
+  timeoutMs = preferredResolverProvider === "local-torrent" ? 45000 : 95000,
+) {
+  const retryDelays =
+    preferredResolverProvider === "local-torrent" ? [] : [900, 1800];
   let lastError = null;
 
   for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {

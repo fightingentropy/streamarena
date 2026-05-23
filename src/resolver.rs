@@ -35,6 +35,7 @@ const REAL_DEBRID_API_BASE: &str = "https://api.real-debrid.com/rest/1.0";
 const SOURCE_LANGUAGE_FILTER_DEFAULT: &str = "en";
 const SOURCE_AUDIO_PROFILE_DEFAULT: &str = "single";
 const RESOLVE_MAX_MS: i64 = 90_000;
+const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 40_000;
 const PLAYABLE_URL_VALIDATE_TIMEOUT_MS: u64 = 8_000;
 const TORRENTIO_REQUEST_TIMEOUT_MS: u64 = 65_000;
 const TORRENTIO_REQUEST_MAX_ATTEMPTS: usize = 2;
@@ -275,6 +276,13 @@ impl ResolverProvider {
 
     fn is_real_debrid(self) -> bool {
         matches!(self, ResolverProvider::RealDebrid)
+    }
+
+    fn resolve_max_ms(self) -> i64 {
+        match self {
+            ResolverProvider::RealDebrid => RESOLVE_MAX_MS,
+            ResolverProvider::LocalTorrent => LOCAL_TORRENT_RESOLVE_MAX_MS,
+        }
     }
 }
 
@@ -1146,16 +1154,17 @@ impl ResolverService {
             ));
         }
         let resolution_started_at = now_ms();
+        let resolve_max_ms = resolver_provider.resolve_max_ms();
         let mut last_error = None;
         for candidate in candidates {
             let elapsed_ms = now_ms() - resolution_started_at;
-            if elapsed_ms >= RESOLVE_MAX_MS {
+            if elapsed_ms >= resolve_max_ms {
                 break;
             }
             let fallback_name = normalize_whitespace(
                 format!("{} {}", metadata.display_title, metadata.display_year).trim(),
             );
-            let remaining_ms = (RESOLVE_MAX_MS - elapsed_ms).max(1) as u64;
+            let remaining_ms = (resolve_max_ms - elapsed_ms).max(1) as u64;
             let resolved_result = match timeout(
                 Duration::from_millis(remaining_ms),
                 self.resolve_candidate_stream(candidate, &fallback_name, resolver_provider),
@@ -1211,10 +1220,11 @@ impl ResolverService {
             ));
         }
         let resolution_started_at = now_ms();
+        let resolve_max_ms = resolver_provider.resolve_max_ms();
         let mut last_error = None;
         for candidate in candidates {
             let elapsed_ms = now_ms() - resolution_started_at;
-            if elapsed_ms >= RESOLVE_MAX_MS {
+            if elapsed_ms >= resolve_max_ms {
                 break;
             }
             let fallback_name = if metadata.episode_title.is_empty() {
@@ -1231,7 +1241,7 @@ impl ResolverService {
                     metadata.episode_title
                 )
             };
-            let remaining_ms = (RESOLVE_MAX_MS - elapsed_ms).max(1) as u64;
+            let remaining_ms = (resolve_max_ms - elapsed_ms).max(1) as u64;
             let resolved_result = match timeout(
                 Duration::from_millis(remaining_ms),
                 self.resolve_candidate_stream(candidate, &fallback_name, resolver_provider),
