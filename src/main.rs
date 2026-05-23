@@ -4,6 +4,7 @@ mod error;
 mod football;
 mod library;
 mod live;
+mod local_torrent;
 mod media;
 mod persistence;
 mod process;
@@ -26,6 +27,7 @@ use tracing::info;
 use crate::config::Config;
 use crate::error::AppResult;
 use crate::football::SportsScheduleCache;
+use crate::local_torrent::LocalTorrentService;
 use crate::media::MediaService;
 use crate::persistence::Db;
 use crate::process::RuntimeServices;
@@ -64,6 +66,7 @@ async fn main() -> AppResult<()> {
         .map_err(|error| crate::error::ApiError::internal(error.to_string()))?;
     let tmdb = TmdbService::new(config.clone(), db.clone(), http_client.clone());
     let media = MediaService::new(config.clone(), db.clone(), http_client.clone());
+    let local_torrent = LocalTorrentService::new(config.clone(), db.clone());
     let runtime = RuntimeServices::new(config.clone());
     let resolver = ResolverService::new(
         config.clone(),
@@ -71,6 +74,7 @@ async fn main() -> AppResult<()> {
         http_client.clone(),
         tmdb.clone(),
         media.clone(),
+        local_torrent.clone(),
     );
     let streaming = StreamingService::new(config.clone(), runtime.clone(), media.clone());
     let upload = UploadService::new(
@@ -103,6 +107,7 @@ async fn main() -> AppResult<()> {
         tmdb,
         media,
         http_client,
+        local_torrent,
         resolver,
         streaming,
         upload,

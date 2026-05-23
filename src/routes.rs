@@ -26,6 +26,7 @@ use crate::library::{
     write_local_library,
 };
 use crate::live::{live_hls_handler, live_hls_resource_handler};
+use crate::local_torrent::LocalTorrentService;
 use crate::media::{
     MediaProbe, MediaService, choose_audio_track_from_probe, choose_subtitle_track_from_probe,
     merge_preferred_subtitle_tracks,
@@ -49,6 +50,7 @@ pub struct AppState {
     pub tmdb: TmdbService,
     pub media: MediaService,
     pub http_client: reqwest::Client,
+    pub local_torrent: LocalTorrentService,
     pub resolver: ResolverService,
     pub streaming: StreamingService,
     pub upload: UploadService,
@@ -115,6 +117,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/resolve/sources", any(resolve_sources_handler))
         .route("/api/resolve/movie", any(resolve_movie_handler))
         .route("/api/resolve/tv", any(resolve_tv_handler))
+        .route(
+            "/api/local-torrent/stream",
+            any(local_torrent_stream_handler),
+        )
         .route("/api/remux", any(remux_handler))
         .route("/api/media/tracks", any(media_tracks_handler))
         .route("/api/subtitles.vtt", any(subtitles_vtt_handler))
@@ -192,6 +198,8 @@ pub async fn config_handler(
     let ffmpeg = state.runtime.get_ffmpeg_capabilities(false).await;
     Ok(json_response(json!({
         "realDebridConfigured": !state.config.real_debrid_token.is_empty(),
+        "localTorrentAvailable": state.local_torrent.is_available(),
+        "resolverProviders": ["real-debrid", "local-torrent"],
         "torznabConfigured": !state.config.torznab_api_url.is_empty(),
         "tmdbConfigured": !state.config.tmdb_api_key.is_empty(),
         "playbackSessionsEnabled": state.config.playback_sessions_enabled,
@@ -950,6 +958,10 @@ pub async fn resolve_sources_handler(
                 .unwrap_or_default(),
             params.get("limit").map(String::as_str).unwrap_or_default(),
             params
+                .get("resolverProvider")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            params
                 .get("seasonNumber")
                 .map(String::as_str)
                 .unwrap_or_default(),
@@ -1018,6 +1030,10 @@ pub async fn resolve_movie_handler(
                 .unwrap_or_default(),
             params
                 .get("sourceAudioProfile")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            params
+                .get("resolverProvider")
                 .map(String::as_str)
                 .unwrap_or_default(),
         )
@@ -1095,9 +1111,34 @@ pub async fn resolve_tv_handler(
                 .get("sourceAudioProfile")
                 .map(String::as_str)
                 .unwrap_or_default(),
+            params
+                .get("resolverProvider")
+                .map(String::as_str)
+                .unwrap_or_default(),
         )
         .await?;
     Ok(json_response(payload))
+}
+
+pub async fn local_torrent_stream_handler(
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+) -> AppResult<Response<Body>> {
+    let params = query_pairs(uri.query().unwrap_or_default());
+    state
+        .local_torrent
+        .create_stream_response(
+            method,
+            headers,
+            params
+                .get("sourceHash")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            params.get("fileId").map(String::as_str).unwrap_or_default(),
+        )
+        .await
 }
 
 pub async fn remux_handler(
@@ -1206,10 +1247,12 @@ pub async fn media_tracks_handler(
     }
     let params = query_pairs(uri.query().unwrap_or_default());
     let request_url = absolute_request_url(&state, &uri)?;
-    let source_input = to_absolute_playback_url(
-        params.get("input").map(String::as_str).unwrap_or_default(),
-        &request_url,
-    );
+    let raw_input = params.get("input").map(String::as_str).unwrap_or_default();
+    let source_input = if raw_input.trim().starts_with("/api/local-torrent/stream") {
+        raw_input.trim().to_owned()
+    } else {
+        to_absolute_playback_url(raw_input, &request_url)
+    };
     if source_input.is_empty() {
         return Err(ApiError::bad_request("Missing input query parameter."));
     }

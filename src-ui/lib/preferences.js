@@ -18,6 +18,7 @@ export const DEFAULT_AUDIO_LANGUAGE_PREF_KEY = "netflix-default-audio-lang";
 export const SOURCE_MIN_SEEDERS_PREF_KEY = "netflix-source-filter-min-seeders";
 export const SOURCE_AUDIO_PROFILE_PREF_KEY =
   "netflix-source-filter-audio-profile";
+export const RESOLVER_PROVIDER_PREF_KEY = "netflix-resolver-provider";
 export const REMUX_VIDEO_MODE_PREF_KEY = "netflix-remux-video-mode";
 export const SUBTITLE_COLOR_PREF_KEY = "netflix-subtitle-color-pref";
 
@@ -125,6 +126,21 @@ export function normalizeSourceAudioProfile(value) {
   return "single";
 }
 
+export function normalizeResolverProviderPreference(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "local-torrent" ||
+    normalized === "local_torrent" ||
+    normalized === "local" ||
+    normalized === "torrent"
+  ) {
+    return "local-torrent";
+  }
+  return "real-debrid";
+}
+
 export function normalizeRemuxVideoMode(value) {
   const normalized = String(value || "")
     .trim()
@@ -194,4 +210,14 @@ export function getStoredAudioLangForTmdbMovie(tmdbId) {
     // Ignore localStorage failures.
   }
   return "auto";
+}
+
+export function getStoredResolverProviderPreference() {
+  try {
+    return normalizeResolverProviderPreference(
+      localStorage.getItem(RESOLVER_PROVIDER_PREF_KEY),
+    );
+  } catch {
+    return "real-debrid";
+  }
 }

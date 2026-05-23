@@ -8,6 +8,7 @@ pub struct Config {
     pub assets_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub hls_cache_dir: PathBuf,
+    pub local_torrent_cache_dir: PathBuf,
     pub upload_temp_dir: PathBuf,
     pub local_library_path: PathBuf,
     pub persistent_cache_db_path: PathBuf,
@@ -29,6 +30,9 @@ pub struct Config {
     pub remux_process_timeout_seconds: u64,
     pub resolver_max_concurrent: usize,
     pub resolver_queue_timeout_ms: u64,
+    pub local_torrent_max_bytes: u64,
+    pub local_torrent_metadata_timeout_ms: u64,
+    pub local_torrent_ready_timeout_ms: u64,
     pub hls_max_transcode_jobs: usize,
     pub hls_max_segment_renders: usize,
     pub hls_segment_queue_timeout_ms: u64,
@@ -72,6 +76,16 @@ impl Config {
         let resolver_max_concurrent = parse_usize_env("RESOLVER_MAX_CONCURRENT", 2, 1, 16);
         let resolver_queue_timeout_ms =
             parse_u64_env("RESOLVER_QUEUE_TIMEOUT_MS", 3_000, 100, 120_000);
+        let local_torrent_max_bytes = parse_u64_env(
+            "LOCAL_TORRENT_MAX_BYTES",
+            80 * 1024 * 1024 * 1024,
+            1024 * 1024 * 1024,
+            2 * 1024 * 1024 * 1024 * 1024,
+        );
+        let local_torrent_metadata_timeout_ms =
+            parse_u64_env("LOCAL_TORRENT_METADATA_TIMEOUT_MS", 45_000, 5_000, 180_000);
+        let local_torrent_ready_timeout_ms =
+            parse_u64_env("LOCAL_TORRENT_READY_TIMEOUT_MS", 90_000, 5_000, 300_000);
         let torznab_limit = parse_usize_env("TORZNAB_LIMIT", 50, 1, 100);
         let torznab_timeout_ms = parse_u64_env("TORZNAB_TIMEOUT_MS", 15_000, 3_000, 65_000);
         let hls_max_transcode_jobs = parse_usize_env("HLS_MAX_TRANSCODE_JOBS", 1, 1, 8);
@@ -85,6 +99,7 @@ impl Config {
             assets_dir: assets_dir.clone(),
             cache_dir: cache_dir.clone(),
             hls_cache_dir: cache_dir.join("hls"),
+            local_torrent_cache_dir: cache_dir.join("local-torrents"),
             upload_temp_dir: cache_dir.join("uploads"),
             local_library_path: assets_dir.join("library.json"),
             persistent_cache_db_path: cache_dir.join("resolver-cache.sqlite"),
@@ -130,6 +145,9 @@ impl Config {
             remux_process_timeout_seconds,
             resolver_max_concurrent,
             resolver_queue_timeout_ms,
+            local_torrent_max_bytes,
+            local_torrent_metadata_timeout_ms,
+            local_torrent_ready_timeout_ms,
             hls_max_transcode_jobs,
             hls_max_segment_renders,
             hls_segment_queue_timeout_ms,

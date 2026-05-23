@@ -29,12 +29,14 @@ import {
   DEFAULT_STREAM_QUALITY_PREFERENCE,
   SOURCE_MIN_SEEDERS_PREF_KEY,
   SOURCE_AUDIO_PROFILE_PREF_KEY,
+  RESOLVER_PROVIDER_PREF_KEY,
   DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
   REMUX_VIDEO_MODE_PREF_KEY,
   SUBTITLE_COLOR_PREF_KEY,
   normalizeDefaultAudioLanguage,
   normalizeSourceMinSeeders,
   normalizeSourceAudioProfile,
+  getStoredResolverProviderPreference,
   normalizeRemuxVideoMode,
   normalizeSubtitleColor,
 } from "../lib/preferences.js";
@@ -970,6 +972,7 @@ let preferredSourceResultsLimit = DEFAULT_SOURCE_RESULTS_LIMIT;
 let preferredSourceFormats = [...supportedSourceFormats];
 let preferredSourceLanguage = getStoredSourceLanguage();
 let preferredSourceAudioProfile = getStoredSourceAudioProfile();
+let preferredResolverProvider = getStoredResolverProviderPreference();
 let preferredAudioSyncMs = 0;
 let preferredRemuxVideoMode = getStoredRemuxVideoMode();
 preferredSubtitleLang = normalizeSubtitlePreference(subtitleLangParam);
@@ -6148,6 +6151,7 @@ async function resolveTmdbMovieViaBackend(
       year,
       audioLang,
       quality,
+      resolverProvider: preferredResolverProvider,
     });
     if (preferredSubtitleLang) {
       query.set("subtitleLang", preferredSubtitleLang);
@@ -6231,6 +6235,7 @@ async function resolveTmdbTvEpisodeViaBackend(
       ),
       audioLang,
       quality,
+      resolverProvider: preferredResolverProvider,
     });
     if (preferredSubtitleLang) {
       query.set("subtitleLang", preferredSubtitleLang);
@@ -6332,6 +6337,7 @@ async function fetchTmdbSourceOptionsViaBackend() {
     year,
     audioLang: preferredAudioLang,
     quality: preferredQuality,
+    resolverProvider: preferredResolverProvider,
     limit: String(
       Math.max(preferredSourceResultsLimit, SOURCE_FETCH_BATCH_LIMIT),
     ),
@@ -7347,7 +7353,7 @@ async function initPlaybackSource() {
     showResolver("Loading video...");
     await resolveTmdbSourcesAndPlay();
   } catch (error) {
-    console.error("Failed to resolve TMDB playback via Real-Debrid:", error);
+    console.error("Failed to resolve TMDB playback:", error);
     showResolver(error.message || "Unable to resolve this stream.", {
       isError: true,
     });
@@ -8619,11 +8625,13 @@ trackListener(window, "storage", (event) => {
   if (
     event.key === SOURCE_MIN_SEEDERS_PREF_KEY ||
     event.key === SOURCE_LANGUAGE_PREF_KEY ||
-    event.key === SOURCE_AUDIO_PROFILE_PREF_KEY
+    event.key === SOURCE_AUDIO_PROFILE_PREF_KEY ||
+    event.key === RESOLVER_PROVIDER_PREF_KEY
   ) {
     preferredSourceMinSeeders = getStoredSourceMinSeeders();
     preferredSourceLanguage = getStoredSourceLanguage();
     preferredSourceAudioProfile = getStoredSourceAudioProfile();
+    preferredResolverProvider = getStoredResolverProviderPreference();
     if (isTmdbResolvedPlayback && audioControl?.classList.contains("is-open")) {
       void fetchTmdbSourceOptionsViaBackend();
     }

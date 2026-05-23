@@ -29,6 +29,7 @@ const OPENSUBTITLES_API_BASE: &str = "https://api.opensubtitles.com/api/v1";
 const OPENSUBTITLES_TRACK_LIMIT: usize = 5;
 const LOCAL_SIDECAR_SUBTITLE_STREAM_INDEX_BASE: i64 = 1_000_000;
 const EXTERNAL_SUBTITLE_STREAM_INDEX_BASE: i64 = 2_000_000;
+const LOCAL_TORRENT_STREAM_PATH: &str = "/api/local-torrent/stream";
 
 static ASS_OVERRIDE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{\\[^}]*\}").expect("valid ASS override regex"));
@@ -526,10 +527,17 @@ impl MediaService {
             return self.resolve_transcode_input(&playback_input);
         }
 
+        if is_local_torrent_stream_input(input) {
+            return Ok(local_torrent_backend_url(&self.config, input));
+        }
+
         if let Ok(url) = Url::parse(input)
             && matches!(url.scheme(), "http" | "https")
         {
             if is_local_app_playback_url(&self.config, &url) {
+                if is_local_torrent_stream_url(&url) {
+                    return Ok(url.to_string());
+                }
                 let local_path = to_local_path(&self.config.root_dir, url.path())
                     .ok_or_else(|| ApiError::bad_request("Invalid local playback path."))?;
                 return Ok(local_path.to_string_lossy().to_string());
@@ -1078,6 +1086,24 @@ fn is_local_app_playback_url(config: &Config, url: &Url) -> bool {
         );
     let matches_port = url.port_or_known_default().unwrap_or_default() == config.port;
     matches_host && matches_port
+}
+
+fn is_local_torrent_stream_input(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed == LOCAL_TORRENT_STREAM_PATH
+        || trimmed.starts_with(&format!("{LOCAL_TORRENT_STREAM_PATH}?"))
+}
+
+fn is_local_torrent_stream_url(url: &Url) -> bool {
+    url.path() == LOCAL_TORRENT_STREAM_PATH
+}
+
+fn local_torrent_backend_url(config: &Config, path_and_query: &str) -> String {
+    let host = match config.host.trim() {
+        "" | "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+        host => host,
+    };
+    format!("http://{host}:{}{}", config.port, path_and_query.trim())
 }
 
 fn is_allowed_remote_transcode_url(url: &Url) -> bool {
@@ -1725,9 +1751,9 @@ mod tests {
         AudioTrack, MediaProbe, SubtitleTrack, choose_audio_track_from_probe,
         choose_subtitle_track_from_probe, extract_sidecar_subtitle_suffix,
         infer_sidecar_subtitle_language, is_allowed_external_subtitle_download_url,
-        is_allowed_remote_transcode_url, is_local_app_playback_url,
-        merge_preferred_subtitle_tracks, normalize_external_subtitle_download_url,
-        normalize_subtitle_text_to_vtt,
+        is_allowed_remote_transcode_url, is_local_app_playback_url, is_local_torrent_stream_input,
+        is_local_torrent_stream_url, merge_preferred_subtitle_tracks,
+        normalize_external_subtitle_download_url, normalize_subtitle_text_to_vtt,
     };
 
     #[test]
@@ -1933,6 +1959,7 @@ mod tests {
             assets_dir: std::env::temp_dir(),
             cache_dir: std::env::temp_dir(),
             hls_cache_dir: std::env::temp_dir(),
+            local_torrent_cache_dir: std::env::temp_dir().join("local-torrents"),
             upload_temp_dir: std::env::temp_dir(),
             local_library_path: std::env::temp_dir().join("library.json"),
             persistent_cache_db_path: std::env::temp_dir().join("cache.sqlite"),
@@ -1954,6 +1981,9 @@ mod tests {
             remux_process_timeout_seconds: 4 * 60 * 60,
             resolver_max_concurrent: 2,
             resolver_queue_timeout_ms: 3_000,
+            local_torrent_max_bytes: 80 * 1024 * 1024 * 1024,
+            local_torrent_metadata_timeout_ms: 45_000,
+            local_torrent_ready_timeout_ms: 90_000,
             hls_max_transcode_jobs: 1,
             hls_max_segment_renders: 2,
             hls_segment_queue_timeout_ms: 2_000,
@@ -1971,6 +2001,16 @@ mod tests {
         assert!(!is_local_app_playback_url(
             &config,
             &Url::parse("https://download.real-debrid.com/video.mp4").expect("rd url")
+        ));
+        assert!(is_local_torrent_stream_input(
+            "/api/local-torrent/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=0"
+        ));
+        assert!(is_local_torrent_stream_url(
+            &Url::parse("http://127.0.0.1:5173/api/local-torrent/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=0")
+                .expect("local torrent url")
+        ));
+        assert!(!is_local_torrent_stream_url(
+            &Url::parse("http://127.0.0.1:5173/api/remux?input=x").expect("remux url")
         ));
     }
 }

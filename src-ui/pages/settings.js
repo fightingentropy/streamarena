@@ -18,6 +18,7 @@ import {
   SUBTITLE_COLOR_PREF_KEY,
   SOURCE_MIN_SEEDERS_PREF_KEY,
   SOURCE_AUDIO_PROFILE_PREF_KEY,
+  RESOLVER_PROVIDER_PREF_KEY,
   DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
   REMUX_VIDEO_MODE_PREF_KEY,
   DEFAULT_SUBTITLE_COLOR,
@@ -26,9 +27,11 @@ import {
   normalizeSourceMinSeeders,
   normalizeDefaultAudioLanguage,
   normalizeSourceAudioProfile,
+  normalizeResolverProviderPreference,
   normalizeRemuxVideoMode,
   normalizeSubtitleColor,
   getStoredStreamQualityPreference,
+  getStoredResolverProviderPreference,
 } from "../lib/preferences.js";
 
 // ─── Preference key constants ───────────────────────────────────────────────
@@ -97,6 +100,13 @@ function getAudioProfileLabel(value) {
   }, "Single audio");
 }
 
+function getResolverProviderLabel(value) {
+  return labelFromMap(value, {
+    "real-debrid": "Real-Debrid",
+    "local-torrent": "Local torrent (experimental)",
+  }, "Real-Debrid");
+}
+
 function getRemuxVideoModeLabel(value) {
   return labelFromMap(value, {
     auto: "Auto",
@@ -141,6 +151,10 @@ function getStoredSourceLanguage() {
 function getStoredSourceAudioProfile() {
   try { return normalizeSourceAudioProfile(localStorage.getItem(SOURCE_AUDIO_PROFILE_PREF_KEY)); }
   catch { return "single"; }
+}
+
+function getStoredResolverProvider() {
+  return getStoredResolverProviderPreference();
 }
 
 function getStoredRemuxVideoMode() {
@@ -230,6 +244,20 @@ function persistSourceAudioProfile(value) {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ [SOURCE_AUDIO_PROFILE_PREF_KEY]: normalized }),
+  }).catch(() => {});
+  return normalized;
+}
+
+function persistResolverProvider(value) {
+  const normalized = normalizeResolverProviderPreference(value);
+  try {
+    if (normalized === "real-debrid") localStorage.removeItem(RESOLVER_PROVIDER_PREF_KEY);
+    else localStorage.setItem(RESOLVER_PROVIDER_PREF_KEY, normalized);
+  } catch {}
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [RESOLVER_PROVIDER_PREF_KEY]: normalized }),
   }).catch(() => {});
   return normalized;
 }
@@ -372,6 +400,7 @@ export default function SettingsPage() {
   const [sourceMinSeeders, setSourceMinSeeders] = createSignal(getStoredSourceMinSeeders());
   const [sourceLang, setSourceLang] = createSignal(getStoredSourceLanguage());
   const [sourceAudioProfile, setSourceAudioProfile] = createSignal(getStoredSourceAudioProfile());
+  const [resolverProvider, setResolverProvider] = createSignal(getStoredResolverProvider());
   const [remuxVideoMode, setRemuxVideoMode] = createSignal(getStoredRemuxVideoMode());
 
   // Avatar state
@@ -483,6 +512,10 @@ export default function SettingsPage() {
     setSourceAudioProfile(normalizeSourceAudioProfile(e.target.value));
   }
 
+  function handleResolverProviderChange(value) {
+    setResolverProvider(normalizeResolverProviderPreference(value));
+  }
+
   function handleRemuxVideoModeChange(value) {
     setRemuxVideoMode(normalizeRemuxVideoMode(value));
   }
@@ -549,6 +582,9 @@ export default function SettingsPage() {
 
     const savedSourceAudioProfile = persistSourceAudioProfile(sourceAudioProfile());
     setSourceAudioProfile(savedSourceAudioProfile);
+
+    const savedResolverProvider = persistResolverProvider(resolverProvider());
+    setResolverProvider(savedResolverProvider);
 
     const savedDefaultAudioLang = persistDefaultAudioLanguage(defaultAudioLang());
     setDefaultAudioLang(savedDefaultAudioLang);
@@ -766,6 +802,41 @@ export default function SettingsPage() {
               Sources
             </h2>
             <div class="settings-list-card">
+              <section class="settings-list-row">
+                <span class="settings-row-icon settings-row-icon--sources" aria-hidden="true"></span>
+                <div class="settings-row-copy">
+                  <h3>Resolver provider</h3>
+                  <p>${() => getResolverProviderLabel(resolverProvider())}</p>
+                </div>
+                <div
+                  class="settings-row-control settings-segmented-control resolver-provider-options"
+                  role="radiogroup"
+                  aria-label="Resolver provider"
+                >
+                  <label class="remux-mode-option">
+                    <input
+                      type="radio"
+                      name="resolverProvider"
+                      value="real-debrid"
+                      checked=${() => resolverProvider() === "real-debrid"}
+                      onChange=${() => handleResolverProviderChange("real-debrid")}
+                    />
+                    <span>Real-Debrid</span>
+                  </label>
+                  <label class="remux-mode-option">
+                    <input
+                      type="radio"
+                      name="resolverProvider"
+                      value="local-torrent"
+                      checked=${() => resolverProvider() === "local-torrent"}
+                      onChange=${() => handleResolverProviderChange("local-torrent")}
+                    />
+                    <span>Local torrent (experimental)</span>
+                  </label>
+                </div>
+                <span class="settings-row-chevron" aria-hidden="true"></span>
+              </section>
+
               <section class="settings-list-row settings-list-row--stacked">
                 <span class="settings-row-icon settings-row-icon--sources" aria-hidden="true"></span>
                 <div class="settings-row-copy">
