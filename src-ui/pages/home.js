@@ -64,6 +64,7 @@ const YOUTUBE_PLAYER_STATE = {
   CUED: 5,
 };
 const FEATURED_HERO_ROTATION_MS = 24 * 60 * 60 * 1000;
+const FEATURED_HERO_CAROUSEL_MS = 8000;
 const FEATURED_HERO_STORAGE_KEY = "netflix-featured-hero-v2";
 const FEATURED_HERO_CANDIDATE_LIMIT = 10;
 const BLOCKED_FEATURED_HERO_TITLE_KEYS = new Set(["your heart will be broken"]);
@@ -388,6 +389,7 @@ function createDefaultFeaturedHero() {
     year: "",
     runtime: "Movie",
     maturity: "13+",
+    tagline: "Discover what everyone is watching right now.",
     description: "Current top movies from around the world.",
     poster: "assets/images/thumbnail-top10-h.jpg",
     thumb: "assets/images/thumbnail-top10-h.jpg",
@@ -433,12 +435,54 @@ function getFeaturedHeroTitleLines(feature) {
   return lines;
 }
 
-function getFeaturedHeroCallouts(feature) {
-  const values = Array.isArray(feature?.callouts) ? feature.callouts : [];
-  return values
-    .map((value) => String(value || "").trim())
-    .filter(Boolean)
-    .slice(0, 2);
+function getFeaturedHeroTagline(feature) {
+  const tagline = String(feature?.tagline || "").trim();
+  if (tagline) {
+    return tagline;
+  }
+  const callouts = getFeaturedHeroCallouts(feature);
+  return callouts[0] || "";
+}
+
+function getFeaturedHeroMaturityLabel(feature) {
+  const maturity = String(feature?.maturity || "13+").trim();
+  return maturity.replace(/\+$/, "");
+}
+
+function getPopularRowTitle(payload) {
+  const genreMap = new Map();
+  (Array.isArray(payload?.genres) ? payload.genres : []).forEach((genre) => {
+    genreMap.set(genre.id, genre.name);
+  });
+  const genreCounts = new Map();
+  (Array.isArray(payload?.results) ? payload.results : [])
+    .slice(0, POPULAR_TITLES_LIMIT)
+    .forEach((item) => {
+      (Array.isArray(item?.genre_ids) ? item.genre_ids : []).forEach((id) => {
+        const name = genreMap.get(id);
+        if (!name) {
+          return;
+        }
+        genreCounts.set(name, (genreCounts.get(name) || 0) + 1);
+      });
+    });
+  const topGenre = [...genreCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
+  if (topGenre === "Crime" || topGenre === "Thriller") {
+    return "Relentless Crime Thrillers";
+  }
+  if (topGenre === "Action") {
+    return "Adrenaline-Fueled Action";
+  }
+  if (topGenre === "Comedy") {
+    return "Laugh Out Loud Comedies";
+  }
+  if (topGenre === "Horror") {
+    return "Spine-Chilling Horror";
+  }
+  if (topGenre) {
+    return `${topGenre} Picks`;
+  }
+  return "Trending Now";
 }
 
 function findLocalMovieForTmdbId(localLibrary, tmdbId) {
@@ -451,6 +495,14 @@ function findLocalMovieForTmdbId(localLibrary, tmdbId) {
       (movie) => String(movie?.tmdbId || "").trim() === normalizedTmdbId,
     ) || null
   );
+}
+
+function getFeaturedHeroCallouts(feature) {
+  const values = Array.isArray(feature?.callouts) ? feature.callouts : [];
+  return values
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .slice(0, 2);
 }
 
 function createFeaturedHeroFromTmdbItem(
@@ -483,6 +535,7 @@ function createFeaturedHeroFromTmdbItem(
     year,
     runtime: "Movie",
     maturity: item?.adult ? "18+" : "13+",
+    tagline: String(item?.tagline || "").trim(),
     description:
       String(item?.overview || "").trim() || "No description available.",
     poster,
@@ -938,13 +991,15 @@ export default function HomePage() {
   const [searchBoxOpen, setSearchBoxOpen] = createSignal(false);
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
   const [featuredHero, setFeaturedHero] = createSignal(createDefaultFeaturedHero());
+  const [featuredHeroCandidates, setFeaturedHeroCandidates] = createSignal([]);
+  const [featuredHeroIndex, setFeaturedHeroIndex] = createSignal(0);
   const [heroPreviewActive, setHeroPreviewActive] = createSignal(false);
   const [heroPreviewPlaying, setHeroPreviewPlaying] = createSignal(false);
 
   const [continueRowVisible, setContinueRowVisible] = createSignal(false);
   const [continueEmptyVisible, setContinueEmptyVisible] = createSignal(false);
   const [popularRowVisible, setPopularRowVisible] = createSignal(true);
-  const [popularRowTitle, setPopularRowTitle] = createSignal("Top 10 Popular Titles");
+  const [popularRowTitle, setPopularRowTitle] = createSignal("Trending Now");
   const [myListRowVisible, setMyListRowVisible] = createSignal(false);
   const [myListEmptyVisible, setMyListEmptyVisible] = createSignal(false);
   const [activeView, setActiveView] = createSignal("home");
@@ -995,6 +1050,7 @@ export default function HomePage() {
   let searchDebounceTimer = null;
   let activeSearchRequestToken = 0;
   let featuredHeroDetailsRequestVersion = 0;
+  let heroCarouselTimer = null;
   let searchAbortController = null;
   let searchContextTarget = null;
   let searchBoxHideTimer = null;
@@ -2260,7 +2316,7 @@ export default function HomePage() {
     return card;
   }
 
-  function buildCardFromTmdbElement(item, genreMap, imageBase = TMDB_IMAGE_BASE) {
+  function buildCardFromTmdbElement(item, genreMap, imageBase = TMDB_IMAGE_BASE, cardIndex = 0) {
     const title = item.title || "Untitled";
     const releaseDate = item.release_date || "";
     const year = releaseDate ? releaseDate.slice(0, 4) : "2024";
@@ -2281,6 +2337,14 @@ export default function HomePage() {
       ? genreNames.map(escapeHtml).join(" <span>&bull;</span> ")
       : "Popular <span>&bull;</span> Trending";
     const safeTitle = escapeHtml(title);
+    const top10BadgeMarkup =
+      cardIndex < POPULAR_TITLES_LIMIT
+        ? `<span class="card-top10-badge" aria-hidden="true">TOP<strong>${cardIndex + 1}</strong></span>`
+        : "";
+    const recentBadgeMarkup =
+      cardIndex < 3
+        ? `<span class="card-recent-badge">Recently Added</span>`
+        : "";
 
     const card = document.createElement("article");
     card.className = "card";
@@ -2305,7 +2369,9 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
+        ${top10BadgeMarkup}
         <img src="${posterUrl}" alt="${safeTitle}" loading="lazy" />
+        ${recentBadgeMarkup}
         <div class="progress"><span style="width: ${Math.max(10, Math.min(96, Math.round(item.vote_average * 10)))}%"></span></div>
       </div>
       <div class="card-hover">
@@ -2722,7 +2788,7 @@ export default function HomePage() {
         return true;
       })
       .slice(0, POPULAR_TITLES_LIMIT)
-      .map((item) => buildCardFromTmdbElement(item, genreMap, imageBase));
+      .map((item, index) => buildCardFromTmdbElement(item, genreMap, imageBase, index));
   }
 
   function applyFeaturedHeroCandidate(selected) {
@@ -2739,9 +2805,60 @@ export default function HomePage() {
     void hydrateFeaturedHeroFromTmdb(selected);
   }
 
+  function selectFeaturedHeroByIndex(index) {
+    const candidates = featuredHeroCandidates();
+    if (!candidates.length) {
+      return;
+    }
+    const normalizedIndex =
+      ((Number(index) % candidates.length) + candidates.length) % candidates.length;
+    setFeaturedHeroIndex(normalizedIndex);
+    applyFeaturedHeroCandidate(candidates[normalizedIndex]);
+  }
+
+  function advanceFeaturedHeroCarousel() {
+    const candidates = featuredHeroCandidates();
+    if (candidates.length <= 1) {
+      return;
+    }
+    selectFeaturedHeroByIndex(featuredHeroIndex() + 1);
+  }
+
+  function stopHeroCarouselTimer() {
+    if (heroCarouselTimer) {
+      window.clearInterval(heroCarouselTimer);
+      heroCarouselTimer = null;
+    }
+  }
+
+  function startHeroCarouselTimer() {
+    stopHeroCarouselTimer();
+    if (featuredHeroCandidates().length <= 1) {
+      return;
+    }
+    heroCarouselTimer = window.setInterval(() => {
+      if (activeView() !== "home" || showSearchExperience() || document.hidden) {
+        return;
+      }
+      advanceFeaturedHeroCarousel();
+    }, FEATURED_HERO_CAROUSEL_MS);
+  }
+
+  function handleHeroCarouselDotClick(index) {
+    selectFeaturedHeroByIndex(index);
+    startHeroCarouselTimer();
+  }
+
   function applyFeaturedHeroFromPopularPayload(payload, localLibrary = null) {
     const candidates = buildFeaturedHeroCandidates(payload, localLibrary);
-    applyFeaturedHeroCandidate(selectFeaturedHeroCandidate(candidates));
+    setFeaturedHeroCandidates(candidates);
+    const selected = selectFeaturedHeroCandidate(candidates);
+    const selectedIndex = candidates.findIndex(
+      (item) => item.tmdbId === selected?.tmdbId,
+    );
+    setFeaturedHeroIndex(selectedIndex >= 0 ? selectedIndex : 0);
+    applyFeaturedHeroCandidate(selected);
+    startHeroCarouselTimer();
   }
 
   async function hydrateFeaturedHeroFromTmdb(hero) {
@@ -2788,6 +2905,10 @@ export default function HomePage() {
           year,
           runtime: formatRuntime(details?.runtime) || current.runtime || "Movie",
           maturity: details?.adult ? "18+" : current.maturity || "13+",
+          tagline:
+            String(details?.tagline || "").trim() ||
+            current.tagline ||
+            "",
           description:
             String(details?.overview || "").trim() ||
             current.description ||
@@ -2802,7 +2923,7 @@ export default function HomePage() {
           ready: true,
         };
       });
-      if (heroPreviewHovering && canPlayHeroPreview()) {
+      if (canPlayHeroPreview()) {
         playHeroPreview();
       } else {
         ensureHeroPreviewPreloadSource();
@@ -2840,7 +2961,7 @@ export default function HomePage() {
       libraryResult.status === "fulfilled" ? libraryResult.value : null,
     );
     const cardsToRender = buildPopularTitleCards(popularResult.value);
-    setPopularRowTitle(`Top ${POPULAR_TITLES_LIMIT} Popular Titles`);
+    setPopularRowTitle(getPopularRowTitle(popularResult.value));
     setPopularRowVisible(cardsToRender.length > 0);
     renderPopularCards(cardsToRender);
   }
@@ -3320,7 +3441,6 @@ export default function HomePage() {
     if (
       heroPreviewActive() &&
       heroPreviewInViewport &&
-      heroPreviewHovering &&
       canPlayHeroPreview()
     ) {
       postYoutubePlayerCommand("playVideo");
@@ -3410,7 +3530,7 @@ export default function HomePage() {
       resumeHeroPreviewPlayback();
       return;
     }
-    if (heroPreviewHovering && canPlayHeroPreview()) {
+    if (canPlayHeroPreview()) {
       playHeroPreview();
       return;
     }
@@ -3513,6 +3633,17 @@ export default function HomePage() {
       return;
     }
     playHeroPreview();
+  }
+
+  function startHeroPreviewOnLoad() {
+    heroPreviewHovering = true;
+    if (canPlayHeroPreview()) {
+      if (getHeroTrailerEmbedUrl()) {
+        playHeroPreview();
+      } else {
+        ensureHeroPreviewPreloadSource();
+      }
+    }
   }
 
   function handleMuteToggle() {
@@ -3869,6 +4000,7 @@ export default function HomePage() {
     loadPopularTitles();
     applyAccountAvatarStyle();
     closeAccountMenu();
+    startHeroPreviewOnLoad();
     if (window.location.pathname === "/live") {
       showLiveView({ push: false });
     }
@@ -4041,6 +4173,7 @@ export default function HomePage() {
 
     onCleanup(() => {
       cleanupHorizontalRailScrollers();
+      stopHeroCarouselTimer();
       stopHeroPreview();
       window.removeEventListener("message", handleHeroPreviewMessage);
       heroVisibilityObserver?.disconnect();
@@ -4140,6 +4273,7 @@ export default function HomePage() {
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 22a2.6 2.6 0 0 0 2.45-1.72h-4.9A2.6 2.6 0 0 0 12 22Zm7.1-5.2-1.45-1.84V10a5.68 5.68 0 0 0-4.48-5.56V3a1.17 1.17 0 1 0-2.34 0v1.44A5.68 5.68 0 0 0 6.35 10v4.96L4.9 16.8a1 1 0 0 0 .78 1.62h12.64a1 1 0 0 0 .78-1.62Z"></path>
             </svg>
+            <span class="notification-badge" aria-hidden="true">4</span>
           </button>
           <div id="accountMenu" class="account-menu">
             <button
@@ -4282,12 +4416,7 @@ export default function HomePage() {
 
         <div class="hero-shade" aria-hidden="true"></div>
 
-        <div class="hero-top-row">
-          <img
-            src="assets/icons/netflix-logo-clean.png"
-            class="featured-logo-mark"
-            alt="Netflix"
-          />
+        <div class="hero-bottom-controls">
           <div class="hero-controls">
             <button
               id="muteToggle"
@@ -4304,10 +4433,38 @@ export default function HomePage() {
                 <path d="M14 5.2v13.6a1 1 0 0 1-1.68.74L7.6 15H5a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2.6l4.72-4.54A1 1 0 0 1 14 5.2Zm6.3 3.1a1 1 0 0 1 0 1.4L18.01 12l2.3 2.3a1 1 0 0 1-1.42 1.4L16.6 13.4l-2.3 2.3a1 1 0 0 1-1.4-1.42l2.3-2.28-2.3-2.3a1 1 0 0 1 1.4-1.4l2.3 2.3 2.29-2.3a1 1 0 0 1 1.41 0Z"></path>
               </svg>
             </button>
+            <span class="hero-bottom-rating" aria-label=${() => `Rated ${featuredHero().maturity || "13+"}`}>
+              ${() => getFeaturedHeroMaturityLabel(featuredHero())}
+            </span>
+          </div>
+          <div
+            class="hero-carousel-dots"
+            role="tablist"
+            aria-label="Featured titles"
+            style=${() => featuredHeroCandidates().length <= 1 ? "display:none" : ""}
+          >
+            ${() =>
+              featuredHeroCandidates()
+                .slice(0, FEATURED_HERO_CANDIDATE_LIMIT)
+                .map((candidate, index) => html`
+                  <button
+                    type="button"
+                    class=${() =>
+                      `hero-carousel-dot${featuredHeroIndex() === index ? " is-active" : ""}`}
+                    aria-label=${`Show ${candidate.title || "featured title"}`}
+                    aria-selected=${() => (featuredHeroIndex() === index ? "true" : "false")}
+                    onClick=${() => handleHeroCarouselDotClick(index)}
+                  ></button>
+                `)}
           </div>
         </div>
 
         <section class="hero-content" aria-labelledby="heroTitle">
+          <img
+            src="assets/icons/netflix-logo-clean.png"
+            class="featured-logo-mark"
+            alt="Netflix"
+          />
           <h1
             id="heroTitle"
             class="hero-title-stacked"
@@ -4321,15 +4478,12 @@ export default function HomePage() {
                 (line) => html`<span>${line}</span>`,
               )}
           </h1>
-          <div class="hero-meta" aria-label="Title details">
-            <span>Movie</span>
-            <span aria-hidden="true">•</span>
-            <span>${() => featuredHero().year || "Popular"}</span>
-            <span aria-hidden="true">•</span>
-            <span>${() => featuredHero().runtime || "Movie"}</span>
-            <span aria-hidden="true">•</span>
-            <span class="maturity-badge">${() => featuredHero().maturity || "13+"}</span>
-          </div>
+          <p
+            class="hero-tagline"
+            style=${() => (getFeaturedHeroTagline(featuredHero()) ? "" : "display:none")}
+          >
+            ${() => getFeaturedHeroTagline(featuredHero())}
+          </p>
           <p class="description">
             ${() => featuredHero().description || "No description available."}
           </p>
@@ -4376,12 +4530,25 @@ export default function HomePage() {
               More Info
             </button>
           </div>
-          <div class="hero-callouts" aria-label="Featured badges">
-            <span>${() => getFeaturedHeroCallouts(featuredHero())[0] || "Top global movie"}</span>
-            <span>${() => getFeaturedHeroCallouts(featuredHero())[1] || "Popular now"}</span>
-          </div>
         </section>
 
+      </section>
+
+      <section
+        id="popularRow"
+        class="popular-row home-popular-row"
+        style=${() => activeView() === "home" && popularRowVisible() ? "" : "display:none"}
+      >
+        <div class="popular-row-inner">
+          <div class="rail-header">
+            <h2 id="popularRowTitle">${() => popularRowTitle()}</h2>
+          </div>
+          <div
+            id="cardsContainer"
+            class="cards popular-cards"
+            ref=${(el) => (cardsContainerRef = el)}
+          ></div>
+        </div>
       </section>
 
       <section
@@ -4404,23 +4571,6 @@ export default function HomePage() {
         </p>
       </section>
     </div>
-
-    <section
-      id="popularRow"
-      class="popular-row home-popular-row"
-      style=${() => activeView() === "home" && popularRowVisible() ? "" : "display:none"}
-    >
-      <div class="popular-row-inner">
-        <div class="rail-header">
-          <h2 id="popularRowTitle">${() => popularRowTitle()}</h2>
-        </div>
-        <div
-          id="cardsContainer"
-          class="cards popular-cards"
-          ref=${(el) => (cardsContainerRef = el)}
-        ></div>
-      </div>
-    </section>
 
     <section
       id="myListRow"
