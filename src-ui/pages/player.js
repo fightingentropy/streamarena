@@ -126,6 +126,7 @@ let selectedSubtitleStreamIndex = -1;
 let availableAudioTracks = [];
 let availableSubtitleTracks = [];
 let availablePlaybackSources = [];
+let resolverFailedSourceHashes = new Set();
 let subtitleTrackElement = null;
 let customSubtitleCues = [];
 let customSubtitleCueCursor = 0;
@@ -1348,11 +1349,13 @@ function showResolver(
     resolverCountdown.textContent = String(countdown || "").trim();
     resolverCountdown.hidden = !isRecovery || !resolverCountdown.textContent;
   }
+  const shouldShowRetry = (isRecovery || isError) && showRetry;
+  const shouldShowAlternate = (isRecovery || isError) && showAlternate;
   if (resolverRetryButton) {
-    resolverRetryButton.hidden = !isRecovery || !showRetry;
+    resolverRetryButton.hidden = !shouldShowRetry;
   }
   if (resolverAlternateButton) {
-    resolverAlternateButton.hidden = !isRecovery || !showAlternate;
+    resolverAlternateButton.hidden = !shouldShowAlternate;
   }
   if (resolverLoader) {
     resolverLoader.hidden = shouldShowStatus;
@@ -1363,6 +1366,10 @@ function showResolver(
   resolverOverlay.classList.toggle("is-error", isError);
   resolverOverlay.classList.toggle("is-recovery", isRecovery);
   resolverOverlay.classList.toggle("has-status", shouldShowStatus);
+  resolverOverlay.classList.toggle(
+    "has-actions",
+    shouldShowRetry || shouldShowAlternate,
+  );
 }
 
 function hideResolver() {
@@ -1374,6 +1381,7 @@ function hideResolver() {
   resolverOverlay.classList.remove("is-error");
   resolverOverlay.classList.remove("is-recovery");
   resolverOverlay.classList.remove("has-status");
+  resolverOverlay.classList.remove("has-actions");
   if (resolverLoader) {
     resolverLoader.hidden = false;
     resolverLoader.style.display = "";
@@ -1444,12 +1452,20 @@ function clearPendingVideoSource() {
 function showResolverError(
   errorOrMessage,
   fallbackMessage = "Unable to resolve this stream.",
-  { clearVideoSource = false } = {},
+  {
+    clearVideoSource = false,
+    showRetry = isTmdbResolvedPlayback || hasRecoverablePlaybackSource(),
+    showAlternate = isTmdbResolvedPlayback,
+  } = {},
 ) {
   clearPlaybackRecovery({ hideOverlay: false });
   hideSeekLoadingIndicator();
   if (clearVideoSource) {
     clearPendingVideoSource();
+  }
+  const failedSourceHash = normalizeSourceHash(selectedSourceHash);
+  if (failedSourceHash) {
+    resolverFailedSourceHashes.add(failedSourceHash);
   }
 
   const message = normalizeResolverFailureMessage(
@@ -1459,12 +1475,15 @@ function showResolverError(
   showResolver(message, {
     isError: true,
     showStatus: true,
+    showRetry,
+    showAlternate,
   });
 
   if (resolverOverlay) {
     resolverOverlay.hidden = false;
     resolverOverlay.classList.add("is-error", "has-status");
     resolverOverlay.classList.remove("is-recovery");
+    resolverOverlay.classList.toggle("has-actions", showRetry || showAlternate);
   }
   if (resolverLoader) {
     resolverLoader.hidden = true;
@@ -5868,7 +5887,205 @@ function retryPlaybackRecoveryNow() {
   void runPlaybackRecoveryAttempt(sequence, mode);
 }
 
+function parseSourceSizeGb(sizeLabel) {
+  const match = /([\d.]+)\s*(tb|gb|mb)\b/i.exec(String(sizeLabel || ""));
+  if (!match) {
+    return 0;
+  }
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  const unit = match[2].toLowerCase();
+  if (unit === "tb") {
+    return value * 1024;
+  }
+  if (unit === "mb") {
+    return value / 1024;
+  }
+  return value;
+}
+
+function isLikelySourcePack(sourceOption) {
+  const text = [
+    sourceOption?.primary,
+    sourceOption?.filename,
+    sourceOption?.provider,
+    sourceOption?.releaseGroup,
+  ]
+    .map((value) => String(value || "").toLowerCase())
+    .join(" ");
+  return /\b(pack|collection|top\s*\d+|gdrive|movies)\b/.test(text);
+}
+
+function scoreResolverAlternateSource(sourceOption) {
+  const seeders = Math.max(0, Number(sourceOption?.seeders) || 0);
+  const sizeGb = parseSourceSizeGb(sourceOption?.size);
+  const resolution = parseSourceOptionVerticalResolution(sourceOption);
+  const backendScore = Number(sourceOption?.score);
+  let score = Number.isFinite(backendScore) ? backendScore / 100 : 0;
+
+  score += Math.min(seeders, 300) * 0.25;
+  if (sizeGb > 0) {
+    if (sizeGb <= 3) score += 85;
+    else if (sizeGb <= 6) score += 70;
+    else if (sizeGb <= 10) score += 50;
+    else if (sizeGb <= 16) score += 20;
+    else if (sizeGb > 60) score -= 120;
+    else if (sizeGb > 30) score -= 80;
+  }
+  if (resolution === 1080) score += 35;
+  else if (resolution === 720) score += 15;
+  else if (resolution >= 2160) score += sizeGb > 0 && sizeGb <= 10 ? 8 : -30;
+
+  if (isSourceOptionLikelyContainer(sourceOption, "mp4")) score += 25;
+  if (isSourceOptionLikelyContainer(sourceOption, "mkv")) score -= 5;
+  if (isLikelySourcePack(sourceOption)) score -= 110;
+
+  return score;
+}
+
+function pickResolverAlternateSourceHash() {
+  const currentHash = normalizeSourceHash(selectedSourceHash);
+  const options = availablePlaybackSources
+    .map((option, index) => ({
+      option,
+      index,
+      sourceHash: normalizeSourceHash(
+        option?.sourceHash || option?.infoHash || "",
+      ),
+    }))
+    .filter((item) => item.sourceHash);
+  if (!options.length) {
+    return "";
+  }
+
+  const unfailed = options.filter(
+    (item) =>
+      item.sourceHash !== currentHash &&
+      !resolverFailedSourceHashes.has(item.sourceHash),
+  );
+  const candidates = unfailed.length
+    ? unfailed
+    : options.filter((item) => item.sourceHash !== currentHash);
+  if (!candidates.length) {
+    return "";
+  }
+
+  if (preferredResolverProvider === "local-torrent") {
+    candidates.sort((left, right) => {
+      const scoreDelta =
+        scoreResolverAlternateSource(right.option) -
+        scoreResolverAlternateSource(left.option);
+      if (scoreDelta !== 0) {
+        return scoreDelta > 0 ? 1 : -1;
+      }
+      return left.index - right.index;
+    });
+    return candidates[0].sourceHash;
+  }
+
+  return candidates[0].sourceHash;
+}
+
+async function resolveTmdbFromResolverAction({
+  sourceHash = "",
+  isAlternate = false,
+} = {}) {
+  if (!isTmdbResolvedPlayback) {
+    retryPlaybackRecoveryNow();
+    return;
+  }
+
+  const normalizedSourceHash = normalizeSourceHash(sourceHash);
+  const previousSourceHash = selectedSourceHash;
+  const previousSourceSelectionPinned = sourceSelectionPinned;
+  if (normalizedSourceHash) {
+    selectedSourceHash = normalizedSourceHash;
+    sourceSelectionPinned = true;
+    applyPreferredSourceAudioSync(selectedSourceHash);
+    persistSourceHashInUrl();
+    syncAudioState();
+  }
+
+  tmdbResolveRetries = 0;
+  showResolver(isAlternate ? "Trying another source..." : "Loading video...");
+  try {
+    await resolveTmdbSourcesAndPlay({
+      allowSourceFallback: !normalizedSourceHash,
+      requiredSourceHash: normalizedSourceHash,
+    });
+  } catch (error) {
+    if (normalizedSourceHash) {
+      resolverFailedSourceHashes.add(normalizedSourceHash);
+      selectedSourceHash = previousSourceHash;
+      sourceSelectionPinned = previousSourceSelectionPinned;
+      applyPreferredSourceAudioSync(selectedSourceHash);
+      persistSourceHashInUrl();
+      syncAudioState();
+    }
+    console.error(
+      isAlternate
+        ? "Failed to switch TMDB playback source:"
+        : "Failed to retry TMDB playback:",
+      error,
+    );
+    showResolverError(
+      error,
+      isAlternate ? "Unable to start that source." : "Unable to resolve this stream.",
+      { clearVideoSource: true },
+    );
+  }
+}
+
+async function resolveAlternateTmdbSourceFromResolverError() {
+  if (!availablePlaybackSources.length) {
+    showResolver("Loading alternate sources...", { showStatus: true });
+    await fetchTmdbSourceOptionsViaBackend();
+  }
+
+  const nextSourceHash = pickResolverAlternateSourceHash();
+  if (!nextSourceHash) {
+    showResolverError(
+      "No alternate sources are available for this title.",
+      "No alternate sources are available for this title.",
+      {
+        showRetry: true,
+        showAlternate: false,
+      },
+    );
+    return;
+  }
+
+  await resolveTmdbFromResolverAction({
+    sourceHash: nextSourceHash,
+    isAlternate: true,
+  });
+}
+
+function retryResolverActionNow() {
+  if (isTmdbResolvedPlayback) {
+    void resolveTmdbFromResolverAction();
+    return;
+  }
+  retryPlaybackRecoveryNow();
+}
+
 function tryAlternatePlaybackSourceNow() {
+  if (
+    isTmdbResolvedPlayback &&
+    resolverOverlay &&
+    resolverOverlay.classList.contains("is-error")
+  ) {
+    void resolveAlternateTmdbSourceFromResolverError().catch((error) => {
+      console.error("Failed to load alternate TMDB source:", error);
+      showResolverError(error, "Unable to load another source.", {
+        clearVideoSource: true,
+      });
+    });
+    return;
+  }
+
   clearPlaybackRecovery({ hideOverlay: false });
   if (attemptTmdbRecovery("Trying another source...")) {
     return;
@@ -7532,7 +7749,7 @@ if (autoPlayCancel) {
 
 if (resolverRetryButton) {
   trackListener(resolverRetryButton, "click", () => {
-    retryPlaybackRecoveryNow();
+    retryResolverActionNow();
   });
 }
 if (resolverAlternateButton) {
