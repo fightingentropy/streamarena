@@ -513,6 +513,7 @@ const subtitleLanguageNames = {
 let playbackBenchmark = null;
 
 let selectedSourceHash = normalizeSourceHash(sourceHashParam);
+let currentTmdbPlaybackSessionKey = "";
 let sourceSelectionPinned = false;
 
 function getPinnedSourceHashForRequests() {
@@ -3393,6 +3394,7 @@ function reportCurrentTmdbPlaybackFailure(message, eventType = "playback_error")
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       tmdbId,
+      sessionKey: currentTmdbPlaybackSessionKey,
       audioLang: preferredAudioLang || "auto",
       quality: preferredQuality || DEFAULT_STREAM_QUALITY_PREFERENCE,
       positionSeconds: Math.max(0, getEffectiveCurrentTime()),
@@ -3522,6 +3524,7 @@ async function resolveTmdbSourcesAndPlay({
   const resolvedSourceHash = normalizeSourceHash(
     resolved?.sourceHash || selectedSourceHash,
   );
+  currentTmdbPlaybackSessionKey = String(resolved?.session?.key || "").trim();
   if (
     normalizedRequiredSourceHash &&
     resolvedSourceHash !== normalizedRequiredSourceHash

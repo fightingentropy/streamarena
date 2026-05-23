@@ -265,13 +265,10 @@ impl Db {
                 ],
             )?;
             if normalize_preferred_audio_lang(&audio_lang) != "auto" {
-                for quality in ["auto", "2160p", "1080p", "720p"] {
-                    let session_key = format!("{tmdb_id}:auto:{quality}");
-                    let _ = tx.execute(
-                        "DELETE FROM playback_sessions WHERE session_key = ?",
-                        [session_key],
-                    );
-                }
+                let _ = tx.execute(
+                    "DELETE FROM playback_sessions WHERE tmdb_id = ? AND audio_lang = 'auto'",
+                    [tmdb_id.as_str()],
+                );
             }
             tx.commit()?;
             return_connection(&pool, connection);
@@ -384,34 +381,41 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
-    pub async fn get_latest_healthy_playback_session_for_tmdb(
+    pub async fn get_latest_healthy_playback_sessions_for_tmdb(
         &self,
         tmdb_id: String,
-    ) -> AppResult<Option<PlaybackSession>> {
+        limit: i64,
+    ) -> AppResult<Vec<PlaybackSession>> {
         let path = self.path.clone();
         let pool = self.pool.clone();
         task::spawn_blocking(move || {
+            let normalized_limit = limit.clamp(1, 100);
             let connection = take_connection(&pool, &path)?;
-            let key = connection
-                .query_row(
-                    "
+            let mut statement = connection.prepare(
+                "
                     SELECT session_key
                     FROM playback_sessions
                     WHERE tmdb_id = ?
                       AND health_state != 'invalid'
                       AND playable_url != ''
                     ORDER BY updated_at DESC
-                    LIMIT 1
+                    LIMIT ?
                     ",
-                    [tmdb_id.as_str()],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?;
+            )?;
+            let keys = statement
+                .query_map(params![tmdb_id.as_str(), normalized_limit], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
             return_connection(&pool, connection);
-            match key {
-                Some(session_key) => get_playback_session_inner(&pool, &path, session_key),
-                None => Ok(None),
+            let mut sessions = Vec::new();
+            for session_key in keys {
+                if let Some(session) = get_playback_session_inner(&pool, &path, session_key)? {
+                    sessions.push(session);
+                }
             }
+            Ok::<Vec<PlaybackSession>, rusqlite::Error>(sessions)
         })
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
@@ -574,14 +578,15 @@ impl Db {
             let connection = take_connection(&pool, &path)?;
             let normalized_audio_lang = normalize_preferred_audio_lang(&input.audio_lang);
             let normalized_quality = normalize_preferred_stream_quality(&input.preferred_quality);
-            let session_key = build_playback_session_key(
-                &input.tmdb_id,
-                &normalized_audio_lang,
-                &normalized_quality,
-            );
+            let session_key = input.session_key.trim().to_owned();
             let existing = get_playback_session_inner(&pool, &path, session_key.clone())?;
             let auto_session_key = if normalized_audio_lang != "auto" {
-                build_playback_session_key(&input.tmdb_id, "auto", &normalized_quality)
+                build_related_playback_session_key_with_audio(
+                    &session_key,
+                    &input.tmdb_id,
+                    "auto",
+                    &normalized_quality,
+                )
             } else {
                 String::new()
             };
@@ -2199,7 +2204,7 @@ fn trim_table(
 fn parse_movie_resolve_key_quality(cache_key: &str) -> String {
     cache_key
         .split(':')
-        .nth(2)
+        .next_back()
         .map(normalize_preferred_stream_quality)
         .unwrap_or_else(|| "auto".to_owned())
 }
@@ -2211,6 +2216,29 @@ fn build_playback_session_key(tmdb_id: &str, audio_lang: &str, quality: &str) ->
         normalize_preferred_audio_lang(audio_lang),
         normalize_preferred_stream_quality(quality)
     )
+}
+
+fn build_related_playback_session_key_with_audio(
+    session_key: &str,
+    tmdb_id: &str,
+    audio_lang: &str,
+    quality: &str,
+) -> String {
+    let parts = session_key.split(':').collect::<Vec<_>>();
+    if parts.len() == 6
+        && parts.first() == Some(&"tv")
+        && parts.get(1).copied() == Some(tmdb_id.trim())
+    {
+        return format!(
+            "tv:{}:{}:{}:{}:{}",
+            parts[1],
+            parts[2],
+            parts[3],
+            normalize_preferred_audio_lang(audio_lang),
+            normalize_preferred_stream_quality(quality)
+        );
+    }
+    build_playback_session_key(tmdb_id, audio_lang, quality)
 }
 
 fn normalize_playback_session_fallback_urls(values: Vec<String>) -> Vec<String> {
@@ -2349,6 +2377,10 @@ mod tests {
     #[test]
     fn parses_quality_from_session_key() {
         assert_eq!(parse_movie_resolve_key_quality("123:auto:1080p"), "1080p");
+        assert_eq!(
+            parse_movie_resolve_key_quality("tv:123:s1:e2:en:720p"),
+            "720p"
+        );
     }
 
     #[tokio::test]
@@ -2416,6 +2448,59 @@ mod tests {
                 .expect("load auto session")
                 .is_none()
         );
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn persists_episode_scoped_playback_sessions_without_overwriting() {
+        let path = unique_temp_db_path("episode-scoped-playback-session");
+        let db = setup_test_playback_session_db(&path).await;
+
+        for (session_key, episode_number, filename) in [
+            ("tv:123:s1:e1:auto:1080p", 1, "Show.S01E01.mkv"),
+            ("tv:123:s1:e2:auto:1080p", 2, "Show.S01E02.mkv"),
+        ] {
+            db.persist_playback_session(PersistPlaybackSessionInput {
+                session_key: session_key.to_owned(),
+                tmdb_id: "123".to_owned(),
+                audio_lang: "auto".to_owned(),
+                preferred_quality: "1080p".to_owned(),
+                source_hash: format!("{episode_number:040}"),
+                selected_file: episode_number.to_string(),
+                filename: filename.to_owned(),
+                playable_url: format!("https://download.real-debrid.com/{filename}"),
+                fallback_urls: Vec::new(),
+                metadata: json!({
+                    "tmdbId": "123",
+                    "displayTitle": "Show",
+                    "mediaType": "tv",
+                    "seasonNumber": 1,
+                    "episodeNumber": episode_number
+                }),
+            })
+            .await
+            .expect("persist episode session");
+        }
+
+        assert!(
+            db.get_playback_session("tv:123:s1:e1:auto:1080p".to_owned())
+                .await
+                .expect("load episode 1")
+                .is_some()
+        );
+        assert!(
+            db.get_playback_session("tv:123:s1:e2:auto:1080p".to_owned())
+                .await
+                .expect("load episode 2")
+                .is_some()
+        );
+
+        let sessions = db
+            .get_latest_healthy_playback_sessions_for_tmdb("123".to_owned(), 10)
+            .await
+            .expect("load latest healthy sessions");
+        assert_eq!(sessions.len(), 2);
 
         let _ = tokio::fs::remove_file(&path).await;
     }
@@ -2529,9 +2614,11 @@ mod tests {
         .expect("invalidate latest session");
 
         let latest = db
-            .get_latest_healthy_playback_session_for_tmdb("123".to_owned())
+            .get_latest_healthy_playback_sessions_for_tmdb("123".to_owned(), 1)
             .await
             .expect("load latest healthy session")
+            .into_iter()
+            .next()
             .expect("healthy session exists");
 
         assert_eq!(latest.session_key, "123:en:1080p");
