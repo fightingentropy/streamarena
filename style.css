@@ -167,6 +167,21 @@
 
 .home-page .featured-hero.is-preview-active .hero-trailer-frame {
     opacity: 1;
+    height: 140%;
+    transform: translate(-50%, -50%) scale(1.42);
+}
+
+.home-page .hero-trailer-shield {
+    display: none;
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: auto;
+    cursor: default;
+}
+
+.home-page .featured-hero.is-preview-active .hero-trailer-shield {
+    display: block;
 }
 
 .home-page .featured-hero.is-preview-active .hero-poster {
@@ -180,7 +195,7 @@
 .home-page .hero-shade {
     position: absolute;
     inset: 0;
-    z-index: 2;
+    z-index: 4;
     background:
         linear-gradient(
             90deg,

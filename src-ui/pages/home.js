@@ -596,18 +596,20 @@ function selectFeaturedHeroTrailerKey(details) {
   ).trim();
 }
 
-function buildYoutubeTrailerEmbedUrl(key, muted, { autoplay = true } = {}) {
+function buildYoutubeTrailerEmbedUrl(key, muted) {
   const trailerKey = String(key || "").trim();
   if (!trailerKey) {
     return "";
   }
   const params = new URLSearchParams({
-    autoplay: autoplay ? "1" : "0",
+    autoplay: "0",
+    enablejsapi: "1",
     mute: muted ? "1" : "0",
     controls: "0",
     disablekb: "1",
     fs: "0",
     iv_load_policy: "3",
+    cc_load_policy: "0",
     loop: "1",
     modestbranding: "1",
     playsinline: "1",
@@ -3225,17 +3227,62 @@ export default function HomePage() {
   }
 
   // ---- Hero ----
+  function getHeroPreviewIframe() {
+    return heroPreviewFrameRef instanceof HTMLIFrameElement
+      ? heroPreviewFrameRef
+      : null;
+  }
+
+  function getHeroTrailerEmbedUrl() {
+    return buildYoutubeTrailerEmbedUrl(
+      featuredHero()?.trailerKey,
+      isMuted(),
+    );
+  }
+
+  function postYoutubePlayerCommand(func) {
+    const iframe = getHeroPreviewIframe();
+    const src = iframe?.getAttribute("src") || "";
+    if (!iframe || !src.includes("youtube")) {
+      return false;
+    }
+    iframe.contentWindow?.postMessage(
+      JSON.stringify({ event: "command", func, args: "" }),
+      "*",
+    );
+    return true;
+  }
+
+  function ensureHeroPreviewIframeLoaded() {
+    const iframe = getHeroPreviewIframe();
+    if (!iframe || !canPreloadHeroPreview()) {
+      return false;
+    }
+    const trailerUrl = getHeroTrailerEmbedUrl();
+    if (!trailerUrl) {
+      iframe.removeAttribute("src");
+      setHeroPreviewActive(false);
+      return false;
+    }
+    if (iframe.getAttribute("src") !== trailerUrl) {
+      iframe.setAttribute("src", trailerUrl);
+    }
+    return true;
+  }
+
   function applyHeroPreviewMutedState(nextMuted) {
     setIsMuted(nextMuted);
-    if (heroPreviewFrameRef instanceof HTMLIFrameElement) {
-      const currentSrc = heroPreviewFrameRef.getAttribute("src");
-      if (currentSrc) {
-        if (heroPreviewActive()) {
-          ensureHeroPreviewSource();
-        } else {
-          ensureHeroPreviewPreloadSource();
-        }
-      }
+    const iframe = getHeroPreviewIframe();
+    if (!iframe?.getAttribute("src")) {
+      return;
+    }
+    const trailerUrl = getHeroTrailerEmbedUrl();
+    const wasPlaying = heroPreviewActive();
+    if (iframe.getAttribute("src") !== trailerUrl) {
+      iframe.setAttribute("src", trailerUrl);
+    }
+    if (wasPlaying) {
+      playHeroPreview();
     }
   }
 
@@ -3258,50 +3305,44 @@ export default function HomePage() {
   }
 
   function ensureHeroPreviewPreloadSource() {
-    if (!(heroPreviewFrameRef instanceof HTMLIFrameElement)) {
+    if (!ensureHeroPreviewIframeLoaded()) {
       return false;
-    }
-    if (!canPreloadHeroPreview()) {
-      return false;
-    }
-    const trailerUrl = buildYoutubeTrailerEmbedUrl(
-      featuredHero()?.trailerKey,
-      isMuted(),
-      { autoplay: false },
-    );
-    if (!trailerUrl) {
-      heroPreviewFrameRef.removeAttribute("src");
-      setHeroPreviewActive(false);
-      return false;
-    }
-    if (heroPreviewFrameRef.getAttribute("src") !== trailerUrl) {
-      heroPreviewFrameRef.setAttribute("src", trailerUrl);
     }
     setHeroPreviewActive(false);
     return true;
   }
 
-  function ensureHeroPreviewSource() {
-    if (!(heroPreviewFrameRef instanceof HTMLIFrameElement)) {
-      setHeroPreviewActive(false);
+  function pauseHeroPreviewForViewport() {
+    heroPreviewPlayRequestId += 1;
+    postYoutubePlayerCommand("pauseVideo");
+  }
+
+  function resumeHeroPreviewPlayback() {
+    const iframe = getHeroPreviewIframe();
+    const trailerUrl = getHeroTrailerEmbedUrl();
+    if (!iframe || !trailerUrl || !canPlayHeroPreview()) {
       return false;
     }
-    const trailerUrl = buildYoutubeTrailerEmbedUrl(
-      featuredHero()?.trailerKey,
-      isMuted(),
-      { autoplay: true },
-    );
-    if (!trailerUrl) {
-      heroPreviewFrameRef.removeAttribute("src");
-      setHeroPreviewActive(false);
+
+    heroPreviewPlayRequestId += 1;
+    const requestId = heroPreviewPlayRequestId;
+    const startPlayback = () => {
+      if (requestId !== heroPreviewPlayRequestId) {
+        return;
+      }
+      postYoutubePlayerCommand("playVideo");
+    };
+
+    const hadLoadedSrc =
+      Boolean(iframe.getAttribute("src")) && iframe.getAttribute("src") === trailerUrl;
+    if (!ensureHeroPreviewIframeLoaded()) {
       return false;
     }
-    if (heroPreviewFrameRef.getAttribute("src") === trailerUrl) {
-      setHeroPreviewActive(true);
+    if (hadLoadedSrc) {
+      startPlayback();
       return true;
     }
-    heroPreviewFrameRef.setAttribute("src", trailerUrl);
-    setHeroPreviewActive(true);
+    iframe.addEventListener("load", startPlayback, { once: true });
     return true;
   }
 
@@ -3310,18 +3351,29 @@ export default function HomePage() {
       heroPreviewHovering = false;
     }
     heroPreviewPlayRequestId += 1;
-    if (!(heroPreviewFrameRef instanceof HTMLIFrameElement)) {
+    const iframe = getHeroPreviewIframe();
+    if (!iframe) {
       setHeroPreviewActive(false);
       return;
     }
-    heroPreviewFrameRef.removeAttribute("src");
+    iframe.removeAttribute("src");
     setHeroPreviewActive(false);
   }
 
   function updateHeroPreviewViewportState(isInViewport) {
     heroPreviewInViewport = Boolean(isInViewport);
     if (!heroPreviewInViewport) {
-      stopHeroPreview();
+      if (heroPreviewActive() && getHeroPreviewIframe()?.getAttribute("src")) {
+        pauseHeroPreviewForViewport();
+      }
+      return;
+    }
+    if (heroPreviewActive() && getHeroPreviewIframe()?.getAttribute("src")) {
+      resumeHeroPreviewPlayback();
+      return;
+    }
+    if (heroPreviewHovering && canPlayHeroPreview()) {
+      playHeroPreview();
       return;
     }
     if (!heroPreviewActive()) {
@@ -3330,12 +3382,19 @@ export default function HomePage() {
   }
 
   function playHeroPreview() {
-    if (!(heroPreviewFrameRef instanceof HTMLIFrameElement) || !canPlayHeroPreview()) {
+    if (!canPlayHeroPreview()) {
       stopHeroPreview();
       return;
     }
-    heroPreviewPlayRequestId += 1;
-    ensureHeroPreviewSource();
+    if (!getHeroTrailerEmbedUrl()) {
+      stopHeroPreview();
+      return;
+    }
+    setHeroPreviewActive(true);
+    if (!resumeHeroPreviewPlayback()) {
+      setHeroPreviewActive(false);
+      stopHeroPreview();
+    }
   }
 
   function scheduleHeroPreviewPlayback() {
@@ -4108,6 +4167,7 @@ export default function HomePage() {
           tabindex="-1"
           aria-hidden="true"
         ></iframe>
+        <div class="hero-trailer-shield" aria-hidden="true"></div>
 
         <div class="hero-shade" aria-hidden="true"></div>
 
