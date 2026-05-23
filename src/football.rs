@@ -641,7 +641,7 @@ fn remove_config_noise_char(value: &str) -> String {
 
 fn decode_base64_utf8(value: &str) -> AppResult<String> {
     let mut normalized = value.trim().to_owned();
-    while normalized.len() % 4 != 0 {
+    while !normalized.len().is_multiple_of(4) {
         normalized.push('=');
     }
     let bytes = BASE64_STANDARD

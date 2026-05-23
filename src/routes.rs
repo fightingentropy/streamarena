@@ -7,7 +7,7 @@ use axum::body::{Body, to_bytes};
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{Method, Response, Uri};
 use axum::middleware::{self, Next};
-use axum::routing::{any, get, put};
+use axum::routing::{any, get};
 use serde_json::{Value, json};
 use url::Url;
 
@@ -80,9 +80,6 @@ pub fn build_router(state: AppState) -> Router {
             "/api/basketball/stream",
             get(basketball_stream_resolve_handler),
         )
-        .route("/api/library", get(library_get_handler))
-        .route("/api/hls/master.m3u8", any(hls_master_handler))
-        .route("/api/hls/segment.ts", any(hls_segment_handler))
         .route("/api/live/hls.m3u8", any(live_hls_handler))
         .route("/api/live/hls-resource", any(live_hls_resource_handler))
         .route("/api/auth/signup", any(auth_signup_handler))
@@ -90,7 +87,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/logout", any(auth_logout_handler));
 
     let protected_api = Router::new()
-        .route("/api/library", put(library_put_handler))
+        .route(
+            "/api/library",
+            get(library_get_handler).put(library_put_handler),
+        )
+        .route("/api/hls/master.m3u8", any(hls_master_handler))
+        .route("/api/hls/segment.ts", any(hls_segment_handler))
         .route("/api/debug/cache", any(debug_cache))
         .route("/api/title/preferences", any(title_preferences_handler))
         .route("/api/session/progress", any(session_progress_handler))
@@ -162,7 +164,7 @@ pub async fn debug_cache(
     if method != Method::GET && method != Method::POST {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    if method == Method::POST && uri.query().unwrap_or_default().contains("clear=1") {
+    if query_flag_enabled(uri.query().unwrap_or_default(), "clear") {
         state.db.clear_persistent_caches().await?;
         let _ = tokio::fs::remove_dir_all(&state.config.hls_cache_dir).await;
     }
@@ -237,7 +239,7 @@ pub async fn health_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    let refresh = uri.query().unwrap_or_default().contains("refresh=1");
+    let refresh = query_flag_enabled(uri.query().unwrap_or_default(), "refresh");
     let ffmpeg = state.runtime.get_ffmpeg_capabilities(refresh).await;
     Ok(json_response(json!({
         "ok": true,
@@ -2016,6 +2018,13 @@ fn query_pairs(query: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+fn query_flag_enabled(query: &str, name: &str) -> bool {
+    query_pairs(query).get(name).is_some_and(|value| {
+        let normalized = value.trim();
+        normalized == "1" || normalized.eq_ignore_ascii_case("true")
+    })
+}
+
 fn is_numeric_id(value: &str) -> bool {
     !value.trim().is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
 }
@@ -2673,7 +2682,7 @@ impl StringExt for String {
 mod tests {
     use super::{
         absolute_request_url_with_authority, build_playback_session_key, find_episode_pattern,
-        normalize_preferred_audio_lang, normalize_subtitle_preference,
+        normalize_preferred_audio_lang, normalize_subtitle_preference, query_flag_enabled,
     };
     use axum::http::header::HOST;
     use axum::http::{HeaderMap, HeaderValue, Uri};
@@ -2700,6 +2709,15 @@ mod tests {
     #[test]
     fn builds_session_key() {
         assert_eq!(build_playback_session_key("1", "en", "1080"), "1:en:1080p");
+    }
+
+    #[test]
+    fn query_flags_require_exact_parameter_names() {
+        assert!(query_flag_enabled("clear=1", "clear"));
+        assert!(query_flag_enabled("clear=true", "clear"));
+        assert!(!query_flag_enabled("notclear=1", "clear"));
+        assert!(!query_flag_enabled("clearance=1", "clear"));
+        assert!(!query_flag_enabled("clear=0", "clear"));
     }
 
     #[test]

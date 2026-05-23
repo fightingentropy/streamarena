@@ -58,6 +58,7 @@ struct UploadSession {
     temp_path: PathBuf,
     file_name: String,
     metadata: Map<String, Value>,
+    expected_bytes: Option<u64>,
     received_bytes: u64,
     created_at: i64,
 }
@@ -175,6 +176,15 @@ impl UploadService {
             return Err(ApiError::bad_request("Missing fileName."));
         }
         validate_upload_extension(&file_name)?;
+        let expected_bytes = object.get("fileSize").and_then(json_u64_value);
+        if let Some(file_size) = expected_bytes {
+            if file_size == 0 {
+                return Err(ApiError::bad_request("Uploaded file is empty."));
+            }
+            if file_size > self.config.max_upload_bytes as u64 {
+                return Err(total_upload_limit_error(self.config.max_upload_bytes));
+            }
+        }
         self.ensure_upload_directories().await?;
         let session_id = generate_upload_session_id();
         let temp_path = self
@@ -187,6 +197,7 @@ impl UploadService {
                 temp_path,
                 file_name,
                 metadata: object,
+                expected_bytes,
                 received_bytes: 0,
                 created_at: now_ms(),
             },
@@ -202,10 +213,10 @@ impl UploadService {
         if session_id.trim().is_empty() {
             return Err(ApiError::bad_request("Missing sessionId."));
         }
-        let temp_path = self
+        let (temp_path, previous_received) = self
             .sessions
             .get(session_id)
-            .map(|entry| entry.temp_path.clone())
+            .map(|entry| (entry.temp_path.clone(), entry.received_bytes))
             .ok_or_else(|| ApiError::not_found("Upload session not found."))?;
         self.ensure_upload_directories().await?;
         let written_bytes =
@@ -213,13 +224,18 @@ impl UploadService {
         if written_bytes == 0 {
             return Err(ApiError::bad_request("Empty chunk payload."));
         }
+        let next_total = previous_received.saturating_add(written_bytes);
+        if next_total > self.config.max_upload_bytes as u64 {
+            rollback_chunk_file_to_len(&temp_path, previous_received).await;
+            return Err(total_upload_limit_error(self.config.max_upload_bytes));
+        }
 
         let received_bytes = {
             let mut session = self
                 .sessions
                 .get_mut(session_id)
                 .ok_or_else(|| ApiError::not_found("Upload session not found."))?;
-            session.received_bytes = session.received_bytes.saturating_add(written_bytes);
+            session.received_bytes = next_total;
             session.received_bytes
         };
         Ok(json!({
@@ -246,6 +262,18 @@ impl UploadService {
         let Some((_, session)) = self.sessions.remove(&session_id) else {
             return Err(ApiError::not_found("Upload session not found."));
         };
+        if session.received_bytes == 0 {
+            let _ = remove_file_if_present(&session.temp_path).await;
+            return Err(ApiError::bad_request("Uploaded file is empty."));
+        }
+        if let Some(expected_bytes) = session.expected_bytes
+            && session.received_bytes != expected_bytes
+        {
+            let _ = remove_file_if_present(&session.temp_path).await;
+            return Err(ApiError::bad_request(
+                "Upload is incomplete. Retry the file upload.",
+            ));
+        }
 
         let mut metadata_map = session.metadata.clone();
         for (key, value) in object {
@@ -1210,6 +1238,15 @@ fn build_upload_temp_filename(original_name: &str) -> String {
     format!("{base}-{}-{}{}", now_ms(), random_suffix(), safe_ext)
 }
 
+fn json_u64_value(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|number| number.is_finite() && *number >= 0.0 && number.fract() == 0.0)
+            .map(|number| number as u64)
+    })
+}
+
 fn random_suffix() -> String {
     let mut buf = [0u8; 8];
     getrandom::fill(&mut buf).unwrap_or_else(|_| {
@@ -1286,6 +1323,12 @@ async fn rollback_partial_chunk(file: &fs::File, initial_len: u64) {
     let _ = file.set_len(initial_len).await;
 }
 
+async fn rollback_chunk_file_to_len(path: &Path, len: u64) {
+    if let Ok(file) = OpenOptions::new().write(true).open(path).await {
+        let _ = file.set_len(len).await;
+    }
+}
+
 fn map_chunk_stream_error(message: &str, max_chunk_bytes: usize) -> ApiError {
     if message.to_lowercase().contains("length limit exceeded") {
         chunk_limit_error(max_chunk_bytes)
@@ -1298,6 +1341,13 @@ fn chunk_limit_error(max_chunk_bytes: usize) -> ApiError {
     ApiError::payload_too_large(format!(
         "Chunk payload exceeded the {} MiB upload limit.",
         max_chunk_bytes / (1024 * 1024)
+    ))
+}
+
+fn total_upload_limit_error(max_upload_bytes: usize) -> ApiError {
+    ApiError::payload_too_large(format!(
+        "Upload exceeded the configured {} MiB limit.",
+        max_upload_bytes / (1024 * 1024)
     ))
 }
 
@@ -1635,7 +1685,7 @@ mod tests {
 
     use axum::body::{Body, Bytes};
     use futures_util::stream;
-    use serde_json::{Map, Value};
+    use serde_json::{Map, Value, json};
 
     use super::{
         UPLOAD_SESSION_CHUNK_MAX_BYTES, UploadService, UploadSession,
@@ -1717,6 +1767,7 @@ mod tests {
                 temp_path: temp_path.clone(),
                 file_name: "video.mp4".to_owned(),
                 metadata: Map::new(),
+                expected_bytes: None,
                 received_bytes: 0,
                 created_at: now_ms(),
             },
@@ -1766,6 +1817,7 @@ mod tests {
                 temp_path: temp_path.clone(),
                 file_name: "video.mp4".to_owned(),
                 metadata: Map::new(),
+                expected_bytes: None,
                 received_bytes: 4,
                 created_at: now_ms(),
             },
@@ -1803,6 +1855,115 @@ mod tests {
                 .expect("session exists")
                 .received_bytes,
             4
+        );
+
+        let _ = tokio::fs::remove_dir_all(root_dir).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_declared_uploads_larger_than_configured_limit() {
+        let (service, root_dir) = setup_test_upload_service("reject-declared-size").await;
+        let error = service
+            .start_session(json!({
+                "fileName": "video.mp4",
+                "fileSize": (service.config.max_upload_bytes as u64) + 1
+            }))
+            .await
+            .expect_err("oversized upload should fail before chunks");
+
+        assert!(
+            format!("{error:?}").contains("Upload exceeded"),
+            "unexpected error: {error:?}"
+        );
+        assert!(service.sessions.is_empty());
+
+        let _ = tokio::fs::remove_dir_all(root_dir).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_chunk_uploads_that_exceed_total_limit_without_partial_bytes() {
+        let (mut service, root_dir) = setup_test_upload_service("reject-total-limit").await;
+        service.config.max_upload_bytes = 6;
+        let temp_path = service.config.upload_temp_dir.join("reject-total.part");
+        tokio::fs::create_dir_all(&service.config.upload_temp_dir)
+            .await
+            .expect("create upload temp dir");
+        tokio::fs::write(&temp_path, b"seed")
+            .await
+            .expect("seed upload temp file");
+        service.sessions.insert(
+            "session-3".to_owned(),
+            UploadSession {
+                temp_path: temp_path.clone(),
+                file_name: "video.mp4".to_owned(),
+                metadata: Map::new(),
+                expected_bytes: None,
+                received_bytes: 4,
+                created_at: now_ms(),
+            },
+        );
+
+        let error = service
+            .append_chunk("session-3", Body::from("abc"))
+            .await
+            .expect_err("chunk should exceed total upload limit");
+
+        assert!(
+            format!("{error:?}").contains("Upload exceeded"),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(
+            tokio::fs::read(&temp_path)
+                .await
+                .expect("read rolled back file"),
+            b"seed"
+        );
+        assert_eq!(
+            service
+                .sessions
+                .get("session-3")
+                .expect("session exists")
+                .received_bytes,
+            4
+        );
+
+        let _ = tokio::fs::remove_dir_all(root_dir).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_incomplete_chunk_upload_finish() {
+        let (service, root_dir) = setup_test_upload_service("reject-incomplete-finish").await;
+        let temp_path = service.config.upload_temp_dir.join("incomplete.part");
+        tokio::fs::create_dir_all(&service.config.upload_temp_dir)
+            .await
+            .expect("create upload temp dir");
+        tokio::fs::write(&temp_path, b"seed")
+            .await
+            .expect("seed upload temp file");
+        service.sessions.insert(
+            "session-4".to_owned(),
+            UploadSession {
+                temp_path: temp_path.clone(),
+                file_name: "video.mp4".to_owned(),
+                metadata: Map::new(),
+                expected_bytes: Some(5),
+                received_bytes: 4,
+                created_at: now_ms(),
+            },
+        );
+
+        let error = service
+            .finish_session(json!({"sessionId": "session-4"}))
+            .await
+            .expect_err("incomplete upload should fail");
+
+        assert!(
+            format!("{error:?}").contains("Upload is incomplete"),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            tokio::fs::metadata(&temp_path).await.is_err(),
+            "incomplete temp file should be removed"
         );
 
         let _ = tokio::fs::remove_dir_all(root_dir).await;

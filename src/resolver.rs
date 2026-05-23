@@ -794,7 +794,7 @@ impl ResolverService {
                             &filters.source_filters,
                             &health_scores,
                         );
-                        match self
+                        if let Ok(result) = self
                             .resolve_movie_candidates(
                                 torznab_candidates,
                                 &metadata,
@@ -803,11 +803,8 @@ impl ResolverService {
                             )
                             .await
                         {
-                            Ok(result) => {
-                                external_guard.mark_completed();
-                                return Ok(result);
-                            }
-                            Err(_) => {}
+                            external_guard.mark_completed();
+                            return Ok(result);
                         }
                     }
                 }
@@ -1100,7 +1097,7 @@ impl ResolverService {
                             &filters.source_filters,
                             &health_scores,
                         );
-                        match self
+                        if let Ok(result) = self
                             .resolve_episode_candidates(
                                 torznab_candidates,
                                 &metadata,
@@ -1109,11 +1106,8 @@ impl ResolverService {
                             )
                             .await
                         {
-                            Ok(result) => {
-                                external_guard.mark_completed();
-                                return Ok(result);
-                            }
-                            Err(_) => {}
+                            external_guard.mark_completed();
+                            return Ok(result);
                         }
                     }
                 }
@@ -1652,19 +1646,16 @@ impl ResolverService {
                         validate_resolved_movie_source(resolved, &metadata)
                     }
                 });
-            match result {
-                Ok(resolved) => {
-                    let _ = service
-                        .build_resolved_response(
-                            resolved,
-                            metadata,
-                            preferences,
-                            ResolverProvider::LocalTorrent,
-                            true,
-                        )
-                        .await;
-                }
-                Err(_) => {}
+            if let Ok(resolved) = result {
+                let _ = service
+                    .build_resolved_response(
+                        resolved,
+                        metadata,
+                        preferences,
+                        ResolverProvider::LocalTorrent,
+                        true,
+                    )
+                    .await;
             }
         });
     }
@@ -3204,9 +3195,7 @@ fn select_top_episode_candidates<'a>(
     }
 }
 
-fn select_fastest_race_candidates<'a>(
-    candidates: Vec<&'a DiscoveryStream>,
-) -> Vec<&'a DiscoveryStream> {
+fn select_fastest_race_candidates(candidates: Vec<&DiscoveryStream>) -> Vec<&DiscoveryStream> {
     let safe_limit = FASTEST_PARALLEL_CANDIDATES.max(1);
     let mut selected = Vec::new();
     let mut seen_hashes = HashSet::new();
@@ -4638,10 +4627,10 @@ fn parse_torznab_xml(xml: &str) -> AppResult<Vec<DiscoveryStream>> {
             }
             Ok(Event::End(event)) => {
                 let name = xml_event_name(event.name().as_ref());
-                if name == "item" {
-                    if let Some(item) = current_item.take() {
-                        items.push(item);
-                    }
+                if name == "item"
+                    && let Some(item) = current_item.take()
+                {
+                    items.push(item);
                 }
                 if current_element == name {
                     current_element.clear();
