@@ -18,7 +18,8 @@ use tokio::time::{sleep, timeout};
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
 use crate::local_torrent::{
-    LocalTorrentResolveRequest, LocalTorrentResolvedSource, LocalTorrentService,
+    DirectFileCacheRequest, LocalTorrentResolveRequest, LocalTorrentResolvedSource,
+    LocalTorrentService,
 };
 use crate::media::{
     MediaProbe, MediaService, choose_audio_track_from_probe, choose_subtitle_track_from_probe,
@@ -1224,6 +1225,13 @@ impl ResolverService {
             };
             match resolved_result {
                 Ok(resolved) => {
+                    if resolver_provider.is_real_debrid() {
+                        self.spawn_real_debrid_file_cache_warm(
+                            resolved.clone(),
+                            metadata.clone(),
+                            preferences.clone(),
+                        );
+                    }
                     return self
                         .build_resolved_response(
                             resolved,
@@ -1271,19 +1279,18 @@ impl ResolverService {
                     )
                     .await
                     .unwrap_or_else(|_| Err(ApiError::bad_gateway("Resolving stream timed out.")));
-                    (provider, stream, task_fallback_name, result)
+                    (provider, stream, result)
                 });
             }
         }
 
         let mut last_error = None;
-        while let Some((provider, stream, fallback_name, result)) = futures.next().await {
+        while let Some((provider, stream, result)) = futures.next().await {
             match result.and_then(|resolved| validate_resolved_movie_source(resolved, metadata)) {
                 Ok(resolved) => {
                     if provider.is_real_debrid() {
-                        self.spawn_local_torrent_cache_warm(
-                            stream,
-                            fallback_name,
+                        self.spawn_real_debrid_file_cache_warm(
+                            resolved.clone(),
                             metadata.clone(),
                             preferences.clone(),
                         );
@@ -1361,6 +1368,13 @@ impl ResolverService {
             };
             match resolved_result {
                 Ok(resolved) => {
+                    if resolver_provider.is_real_debrid() {
+                        self.spawn_real_debrid_file_cache_warm(
+                            resolved.clone(),
+                            metadata.clone(),
+                            preferences.clone(),
+                        );
+                    }
                     return self
                         .build_resolved_response(
                             resolved,
@@ -1419,19 +1433,18 @@ impl ResolverService {
                     )
                     .await
                     .unwrap_or_else(|_| Err(ApiError::bad_gateway("Resolving stream timed out.")));
-                    (provider, stream, task_fallback_name, result)
+                    (provider, stream, result)
                 });
             }
         }
 
         let mut last_error = None;
-        while let Some((provider, stream, fallback_name, result)) = futures.next().await {
+        while let Some((provider, stream, result)) = futures.next().await {
             match result.and_then(|resolved| validate_resolved_episode_source(resolved, metadata)) {
                 Ok(resolved) => {
                     if provider.is_real_debrid() {
-                        self.spawn_local_torrent_cache_warm(
-                            stream,
-                            fallback_name,
+                        self.spawn_real_debrid_file_cache_warm(
+                            resolved.clone(),
                             metadata.clone(),
                             preferences.clone(),
                         );
@@ -1613,18 +1626,25 @@ impl ResolverService {
             .await
     }
 
-    fn spawn_local_torrent_cache_warm(
+    fn spawn_real_debrid_file_cache_warm(
         &self,
-        stream: DiscoveryStream,
-        fallback_name: String,
+        resolved: ResolvedSource,
         metadata: ResolveMetadata,
         preferences: ResolvePreferences,
     ) {
         let service = self.clone();
         tokio::spawn(async move {
             let result = service
-                .resolve_local_torrent_candidate_stream(&stream, &fallback_name)
+                .local_torrent
+                .cache_direct_file(DirectFileCacheRequest {
+                    source_hash: resolved.source_hash.clone(),
+                    file_id: resolved.selected_file.clone(),
+                    source_url: resolved.playable_url.clone(),
+                    filename: resolved.filename.clone(),
+                    selected_file_path: resolved.selected_file_path.clone(),
+                })
                 .await
+                .map(local_torrent_resolved_source_to_resolved_source)
                 .and_then(|resolved| {
                     if metadata.media_type == "tv" {
                         validate_resolved_episode_source(resolved, &metadata)
@@ -1644,9 +1664,7 @@ impl ResolverService {
                         )
                         .await;
                 }
-                Err(error) => {
-                    service.record_source_resolve_failure(&stream, &error).await;
-                }
+                Err(_) => {}
             }
         });
     }

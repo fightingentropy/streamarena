@@ -16,7 +16,7 @@ use librqbit::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::{Mutex, OnceCell};
 use tokio::time::timeout;
 use tokio_util::io::ReaderStream;
@@ -30,11 +30,13 @@ use crate::utils::now_ms;
 const LOCAL_TORRENT_RECENT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const LOCAL_TORRENT_ACCESS_MARKER: &str = ".last-accessed";
 const CACHE_CONTROL_STREAM: &str = "no-store";
+const DIRECT_FILE_CACHE_FOLDER: &str = "direct";
 
 #[derive(Clone)]
 pub struct LocalTorrentService {
     config: Config,
     db: Db,
+    http_client: reqwest::Client,
     session: Arc<OnceCell<Arc<Session>>>,
     handles: Arc<DashMap<String, Arc<ManagedTorrent>>>,
     locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
@@ -57,6 +59,15 @@ pub(crate) struct LocalTorrentResolvedSource {
     pub selected_file_path: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct DirectFileCacheRequest {
+    pub source_hash: String,
+    pub file_id: String,
+    pub source_url: String,
+    pub filename: String,
+    pub selected_file_path: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalTorrentCacheEntry {
@@ -66,6 +77,19 @@ struct LocalTorrentCacheEntry {
     file_path: String,
     filename: String,
     output_folder: String,
+    file_length: u64,
+    updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectFileCacheEntry {
+    source_hash: String,
+    file_id: String,
+    source_url: String,
+    filename: String,
+    selected_file_path: String,
+    file_path: String,
     file_length: u64,
     updated_at_ms: i64,
 }
@@ -86,10 +110,11 @@ struct CacheDirEntry {
 }
 
 impl LocalTorrentService {
-    pub fn new(config: Config, db: Db) -> Self {
+    pub fn new(config: Config, db: Db, http_client: reqwest::Client) -> Self {
         Self {
             config,
             db,
+            http_client,
             session: Arc::new(OnceCell::new()),
             handles: Arc::new(DashMap::new()),
             locks: Arc::new(DashMap::new()),
@@ -166,6 +191,127 @@ impl LocalTorrentService {
         })
     }
 
+    pub(crate) async fn cache_direct_file(
+        &self,
+        request: DirectFileCacheRequest,
+    ) -> AppResult<LocalTorrentResolvedSource> {
+        let source_hash = normalize_torrent_hash(&request.source_hash);
+        if source_hash.is_empty() {
+            return Err(ApiError::bad_request(
+                "Direct cache source hash is invalid.",
+            ));
+        }
+        let file_id = normalize_direct_file_id(&request.file_id);
+        if file_id.is_empty() {
+            return Err(ApiError::bad_request("Direct cache file id is invalid."));
+        }
+        let source_url = request.source_url.trim();
+        if !source_url.starts_with("https://") {
+            return Err(ApiError::bad_request(
+                "Direct cache source URL must be HTTPS.",
+            ));
+        }
+
+        let lock_key = format!("{source_hash}:direct:{file_id}");
+        let lock = local_torrent_key_lock(&self.locks, &lock_key);
+        let _guard = lock.lock().await;
+
+        if let Some(mut entry) = self.load_direct_file_entry(&source_hash, &file_id).await?
+            && tokio::fs::metadata(&entry.file_path)
+                .await
+                .map(|metadata| metadata.is_file() && metadata.len() > 0)
+                .unwrap_or(false)
+        {
+            self.refresh_direct_file_entry_access(&mut entry).await?;
+            return Ok(direct_file_entry_to_resolved_source(&entry));
+        }
+
+        let filename = sanitize_cache_filename(
+            &[
+                request.filename.as_str(),
+                request.selected_file_path.as_str(),
+                source_url,
+            ]
+            .into_iter()
+            .find_map(|value| {
+                let filename = filename_from_path(value);
+                (!filename.trim().is_empty()).then_some(filename)
+            })
+            .unwrap_or_else(|| format!("{source_hash}-{file_id}.mp4")),
+        );
+        let output_folder = self.direct_file_output_folder(&source_hash, &file_id);
+        tokio::fs::create_dir_all(&output_folder)
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        let final_path = output_folder.join(&filename);
+        let temp_path = output_folder.join(format!(".{filename}.download"));
+
+        let response = self
+            .http_client
+            .get(source_url)
+            .send()
+            .await
+            .map_err(|error| {
+                ApiError::bad_gateway(format!("Direct cache download failed: {error}"))
+            })?
+            .error_for_status()
+            .map_err(|error| {
+                ApiError::bad_gateway(format!("Direct cache download failed: {error}"))
+            })?;
+        let expected_bytes = response.content_length().ok_or_else(|| {
+            ApiError::bad_gateway("Direct cache download did not report a file size.")
+        })?;
+        self.ensure_cache_has_room(expected_bytes, &source_hash)
+            .await?;
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        let mut output = tokio::fs::File::create(&temp_path)
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        let mut downloaded = 0_u64;
+        let max_bytes = self.config.local_torrent_max_bytes.max(1);
+        let mut response = response;
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            ApiError::bad_gateway(format!("Direct cache download failed: {error}"))
+        })? {
+            downloaded = downloaded.saturating_add(chunk.len() as u64);
+            if downloaded > max_bytes {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err(ApiError::bad_gateway(
+                    "Direct cache file is larger than the local cache quota.",
+                ));
+            }
+            output
+                .write_all(&chunk)
+                .await
+                .map_err(|error| ApiError::internal(error.to_string()))?;
+        }
+        output
+            .flush()
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        drop(output);
+        if downloaded == 0 {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(ApiError::bad_gateway("Direct cache download was empty."));
+        }
+        tokio::fs::rename(&temp_path, &final_path)
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+
+        let mut entry = DirectFileCacheEntry {
+            source_hash,
+            file_id,
+            source_url: source_url.to_owned(),
+            filename,
+            selected_file_path: request.selected_file_path,
+            file_path: final_path.to_string_lossy().to_string(),
+            file_length: downloaded,
+            updated_at_ms: now_ms(),
+        };
+        self.refresh_direct_file_entry_access(&mut entry).await?;
+        Ok(direct_file_entry_to_resolved_source(&entry))
+    }
+
     pub(crate) async fn create_stream_response(
         &self,
         method: Method,
@@ -237,6 +383,100 @@ impl LocalTorrentService {
             .status(StatusCode::OK)
             .body(body)
             .expect("local torrent response");
+        apply_stream_headers(&mut response, &content_type, file_size);
+        Ok(response)
+    }
+
+    pub(crate) async fn create_direct_file_stream_response(
+        &self,
+        method: Method,
+        headers: HeaderMap,
+        source_hash: &str,
+        file_id: &str,
+    ) -> AppResult<Response<Body>> {
+        if method != Method::GET && method != Method::HEAD {
+            return Err(ApiError::method_not_allowed("Method not allowed."));
+        }
+        let (source_hash, file_id) = validate_direct_file_stream_params(source_hash, file_id)?;
+        let lock_key = format!("{source_hash}:direct:{file_id}");
+        let lock = local_torrent_key_lock(&self.locks, &lock_key);
+        let _guard = lock.lock().await;
+        let mut entry = self
+            .load_direct_file_entry(&source_hash, &file_id)
+            .await?
+            .ok_or_else(|| ApiError::not_found("Cached stream was not found."))?;
+        let file_path = PathBuf::from(&entry.file_path);
+        if !file_path.starts_with(self.direct_file_output_folder(&source_hash, &file_id)) {
+            let _ = self
+                .db
+                .delete_movie_quick_start_cache(direct_file_cache_key(&source_hash, &file_id))
+                .await;
+            return Err(ApiError::not_found("Cached stream was not found."));
+        }
+        let metadata = tokio::fs::metadata(&file_path)
+            .await
+            .map_err(|_| ApiError::not_found("Cached stream was not found."))?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Err(ApiError::not_found("Cached stream was not found."));
+        }
+        entry.file_length = metadata.len();
+        self.refresh_direct_file_entry_access_best_effort(&mut entry)
+            .await;
+
+        let file_size = metadata.len();
+        let content_type = mime_guess::from_path(&entry.filename)
+            .first_raw()
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+
+        if let Some(range_header) = headers.get(RANGE).and_then(|value| value.to_str().ok()) {
+            let Some((start, end)) = parse_stream_range(range_header, file_size) else {
+                let mut response = Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .body(Body::from("Requested range not satisfiable"))
+                    .expect("range response");
+                response.headers_mut().insert(
+                    CONTENT_RANGE,
+                    HeaderValue::from_str(&format!("bytes */{file_size}")).unwrap(),
+                );
+                return Ok(response);
+            };
+            let mut file = tokio::fs::File::open(&file_path)
+                .await
+                .map_err(|error| ApiError::internal(error.to_string()))?;
+            file.seek(SeekFrom::Start(start))
+                .await
+                .map_err(|error| ApiError::internal(error.to_string()))?;
+            let len = end - start + 1;
+            let body = if method == Method::HEAD {
+                Body::empty()
+            } else {
+                Body::from_stream(ReaderStream::new(file.take(len)))
+            };
+            let mut response = Response::builder()
+                .status(StatusCode::PARTIAL_CONTENT)
+                .body(body)
+                .expect("partial cached file response");
+            apply_stream_headers(&mut response, &content_type, len);
+            response.headers_mut().insert(
+                CONTENT_RANGE,
+                HeaderValue::from_str(&format!("bytes {start}-{end}/{file_size}")).unwrap(),
+            );
+            return Ok(response);
+        }
+
+        let body = if method == Method::HEAD {
+            Body::empty()
+        } else {
+            let file = tokio::fs::File::open(&file_path)
+                .await
+                .map_err(|error| ApiError::internal(error.to_string()))?;
+            Body::from_stream(ReaderStream::new(file))
+        };
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .body(body)
+            .expect("cached file response");
         apply_stream_headers(&mut response, &content_type, file_size);
         Ok(response)
     }
@@ -452,7 +692,44 @@ impl LocalTorrentService {
         let _ = self.refresh_entry_access(entry).await;
     }
 
+    async fn persist_direct_file_entry(&self, entry: &DirectFileCacheEntry) -> AppResult<()> {
+        self.db
+            .set_movie_quick_start_cache(
+                direct_file_cache_key(&entry.source_hash, &entry.file_id),
+                serde_json::to_value(entry).unwrap_or_else(|_| json!({})),
+                now_ms() + LOCAL_TORRENT_RECENT_RETENTION_MS,
+            )
+            .await
+    }
+
+    async fn refresh_direct_file_entry_access(
+        &self,
+        entry: &mut DirectFileCacheEntry,
+    ) -> AppResult<()> {
+        entry.updated_at_ms = now_ms();
+        self.persist_direct_file_entry(entry).await?;
+        let _ = self.touch_direct_file_access_marker(entry).await;
+        Ok(())
+    }
+
+    async fn refresh_direct_file_entry_access_best_effort(&self, entry: &mut DirectFileCacheEntry) {
+        let _ = self.refresh_direct_file_entry_access(entry).await;
+    }
+
     async fn touch_access_marker(&self, entry: &LocalTorrentCacheEntry) -> AppResult<()> {
+        let output_folder = self.output_folder_for_hash(&entry.source_hash);
+        tokio::fs::create_dir_all(&output_folder)
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        tokio::fs::write(
+            output_folder.join(LOCAL_TORRENT_ACCESS_MARKER),
+            entry.updated_at_ms.to_string(),
+        )
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    async fn touch_direct_file_access_marker(&self, entry: &DirectFileCacheEntry) -> AppResult<()> {
         let output_folder = self.output_folder_for_hash(&entry.source_hash);
         tokio::fs::create_dir_all(&output_folder)
             .await
@@ -486,6 +763,35 @@ impl LocalTorrentService {
         if entry.source_hash != source_hash
             || entry.file_id != file_id
             || entry.magnet_uri.is_empty()
+        {
+            let _ = self.db.delete_movie_quick_start_cache(cache_key).await;
+            return Ok(None);
+        }
+        Ok(Some(entry))
+    }
+
+    async fn load_direct_file_entry(
+        &self,
+        source_hash: &str,
+        file_id: &str,
+    ) -> AppResult<Option<DirectFileCacheEntry>> {
+        let cache_key = direct_file_cache_key(source_hash, file_id);
+        let Some((payload, _)) = self
+            .db
+            .get_movie_quick_start_cache(cache_key.clone())
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Ok(mut entry) = serde_json::from_value::<DirectFileCacheEntry>(payload) else {
+            let _ = self.db.delete_movie_quick_start_cache(cache_key).await;
+            return Ok(None);
+        };
+        entry.source_hash = normalize_torrent_hash(&entry.source_hash);
+        entry.file_id = normalize_direct_file_id(&entry.file_id);
+        if entry.source_hash != source_hash
+            || entry.file_id != file_id
+            || entry.file_path.trim().is_empty()
         {
             let _ = self.db.delete_movie_quick_start_cache(cache_key).await;
             return Ok(None);
@@ -581,6 +887,12 @@ impl LocalTorrentService {
             .local_torrent_cache_dir
             .join(normalize_torrent_hash(source_hash))
     }
+
+    fn direct_file_output_folder(&self, source_hash: &str, file_id: &str) -> PathBuf {
+        self.output_folder_for_hash(source_hash)
+            .join(DIRECT_FILE_CACHE_FOLDER)
+            .join(normalize_direct_file_id(file_id))
+    }
 }
 
 fn local_torrent_key_lock(map: &DashMap<String, Arc<Mutex<()>>>, key: &str) -> Arc<Mutex<()>> {
@@ -601,6 +913,21 @@ fn validate_local_torrent_stream_params(
         .trim()
         .parse::<usize>()
         .map_err(|_| ApiError::bad_request("Invalid local torrent fileId."))?;
+    Ok((source_hash, file_id))
+}
+
+fn validate_direct_file_stream_params(
+    source_hash: &str,
+    file_id: &str,
+) -> AppResult<(String, String)> {
+    let source_hash = normalize_torrent_hash(source_hash);
+    if source_hash.is_empty() {
+        return Err(ApiError::bad_request("Invalid cached stream sourceHash."));
+    }
+    let file_id = normalize_direct_file_id(file_id);
+    if file_id.is_empty() {
+        return Err(ApiError::bad_request("Invalid cached stream fileId."));
+    }
     Ok((source_hash, file_id))
 }
 
@@ -642,11 +969,26 @@ fn local_torrent_stream_url(source_hash: &str, file_id: usize) -> String {
     format!("/api/local-torrent/stream?{}", serializer.finish())
 }
 
+fn direct_file_stream_url(source_hash: &str, file_id: &str) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("sourceHash", &normalize_torrent_hash(source_hash));
+    serializer.append_pair("fileId", &normalize_direct_file_id(file_id));
+    format!("/api/local-cache/stream?{}", serializer.finish())
+}
+
 fn local_torrent_cache_key(source_hash: &str, file_id: usize) -> String {
     format!(
         "local-torrent:{}:{}",
         normalize_torrent_hash(source_hash),
         file_id
+    )
+}
+
+fn direct_file_cache_key(source_hash: &str, file_id: &str) -> String {
+    format!(
+        "local-file:{}:{}",
+        normalize_torrent_hash(source_hash),
+        normalize_direct_file_id(file_id)
     )
 }
 
@@ -659,6 +1001,45 @@ fn normalize_torrent_hash(value: &str) -> String {
     }
 }
 
+fn normalize_direct_file_id(value: &str) -> String {
+    let normalized = value
+        .trim()
+        .chars()
+        .take(80)
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    normalized.trim_matches('.').trim_matches('_').to_owned()
+}
+
+fn sanitize_cache_filename(value: &str) -> String {
+    let filename = filename_from_path(value);
+    let sanitized = filename
+        .chars()
+        .take(180)
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '.' | '-' | '_' | '(' | ')') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('.')
+        .trim()
+        .to_owned();
+    if sanitized.is_empty() {
+        "video.mp4".to_owned()
+    } else {
+        sanitized
+    }
+}
+
 fn filename_from_path(value: &str) -> String {
     Path::new(value)
         .file_name()
@@ -666,6 +1047,18 @@ fn filename_from_path(value: &str) -> String {
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| value.trim().to_owned())
+}
+
+fn direct_file_entry_to_resolved_source(
+    entry: &DirectFileCacheEntry,
+) -> LocalTorrentResolvedSource {
+    LocalTorrentResolvedSource {
+        playable_url: direct_file_stream_url(&entry.source_hash, &entry.file_id),
+        filename: entry.filename.clone(),
+        source_hash: entry.source_hash.clone(),
+        selected_file: entry.file_id.clone(),
+        selected_file_path: entry.selected_file_path.clone(),
+    }
 }
 
 fn parse_stream_range(header: &str, file_size: u64) -> Option<(u64, u64)> {
@@ -774,8 +1167,11 @@ fn system_time_ms(value: SystemTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        LocalTorrentFileCandidate, local_torrent_cache_key, parse_stream_range,
-        pick_local_torrent_video_file, validate_local_torrent_stream_params,
+        DirectFileCacheEntry, LocalTorrentFileCandidate, direct_file_cache_key,
+        direct_file_entry_to_resolved_source, direct_file_stream_url, local_torrent_cache_key,
+        normalize_direct_file_id, parse_stream_range, pick_local_torrent_video_file,
+        sanitize_cache_filename, validate_direct_file_stream_params,
+        validate_local_torrent_stream_params,
     };
 
     #[test]
@@ -793,6 +1189,24 @@ mod tests {
             validate_local_torrent_stream_params("0123456789abcdef0123456789abcdef01234567", "bad")
                 .is_err(),
             "bad file id is rejected"
+        );
+    }
+
+    #[test]
+    fn validates_direct_file_stream_params() {
+        let (hash, file_id) =
+            validate_direct_file_stream_params("0123456789ABCDEF0123456789abcdef01234567", " 1/2 ")
+                .expect("valid params");
+        assert_eq!(hash, "0123456789abcdef0123456789abcdef01234567");
+        assert_eq!(file_id, "1_2");
+        assert!(
+            validate_direct_file_stream_params("not-a-hash", "1").is_err(),
+            "bad source hash is rejected"
+        );
+        assert!(
+            validate_direct_file_stream_params("0123456789abcdef0123456789abcdef01234567", "...")
+                .is_err(),
+            "empty normalized file id is rejected"
         );
     }
 
@@ -848,5 +1262,43 @@ mod tests {
             local_torrent_cache_key("0123456789abcdef0123456789abcdef01234567", 3),
             "local-torrent:0123456789abcdef0123456789abcdef01234567:3"
         );
+    }
+
+    #[test]
+    fn builds_direct_file_cache_identity() {
+        assert_eq!(normalize_direct_file_id(" 1/2 "), "1_2");
+        assert_eq!(
+            sanitize_cache_filename("../Movie:Name?.mkv"),
+            "Movie_Name_.mkv"
+        );
+        assert_eq!(
+            direct_file_cache_key("0123456789abcdef0123456789abcdef01234567", "1/2"),
+            "local-file:0123456789abcdef0123456789abcdef01234567:1_2"
+        );
+        assert_eq!(
+            direct_file_stream_url("0123456789abcdef0123456789abcdef01234567", "1/2"),
+            "/api/local-cache/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=1_2"
+        );
+    }
+
+    #[test]
+    fn converts_direct_file_entry_to_resolved_source() {
+        let entry = DirectFileCacheEntry {
+            source_hash: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            file_id: "7".to_owned(),
+            source_url: "https://download.real-debrid.com/movie.mkv".to_owned(),
+            filename: "Movie.mkv".to_owned(),
+            selected_file_path: "/Movie.mkv".to_owned(),
+            file_path: "/tmp/Movie.mkv".to_owned(),
+            file_length: 100,
+            updated_at_ms: 1,
+        };
+        let resolved = direct_file_entry_to_resolved_source(&entry);
+        assert_eq!(
+            resolved.playable_url,
+            "/api/local-cache/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=7"
+        );
+        assert_eq!(resolved.selected_file, "7");
+        assert_eq!(resolved.filename, "Movie.mkv");
     }
 }

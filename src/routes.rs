@@ -121,6 +121,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/local-torrent/stream",
             any(local_torrent_stream_handler),
         )
+        .route("/api/local-cache/stream", any(local_cache_stream_handler))
         .route("/api/remux", any(remux_handler))
         .route("/api/media/tracks", any(media_tracks_handler))
         .route("/api/subtitles.vtt", any(subtitles_vtt_handler))
@@ -1142,6 +1143,27 @@ pub async fn local_torrent_stream_handler(
         .await
 }
 
+pub async fn local_cache_stream_handler(
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+) -> AppResult<Response<Body>> {
+    let params = query_pairs(uri.query().unwrap_or_default());
+    state
+        .local_torrent
+        .create_direct_file_stream_response(
+            method,
+            headers,
+            params
+                .get("sourceHash")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            params.get("fileId").map(String::as_str).unwrap_or_default(),
+        )
+        .await
+}
+
 pub async fn remux_handler(
     State(state): State<AppState>,
     method: Method,
@@ -1249,7 +1271,9 @@ pub async fn media_tracks_handler(
     let params = query_pairs(uri.query().unwrap_or_default());
     let request_url = absolute_request_url(&state, &uri)?;
     let raw_input = params.get("input").map(String::as_str).unwrap_or_default();
-    let source_input = if raw_input.trim().starts_with("/api/local-torrent/stream") {
+    let source_input = if raw_input.trim().starts_with("/api/local-torrent/stream")
+        || raw_input.trim().starts_with("/api/local-cache/stream")
+    {
         raw_input.trim().to_owned()
     } else {
         to_absolute_playback_url(raw_input, &request_url)

@@ -30,6 +30,7 @@ const OPENSUBTITLES_TRACK_LIMIT: usize = 5;
 const LOCAL_SIDECAR_SUBTITLE_STREAM_INDEX_BASE: i64 = 1_000_000;
 const EXTERNAL_SUBTITLE_STREAM_INDEX_BASE: i64 = 2_000_000;
 const LOCAL_TORRENT_STREAM_PATH: &str = "/api/local-torrent/stream";
+const LOCAL_CACHE_STREAM_PATH: &str = "/api/local-cache/stream";
 
 static ASS_OVERRIDE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{\\[^}]*\}").expect("valid ASS override regex"));
@@ -527,15 +528,27 @@ impl MediaService {
             return self.resolve_transcode_input(&playback_input);
         }
 
-        if is_local_torrent_stream_input(input) {
-            return Ok(local_torrent_backend_url(&self.config, input));
+        if is_local_cache_stream_input(input)
+            && let Some(local_path) = local_cache_stream_file_path(&self.config, input)
+        {
+            return Ok(local_path.to_string_lossy().to_string());
+        }
+
+        if is_local_stream_input(input) {
+            return Ok(local_backend_url(&self.config, input));
         }
 
         if let Ok(url) = Url::parse(input)
             && matches!(url.scheme(), "http" | "https")
         {
             if is_local_app_playback_url(&self.config, &url) {
-                if is_local_torrent_stream_url(&url) {
+                if is_local_cache_stream_url(&url)
+                    && let Some(local_path) =
+                        local_cache_stream_file_path(&self.config, url.as_str())
+                {
+                    return Ok(local_path.to_string_lossy().to_string());
+                }
+                if is_local_stream_url(&url) {
                     return Ok(url.to_string());
                 }
                 let local_path = to_local_path(&self.config.root_dir, url.path())
@@ -1094,11 +1107,99 @@ fn is_local_torrent_stream_input(value: &str) -> bool {
         || trimmed.starts_with(&format!("{LOCAL_TORRENT_STREAM_PATH}?"))
 }
 
+fn is_local_cache_stream_input(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed == LOCAL_CACHE_STREAM_PATH
+        || trimmed.starts_with(&format!("{LOCAL_CACHE_STREAM_PATH}?"))
+}
+
+fn is_local_stream_input(value: &str) -> bool {
+    is_local_torrent_stream_input(value) || is_local_cache_stream_input(value)
+}
+
 fn is_local_torrent_stream_url(url: &Url) -> bool {
     url.path() == LOCAL_TORRENT_STREAM_PATH
 }
 
-fn local_torrent_backend_url(config: &Config, path_and_query: &str) -> String {
+fn is_local_cache_stream_url(url: &Url) -> bool {
+    url.path() == LOCAL_CACHE_STREAM_PATH
+}
+
+fn is_local_stream_url(url: &Url) -> bool {
+    is_local_torrent_stream_url(url) || is_local_cache_stream_url(url)
+}
+
+fn local_cache_stream_file_path(config: &Config, value: &str) -> Option<PathBuf> {
+    let (path, query) = if let Ok(url) = Url::parse(value) {
+        (
+            url.path().to_owned(),
+            url.query().unwrap_or_default().to_owned(),
+        )
+    } else {
+        let trimmed = value.trim();
+        let (path, query) = trimmed.split_once('?')?;
+        (path.to_owned(), query.to_owned())
+    };
+    if path != LOCAL_CACHE_STREAM_PATH {
+        return None;
+    }
+    let params = url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect::<std::collections::HashMap<String, String>>();
+    let source_hash = normalize_local_cache_hash(params.get("sourceHash")?);
+    let file_id = normalize_local_cache_file_id(params.get("fileId")?);
+    if source_hash.is_empty() || file_id.is_empty() {
+        return None;
+    }
+    let folder = config
+        .local_torrent_cache_dir
+        .join(source_hash)
+        .join("direct")
+        .join(file_id);
+    let entries = std::fs::read_dir(folder).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let filename = path.file_name().and_then(|value| value.to_str())?;
+        if filename.starts_with('.') {
+            continue;
+        }
+        if entry
+            .metadata()
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn normalize_local_cache_hash(value: &str) -> String {
+    let normalized = value.trim().to_lowercase();
+    if normalized.len() == 40 && normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        normalized
+    } else {
+        String::new()
+    }
+}
+
+fn normalize_local_cache_file_id(value: &str) -> String {
+    let normalized = value
+        .trim()
+        .chars()
+        .take(80)
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    normalized.trim_matches('.').trim_matches('_').to_owned()
+}
+
+fn local_backend_url(config: &Config, path_and_query: &str) -> String {
     let host = match config.host.trim() {
         "" | "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
         host => host,
@@ -1751,8 +1852,9 @@ mod tests {
         AudioTrack, MediaProbe, SubtitleTrack, choose_audio_track_from_probe,
         choose_subtitle_track_from_probe, extract_sidecar_subtitle_suffix,
         infer_sidecar_subtitle_language, is_allowed_external_subtitle_download_url,
-        is_allowed_remote_transcode_url, is_local_app_playback_url, is_local_torrent_stream_input,
-        is_local_torrent_stream_url, merge_preferred_subtitle_tracks,
+        is_allowed_remote_transcode_url, is_local_app_playback_url, is_local_cache_stream_input,
+        is_local_cache_stream_url, is_local_torrent_stream_input, is_local_torrent_stream_url,
+        local_cache_stream_file_path, merge_preferred_subtitle_tracks,
         normalize_external_subtitle_download_url, normalize_subtitle_text_to_vtt,
     };
 
@@ -2005,10 +2107,32 @@ mod tests {
         assert!(is_local_torrent_stream_input(
             "/api/local-torrent/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=0"
         ));
+        assert!(is_local_cache_stream_input(
+            "/api/local-cache/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=1"
+        ));
         assert!(is_local_torrent_stream_url(
             &Url::parse("http://127.0.0.1:5173/api/local-torrent/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=0")
                 .expect("local torrent url")
         ));
+        assert!(is_local_cache_stream_url(
+            &Url::parse("http://127.0.0.1:5173/api/local-cache/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=1")
+                .expect("local cache url")
+        ));
+        let cached_file = config
+            .local_torrent_cache_dir
+            .join("0123456789abcdef0123456789abcdef01234567")
+            .join("direct")
+            .join("1")
+            .join("Movie.mkv");
+        std::fs::create_dir_all(cached_file.parent().expect("cache parent")).expect("cache dir");
+        std::fs::write(&cached_file, b"movie").expect("cache file");
+        assert_eq!(
+            local_cache_stream_file_path(
+                &config,
+                "/api/local-cache/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=1"
+            ),
+            Some(cached_file)
+        );
         assert!(!is_local_torrent_stream_url(
             &Url::parse("http://127.0.0.1:5173/api/remux?input=x").expect("remux url")
         ));

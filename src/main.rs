@@ -66,7 +66,7 @@ async fn main() -> AppResult<()> {
         .map_err(|error| crate::error::ApiError::internal(error.to_string()))?;
     let tmdb = TmdbService::new(config.clone(), db.clone(), http_client.clone());
     let media = MediaService::new(config.clone(), db.clone(), http_client.clone());
-    let local_torrent = LocalTorrentService::new(config.clone(), db.clone());
+    let local_torrent = LocalTorrentService::new(config.clone(), db.clone(), http_client.clone());
     let runtime = RuntimeServices::new(config.clone());
     let resolver = ResolverService::new(
         config.clone(),
