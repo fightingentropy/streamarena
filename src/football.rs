@@ -17,6 +17,9 @@ use crate::error::{ApiError, AppResult, json_response};
 use crate::routes::AppState;
 use crate::utils::now_ms;
 
+const MATCHSTREAM_SCHEDULE_URL: &str = "https://matchstream.do/matchstream/proxy.php";
+const MATCHSTREAM_FOOTBALL_CACHE_KEY: &str = "matchstream:football";
+const MATCHSTREAM_BASKETBALL_CACHE_KEY: &str = "matchstream:basketball";
 const SUPER_LEAGUE_FOOTBALL_URL: &str = "https://super.league.st/index.php?sport=Football";
 const SUPER_LEAGUE_BASKETBALL_URL: &str = "https://super.league.st/index.php?sport=Basketball";
 const SUPER_LEAGUE_STREAM_USER_AGENT: &str = "Mozilla/5.0";
@@ -118,6 +121,11 @@ struct SourceMatch {
     start_timestamp: i64,
     #[serde(default, deserialize_with = "deserialize_default_on_null")]
     duration: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MatchStreamSchedulePayload {
+    matches: Vec<SourceMatch>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -231,11 +239,12 @@ where
 }
 
 pub async fn football_matches_handler(State(state): State<AppState>) -> AppResult<Response<Body>> {
-    super_league_matches_response(
+    sports_matches_response(
         &state,
-        SUPER_LEAGUE_FOOTBALL_URL,
+        MATCHSTREAM_FOOTBALL_CACHE_KEY,
         "Football",
         is_high_priority_football_match,
+        SUPER_LEAGUE_FOOTBALL_URL,
     )
     .await
 }
@@ -243,45 +252,113 @@ pub async fn football_matches_handler(State(state): State<AppState>) -> AppResul
 pub async fn basketball_matches_handler(
     State(state): State<AppState>,
 ) -> AppResult<Response<Body>> {
-    super_league_matches_response(
+    sports_matches_response(
         &state,
-        SUPER_LEAGUE_BASKETBALL_URL,
+        MATCHSTREAM_BASKETBALL_CACHE_KEY,
         "Basketball",
         is_basketball_match,
+        SUPER_LEAGUE_BASKETBALL_URL,
     )
     .await
 }
 
-async fn super_league_matches_response(
+async fn sports_matches_response(
     state: &AppState,
-    source_url: &'static str,
+    cache_key: &'static str,
     sport_name: &'static str,
     include_match: fn(&SourceMatch) -> bool,
+    fallback_source_url: &'static str,
 ) -> AppResult<Response<Body>> {
-    if let Some(payload) = state.sports_schedule_cache.fresh(source_url, now_ms()) {
+    if let Some(payload) = state.sports_schedule_cache.fresh(cache_key, now_ms()) {
         return Ok(schedule_response(payload, "hit"));
     }
 
-    let schedule_lock = state.sports_schedule_cache.lock_for(source_url);
+    let schedule_lock = state.sports_schedule_cache.lock_for(cache_key);
     let _guard = schedule_lock.lock().await;
-    if let Some(payload) = state.sports_schedule_cache.fresh(source_url, now_ms()) {
+    if let Some(payload) = state.sports_schedule_cache.fresh(cache_key, now_ms()) {
         return Ok(schedule_response(payload, "hit"));
     }
 
-    match fetch_super_league_matches_payload(state, source_url, sport_name, include_match).await {
+    match fetch_sports_matches_payload(state, sport_name, include_match, fallback_source_url).await
+    {
         Ok((payload, fetched_at_ms)) => {
             state
                 .sports_schedule_cache
-                .insert(source_url, payload.clone(), fetched_at_ms);
+                .insert(cache_key, payload.clone(), fetched_at_ms);
             Ok(schedule_response(payload, "miss"))
         }
         Err(error) => {
-            if let Some(payload) = state.sports_schedule_cache.stale(source_url, now_ms()) {
+            if let Some(payload) = state.sports_schedule_cache.stale(cache_key, now_ms()) {
                 return Ok(schedule_response(payload, "stale"));
             }
             Err(error)
         }
     }
+}
+
+async fn fetch_sports_matches_payload(
+    state: &AppState,
+    sport_name: &'static str,
+    include_match: fn(&SourceMatch) -> bool,
+    fallback_source_url: &'static str,
+) -> AppResult<(Value, i64)> {
+    match fetch_matchstream_matches_payload(state, sport_name, include_match).await {
+        Ok(payload) => Ok(payload),
+        Err(matchstream_error) => {
+            match fetch_super_league_matches_payload(
+                state,
+                fallback_source_url,
+                sport_name,
+                include_match,
+            )
+            .await
+            {
+                Ok(payload) => Ok(payload),
+                Err(super_league_error) => Err(ApiError::bad_gateway(format!(
+                    "Failed to fetch {sport_name} schedule from MatchStream ({}) and Super League ({}).",
+                    matchstream_error.message().unwrap_or("unknown error"),
+                    super_league_error.message().unwrap_or("unknown error")
+                ))),
+            }
+        }
+    }
+}
+
+async fn fetch_matchstream_matches_payload(
+    state: &AppState,
+    sport_name: &'static str,
+    include_match: fn(&SourceMatch) -> bool,
+) -> AppResult<(Value, i64)> {
+    let response = state
+        .http_client
+        .get(MATCHSTREAM_SCHEDULE_URL)
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                ApiError::gateway_timeout(format!("Timed out fetching {sport_name} schedule."))
+            } else {
+                ApiError::bad_gateway(format!("Failed to fetch {sport_name} schedule: {error}"))
+            }
+        })?;
+
+    if !response.status().is_success() {
+        return Err(ApiError::bad_gateway(format!(
+            "{sport_name} schedule returned HTTP {}.",
+            response.status(),
+        )));
+    }
+
+    let payload = response.text().await.map_err(|error| {
+        ApiError::bad_gateway(format!("Failed to read {sport_name} schedule: {error}"))
+    })?;
+    let source_matches = parse_matchstream_matches_payload(&payload, sport_name)?;
+    Ok(build_sports_matches_payload(
+        MATCHSTREAM_SCHEDULE_URL,
+        sport_name,
+        include_match,
+        source_matches,
+    ))
 }
 
 async fn fetch_super_league_matches_payload(
@@ -314,6 +391,20 @@ async fn fetch_super_league_matches_payload(
         ApiError::bad_gateway(format!("Failed to read {sport_name} schedule: {error}"))
     })?;
     let source_matches = extract_source_matches(&html, sport_name)?;
+    Ok(build_sports_matches_payload(
+        source_url,
+        sport_name,
+        include_match,
+        source_matches,
+    ))
+}
+
+fn build_sports_matches_payload(
+    source_url: &'static str,
+    sport_name: &'static str,
+    include_match: fn(&SourceMatch) -> bool,
+    source_matches: Vec<SourceMatch>,
+) -> (Value, i64) {
     let now = now_ms();
     let matches: Vec<_> = source_matches
         .into_iter()
@@ -331,7 +422,7 @@ async fn fetch_super_league_matches_payload(
         .collect();
     let fetched_at_ms = now_ms();
 
-    Ok((
+    (
         json!({
             "source": source_url,
             "sport": sport_name,
@@ -339,7 +430,7 @@ async fn fetch_super_league_matches_payload(
             "matches": matches
         }),
         fetched_at_ms,
-    ))
+    )
 }
 
 fn schedule_response(payload: Value, cache_status: &'static str) -> Response<Body> {
@@ -569,6 +660,17 @@ fn is_supported_hls_stream_url(url: &Url) -> bool {
     url.path().to_lowercase().ends_with(".m3u8")
 }
 
+fn parse_matchstream_matches_payload(
+    payload: &str,
+    sport_name: &str,
+) -> AppResult<Vec<SourceMatch>> {
+    serde_json::from_str::<MatchStreamSchedulePayload>(payload)
+        .map(|schedule| schedule.matches)
+        .map_err(|error| {
+            ApiError::bad_gateway(format!("Failed to parse {sport_name} schedule: {error}"))
+        })
+}
+
 fn extract_source_matches(html: &str, sport_name: &str) -> AppResult<Vec<SourceMatch>> {
     static MATCHES_RE: OnceLock<Regex> = OnceLock::new();
     let regex = MATCHES_RE.get_or_init(|| {
@@ -723,10 +825,12 @@ fn normalize_match(match_item: SourceMatch) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        SPORTS_SCHEDULE_CACHE_TTL_MS, SPORTS_SCHEDULE_STALE_IF_ERROR_MS, SourceMatch,
-        SportsScheduleCache, extract_source_matches, is_basketball_match,
-        is_high_priority_football_match,
+        MATCHSTREAM_SCHEDULE_URL, SPORTS_SCHEDULE_CACHE_TTL_MS, SPORTS_SCHEDULE_STALE_IF_ERROR_MS,
+        SourceChannel, SourceMatch, SportsScheduleCache, build_sports_matches_payload,
+        extract_source_matches, is_basketball_match, is_high_priority_football_match,
+        parse_matchstream_matches_payload,
     };
+    use crate::utils::now_ms;
     use serde_json::json;
 
     #[test]
@@ -762,6 +866,84 @@ mod tests {
         assert_eq!(
             matches[0].channels[0].links,
             vec!["https://example.test/1".to_owned()]
+        );
+    }
+
+    #[test]
+    fn parses_matchstream_proxy_payload() {
+        let payload = r#"{
+            "matches": [{
+                "matchText": "03:00 [NBA] Basketball: A vs B [ABC US]",
+                "matchstr": "A vs B",
+                "time": "03:00",
+                "league": "NBA",
+                "sport": "Basketball",
+                "team1": "A",
+                "team2": "B",
+                "channel": "ABC US",
+                "important": false,
+                "matchDate": "2026-05-24",
+                "channels": [{
+                    "name": "ABC",
+                    "oldLinks": ["https://nrdrse.link/ch.php?id=1"],
+                    "number": 1,
+                    "language": "US",
+                    "links": ["https://glisco.link/ch?id=1", "https://sansat.link/ch?id=1"]
+                }],
+                "slug": "nba-basketball-a-b-2026-05-24-03-00",
+                "startTimestamp": 1779580800000,
+                "duration": 180
+            }]
+        }"#;
+
+        let matches = parse_matchstream_matches_payload(payload, "Basketball").unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].title, "A vs B");
+        assert_eq!(matches[0].channels[0].name, "ABC");
+        assert_eq!(
+            matches[0].channels[0].links,
+            vec![
+                "https://glisco.link/ch?id=1".to_owned(),
+                "https://sansat.link/ch?id=1".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_matchstream_payload_with_normalized_streams() {
+        let mut match_item = source_match_with_league("NBA");
+        match_item.sport = "Basketball".to_owned();
+        match_item.slug = "nba-basketball-a-b".to_owned();
+        match_item.start_timestamp = now_ms() + 60_000;
+        match_item.duration = 180;
+        match_item.channels = vec![SourceChannel {
+            name: "ABC".to_owned(),
+            language: "US".to_owned(),
+            links: vec![
+                "https://glisco.link/ch?id=1".to_owned(),
+                "https://sansat.link/ch?id=1".to_owned(),
+            ],
+        }];
+
+        let (payload, _) = build_sports_matches_payload(
+            MATCHSTREAM_SCHEDULE_URL,
+            "Basketball",
+            is_basketball_match,
+            vec![match_item],
+        );
+        let matches = payload["matches"].as_array().unwrap();
+
+        assert_eq!(payload["source"], MATCHSTREAM_SCHEDULE_URL);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["linkCount"], 2);
+        assert_eq!(
+            matches[0]["streams"][0]["source"],
+            "https://glisco.link/ch?id=1"
+        );
+        assert_eq!(
+            matches[0]["streams"][1]["source"],
+            "https://sansat.link/ch?id=1"
         );
     }
 
