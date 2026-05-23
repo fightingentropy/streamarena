@@ -54,7 +54,15 @@ const SEARCH_DEBOUNCE_MS = 280;
 const SEARCH_MIN_QUERY_LENGTH = 2;
 const SEARCH_RESULTS_LIMIT = 40;
 const STALE_HERO_PREVIEW_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
-const HERO_PREVIEW_MIN_VISIBLE_RATIO = 0.5;
+const HERO_PREVIEW_ENTER_VISIBLE_RATIO = 0.3;
+const HERO_PREVIEW_LEAVE_VISIBLE_RATIO = 0.08;
+const YOUTUBE_PLAYER_STATE = {
+  ENDED: 0,
+  PLAYING: 1,
+  PAUSED: 2,
+  BUFFERING: 3,
+  CUED: 5,
+};
 const FEATURED_HERO_ROTATION_MS = 24 * 60 * 60 * 1000;
 const FEATURED_HERO_STORAGE_KEY = "netflix-featured-hero-v2";
 const FEATURED_HERO_CANDIDATE_LIMIT = 10;
@@ -905,6 +913,7 @@ export default function HomePage() {
   let heroPreviewHovering = false;
   let heroPreviewInViewport = true;
   let heroPreviewPlayRequestId = 0;
+  let heroPreviewRestoreUnmute = false;
   let pageRootRef;
   let continueCardsRef;
   let cardsContainerRef;
@@ -930,6 +939,7 @@ export default function HomePage() {
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
   const [featuredHero, setFeaturedHero] = createSignal(createDefaultFeaturedHero());
   const [heroPreviewActive, setHeroPreviewActive] = createSignal(false);
+  const [heroPreviewPlaying, setHeroPreviewPlaying] = createSignal(false);
 
   const [continueRowVisible, setContinueRowVisible] = createSignal(false);
   const [continueEmptyVisible, setContinueEmptyVisible] = createSignal(false);
@@ -3240,17 +3250,81 @@ export default function HomePage() {
     );
   }
 
-  function postYoutubePlayerCommand(func) {
+  function postYoutubePlayerCommand(func, args = []) {
     const iframe = getHeroPreviewIframe();
     const src = iframe?.getAttribute("src") || "";
     if (!iframe || !src.includes("youtube")) {
       return false;
     }
     iframe.contentWindow?.postMessage(
-      JSON.stringify({ event: "command", func, args: "" }),
+      JSON.stringify({ event: "command", func, args }),
       "*",
     );
     return true;
+  }
+
+  function notifyHeroPreviewListening() {
+    const iframe = getHeroPreviewIframe();
+    if (!iframe?.contentWindow) {
+      return;
+    }
+    iframe.contentWindow.postMessage(
+      JSON.stringify({ event: "listening", id: window.location.href }),
+      "*",
+    );
+  }
+
+  function handleHeroPreviewMessage(event) {
+    const iframe = getHeroPreviewIframe();
+    if (!iframe || event.source !== iframe.contentWindow) {
+      return;
+    }
+    if (!String(event.origin || "").includes("youtube")) {
+      return;
+    }
+
+    let payload = event.data;
+    if (typeof payload === "string") {
+      try {
+        payload = JSON.parse(payload);
+      } catch {
+        return;
+      }
+    }
+    if (!payload || typeof payload !== "object") {
+      return;
+    }
+
+    if (payload.event === "onReady") {
+      notifyHeroPreviewListening();
+      return;
+    }
+
+    if (payload.event !== "onStateChange") {
+      return;
+    }
+
+    const state = Number(payload.info);
+    if (state === YOUTUBE_PLAYER_STATE.PLAYING) {
+      setHeroPreviewPlaying(true);
+      return;
+    }
+    if (
+      state !== YOUTUBE_PLAYER_STATE.PAUSED &&
+      state !== YOUTUBE_PLAYER_STATE.ENDED
+    ) {
+      return;
+    }
+
+    setHeroPreviewPlaying(false);
+    if (
+      heroPreviewActive() &&
+      heroPreviewInViewport &&
+      heroPreviewHovering &&
+      canPlayHeroPreview()
+    ) {
+      postYoutubePlayerCommand("playVideo");
+    }
   }
 
   function ensureHeroPreviewIframeLoaded() {
@@ -3266,6 +3340,13 @@ export default function HomePage() {
     }
     if (iframe.getAttribute("src") !== trailerUrl) {
       iframe.setAttribute("src", trailerUrl);
+      iframe.addEventListener(
+        "load",
+        () => {
+          notifyHeroPreviewListening();
+        },
+        { once: true },
+      );
     }
     return true;
   }
@@ -3312,9 +3393,30 @@ export default function HomePage() {
     return true;
   }
 
-  function pauseHeroPreviewForViewport() {
+  function suspendHeroPreviewForViewport() {
     heroPreviewPlayRequestId += 1;
-    postYoutubePlayerCommand("pauseVideo");
+    if (!isMuted()) {
+      postYoutubePlayerCommand("mute");
+      heroPreviewRestoreUnmute = true;
+    }
+  }
+
+  function resumeHeroPreviewAfterViewport() {
+    if (heroPreviewRestoreUnmute && !isMuted()) {
+      postYoutubePlayerCommand("unMute");
+    }
+    heroPreviewRestoreUnmute = false;
+    if (heroPreviewActive() && getHeroPreviewIframe()?.getAttribute("src")) {
+      resumeHeroPreviewPlayback();
+      return;
+    }
+    if (heroPreviewHovering && canPlayHeroPreview()) {
+      playHeroPreview();
+      return;
+    }
+    if (!heroPreviewActive()) {
+      ensureHeroPreviewPreloadSource();
+    }
   }
 
   function resumeHeroPreviewPlayback() {
@@ -3330,7 +3432,9 @@ export default function HomePage() {
       if (requestId !== heroPreviewPlayRequestId) {
         return;
       }
+      notifyHeroPreviewListening();
       postYoutubePlayerCommand("playVideo");
+      setHeroPreviewPlaying(true);
     };
 
     const hadLoadedSrc =
@@ -3358,27 +3462,33 @@ export default function HomePage() {
     }
     iframe.removeAttribute("src");
     setHeroPreviewActive(false);
+    setHeroPreviewPlaying(false);
+    heroPreviewRestoreUnmute = false;
   }
 
-  function updateHeroPreviewViewportState(isInViewport) {
-    heroPreviewInViewport = Boolean(isInViewport);
+  function updateHeroPreviewViewportState(entry) {
+    const ratio = entry?.intersectionRatio ?? 0;
+    const intersecting = Boolean(entry?.isIntersecting);
+    let nextInViewport = heroPreviewInViewport;
+
+    if (!intersecting || ratio <= HERO_PREVIEW_LEAVE_VISIBLE_RATIO) {
+      nextInViewport = false;
+    } else if (ratio >= HERO_PREVIEW_ENTER_VISIBLE_RATIO) {
+      nextInViewport = true;
+    }
+
+    if (nextInViewport === heroPreviewInViewport) {
+      return;
+    }
+
+    heroPreviewInViewport = nextInViewport;
     if (!heroPreviewInViewport) {
       if (heroPreviewActive() && getHeroPreviewIframe()?.getAttribute("src")) {
-        pauseHeroPreviewForViewport();
+        suspendHeroPreviewForViewport();
       }
       return;
     }
-    if (heroPreviewActive() && getHeroPreviewIframe()?.getAttribute("src")) {
-      resumeHeroPreviewPlayback();
-      return;
-    }
-    if (heroPreviewHovering && canPlayHeroPreview()) {
-      playHeroPreview();
-      return;
-    }
-    if (!heroPreviewActive()) {
-      ensureHeroPreviewPreloadSource();
-    }
+    resumeHeroPreviewAfterViewport();
   }
 
   function playHeroPreview() {
@@ -3782,18 +3892,15 @@ export default function HomePage() {
     }
 
     let heroVisibilityObserver = null;
+    window.addEventListener("message", handleHeroPreviewMessage);
+
     if ("IntersectionObserver" in window && heroSectionRef) {
       heroVisibilityObserver = new IntersectionObserver(
         ([entry]) => {
-          updateHeroPreviewViewportState(
-            Boolean(
-              entry?.isIntersecting &&
-                entry.intersectionRatio >= HERO_PREVIEW_MIN_VISIBLE_RATIO,
-            ),
-          );
+          updateHeroPreviewViewportState(entry);
         },
         {
-          threshold: [0, HERO_PREVIEW_MIN_VISIBLE_RATIO, 0.5, 1],
+          threshold: [0, HERO_PREVIEW_LEAVE_VISIBLE_RATIO, HERO_PREVIEW_ENTER_VISIBLE_RATIO, 0.5, 1],
         },
       );
       heroVisibilityObserver.observe(heroSectionRef);
@@ -3935,6 +4042,7 @@ export default function HomePage() {
     onCleanup(() => {
       cleanupHorizontalRailScrollers();
       stopHeroPreview();
+      window.removeEventListener("message", handleHeroPreviewMessage);
       heroVisibilityObserver?.disconnect();
       document.removeEventListener("keydown", handleGlobalKeydown);
       document.removeEventListener("pointerdown", handleGlobalPointerdownContextMenu);
@@ -4143,7 +4251,8 @@ export default function HomePage() {
       </div>
 
       <section
-        class=${() => `featured-hero${heroPreviewActive() ? " is-preview-active" : ""}`}
+        class=${() =>
+          `featured-hero${heroPreviewActive() ? " is-preview-active" : ""}${heroPreviewPlaying() ? " is-preview-playing" : ""}`}
         ref=${(el) => (heroSectionRef = el)}
         aria-label="Featured title"
         style=${() => activeView() === "home" ? "" : "display:none"}
@@ -4157,16 +4266,18 @@ export default function HomePage() {
           decoding="async"
           loading="eager"
         />
-        <iframe
-          id="heroPreview"
-          ref=${(el) => (heroPreviewFrameRef = el)}
-          class="hero-trailer-frame"
-          title=${() => `${featuredHero().title || "Featured movie"} trailer preview`}
-          allow="autoplay; encrypted-media; picture-in-picture"
-          referrerpolicy="strict-origin-when-cross-origin"
-          tabindex="-1"
-          aria-hidden="true"
-        ></iframe>
+        <div class="hero-trailer-stage" aria-hidden="true">
+          <iframe
+            id="heroPreview"
+            ref=${(el) => (heroPreviewFrameRef = el)}
+            class="hero-trailer-frame"
+            title=${() => `${featuredHero().title || "Featured movie"} trailer preview`}
+            allow="autoplay; encrypted-media; picture-in-picture"
+            referrerpolicy="strict-origin-when-cross-origin"
+            tabindex="-1"
+            aria-hidden="true"
+          ></iframe>
+        </div>
         <div class="hero-trailer-shield" aria-hidden="true"></div>
 
         <div class="hero-shade" aria-hidden="true"></div>

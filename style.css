@@ -150,25 +150,42 @@
     transition: opacity 180ms ease;
 }
 
+.home-page .hero-trailer-stage {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    overflow: hidden;
+    pointer-events: none;
+}
+
 .home-page .hero-trailer-frame {
     top: 50%;
     left: 50%;
     right: auto;
     bottom: auto;
-    z-index: 1;
     width: 100%;
-    height: 123%;
+    height: 150%;
     border: 0;
-    transform: translate(-50%, -50%);
+    transform: translate(-50%, -50%) scale(1.58);
     transition: opacity 180ms ease;
     pointer-events: none;
     opacity: 0;
 }
 
-.home-page .featured-hero.is-preview-active .hero-trailer-frame {
+.home-page .featured-hero.is-preview-active.is-preview-playing .hero-trailer-stage,
+.home-page .featured-hero.is-preview-active.is-preview-playing .hero-trailer-frame {
     opacity: 1;
-    height: 140%;
-    transform: translate(-50%, -50%) scale(1.42);
+}
+
+.home-page .featured-hero.is-preview-active:not(.is-preview-playing) .hero-trailer-stage,
+.home-page .featured-hero.is-preview-active:not(.is-preview-playing) .hero-trailer-frame,
+.home-page .featured-hero.is-preview-active:not(.is-preview-playing) .hero-trailer-shield {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.home-page .featured-hero.is-preview-active:not(.is-preview-playing) .hero-poster {
+    opacity: 1;
 }
 
 .home-page .hero-trailer-shield {
@@ -180,11 +197,11 @@
     cursor: default;
 }
 
-.home-page .featured-hero.is-preview-active .hero-trailer-shield {
+.home-page .featured-hero.is-preview-active.is-preview-playing .hero-trailer-shield {
     display: block;
 }
 
-.home-page .featured-hero.is-preview-active .hero-poster {
+.home-page .featured-hero.is-preview-active.is-preview-playing .hero-poster {
     opacity: 0;
 }
 
