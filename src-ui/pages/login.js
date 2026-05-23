@@ -12,10 +12,6 @@ async function migrateLocalStorageToServer() {
     "netflix-profile-avatar-style",
     "netflix-profile-avatar-mode",
     "netflix-profile-avatar-image",
-    "netflix-source-filter-min-seeders",
-    "netflix-source-filter-language",
-    "netflix-source-filter-audio-profile",
-    "netflix-remux-video-mode",
   ];
   for (const key of PREF_KEYS) {
     const val = localStorage.getItem(key);

@@ -27,16 +27,9 @@ import {
   supportedAudioLangs,
   DEFAULT_SUBTITLE_COLOR,
   DEFAULT_STREAM_QUALITY_PREFERENCE,
-  SOURCE_MIN_SEEDERS_PREF_KEY,
-  SOURCE_AUDIO_PROFILE_PREF_KEY,
-  RESOLVER_PROVIDER_PREF_KEY,
   DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
-  REMUX_VIDEO_MODE_PREF_KEY,
   SUBTITLE_COLOR_PREF_KEY,
   normalizeDefaultAudioLanguage,
-  normalizeSourceMinSeeders,
-  normalizeSourceAudioProfile,
-  getStoredResolverProviderPreference,
   normalizeRemuxVideoMode,
   normalizeSubtitleColor,
 } from "../lib/preferences.js";
@@ -455,22 +448,17 @@ const SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:movie:";
 const SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:movie:";
 const LOCAL_SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:local:";
 const LOCAL_SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:local:";
-const SOURCE_LANGUAGE_PREF_KEY = "netflix-source-filter-language";
 const SOURCE_AUDIO_SYNC_PREF_KEY_PREFIX = "netflix-source-audio-sync:";
 const DEFAULT_SOURCE_RESULTS_LIMIT = 5;
 const SOURCE_FETCH_BATCH_LIMIT = 20;
 const supportedQualityPreferences = new Set(["auto", "2160p", "1080p", "720p"]);
 const supportedSourceFormats = ["mp4", "mkv"];
 const supportedSourceFormatSet = new Set(supportedSourceFormats);
-const supportedSourceLanguages = new Set([
-  "en",
-  "any",
-  "fr",
-  "es",
-  "de",
-  "it",
-  "pt",
-]);
+const DEFAULT_SOURCE_MIN_SEEDERS = 0;
+const DEFAULT_SOURCE_LANGUAGE = "en";
+const DEFAULT_SOURCE_AUDIO_PROFILE = "single";
+const DEFAULT_RESOLVER_PROVIDER = "real-debrid";
+const DEFAULT_REMUX_VIDEO_MODE = "auto";
 // SOURCE_LANGUAGE_TOKENS — imported from ./src-ui/player/sources.js
 const AUDIO_SYNC_MIN_MS = -2500;
 const AUDIO_SYNC_MAX_MS = 2500;
@@ -510,6 +498,24 @@ const subtitleLanguageNames = {
   ko: "Korean",
   zh: "Chinese",
 };
+
+function normalizeSourceLanguage(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (!normalized || normalized === "eng" || normalized === "english") {
+    return "en";
+  }
+  if (
+    normalized === "any" ||
+    normalized === "all" ||
+    normalized === "auto" ||
+    normalized === "*"
+  ) {
+    return "any";
+  }
+  return /^[a-z]{2}$/.test(normalized) ? normalized : "en";
+}
 
 // Benchmark API is deferred to onMount (needs video ref)
 let playbackBenchmark = null;
@@ -562,64 +568,6 @@ function getStoredPreferredQuality() {
     );
   } catch {
     return DEFAULT_STREAM_QUALITY_PREFERENCE;
-  }
-}
-
-
-function normalizeSourceLanguage(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (
-    !normalized ||
-    normalized === "en" ||
-    normalized === "eng" ||
-    normalized === "english"
-  ) {
-    return "en";
-  }
-  if (
-    normalized === "any" ||
-    normalized === "all" ||
-    normalized === "auto" ||
-    normalized === "*"
-  ) {
-    return "any";
-  }
-  if (supportedSourceLanguages.has(normalized)) {
-    return normalized;
-  }
-  return "en";
-}
-
-function getStoredSourceMinSeeders() {
-  try {
-    return normalizeSourceMinSeeders(
-      localStorage.getItem(SOURCE_MIN_SEEDERS_PREF_KEY),
-    );
-  } catch {
-    return 0;
-  }
-}
-
-function getStoredSourceLanguage() {
-  try {
-    return normalizeSourceLanguage(
-      localStorage.getItem(SOURCE_LANGUAGE_PREF_KEY),
-    );
-  } catch {
-    return "en";
-  }
-}
-
-
-function getStoredSourceAudioProfile() {
-  try {
-    return normalizeSourceAudioProfile(
-      localStorage.getItem(SOURCE_AUDIO_PROFILE_PREF_KEY),
-    );
-  } catch {
-    return "single";
   }
 }
 
@@ -688,16 +636,6 @@ function normalizeAudioSyncMs(value) {
   return clamped;
 }
 
-
-function getStoredRemuxVideoMode() {
-  try {
-    return normalizeRemuxVideoMode(
-      localStorage.getItem(REMUX_VIDEO_MODE_PREF_KEY),
-    );
-  } catch {
-    return "auto";
-  }
-}
 
 function isRecognizedAudioLang(value) {
   const normalized = String(value || "")
@@ -967,14 +905,14 @@ let preferredQuality = normalizePreferredQuality(qualityParam);
 if (isTmdbMoviePlayback && !hasQualityParam) {
   preferredQuality = getStoredPreferredQuality();
 }
-let preferredSourceMinSeeders = getStoredSourceMinSeeders();
+let preferredSourceMinSeeders = DEFAULT_SOURCE_MIN_SEEDERS;
 let preferredSourceResultsLimit = DEFAULT_SOURCE_RESULTS_LIMIT;
 let preferredSourceFormats = [...supportedSourceFormats];
-let preferredSourceLanguage = getStoredSourceLanguage();
-let preferredSourceAudioProfile = getStoredSourceAudioProfile();
-let preferredResolverProvider = getStoredResolverProviderPreference();
+let preferredSourceLanguage = DEFAULT_SOURCE_LANGUAGE;
+let preferredSourceAudioProfile = DEFAULT_SOURCE_AUDIO_PROFILE;
+let preferredResolverProvider = DEFAULT_RESOLVER_PROVIDER;
 let preferredAudioSyncMs = 0;
-let preferredRemuxVideoMode = getStoredRemuxVideoMode();
+let preferredRemuxVideoMode = DEFAULT_REMUX_VIDEO_MODE;
 preferredSubtitleLang = normalizeSubtitlePreference(subtitleLangParam);
 if ((isTmdbMoviePlayback || isExplicitLocalUploadSource) && !hasSubtitleLangParam) {
   preferredSubtitleLang =
@@ -8622,21 +8560,6 @@ trackListener(window, "storage", (event) => {
     applySubtitleCueColor(event.newValue);
   }
 
-  if (
-    event.key === SOURCE_MIN_SEEDERS_PREF_KEY ||
-    event.key === SOURCE_LANGUAGE_PREF_KEY ||
-    event.key === SOURCE_AUDIO_PROFILE_PREF_KEY ||
-    event.key === RESOLVER_PROVIDER_PREF_KEY
-  ) {
-    preferredSourceMinSeeders = getStoredSourceMinSeeders();
-    preferredSourceLanguage = getStoredSourceLanguage();
-    preferredSourceAudioProfile = getStoredSourceAudioProfile();
-    preferredResolverProvider = getStoredResolverProviderPreference();
-    if (isTmdbResolvedPlayback && audioControl?.classList.contains("is-open")) {
-      void fetchTmdbSourceOptionsViaBackend();
-    }
-  }
-
   if (event.key === DEFAULT_AUDIO_LANGUAGE_PREF_KEY && !hasAudioLangParam) {
     const storedMovieAudioLang = isTmdbMoviePlayback
       ? getStoredAudioLangForTmdbMovie(tmdbId)
@@ -8645,10 +8568,6 @@ trackListener(window, "storage", (event) => {
       preferredAudioLang = getStoredDefaultAudioLanguage();
       syncAudioState();
     }
-  }
-
-  if (event.key === REMUX_VIDEO_MODE_PREF_KEY) {
-    preferredRemuxVideoMode = getStoredRemuxVideoMode();
   }
 });
 trackListener(window, "beforeunload", () => {

@@ -15,11 +15,6 @@ export const DEFAULT_SUBTITLE_COLOR = "#b8bcc3";
 
 export const AUDIO_LANG_PREF_KEY_PREFIX = "netflix-audio-lang:movie:";
 export const DEFAULT_AUDIO_LANGUAGE_PREF_KEY = "netflix-default-audio-lang";
-export const SOURCE_MIN_SEEDERS_PREF_KEY = "netflix-source-filter-min-seeders";
-export const SOURCE_AUDIO_PROFILE_PREF_KEY =
-  "netflix-source-filter-audio-profile";
-export const RESOLVER_PROVIDER_PREF_KEY = "netflix-resolver-provider";
-export const REMUX_VIDEO_MODE_PREF_KEY = "netflix-remux-video-mode";
 export const SUBTITLE_COLOR_PREF_KEY = "netflix-subtitle-color-pref";
 
 export const supportedAudioLangs = new Set([
@@ -93,54 +88,6 @@ export function normalizeDefaultAudioLanguage(value) {
   return "en";
 }
 
-export function normalizeSourceMinSeeders(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.max(0, Math.min(50000, Math.floor(parsed)));
-}
-
-export function normalizeSourceAudioProfile(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (
-    !normalized ||
-    normalized === "single" ||
-    normalized === "single-audio" ||
-    normalized === "single_audio" ||
-    normalized === "singleaudio" ||
-    normalized === "preferred"
-  ) {
-    return "single";
-  }
-  if (
-    normalized === "any" ||
-    normalized === "multi" ||
-    normalized === "multi-audio" ||
-    normalized === "multi_audio" ||
-    normalized === "multiaudio" ||
-    normalized === "all"
-  ) {
-    return "any";
-  }
-  return "single";
-}
-
-export function normalizeResolverProviderPreference(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (
-    normalized === "local-torrent" ||
-    normalized === "local_torrent" ||
-    normalized === "local" ||
-    normalized === "torrent"
-  ) {
-    return "local-torrent";
-  }
-  return "real-debrid";
-}
-
 export function normalizeRemuxVideoMode(value) {
   const normalized = String(value || "")
     .trim()
@@ -210,14 +157,4 @@ export function getStoredAudioLangForTmdbMovie(tmdbId) {
     // Ignore localStorage failures.
   }
   return "auto";
-}
-
-export function getStoredResolverProviderPreference() {
-  try {
-    return normalizeResolverProviderPreference(
-      localStorage.getItem(RESOLVER_PROVIDER_PREF_KEY),
-    );
-  } catch {
-    return "real-debrid";
-  }
 }

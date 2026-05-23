@@ -1,6 +1,5 @@
 import html from "solid-js/html";
 import { createSignal, onCleanup } from "solid-js";
-import UploadSection from "../components/upload-section.js";
 import {
   STREAM_QUALITY_PREF_KEY,
   PROFILE_AVATAR_STYLE_PREF_KEY,
@@ -16,26 +15,14 @@ import {
 } from "../shared.js";
 import {
   SUBTITLE_COLOR_PREF_KEY,
-  SOURCE_MIN_SEEDERS_PREF_KEY,
-  SOURCE_AUDIO_PROFILE_PREF_KEY,
-  RESOLVER_PROVIDER_PREF_KEY,
   DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
-  REMUX_VIDEO_MODE_PREF_KEY,
   DEFAULT_SUBTITLE_COLOR,
   DEFAULT_STREAM_QUALITY_PREFERENCE,
   normalizeStreamQualityPreference,
-  normalizeSourceMinSeeders,
   normalizeDefaultAudioLanguage,
-  normalizeSourceAudioProfile,
-  normalizeResolverProviderPreference,
-  normalizeRemuxVideoMode,
   normalizeSubtitleColor,
   getStoredStreamQualityPreference,
-  getStoredResolverProviderPreference,
 } from "../lib/preferences.js";
-
-// ─── Preference key constants ───────────────────────────────────────────────
-const SOURCE_LANGUAGE_PREF_KEY = "netflix-source-filter-language";
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
 const DEFAULT_AVATAR_STYLE = "blue";
@@ -43,18 +30,9 @@ const DEFAULT_AVATAR_MODE = "preset";
 const AVATAR_OUTPUT_SIZE_PX = 180;
 
 // ─── Supported value sets ───────────────────────────────────────────────────
-const supportedSourceLanguages = ["en", "any", "fr", "es", "de", "it", "pt"];
 const supportedAvatarChoices = new Set([...supportedAvatarStyles, "custom"]);
 
 // ─── Normalization helpers ──────────────────────────────────────────────────
-
-function normalizeSourceLanguage(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized || normalized === "en" || normalized === "eng" || normalized === "english") return "en";
-  if (normalized === "any" || normalized === "all" || normalized === "auto" || normalized === "*") return "any";
-  if (supportedSourceLanguages.includes(normalized)) return normalized;
-  return "en";
-}
 
 function normalizeAvatarChoice(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -93,28 +71,6 @@ function getLanguageLabel(value) {
   }, "English");
 }
 
-function getAudioProfileLabel(value) {
-  return labelFromMap(value, {
-    single: "Single audio",
-    any: "Multi / dubbed",
-  }, "Single audio");
-}
-
-function getResolverProviderLabel(value) {
-  return labelFromMap(value, {
-    "real-debrid": "Real-Debrid",
-    "local-torrent": "Local torrent (experimental)",
-  }, "Real-Debrid");
-}
-
-function getRemuxVideoModeLabel(value) {
-  return labelFromMap(value, {
-    auto: "Auto",
-    copy: "Copy video",
-    normalize: "Normalize video",
-  }, "Auto");
-}
-
 function getAvatarChoiceLabel(value) {
   return labelFromMap(value, {
     blue: "Blue",
@@ -136,30 +92,6 @@ function getStoredSubtitleColorPreference() {
 function getStoredDefaultAudioLanguage() {
   try { return normalizeDefaultAudioLanguage(localStorage.getItem(DEFAULT_AUDIO_LANGUAGE_PREF_KEY)); }
   catch { return "en"; }
-}
-
-function getStoredSourceMinSeeders() {
-  try { return normalizeSourceMinSeeders(localStorage.getItem(SOURCE_MIN_SEEDERS_PREF_KEY)); }
-  catch { return 0; }
-}
-
-function getStoredSourceLanguage() {
-  try { return normalizeSourceLanguage(localStorage.getItem(SOURCE_LANGUAGE_PREF_KEY)); }
-  catch { return "en"; }
-}
-
-function getStoredSourceAudioProfile() {
-  try { return normalizeSourceAudioProfile(localStorage.getItem(SOURCE_AUDIO_PROFILE_PREF_KEY)); }
-  catch { return "single"; }
-}
-
-function getStoredResolverProvider() {
-  return getStoredResolverProviderPreference();
-}
-
-function getStoredRemuxVideoMode() {
-  try { return normalizeRemuxVideoMode(localStorage.getItem(REMUX_VIDEO_MODE_PREF_KEY)); }
-  catch { return "auto"; }
 }
 
 // ─── Persist helpers (localStorage + server sync) ───────────────────────────
@@ -202,76 +134,6 @@ function persistDefaultAudioLanguage(value) {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ [DEFAULT_AUDIO_LANGUAGE_PREF_KEY]: normalized }),
-  }).catch(() => {});
-  return normalized;
-}
-
-function persistSourceMinSeeders(value) {
-  const normalized = normalizeSourceMinSeeders(value);
-  try {
-    if (normalized <= 0) localStorage.removeItem(SOURCE_MIN_SEEDERS_PREF_KEY);
-    else localStorage.setItem(SOURCE_MIN_SEEDERS_PREF_KEY, String(normalized));
-  } catch {}
-  fetch("/api/user/preferences", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [SOURCE_MIN_SEEDERS_PREF_KEY]: String(normalized) }),
-  }).catch(() => {});
-  return normalized;
-}
-
-function persistSourceLanguage(value) {
-  const normalized = normalizeSourceLanguage(value);
-  try {
-    if (normalized === "en") localStorage.removeItem(SOURCE_LANGUAGE_PREF_KEY);
-    else localStorage.setItem(SOURCE_LANGUAGE_PREF_KEY, normalized);
-  } catch {}
-  fetch("/api/user/preferences", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [SOURCE_LANGUAGE_PREF_KEY]: normalized }),
-  }).catch(() => {});
-  return normalized;
-}
-
-function persistSourceAudioProfile(value) {
-  const normalized = normalizeSourceAudioProfile(value);
-  try {
-    if (normalized === "single") localStorage.removeItem(SOURCE_AUDIO_PROFILE_PREF_KEY);
-    else localStorage.setItem(SOURCE_AUDIO_PROFILE_PREF_KEY, normalized);
-  } catch {}
-  fetch("/api/user/preferences", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [SOURCE_AUDIO_PROFILE_PREF_KEY]: normalized }),
-  }).catch(() => {});
-  return normalized;
-}
-
-function persistResolverProvider(value) {
-  const normalized = normalizeResolverProviderPreference(value);
-  try {
-    if (normalized === "real-debrid") localStorage.removeItem(RESOLVER_PROVIDER_PREF_KEY);
-    else localStorage.setItem(RESOLVER_PROVIDER_PREF_KEY, normalized);
-  } catch {}
-  fetch("/api/user/preferences", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [RESOLVER_PROVIDER_PREF_KEY]: normalized }),
-  }).catch(() => {});
-  return normalized;
-}
-
-function persistRemuxVideoMode(value) {
-  const normalized = normalizeRemuxVideoMode(value);
-  try {
-    if (normalized === "auto") localStorage.removeItem(REMUX_VIDEO_MODE_PREF_KEY);
-    else localStorage.setItem(REMUX_VIDEO_MODE_PREF_KEY, normalized);
-  } catch {}
-  fetch("/api/user/preferences", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [REMUX_VIDEO_MODE_PREF_KEY]: normalized }),
   }).catch(() => {});
   return normalized;
 }
@@ -385,6 +247,11 @@ function clearDeprecatedSourcePreferenceStorage() {
   const deprecatedKeys = [
     "netflix-source-filter-allowed-formats",
     "netflix-source-filter-results-limit",
+    "netflix-source-filter-min-seeders",
+    "netflix-source-filter-language",
+    "netflix-source-filter-audio-profile",
+    "netflix-resolver-provider",
+    "netflix-remux-video-mode",
   ];
   try { deprecatedKeys.forEach((key) => localStorage.removeItem(key)); }
   catch {}
@@ -397,11 +264,6 @@ export default function SettingsPage() {
   const [selectedQuality, setSelectedQuality] = createSignal(getStoredStreamQualityPreference());
   const [subtitleColor, setSubtitleColor] = createSignal(getStoredSubtitleColorPreference());
   const [defaultAudioLang, setDefaultAudioLang] = createSignal(getStoredDefaultAudioLanguage());
-  const [sourceMinSeeders, setSourceMinSeeders] = createSignal(getStoredSourceMinSeeders());
-  const [sourceLang, setSourceLang] = createSignal(getStoredSourceLanguage());
-  const [sourceAudioProfile, setSourceAudioProfile] = createSignal(getStoredSourceAudioProfile());
-  const [resolverProvider, setResolverProvider] = createSignal(getStoredResolverProvider());
-  const [remuxVideoMode, setRemuxVideoMode] = createSignal(getStoredRemuxVideoMode());
 
   // Avatar state
   const storedAvatarStyle = getStoredAvatarStylePreference();
@@ -500,26 +362,6 @@ export default function SettingsPage() {
     setDefaultAudioLang(normalizeDefaultAudioLanguage(e.target.value));
   }
 
-  function handleSourceMinSeedersChange(e) {
-    setSourceMinSeeders(normalizeSourceMinSeeders(e.target.value));
-  }
-
-  function handleSourceLangChange(e) {
-    setSourceLang(normalizeSourceLanguage(e.target.value));
-  }
-
-  function handleSourceAudioProfileChange(e) {
-    setSourceAudioProfile(normalizeSourceAudioProfile(e.target.value));
-  }
-
-  function handleResolverProviderChange(value) {
-    setResolverProvider(normalizeResolverProviderPreference(value));
-  }
-
-  function handleRemuxVideoModeChange(value) {
-    setRemuxVideoMode(normalizeRemuxVideoMode(value));
-  }
-
   function handleAvatarChoiceChange(value) {
     const nextChoice = normalizeAvatarChoice(value);
     setAvatarChoice(nextChoice);
@@ -574,23 +416,8 @@ export default function SettingsPage() {
       setPendingCustomImage("");
     }
 
-    const savedMinSeeders = persistSourceMinSeeders(sourceMinSeeders());
-    setSourceMinSeeders(savedMinSeeders);
-
-    const savedSourceLang = persistSourceLanguage(sourceLang());
-    setSourceLang(savedSourceLang);
-
-    const savedSourceAudioProfile = persistSourceAudioProfile(sourceAudioProfile());
-    setSourceAudioProfile(savedSourceAudioProfile);
-
-    const savedResolverProvider = persistResolverProvider(resolverProvider());
-    setResolverProvider(savedResolverProvider);
-
     const savedDefaultAudioLang = persistDefaultAudioLanguage(defaultAudioLang());
     setDefaultAudioLang(savedDefaultAudioLang);
-
-    const savedRemuxVideoMode = persistRemuxVideoMode(remuxVideoMode());
-    setRemuxVideoMode(savedRemuxVideoMode);
 
     showToast("Settings saved");
   }
@@ -668,17 +495,9 @@ export default function SettingsPage() {
             <span class="settings-nav-glyph settings-nav-glyph--playback" aria-hidden="true"></span>
             <span>Playback</span>
           </a>
-          <a class="settings-nav-item" href="#sourcesSection">
-            <span class="settings-nav-glyph settings-nav-glyph--sources" aria-hidden="true"></span>
-            <span>Sources</span>
-          </a>
           <a class="settings-nav-item" href="#profileSection">
             <span class="settings-nav-glyph settings-nav-glyph--profile" aria-hidden="true"></span>
             <span>Profile</span>
-          </a>
-          <a class="settings-nav-item" href="#uploadSection">
-            <span class="settings-nav-glyph settings-nav-glyph--upload" aria-hidden="true"></span>
-            <span>Uploads</span>
           </a>
           <a class="settings-nav-item" href="#maintenanceSection">
             <span class="settings-nav-glyph settings-nav-glyph--maintenance" aria-hidden="true"></span>
@@ -767,8 +586,8 @@ export default function SettingsPage() {
                   <h3>Default audio</h3>
                   <p>${() => getLanguageLabel(defaultAudioLang())}</p>
                 </div>
-                <label class="settings-row-control source-language-filter" for="defaultAudioLanguage">
-                  <span class="source-filter-label">Language</span>
+                <label class="settings-row-control settings-select-field" for="defaultAudioLanguage">
+                  <span class="settings-field-label">Language</span>
                   <select
                     id="defaultAudioLanguage"
                     name="defaultAudioLanguage"
@@ -788,150 +607,6 @@ export default function SettingsPage() {
                     <option value="ro" selected=${() => defaultAudioLang() === "ro"}>Romanian</option>
                   </select>
                 </label>
-                <span class="settings-row-chevron" aria-hidden="true"></span>
-              </section>
-            </div>
-          </section>
-
-          <section
-            class="settings-section-block"
-            id="sourcesSection"
-            aria-labelledby="sourcesTitle"
-          >
-            <h2 id="sourcesTitle" class="settings-section-title">
-              Sources
-            </h2>
-            <div class="settings-list-card">
-              <section class="settings-list-row">
-                <span class="settings-row-icon settings-row-icon--sources" aria-hidden="true"></span>
-                <div class="settings-row-copy">
-                  <h3>Resolver provider</h3>
-                  <p>${() => getResolverProviderLabel(resolverProvider())}</p>
-                </div>
-                <div
-                  class="settings-row-control settings-segmented-control resolver-provider-options"
-                  role="radiogroup"
-                  aria-label="Resolver provider"
-                >
-                  <label class="remux-mode-option">
-                    <input
-                      type="radio"
-                      name="resolverProvider"
-                      value="real-debrid"
-                      checked=${() => resolverProvider() === "real-debrid"}
-                      onChange=${() => handleResolverProviderChange("real-debrid")}
-                    />
-                    <span>Real-Debrid</span>
-                  </label>
-                  <label class="remux-mode-option">
-                    <input
-                      type="radio"
-                      name="resolverProvider"
-                      value="local-torrent"
-                      checked=${() => resolverProvider() === "local-torrent"}
-                      onChange=${() => handleResolverProviderChange("local-torrent")}
-                    />
-                    <span>Local torrent (experimental)</span>
-                  </label>
-                </div>
-                <span class="settings-row-chevron" aria-hidden="true"></span>
-              </section>
-
-              <section class="settings-list-row settings-list-row--stacked">
-                <span class="settings-row-icon settings-row-icon--sources" aria-hidden="true"></span>
-                <div class="settings-row-copy">
-                  <h3>Source defaults</h3>
-                  <p>${() => `${sourceMinSeeders()} min seeds, ${getLanguageLabel(sourceLang())}, ${getAudioProfileLabel(sourceAudioProfile())}`}</p>
-                </div>
-                <div class="settings-row-control source-filter-stack">
-                  <label class="source-min-seeds" for="sourceMinSeeders">
-                    <span class="source-filter-label">Min seeds</span>
-                    <input
-                      id="sourceMinSeeders"
-                      name="sourceMinSeeders"
-                      type="number"
-                      min="0"
-                      max="50000"
-                      step="1"
-                      value=${() => String(sourceMinSeeders())}
-                      onChange=${handleSourceMinSeedersChange}
-                    />
-                  </label>
-
-                  <label class="source-language-filter" for="sourceLanguage">
-                    <span class="source-filter-label">Language</span>
-                    <select
-                      id="sourceLanguage"
-                      name="sourceLanguage"
-                      onChange=${handleSourceLangChange}
-                    >
-                      <option value="en" selected=${() => sourceLang() === "en"}>English</option>
-                      <option value="any" selected=${() => sourceLang() === "any"}>Any</option>
-                      <option value="fr" selected=${() => sourceLang() === "fr"}>French</option>
-                      <option value="es" selected=${() => sourceLang() === "es"}>Spanish</option>
-                      <option value="de" selected=${() => sourceLang() === "de"}>German</option>
-                      <option value="it" selected=${() => sourceLang() === "it"}>Italian</option>
-                      <option value="pt" selected=${() => sourceLang() === "pt"}>Portuguese</option>
-                    </select>
-                  </label>
-
-                  <label class="source-language-filter" for="sourceAudioProfile">
-                    <span class="source-filter-label">Audio mix</span>
-                    <select
-                      id="sourceAudioProfile"
-                      name="sourceAudioProfile"
-                      onChange=${handleSourceAudioProfileChange}
-                    >
-                      <option value="single" selected=${() => sourceAudioProfile() === "single"}>Single audio</option>
-                      <option value="any" selected=${() => sourceAudioProfile() === "any"}>Multi / dubbed</option>
-                    </select>
-                  </label>
-                </div>
-                <span class="settings-row-chevron" aria-hidden="true"></span>
-              </section>
-
-              <section class="settings-list-row">
-                <span class="settings-row-icon settings-row-icon--remux" aria-hidden="true"></span>
-                <div class="settings-row-copy">
-                  <h3>Remux video mode</h3>
-                  <p>${() => getRemuxVideoModeLabel(remuxVideoMode())}</p>
-                </div>
-                <div
-                  class="settings-row-control settings-segmented-control remux-mode-options"
-                  role="radiogroup"
-                  aria-label="Remux video mode"
-                >
-                  <label class="remux-mode-option">
-                    <input
-                      type="radio"
-                      name="remuxVideoMode"
-                      value="auto"
-                      checked=${() => remuxVideoMode() === "auto"}
-                      onChange=${() => handleRemuxVideoModeChange("auto")}
-                    />
-                    <span>Auto</span>
-                  </label>
-                  <label class="remux-mode-option">
-                    <input
-                      type="radio"
-                      name="remuxVideoMode"
-                      value="copy"
-                      checked=${() => remuxVideoMode() === "copy"}
-                      onChange=${() => handleRemuxVideoModeChange("copy")}
-                    />
-                    <span>Copy</span>
-                  </label>
-                  <label class="remux-mode-option">
-                    <input
-                      type="radio"
-                      name="remuxVideoMode"
-                      value="normalize"
-                      checked=${() => remuxVideoMode() === "normalize"}
-                      onChange=${() => handleRemuxVideoModeChange("normalize")}
-                    />
-                    <span>Normalize</span>
-                  </label>
-                </div>
                 <span class="settings-row-chevron" aria-hidden="true"></span>
               </section>
             </div>
@@ -1099,17 +774,6 @@ export default function SettingsPage() {
             ></p>
           </div>
         </form>
-
-        <section
-          class="settings-section-block settings-section-block--upload"
-          id="uploadSection"
-          aria-labelledby="uploadSectionTitle"
-        >
-          <h2 id="uploadSectionTitle" class="settings-section-title">
-            Uploads
-          </h2>
-          ${UploadSection}
-        </section>
 
         <section
           class="settings-section-block"

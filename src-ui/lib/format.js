@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Shared formatting and file-related utility functions.
-// Used by upload page and upload-section component.
+// Used by upload page components.
 // ---------------------------------------------------------------------------
 
 export function formatBytes(value) {

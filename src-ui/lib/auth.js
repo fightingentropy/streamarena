@@ -44,7 +44,16 @@ export async function signOut() {
 const RESUME_STORAGE_PREFIX = "netflix-resume:";
 const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
 const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
-const STALE_HERO_TRAILER_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
+const DEPRECATED_BROWSER_PREF_KEYS = new Set([
+  "netflix-hero-trailer-muted-v2",
+  "netflix-source-filter-allowed-formats",
+  "netflix-source-filter-results-limit",
+  "netflix-source-filter-min-seeders",
+  "netflix-source-filter-language",
+  "netflix-source-filter-audio-profile",
+  "netflix-resolver-provider",
+  "netflix-remux-video-mode",
+]);
 
 function pruneLocalResumeKeys(serverResumeSources) {
   if (!(serverResumeSources instanceof Set)) return;
@@ -80,7 +89,7 @@ export async function hydrateFromServer() {
       const prefs = await prefsRes.json();
       if (prefs && typeof prefs === "object") {
         for (const [key, value] of Object.entries(prefs)) {
-          if (key === STALE_HERO_TRAILER_MUTED_PREF_KEY) {
+          if (DEPRECATED_BROWSER_PREF_KEYS.has(key)) {
             localStorage.removeItem(key);
             continue;
           }
