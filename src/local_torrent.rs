@@ -27,7 +27,7 @@ use crate::persistence::Db;
 use crate::resolver::pick_video_file_ids;
 use crate::utils::now_ms;
 
-const LOCAL_TORRENT_RECENT_RETENTION_MS: i64 = 3 * 24 * 60 * 60 * 1000;
+const LOCAL_TORRENT_RECENT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const LOCAL_TORRENT_ACCESS_MARKER: &str = ".last-accessed";
 const CACHE_CONTROL_STREAM: &str = "no-store";
 
