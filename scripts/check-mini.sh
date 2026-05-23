@@ -8,6 +8,7 @@ PUBLIC_URL="${PUBLIC_URL:-https://fightingentropy.org}"
 PUBLIC_HOST="${PUBLIC_HOST:-fightingentropy.org}"
 MAX_DISK_PERCENT="${MAX_DISK_PERCENT:-90}"
 MIN_FREE_GB="${MIN_FREE_GB:-50}"
+PROTECTED_ENDPOINT_STATUS="${PROTECTED_ENDPOINT_STATUS:-401}"
 
 SSH_OPTS=(
   -i "$SSH_KEY"
@@ -156,9 +157,9 @@ public_ip=$(value_for public_ip)
 
 [[ "$runtime_tree" == "$expected_tree" ]] && pass "runtime tree is $runtime_tree" || bad "runtime tree is $runtime_tree, expected $expected_tree"
 [[ "$app_http" == "200" ]] && pass "mini app returns HTTP 200" || bad "mini app returned HTTP $app_http"
-[[ "$library_http" == "200" ]] && pass "API library endpoint returns HTTP 200" || bad "API library endpoint returned HTTP $library_http"
-[[ "$caddy_http" == "200" ]] && pass "Caddy HTTP reverse proxy returns HTTP 200" || bad "Caddy HTTP reverse proxy returned HTTP $caddy_http"
-[[ "$caddy_https" == "200" ]] && pass "Caddy HTTPS reverse proxy returns HTTP 200" || bad "Caddy HTTPS reverse proxy returned HTTP $caddy_https"
+[[ "$library_http" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "API library endpoint returns HTTP $PROTECTED_ENDPOINT_STATUS" || bad "API library endpoint returned HTTP $library_http"
+[[ "$caddy_http" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "Caddy HTTP reverse proxy returns HTTP $PROTECTED_ENDPOINT_STATUS" || bad "Caddy HTTP reverse proxy returned HTTP $caddy_http"
+[[ "$caddy_https" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "Caddy HTTPS reverse proxy returns HTTP $PROTECTED_ENDPOINT_STATUS" || bad "Caddy HTTPS reverse proxy returned HTTP $caddy_https"
 [[ "$listener" == "127.0.0.1:5173" ]] && pass "backend listener is localhost only" || bad "backend listener is '$listener'"
 [[ "$caddy_80" == *":80" ]] && pass "Caddy listens on port 80" || bad "Caddy port 80 listener is '$caddy_80'"
 [[ "$caddy_443" == *":443" ]] && pass "Caddy listens on port 443" || bad "Caddy port 443 listener is '$caddy_443'"
