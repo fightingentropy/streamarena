@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use regex::Regex;
@@ -36,6 +37,9 @@ const SOURCE_LANGUAGE_FILTER_DEFAULT: &str = "en";
 const SOURCE_AUDIO_PROFILE_DEFAULT: &str = "single";
 const RESOLVE_MAX_MS: i64 = 90_000;
 const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 40_000;
+const FASTEST_RESOLVE_MAX_MS: i64 = 45_000;
+const FASTEST_PARALLEL_CANDIDATES: usize = 4;
+const FASTEST_CANDIDATE_POOL_LIMIT: usize = 40;
 const PLAYABLE_URL_VALIDATE_TIMEOUT_MS: u64 = 8_000;
 const TORRENTIO_REQUEST_TIMEOUT_MS: u64 = 65_000;
 const TORRENTIO_REQUEST_MAX_ATTEMPTS: usize = 2;
@@ -264,6 +268,7 @@ struct ResolveFilters {
 pub(crate) enum ResolverProvider {
     RealDebrid,
     LocalTorrent,
+    Fastest,
 }
 
 impl ResolverProvider {
@@ -271,6 +276,7 @@ impl ResolverProvider {
         match self {
             ResolverProvider::RealDebrid => "real-debrid",
             ResolverProvider::LocalTorrent => "local-torrent",
+            ResolverProvider::Fastest => "fastest",
         }
     }
 
@@ -278,10 +284,23 @@ impl ResolverProvider {
         matches!(self, ResolverProvider::RealDebrid)
     }
 
+    fn is_fastest(self) -> bool {
+        matches!(self, ResolverProvider::Fastest)
+    }
+
+    fn cache_reuse_provider(self) -> ResolverProvider {
+        if self.is_fastest() {
+            ResolverProvider::LocalTorrent
+        } else {
+            self
+        }
+    }
+
     fn resolve_max_ms(self) -> i64 {
         match self {
             ResolverProvider::RealDebrid => RESOLVE_MAX_MS,
             ResolverProvider::LocalTorrent => LOCAL_TORRENT_RESOLVE_MAX_MS,
+            ResolverProvider::Fastest => FASTEST_RESOLVE_MAX_MS,
         }
     }
 }
@@ -717,8 +736,9 @@ impl ResolverService {
         let metadata = self
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
+        let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
-            .try_reuse_playback_session(&metadata, &preferences, &filters, resolver_provider)
+            .try_reuse_playback_session(&metadata, &preferences, &filters, cache_reuse_provider)
             .await?
         {
             external_guard.mark_completed();
@@ -730,7 +750,7 @@ impl ResolverService {
                     &metadata,
                     &preferences,
                     &filters,
-                    resolver_provider,
+                    cache_reuse_provider,
                 )
                 .await?
         {
@@ -741,13 +761,18 @@ impl ResolverService {
         match self.fetch_torrentio_movie_streams(&metadata.imdb_id).await {
             Ok(streams) => {
                 let health_scores = self.compute_source_health_scores(&streams).await?;
+                let candidate_limit = if resolver_provider.is_fastest() {
+                    FASTEST_CANDIDATE_POOL_LIMIT
+                } else {
+                    10
+                };
                 let candidates = select_top_movie_candidates(
                     &streams,
                     &metadata,
                     &preferences.audio_lang,
                     &preferences.quality,
                     &filters.source_hash,
-                    10,
+                    candidate_limit,
                     &filters.source_filters,
                     &health_scores,
                 );
@@ -764,7 +789,7 @@ impl ResolverService {
                             &preferences.audio_lang,
                             &preferences.quality,
                             &filters.source_hash,
-                            10,
+                            candidate_limit,
                             &filters.source_filters,
                             &health_scores,
                         );
@@ -813,13 +838,18 @@ impl ResolverService {
         let torznab_streams = self.fetch_torznab_movie_streams(&metadata).await?;
         if !torznab_streams.is_empty() {
             let health_scores = self.compute_source_health_scores(&torznab_streams).await?;
+            let candidate_limit = if resolver_provider.is_fastest() {
+                FASTEST_CANDIDATE_POOL_LIMIT
+            } else {
+                10
+            };
             let torznab_candidates = select_top_movie_candidates(
                 &torznab_streams,
                 &metadata,
                 &preferences.audio_lang,
                 &preferences.quality,
                 &filters.source_hash,
-                10,
+                candidate_limit,
                 &filters.source_filters,
                 &health_scores,
             );
@@ -1003,8 +1033,9 @@ impl ResolverService {
                 episode_number,
             )
             .await?;
+        let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
-            .try_reuse_playback_session(&metadata, &preferences, &filters, resolver_provider)
+            .try_reuse_playback_session(&metadata, &preferences, &filters, cache_reuse_provider)
             .await?
         {
             external_guard.mark_completed();
@@ -1016,7 +1047,7 @@ impl ResolverService {
                     &metadata,
                     &preferences,
                     &filters,
-                    resolver_provider,
+                    cache_reuse_provider,
                 )
                 .await?
         {
@@ -1034,6 +1065,11 @@ impl ResolverService {
         {
             Ok(streams) => {
                 let health_scores = self.compute_source_health_scores(&streams).await?;
+                let candidate_limit = if resolver_provider.is_fastest() {
+                    FASTEST_CANDIDATE_POOL_LIMIT
+                } else {
+                    10
+                };
                 let candidates = select_top_episode_candidates(
                     &streams,
                     &metadata,
@@ -1041,7 +1077,7 @@ impl ResolverService {
                     &preferences.quality,
                     &normalized_preferred_container,
                     &filters.source_hash,
-                    10,
+                    candidate_limit,
                     &filters.source_filters,
                     &health_scores,
                 );
@@ -1059,7 +1095,7 @@ impl ResolverService {
                             &preferences.quality,
                             &normalized_preferred_container,
                             &filters.source_hash,
-                            10,
+                            candidate_limit,
                             &filters.source_filters,
                             &health_scores,
                         );
@@ -1108,6 +1144,11 @@ impl ResolverService {
         let torznab_streams = self.fetch_torznab_episode_streams(&metadata).await?;
         if !torznab_streams.is_empty() {
             let health_scores = self.compute_source_health_scores(&torznab_streams).await?;
+            let candidate_limit = if resolver_provider.is_fastest() {
+                FASTEST_CANDIDATE_POOL_LIMIT
+            } else {
+                10
+            };
             let torznab_candidates = select_top_episode_candidates(
                 &torznab_streams,
                 &metadata,
@@ -1115,7 +1156,7 @@ impl ResolverService {
                 &preferences.quality,
                 &normalized_preferred_container,
                 &filters.source_hash,
-                10,
+                candidate_limit,
                 &filters.source_filters,
                 &health_scores,
             );
@@ -1148,6 +1189,11 @@ impl ResolverService {
         preferences: &ResolvePreferences,
         resolver_provider: ResolverProvider,
     ) -> AppResult<Value> {
+        if resolver_provider.is_fastest() {
+            return self
+                .resolve_movie_candidates_fastest(candidates, metadata, preferences)
+                .await;
+        }
         if candidates.is_empty() {
             return Err(ApiError::internal(
                 "No stream candidates were returned for this movie.",
@@ -1171,18 +1217,9 @@ impl ResolverService {
             )
             .await
             {
-                Ok(result) => result.and_then(|resolved| {
-                    if !does_filename_likely_match_movie(
-                        &resolved.filename,
-                        &metadata.display_title,
-                        &metadata.display_year,
-                    ) {
-                        return Err(ApiError::internal(
-                            "Resolved stream filename did not match requested title.",
-                        ));
-                    }
-                    Ok(resolved)
-                }),
+                Ok(result) => {
+                    result.and_then(|resolved| validate_resolved_movie_source(resolved, metadata))
+                }
                 Err(_) => Err(ApiError::bad_gateway("Resolving stream timed out.")),
             };
             match resolved_result {
@@ -1207,6 +1244,70 @@ impl ResolverService {
         Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
     }
 
+    async fn resolve_movie_candidates_fastest(
+        &self,
+        candidates: Vec<&DiscoveryStream>,
+        metadata: &ResolveMetadata,
+        preferences: &ResolvePreferences,
+    ) -> AppResult<Value> {
+        if candidates.is_empty() {
+            return Err(ApiError::internal(
+                "No stream candidates were returned for this movie.",
+            ));
+        }
+
+        let fallback_name = normalize_whitespace(
+            format!("{} {}", metadata.display_title, metadata.display_year).trim(),
+        );
+        let mut futures = FuturesUnordered::new();
+        for candidate in select_fastest_race_candidates(candidates) {
+            for provider in [ResolverProvider::LocalTorrent, ResolverProvider::RealDebrid] {
+                let stream = (*candidate).clone();
+                let task_fallback_name = fallback_name.clone();
+                futures.push(async move {
+                    let result = timeout(
+                        Duration::from_millis(FASTEST_RESOLVE_MAX_MS as u64),
+                        self.resolve_candidate_stream(&stream, &task_fallback_name, provider),
+                    )
+                    .await
+                    .unwrap_or_else(|_| Err(ApiError::bad_gateway("Resolving stream timed out.")));
+                    (provider, stream, task_fallback_name, result)
+                });
+            }
+        }
+
+        let mut last_error = None;
+        while let Some((provider, stream, fallback_name, result)) = futures.next().await {
+            match result.and_then(|resolved| validate_resolved_movie_source(resolved, metadata)) {
+                Ok(resolved) => {
+                    if provider.is_real_debrid() {
+                        self.spawn_local_torrent_cache_warm(
+                            stream,
+                            fallback_name,
+                            metadata.clone(),
+                            preferences.clone(),
+                        );
+                    }
+                    return self
+                        .build_resolved_response(
+                            resolved,
+                            metadata.clone(),
+                            preferences.clone(),
+                            provider,
+                            true,
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    self.record_source_resolve_failure(&stream, &error).await;
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
+    }
+
     async fn resolve_episode_candidates(
         &self,
         candidates: Vec<&DiscoveryStream>,
@@ -1214,6 +1315,11 @@ impl ResolverService {
         preferences: &ResolvePreferences,
         resolver_provider: ResolverProvider,
     ) -> AppResult<Value> {
+        if resolver_provider.is_fastest() {
+            return self
+                .resolve_episode_candidates_fastest(candidates, metadata, preferences)
+                .await;
+        }
         if candidates.is_empty() {
             return Err(ApiError::internal(
                 "No stream candidates were returned for this episode.",
@@ -1248,25 +1354,9 @@ impl ResolverService {
             )
             .await
             {
-                Ok(result) => result.and_then(|resolved| {
-                    let episode_match_name = if !resolved.selected_file_path.trim().is_empty() {
-                        resolved.selected_file_path.clone()
-                    } else {
-                        resolved.filename.clone()
-                    };
-                    if !does_filename_likely_match_tv_episode(
-                        &episode_match_name,
-                        &metadata.display_title,
-                        &metadata.display_year,
-                        metadata.season_number,
-                        metadata.episode_number,
-                    ) {
-                        return Err(ApiError::internal(
-                            "Resolved stream filename did not match requested episode.",
-                        ));
-                    }
-                    Ok(resolved)
-                }),
+                Ok(result) => {
+                    result.and_then(|resolved| validate_resolved_episode_source(resolved, metadata))
+                }
                 Err(_) => Err(ApiError::bad_gateway("Resolving stream timed out.")),
             };
             match resolved_result {
@@ -1283,6 +1373,81 @@ impl ResolverService {
                 }
                 Err(error) => {
                     self.record_source_resolve_failure(candidate, &error).await;
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
+    }
+
+    async fn resolve_episode_candidates_fastest(
+        &self,
+        candidates: Vec<&DiscoveryStream>,
+        metadata: &ResolveMetadata,
+        preferences: &ResolvePreferences,
+    ) -> AppResult<Value> {
+        if candidates.is_empty() {
+            return Err(ApiError::internal(
+                "No stream candidates were returned for this episode.",
+            ));
+        }
+
+        let fallback_name = if metadata.episode_title.is_empty() {
+            format!(
+                "{} S{:02}E{:02}",
+                metadata.display_title, metadata.season_number, metadata.episode_number
+            )
+        } else {
+            format!(
+                "{} S{:02}E{:02} {}",
+                metadata.display_title,
+                metadata.season_number,
+                metadata.episode_number,
+                metadata.episode_title
+            )
+        };
+        let mut futures = FuturesUnordered::new();
+        for candidate in select_fastest_race_candidates(candidates) {
+            for provider in [ResolverProvider::LocalTorrent, ResolverProvider::RealDebrid] {
+                let stream = (*candidate).clone();
+                let task_fallback_name = fallback_name.clone();
+                futures.push(async move {
+                    let result = timeout(
+                        Duration::from_millis(FASTEST_RESOLVE_MAX_MS as u64),
+                        self.resolve_candidate_stream(&stream, &task_fallback_name, provider),
+                    )
+                    .await
+                    .unwrap_or_else(|_| Err(ApiError::bad_gateway("Resolving stream timed out.")));
+                    (provider, stream, task_fallback_name, result)
+                });
+            }
+        }
+
+        let mut last_error = None;
+        while let Some((provider, stream, fallback_name, result)) = futures.next().await {
+            match result.and_then(|resolved| validate_resolved_episode_source(resolved, metadata)) {
+                Ok(resolved) => {
+                    if provider.is_real_debrid() {
+                        self.spawn_local_torrent_cache_warm(
+                            stream,
+                            fallback_name,
+                            metadata.clone(),
+                            preferences.clone(),
+                        );
+                    }
+                    return self
+                        .build_resolved_response(
+                            resolved,
+                            metadata.clone(),
+                            preferences.clone(),
+                            provider,
+                            true,
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    self.record_source_resolve_failure(&stream, &error).await;
                     last_error = Some(error);
                 }
             }
@@ -1439,8 +1604,51 @@ impl ResolverService {
                 .resolve_real_debrid_candidate_stream(stream, fallback_name)
                 .await;
         }
+        if resolver_provider.is_fastest() {
+            return Err(ApiError::internal(
+                "Fastest resolver must race concrete providers.",
+            ));
+        }
         self.resolve_local_torrent_candidate_stream(stream, fallback_name)
             .await
+    }
+
+    fn spawn_local_torrent_cache_warm(
+        &self,
+        stream: DiscoveryStream,
+        fallback_name: String,
+        metadata: ResolveMetadata,
+        preferences: ResolvePreferences,
+    ) {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let result = service
+                .resolve_local_torrent_candidate_stream(&stream, &fallback_name)
+                .await
+                .and_then(|resolved| {
+                    if metadata.media_type == "tv" {
+                        validate_resolved_episode_source(resolved, &metadata)
+                    } else {
+                        validate_resolved_movie_source(resolved, &metadata)
+                    }
+                });
+            match result {
+                Ok(resolved) => {
+                    let _ = service
+                        .build_resolved_response(
+                            resolved,
+                            metadata,
+                            preferences,
+                            ResolverProvider::LocalTorrent,
+                            true,
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    service.record_source_resolve_failure(&stream, &error).await;
+                }
+            }
+        });
     }
 
     async fn resolve_local_torrent_candidate_stream(
@@ -2697,6 +2905,45 @@ fn local_torrent_resolved_source_to_resolved_source(
     }
 }
 
+fn validate_resolved_movie_source(
+    resolved: ResolvedSource,
+    metadata: &ResolveMetadata,
+) -> AppResult<ResolvedSource> {
+    if !does_filename_likely_match_movie(
+        &resolved.filename,
+        &metadata.display_title,
+        &metadata.display_year,
+    ) {
+        return Err(ApiError::internal(
+            "Resolved stream filename did not match requested title.",
+        ));
+    }
+    Ok(resolved)
+}
+
+fn validate_resolved_episode_source(
+    resolved: ResolvedSource,
+    metadata: &ResolveMetadata,
+) -> AppResult<ResolvedSource> {
+    let episode_match_name = if !resolved.selected_file_path.trim().is_empty() {
+        resolved.selected_file_path.clone()
+    } else {
+        resolved.filename.clone()
+    };
+    if !does_filename_likely_match_tv_episode(
+        &episode_match_name,
+        &metadata.display_title,
+        &metadata.display_year,
+        metadata.season_number,
+        metadata.episode_number,
+    ) {
+        return Err(ApiError::internal(
+            "Resolved stream filename did not match requested episode.",
+        ));
+    }
+    Ok(resolved)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_movie_resolve_lock_key(
     tmdb_id: &str,
@@ -2937,6 +3184,77 @@ fn select_top_episode_candidates<'a>(
     } else {
         selected
     }
+}
+
+fn select_fastest_race_candidates<'a>(
+    candidates: Vec<&'a DiscoveryStream>,
+) -> Vec<&'a DiscoveryStream> {
+    let safe_limit = FASTEST_PARALLEL_CANDIDATES.max(1);
+    let mut selected = Vec::new();
+    let mut seen_hashes = HashSet::new();
+    for candidate in candidates.iter().copied().take(2) {
+        push_unique_candidate(&mut selected, &mut seen_hashes, candidate);
+        if selected.len() >= safe_limit {
+            return selected;
+        }
+    }
+
+    let mut local_friendly = candidates.clone();
+    local_friendly.sort_by(|left, right| {
+        let right_score = score_fastest_local_candidate(right);
+        let left_score = score_fastest_local_candidate(left);
+        if right_score != left_score {
+            return right_score.cmp(&left_score);
+        }
+        parse_seed_count(&right.title).cmp(&parse_seed_count(&left.title))
+    });
+    for candidate in local_friendly {
+        push_unique_candidate(&mut selected, &mut seen_hashes, candidate);
+        if selected.len() >= safe_limit {
+            return selected;
+        }
+    }
+
+    for candidate in candidates {
+        push_unique_candidate(&mut selected, &mut seen_hashes, candidate);
+        if selected.len() >= safe_limit {
+            break;
+        }
+    }
+    selected
+}
+
+fn score_fastest_local_candidate(stream: &DiscoveryStream) -> i64 {
+    let seed_count = parse_seed_count(if stream.title.is_empty() {
+        stream.name.as_str()
+    } else {
+        stream.title.as_str()
+    });
+    let size_bytes = parse_stream_size_bytes(stream);
+    let mut score = if seed_count > 0 {
+        (((seed_count + 1) as f64).log10() * 900.0).round() as i64
+    } else {
+        0
+    };
+
+    if size_bytes > 0 {
+        let size_gb = size_bytes as f64 / 1_073_741_824.0;
+        score += if size_gb <= 1.5 {
+            600
+        } else if size_gb <= 3.5 {
+            1_100
+        } else if size_gb <= 6.0 {
+            800
+        } else if size_gb <= 10.0 {
+            250
+        } else {
+            -((size_gb - 10.0) * 85.0).round() as i64
+        };
+    }
+    if is_stream_likely_container(stream, "mp4") {
+        score += 550;
+    }
+    score + score_stream_release_quality(stream)
 }
 
 fn should_prefer_mp4_episode_candidate(preferred_container: &str, source_hash: &str) -> bool {
@@ -3844,6 +4162,34 @@ fn extract_stream_size_label(stream: &DiscoveryStream) -> String {
         .unwrap_or_default()
 }
 
+fn parse_stream_size_bytes(stream: &DiscoveryStream) -> i64 {
+    parse_size_label_bytes(&extract_stream_size_label(stream))
+}
+
+fn parse_size_label_bytes(label: &str) -> i64 {
+    let mut parts = label.split_whitespace();
+    let Some(number_part) = parts.next() else {
+        return 0;
+    };
+    let value = number_part.replace(',', "").parse::<f64>().unwrap_or(0.0);
+    if value <= 0.0 {
+        return 0;
+    }
+    let unit = parts.next().unwrap_or("b").to_lowercase();
+    let multiplier = if unit.starts_with("kb") || unit.starts_with("kib") {
+        1024.0
+    } else if unit.starts_with("mb") || unit.starts_with("mib") {
+        1024.0_f64.powi(2)
+    } else if unit.starts_with("gb") || unit.starts_with("gib") {
+        1024.0_f64.powi(3)
+    } else if unit.starts_with("tb") || unit.starts_with("tib") {
+        1024.0_f64.powi(4)
+    } else {
+        1.0
+    };
+    (value * multiplier).round() as i64
+}
+
 fn extract_stream_release_group(stream: &DiscoveryStream) -> String {
     STREAM_RELEASE_GROUP_RE
         .captures(&stream.title)
@@ -3886,10 +4232,9 @@ pub(crate) fn normalize_resolver_provider(value: &str) -> ResolverProvider {
         "real-debrid" | "real_debrid" | "realdebrid" | "debrid" | "rd" => {
             ResolverProvider::RealDebrid
         }
-        "" | "default" | "local-torrent" | "local_torrent" | "local" | "torrent" => {
-            ResolverProvider::LocalTorrent
-        }
-        _ => ResolverProvider::LocalTorrent,
+        "local-torrent" | "local_torrent" | "local" | "torrent" => ResolverProvider::LocalTorrent,
+        "" | "default" | "fastest" | "race" | "auto" | "automatic" => ResolverProvider::Fastest,
+        _ => ResolverProvider::Fastest,
     }
 }
 
@@ -5424,8 +5769,9 @@ mod tests {
         is_persistent_source_resolve_error, normalize_allowed_formats,
         normalize_resolved_source_for_software_decode, normalize_resolver_provider,
         normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
-        parse_runtime_from_label_seconds, parse_seed_count, parse_torznab_xml,
-        playback_session_matches_preferred_container, ready_info_has_selected_file_id,
+        parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
+        parse_torznab_xml, playback_session_matches_preferred_container,
+        ready_info_has_selected_file_id, select_fastest_race_candidates,
         select_top_episode_candidates, select_top_movie_candidates,
         should_allow_latest_playback_session_fallback, should_prefer_software_decode_source,
         should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
@@ -5444,6 +5790,13 @@ mod tests {
     #[test]
     fn parses_seed_counts() {
         assert_eq!(parse_seed_count("Torrent 👤 1,234"), 1234);
+    }
+
+    #[test]
+    fn parses_stream_size_labels() {
+        assert_eq!(parse_size_label_bytes("2.5 GB"), 2_684_354_560);
+        assert_eq!(parse_size_label_bytes("900 MB"), 943_718_400);
+        assert_eq!(parse_size_label_bytes(""), 0);
     }
 
     #[test]
@@ -5468,9 +5821,10 @@ mod tests {
 
     #[test]
     fn normalizes_resolver_provider_preference() {
+        assert_eq!(normalize_resolver_provider(""), ResolverProvider::Fastest);
         assert_eq!(
-            normalize_resolver_provider(""),
-            ResolverProvider::LocalTorrent
+            normalize_resolver_provider("fastest"),
+            ResolverProvider::Fastest
         );
         assert_eq!(
             normalize_resolver_provider("local-torrent"),
@@ -5482,10 +5836,11 @@ mod tests {
         );
         assert_eq!(
             normalize_resolver_provider("unexpected"),
-            ResolverProvider::LocalTorrent
+            ResolverProvider::Fastest
         );
         assert!(ResolverProvider::RealDebrid.is_real_debrid());
         assert!(!ResolverProvider::LocalTorrent.is_real_debrid());
+        assert!(ResolverProvider::Fastest.is_fastest());
     }
 
     #[test]
@@ -5877,6 +6232,38 @@ mod tests {
             source_language: "en".to_owned(),
             source_audio_profile: "single".to_owned(),
         }
+    }
+
+    #[test]
+    fn fastest_race_candidates_include_local_friendly_sources() {
+        let ranked_huge = sample_stream(
+            "The Matrix 1999 2160p Remux.mkv\n💾 76 GB\n👤 300",
+            "1111111111111111111111111111111111111111",
+        );
+        let ranked_large = sample_stream(
+            "The Matrix 1999 2160p WEB-DL.mkv\n💾 24 GB\n👤 180",
+            "2222222222222222222222222222222222222222",
+        );
+        let small_mp4 = sample_stream(
+            "The Matrix 1999 1080p BluRay.x265.mp4\n💾 2.2 GB\n👤 2,400",
+            "3333333333333333333333333333333333333333",
+        );
+        let medium_mkv = sample_stream(
+            "The Matrix 1999 1080p BluRay.mkv\n💾 8 GB\n👤 650",
+            "4444444444444444444444444444444444444444",
+        );
+        let candidates = vec![&ranked_huge, &ranked_large, &medium_mkv, &small_mp4];
+
+        let selected = select_fastest_race_candidates(candidates);
+
+        assert_eq!(selected.len(), 4);
+        assert_eq!(selected[0].infoHash, ranked_huge.infoHash);
+        assert_eq!(selected[1].infoHash, ranked_large.infoHash);
+        assert!(
+            selected
+                .iter()
+                .any(|item| item.infoHash == small_mp4.infoHash)
+        );
     }
 
     #[test]

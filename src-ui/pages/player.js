@@ -458,7 +458,7 @@ const supportedSourceFormatSet = new Set(supportedSourceFormats);
 const DEFAULT_SOURCE_MIN_SEEDERS = 0;
 const DEFAULT_SOURCE_LANGUAGE = "en";
 const DEFAULT_SOURCE_AUDIO_PROFILE = "single";
-const DEFAULT_RESOLVER_PROVIDER = "local-torrent";
+const DEFAULT_RESOLVER_PROVIDER = "fastest";
 const DEFAULT_REMUX_VIDEO_MODE = "auto";
 // SOURCE_LANGUAGE_TOKENS — imported from ./src-ui/player/sources.js
 const AUDIO_SYNC_MIN_MS = -2500;
@@ -1420,7 +1420,7 @@ function normalizeResolverFailureMessage(
   const normalized = message.toLowerCase();
 
   if (
-    preferredResolverProvider === "local-torrent" &&
+    preferredResolverProvider !== "real-debrid" &&
     (normalized.includes("resolving stream timed out") ||
       normalized.includes("request timed out") ||
       normalized.includes("local torrent") ||
@@ -1430,6 +1430,9 @@ function normalizeResolverFailureMessage(
       normalized.includes("bad gateway") ||
       normalized.includes("502"))
   ) {
+    if (preferredResolverProvider === "fastest") {
+      return "This source could not start quickly enough. Try another source.";
+    }
     return "Local torrent could not start this source quickly enough. Try another source.";
   }
 
@@ -5972,7 +5975,7 @@ function pickResolverAlternateSourceHash() {
     return "";
   }
 
-  if (preferredResolverProvider === "local-torrent") {
+  if (preferredResolverProvider !== "real-debrid") {
     candidates.sort((left, right) => {
       const scoreDelta =
         scoreResolverAlternateSource(right.option) -
@@ -6146,10 +6149,10 @@ function isSourceFallbackResolveError(error) {
 
 async function requestResolveJson(
   url,
-  timeoutMs = preferredResolverProvider === "local-torrent" ? 45000 : 95000,
+  timeoutMs = preferredResolverProvider === "real-debrid" ? 95000 : 50000,
 ) {
   const retryDelays =
-    preferredResolverProvider === "local-torrent" ? [] : [900, 1800];
+    preferredResolverProvider === "real-debrid" ? [900, 1800] : [];
   let lastError = null;
 
   for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
