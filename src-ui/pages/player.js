@@ -1330,10 +1330,11 @@ function showResolver(
     return;
   }
 
+  const shouldShowStatus = showStatus || isError || isRecovery;
   if (resolverStatus) {
     resolverStatus.textContent =
       String(message || "").trim() || "Unable to load this video.";
-    resolverStatus.hidden = !(showStatus || isRecovery);
+    resolverStatus.hidden = !shouldShowStatus;
   }
   if (resolverTitle) {
     resolverTitle.textContent = String(title || "").trim();
@@ -1354,12 +1355,14 @@ function showResolver(
     resolverAlternateButton.hidden = !isRecovery || !showAlternate;
   }
   if (resolverLoader) {
-    resolverLoader.hidden = showStatus || isError || isRecovery;
+    resolverLoader.hidden = shouldShowStatus;
+    resolverLoader.style.display = shouldShowStatus ? "none" : "";
   }
   hideSeekLoadingIndicator();
   resolverOverlay.hidden = false;
   resolverOverlay.classList.toggle("is-error", isError);
   resolverOverlay.classList.toggle("is-recovery", isRecovery);
+  resolverOverlay.classList.toggle("has-status", shouldShowStatus);
 }
 
 function hideResolver() {
@@ -1370,8 +1373,10 @@ function hideResolver() {
   resolverOverlay.hidden = true;
   resolverOverlay.classList.remove("is-error");
   resolverOverlay.classList.remove("is-recovery");
+  resolverOverlay.classList.remove("has-status");
   if (resolverLoader) {
     resolverLoader.hidden = false;
+    resolverLoader.style.display = "";
   }
   if (resolverStatus) {
     resolverStatus.hidden = true;
@@ -1391,6 +1396,84 @@ function hideResolver() {
   if (resolverAlternateButton) {
     resolverAlternateButton.hidden = true;
   }
+}
+
+function normalizeResolverFailureMessage(
+  errorOrMessage,
+  fallbackMessage = "Unable to resolve this stream.",
+) {
+  const rawMessage =
+    typeof errorOrMessage === "string"
+      ? errorOrMessage
+      : errorOrMessage?.message;
+  const message = String(rawMessage || fallbackMessage || "")
+    .trim()
+    .replace(/\s+/g, " ");
+  const normalized = message.toLowerCase();
+
+  if (
+    preferredResolverProvider === "local-torrent" &&
+    (normalized.includes("resolving stream timed out") ||
+      normalized.includes("request timed out") ||
+      normalized.includes("local torrent") ||
+      normalized.includes("metadata") ||
+      normalized.includes("first byte") ||
+      normalized.includes("peer") ||
+      normalized.includes("bad gateway") ||
+      normalized.includes("502"))
+  ) {
+    return "Local torrent could not start this source quickly enough. Try another source.";
+  }
+
+  return message || fallbackMessage || "Unable to resolve this stream.";
+}
+
+function clearPendingVideoSource() {
+  if (!video) {
+    return;
+  }
+  try {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  } catch {
+    // Ignore media cleanup failures; the resolver error is the user-visible state.
+  }
+}
+
+function showResolverError(
+  errorOrMessage,
+  fallbackMessage = "Unable to resolve this stream.",
+  { clearVideoSource = false } = {},
+) {
+  clearPlaybackRecovery({ hideOverlay: false });
+  hideSeekLoadingIndicator();
+  if (clearVideoSource) {
+    clearPendingVideoSource();
+  }
+
+  const message = normalizeResolverFailureMessage(
+    errorOrMessage,
+    fallbackMessage,
+  );
+  showResolver(message, {
+    isError: true,
+    showStatus: true,
+  });
+
+  if (resolverOverlay) {
+    resolverOverlay.hidden = false;
+    resolverOverlay.classList.add("is-error", "has-status");
+    resolverOverlay.classList.remove("is-recovery");
+  }
+  if (resolverLoader) {
+    resolverLoader.hidden = true;
+    resolverLoader.style.display = "none";
+  }
+  if (resolverStatus) {
+    resolverStatus.hidden = false;
+  }
+  return message;
 }
 
 function hasActiveSource() {
@@ -3157,7 +3240,7 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
       if (attemptTmdbRecovery("Trying alternate source...")) {
         return;
       }
-      showResolver(fallbackMessage, { isError: true });
+      showResolverError(fallbackMessage);
       reportCurrentTmdbPlaybackFailure(fallbackMessage);
     };
 
@@ -3637,7 +3720,7 @@ function attemptTmdbRecovery(message) {
         console.error("Failed to refresh TMDB playback source:", error);
         const fallbackMessage =
           error?.message || "Resolved stream could not be played. Try again.";
-        showResolver(fallbackMessage, { isError: true });
+        showResolverError(fallbackMessage);
       })
       .finally(() => {
         isRecoveringTmdbStream = false;
@@ -4793,9 +4876,7 @@ async function switchLiveStream(streamId) {
       await tryPlay();
     }
   } catch (error) {
-    showResolver(error?.message || "Unable to load this live stream.", {
-      isError: true,
-    });
+    showResolverError(error, "Unable to load this live stream.");
   }
   syncPlayState();
   syncDurationText();
@@ -5777,7 +5858,7 @@ async function runPlaybackRecoveryAttempt(sequence, mode) {
     return;
   }
 
-  showResolver("Unable to resume this stream. Try again.", { isError: true });
+  showResolverError("Unable to resume this stream. Try again.");
 }
 
 function retryPlaybackRecoveryNow() {
@@ -5813,7 +5894,7 @@ async function handlePlaybackErrorRecovery(message) {
     return true;
   }
 
-  showResolver(fallbackMessage, { isError: true });
+  showResolverError(fallbackMessage);
   return false;
 }
 
@@ -7296,8 +7377,8 @@ async function initPlaybackSource() {
     await resolveTmdbSourcesAndPlay();
   } catch (error) {
     console.error("Failed to resolve TMDB playback:", error);
-    showResolver(error.message || "Unable to resolve this stream.", {
-      isError: true,
+    showResolverError(error, "Unable to resolve this stream.", {
+      clearVideoSource: true,
     });
   }
 
@@ -7726,9 +7807,7 @@ if (audioOptionsContainer) trackListener(audioOptionsContainer, "click", async (
       }
     } catch (error) {
       console.error("Failed to switch audio language:", error);
-      showResolver(error?.message || "Unable to switch language.", {
-        isError: true,
-      });
+      showResolverError(error, "Unable to switch language.");
     }
     return;
   }
@@ -7898,7 +7977,7 @@ async function handleSourceOptionSelection(nextSourceHash) {
     persistSourceHashInUrl();
     syncAudioState();
     const fallbackMessage = error?.message || "Unable to switch source.";
-    showResolver(fallbackMessage, { isError: true });
+    showResolverError(fallbackMessage);
   }
 }
 
