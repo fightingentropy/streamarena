@@ -64,7 +64,7 @@ const YOUTUBE_PLAYER_STATE = {
   CUED: 5,
 };
 const FEATURED_HERO_ROTATION_MS = 24 * 60 * 60 * 1000;
-const FEATURED_HERO_CAROUSEL_MS = 8000;
+const FEATURED_HERO_CAROUSEL_MS = 20000;
 const FEATURED_HERO_STORAGE_KEY = "netflix-featured-hero-v2";
 const FEATURED_HERO_CANDIDATE_LIMIT = 10;
 const BLOCKED_FEATURED_HERO_TITLE_KEYS = new Set(["your heart will be broken"]);
@@ -2322,9 +2322,11 @@ export default function HomePage() {
     const year = releaseDate ? releaseDate.slice(0, 4) : "2024";
     const posterPath = item.poster_path || item.backdrop_path;
     const backdropPath = item.backdrop_path || item.poster_path;
-    const posterUrl = posterPath
-      ? `${imageBase}/w500${posterPath}`
-      : "assets/images/thumbnail.jpg";
+    const posterUrl = backdropPath
+      ? `${imageBase}/w780${backdropPath}`
+      : posterPath
+        ? `${imageBase}/w780${posterPath}`
+        : "assets/images/thumbnail.jpg";
     const heroUrl = backdropPath
       ? `${imageBase}/original${backdropPath}`
       : posterUrl;
@@ -2337,12 +2339,18 @@ export default function HomePage() {
       ? genreNames.map(escapeHtml).join(" <span>&bull;</span> ")
       : "Popular <span>&bull;</span> Trending";
     const safeTitle = escapeHtml(title);
+    const displayTitle = escapeHtml(
+      String(title || "Untitled")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase(),
+    );
     const top10BadgeMarkup =
       cardIndex < POPULAR_TITLES_LIMIT
-        ? `<span class="card-top10-badge" aria-hidden="true">TOP<strong>${cardIndex + 1}</strong></span>`
+        ? `<span class="card-top10-badge" aria-hidden="true"><span class="card-top10-badge-label">TOP</span><span class="card-top10-badge-rank">${cardIndex + 1}</span></span>`
         : "";
     const recentBadgeMarkup =
-      cardIndex < 3
+      cardIndex < POPULAR_TITLES_LIMIT
         ? `<span class="card-recent-badge">Recently Added</span>`
         : "";
 
@@ -2369,10 +2377,13 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
-        ${top10BadgeMarkup}
-        <img src="${posterUrl}" alt="${safeTitle}" loading="lazy" />
+        <div class="card-rail-art">
+          ${top10BadgeMarkup}
+          <img src="${posterUrl}" alt="${safeTitle}" loading="lazy" />
+          <div class="card-rail-shade" aria-hidden="true"></div>
+          <span class="card-rail-title" aria-hidden="true">${displayTitle}</span>
+        </div>
         ${recentBadgeMarkup}
-        <div class="progress"><span style="width: ${Math.max(10, Math.min(96, Math.round(item.vote_average * 10)))}%"></span></div>
       </div>
       <div class="card-hover">
         <img class="card-hover-image" src="${heroUrl}" alt="${safeTitle} preview" loading="lazy" />
