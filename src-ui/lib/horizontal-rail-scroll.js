@@ -64,10 +64,14 @@ export function bindHorizontalRailScroll(rail) {
   };
 
   const handleWheel = (event) => {
+    const absX = Math.abs(event.deltaX);
+    const absY = Math.abs(event.deltaY);
     const horizontalDelta = getHorizontalWheelDelta(event, rail);
     const isHorizontalGesture =
-      Math.abs(event.deltaX) >= Math.abs(event.deltaY) || event.shiftKey;
+      (event.shiftKey && absY > absX) ||
+      (absX > absY && absX > 1);
 
+    // Let vertical trackpad scrolling reach the page when the pointer is over a rail.
     if (!isHorizontalGesture || !canScrollBy(rail, horizontalDelta)) {
       return;
     }

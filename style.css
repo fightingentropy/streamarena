@@ -1652,11 +1652,17 @@ body.is-search-mode #myListRow {
     overflow-x: auto;
     overflow-y: hidden;
     overscroll-behavior-x: contain;
-    overscroll-behavior-y: none;
+    overscroll-behavior-y: auto;
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
     cursor: grab;
     user-select: none;
+    /* Let trackpad scrolling pass through empty rail space to the page. */
+    pointer-events: none;
+}
+
+.cards.popular-cards .card {
+    pointer-events: auto;
 }
 
 .cards.popular-cards::-webkit-scrollbar {
