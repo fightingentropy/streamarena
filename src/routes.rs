@@ -199,8 +199,8 @@ pub async fn config_handler(
     Ok(json_response(json!({
         "realDebridConfigured": !state.config.real_debrid_token.is_empty(),
         "localTorrentAvailable": state.local_torrent.is_available(),
-        "defaultResolverProvider": "local-torrent",
-        "resolverProviders": ["local-torrent", "real-debrid"],
+        "defaultResolverProvider": "fastest",
+        "resolverProviders": ["fastest", "local-torrent", "real-debrid"],
         "torznabConfigured": !state.config.torznab_api_url.is_empty(),
         "tmdbConfigured": !state.config.tmdb_api_key.is_empty(),
         "playbackSessionsEnabled": state.config.playback_sessions_enabled,
