@@ -1,14 +1,16 @@
 use std::collections::BTreeSet;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::Response;
+use axum::http::{HeaderValue, Response};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use dashmap::DashMap;
 use regex::Regex;
 use serde::{Deserialize, Deserializer};
-use serde_json::json;
+use serde_json::{Value, json};
+use tokio::sync::Mutex;
 use url::Url;
 
 use crate::error::{ApiError, AppResult, json_response};
@@ -18,6 +20,8 @@ use crate::utils::now_ms;
 const SUPER_LEAGUE_FOOTBALL_URL: &str = "https://super.league.st/index.php?sport=Football";
 const SUPER_LEAGUE_BASKETBALL_URL: &str = "https://super.league.st/index.php?sport=Basketball";
 const SUPER_LEAGUE_STREAM_USER_AGENT: &str = "Mozilla/5.0";
+const SPORTS_SCHEDULE_CACHE_TTL_MS: i64 = 2 * 60 * 1000;
+const SPORTS_SCHEDULE_STALE_IF_ERROR_MS: i64 = 30 * 60 * 1000;
 const HIGH_PRIORITY_FOOTBALL_LEAGUES: &[&str] = &[
     "england premier league",
     "england fa cup",
@@ -135,6 +139,65 @@ struct EmbeddedPlayerConfig {
     stream_url_nop2p: String,
 }
 
+#[derive(Clone, Default)]
+pub struct SportsScheduleCache {
+    entries: Arc<DashMap<&'static str, CachedSportsSchedule>>,
+    locks: Arc<DashMap<&'static str, Arc<Mutex<()>>>>,
+}
+
+#[derive(Clone)]
+struct CachedSportsSchedule {
+    payload: Value,
+    fetched_at_ms: i64,
+}
+
+impl SportsScheduleCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn fresh(&self, key: &'static str, now: i64) -> Option<Value> {
+        self.entries.get(key).and_then(|entry| {
+            let cached = entry.value();
+            (cache_age_ms(cached.fetched_at_ms, now) <= SPORTS_SCHEDULE_CACHE_TTL_MS)
+                .then(|| cached.payload.clone())
+        })
+    }
+
+    fn stale(&self, key: &'static str, now: i64) -> Option<Value> {
+        self.entries.get(key).and_then(|entry| {
+            let cached = entry.value();
+            (cache_age_ms(cached.fetched_at_ms, now) <= SPORTS_SCHEDULE_STALE_IF_ERROR_MS)
+                .then(|| cached.payload.clone())
+        })
+    }
+
+    fn insert(&self, key: &'static str, payload: Value, fetched_at_ms: i64) {
+        self.entries.insert(
+            key,
+            CachedSportsSchedule {
+                payload,
+                fetched_at_ms,
+            },
+        );
+    }
+
+    fn lock_for(&self, key: &'static str) -> Arc<Mutex<()>> {
+        self.locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+}
+
+fn cache_age_ms(fetched_at_ms: i64, now: i64) -> i64 {
+    if now <= fetched_at_ms {
+        0
+    } else {
+        now - fetched_at_ms
+    }
+}
+
 fn deserialize_default_on_null<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
@@ -195,6 +258,38 @@ async fn super_league_matches_response(
     sport_name: &'static str,
     include_match: fn(&SourceMatch) -> bool,
 ) -> AppResult<Response<Body>> {
+    if let Some(payload) = state.sports_schedule_cache.fresh(source_url, now_ms()) {
+        return Ok(schedule_response(payload, "hit"));
+    }
+
+    let schedule_lock = state.sports_schedule_cache.lock_for(source_url);
+    let _guard = schedule_lock.lock().await;
+    if let Some(payload) = state.sports_schedule_cache.fresh(source_url, now_ms()) {
+        return Ok(schedule_response(payload, "hit"));
+    }
+
+    match fetch_super_league_matches_payload(state, source_url, sport_name, include_match).await {
+        Ok((payload, fetched_at_ms)) => {
+            state
+                .sports_schedule_cache
+                .insert(source_url, payload.clone(), fetched_at_ms);
+            Ok(schedule_response(payload, "miss"))
+        }
+        Err(error) => {
+            if let Some(payload) = state.sports_schedule_cache.stale(source_url, now_ms()) {
+                return Ok(schedule_response(payload, "stale"));
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn fetch_super_league_matches_payload(
+    state: &AppState,
+    source_url: &'static str,
+    sport_name: &'static str,
+    include_match: fn(&SourceMatch) -> bool,
+) -> AppResult<(Value, i64)> {
     let response = state
         .http_client
         .get(source_url)
@@ -234,13 +329,26 @@ async fn super_league_matches_response(
         })
         .map(normalize_match)
         .collect();
+    let fetched_at_ms = now_ms();
 
-    Ok(json_response(json!({
-        "source": source_url,
-        "sport": sport_name,
-        "fetchedAt": now_ms(),
-        "matches": matches
-    })))
+    Ok((
+        json!({
+            "source": source_url,
+            "sport": sport_name,
+            "fetchedAt": fetched_at_ms,
+            "matches": matches
+        }),
+        fetched_at_ms,
+    ))
+}
+
+fn schedule_response(payload: Value, cache_status: &'static str) -> Response<Body> {
+    let mut response = json_response(payload);
+    response.headers_mut().insert(
+        "x-sports-schedule-cache",
+        HeaderValue::from_static(cache_status),
+    );
+    response
 }
 
 pub async fn football_stream_resolve_handler(
@@ -615,8 +723,11 @@ fn normalize_match(match_item: SourceMatch) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        SourceMatch, extract_source_matches, is_basketball_match, is_high_priority_football_match,
+        SPORTS_SCHEDULE_CACHE_TTL_MS, SPORTS_SCHEDULE_STALE_IF_ERROR_MS, SourceMatch,
+        SportsScheduleCache, extract_source_matches, is_basketball_match,
+        is_high_priority_football_match,
     };
+    use serde_json::json;
 
     #[test]
     fn extracts_embedded_matches_json() {
@@ -651,6 +762,35 @@ mod tests {
         assert_eq!(
             matches[0].channels[0].links,
             vec!["https://example.test/1".to_owned()]
+        );
+    }
+
+    #[test]
+    fn sports_schedule_cache_reuses_fresh_entries_and_expires_later() {
+        let cache = SportsScheduleCache::new();
+        cache.insert("football", json!({ "sport": "Football" }), 1_000);
+
+        assert_eq!(
+            cache
+                .fresh("football", 1_000 + SPORTS_SCHEDULE_CACHE_TTL_MS)
+                .unwrap()["sport"],
+            "Football"
+        );
+        assert!(
+            cache
+                .fresh("football", 1_000 + SPORTS_SCHEDULE_CACHE_TTL_MS + 1)
+                .is_none()
+        );
+        assert_eq!(
+            cache
+                .stale("football", 1_000 + SPORTS_SCHEDULE_STALE_IF_ERROR_MS)
+                .unwrap()["sport"],
+            "Football"
+        );
+        assert!(
+            cache
+                .stale("football", 1_000 + SPORTS_SCHEDULE_STALE_IF_ERROR_MS + 1)
+                .is_none()
         );
     }
 
