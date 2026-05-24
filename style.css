@@ -119,7 +119,7 @@
 
 .home-page .hero-poster,
 .home-page .hero-video,
-.home-page .hero-trailer-frame {
+.home-page .hero-preview-video {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -142,7 +142,7 @@
     transition: opacity 180ms ease;
 }
 
-.home-page .hero-trailer-stage {
+.home-page .hero-preview-stage {
     position: absolute;
     inset: 0;
     z-index: 1;
@@ -150,28 +150,26 @@
     pointer-events: none;
 }
 
-.home-page .hero-trailer-frame {
-    top: 50%;
-    left: 50%;
-    right: auto;
-    bottom: auto;
+.home-page .hero-preview-video {
     width: 100%;
-    height: 150%;
+    height: 100%;
     border: 0;
-    transform: translate(-50%, -50%) scale(1.58);
+    object-fit: cover;
+    object-position: center top;
+    transform: none;
     transition: opacity 180ms ease;
     pointer-events: none;
     opacity: 0;
 }
 
-.home-page .featured-hero.is-preview-active.is-preview-playing .hero-trailer-stage,
-.home-page .featured-hero.is-preview-active.is-preview-playing .hero-trailer-frame {
+.home-page .featured-hero.is-preview-active.is-preview-playing .hero-preview-stage,
+.home-page .featured-hero.is-preview-active.is-preview-playing .hero-preview-video {
     opacity: 1;
 }
 
-.home-page .featured-hero.is-preview-active:not(.is-preview-playing) .hero-trailer-stage,
-.home-page .featured-hero.is-preview-active:not(.is-preview-playing) .hero-trailer-frame,
-.home-page .featured-hero.is-preview-active:not(.is-preview-playing) .hero-trailer-shield {
+.home-page .featured-hero.is-preview-active:not(.is-preview-playing) .hero-preview-stage,
+.home-page .featured-hero.is-preview-active:not(.is-preview-playing) .hero-preview-video,
+.home-page .featured-hero.is-preview-active:not(.is-preview-playing) .hero-preview-shield {
     opacity: 0;
     pointer-events: none;
 }
@@ -180,7 +178,7 @@
     opacity: 1;
 }
 
-.home-page .hero-trailer-shield {
+.home-page .hero-preview-shield {
     display: none;
     position: absolute;
     inset: 0;
@@ -189,7 +187,7 @@
     cursor: default;
 }
 
-.home-page .featured-hero.is-preview-active.is-preview-playing .hero-trailer-shield {
+.home-page .featured-hero.is-preview-active.is-preview-playing .hero-preview-shield {
     display: block;
 }
 
@@ -197,7 +195,8 @@
     opacity: 0;
 }
 
-.home-page .hero-video:not([src]) {
+.home-page .hero-video:not([src]),
+.home-page .hero-preview-video:not([src]) {
     opacity: 0;
 }
 

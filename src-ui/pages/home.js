@@ -56,13 +56,7 @@ const SEARCH_RESULTS_LIMIT = 40;
 const STALE_HERO_PREVIEW_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
 const HERO_PREVIEW_ENTER_VISIBLE_RATIO = 0.3;
 const HERO_PREVIEW_LEAVE_VISIBLE_RATIO = 0.08;
-const YOUTUBE_PLAYER_STATE = {
-  ENDED: 0,
-  PLAYING: 1,
-  PAUSED: 2,
-  BUFFERING: 3,
-  CUED: 5,
-};
+const HERO_PREVIEW_MANIFEST_URL = "assets/hero-previews.json";
 const FEATURED_HERO_ROTATION_MS = 24 * 60 * 60 * 1000;
 const FEATURED_HERO_CAROUSEL_MS = 20000;
 const FEATURED_HERO_STORAGE_KEY = "netflix-featured-hero-v2";
@@ -394,7 +388,7 @@ function createDefaultFeaturedHero() {
     poster: "assets/images/thumbnail-top10-h.jpg",
     thumb: "assets/images/thumbnail-top10-h.jpg",
     src: "",
-    trailerKey: "",
+    previewSrc: "",
     callouts: ["Top global movies", "Popular now"],
     ready: false,
   };
@@ -510,6 +504,7 @@ function createFeaturedHeroFromTmdbItem(
   genreMap,
   imageBase = TMDB_IMAGE_BASE,
   localLibrary = null,
+  heroPreviewMap = null,
 ) {
   const tmdbId = String(item?.id || "").trim();
   const title = normalizeHeroTitle(item?.title || item?.name || "Popular Movie");
@@ -528,6 +523,9 @@ function createFeaturedHeroFromTmdbItem(
     .slice(0, 2);
   const localMovie = findLocalMovieForTmdbId(localLibrary, tmdbId);
   const localSrc = String(localMovie?.src || "").trim();
+  const previewEntry =
+    heroPreviewMap instanceof Map ? heroPreviewMap.get(tmdbId) : null;
+  const previewSrc = String(previewEntry?.src || "").trim();
   return {
     title,
     tmdbId,
@@ -541,7 +539,7 @@ function createFeaturedHeroFromTmdbItem(
     poster,
     thumb: poster,
     src: localSrc,
-    trailerKey: "",
+    previewSrc,
     callouts: [
       localSrc ? "Available locally" : "Top global movie",
       genreNames.length ? genreNames.join(" / ") : "Popular now",
@@ -616,7 +614,7 @@ function createFeaturedHeroFromLocalEntry(entry) {
     episodeIndex,
     seasonNumber: isSeries ? Number(firstEpisode?.seasonNumber || 1) : 0,
     episodeNumber: isSeries ? Number(firstEpisode?.episodeNumber || episodeIndex + 1) : 0,
-    trailerKey: "",
+    previewSrc: "",
     callouts: [
       "Available locally",
       isSeries ? (isCourse ? "Course" : "Series") : "Movie",
@@ -625,16 +623,26 @@ function createFeaturedHeroFromLocalEntry(entry) {
   };
 }
 
-function buildFeaturedHeroCandidates(payload, localLibrary = null) {
+function buildFeaturedHeroCandidates(
+  payload,
+  localLibrary = null,
+  heroPreviewMap = null,
+) {
   const genreMap = new Map();
   (Array.isArray(payload?.genres) ? payload.genres : []).forEach((genre) => {
     genreMap.set(genre.id, genre.name);
   });
   const imageBase = payload?.imageBase || TMDB_IMAGE_BASE;
   const seenIds = new Set();
-  return (Array.isArray(payload?.results) ? payload.results : [])
+  const candidates = (Array.isArray(payload?.results) ? payload.results : [])
     .map((item) =>
-      createFeaturedHeroFromTmdbItem(item, genreMap, imageBase, localLibrary),
+      createFeaturedHeroFromTmdbItem(
+        item,
+        genreMap,
+        imageBase,
+        localLibrary,
+        heroPreviewMap,
+      ),
     )
     .filter((item) => {
       if (!item.tmdbId || seenIds.has(item.tmdbId)) {
@@ -649,6 +657,8 @@ function buildFeaturedHeroCandidates(payload, localLibrary = null) {
       return Boolean(item.poster && item.title);
     })
     .slice(0, FEATURED_HERO_CANDIDATE_LIMIT);
+  const previewCandidates = candidates.filter((item) => item.previewSrc);
+  return previewCandidates.length ? previewCandidates : candidates;
 }
 
 function readFeaturedHeroRotation() {
@@ -703,61 +713,48 @@ function selectFeaturedHeroCandidate(candidates) {
   return selected;
 }
 
-function selectFeaturedHeroTrailerKey(details) {
-  const videos = Array.isArray(details?.videos?.results)
-    ? details.videos.results
-    : [];
-  const youtubeVideos = videos.filter((video) => {
-    const site = String(video?.site || "").trim().toLowerCase();
-    const key = String(video?.key || "").trim();
-    return site === "youtube" && key;
-  });
-  if (!youtubeVideos.length) {
+function normalizeHeroPreviewPath(value) {
+  const path = String(value || "").trim();
+  if (!path || /^https?:\/\//i.test(path) || path.startsWith("//")) {
     return "";
   }
-  const scoreVideo = (video) => {
-    const type = String(video?.type || "").trim().toLowerCase();
-    const name = String(video?.name || "").trim().toLowerCase();
-    let score = 0;
-    if (type === "trailer") score += 50;
-    if (video?.official) score += 20;
-    if (name.includes("official trailer")) score += 15;
-    if (name.includes("trailer")) score += 8;
-    if (type === "teaser") score += 4;
-    return score;
-  };
-  return String(
-    [...youtubeVideos].sort((left, right) => scoreVideo(right) - scoreVideo(left))[0]
-      ?.key || "",
-  ).trim();
+  const normalized = path.replace(/^\/+/, "");
+  return normalized.startsWith("assets/videos/hero-previews/")
+    ? normalized
+    : "";
 }
 
-function buildYoutubeTrailerEmbedUrl(key, muted) {
-  const trailerKey = String(key || "").trim();
-  if (!trailerKey) {
-    return "";
-  }
-  const params = new URLSearchParams({
-    autoplay: "0",
-    enablejsapi: "1",
-    mute: muted ? "1" : "0",
-    controls: "0",
-    disablekb: "1",
-    fs: "0",
-    iv_load_policy: "3",
-    cc_load_policy: "0",
-    loop: "1",
-    modestbranding: "1",
-    playsinline: "1",
-    rel: "0",
-    playlist: trailerKey,
+function normalizeHeroPreviewManifest(payload) {
+  const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+  const previewMap = new Map();
+  entries.forEach((entry) => {
+    const tmdbId = String(entry?.tmdbId || "").trim();
+    const src = normalizeHeroPreviewPath(entry?.src);
+    if (!tmdbId || !src) {
+      return;
+    }
+    previewMap.set(tmdbId, {
+      src,
+      title: String(entry?.title || "").trim(),
+      updatedAt: String(entry?.updatedAt || payload?.updatedAt || "").trim(),
+    });
   });
+  return previewMap;
+}
+
+async function fetchHeroPreviewManifest() {
   try {
-    params.set("origin", window.location.origin);
-  } catch {
-    // Ignore origin when unavailable.
+    const response = await fetch(HERO_PREVIEW_MANIFEST_URL, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return new Map();
+    }
+    return normalizeHeroPreviewManifest(await response.json());
+  } catch (error) {
+    console.warn("Failed to load hero preview manifest:", error);
+    return new Map();
   }
-  return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(trailerKey)}?${params.toString()}`;
 }
 
 function createSearchResultDetails(item, imageBase = TMDB_IMAGE_BASE) {
@@ -1036,12 +1033,10 @@ function setTmdbDetailsCache(key, value) {
 // ---------------------------------------------------------------------------
 export default function HomePage() {
   // ---- Refs ----
-  let heroPreviewFrameRef;
+  let heroPreviewVideoRef;
   let heroSectionRef;
-  let heroPreviewHovering = false;
   let heroPreviewInViewport = true;
   let heroPreviewPlayRequestId = 0;
-  let heroPreviewRestoreUnmute = false;
   let pageRootRef;
   let continueCardsRef;
   let cardsContainerRef;
@@ -1057,7 +1052,7 @@ export default function HomePage() {
   let searchContextMenuRef;
 
   // ---- Signals ----
-  const [isMuted, setIsMuted] = createSignal(false);
+  const [isMuted, setIsMuted] = createSignal(true);
   const [isSearchModeActive, setIsSearchModeActive] = createSignal(false);
   const [searchStatusText, setSearchStatusText] = createSignal("Start typing to search TMDB titles.");
   const [searchStatusTone, setSearchStatusTone] = createSignal("");
@@ -2944,7 +2939,7 @@ export default function HomePage() {
     }
     const currentTmdbId = String(featuredHero()?.tmdbId || "").trim();
     if (currentTmdbId && currentTmdbId !== selected.tmdbId) {
-      stopHeroPreview({ preserveHover: true });
+      stopHeroPreview();
     }
     setFeaturedHeroReady(true);
     setFeaturedHero(selected);
@@ -2995,8 +2990,16 @@ export default function HomePage() {
     startHeroCarouselTimer();
   }
 
-  function applyFeaturedHeroFromPopularPayload(payload, localLibrary = null) {
-    const candidates = buildFeaturedHeroCandidates(payload, localLibrary);
+  function applyFeaturedHeroFromPopularPayload(
+    payload,
+    localLibrary = null,
+    heroPreviewMap = null,
+  ) {
+    const candidates = buildFeaturedHeroCandidates(
+      payload,
+      localLibrary,
+      heroPreviewMap,
+    );
     setFeaturedHeroCandidates(candidates);
     const selected = selectFeaturedHeroCandidate(candidates);
     const selectedIndex = candidates.findIndex(
@@ -3040,7 +3043,6 @@ export default function HomePage() {
       const poster = backdropPath
         ? `${TMDB_IMAGE_BASE}/original${backdropPath}`
         : hero.poster;
-      const trailerKey = selectFeaturedHeroTrailerKey(details);
       setFeaturedHero((current) => {
         if (String(current?.tmdbId || "").trim() !== tmdbId) {
           return current;
@@ -3061,7 +3063,6 @@ export default function HomePage() {
             "No description available.",
           poster,
           thumb: poster || current.thumb,
-          trailerKey,
           callouts: [
             current.src ? "Available locally" : "Top global movie",
             genreNames.length ? genreNames.join(" / ") : current.callouts?.[1],
@@ -3103,6 +3104,10 @@ export default function HomePage() {
       (value) => ({ status: "fulfilled", value }),
       (reason) => ({ status: "rejected", reason }),
     );
+    const previewRequest = fetchHeroPreviewManifest().then(
+      (value) => ({ status: "fulfilled", value }),
+      (reason) => ({ status: "rejected", reason }),
+    );
 
     const libraryResult = await libraryRequest;
     let hasLocalFallback = false;
@@ -3120,7 +3125,10 @@ export default function HomePage() {
       applyLocalLibraryFallbackHome(libraryResult.value);
     }
 
-    const popularResult = await popularRequest;
+    const [popularResult, previewResult] = await Promise.all([
+      popularRequest,
+      previewRequest,
+    ]);
 
     if (popularResult.status !== "fulfilled") {
       const logPopularFailure = hasLocalFallback ? console.warn : console.error;
@@ -3149,6 +3157,7 @@ export default function HomePage() {
     applyFeaturedHeroFromPopularPayload(
       popularResult.value,
       libraryResult.status === "fulfilled" ? libraryResult.value : null,
+      previewResult.status === "fulfilled" ? previewResult.value : null,
     );
     setPopularRowTitle(getPopularRowTitle(popularResult.value));
     setPopularRowVisible(cardsToRender.length > 0);
@@ -3547,133 +3556,14 @@ export default function HomePage() {
   }
 
   // ---- Hero ----
-  function getHeroPreviewIframe() {
-    return heroPreviewFrameRef instanceof HTMLIFrameElement
-      ? heroPreviewFrameRef
+  function getHeroPreviewVideo() {
+    return heroPreviewVideoRef instanceof HTMLVideoElement
+      ? heroPreviewVideoRef
       : null;
   }
 
-  function getHeroTrailerEmbedUrl() {
-    return buildYoutubeTrailerEmbedUrl(
-      featuredHero()?.trailerKey,
-      isMuted(),
-    );
-  }
-
-  function postYoutubePlayerCommand(func, args = []) {
-    const iframe = getHeroPreviewIframe();
-    const src = iframe?.getAttribute("src") || "";
-    if (!iframe || !src.includes("youtube")) {
-      return false;
-    }
-    iframe.contentWindow?.postMessage(
-      JSON.stringify({ event: "command", func, args }),
-      "*",
-    );
-    return true;
-  }
-
-  function notifyHeroPreviewListening() {
-    const iframe = getHeroPreviewIframe();
-    if (!iframe?.contentWindow) {
-      return;
-    }
-    iframe.contentWindow.postMessage(
-      JSON.stringify({ event: "listening", id: window.location.href }),
-      "*",
-    );
-  }
-
-  function handleHeroPreviewMessage(event) {
-    const iframe = getHeroPreviewIframe();
-    if (!iframe || event.source !== iframe.contentWindow) {
-      return;
-    }
-    if (!String(event.origin || "").includes("youtube")) {
-      return;
-    }
-
-    let payload = event.data;
-    if (typeof payload === "string") {
-      try {
-        payload = JSON.parse(payload);
-      } catch {
-        return;
-      }
-    }
-    if (!payload || typeof payload !== "object") {
-      return;
-    }
-
-    if (payload.event === "onReady") {
-      notifyHeroPreviewListening();
-      return;
-    }
-
-    if (payload.event !== "onStateChange") {
-      return;
-    }
-
-    const state = Number(payload.info);
-    if (state === YOUTUBE_PLAYER_STATE.PLAYING) {
-      setHeroPreviewPlaying(true);
-      return;
-    }
-    if (
-      state !== YOUTUBE_PLAYER_STATE.PAUSED &&
-      state !== YOUTUBE_PLAYER_STATE.ENDED
-    ) {
-      return;
-    }
-
-    setHeroPreviewPlaying(false);
-    if (
-      heroPreviewActive() &&
-      heroPreviewInViewport &&
-      canPlayHeroPreview()
-    ) {
-      postYoutubePlayerCommand("playVideo");
-    }
-  }
-
-  function ensureHeroPreviewIframeLoaded() {
-    const iframe = getHeroPreviewIframe();
-    if (!iframe || !canPreloadHeroPreview()) {
-      return false;
-    }
-    const trailerUrl = getHeroTrailerEmbedUrl();
-    if (!trailerUrl) {
-      iframe.removeAttribute("src");
-      setHeroPreviewActive(false);
-      return false;
-    }
-    if (iframe.getAttribute("src") !== trailerUrl) {
-      iframe.setAttribute("src", trailerUrl);
-      iframe.addEventListener(
-        "load",
-        () => {
-          notifyHeroPreviewListening();
-        },
-        { once: true },
-      );
-    }
-    return true;
-  }
-
-  function applyHeroPreviewMutedState(nextMuted) {
-    setIsMuted(nextMuted);
-    const iframe = getHeroPreviewIframe();
-    if (!iframe?.getAttribute("src")) {
-      return;
-    }
-    const trailerUrl = getHeroTrailerEmbedUrl();
-    const wasPlaying = heroPreviewActive();
-    if (iframe.getAttribute("src") !== trailerUrl) {
-      iframe.setAttribute("src", trailerUrl);
-    }
-    if (wasPlaying) {
-      playHeroPreview();
-    }
+  function getHeroPreviewSrc() {
+    return normalizeHeroPreviewPath(featuredHero()?.previewSrc);
   }
 
   function canPlayHeroPreview() {
@@ -3681,7 +3571,8 @@ export default function HomePage() {
       heroPreviewInViewport &&
       activeView() === "home" &&
       !showSearchExperience() &&
-      !document.hidden
+      !document.hidden &&
+      Boolean(getHeroPreviewSrc())
     );
   }
 
@@ -3690,12 +3581,42 @@ export default function HomePage() {
       heroPreviewInViewport &&
       activeView() === "home" &&
       !showSearchExperience() &&
-      !document.hidden
+      !document.hidden &&
+      Boolean(getHeroPreviewSrc())
     );
   }
 
+  function ensureHeroPreviewVideoLoaded() {
+    const video = getHeroPreviewVideo();
+    const previewSrc = getHeroPreviewSrc();
+    if (!video || !previewSrc || !canPreloadHeroPreview()) {
+      return false;
+    }
+    video.loop = true;
+    video.playsInline = true;
+    video.muted = isMuted();
+    if (video.getAttribute("src") !== previewSrc) {
+      video.pause();
+      video.setAttribute("src", previewSrc);
+      video.load();
+    }
+    return true;
+  }
+
+  function applyHeroPreviewMutedState(nextMuted) {
+    setIsMuted(nextMuted);
+    const video = getHeroPreviewVideo();
+    if (!video) {
+      return;
+    }
+    video.muted = nextMuted;
+    if (heroPreviewActive() && canPlayHeroPreview()) {
+      void resumeHeroPreviewPlayback();
+    }
+  }
+
   function ensureHeroPreviewPreloadSource() {
-    if (!ensureHeroPreviewIframeLoaded()) {
+    if (!ensureHeroPreviewVideoLoaded()) {
       return false;
     }
     setHeroPreviewActive(false);
@@ -3704,18 +3625,12 @@ export default function HomePage() {
 
   function suspendHeroPreviewForViewport() {
     heroPreviewPlayRequestId += 1;
-    if (!isMuted()) {
-      postYoutubePlayerCommand("mute");
-      heroPreviewRestoreUnmute = true;
-    }
+    getHeroPreviewVideo()?.pause();
+    setHeroPreviewPlaying(false);
   }
 
   function resumeHeroPreviewAfterViewport() {
-    if (heroPreviewRestoreUnmute && !isMuted()) {
-      postYoutubePlayerCommand("unMute");
-    }
-    heroPreviewRestoreUnmute = false;
-    if (heroPreviewActive() && getHeroPreviewIframe()?.getAttribute("src")) {
+    if (heroPreviewActive() && getHeroPreviewVideo()?.getAttribute("src")) {
       resumeHeroPreviewPlayback();
       return;
     }
@@ -3729,50 +3644,63 @@ export default function HomePage() {
   }
 
   function resumeHeroPreviewPlayback() {
-    const iframe = getHeroPreviewIframe();
-    const trailerUrl = getHeroTrailerEmbedUrl();
-    if (!iframe || !trailerUrl || !canPlayHeroPreview()) {
+    const video = getHeroPreviewVideo();
+    if (!video || !canPlayHeroPreview()) {
       return false;
     }
 
     heroPreviewPlayRequestId += 1;
     const requestId = heroPreviewPlayRequestId;
-    const startPlayback = () => {
-      if (requestId !== heroPreviewPlayRequestId) {
-        return;
-      }
-      notifyHeroPreviewListening();
-      postYoutubePlayerCommand("playVideo");
-      setHeroPreviewPlaying(true);
-    };
-
-    const hadLoadedSrc =
-      Boolean(iframe.getAttribute("src")) && iframe.getAttribute("src") === trailerUrl;
-    if (!ensureHeroPreviewIframeLoaded()) {
+    if (!ensureHeroPreviewVideoLoaded()) {
       return false;
     }
-    if (hadLoadedSrc) {
-      startPlayback();
+
+    video.muted = isMuted();
+    const playPromise = video.play();
+    if (!playPromise || typeof playPromise.then !== "function") {
+      setHeroPreviewPlaying(true);
       return true;
     }
-    iframe.addEventListener("load", startPlayback, { once: true });
+
+    playPromise
+      .then(() => {
+        if (requestId === heroPreviewPlayRequestId) {
+          setHeroPreviewPlaying(true);
+        }
+      })
+      .catch(() => {
+        if (requestId !== heroPreviewPlayRequestId) {
+          return;
+        }
+        if (!video.muted) {
+          setIsMuted(true);
+          video.muted = true;
+          void video.play().then(() => {
+            if (requestId === heroPreviewPlayRequestId) {
+              setHeroPreviewPlaying(true);
+            }
+          }).catch(() => {
+            if (requestId === heroPreviewPlayRequestId) {
+              stopHeroPreview();
+            }
+          });
+          return;
+        }
+        stopHeroPreview();
+      });
     return true;
   }
 
-  function stopHeroPreview({ preserveHover = false } = {}) {
-    if (!preserveHover) {
-      heroPreviewHovering = false;
-    }
+  function stopHeroPreview() {
     heroPreviewPlayRequestId += 1;
-    const iframe = getHeroPreviewIframe();
-    if (!iframe) {
-      setHeroPreviewActive(false);
-      return;
+    const video = getHeroPreviewVideo();
+    if (video) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
     }
-    iframe.removeAttribute("src");
     setHeroPreviewActive(false);
     setHeroPreviewPlaying(false);
-    heroPreviewRestoreUnmute = false;
   }
 
   function updateHeroPreviewViewportState(entry) {
@@ -3792,7 +3720,7 @@ export default function HomePage() {
 
     heroPreviewInViewport = nextInViewport;
     if (!heroPreviewInViewport) {
-      if (heroPreviewActive() && getHeroPreviewIframe()?.getAttribute("src")) {
+      if (heroPreviewActive() && getHeroPreviewVideo()?.getAttribute("src")) {
         suspendHeroPreviewForViewport();
       }
       return;
@@ -3805,7 +3733,7 @@ export default function HomePage() {
       stopHeroPreview();
       return;
     }
-    if (!getHeroTrailerEmbedUrl()) {
+    if (!getHeroPreviewSrc()) {
       stopHeroPreview();
       return;
     }
@@ -3817,22 +3745,10 @@ export default function HomePage() {
   }
 
   function scheduleHeroPreviewPlayback() {
-    heroPreviewHovering = true;
     if (!canPlayHeroPreview()) {
       return;
     }
     playHeroPreview();
-  }
-
-  function startHeroPreviewOnLoad() {
-    heroPreviewHovering = true;
-    if (canPlayHeroPreview()) {
-      if (getHeroTrailerEmbedUrl()) {
-        playHeroPreview();
-      } else {
-        ensureHeroPreviewPreloadSource();
-      }
-    }
   }
 
   function handleMuteToggle() {
@@ -4214,7 +4130,6 @@ export default function HomePage() {
     }
 
     let heroVisibilityObserver = null;
-    window.addEventListener("message", handleHeroPreviewMessage);
 
     if ("IntersectionObserver" in window && heroSectionRef) {
       heroVisibilityObserver = new IntersectionObserver(
@@ -4365,7 +4280,6 @@ export default function HomePage() {
       cleanupHorizontalRailScrollers();
       stopHeroCarouselTimer();
       stopHeroPreview();
-      window.removeEventListener("message", handleHeroPreviewMessage);
       heroVisibilityObserver?.disconnect();
       document.removeEventListener("keydown", handleGlobalKeydown);
       document.removeEventListener("pointerdown", handleGlobalPointerdownContextMenu);
@@ -4589,19 +4503,26 @@ export default function HomePage() {
           decoding="async"
           loading="eager"
         />
-        <div class="hero-trailer-stage" aria-hidden="true">
-          <iframe
+        <div class="hero-preview-stage" aria-hidden="true">
+          <video
             id="heroPreview"
-            ref=${(el) => (heroPreviewFrameRef = el)}
-            class="hero-trailer-frame"
-            title=${() => `${featuredHero().title || "Featured movie"} trailer preview`}
-            allow="autoplay; encrypted-media; picture-in-picture"
-            referrerpolicy="strict-origin-when-cross-origin"
+            ref=${(el) => (heroPreviewVideoRef = el)}
+            class="hero-preview-video"
+            title=${() => `${featuredHero().title || "Featured movie"} preview`}
+            preload="metadata"
+            loop
+            muted=${() => isMuted()}
+            playsinline
+            disablepictureinpicture
             tabindex="-1"
             aria-hidden="true"
-          ></iframe>
+            onPlay=${() => setHeroPreviewPlaying(true)}
+            onPause=${() => setHeroPreviewPlaying(false)}
+            onEnded=${() => setHeroPreviewPlaying(false)}
+            onError=${() => stopHeroPreview()}
+          ></video>
         </div>
-        <div class="hero-trailer-shield" aria-hidden="true"></div>
+        <div class="hero-preview-shield" aria-hidden="true"></div>
 
         <div class="hero-shade" aria-hidden="true"></div>
 
@@ -4611,8 +4532,8 @@ export default function HomePage() {
               id="muteToggle"
               class=${() => `control-btn${isMuted() ? " muted" : ""}`}
               type="button"
-              aria-label=${() => isMuted() ? "Unmute trailer" : "Mute trailer"}
-              disabled=${() => !featuredHero().trailerKey}
+              aria-label=${() => isMuted() ? "Unmute preview" : "Mute preview"}
+              disabled=${() => !featuredHero().previewSrc}
               onClick=${handleMuteToggle}
             >
               <svg class="icon-on" viewBox="0 0 24 24" aria-hidden="true">

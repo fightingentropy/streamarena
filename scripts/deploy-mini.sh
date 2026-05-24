@@ -71,14 +71,18 @@ fi
 [[ -d dist ]] || { echo "Missing dist/. Run without --skip-build first." >&2; exit 1; }
 [[ -x target/release/netflix-rust-backend ]] || { echo "Missing target/release/netflix-rust-backend. Run without --skip-build first." >&2; exit 1; }
 
-"${SSH_BASE[@]}" "$MINI_HOST" "mkdir -p '$REMOTE_APP/dist' '$REMOTE_APP/bin' '$REMOTE_APP/assets/images' '$REMOTE_APP/assets/icons' '$REMOTE_APP/assets/videos'"
+"${SSH_BASE[@]}" "$MINI_HOST" "mkdir -p '$REMOTE_APP/dist' '$REMOTE_APP/bin' '$REMOTE_APP/assets/images' '$REMOTE_APP/assets/icons' '$REMOTE_APP/assets/videos' '$REMOTE_APP/assets/videos/hero-previews'"
 
 rsync -a --delete -e "$RSYNC_SSH" dist/ "$MINI_HOST:$REMOTE_APP/dist/"
 
 rsync -a -e "$RSYNC_SSH" target/release/netflix-rust-backend "$MINI_HOST:$REMOTE_APP/bin/netflix-rust-backend.new"
 "${SSH_BASE[@]}" "$MINI_HOST" "chmod 755 '$REMOTE_APP/bin/netflix-rust-backend.new' && mv '$REMOTE_APP/bin/netflix-rust-backend.new' '$REMOTE_APP/bin/netflix-rust-backend'"
+rsync -a -e "$RSYNC_SSH" scripts/refresh-hero-previews.py "$MINI_HOST:$REMOTE_APP/bin/netflix-refresh-hero-previews.py.new"
+"${SSH_BASE[@]}" "$MINI_HOST" "chmod 755 '$REMOTE_APP/bin/netflix-refresh-hero-previews.py.new' && mv '$REMOTE_APP/bin/netflix-refresh-hero-previews.py.new' '$REMOTE_APP/bin/netflix-refresh-hero-previews.py'"
 
 rsync -a -e "$RSYNC_SSH" assets/library.json "$MINI_HOST:$REMOTE_APP/assets/library.json"
+rsync -a -e "$RSYNC_SSH" assets/hero-previews.json "$MINI_HOST:$REMOTE_APP/assets/hero-previews.json.seed"
+"${SSH_BASE[@]}" "$MINI_HOST" "if [[ ! -f '$REMOTE_APP/assets/hero-previews.json' ]]; then mv '$REMOTE_APP/assets/hero-previews.json.seed' '$REMOTE_APP/assets/hero-previews.json'; else rm -f '$REMOTE_APP/assets/hero-previews.json.seed'; fi"
 rsync -a --delete -e "$RSYNC_SSH" assets/images/ "$MINI_HOST:$REMOTE_APP/assets/images/"
 rsync -a --delete -e "$RSYNC_SSH" assets/icons/ "$MINI_HOST:$REMOTE_APP/assets/icons/"
 
@@ -102,4 +106,5 @@ if [[ "$RESTART" -eq 1 ]]; then
   sleep 4
 fi
 
+"$ROOT_DIR/scripts/install-mini-agents.sh"
 "$ROOT_DIR/scripts/check-mini.sh"
