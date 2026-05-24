@@ -1977,7 +1977,7 @@ export default function HomePage() {
   // ---- My List ----
   function myListIconMarkup(isActive) {
     return isActive
-      ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg>`
+      ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 9.2 16.7 19 7" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>`
       : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke-linecap="round" /></svg>`;
   }
 
@@ -1988,8 +1988,9 @@ export default function HomePage() {
     button.classList.toggle("is-active", Boolean(isActive));
     button.setAttribute(
       "aria-label",
-      isActive ? "Remove from my list" : "Add to my list",
+      isActive ? "Remove from My List" : "Add to My List",
     );
+    button.dataset.tooltip = isActive ? "Remove from My List" : "Add to My List";
     button.setAttribute("aria-pressed", isActive ? "true" : "false");
     button.innerHTML = myListIconMarkup(isActive);
   }
@@ -2064,7 +2065,7 @@ export default function HomePage() {
               <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
               </button>
-              <button class="hover-round hover-my-list" type="button" aria-label="Add to my list" aria-pressed="false">
+              <button class="hover-round hover-my-list" type="button" aria-label="Add to My List" aria-pressed="false" data-tooltip="Add to My List">
                 ${myListIconMarkup(false)}
               </button>
             </div>
@@ -2459,10 +2460,10 @@ export default function HomePage() {
               <button class="hover-round hover-play" type="button" aria-label="Resume ${safeTitle}">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
               </button>
-              <button class="hover-round hover-my-list" type="button" aria-label="Add to my list" aria-pressed="false">
+              <button class="hover-round hover-my-list" type="button" aria-label="Add to My List" aria-pressed="false" data-tooltip="Add to My List">
                 ${myListIconMarkup(false)}
               </button>
-              <button class="hover-round hover-remove" type="button" aria-label="Remove ${safeTitle} from continue watching">
+              <button class="hover-round hover-remove" type="button" aria-label="Remove ${safeTitle} from row" data-tooltip="Remove from row">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg>
               </button>
               ${editButtonMarkup}
@@ -2565,7 +2566,7 @@ export default function HomePage() {
               <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
               </button>
-              <button class="hover-round hover-my-list" type="button" aria-label="Add to my list" aria-pressed="false">
+              <button class="hover-round hover-my-list" type="button" aria-label="Add to My List" aria-pressed="false" data-tooltip="Add to My List">
                 ${myListIconMarkup(false)}
               </button>
             </div>
@@ -2671,7 +2672,7 @@ export default function HomePage() {
               <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
               </button>
-              <button class="hover-round hover-my-list" type="button" aria-label="Add to my list" aria-pressed="false">
+              <button class="hover-round hover-my-list" type="button" aria-label="Add to My List" aria-pressed="false" data-tooltip="Add to My List">
                 ${myListIconMarkup(false)}
               </button>
               ${editButtonMarkup}
@@ -2819,7 +2820,7 @@ export default function HomePage() {
               <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
               </button>
-              <button class="hover-round hover-my-list" type="button" aria-label="Add to my list" aria-pressed="false">
+              <button class="hover-round hover-my-list" type="button" aria-label="Add to My List" aria-pressed="false" data-tooltip="Add to My List">
                 ${myListIconMarkup(false)}
               </button>
               ${editButtonMarkup}
@@ -4793,7 +4794,7 @@ export default function HomePage() {
           class="continue-empty"
           style=${() => myListEmptyVisible() ? "" : "display:none"}
         >
-          Add titles using the check icon.
+          Add titles using the plus icon.
         </p>
       </div>
     </section>
@@ -4900,14 +4901,16 @@ export default function HomePage() {
                 id="detailsMyList"
                 class=${() => `details-round${detailsMyListActive() ? " is-active" : ""}`}
                 type="button"
-                aria-label=${() => detailsMyListActive() ? "Remove from my list" : "Add to my list"}
+                aria-label=${() => detailsMyListActive() ? "Remove from My List" : "Add to My List"}
+                aria-pressed=${() => detailsMyListActive() ? "true" : "false"}
                 onClick=${handleDetailsMyList}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path
-                    d=${() => detailsMyListActive() ? "m6 6 12 12M18 6 6 18" : "M12 5v14M5 12h14"}
+                    d=${() => detailsMyListActive() ? "M5 12.5 9.2 16.7 19 7" : "M12 5v14M5 12h14"}
                     fill="none"
                     stroke-linecap="round"
+                    stroke-linejoin="round"
                   ></path>
                 </svg>
               </button>
