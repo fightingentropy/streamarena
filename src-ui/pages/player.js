@@ -43,10 +43,8 @@ import {
   shouldShowLiveStreamControls as shouldShowLiveStreamControlsForState,
   syncLiveStreamControls as syncLiveStreamControlsDom,
 } from "../player/live-streams.js";
-import {
-  isHlsPlaybackSource,
-  shouldUseHlsJsForPlayback,
-} from "../player/hls-playback.js";
+import { isHlsPlaybackSource, shouldUseHlsJsForPlayback } from "../player/hls-playback.js";
+import { normalizeResumeStartSeconds, withRemuxResumeStart } from "../player/resume-start.js";
 import {
   attachFullscreenControl,
   isFullscreenActive,
@@ -963,9 +961,7 @@ let lastPersistedResumeTime = 0;
 let lastPersistedResumeAt = 0;
 let resumeFlushIntervalId = 0;
 
-function emptyRememberedTmdbSourceState() {
-  return { sourceHash: "", sessionKey: "", resolverProvider: "", sourceInput: "", filename: "" };
-}
+function emptyRememberedTmdbSourceState() { return { sourceHash: "", sessionKey: "", resolverProvider: "", sourceInput: "", filename: "" }; }
 
 function getRememberedContinueWatchingSourceState() {
   const normalizedSource = String(sourceIdentity || "").trim();
@@ -1000,10 +996,8 @@ function applyRememberedTmdbSourcePin() {
     if (remembered.sourceHash === selectedSourceHash) {
       currentTmdbPlaybackSessionKey =
         currentTmdbPlaybackSessionKey || remembered.sessionKey;
-      currentTmdbResolverProvider =
-        currentTmdbResolverProvider || remembered.resolverProvider;
-      currentTmdbResolvedFilename =
-        currentTmdbResolvedFilename || remembered.filename;
+      currentTmdbResolverProvider = currentTmdbResolverProvider || remembered.resolverProvider;
+      currentTmdbResolvedFilename = currentTmdbResolvedFilename || remembered.filename;
       activeTrackSourceInput = activeTrackSourceInput || remembered.sourceInput;
     }
   }
@@ -1239,6 +1233,8 @@ function removeContinueWatchingEntry() {
 function hasInitialResumeTarget() {
   return Number.isFinite(resumeTime) && resumeTime > 1;
 }
+
+function getInitialPlaybackStartSeconds() { return hasInitialResumeTarget() ? normalizeResumeStartSeconds(resumeTime) : 0; }
 
 function clearInitialResumeRetry() {
   if (initialResumeRetryTimeout) {
@@ -3289,12 +3285,14 @@ function getEffectiveCurrentTime() {
   return Number(video.currentTime) || 0;
 }
 
-function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
+function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 0 } = {}) {
   if (!nextSource) {
     return;
   }
+  const requestedStartSeconds = normalizeResumeStartSeconds(startSeconds);
+  const sourceWithStart = withRemuxResumeStart(nextSource, requestedStartSeconds, window.location.origin);
   const sourceWithAudioSync = withPreferredAudioSyncForRemuxSource(
-    nextSource,
+    sourceWithStart,
     preferredAudioSyncMs,
   );
   lastRequestedPlaybackSource = sourceWithAudioSync;
@@ -3355,6 +3353,7 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
 
   if (isHlsSource) {
     const hlsMeta = parseHlsMasterSource(sourceWithAudioSync);
+    const hlsStartPosition = hlsMeta?.input && requestedStartSeconds > 0 ? requestedStartSeconds : -1;
 
     const handleHlsPlaybackFailure = (message) => {
       destroyActiveHlsController();
@@ -3415,6 +3414,8 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
           const hls = new HlsConstructor({
             backBufferLength: 90,
             maxBufferLength: 60,
+            autoStartLoad: hlsStartPosition < 0,
+            startPosition: hlsStartPosition,
           });
           let hlsRecoveryAttempts = 0;
           activeHlsController = hls;
@@ -3459,6 +3460,9 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
           });
           hls.on(HlsConstructor.Events.MANIFEST_PARSED, () => {
             if (activeHlsController === hls) {
+              if (hlsStartPosition >= 0) {
+                hls.startLoad(hlsStartPosition);
+              }
               void tryPlay();
             }
           });
@@ -3476,7 +3480,7 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
     }
 
     if (hlsMeta?.input) {
-      const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
+      const resumeAt = hlsStartPosition >= 0 ? hlsStartPosition : Math.max(0, Math.floor(getEffectiveCurrentTime()));
       const remuxFallback = buildSoftwareDecodeUrl(
         hlsMeta.input,
         resumeAt,
@@ -3805,7 +3809,7 @@ async function resolveTmdbSourcesAndPlay({
   void queueGallerySaveIfRequested(resolved);
   const preferredSource =
     tmdbSourceQueue[0] || preferredBrowserSource || nativePreferredSource;
-  setVideoSource(preferredSource);
+  setVideoSource(preferredSource, { startSeconds: getInitialPlaybackStartSeconds() });
   applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
   syncAudioState();
   hideResolver();
@@ -7968,7 +7972,7 @@ async function initPlaybackSource() {
           remuxSubtitleStreamIndex,
         )
       : src;
-    setVideoSource(nextSource);
+    setVideoSource(nextSource, { startSeconds: getInitialPlaybackStartSeconds() });
     applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
     await tryPlay();
     cleanUrlIfNeeded();
@@ -8001,7 +8005,7 @@ async function initPlaybackSource() {
       );
       return;
     }
-    setVideoSource(src);
+    setVideoSource(src, { startSeconds: getInitialPlaybackStartSeconds() });
     hideResolver();
     await tryPlay();
     return;
