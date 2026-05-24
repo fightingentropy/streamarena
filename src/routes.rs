@@ -1021,6 +1021,10 @@ pub async fn resolve_movie_handler(
                 .map(String::as_str)
                 .unwrap_or_default(),
             params
+                .get("sessionKey")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            params
                 .get("minSeeders")
                 .map(String::as_str)
                 .unwrap_or_default(),
@@ -1097,6 +1101,10 @@ pub async fn resolve_tv_handler(
                 .unwrap_or_default(),
             params
                 .get("sourceHash")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            params
+                .get("sessionKey")
                 .map(String::as_str)
                 .unwrap_or_default(),
             params

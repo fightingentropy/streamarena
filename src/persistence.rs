@@ -1544,7 +1544,9 @@ impl Db {
             let rows = {
                 let mut stmt = connection.prepare(
                     "SELECT source_identity, title, episode, src, tmdb_id, media_type,
-                            series_id, episode_index, year, thumb, resume_seconds, updated_at
+                            series_id, episode_index, year, thumb,
+                            source_hash, session_key, resolver_provider, source_input, filename,
+                            resume_seconds, updated_at
                      FROM user_continue_watching WHERE user_id = ?
                      ORDER BY updated_at DESC",
                 )?;
@@ -1560,8 +1562,13 @@ impl Db {
                         "episodeIndex": row.get::<_, i64>(7)?,
                         "year": row.get::<_, String>(8)?,
                         "thumb": row.get::<_, String>(9)?,
-                        "resumeSeconds": row.get::<_, f64>(10)?,
-                        "updatedAt": row.get::<_, i64>(11)?,
+                        "sourceHash": row.get::<_, String>(10)?,
+                        "sessionKey": row.get::<_, String>(11)?,
+                        "resolverProvider": row.get::<_, String>(12)?,
+                        "sourceInput": row.get::<_, String>(13)?,
+                        "filename": row.get::<_, String>(14)?,
+                        "resumeSeconds": row.get::<_, f64>(15)?,
+                        "updatedAt": row.get::<_, i64>(16)?,
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()?
@@ -1633,6 +1640,36 @@ impl Db {
                 .get("resumeSeconds")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0);
+            let source_hash = entry
+                .get("sourceHash")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            let session_key = entry
+                .get("sessionKey")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            let resolver_provider = entry
+                .get("resolverProvider")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            let source_input = entry
+                .get("sourceInput")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            let filename = entry
+                .get("filename")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
             let normalized_series_id = series_id.trim().to_ascii_lowercase();
             let normalized_media_type = media_type.trim().to_ascii_lowercase();
             let normalized_tmdb_id = tmdb_id.trim().to_owned();
@@ -1702,8 +1739,9 @@ impl Db {
             connection.execute(
                 "INSERT INTO user_continue_watching
                    (user_id, source_identity, title, episode, src, tmdb_id, media_type,
-                    series_id, episode_index, year, thumb, resume_seconds, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    series_id, episode_index, year, thumb, source_hash, session_key,
+                    resolver_provider, source_input, filename, resume_seconds, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(user_id, source_identity) DO UPDATE SET
                    title = excluded.title,
                    episode = excluded.episode,
@@ -1714,6 +1752,11 @@ impl Db {
                    episode_index = excluded.episode_index,
                    year = excluded.year,
                    thumb = excluded.thumb,
+                   source_hash = excluded.source_hash,
+                   session_key = excluded.session_key,
+                   resolver_provider = excluded.resolver_provider,
+                   source_input = excluded.source_input,
+                   filename = excluded.filename,
                    resume_seconds = excluded.resume_seconds,
                    updated_at = excluded.updated_at",
                 params![
@@ -1728,6 +1771,11 @@ impl Db {
                     episode_index,
                     year,
                     thumb,
+                    source_hash,
+                    session_key,
+                    resolver_provider,
+                    source_input,
+                    filename,
                     resume_seconds,
                     now
                 ],
@@ -2063,6 +2111,11 @@ fn init_schema(path: PathBuf) -> Result<(), rusqlite::Error> {
           episode_index INTEGER NOT NULL DEFAULT -1,
           year TEXT NOT NULL DEFAULT '',
           thumb TEXT NOT NULL DEFAULT '',
+          source_hash TEXT NOT NULL DEFAULT '',
+          session_key TEXT NOT NULL DEFAULT '',
+          resolver_provider TEXT NOT NULL DEFAULT '',
+          source_input TEXT NOT NULL DEFAULT '',
+          filename TEXT NOT NULL DEFAULT '',
           resume_seconds REAL NOT NULL DEFAULT 0,
           updated_at INTEGER NOT NULL,
           PRIMARY KEY (user_id, source_identity)
@@ -2075,6 +2128,59 @@ fn init_schema(path: PathBuf) -> Result<(), rusqlite::Error> {
           PRIMARY KEY (user_id, item_identity)
         );
         ",
+    )?;
+    ensure_text_column(
+        &connection,
+        "user_continue_watching",
+        "source_hash",
+        "source_hash TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_text_column(
+        &connection,
+        "user_continue_watching",
+        "session_key",
+        "session_key TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_text_column(
+        &connection,
+        "user_continue_watching",
+        "resolver_provider",
+        "resolver_provider TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_text_column(
+        &connection,
+        "user_continue_watching",
+        "source_input",
+        "source_input TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_text_column(
+        &connection,
+        "user_continue_watching",
+        "filename",
+        "filename TEXT NOT NULL DEFAULT ''",
+    )?;
+    Ok(())
+}
+
+fn ensure_text_column(
+    connection: &Connection,
+    table_name: &str,
+    column_name: &str,
+    column_definition: &str,
+) -> Result<(), rusqlite::Error> {
+    let mut stmt = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let existing_columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if existing_columns
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(column_name))
+    {
+        return Ok(());
+    }
+    connection.execute(
+        &format!("ALTER TABLE {table_name} ADD COLUMN {column_definition}"),
+        [],
     )?;
     Ok(())
 }
@@ -2781,6 +2887,11 @@ mod tests {
                 "mediaType": "tv",
                 "seriesId": "tmdb-tv-85552",
                 "episodeIndex": 1,
+                "sourceHash": "abcdef123",
+                "sessionKey": "local-torrent:tv:85552:s1:e2:en:1080p",
+                "resolverProvider": "local-torrent",
+                "sourceInput": "http://127.0.0.1:5173/api/local-torrent/stream?sourceHash=abcdef123",
+                "filename": "Euphoria.S01E02.mkv",
                 "resumeSeconds": 240.0
             }),
         )
@@ -2794,6 +2905,13 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["sourceIdentity"], "tmdb:tv:85552:s1:e2");
         assert_eq!(entries[0]["seriesId"], "tmdb-tv-85552");
+        assert_eq!(entries[0]["sourceHash"], "abcdef123");
+        assert_eq!(
+            entries[0]["sessionKey"],
+            "local-torrent:tv:85552:s1:e2:en:1080p"
+        );
+        assert_eq!(entries[0]["resolverProvider"], "local-torrent");
+        assert_eq!(entries[0]["filename"], "Euphoria.S01E02.mkv");
 
         db.delete_user_continue_watching_for_series(user_id, "tmdb-tv-85552".to_owned())
             .await

@@ -632,6 +632,7 @@ impl ResolverService {
         preferred_quality: &str,
         preferred_subtitle_lang: &str,
         source_hash: &str,
+        session_key: &str,
         min_seeders: &str,
         allowed_formats: &str,
         source_language: &str,
@@ -648,6 +649,7 @@ impl ResolverService {
             preferred_quality,
             preferred_subtitle_lang,
             source_hash,
+            session_key,
             min_seeders,
             allowed_formats,
             source_language,
@@ -674,6 +676,7 @@ impl ResolverService {
             preferred_quality,
             preferred_subtitle_lang,
             source_hash,
+            session_key,
             min_seeders,
             allowed_formats,
             source_language,
@@ -693,6 +696,7 @@ impl ResolverService {
         preferred_quality: &str,
         preferred_subtitle_lang: &str,
         source_hash: &str,
+        session_key: &str,
         min_seeders: &str,
         allowed_formats: &str,
         source_language: &str,
@@ -740,7 +744,13 @@ impl ResolverService {
             .await?;
         let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
-            .try_reuse_playback_session(&metadata, &preferences, &filters, cache_reuse_provider)
+            .try_reuse_playback_session(
+                &metadata,
+                &preferences,
+                &filters,
+                cache_reuse_provider,
+                session_key,
+            )
             .await?
         {
             external_guard.mark_completed();
@@ -889,6 +899,7 @@ impl ResolverService {
         preferred_subtitle_lang: &str,
         preferred_container: &str,
         source_hash: &str,
+        session_key: &str,
         min_seeders: &str,
         allowed_formats: &str,
         source_language: &str,
@@ -910,6 +921,7 @@ impl ResolverService {
             preferred_subtitle_lang,
             preferred_container,
             source_hash,
+            session_key,
             min_seeders,
             allowed_formats,
             source_language,
@@ -941,6 +953,7 @@ impl ResolverService {
             preferred_subtitle_lang,
             preferred_container,
             source_hash,
+            session_key,
             min_seeders,
             allowed_formats,
             source_language,
@@ -965,6 +978,7 @@ impl ResolverService {
         preferred_subtitle_lang: &str,
         preferred_container: &str,
         source_hash: &str,
+        session_key: &str,
         min_seeders: &str,
         allowed_formats: &str,
         source_language: &str,
@@ -1034,7 +1048,13 @@ impl ResolverService {
             .await?;
         let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
-            .try_reuse_playback_session(&metadata, &preferences, &filters, cache_reuse_provider)
+            .try_reuse_playback_session(
+                &metadata,
+                &preferences,
+                &filters,
+                cache_reuse_provider,
+                session_key,
+            )
             .await?
         {
             external_guard.mark_completed();
@@ -2217,6 +2237,7 @@ impl ResolverService {
         preferences: &ResolvePreferences,
         filters: &ResolveFilters,
         resolver_provider: ResolverProvider,
+        requested_session_key: &str,
     ) -> AppResult<Option<Value>> {
         if !self.config.playback_sessions_enabled
             || metadata.tmdb_id.trim().is_empty()
@@ -2225,12 +2246,18 @@ impl ResolverService {
             return Ok(None);
         }
 
-        let session_keys = build_playback_session_lookup_keys(
+        let mut session_keys = Vec::new();
+        let requested_session_key = requested_session_key.trim();
+        if !requested_session_key.is_empty() {
+            session_keys.push(requested_session_key.to_owned());
+        }
+        session_keys.extend(build_playback_session_lookup_keys(
             metadata,
             &preferences.audio_lang,
             &preferences.quality,
             resolver_provider,
-        );
+        ));
+        session_keys.dedup();
         let mut session = None;
         for session_key in session_keys {
             if let Some(candidate) = self.db.get_playback_session(session_key).await? {
@@ -2992,6 +3019,7 @@ fn build_movie_resolve_lock_key(
     preferred_quality: &str,
     preferred_subtitle_lang: &str,
     source_hash: &str,
+    session_key: &str,
     min_seeders: &str,
     allowed_formats: &str,
     source_language: &str,
@@ -2999,12 +3027,13 @@ fn build_movie_resolve_lock_key(
     resolver_provider: ResolverProvider,
 ) -> String {
     format!(
-        "movie|provider:{}|tmdb:{}|audio:{}|sub:{}|quality:{}|hash:{}|{}",
+        "movie|provider:{}|tmdb:{}|audio:{}|sub:{}|quality:{}|session:{}|hash:{}|{}",
         resolver_provider.as_str(),
         tmdb_id.trim(),
         normalize_preferred_audio_lang(preferred_audio_lang),
         normalize_subtitle_preference(preferred_subtitle_lang),
         normalize_preferred_stream_quality(preferred_quality),
+        session_key.trim(),
         normalize_source_hash(source_hash),
         build_source_filter_lock_key(
             min_seeders,
@@ -3027,6 +3056,7 @@ fn build_tv_resolve_lock_key(
     preferred_subtitle_lang: &str,
     preferred_container: &str,
     source_hash: &str,
+    session_key: &str,
     min_seeders: &str,
     allowed_formats: &str,
     source_language: &str,
@@ -3050,7 +3080,7 @@ fn build_tv_resolve_lock_key(
         1,
     );
     format!(
-        "tv|provider:{}|tmdb:{}|s:{}|e:{}|audio:{}|sub:{}|quality:{}|container:{}|hash:{}|{}",
+        "tv|provider:{}|tmdb:{}|s:{}|e:{}|audio:{}|sub:{}|quality:{}|container:{}|session:{}|hash:{}|{}",
         resolver_provider.as_str(),
         tmdb_id.trim(),
         season_number,
@@ -3059,6 +3089,7 @@ fn build_tv_resolve_lock_key(
         normalize_subtitle_preference(preferred_subtitle_lang),
         normalize_preferred_stream_quality(preferred_quality),
         normalize_tv_preferred_container(preferred_container),
+        session_key.trim(),
         normalize_source_hash(source_hash),
         build_source_filter_lock_key(
             min_seeders,
@@ -5930,13 +5961,14 @@ mod tests {
                 "1080",
                 "Off",
                 "bad",
+                " local-torrent:123:en:1080p ",
                 "5",
                 "mkv mp4",
                 "EN",
                 "single",
                 ResolverProvider::RealDebrid
             ),
-            "movie|provider:real-debrid|tmdb:123|audio:en|sub:off|quality:1080p|hash:|min:5|formats:mkv,mp4|lang:en|profile:single"
+            "movie|provider:real-debrid|tmdb:123|audio:en|sub:off|quality:1080p|session:local-torrent:123:en:1080p|hash:|min:5|formats:mkv,mp4|lang:en|profile:single"
         );
         assert_eq!(
             build_tv_resolve_lock_key(
@@ -5951,12 +5983,13 @@ mod tests {
                 "mp4",
                 "",
                 "",
+                "",
                 "mp4",
                 "auto",
                 "multi",
                 ResolverProvider::LocalTorrent
             ),
-            "tv|provider:local-torrent|tmdb:123|s:2|e:7|audio:auto|sub:en|quality:2160p|container:mp4|hash:|min:0|formats:mp4|lang:any|profile:any"
+            "tv|provider:local-torrent|tmdb:123|s:2|e:7|audio:auto|sub:en|quality:2160p|container:mp4|session:|hash:|min:0|formats:mp4|lang:any|profile:any"
         );
     }
 

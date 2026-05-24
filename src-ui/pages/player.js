@@ -86,6 +86,13 @@ const playbackRecoveryStallDelayMs = 8000;
 const playbackRecoveryServerTimeoutMs = 3500;
 const playbackRecoveryInitialDelayMs = 3000;
 const playbackRecoveryMaxDelayMs = 10000;
+const audioDecodeWatchIntervalMs = 2000;
+const audioDecodeStallGraceMs = 8000;
+const audioDecodeRecoveryCooldownMs = 30000;
+const audioDecodeRecoveryMaxAttempts = 2;
+const audioDecodeGraceAfterSourceChangeMs = 6000;
+const audioDecodeGraceAfterSeekMs = 6000;
+const audioDecodeVideoAdvanceThresholdSeconds = 6;
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
@@ -163,6 +170,14 @@ let lastRequestedAbsolutePlaybackSource = "";
 let activeHlsController = null;
 let hlsConstructorPromise = null;
 let pendingHlsJsPlaybackSource = "";
+let audioDecodeWatchInterval = null;
+let audioDecodeWatchState = null;
+let audioDecodeRecoveryInFlight = false;
+let audioDecodeRecoverySourceKey = "";
+let audioDecodeRecoveryAttempts = 0;
+let lastAudioDecodeRecoveryAt = 0;
+let lastPlaybackSourceSetAt = 0;
+let lastPlaybackSeekAt = 0;
 
 const _cleanups = [];
 function trackListener(target, event, handler, options) {
@@ -523,7 +538,9 @@ let playbackBenchmark = null;
 
 let selectedSourceHash = normalizeSourceHash(sourceHashParam);
 let currentTmdbPlaybackSessionKey = "";
-let sourceSelectionPinned = false;
+let currentTmdbResolverProvider = "";
+let currentTmdbResolvedFilename = "";
+let sourceSelectionPinned = Boolean(selectedSourceHash);
 let automaticTmdbAlternateRecoveryInFlight = false;
 
 function getPinnedSourceHashForRequests() {
@@ -531,6 +548,13 @@ function getPinnedSourceHashForRequests() {
     return "";
   }
   return normalizeSourceHash(selectedSourceHash);
+}
+
+function getPinnedSessionKeyForRequests() {
+  if (!sourceSelectionPinned || !getPinnedSourceHashForRequests()) {
+    return "";
+  }
+  return String(currentTmdbPlaybackSessionKey || "").trim();
 }
 
 function getAudioLangPreferenceStorageKey(movieTmdbId) {
@@ -938,6 +962,66 @@ let resumeTime = 0;
 let lastPersistedResumeTime = 0;
 let lastPersistedResumeAt = 0;
 let resumeFlushIntervalId = 0;
+
+function emptyRememberedTmdbSourceState() {
+  return { sourceHash: "", sessionKey: "", resolverProvider: "", sourceInput: "", filename: "" };
+}
+
+function getRememberedContinueWatchingSourceState() {
+  const normalizedSource = String(sourceIdentity || "").trim();
+  if (!normalizedSource) {
+    return emptyRememberedTmdbSourceState();
+  }
+  try {
+    const metaMap = readContinueWatchingMetaMap();
+    const entry = metaMap?.[normalizedSource];
+    if (!entry || typeof entry !== "object") {
+      return emptyRememberedTmdbSourceState();
+    }
+    return {
+      sourceHash: normalizeSourceHash(entry.sourceHash || ""),
+      sessionKey: String(entry.sessionKey || "").trim(),
+      resolverProvider: String(entry.resolverProvider || "").trim(),
+      sourceInput: String(entry.sourceInput || "").trim(),
+      filename: String(entry.filename || "").trim(),
+    };
+  } catch {
+    return emptyRememberedTmdbSourceState();
+  }
+}
+
+function applyRememberedTmdbSourcePin() {
+  if (!isTmdbResolvedPlayback) {
+    return;
+  }
+  const remembered = getRememberedContinueWatchingSourceState();
+  if (selectedSourceHash) {
+    sourceSelectionPinned = true;
+    if (remembered.sourceHash === selectedSourceHash) {
+      currentTmdbPlaybackSessionKey =
+        currentTmdbPlaybackSessionKey || remembered.sessionKey;
+      currentTmdbResolverProvider =
+        currentTmdbResolverProvider || remembered.resolverProvider;
+      currentTmdbResolvedFilename =
+        currentTmdbResolvedFilename || remembered.filename;
+      activeTrackSourceInput = activeTrackSourceInput || remembered.sourceInput;
+    }
+  }
+  if (!sourceSelectionPinned) {
+    if (remembered.sourceHash) {
+      selectedSourceHash = remembered.sourceHash;
+      sourceSelectionPinned = true;
+      currentTmdbPlaybackSessionKey = remembered.sessionKey;
+      currentTmdbResolverProvider = remembered.resolverProvider;
+      currentTmdbResolvedFilename = remembered.filename;
+      activeTrackSourceInput = remembered.sourceInput || activeTrackSourceInput;
+      applyPreferredSourceAudioSync(selectedSourceHash);
+    }
+  }
+}
+
+applyRememberedTmdbSourcePin();
+
 try {
   const storedResume = Number(localStorage.getItem(resumeStorageKey));
   if (Number.isFinite(storedResume) && storedResume > 0) {
@@ -990,6 +1074,12 @@ function getCanonicalContinueWatchingMetadata() {
           ),
         )
       : -1;
+  const normalizedSourceHash = isTmdbResolvedPlayback
+    ? normalizeSourceHash(selectedSourceHash)
+    : "";
+  const resolvedSourceInput = isTmdbResolvedPlayback
+    ? String(activeTrackSourceInput || activeTranscodeInput || "").trim()
+    : "";
   return {
     title: String(title || "Title"),
     episode: String(episode || "Now Playing"),
@@ -1010,6 +1100,13 @@ function getCanonicalContinueWatchingMetadata() {
     thumb: isSeriesPlayback || isTmdbSeriesPlayback
       ? String(activeSeriesEpisode?.thumb || DEFAULT_EPISODE_THUMBNAIL)
       : thumbParam,
+    sourceHash: normalizedSourceHash,
+    sessionKey: isTmdbResolvedPlayback ? String(currentTmdbPlaybackSessionKey || "").trim() : "",
+    resolverProvider: isTmdbResolvedPlayback
+      ? String(currentTmdbResolverProvider || preferredResolverProvider || "").trim()
+      : "",
+    sourceInput: resolvedSourceInput,
+    filename: isTmdbResolvedPlayback ? String(currentTmdbResolvedFilename || "").trim() : "",
   };
 }
 
@@ -1093,6 +1190,11 @@ function persistContinueWatchingEntry(resumeSeconds) {
       episodeNumber: metadata.episodeNumber,
       year: metadata.year,
       thumb: metadata.thumb,
+      sourceHash: metadata.sourceHash,
+      sessionKey: metadata.sessionKey,
+      resolverProvider: metadata.resolverProvider,
+      sourceInput: metadata.sourceInput,
+      filename: metadata.filename,
       resumeSeconds: Number(resumeSeconds),
       updatedAt: Date.now(),
     };
@@ -3196,6 +3298,8 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
     preferredAudioSyncMs,
   );
   lastRequestedPlaybackSource = sourceWithAudioSync;
+  lastPlaybackSourceSetAt = performance.now();
+  resetAudioDecodeWatchState();
 
   clearStreamStallRecovery();
   clearSubtitleTrack();
@@ -3589,6 +3693,10 @@ async function resolveTmdbSourcesAndPlay({
     resolved?.sourceHash || selectedSourceHash,
   );
   currentTmdbPlaybackSessionKey = String(resolved?.session?.key || "").trim();
+  currentTmdbResolverProvider = String(
+    resolved?.resolverProvider || resolved?.session?.resolverProvider || resolved?.metadata?.resolverProvider || "",
+  ).trim();
+  currentTmdbResolvedFilename = String(resolved?.filename || "").trim();
   if (
     normalizedRequiredSourceHash &&
     resolvedSourceHash !== normalizedRequiredSourceHash
@@ -3626,6 +3734,9 @@ async function resolveTmdbSourcesAndPlay({
   selectedSourceHash = resolvedSourceHash;
   applyPreferredSourceAudioSync(selectedSourceHash);
   persistSourceHashInUrl();
+  if (resumeTime > 1) {
+    persistContinueWatchingEntry(resumeTime);
+  }
 
   if (resolvedTrackPreferenceAudio && resolvedTrackPreferenceAudio !== "auto") {
     preferredAudioLang = resolvedTrackPreferenceAudio;
@@ -5266,6 +5377,207 @@ function scheduleStreamStallRecovery(
   }, playbackRecoveryStallDelayMs);
 }
 
+function resetAudioDecodeWatchState() {
+  audioDecodeWatchState = null;
+}
+
+function clearAudioDecodeWatch() {
+  if (audioDecodeWatchInterval !== null) {
+    window.clearInterval(audioDecodeWatchInterval);
+    audioDecodeWatchInterval = null;
+  }
+  audioDecodeWatchState = null;
+  audioDecodeRecoveryInFlight = false;
+}
+
+function getMediaDecodeCounter(name) {
+  const value = Number(video?.[name]);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function shouldExpectAudioForCurrentSource() {
+  return (
+    availableAudioTracks.length > 0 ||
+    selectedAudioStreamIndex >= 0 ||
+    activeAudioStreamIndex >= 0
+  );
+}
+
+function getCurrentAudioRecoverySourceKey() {
+  const source = String(
+    video.currentSrc ||
+      video.getAttribute("src") ||
+      lastRequestedPlaybackSource ||
+      lastRequestedAbsolutePlaybackSource ||
+      "",
+  ).trim();
+  const input =
+    activeTrackSourceInput ||
+    activeTranscodeInput ||
+    extractPlaybackSourceInput(source) ||
+    source;
+  const audioStreamIndex =
+    activeAudioStreamIndex >= 0 ? activeAudioStreamIndex : selectedAudioStreamIndex;
+  return [
+    input,
+    `audio:${Number.isFinite(audioStreamIndex) ? audioStreamIndex : -1}`,
+    `source:${normalizeSourceHash(selectedSourceHash)}`,
+  ].join("|");
+}
+
+function syncAudioDecodeRecoverySourceKey() {
+  const sourceKey = getCurrentAudioRecoverySourceKey();
+  if (sourceKey && sourceKey !== audioDecodeRecoverySourceKey) {
+    audioDecodeRecoverySourceKey = sourceKey;
+    audioDecodeRecoveryAttempts = 0;
+  }
+  return sourceKey;
+}
+
+function shouldWatchAudioDecodeProgress() {
+  if (
+    !video ||
+    !hasActiveSource() ||
+    video.paused ||
+    video.ended ||
+    video.seeking ||
+    video.readyState < 2 ||
+    isResolvingSource() ||
+    video.muted ||
+    clampPlayerVolume(video.volume) <= 0.001 ||
+    !shouldExpectAudioForCurrentSource()
+  ) {
+    return false;
+  }
+
+  const now = performance.now();
+  if (
+    now - lastPlaybackSourceSetAt < audioDecodeGraceAfterSourceChangeMs ||
+    now - lastPlaybackSeekAt < audioDecodeGraceAfterSeekMs
+  ) {
+    return false;
+  }
+
+  return getMediaDecodeCounter("webkitAudioDecodedByteCount") !== null;
+}
+
+function recoverSilentAudioPlayback() {
+  const now = performance.now();
+  const sourceKey = syncAudioDecodeRecoverySourceKey();
+  if (
+    !sourceKey ||
+    audioDecodeRecoveryInFlight ||
+    audioDecodeRecoveryAttempts >= audioDecodeRecoveryMaxAttempts ||
+    now - lastAudioDecodeRecoveryAt < audioDecodeRecoveryCooldownMs
+  ) {
+    return false;
+  }
+
+  audioDecodeRecoveryInFlight = true;
+  audioDecodeRecoveryAttempts += 1;
+  lastAudioDecodeRecoveryAt = now;
+  resetAudioDecodeWatchState();
+
+  showResolver("Audio stalled. Reconnecting stream...", {
+    isRecovery: true,
+    showStatus: true,
+    title: "Restoring audio",
+    detail: "Restarting the media pipeline from your current position.",
+    countdown: "",
+    showRetry: true,
+    showAlternate: isTmdbResolvedPlayback,
+  });
+
+  const retried = retryCurrentPlaybackFromSavedPosition();
+  if (!retried) {
+    schedulePlaybackRecovery("buffering", "Audio stalled. Retrying playback...", {
+      delayMs: 0,
+    });
+  }
+
+  window.setTimeout(() => {
+    audioDecodeRecoveryInFlight = false;
+  }, audioDecodeGraceAfterSourceChangeMs);
+  return true;
+}
+
+function checkAudioDecodeProgress() {
+  if (!shouldWatchAudioDecodeProgress()) {
+    resetAudioDecodeWatchState();
+    return;
+  }
+
+  const now = performance.now();
+  const sourceKey = syncAudioDecodeRecoverySourceKey();
+  const audioBytes = getMediaDecodeCounter("webkitAudioDecodedByteCount");
+  if (!sourceKey || audioBytes === null) {
+    resetAudioDecodeWatchState();
+    return;
+  }
+
+  const currentTime = getEffectiveCurrentTime();
+  const videoBytes = getMediaDecodeCounter("webkitVideoDecodedByteCount");
+  const previous = audioDecodeWatchState;
+  if (
+    !previous ||
+    previous.sourceKey !== sourceKey ||
+    audioBytes < previous.audioBytes ||
+    currentTime < previous.currentTime - 0.5
+  ) {
+    audioDecodeWatchState = {
+      sourceKey,
+      audioBytes,
+      videoBytes,
+      currentTime,
+      lastAudioAdvanceAt: now,
+      lastAudioAdvanceCurrentTime: currentTime,
+    };
+    return;
+  }
+
+  const audioAdvanced = audioBytes > previous.audioBytes;
+  const videoAdvanced =
+    currentTime > previous.currentTime + 0.7 ||
+    (videoBytes !== null &&
+      previous.videoBytes !== null &&
+      videoBytes > previous.videoBytes);
+
+  audioDecodeWatchState = {
+    sourceKey,
+    audioBytes,
+    videoBytes,
+    currentTime,
+    lastAudioAdvanceAt: audioAdvanced ? now : previous.lastAudioAdvanceAt,
+    lastAudioAdvanceCurrentTime: audioAdvanced
+      ? currentTime
+      : previous.lastAudioAdvanceCurrentTime,
+  };
+
+  if (audioAdvanced || !videoAdvanced) {
+    return;
+  }
+
+  const stalledForMs = now - previous.lastAudioAdvanceAt;
+  const videoAdvancedSeconds =
+    currentTime - previous.lastAudioAdvanceCurrentTime;
+  if (
+    stalledForMs >= audioDecodeStallGraceMs &&
+    videoAdvancedSeconds >= audioDecodeVideoAdvanceThresholdSeconds
+  ) {
+    recoverSilentAudioPlayback();
+  }
+}
+
+function startAudioDecodeWatch() {
+  if (audioDecodeWatchInterval !== null) {
+    return;
+  }
+  audioDecodeWatchInterval = window.setInterval(
+    checkAudioDecodeProgress,
+    audioDecodeWatchIntervalMs,
+  );
+}
+
 function clearControlsHideTimer() {
   window.clearTimeout(controlsHideTimeout);
 }
@@ -5508,6 +5820,8 @@ function seekToAbsoluteTime(
   { showLoading = false, isInitialResume = false } = {},
 ) {
   const clampedTarget = Math.max(0, Number(targetSeconds) || 0);
+  lastPlaybackSeekAt = performance.now();
+  resetAudioDecodeWatchState();
   if (!isInitialResume) {
     markInitialResumeHandled();
   }
@@ -6458,6 +6772,7 @@ async function resolveTmdbMovieViaBackend(
 ) {
   const buildQuery = ({
     sourceHash = "",
+    sessionKey = "",
     includeSourceFilters = true,
     audioLang = preferredAudioLang,
     quality = preferredQuality,
@@ -6476,6 +6791,9 @@ async function resolveTmdbMovieViaBackend(
     if (sourceHash) {
       query.set("sourceHash", sourceHash);
     }
+    if (sessionKey) {
+      query.set("sessionKey", sessionKey);
+    }
     if (includeSourceFilters) {
       if (preferredSourceMinSeeders > 0) {
         query.set("minSeeders", String(preferredSourceMinSeeders));
@@ -6493,10 +6811,15 @@ async function resolveTmdbMovieViaBackend(
   };
 
   const pinnedSourceHash = getPinnedSourceHashForRequests();
+  const pinnedSessionKey = getPinnedSessionKeyForRequests();
   let lastError = null;
   try {
     return await requestResolveJson(
-      `/api/resolve/movie?${buildQuery({ sourceHash: pinnedSourceHash }).toString()}`,
+      `/api/resolve/movie?${buildQuery({
+        sourceHash: pinnedSourceHash,
+        sessionKey: pinnedSessionKey,
+        includeSourceFilters: !pinnedSourceHash,
+      }).toString()}`,
     );
   } catch (error) {
     lastError = error;
@@ -6537,6 +6860,7 @@ async function resolveTmdbTvEpisodeViaBackend(
     containerPreference = "",
     sourceHash = "",
     {
+      sessionKey = "",
       includeSourceFilters = true,
       audioLang = preferredAudioLang,
       quality = preferredQuality,
@@ -6563,6 +6887,9 @@ async function resolveTmdbTvEpisodeViaBackend(
     if (sourceHash) {
       query.set("sourceHash", sourceHash);
     }
+    if (sessionKey) {
+      query.set("sessionKey", sessionKey);
+    }
     if (includeSourceFilters) {
       if (preferredSourceMinSeeders > 0) {
         query.set("minSeeders", String(preferredSourceMinSeeders));
@@ -6580,26 +6907,34 @@ async function resolveTmdbTvEpisodeViaBackend(
   };
 
   const pinnedSourceHash = getPinnedSourceHashForRequests();
+  const pinnedSessionKey = getPinnedSessionKeyForRequests();
   try {
     return await requestResolveJson(
-      `/api/resolve/tv?${buildQuery(preferredContainer, pinnedSourceHash).toString()}`,
+      `/api/resolve/tv?${buildQuery(preferredContainer, pinnedSourceHash, {
+        sessionKey: pinnedSessionKey,
+        includeSourceFilters: !pinnedSourceHash,
+      }).toString()}`,
     );
   } catch (error) {
     let lastError = error;
     const fallbackAttempts = [];
     const seen = new Set([`${preferredContainer}::${pinnedSourceHash}`]);
 
-    const pushFallback = (containerPreference, sourceHashPreference) => {
+    const pushFallback = (
+      containerPreference,
+      sourceHashPreference,
+      sessionKeyPreference = "",
+    ) => {
       const key = `${containerPreference}::${sourceHashPreference}`;
       if (seen.has(key)) {
         return;
       }
       seen.add(key);
-      fallbackAttempts.push([containerPreference, sourceHashPreference]);
+      fallbackAttempts.push([containerPreference, sourceHashPreference, sessionKeyPreference]);
     };
 
     if (allowContainerFallback && preferredContainer) {
-      pushFallback("", pinnedSourceHash);
+      pushFallback("", pinnedSourceHash, pinnedSessionKey);
     }
     if (allowSourceFallback && pinnedSourceHash) {
       pushFallback(preferredContainer, "");
@@ -6613,10 +6948,13 @@ async function resolveTmdbTvEpisodeViaBackend(
       pushFallback("", "");
     }
 
-    for (const [fallbackContainer, fallbackSource] of fallbackAttempts) {
+    for (const [fallbackContainer, fallbackSource, fallbackSessionKey] of fallbackAttempts) {
       try {
         return await requestResolveJson(
-          `/api/resolve/tv?${buildQuery(fallbackContainer, fallbackSource).toString()}`,
+          `/api/resolve/tv?${buildQuery(fallbackContainer, fallbackSource, {
+            sessionKey: fallbackSessionKey,
+            includeSourceFilters: !fallbackSource,
+          }).toString()}`,
         );
       } catch (fallbackError) {
         lastError = fallbackError;
@@ -6670,17 +7008,19 @@ async function fetchTmdbSourceOptionsViaBackend() {
   if (pinnedSourceHash) {
     query.set("sourceHash", pinnedSourceHash);
   }
-  if (preferredSourceMinSeeders > 0) {
-    query.set("minSeeders", String(preferredSourceMinSeeders));
+  if (!pinnedSourceHash) {
+    if (preferredSourceMinSeeders > 0) {
+      query.set("minSeeders", String(preferredSourceMinSeeders));
+    }
+    if (
+      preferredSourceFormats.length > 0 &&
+      preferredSourceFormats.length < supportedSourceFormats.length
+    ) {
+      query.set("allowedFormats", preferredSourceFormats.join(","));
+    }
+    query.set("sourceLang", preferredSourceLanguage);
+    query.set("sourceAudioProfile", preferredSourceAudioProfile);
   }
-  if (
-    preferredSourceFormats.length > 0 &&
-    preferredSourceFormats.length < supportedSourceFormats.length
-  ) {
-    query.set("allowedFormats", preferredSourceFormats.join(","));
-  }
-  query.set("sourceLang", preferredSourceLanguage);
-  query.set("sourceAudioProfile", preferredSourceAudioProfile);
 
   try {
     const payload = await requestJson(
@@ -7512,6 +7852,7 @@ async function initPlaybackSource() {
         ? `tmdb:${mediaType}:${tmdbId}${isTmdbTvPlayback ? `:s${seasonNumber}:e${episodeNumber}` : ""}`
         : DEFAULT_TRAILER_SOURCE);
   resumeStorageKey = `netflix-resume:${sourceIdentity}`;
+  applyRememberedTmdbSourcePin();
 
   // Re-read resume time with the (possibly updated) storage key.
   try {
@@ -7706,6 +8047,7 @@ async function initPlaybackSource() {
 
   onMount(() => {
     collectSpeedOptionRefs();
+    startAudioDecodeWatch();
     setEpisodeLabel(_needsSlugResolve ? "" : title, _needsSlugResolve ? "" : episode);
 
     resumeFlushIntervalId = window.setInterval(() => {
@@ -8632,6 +8974,8 @@ trackListener(video, "playing", startSubtitleRafLoop);
 trackListener(video, "pause", stopSubtitleRafLoop);
 trackListener(video, "ended", stopSubtitleRafLoop);
 trackListener(video, "seeking", () => {
+  lastPlaybackSeekAt = performance.now();
+  resetAudioDecodeWatchState();
   lastRenderedSubtitleCueIndex = -1;
   renderCustomSubtitleOverlay();
 });
@@ -9032,6 +9376,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     clearSingleClickPlaybackToggle();
     clearStreamStallRecovery();
     clearPlaybackRecovery();
+    clearAudioDecodeWatch();
     clearSeekLoadingTimeout();
     destroyActiveHlsController();
     stopSubtitleRafLoop();
