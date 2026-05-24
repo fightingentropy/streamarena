@@ -14,6 +14,12 @@ const PRIDE_PREJUDICE_SOURCE =
   "assets/videos/Pride.Prejudice.2005.2160p.4K.WEB.x265.10bit.AAC5.1-[YTS.MX].mp4";
 const PRIDE_PREJUDICE_THUMBNAIL = "assets/images/pride-prejudice-thumb.jpg";
 
+function normalizeContinueSourceHash(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
 export function formatRuntime(minutes) {
   if (!minutes || Number.isNaN(minutes)) return "";
   const hours = Math.floor(minutes / 60);
@@ -349,6 +355,11 @@ function normalizeLocalContinueEntry(entry) {
   safeEntry.episodeNumber = Number.isFinite(Number(safeEntry.episodeNumber))
     ? Math.max(0, Math.floor(Number(safeEntry.episodeNumber)))
     : 0;
+  safeEntry.sourceHash = normalizeContinueSourceHash(safeEntry.sourceHash);
+  safeEntry.sessionKey = String(safeEntry.sessionKey || "").trim();
+  safeEntry.resolverProvider = String(safeEntry.resolverProvider || "").trim();
+  safeEntry.sourceInput = String(safeEntry.sourceInput || "").trim();
+  safeEntry.filename = String(safeEntry.filename || "").trim();
   return safeEntry;
 }
 
@@ -447,6 +458,11 @@ function normalizeServerContinueEntry(entry) {
       : parsedTmdbSource.episodeNumber,
     year: String(entry.year || "").trim(),
     thumb: String(entry.thumb || "").trim(),
+    sourceHash: entry.sourceHash,
+    sessionKey: entry.sessionKey,
+    resolverProvider: entry.resolverProvider,
+    sourceInput: entry.sourceInput,
+    filename: entry.filename,
   });
 }
 
@@ -613,6 +629,11 @@ export function getContinueWatchingEntries() {
         : parsedTmdbSource.episodeNumber,
       year: String(value.year || "").trim(),
       thumb: String(value.thumb || "").trim(),
+      sourceHash: value.sourceHash,
+      sessionKey: value.sessionKey,
+      resolverProvider: value.resolverProvider,
+      sourceInput: value.sourceInput,
+      filename: value.filename,
     });
     addContinueEntryToMap(entriesBySource, normalizedEntry);
   });

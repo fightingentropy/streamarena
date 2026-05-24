@@ -36,7 +36,7 @@ const HLS_SEGMENT_WAIT_POLL_MS: u64 = 180;
 const REMUX_ACCURATE_SEEK_PREROLL_SECONDS: i64 = 12;
 const FFMPEG_STDERR_MAX_LINES: usize = 80;
 const FFMPEG_STDERR_MAX_BYTES: usize = 16 * 1024;
-const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v5";
+const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v6";
 
 const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "mp2", "opus", "vorbis", "flac", "alac"];
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
@@ -1536,6 +1536,17 @@ fn build_hls_mobile_safe_video_filter_args() -> Vec<String> {
     ]
 }
 
+fn build_hls_audio_encode_args() -> Vec<String> {
+    vec![
+        "-c:a".to_owned(),
+        "aac".to_owned(),
+        "-ac".to_owned(),
+        "2".to_owned(),
+        "-b:a".to_owned(),
+        "160k".to_owned(),
+    ]
+}
+
 fn build_remux_video_encode_config(hwaccel_mode: &str) -> VideoEncodeConfig {
     match hwaccel_mode.trim().to_lowercase().as_str() {
         "videotoolbox" => VideoEncodeConfig {
@@ -1694,11 +1705,8 @@ fn build_hls_on_demand_segment_args(
     ]);
     args.extend(build_hls_mobile_safe_video_filter_args());
     args.extend(encode_config.video_encode_args.clone());
+    args.extend(build_hls_audio_encode_args());
     args.extend([
-        "-c:a".to_owned(),
-        "aac".to_owned(),
-        "-b:a".to_owned(),
-        "160k".to_owned(),
         "-output_ts_offset".to_owned(),
         segment_start_seconds.to_string(),
         "-f".to_owned(),
@@ -1744,12 +1752,9 @@ fn build_hls_transcode_args(
     args.extend([
         "-force_key_frames".to_owned(),
         format!("expr:gte(t,n_forced*{HLS_SEGMENT_DURATION_SECONDS})"),
-        "-c:a".to_owned(),
-        "aac".to_owned(),
-        "-ac".to_owned(),
-        "2".to_owned(),
-        "-b:a".to_owned(),
-        "160k".to_owned(),
+    ]);
+    args.extend(build_hls_audio_encode_args());
+    args.extend([
         "-f".to_owned(),
         "segment".to_owned(),
         "-segment_time".to_owned(),
@@ -2049,6 +2054,45 @@ mod tests {
             .position(|arg| arg == "-output_ts_offset")
             .expect("timestamp offset argument");
         assert_eq!(args.get(offset_index + 1).map(String::as_str), Some("18"));
+    }
+
+    #[test]
+    fn hls_transcode_and_on_demand_args_use_matching_audio_layout() {
+        let transcode_args = build_hls_transcode_args(
+            "movie.mp4",
+            -1,
+            &build_hls_video_encode_config("none"),
+            "/tmp/movie",
+        );
+        let segment_args = build_hls_on_demand_segment_args(
+            "movie.mp4",
+            3,
+            -1,
+            &build_hls_video_encode_config("none"),
+        );
+
+        for args in [transcode_args, segment_args] {
+            let codec_index = args
+                .iter()
+                .position(|arg| arg == "-c:a")
+                .expect("audio codec argument");
+            assert_eq!(args.get(codec_index + 1).map(String::as_str), Some("aac"));
+
+            let channels_index = args
+                .iter()
+                .position(|arg| arg == "-ac")
+                .expect("audio channel argument");
+            assert_eq!(args.get(channels_index + 1).map(String::as_str), Some("2"));
+
+            let bitrate_index = args
+                .iter()
+                .position(|arg| arg == "-b:a")
+                .expect("audio bitrate argument");
+            assert_eq!(
+                args.get(bitrate_index + 1).map(String::as_str),
+                Some("160k")
+            );
+        }
     }
 
     #[test]
