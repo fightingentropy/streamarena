@@ -18,6 +18,7 @@ body.sports-route .page {
 
 .sports-switcher {
     display: flex;
+    flex-wrap: wrap;
     width: min(1760px, 100%);
     margin: 0 auto 14px;
     gap: 8px;

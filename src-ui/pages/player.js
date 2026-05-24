@@ -251,7 +251,7 @@ function normalizeLiveEmbedResolver(value) {
   const resolver = String(value || "football")
     .trim()
     .toLowerCase();
-  if (resolver === "basketball" || resolver === "twitch") {
+  if (resolver === "basketball" || resolver === "sports" || resolver === "twitch") {
     return resolver;
   }
   return "football";
