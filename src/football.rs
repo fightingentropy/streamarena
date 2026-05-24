@@ -703,6 +703,7 @@ fn build_sports_matches_payload(
     )
 }
 
+#[cfg(test)]
 fn build_streamed_football_matches_payload(source_matches: Vec<StreamedMatch>) -> (Value, i64) {
     build_streamed_sport_matches_payload(source_matches, STREAMED_FOOTBALL_MATCHES_URL, "Football")
 }
