@@ -27,7 +27,11 @@ import {
 } from "../lib/preferences.js";
 import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
 import LiveChannelsView from "../components/live-channels-view.js";
-import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
+import {
+  addCurrentReturnToParam,
+  saveWatchParams,
+  slugifyTitle,
+} from "../lib/watch-params.js";
 import {
   CONTINUE_WATCHING_META_KEY,
   DEFAULT_LOCAL_THUMBNAIL,
@@ -1262,6 +1266,7 @@ export default function HomePage() {
 
     const _slug = slugifyTitle(title || "Title");
     const _epIdx = isSeriesLaunch && hasEpisodeIndex ? `/${Math.floor(parsedEpisodeIndex)}` : "";
+    addCurrentReturnToParam(params);
     saveWatchParams(_slug, params.toString(), {
       tmdbId: params.get("tmdbId") || "",
       seriesId: params.get("seriesId") || "",

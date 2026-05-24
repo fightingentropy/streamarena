@@ -39,6 +39,7 @@ use crate::resolver::ResolverService;
 use crate::static_files::serve_static;
 use crate::streaming::StreamingService;
 use crate::tmdb::TmdbService;
+use crate::twitch::twitch_stream_resolve_handler;
 use crate::upload::UPLOAD_SESSION_CHUNK_MAX_BYTES;
 use crate::upload::UploadService;
 use crate::utils::now_ms;
@@ -80,6 +81,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/basketball/stream",
             get(basketball_stream_resolve_handler),
         )
+        .route("/api/twitch/stream", get(twitch_stream_resolve_handler))
         .route("/api/live/hls.m3u8", any(live_hls_handler))
         .route("/api/live/hls-resource", any(live_hls_resource_handler))
         .route("/api/auth/signup", any(auth_signup_handler))

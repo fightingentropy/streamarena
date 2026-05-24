@@ -1,7 +1,11 @@
 import html from "solid-js/html";
 
 import { LIVE_CHANNELS } from "../lib/live-channels.js";
-import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
+import {
+  addCurrentReturnToParam,
+  saveWatchParams,
+  slugifyTitle,
+} from "../lib/watch-params.js";
 
 function slugify(value) {
   return String(value || "live")
@@ -77,10 +81,17 @@ function buildPlayerUrl(channel) {
     params.set("liveStreamId", defaultStream?.id || streams[0].id);
     params.set("liveStreams", JSON.stringify(streams));
   }
+  if (channel?.liveEmbed) {
+    params.set("liveEmbed", "1");
+  }
+  if (channel?.liveResolver) {
+    params.set("liveResolver", String(channel.liveResolver));
+  }
   if (channel?.artwork) {
     params.set("thumb", channel.artwork);
   }
   params.set("episode", "Live");
+  addCurrentReturnToParam(params);
 
   const slug = slugifyTitle(title);
   saveWatchParams(slug, params.toString());

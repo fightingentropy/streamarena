@@ -1,6 +1,10 @@
 import html from "solid-js/html";
 import { createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import { saveWatchParams, slugifyTitle } from "../lib/watch-params.js";
+import {
+  addCurrentReturnToParam,
+  saveWatchParams,
+  slugifyTitle,
+} from "../lib/watch-params.js";
 
 const SPORT_CONFIGS = Object.freeze({
   football: Object.freeze({
@@ -168,6 +172,7 @@ function buildSportsPlayerUrl(match, config) {
     liveStreamId: defaultStream.id || "stream-1",
     liveStreams: JSON.stringify(streams),
   });
+  addCurrentReturnToParam(params);
   saveWatchParams(slug, params.toString());
   return `/watch/${slug}`;
 }

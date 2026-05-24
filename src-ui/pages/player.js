@@ -44,6 +44,7 @@ import {
   syncLiveStreamControls as syncLiveStreamControlsDom,
 } from "../player/live-streams.js";
 import { isHlsPlaybackSource, shouldUseHlsJsForPlayback } from "../player/hls-playback.js";
+import { createPlaybackBenchmarkApi } from "../player/playback-benchmark-api.js";
 import { normalizeResumeStartSeconds, withRemuxResumeStart } from "../player/resume-start.js";
 import {
   attachFullscreenControl,
@@ -53,6 +54,7 @@ import {
 import {
   findSeriesEntryBySlug,
   loadWatchParams,
+  normalizeInternalReturnToPath,
   saveWatchParams,
   slugifyTitle,
 } from "../lib/watch-params.js";
@@ -91,6 +93,9 @@ const audioDecodeRecoveryMaxAttempts = 2;
 const audioDecodeGraceAfterSourceChangeMs = 6000;
 const audioDecodeGraceAfterSeekMs = 6000;
 const audioDecodeVideoAdvanceThresholdSeconds = 6;
+const LIVE_EDGE_PIN_RATIO = 0.985;
+const LIVE_EDGE_PLAYBACK_OFFSET_SECONDS = 0.5;
+const LIVE_EDGE_REJOIN_TOLERANCE_SECONDS = 2.5;
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
@@ -161,6 +166,7 @@ const reportedPlaybackFailureKeys = new Set();
 let liveStreamOptions = [];
 let selectedLiveStreamId = "";
 let isLivePlayback = false;
+let liveEdgePinned = true;
 let shouldResolveLiveEmbedSource = false;
 let liveEmbedResolver = "football";
 let lastRequestedPlaybackSource = "";
@@ -243,7 +249,10 @@ function normalizeLiveEmbedResolver(value) {
   const resolver = String(value || "football")
     .trim()
     .toLowerCase();
-  return resolver === "basketball" ? "basketball" : "football";
+  if (resolver === "basketball" || resolver === "twitch") {
+    return resolver;
+  }
+  return "football";
 }
 
 function refreshLiveStreamStateFromParams(queryParams = params) {
@@ -3441,6 +3450,138 @@ function getEffectiveCurrentTime() {
   return Number(video.currentTime) || 0;
 }
 
+function getLiveSeekableWindow() {
+  if (!isLivePlayback || !video) {
+    return null;
+  }
+
+  const seekable = video.seekable;
+  if (seekable?.length > 0) {
+    for (let index = seekable.length - 1; index >= 0; index -= 1) {
+      try {
+        const start = Number(seekable.start(index));
+        const end = Number(seekable.end(index));
+        if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+          return { start, end, duration: end - start };
+        }
+      } catch {
+        // Continue to older ranges if the browser invalidated this one.
+      }
+    }
+  }
+
+  const duration = Number(video.duration);
+  if (Number.isFinite(duration) && duration > 0) {
+    return { start: 0, end: duration, duration };
+  }
+
+  return null;
+}
+
+function getLiveEdgeTargetSeconds(liveWindow = getLiveSeekableWindow()) {
+  if (!liveWindow) {
+    return null;
+  }
+  return Math.max(
+    liveWindow.start,
+    liveWindow.end - LIVE_EDGE_PLAYBACK_OFFSET_SECONDS,
+  );
+}
+
+function clampLiveSeekTargetSeconds(targetSeconds) {
+  const target = Number(targetSeconds);
+  if (!Number.isFinite(target)) {
+    return 0;
+  }
+
+  const liveWindow = getLiveSeekableWindow();
+  if (!liveWindow) {
+    return Math.max(0, target);
+  }
+
+  return Math.max(liveWindow.start, Math.min(liveWindow.end, target));
+}
+
+function getSeekTargetSecondsFromRatio(ratio, fallbackDurationSeconds) {
+  const clampedRatio = Math.max(0, Math.min(1, Number(ratio) || 0));
+  if (isLivePlayback) {
+    const liveWindow = getLiveSeekableWindow();
+    if (liveWindow) {
+      const liveEdgeTarget = getLiveEdgeTargetSeconds(liveWindow);
+      if (
+        clampedRatio >= LIVE_EDGE_PIN_RATIO &&
+        Number.isFinite(liveEdgeTarget)
+      ) {
+        return liveEdgeTarget;
+      }
+      return liveWindow.start + clampedRatio * liveWindow.duration;
+    }
+  }
+
+  const duration = Number(fallbackDurationSeconds);
+  return clampedRatio * (Number.isFinite(duration) && duration > 0 ? duration : 0);
+}
+
+function updateLiveEdgePinFromTarget(targetSeconds) {
+  if (!isLivePlayback) {
+    liveEdgePinned = false;
+    return;
+  }
+
+  const liveEdgeTarget = getLiveEdgeTargetSeconds();
+  if (!Number.isFinite(liveEdgeTarget)) {
+    liveEdgePinned = true;
+    return;
+  }
+
+  liveEdgePinned =
+    Number(targetSeconds) >= liveEdgeTarget - LIVE_EDGE_REJOIN_TOLERANCE_SECONDS;
+}
+
+function getFallbackPlayerReturnPath() {
+  if (isLivePlayback) {
+    return shouldResolveLiveEmbedSource ? "/sports" : "/live";
+  }
+  return "/";
+}
+
+function getExplicitPlayerReturnPath() {
+  return normalizeInternalReturnToPath(params.get("returnTo") || "");
+}
+
+function getReferrerPlayerReturnPath() {
+  return normalizeInternalReturnToPath(document.referrer || "");
+}
+
+function navigateBackFromPlayer() {
+  persistResumeTime(true);
+
+  const explicitReturnPath = getExplicitPlayerReturnPath();
+  const referrerReturnPath = getReferrerPlayerReturnPath();
+  if (
+    explicitReturnPath &&
+    referrerReturnPath === explicitReturnPath &&
+    window.history.length > 1
+  ) {
+    window.history.back();
+    return;
+  }
+  if (explicitReturnPath) {
+    window.location.href = explicitReturnPath;
+    return;
+  }
+  if (referrerReturnPath && window.history.length > 1) {
+    window.history.back();
+    return;
+  }
+  if (referrerReturnPath) {
+    window.location.href = referrerReturnPath;
+    return;
+  }
+
+  window.location.href = getFallbackPlayerReturnPath();
+}
+
 function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 0 } = {}) {
   if (!nextSource) {
     return;
@@ -3451,6 +3592,11 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
     sourceWithStart,
     preferredAudioSyncMs,
   );
+  const previousRequestedSource =
+    lastRequestedPlaybackSource || lastRequestedAbsolutePlaybackSource;
+  if (isLivePlayback && sourceWithAudioSync !== previousRequestedSource) {
+    liveEdgePinned = true;
+  }
   lastRequestedPlaybackSource = sourceWithAudioSync;
   lastPlaybackSourceSetAt = performance.now();
   resetAudioDecodeWatchState();
@@ -4574,6 +4720,10 @@ function navigateToSeriesEpisode(nextIndex) {
   if (sourceSelectionPinned && selectedSourceHash) {
     nextParams.set("sourceHash", selectedSourceHash);
   }
+  const returnTo = getExplicitPlayerReturnPath();
+  if (returnTo) {
+    nextParams.set("returnTo", returnTo);
+  }
 
   const _seriesSlug = slugify(activeSeries?.title || title);
   const _episodePath = _seriesSlug ? `/watch/${_seriesSlug}/${safeIndex}` : window.location.pathname;
@@ -5341,6 +5491,13 @@ function getDisplayDurationSeconds() {
 }
 
 function getSeekScaleDurationSeconds() {
+  if (isLivePlayback) {
+    const liveWindow = getLiveSeekableWindow();
+    if (liveWindow?.duration > 0) {
+      return liveWindow.duration;
+    }
+  }
+
   const displayDuration = getDisplayDurationSeconds();
   if (Number.isFinite(displayDuration) && displayDuration > 0) {
     return displayDuration;
@@ -5348,7 +5505,42 @@ function getSeekScaleDurationSeconds() {
   return getTimelineDurationSeconds();
 }
 
+function getLiveBufferedSeekValue(liveWindow = getLiveSeekableWindow()) {
+  if (!liveWindow || !video.buffered?.length) {
+    return liveEdgePinned ? Number(seekBar.max) || 1000 : null;
+  }
+
+  const current = clampLiveSeekTargetSeconds(getEffectiveCurrentTime());
+  let bufferedEnd = current;
+
+  for (let index = 0; index < video.buffered.length; index += 1) {
+    try {
+      const start = Number(video.buffered.start(index));
+      const end = Number(video.buffered.end(index));
+      const containsCurrent = current >= start - 0.25 && current <= end + 0.25;
+      if (containsCurrent) {
+        bufferedEnd = Math.max(bufferedEnd, end);
+      }
+    } catch {
+      // Ignore browser ranges that disappear during live playlist refresh.
+    }
+  }
+
+  const max = Number(seekBar.max) || 1000;
+  const clampedBufferedEnd = Math.max(
+    liveWindow.start,
+    Math.min(liveWindow.end, bufferedEnd),
+  );
+  return Math.round(
+    ((clampedBufferedEnd - liveWindow.start) / liveWindow.duration) * max,
+  );
+}
+
 function getBufferedSeekValue(totalDurationSeconds) {
+  if (isLivePlayback) {
+    return getLiveBufferedSeekValue();
+  }
+
   if (
     !Number.isFinite(totalDurationSeconds) ||
     totalDurationSeconds <= 0 ||
@@ -5789,7 +5981,52 @@ function handleUserActivity() {
   scheduleControlsHide();
 }
 
+function syncLiveSeekState() {
+  syncDurationText();
+
+  if (isDraggingSeek) {
+    return;
+  }
+
+  const liveWindow = getLiveSeekableWindow();
+  const max = Number(seekBar.max) || 1000;
+  if (!liveWindow?.duration) {
+    seekBar.value = liveEdgePinned ? String(max) : seekBar.value;
+    paintSeekProgress(seekBar.value, liveEdgePinned ? max : null);
+    return;
+  }
+
+  const liveEdgeTarget = getLiveEdgeTargetSeconds(liveWindow);
+  const current = clampLiveSeekTargetSeconds(getEffectiveCurrentTime());
+  if (
+    !liveEdgePinned &&
+    Number.isFinite(liveEdgeTarget) &&
+    current >= liveEdgeTarget - LIVE_EDGE_REJOIN_TOLERANCE_SECONDS
+  ) {
+    liveEdgePinned = true;
+  }
+
+  const displayedCurrent = liveEdgePinned
+    ? liveWindow.end
+    : clampLiveSeekTargetSeconds(getEffectiveCurrentTime());
+  const seekValue = liveEdgePinned
+    ? max
+    : Math.round(
+        ((displayedCurrent - liveWindow.start) / liveWindow.duration) * max,
+      );
+  seekBar.value = String(Math.max(0, Math.min(max, seekValue)));
+  paintSeekProgress(
+    seekBar.value,
+    liveEdgePinned ? max : getLiveBufferedSeekValue(liveWindow),
+  );
+}
+
 function syncSeekState() {
+  if (isLivePlayback) {
+    syncLiveSeekState();
+    return;
+  }
+
   const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
   if (isDraggingSeek) {
     if (seekScaleDurationSeconds > 0) {
@@ -5984,7 +6221,13 @@ function seekToAbsoluteTime(
   targetSeconds,
   { showLoading = false, isInitialResume = false } = {},
 ) {
-  const clampedTarget = Math.max(0, Number(targetSeconds) || 0);
+  let clampedTarget = Math.max(0, Number(targetSeconds) || 0);
+  if (isLivePlayback) {
+    clampedTarget = clampLiveSeekTargetSeconds(clampedTarget);
+    if (!isInitialResume) {
+      updateLiveEdgePinFromTarget(clampedTarget);
+    }
+  }
   lastPlaybackSeekAt = performance.now();
   resetAudioDecodeWatchState();
   if (!isInitialResume) {
@@ -5994,6 +6237,10 @@ function seekToAbsoluteTime(
     showSeekLoadingIndicator();
   }
   if (!isTranscodeSourceActive()) {
+    if (isLivePlayback) {
+      video.currentTime = clampedTarget;
+      return;
+    }
     if (Number.isFinite(video.duration) && video.duration > 0) {
       video.currentTime = Math.min(video.duration, clampedTarget);
     } else {
@@ -7238,613 +7485,6 @@ function persistSourceHashInUrl() {
   // No-op: clean URLs don't carry query params.
 }
 
-function createPlaybackBenchmarkApi() {
-  const benchmarkOriginMs = performance.now();
-  const benchmarkState = {
-    counters: {
-      loadedmetadata: 0,
-      canplay: 0,
-      playing: 0,
-      waiting: 0,
-      stalled: 0,
-      error: 0,
-      play: 0,
-      pause: 0,
-      seeking: 0,
-      seeked: 0,
-      ended: 0,
-      timeupdate: 0,
-    },
-    timings: {
-      firstLoadedMetadataMs: null,
-      firstCanPlayMs: null,
-      firstPlayingMs: null,
-      firstTimeUpdateMs: null,
-      firstVideoFrameMs: null,
-      lastVideoFrameMs: null,
-      lastSourceSetMs: null,
-    },
-    frameStats: {
-      callbackCount: 0,
-      processingDurationSampleCount: 0,
-      processingDurationTotalMs: 0,
-      maxProcessingDurationMs: 0,
-      frameIntervalSampleCount: 0,
-      frameIntervalTotalMs: 0,
-      maxFrameIntervalMs: 0,
-      maxPresentedFramesDelta: 0,
-      lastFrameNowMs: null,
-      lastPresentedFrames: null,
-    },
-    events: [],
-    sourceHistory: [],
-    frameCallbackArmed: false,
-  };
-  const loggedEvents = new Set([
-    "sourcechange",
-    "loadedmetadata",
-    "canplay",
-    "playing",
-    "waiting",
-    "stalled",
-    "error",
-    "play",
-    "pause",
-    "seeking",
-    "seeked",
-    "ended",
-  ]);
-
-  function benchmarkNowMs() {
-    return performance.now() - benchmarkOriginMs;
-  }
-
-  function roundBenchmarkNumber(value, digits = 2) {
-    return Number.isFinite(value)
-      ? Number(Number(value).toFixed(digits))
-      : null;
-  }
-
-  function rememberFirstBenchmarkTiming(key) {
-    if (benchmarkState.timings[key] === null) {
-      benchmarkState.timings[key] = roundBenchmarkNumber(benchmarkNowMs(), 1);
-    }
-  }
-
-  function getBenchmarkCurrentSource() {
-    return String(video.currentSrc || video.getAttribute("src") || "").trim();
-  }
-
-  function inferBenchmarkPlaybackMode(source = getBenchmarkCurrentSource()) {
-    const normalized = String(source || "").toLowerCase();
-    if (normalized.includes("/api/hls/master.m3u8")) {
-      return "hls";
-    }
-    if (normalized.includes("/api/remux")) {
-      return "remux";
-    }
-    return "direct";
-  }
-
-  function pushBenchmarkEvent(type, details = {}) {
-    if (!loggedEvents.has(type)) {
-      return;
-    }
-    benchmarkState.events.push({
-      type,
-      atMs: roundBenchmarkNumber(benchmarkNowMs(), 1),
-      currentTime: roundBenchmarkNumber(getEffectiveCurrentTime(), 3),
-      readyState: Number(video.readyState || 0),
-      paused: Boolean(video.paused),
-      seeking: Boolean(video.seeking),
-      mode: inferBenchmarkPlaybackMode(),
-      ...details,
-    });
-    if (benchmarkState.events.length > 120) {
-      benchmarkState.events.shift();
-    }
-  }
-
-  function readBenchmarkVideoQuality() {
-    if (typeof video.getVideoPlaybackQuality !== "function") {
-      return null;
-    }
-
-    try {
-      const quality = video.getVideoPlaybackQuality();
-      return {
-        droppedVideoFrames: Number(quality?.droppedVideoFrames || 0),
-        totalVideoFrames: Number(quality?.totalVideoFrames || 0),
-        corruptedVideoFrames: Number(quality?.corruptedVideoFrames || 0),
-        creationTime: Number(quality?.creationTime || 0),
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  function summarizeBenchmarkResources() {
-    const totals = {
-      requestCount: 0,
-      transferSize: 0,
-      encodedBodySize: 0,
-      decodedBodySize: 0,
-      durationMs: 0,
-    };
-
-    const entries = performance.getEntriesByType("resource");
-    entries.forEach((entry) => {
-      const name = String(entry?.name || "");
-      let pathname = "";
-      try {
-        pathname = new URL(name, window.location.origin).pathname;
-      } catch {
-        pathname = name;
-      }
-
-      const isPlaybackEntry =
-        pathname.startsWith("/assets/videos/") ||
-        pathname.startsWith("/media/") ||
-        pathname.startsWith("/videos/") ||
-        pathname === "/api/remux" ||
-        pathname === "/api/hls/master.m3u8" ||
-        pathname === "/api/hls/segment.ts";
-
-      if (!isPlaybackEntry) {
-        return;
-      }
-
-      totals.requestCount += 1;
-      totals.transferSize += Number(entry?.transferSize || 0);
-      totals.encodedBodySize += Number(entry?.encodedBodySize || 0);
-      totals.decodedBodySize += Number(entry?.decodedBodySize || 0);
-      totals.durationMs += Number(entry?.duration || 0);
-    });
-
-    return {
-      requestCount: totals.requestCount,
-      transferSize: Math.max(0, Math.round(totals.transferSize)),
-      encodedBodySize: Math.max(0, Math.round(totals.encodedBodySize)),
-      decodedBodySize: Math.max(0, Math.round(totals.decodedBodySize)),
-      durationMs: roundBenchmarkNumber(totals.durationMs, 1),
-    };
-  }
-
-  function getBenchmarkSnapshot() {
-    const frameStats = benchmarkState.frameStats;
-    const quality = readBenchmarkVideoQuality();
-    const effectiveDurationSeconds = (() => {
-      if (typeof getDisplayDurationSeconds === "function") {
-        const displayDuration = Number(getDisplayDurationSeconds());
-        if (Number.isFinite(displayDuration) && displayDuration > 0) {
-          return roundBenchmarkNumber(displayDuration, 3);
-        }
-      }
-      const fallbackDuration = Number(video.duration);
-      return Number.isFinite(fallbackDuration)
-        ? roundBenchmarkNumber(fallbackDuration, 3)
-        : null;
-    })();
-
-    return {
-      benchmarkMode: true,
-      capturedAtMs: roundBenchmarkNumber(benchmarkNowMs(), 1),
-      currentTime: roundBenchmarkNumber(getEffectiveCurrentTime(), 3),
-      rawCurrentTime: roundBenchmarkNumber(Number(video.currentTime || 0), 3),
-      durationSeconds: effectiveDurationSeconds,
-      playbackRate: roundBenchmarkNumber(Number(video.playbackRate || 1), 3),
-      readyState: Number(video.readyState || 0),
-      networkState: Number(video.networkState || 0),
-      paused: Boolean(video.paused),
-      ended: Boolean(video.ended),
-      seeking: Boolean(video.seeking),
-      muted: Boolean(video.muted),
-      volume: roundBenchmarkNumber(Number(video.volume || 0), 3),
-      source: {
-        currentSource: getBenchmarkCurrentSource(),
-        input: extractPlaybackSourceInput(getBenchmarkCurrentSource()),
-        mode: inferBenchmarkPlaybackMode(),
-      },
-      videoMetrics: {
-        clientWidth: Number(video.clientWidth || 0),
-        clientHeight: Number(video.clientHeight || 0),
-        videoWidth: Number(video.videoWidth || 0),
-        videoHeight: Number(video.videoHeight || 0),
-      },
-      timings: { ...benchmarkState.timings },
-      counters: { ...benchmarkState.counters },
-      quality,
-      frameStats: {
-        callbackCount: benchmarkState.frameStats.callbackCount,
-        processingDurationSampleCount:
-          frameStats.processingDurationSampleCount,
-        meanProcessingDurationMs:
-          frameStats.processingDurationSampleCount > 0
-            ? roundBenchmarkNumber(
-                frameStats.processingDurationTotalMs /
-                  frameStats.processingDurationSampleCount,
-                3,
-              )
-            : null,
-        maxProcessingDurationMs: roundBenchmarkNumber(
-          frameStats.maxProcessingDurationMs,
-          3,
-        ),
-        frameIntervalSampleCount: frameStats.frameIntervalSampleCount,
-        meanFrameIntervalMs:
-          frameStats.frameIntervalSampleCount > 0
-            ? roundBenchmarkNumber(
-                frameStats.frameIntervalTotalMs /
-                  frameStats.frameIntervalSampleCount,
-                3,
-              )
-            : null,
-        maxFrameIntervalMs: roundBenchmarkNumber(
-          frameStats.maxFrameIntervalMs,
-          3,
-        ),
-        estimatedFrameRateFps:
-          frameStats.frameIntervalSampleCount > 0 &&
-          frameStats.frameIntervalTotalMs > 0
-            ? roundBenchmarkNumber(
-                1000 /
-                  (frameStats.frameIntervalTotalMs /
-                    frameStats.frameIntervalSampleCount),
-                3,
-              )
-            : null,
-        maxPresentedFramesDelta: frameStats.maxPresentedFramesDelta,
-      },
-      resources: summarizeBenchmarkResources(),
-      events: benchmarkState.events.slice(),
-      sourceHistory: benchmarkState.sourceHistory.slice(),
-    };
-  }
-
-  async function waitForBenchmarkCondition(
-    predicate,
-    {
-      timeoutMs = 30_000,
-      pollIntervalMs = 50,
-      errorMessage = "Benchmark condition timed out.",
-    } = {},
-  ) {
-    const startedAt = performance.now();
-
-    return new Promise((resolve, reject) => {
-      function step() {
-        let result = null;
-        try {
-          result = predicate();
-        } catch (error) {
-          reject(error);
-          return;
-        }
-
-        if (result) {
-          resolve(result === true ? getBenchmarkSnapshot() : result);
-          return;
-        }
-
-        if (performance.now() - startedAt >= timeoutMs) {
-          reject(new Error(errorMessage));
-          return;
-        }
-
-        window.setTimeout(step, pollIntervalMs);
-      }
-
-      step();
-    });
-  }
-
-  function armBenchmarkFrameCallback() {
-    if (
-      benchmarkState.frameCallbackArmed ||
-      typeof video.requestVideoFrameCallback !== "function"
-    ) {
-      return;
-    }
-
-    benchmarkState.frameCallbackArmed = true;
-    video.requestVideoFrameCallback((now, metadata) => {
-      benchmarkState.frameCallbackArmed = false;
-      benchmarkState.frameStats.callbackCount += 1;
-      rememberFirstBenchmarkTiming("firstVideoFrameMs");
-      benchmarkState.timings.lastVideoFrameMs = roundBenchmarkNumber(
-        benchmarkNowMs(),
-        1,
-      );
-
-      const processingDurationMs =
-        Number(metadata?.processingDuration || 0) * 1000;
-      if (Number.isFinite(processingDurationMs) && processingDurationMs >= 0) {
-        benchmarkState.frameStats.processingDurationSampleCount += 1;
-        benchmarkState.frameStats.processingDurationTotalMs +=
-          processingDurationMs;
-        benchmarkState.frameStats.maxProcessingDurationMs = Math.max(
-          benchmarkState.frameStats.maxProcessingDurationMs,
-          processingDurationMs,
-        );
-      }
-
-      if (Number.isFinite(benchmarkState.frameStats.lastFrameNowMs)) {
-        const frameIntervalMs = now - benchmarkState.frameStats.lastFrameNowMs;
-        if (Number.isFinite(frameIntervalMs) && frameIntervalMs >= 0) {
-          benchmarkState.frameStats.frameIntervalSampleCount += 1;
-          benchmarkState.frameStats.frameIntervalTotalMs += frameIntervalMs;
-          benchmarkState.frameStats.maxFrameIntervalMs = Math.max(
-            benchmarkState.frameStats.maxFrameIntervalMs,
-            frameIntervalMs,
-          );
-        }
-      }
-      benchmarkState.frameStats.lastFrameNowMs = now;
-
-      const presentedFrames = Number(metadata?.presentedFrames || 0);
-      if (
-        Number.isFinite(presentedFrames) &&
-        Number.isFinite(benchmarkState.frameStats.lastPresentedFrames)
-      ) {
-        benchmarkState.frameStats.maxPresentedFramesDelta = Math.max(
-          benchmarkState.frameStats.maxPresentedFramesDelta,
-          Math.max(
-            0,
-            presentedFrames - benchmarkState.frameStats.lastPresentedFrames,
-          ),
-        );
-      }
-      if (Number.isFinite(presentedFrames) && presentedFrames >= 0) {
-        benchmarkState.frameStats.lastPresentedFrames = presentedFrames;
-      }
-
-      if (!video.ended) {
-        armBenchmarkFrameCallback();
-      }
-    });
-  }
-
-  function recordBenchmarkVideoEvent(type) {
-    if (Object.hasOwn(benchmarkState.counters, type)) {
-      benchmarkState.counters[type] += 1;
-    }
-
-    if (type === "loadedmetadata") {
-      rememberFirstBenchmarkTiming("firstLoadedMetadataMs");
-      armBenchmarkFrameCallback();
-    } else if (type === "canplay") {
-      rememberFirstBenchmarkTiming("firstCanPlayMs");
-      armBenchmarkFrameCallback();
-    } else if (type === "playing") {
-      rememberFirstBenchmarkTiming("firstPlayingMs");
-      armBenchmarkFrameCallback();
-    } else if (type === "timeupdate") {
-      rememberFirstBenchmarkTiming("firstTimeUpdateMs");
-    }
-
-    if (type === "error") {
-      pushBenchmarkEvent(type, {
-        mediaErrorCode: Number(video.error?.code || 0) || null,
-        mediaErrorMessage: String(video.error?.message || "").trim() || null,
-      });
-      return;
-    }
-
-    pushBenchmarkEvent(type);
-  }
-
-  [
-    "loadedmetadata",
-    "canplay",
-    "playing",
-    "waiting",
-    "stalled",
-    "error",
-    "play",
-    "pause",
-    "seeking",
-    "seeked",
-    "ended",
-    "timeupdate",
-  ].forEach((eventName) => {
-    video.addEventListener(eventName, () => recordBenchmarkVideoEvent(eventName));
-  });
-
-  return {
-    getSnapshot: getBenchmarkSnapshot,
-    play: async () => {
-      await tryPlay();
-      return getBenchmarkSnapshot();
-    },
-    pause: () => {
-      video.pause();
-      return getBenchmarkSnapshot();
-    },
-    waitForPlayback: async ({
-      timeoutMs = 30_000,
-      minCurrentTime = 1.25,
-    } = {}) => {
-      return waitForBenchmarkCondition(
-        () => {
-          const snapshot = getBenchmarkSnapshot();
-          if (!snapshot.source.currentSource) {
-            return null;
-          }
-          const hasStarted =
-            snapshot.timings.firstPlayingMs !== null ||
-            snapshot.timings.firstVideoFrameMs !== null;
-          if (
-            hasStarted &&
-            snapshot.readyState >= 2 &&
-            snapshot.currentTime >= minCurrentTime
-          ) {
-            return snapshot;
-          }
-          return null;
-        },
-        {
-          timeoutMs,
-          errorMessage: `Playback did not advance past ${minCurrentTime}s in time.`,
-        },
-      );
-    },
-    measurePauseResume: async ({
-      pauseDurationMs = 500,
-      playbackAdvanceSeconds = 0.35,
-      timeoutMs = 15_000,
-    } = {}) => {
-      const baselineCurrentTime = getEffectiveCurrentTime();
-      const pauseStartedAt = performance.now();
-      video.pause();
-      await waitForBenchmarkCondition(() => video.paused, {
-        timeoutMs,
-        errorMessage: "Pause did not settle in time.",
-      });
-      const pauseSettledMs = performance.now() - pauseStartedAt;
-
-      if (pauseDurationMs > 0) {
-        await new Promise((resolve) => window.setTimeout(resolve, pauseDurationMs));
-      }
-
-      const resumeStartedAt = performance.now();
-      await tryPlay();
-      const targetTime = baselineCurrentTime + Math.max(0.05, playbackAdvanceSeconds);
-      await waitForBenchmarkCondition(
-        () => {
-          if (video.paused || video.readyState < 2) {
-            return null;
-          }
-          return getEffectiveCurrentTime() >= targetTime
-            ? getBenchmarkSnapshot()
-            : null;
-        },
-        {
-          timeoutMs,
-          errorMessage: "Playback did not resume cleanly in time.",
-        },
-      );
-
-      return {
-        baselineCurrentTime: roundBenchmarkNumber(baselineCurrentTime, 3),
-        pauseSettledMs: roundBenchmarkNumber(pauseSettledMs, 2),
-        resumeLatencyMs: roundBenchmarkNumber(
-          performance.now() - resumeStartedAt,
-          2,
-        ),
-        endCurrentTime: roundBenchmarkNumber(getEffectiveCurrentTime(), 3),
-        snapshot: getBenchmarkSnapshot(),
-      };
-    },
-    measureSeek: async ({
-      targetSeconds = 0,
-      playbackAdvanceSeconds = 0.35,
-      timeoutMs = 20_000,
-      showLoading = true,
-    } = {}) => {
-      const baselineCurrentTime = getEffectiveCurrentTime();
-      const safeTargetSeconds = Math.max(0, Number(targetSeconds) || 0);
-      const seekStartedAt = performance.now();
-      seekToAbsoluteTime(safeTargetSeconds, { showLoading });
-
-      await waitForBenchmarkCondition(
-        () => {
-          if (video.seeking || video.readyState < 2) {
-            return null;
-          }
-          const effectiveCurrentTime = getEffectiveCurrentTime();
-          const nearTarget = Math.abs(effectiveCurrentTime - safeTargetSeconds) <= 1;
-          const advancedPastTarget =
-            effectiveCurrentTime >=
-            safeTargetSeconds + Math.max(0.05, playbackAdvanceSeconds);
-          return nearTarget || advancedPastTarget
-            ? getBenchmarkSnapshot()
-            : null;
-        },
-        {
-          timeoutMs,
-          errorMessage: `Seek to ${safeTargetSeconds}s did not settle in time.`,
-        },
-      );
-
-      const endCurrentTime = getEffectiveCurrentTime();
-      return {
-        baselineCurrentTime: roundBenchmarkNumber(baselineCurrentTime, 3),
-        targetSeconds: roundBenchmarkNumber(safeTargetSeconds, 3),
-        seekLatencyMs: roundBenchmarkNumber(
-          performance.now() - seekStartedAt,
-          2,
-        ),
-        endCurrentTime: roundBenchmarkNumber(endCurrentTime, 3),
-        absoluteErrorSeconds: roundBenchmarkNumber(
-          Math.abs(endCurrentTime - safeTargetSeconds),
-          3,
-        ),
-        snapshot: getBenchmarkSnapshot(),
-      };
-    },
-    setStrategy: async ({
-      mode = "direct",
-      input = "",
-      startSeconds = 0,
-      audioStreamIndex = -1,
-      subtitleStreamIndex = -1,
-      videoMode = preferredRemuxVideoMode,
-    } = {}) => {
-      const safeInput = String(input || "").trim();
-      if (!safeInput) {
-        throw new Error("Benchmark strategy input is required.");
-      }
-
-      let nextSource = safeInput;
-      if (mode === "remux") {
-        nextSource = buildSoftwareDecodeUrl(
-          safeInput,
-          startSeconds,
-          audioStreamIndex,
-          preferredAudioSyncMs,
-          subtitleStreamIndex,
-          videoMode,
-        );
-      } else if (mode === "hls") {
-        nextSource = buildHlsPlaybackUrl(
-          safeInput,
-          audioStreamIndex,
-          subtitleStreamIndex,
-        );
-      } else if (mode === "direct") {
-        if (
-          !safeInput.startsWith("/") &&
-          !/^[a-z]+:\/\//i.test(safeInput)
-        ) {
-          nextSource = `/${safeInput}`;
-        }
-      } else {
-        throw new Error(`Unsupported benchmark strategy '${mode}'.`);
-      }
-
-      setVideoSource(nextSource);
-      await tryPlay();
-      return getBenchmarkSnapshot();
-    },
-    _recordSourceChange: (source) => {
-      const atMs = roundBenchmarkNumber(benchmarkNowMs(), 1);
-      benchmarkState.timings.lastSourceSetMs = atMs;
-      benchmarkState.sourceHistory.push({
-        atMs,
-        mode: inferBenchmarkPlaybackMode(source),
-        source,
-      });
-      if (benchmarkState.sourceHistory.length > 24) {
-        benchmarkState.sourceHistory.shift();
-      }
-      pushBenchmarkEvent("sourcechange", {
-        source,
-        mode: inferBenchmarkPlaybackMode(source),
-      });
-    },
-  };
-}
-
 function cleanUrlIfNeeded() {
   try {
     const shouldUseEpisodePath = isEpisodeListPlayback();
@@ -7891,6 +7531,12 @@ async function initPlaybackSource() {
           }
           if (!params.has("liveStreams")) {
             params.set("liveStreams", JSON.stringify(_liveMatch.streams || []));
+          }
+          if (_liveMatch.liveEmbed && !params.has("liveEmbed")) {
+            params.set("liveEmbed", "1");
+          }
+          if (_liveMatch.liveResolver && !params.has("liveResolver")) {
+            params.set("liveResolver", _liveMatch.liveResolver);
           }
           rawSourceParam = String(params.get("src") || "").trim();
           normalizedRawSourceParam = normalizePlaybackSourceValue(rawSourceParam);
@@ -8221,7 +7867,19 @@ async function initPlaybackSource() {
 
     // Benchmark API (needs video ref)
     if (benchmarkModeEnabled) {
-      playbackBenchmark = createPlaybackBenchmarkApi();
+      playbackBenchmark = createPlaybackBenchmarkApi({
+        video,
+        getEffectiveCurrentTime,
+        getDisplayDurationSeconds,
+        extractPlaybackSourceInput,
+        tryPlay,
+        seekToAbsoluteTime,
+        buildSoftwareDecodeUrl,
+        buildHlsPlaybackUrl,
+        setVideoSource,
+        getPreferredRemuxVideoMode: () => preferredRemuxVideoMode,
+        getPreferredAudioSyncMs: () => preferredAudioSyncMs,
+      });
       window.__NETFLIX_PLAYBACK_BENCHMARK__ = playbackBenchmark;
     }
 
@@ -8230,8 +7888,7 @@ async function initPlaybackSource() {
 enableAudiblePlaybackByDefault();
 
 trackListener(goBack, "click", () => {
-  persistResumeTime(true);
-  window.location.href = "/";
+  navigateBackFromPlayer();
 });
 
 trackListener(togglePlay, "click", togglePlayback);
@@ -8956,8 +8613,20 @@ function updateSeekPreview(e) {
   const duration = getSeekScaleDurationSeconds();
   if (duration <= 0) return;
 
-  const timeAtCursor = ratio * duration;
-  seekPreviewTime.textContent = formatTime(timeAtCursor);
+  const timeAtCursor = getSeekTargetSecondsFromRatio(ratio, duration);
+  if (isLivePlayback) {
+    const liveWindow = getLiveSeekableWindow();
+    const secondsBehindLive = liveWindow
+      ? Math.max(0, liveWindow.end - timeAtCursor)
+      : 0;
+    seekPreviewTime.textContent =
+      ratio >= LIVE_EDGE_PIN_RATIO ||
+      secondsBehindLive <= LIVE_EDGE_REJOIN_TOLERANCE_SECONDS
+        ? "LIVE"
+        : `-${formatTime(secondsBehindLive)}`;
+  } else {
+    seekPreviewTime.textContent = formatTime(timeAtCursor);
+  }
 
   // Position the preview, clamped so it doesn't go off-screen
   const previewWidth = 160;
@@ -8970,14 +8639,12 @@ function updateSeekPreview(e) {
   // Draw thumbnail from main video if same source, or preview video
   syncPreviewVideoSource();
   if (seekPreviewReady && seekPreviewVideo) {
-    const target = Math.max(
-      0,
-      Math.min(
-        duration,
-        Math.round(timeAtCursor / SEEK_PREVIEW_SEEK_STEP_SECONDS) *
-          SEEK_PREVIEW_SEEK_STEP_SECONDS,
-      ),
-    );
+    const roundedTarget =
+      Math.round(timeAtCursor / SEEK_PREVIEW_SEEK_STEP_SECONDS) *
+      SEEK_PREVIEW_SEEK_STEP_SECONDS;
+    const target = isLivePlayback
+      ? clampLiveSeekTargetSeconds(roundedTarget)
+      : Math.max(0, Math.min(duration, roundedTarget));
     const now = performance.now();
     if (
       seekPreviewPending !== target &&
@@ -9038,13 +8705,21 @@ function handleSeekPointerUp(event) {
   }
 
   if (pendingTranscodeSeekRatio !== null && isTranscodeSourceActive()) {
-    seekToAbsoluteTime(pendingTranscodeSeekRatio * seekScaleDurationSeconds, {
-      showLoading: true,
-    });
+    seekToAbsoluteTime(
+      getSeekTargetSecondsFromRatio(
+        pendingTranscodeSeekRatio,
+        seekScaleDurationSeconds,
+      ),
+      { showLoading: true },
+    );
   } else if (pendingStandardSeekRatio !== null && !isTranscodeSourceActive()) {
-    seekToAbsoluteTime(pendingStandardSeekRatio * seekScaleDurationSeconds, {
-      showLoading: true,
-    });
+    seekToAbsoluteTime(
+      getSeekTargetSecondsFromRatio(
+        pendingStandardSeekRatio,
+        seekScaleDurationSeconds,
+      ),
+      { showLoading: true },
+    );
   }
 
   pendingTranscodeSeekRatio = null;
@@ -9076,7 +8751,10 @@ trackListener(seekBar, "input", () => {
       pendingTranscodeSeekRatio = ratio;
       return;
     }
-    seekToAbsoluteTime(ratio * seekScaleDurationSeconds, { showLoading: true });
+    seekToAbsoluteTime(
+      getSeekTargetSecondsFromRatio(ratio, seekScaleDurationSeconds),
+      { showLoading: true },
+    );
     return;
   }
 
@@ -9088,7 +8766,10 @@ trackListener(seekBar, "input", () => {
     pendingStandardSeekRatio = ratio;
     return;
   }
-  seekToAbsoluteTime(ratio * seekScaleDurationSeconds, { showLoading: true });
+  seekToAbsoluteTime(
+    getSeekTargetSecondsFromRatio(ratio, seekScaleDurationSeconds),
+    { showLoading: true },
+  );
 });
 
 trackListener(video, "loadedmetadata", () => {
@@ -9434,8 +9115,7 @@ async function handleKeydown(event) {
       closeSpeedPopover(false);
       return;
     }
-    persistResumeTime(true);
-    window.location.href = "/";
+    navigateBackFromPlayer();
   }
 }
 _handleKeydownRef = handleKeydown;

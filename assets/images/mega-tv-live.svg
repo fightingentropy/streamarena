@@ -1,0 +1,6 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect width="64" height="64" rx="8" fill="#FF6B00"/>
+<rect x="8" y="8" width="48" height="48" rx="4" fill="#FFFFFF"/>
+<text x="32" y="32" text-anchor="middle" font-family="Arial, sans-serif" font-weight="bold" font-size="12" fill="#FF6B00">MEGA</text>
+<rect x="20" y="40" width="24" height="2" fill="#FF6B00"/>
+</svg>
