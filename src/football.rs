@@ -649,8 +649,8 @@ fn merge_football_match_payloads(
     json!({
         "source": "combined",
         "sources": [
-            legacy_payload.get("source").and_then(Value::as_str).unwrap_or_default(),
-            STREAMED_FOOTBALL_MATCHES_URL
+            STREAMED_FOOTBALL_MATCHES_URL,
+            legacy_payload.get("source").and_then(Value::as_str).unwrap_or_default()
         ],
         "sport": "Football",
         "fetchedAt": fetched_at_ms,
@@ -694,66 +694,62 @@ fn merge_football_match_streams(existing: &mut Value, incoming: &Value) {
     let Some(existing_object) = existing.as_object_mut() else {
         return;
     };
+    let prefer_incoming = is_streamed_match_payload(incoming);
 
-    let mut streams = existing_object
+    let existing_streams = existing_object
         .get("streams")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut seen_stream_sources = streams
-        .iter()
-        .filter_map(|stream| stream.get("source").and_then(Value::as_str))
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    if let Some(incoming_streams) = incoming.get("streams").and_then(Value::as_array) {
-        for stream in incoming_streams {
-            let Some(source) = stream.get("source").and_then(Value::as_str) else {
-                continue;
-            };
-            if seen_stream_sources.insert(source.to_owned()) {
-                streams.push(stream.clone());
+    let incoming_streams = incoming.get("streams").and_then(Value::as_array);
+    let mut streams = Vec::new();
+    let mut seen_stream_sources = BTreeSet::new();
+    if prefer_incoming {
+        if let Some(incoming_streams) = incoming_streams {
+            for stream in incoming_streams {
+                push_unique_football_stream(&mut streams, &mut seen_stream_sources, stream);
+            }
+        }
+        for stream in &existing_streams {
+            push_unique_football_stream(&mut streams, &mut seen_stream_sources, stream);
+        }
+    } else {
+        for stream in &existing_streams {
+            push_unique_football_stream(&mut streams, &mut seen_stream_sources, stream);
+        }
+        if let Some(incoming_streams) = incoming_streams {
+            for stream in incoming_streams {
+                push_unique_football_stream(&mut streams, &mut seen_stream_sources, stream);
             }
         }
     }
     existing_object.insert("linkCount".to_owned(), json!(streams.len()));
     existing_object.insert("streams".to_owned(), Value::Array(streams));
 
-    let mut channels = existing_object
+    let existing_channels = existing_object
         .get("channels")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut seen_channels = channels
-        .iter()
-        .map(|channel| {
-            format!(
-                "{}:{}",
-                channel
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-                channel
-                    .get("language")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    if let Some(incoming_channels) = incoming.get("channels").and_then(Value::as_array) {
-        for channel in incoming_channels {
-            let key = format!(
-                "{}:{}",
-                channel
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-                channel
-                    .get("language")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-            );
-            if seen_channels.insert(key) {
-                channels.push(channel.clone());
+    let incoming_channels = incoming.get("channels").and_then(Value::as_array);
+    let mut channels = Vec::new();
+    let mut seen_channels = BTreeSet::new();
+    if prefer_incoming {
+        if let Some(incoming_channels) = incoming_channels {
+            for channel in incoming_channels {
+                push_unique_football_channel(&mut channels, &mut seen_channels, channel);
+            }
+        }
+        for channel in &existing_channels {
+            push_unique_football_channel(&mut channels, &mut seen_channels, channel);
+        }
+    } else {
+        for channel in &existing_channels {
+            push_unique_football_channel(&mut channels, &mut seen_channels, channel);
+        }
+        if let Some(incoming_channels) = incoming_channels {
+            for channel in incoming_channels {
+                push_unique_football_channel(&mut channels, &mut seen_channels, channel);
             }
         }
     }
@@ -780,6 +776,71 @@ fn merge_football_match_streams(existing: &mut Value, incoming: &Value) {
         "languages".to_owned(),
         Value::Array(languages.into_iter().map(Value::String).collect()),
     );
+}
+
+fn is_streamed_match_payload(match_item: &Value) -> bool {
+    if match_item
+        .get("provider")
+        .and_then(Value::as_str)
+        .map(|provider| provider.eq_ignore_ascii_case("streamed"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    match_item
+        .get("streams")
+        .and_then(Value::as_array)
+        .map(|streams| {
+            streams.iter().any(|stream| {
+                stream
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .map(is_streamed_stream_source)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn is_streamed_stream_source(source: &str) -> bool {
+    Url::parse(source.trim())
+        .map(|url| is_streamed_stream_api_url(&url))
+        .unwrap_or(false)
+}
+
+fn push_unique_football_stream(
+    streams: &mut Vec<Value>,
+    seen_sources: &mut BTreeSet<String>,
+    stream: &Value,
+) {
+    let Some(source) = stream.get("source").and_then(Value::as_str) else {
+        return;
+    };
+    if seen_sources.insert(source.to_owned()) {
+        streams.push(stream.clone());
+    }
+}
+
+fn push_unique_football_channel(
+    channels: &mut Vec<Value>,
+    seen_channels: &mut BTreeSet<String>,
+    channel: &Value,
+) {
+    let key = format!(
+        "{}:{}",
+        channel
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        channel
+            .get("language")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    );
+    if seen_channels.insert(key) {
+        channels.push(channel.clone());
+    }
 }
 
 fn schedule_response(payload: Value, cache_status: &'static str) -> Response<Body> {
@@ -1697,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn merges_streamed_streams_into_matching_legacy_match() {
+    fn merges_streamed_streams_first_into_matching_legacy_match() {
         let legacy_payload = json!({
             "source": "legacy",
             "sport": "Football",
@@ -1751,6 +1812,15 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0]["linkCount"], 2);
         assert_eq!(matches[0]["streams"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            matches[0]["streams"][0]["source"],
+            "https://streamed.pk/api/stream/admin/a-b"
+        );
+        assert_eq!(
+            matches[0]["streams"][1]["source"],
+            "https://glisco.link/ch?id=1"
+        );
+        assert_eq!(matches[0]["channels"][0]["name"], "Streamed Admin");
         assert_eq!(matches[0]["languages"].as_array().unwrap().len(), 2);
     }
 
