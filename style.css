@@ -1969,6 +1969,7 @@ body.is-search-mode #myListRow {
 }
 
 .hover-round {
+    position: relative;
     width: 40px;
     height: 40px;
     border-radius: 999px;
@@ -2010,7 +2011,53 @@ body.is-search-mode #myListRow {
 
 .hover-round.is-active {
     border-color: #fff;
-    background: rgba(229, 9, 20, 0.32);
+    background: rgba(58, 58, 58, 0.9);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .hover-round[data-tooltip]::before,
+    .hover-round[data-tooltip]::after {
+        position: absolute;
+        left: 50%;
+        z-index: 5;
+        opacity: 0;
+        pointer-events: none;
+        transition:
+            opacity 120ms ease,
+            transform 120ms ease;
+    }
+
+    .hover-round[data-tooltip]::before {
+        content: attr(data-tooltip);
+        bottom: calc(100% + 16px);
+        padding: 10px 14px;
+        border-radius: 4px;
+        background: #e6e6e6;
+        color: #1d1d1f;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+        font-size: 0.92rem;
+        font-weight: 700;
+        line-height: 1;
+        white-space: nowrap;
+        transform: translate(-50%, 4px);
+    }
+
+    .hover-round[data-tooltip]::after {
+        content: "";
+        bottom: calc(100% + 8px);
+        border-top: 8px solid #e6e6e6;
+        border-right: 8px solid transparent;
+        border-left: 8px solid transparent;
+        transform: translate(-50%, 4px);
+    }
+
+    .hover-round[data-tooltip]:hover::before,
+    .hover-round[data-tooltip]:hover::after,
+    .hover-round[data-tooltip]:focus-visible::before,
+    .hover-round[data-tooltip]:focus-visible::after {
+        opacity: 1;
+        transform: translate(-50%, 0);
+    }
 }
 
 .hover-edit {
