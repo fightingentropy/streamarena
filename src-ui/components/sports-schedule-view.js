@@ -19,15 +19,52 @@ const SPORT_CONFIGS = Object.freeze({
     streamResolver: "basketball",
     slugFallback: "basketball",
   }),
+  tennis: Object.freeze({
+    apiUrl: "/api/tennis/matches",
+    sportName: "Tennis",
+    streamResolver: "sports",
+    slugFallback: "tennis",
+  }),
+  hockey: Object.freeze({
+    apiUrl: "/api/hockey/matches",
+    sportName: "Hockey",
+    streamResolver: "sports",
+    slugFallback: "hockey",
+  }),
+  baseball: Object.freeze({
+    apiUrl: "/api/baseball/matches",
+    sportName: "Baseball",
+    streamResolver: "sports",
+    slugFallback: "baseball",
+  }),
+  "american-football": Object.freeze({
+    apiUrl: "/api/american-football/matches",
+    sportName: "American Football",
+    streamResolver: "sports",
+    slugFallback: "american-football",
+  }),
+  cricket: Object.freeze({
+    apiUrl: "/api/cricket/matches",
+    sportName: "Cricket",
+    streamResolver: "sports",
+    slugFallback: "cricket",
+  }),
 });
 
+const SPORT_TABS = Object.freeze(
+  Object.entries(SPORT_CONFIGS).map(([id, config]) =>
+    Object.freeze({ id, label: config.sportName }),
+  ),
+);
+
 function normalizeSport(value) {
-  return String(value || "").trim().toLowerCase() === "basketball" ? "basketball" : "football";
+  const sport = String(value || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(SPORT_CONFIGS, sport) ? sport : "football";
 }
 
 function readInitialSport(options = {}) {
   const optionSport = normalizeSport(options.initialSport);
-  if (optionSport === "basketball") return optionSport;
+  if (optionSport !== "football") return optionSport;
   try {
     return normalizeSport(new URLSearchParams(window.location.search).get("sport"));
   } catch {
@@ -41,10 +78,10 @@ function updateSportsUrl(sport) {
     if (!url.pathname.endsWith(".html")) {
       url.pathname = "/sports";
     }
-    if (sport === "basketball") {
-      url.searchParams.set("sport", "basketball");
-    } else {
+    if (sport === "football") {
       url.searchParams.delete("sport");
+    } else {
+      url.searchParams.set("sport", sport);
     }
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   } catch {
@@ -394,18 +431,14 @@ export default function SportsScheduleView(options = {}) {
   return html`
     <main class="sports-main">
       <nav class="sports-switcher" aria-label="Sports">
-        <button
-          type="button"
-          class=${() => (selectedSport() === "football" ? "is-active" : "")}
-          aria-pressed=${() => (selectedSport() === "football" ? "true" : "false")}
-          onClick=${() => switchSport("football")}
-        >Football</button>
-        <button
-          type="button"
-          class=${() => (selectedSport() === "basketball" ? "is-active" : "")}
-          aria-pressed=${() => (selectedSport() === "basketball" ? "true" : "false")}
-          onClick=${() => switchSport("basketball")}
-        >Basketball</button>
+        ${SPORT_TABS.map((sport) => html`
+          <button
+            type="button"
+            class=${() => (selectedSport() === sport.id ? "is-active" : "")}
+            aria-pressed=${() => (selectedSport() === sport.id ? "true" : "false")}
+            onClick=${() => switchSport(sport.id)}
+          >${sport.label}</button>
+        `)}
       </nav>
       <section class="sports-board" aria-label=${() => `${config().sportName} schedule`}>
         <div class="sports-date-strip">

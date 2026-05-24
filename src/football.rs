@@ -21,11 +21,17 @@ use crate::utils::now_ms;
 const MATCHSTREAM_SCHEDULE_URL: &str = "https://matchstream.do/matchstream/proxy.php";
 const MATCHSTREAM_FOOTBALL_CACHE_KEY: &str = "matchstream:football";
 const MATCHSTREAM_BASKETBALL_CACHE_KEY: &str = "matchstream:basketball";
+const STREAMED_TENNIS_CACHE_KEY: &str = "streamed:tennis";
+const STREAMED_HOCKEY_CACHE_KEY: &str = "streamed:hockey";
+const STREAMED_BASEBALL_CACHE_KEY: &str = "streamed:baseball";
+const STREAMED_AMERICAN_FOOTBALL_CACHE_KEY: &str = "streamed:american-football";
+const STREAMED_CRICKET_CACHE_KEY: &str = "streamed:cricket";
 const SUPER_LEAGUE_FOOTBALL_URL: &str = "https://super.league.st/index.php?sport=Football";
 const SUPER_LEAGUE_BASKETBALL_URL: &str = "https://super.league.st/index.php?sport=Basketball";
+const STREAMED_MATCHES_BASE_URL: &str = "https://streamed.pk/api/matches";
 const STREAMED_FOOTBALL_MATCHES_URL: &str = "https://streamed.pk/api/matches/football";
-const STREAMED_FOOTBALL_REFERER: &str = "https://livsport.dpdns.org/sport?id=football";
-const STREAMED_FOOTBALL_DEFAULT_DURATION_MINUTES: i64 = 180;
+const STREAMED_REFERER: &str = "https://streamed.pk/";
+const STREAMED_DEFAULT_DURATION_MINUTES: i64 = 180;
 const SUPER_LEAGUE_STREAM_USER_AGENT: &str = "Mozilla/5.0";
 const MAX_LIVE_STREAM_CANDIDATES: usize = 6;
 const LIVE_STREAM_PREFLIGHT_TIMEOUT_MS: u64 = 4_000;
@@ -350,6 +356,35 @@ pub async fn basketball_matches_handler(
     .await
 }
 
+pub async fn tennis_matches_handler(State(state): State<AppState>) -> AppResult<Response<Body>> {
+    streamed_sport_matches_response(&state, STREAMED_TENNIS_CACHE_KEY, "tennis", "Tennis").await
+}
+
+pub async fn hockey_matches_handler(State(state): State<AppState>) -> AppResult<Response<Body>> {
+    streamed_sport_matches_response(&state, STREAMED_HOCKEY_CACHE_KEY, "hockey", "Hockey").await
+}
+
+pub async fn baseball_matches_handler(State(state): State<AppState>) -> AppResult<Response<Body>> {
+    streamed_sport_matches_response(&state, STREAMED_BASEBALL_CACHE_KEY, "baseball", "Baseball")
+        .await
+}
+
+pub async fn american_football_matches_handler(
+    State(state): State<AppState>,
+) -> AppResult<Response<Body>> {
+    streamed_sport_matches_response(
+        &state,
+        STREAMED_AMERICAN_FOOTBALL_CACHE_KEY,
+        "american-football",
+        "American Football",
+    )
+    .await
+}
+
+pub async fn cricket_matches_handler(State(state): State<AppState>) -> AppResult<Response<Body>> {
+    streamed_sport_matches_response(&state, STREAMED_CRICKET_CACHE_KEY, "cricket", "Cricket").await
+}
+
 async fn sports_matches_response(
     state: &AppState,
     cache_key: &'static str,
@@ -384,6 +419,38 @@ async fn sports_matches_response(
     }
 }
 
+async fn streamed_sport_matches_response(
+    state: &AppState,
+    cache_key: &'static str,
+    streamed_category: &'static str,
+    sport_name: &'static str,
+) -> AppResult<Response<Body>> {
+    if let Some(payload) = state.sports_schedule_cache.fresh(cache_key, now_ms()) {
+        return Ok(schedule_response(payload, "hit"));
+    }
+
+    let schedule_lock = state.sports_schedule_cache.lock_for(cache_key);
+    let _guard = schedule_lock.lock().await;
+    if let Some(payload) = state.sports_schedule_cache.fresh(cache_key, now_ms()) {
+        return Ok(schedule_response(payload, "hit"));
+    }
+
+    match fetch_streamed_sport_matches_payload(state, streamed_category, sport_name).await {
+        Ok((payload, fetched_at_ms)) => {
+            state
+                .sports_schedule_cache
+                .insert(cache_key, payload.clone(), fetched_at_ms);
+            Ok(schedule_response(payload, "miss"))
+        }
+        Err(error) => {
+            if let Some(payload) = state.sports_schedule_cache.stale(cache_key, now_ms()) {
+                return Ok(schedule_response(payload, "stale"));
+            }
+            Err(error)
+        }
+    }
+}
+
 async fn fetch_sports_matches_payload(
     state: &AppState,
     sport_name: &'static str,
@@ -391,21 +458,40 @@ async fn fetch_sports_matches_payload(
     fallback_source_url: &'static str,
 ) -> AppResult<(Value, i64)> {
     if sport_name == "Football" {
-        return fetch_combined_football_matches_payload(state, include_match, fallback_source_url)
-            .await;
+        return fetch_combined_streamed_legacy_matches_payload(
+            state,
+            sport_name,
+            "football",
+            include_match,
+            fallback_source_url,
+        )
+        .await;
+    }
+    if sport_name == "Basketball" {
+        return fetch_combined_streamed_legacy_matches_payload(
+            state,
+            sport_name,
+            "basketball",
+            include_match,
+            fallback_source_url,
+        )
+        .await;
     }
 
     fetch_legacy_sports_matches_payload(state, sport_name, include_match, fallback_source_url).await
 }
 
-async fn fetch_combined_football_matches_payload(
+async fn fetch_combined_streamed_legacy_matches_payload(
     state: &AppState,
+    sport_name: &'static str,
+    streamed_category: &'static str,
     include_match: fn(&SourceMatch) -> bool,
     fallback_source_url: &'static str,
 ) -> AppResult<(Value, i64)> {
     let legacy_future =
-        fetch_legacy_sports_matches_payload(state, "Football", include_match, fallback_source_url);
-    let streamed_future = fetch_streamed_football_matches_payload(state);
+        fetch_legacy_sports_matches_payload(state, sport_name, include_match, fallback_source_url);
+    let streamed_future =
+        fetch_streamed_sport_matches_payload(state, streamed_category, sport_name);
     let (legacy_result, streamed_result) = tokio::join!(legacy_future, streamed_future);
 
     match (legacy_result, streamed_result) {
@@ -422,7 +508,7 @@ async fn fetch_combined_football_matches_payload(
         (Ok(payload), Err(_streamed_error)) => Ok(payload),
         (Err(_legacy_error), Ok(payload)) => Ok(payload),
         (Err(legacy_error), Err(streamed_error)) => Err(ApiError::bad_gateway(format!(
-            "Failed to fetch Football schedule from legacy providers ({}) and Streamed ({}).",
+            "Failed to fetch {sport_name} schedule from legacy providers ({}) and Streamed ({}).",
             legacy_error.message().unwrap_or("unknown error"),
             streamed_error.message().unwrap_or("unknown error")
         ))),
@@ -532,27 +618,34 @@ async fn fetch_super_league_matches_payload(
     ))
 }
 
-async fn fetch_streamed_football_matches_payload(state: &AppState) -> AppResult<(Value, i64)> {
+async fn fetch_streamed_sport_matches_payload(
+    state: &AppState,
+    streamed_category: &'static str,
+    sport_name: &'static str,
+) -> AppResult<(Value, i64)> {
+    let source_url = streamed_matches_url(streamed_category);
     let response = state
         .http_client
-        .get(STREAMED_FOOTBALL_MATCHES_URL)
+        .get(&source_url)
         .header(reqwest::header::USER_AGENT, SUPER_LEAGUE_STREAM_USER_AGENT)
-        .header(reqwest::header::REFERER, STREAMED_FOOTBALL_REFERER)
+        .header(reqwest::header::REFERER, STREAMED_REFERER)
         .send()
         .await
         .map_err(|error| {
             if error.is_timeout() {
-                ApiError::gateway_timeout("Timed out fetching Streamed football schedule.")
+                ApiError::gateway_timeout(format!(
+                    "Timed out fetching Streamed {sport_name} schedule."
+                ))
             } else {
                 ApiError::bad_gateway(format!(
-                    "Failed to fetch Streamed football schedule: {error}"
+                    "Failed to fetch Streamed {sport_name} schedule: {error}"
                 ))
             }
         })?;
 
     if !response.status().is_success() {
         return Err(ApiError::bad_gateway(format!(
-            "Streamed football schedule returned HTTP {}.",
+            "Streamed {sport_name} schedule returned HTTP {}.",
             response.status(),
         )));
     }
@@ -562,10 +655,18 @@ async fn fetch_streamed_football_matches_payload(state: &AppState) -> AppResult<
         .await
         .map_err(|error| {
             ApiError::bad_gateway(format!(
-                "Failed to parse Streamed football schedule: {error}"
+                "Failed to parse Streamed {sport_name} schedule: {error}"
             ))
         })?;
-    Ok(build_streamed_football_matches_payload(source_matches))
+    Ok(build_streamed_sport_matches_payload(
+        source_matches,
+        &source_url,
+        sport_name,
+    ))
+}
+
+fn streamed_matches_url(streamed_category: &str) -> String {
+    format!("{STREAMED_MATCHES_BASE_URL}/{streamed_category}")
 }
 
 fn build_sports_matches_payload(
@@ -603,6 +704,14 @@ fn build_sports_matches_payload(
 }
 
 fn build_streamed_football_matches_payload(source_matches: Vec<StreamedMatch>) -> (Value, i64) {
+    build_streamed_sport_matches_payload(source_matches, STREAMED_FOOTBALL_MATCHES_URL, "Football")
+}
+
+fn build_streamed_sport_matches_payload(
+    source_matches: Vec<StreamedMatch>,
+    source_url: &str,
+    default_sport_name: &'static str,
+) -> (Value, i64) {
     let now = now_ms();
     let matches = source_matches
         .into_iter()
@@ -610,18 +719,19 @@ fn build_streamed_football_matches_payload(source_matches: Vec<StreamedMatch>) -
             match_item.date > 0
                 && !match_item.title.trim().is_empty()
                 && !match_item.sources.is_empty()
-                && match_item.date.saturating_add(
-                    STREAMED_FOOTBALL_DEFAULT_DURATION_MINUTES.saturating_mul(60_000),
-                ) > now
+                && match_item
+                    .date
+                    .saturating_add(STREAMED_DEFAULT_DURATION_MINUTES.saturating_mul(60_000))
+                    > now
         })
-        .map(normalize_streamed_football_match)
+        .map(|match_item| normalize_streamed_sport_match(match_item, default_sport_name))
         .collect::<Vec<_>>();
     let fetched_at_ms = now_ms();
 
     (
         json!({
-            "source": STREAMED_FOOTBALL_MATCHES_URL,
-            "sport": "Football",
+            "source": source_url,
+            "sport": default_sport_name,
             "fetchedAt": fetched_at_ms,
             "matches": matches
         }),
@@ -866,6 +976,13 @@ pub async fn basketball_stream_resolve_handler(
     super_league_stream_resolve_response(&state, query).await
 }
 
+pub async fn streamed_sports_stream_resolve_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResolveFootballStreamQuery>,
+) -> AppResult<Response<Body>> {
+    super_league_stream_resolve_response(&state, query).await
+}
+
 async fn super_league_stream_resolve_response(
     state: &AppState,
     query: ResolveFootballStreamQuery,
@@ -1019,7 +1136,7 @@ async fn fetch_streamed_embed_streams(
         .http_client
         .get(source_url.clone())
         .header(reqwest::header::USER_AGENT, SUPER_LEAGUE_STREAM_USER_AGENT)
-        .header(reqwest::header::REFERER, STREAMED_FOOTBALL_REFERER)
+        .header(reqwest::header::REFERER, STREAMED_REFERER)
         .send()
         .await
         .map_err(|error| {
@@ -1368,7 +1485,10 @@ fn normalize_football_league_name(league: &str) -> String {
         .join(" ")
 }
 
-fn normalize_streamed_football_match(match_item: StreamedMatch) -> serde_json::Value {
+fn normalize_streamed_sport_match(
+    match_item: StreamedMatch,
+    default_sport_name: &'static str,
+) -> serde_json::Value {
     let title = match_item.title.trim().to_owned();
     let team1 = match_item
         .teams
@@ -1387,7 +1507,7 @@ fn normalize_streamed_football_match(match_item: StreamedMatch) -> serde_json::V
         .unwrap_or_default()
         .to_owned();
     let sport = if match_item.category.trim().is_empty() {
-        "Football".to_owned()
+        default_sport_name.to_owned()
     } else {
         title_case_ascii(match_item.category.trim())
     };
@@ -1428,7 +1548,7 @@ fn normalize_streamed_football_match(match_item: StreamedMatch) -> serde_json::V
         .collect::<Vec<_>>();
     let ends_at_timestamp = match_item
         .date
-        .saturating_add(STREAMED_FOOTBALL_DEFAULT_DURATION_MINUTES.saturating_mul(60_000));
+        .saturating_add(STREAMED_DEFAULT_DURATION_MINUTES.saturating_mul(60_000));
 
     json!({
         "id": format!("streamed-{}", match_item.id),
@@ -1444,7 +1564,7 @@ fn normalize_streamed_football_match(match_item: StreamedMatch) -> serde_json::V
         "sourceMatchDate": "",
         "startTimestamp": match_item.date,
         "endsAtTimestamp": ends_at_timestamp,
-        "durationMinutes": STREAMED_FOOTBALL_DEFAULT_DURATION_MINUTES,
+        "durationMinutes": STREAMED_DEFAULT_DURATION_MINUTES,
         "linkCount": streams.len(),
         "channelCount": channels.len(),
         "channels": channels,

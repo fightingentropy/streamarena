@@ -17,8 +17,10 @@ use crate::auth;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult, json_response};
 use crate::football::{
-    SportsScheduleCache, basketball_matches_handler, basketball_stream_resolve_handler,
-    football_matches_handler, football_stream_resolve_handler,
+    SportsScheduleCache, american_football_matches_handler, baseball_matches_handler,
+    basketball_matches_handler, basketball_stream_resolve_handler, cricket_matches_handler,
+    football_matches_handler, football_stream_resolve_handler, hockey_matches_handler,
+    streamed_sports_stream_resolve_handler, tennis_matches_handler,
 };
 use crate::library::{
     normalize_upload_content_type, normalize_upload_episode_ordinal, normalize_whitespace,
@@ -80,6 +82,18 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/basketball/stream",
             get(basketball_stream_resolve_handler),
+        )
+        .route("/api/tennis/matches", get(tennis_matches_handler))
+        .route("/api/hockey/matches", get(hockey_matches_handler))
+        .route("/api/baseball/matches", get(baseball_matches_handler))
+        .route(
+            "/api/american-football/matches",
+            get(american_football_matches_handler),
+        )
+        .route("/api/cricket/matches", get(cricket_matches_handler))
+        .route(
+            "/api/sports/stream",
+            get(streamed_sports_stream_resolve_handler),
         )
         .route("/api/twitch/stream", get(twitch_stream_resolve_handler))
         .route("/api/live/hls.m3u8", any(live_hls_handler))
