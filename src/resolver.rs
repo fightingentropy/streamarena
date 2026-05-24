@@ -11,16 +11,15 @@ use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio::process::Command;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
-use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
-use tracing::warn;
+use url::Url;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
 use crate::local_torrent::{
-    DirectFileCacheRequest, LocalTorrentResolveRequest, LocalTorrentResolvedSource,
-    LocalTorrentService,
+    LocalTorrentResolveRequest, LocalTorrentResolvedSource, LocalTorrentService,
 };
 use crate::media::{
     MediaProbe, MediaService, choose_audio_track_from_probe, choose_subtitle_track_from_probe,
@@ -40,6 +39,7 @@ const SOURCE_AUDIO_PROFILE_DEFAULT: &str = "single";
 const RESOLVE_MAX_MS: i64 = 90_000;
 const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 40_000;
 const FASTEST_RESOLVE_MAX_MS: i64 = 45_000;
+#[cfg(test)]
 const FASTEST_PARALLEL_CANDIDATES: usize = 4;
 const FASTEST_CANDIDATE_POOL_LIMIT: usize = 40;
 const PLAYABLE_URL_VALIDATE_TIMEOUT_MS: u64 = 8_000;
@@ -71,6 +71,8 @@ const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
 const DEFAULT_ALLOWED_SOURCE_FORMATS: &[&str] = &["mp4", "mkv"];
 const EXTERNAL_EMBED_RESOLVER_PROVIDER: &str = "external-embed";
 const LIVE_IFRAME_SOURCE_PREFIX: &str = "live-iframe:";
+const EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-external-embed-hls.mjs";
+const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
 
 static SEED_COUNT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"👤\s*([0-9.,]+)").expect("valid seed regex"));
@@ -260,26 +262,71 @@ struct ExternalEmbedSource {
     server: Option<ExternalEmbedServer>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ExternalEmbedHlsResolverOutput {
+    #[serde(rename = "playbackUrl")]
+    playback_url: String,
+    #[serde(default)]
+    referer: String,
+}
+
+struct ExternalEmbedHlsPlaybackSource {
+    playback_url: Url,
+    referer: Option<String>,
+}
+
 const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
+    // Fast CDN-based embed sources (primary - fastest loading)
+    ExternalEmbedProvider {
+        id: "vidsrc",
+        label: "VidSrc",
+        priority: 0,
+    },
+    ExternalEmbedProvider {
+        id: "autoembed",
+        label: "AutoEmbed",
+        priority: 1,
+    },
+    ExternalEmbedProvider {
+        id: "vidlink",
+        label: "VidLink",
+        priority: 2,
+    },
+    ExternalEmbedProvider {
+        id: "superembed",
+        label: "SuperEmbed",
+        priority: 3,
+    },
     ExternalEmbedProvider {
         id: "vidfast",
         label: "VidFast",
-        priority: 0,
+        priority: 4,
     },
     ExternalEmbedProvider {
         id: "videasy",
         label: "VidEasy",
-        priority: 1,
+        priority: 5,
     },
     ExternalEmbedProvider {
         id: "vidking",
         label: "VidKing",
-        priority: 2,
+        priority: 6,
     },
     ExternalEmbedProvider {
         id: "2embed",
         label: "2Embed",
-        priority: 3,
+        priority: 7,
+    },
+    // Unreliable / often blocked — keep as last-resort fallbacks only
+    ExternalEmbedProvider {
+        id: "embedsu",
+        label: "Embed.su",
+        priority: 90,
+    },
+    ExternalEmbedProvider {
+        id: "moviesapi",
+        label: "MoviesAPI",
+        priority: 91,
     },
 ];
 
@@ -420,7 +467,7 @@ impl ResolverProvider {
     fn cache_reuse_provider(self) -> ResolverProvider {
         match self {
             ResolverProvider::Fastest | ResolverProvider::RealDebrid => {
-                ResolverProvider::LocalTorrent
+                ResolverProvider::RealDebrid
             }
             ResolverProvider::LocalTorrent => ResolverProvider::LocalTorrent,
         }
@@ -816,6 +863,7 @@ impl ResolverService {
         source_language: &str,
         source_audio_profile: &str,
         resolver_provider: &str,
+        skip_external_embed: bool,
     ) -> AppResult<Value> {
         self.resolve_metrics
             .movie_requests
@@ -833,6 +881,7 @@ impl ResolverService {
             source_language,
             source_audio_profile,
             resolver_provider,
+            skip_external_embed,
         );
         let lock = resolver_key_lock(&self.resolve_locks, &lock_key);
         let _guard = match lock.try_lock() {
@@ -860,6 +909,7 @@ impl ResolverService {
             source_language,
             source_audio_profile,
             resolver_provider,
+            skip_external_embed,
         )
         .await
     }
@@ -939,6 +989,7 @@ impl ResolverService {
         source_language: &str,
         source_audio_profile: &str,
         resolver_provider: ResolverProvider,
+        skip_external_embed: bool,
     ) -> AppResult<Value> {
         let stored_preference = self
             .db
@@ -982,12 +1033,36 @@ impl ResolverService {
         if let Some(provider) =
             external_embed_source_for_source_hash(&metadata, &filters.source_hash)
         {
-            external_guard.mark_completed();
-            return Ok(build_external_embed_resolved_payload(
+            if let Some(payload) = build_external_embed_resolved_playback_payload(
                 &metadata,
                 provider,
                 &preferences,
+                true,
+            )
+            .await
+            {
+                external_guard.mark_completed();
+                return Ok(payload);
+            }
+            return Err(ApiError::bad_gateway(
+                "Selected external HLS source is unavailable.",
             ));
+        }
+        if !skip_external_embed
+            && should_prefer_default_external_embed(&filters, resolver_provider)
+            && let Some(provider) = default_external_embed_source(&metadata)
+        {
+            if let Some(payload) = build_external_embed_resolved_playback_payload(
+                &metadata,
+                provider,
+                &preferences,
+                true,
+            )
+            .await
+            {
+                external_guard.mark_completed();
+                return Ok(payload);
+            }
         }
         let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
@@ -1152,6 +1227,7 @@ impl ResolverService {
         source_language: &str,
         source_audio_profile: &str,
         resolver_provider: &str,
+        skip_external_embed: bool,
     ) -> AppResult<Value> {
         self.resolve_metrics
             .tv_requests
@@ -1174,6 +1250,7 @@ impl ResolverService {
             source_language,
             source_audio_profile,
             resolver_provider,
+            skip_external_embed,
         );
         let lock = resolver_key_lock(&self.resolve_locks, &lock_key);
         let _guard = match lock.try_lock() {
@@ -1206,6 +1283,7 @@ impl ResolverService {
             source_language,
             source_audio_profile,
             resolver_provider,
+            skip_external_embed,
         )
         .await
     }
@@ -1231,6 +1309,7 @@ impl ResolverService {
         source_language: &str,
         source_audio_profile: &str,
         resolver_provider: ResolverProvider,
+        skip_external_embed: bool,
     ) -> AppResult<Value> {
         let stored_preference = self
             .db
@@ -1296,12 +1375,36 @@ impl ResolverService {
         if let Some(provider) =
             external_embed_source_for_source_hash(&metadata, &filters.source_hash)
         {
-            external_guard.mark_completed();
-            return Ok(build_external_embed_resolved_payload(
+            if let Some(payload) = build_external_embed_resolved_playback_payload(
                 &metadata,
                 provider,
                 &preferences,
+                true,
+            )
+            .await
+            {
+                external_guard.mark_completed();
+                return Ok(payload);
+            }
+            return Err(ApiError::bad_gateway(
+                "Selected external HLS source is unavailable.",
             ));
+        }
+        if !skip_external_embed
+            && should_prefer_default_external_embed(&filters, resolver_provider)
+            && let Some(provider) = default_external_embed_source(&metadata)
+        {
+            if let Some(payload) = build_external_embed_resolved_playback_payload(
+                &metadata,
+                provider,
+                &preferences,
+                true,
+            )
+            .await
+            {
+                external_guard.mark_completed();
+                return Ok(payload);
+            }
         }
         let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
@@ -1464,9 +1567,25 @@ impl ResolverService {
     ) -> AppResult<Value> {
         if resolver_provider.is_fastest() {
             return self
-                .resolve_movie_candidates_fastest(candidates, metadata, preferences)
+                .resolve_movie_candidates_auto(candidates, metadata, preferences)
                 .await;
         }
+        self.resolve_movie_candidates_with_provider(
+            candidates,
+            metadata,
+            preferences,
+            resolver_provider,
+        )
+        .await
+    }
+
+    async fn resolve_movie_candidates_with_provider(
+        &self,
+        candidates: Vec<&DiscoveryStream>,
+        metadata: &ResolveMetadata,
+        preferences: &ResolvePreferences,
+        resolver_provider: ResolverProvider,
+    ) -> AppResult<Value> {
         if candidates.is_empty() {
             return Err(ApiError::internal(
                 "No stream candidates were returned for this movie.",
@@ -1497,13 +1616,6 @@ impl ResolverService {
             };
             match resolved_result {
                 Ok(resolved) => {
-                    if resolver_provider.is_real_debrid() {
-                        self.spawn_real_debrid_file_cache_warm(
-                            resolved.clone(),
-                            metadata.clone(),
-                            preferences.clone(),
-                        );
-                    }
                     return self
                         .build_resolved_response(
                             resolved,
@@ -1524,67 +1636,41 @@ impl ResolverService {
         Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
     }
 
-    async fn resolve_movie_candidates_fastest(
+    async fn resolve_movie_candidates_auto(
         &self,
         candidates: Vec<&DiscoveryStream>,
         metadata: &ResolveMetadata,
         preferences: &ResolvePreferences,
     ) -> AppResult<Value> {
-        if candidates.is_empty() {
-            return Err(ApiError::internal(
-                "No stream candidates were returned for this movie.",
-            ));
+        let real_debrid_result = self
+            .resolve_movie_candidates_with_provider(
+                candidates.clone(),
+                metadata,
+                preferences,
+                ResolverProvider::RealDebrid,
+            )
+            .await;
+        match real_debrid_result {
+            Ok(result) => Ok(result),
+            Err(real_debrid_error) => match self
+                .resolve_movie_candidates_with_provider(
+                    candidates,
+                    metadata,
+                    preferences,
+                    ResolverProvider::LocalTorrent,
+                )
+                .await
+            {
+                Ok(result) => Ok(result),
+                Err(local_torrent_error) => Err(
+                    if is_persistent_source_resolve_error(&local_torrent_error) {
+                        local_torrent_error
+                    } else {
+                        real_debrid_error
+                    },
+                ),
+            },
         }
-
-        let fallback_name = normalize_whitespace(
-            format!("{} {}", metadata.display_title, metadata.display_year).trim(),
-        );
-        let mut races = self
-            .spawn_fastest_resolve_jobs(select_fastest_race_candidates(candidates), fallback_name);
-
-        let mut last_error = None;
-        while let Some(join_result) = races.join_next().await {
-            let (provider, stream, result) = match join_result {
-                Ok(result) => result,
-                Err(error) => {
-                    last_error = Some(ApiError::internal(format!(
-                        "Resolver worker failed: {error}"
-                    )));
-                    continue;
-                }
-            };
-            match result.and_then(|resolved| validate_resolved_movie_source(resolved, metadata)) {
-                Ok(resolved) => {
-                    if provider.is_real_debrid() {
-                        self.spawn_real_debrid_file_cache_warm(
-                            resolved.clone(),
-                            metadata.clone(),
-                            preferences.clone(),
-                        );
-                    }
-                    races.abort_all();
-                    let response = self
-                        .build_resolved_response(
-                            resolved,
-                            metadata.clone(),
-                            preferences.clone(),
-                            provider,
-                            true,
-                        )
-                        .await;
-                    while races.join_next().await.is_some() {}
-                    return response;
-                }
-                Err(error) => {
-                    self.record_source_resolve_failure(&stream, &error).await;
-                    last_error = Some(error);
-                }
-            }
-        }
-
-        races.abort_all();
-        while races.join_next().await.is_some() {}
-        Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
     }
 
     async fn resolve_episode_candidates(
@@ -1596,9 +1682,25 @@ impl ResolverService {
     ) -> AppResult<Value> {
         if resolver_provider.is_fastest() {
             return self
-                .resolve_episode_candidates_fastest(candidates, metadata, preferences)
+                .resolve_episode_candidates_auto(candidates, metadata, preferences)
                 .await;
         }
+        self.resolve_episode_candidates_with_provider(
+            candidates,
+            metadata,
+            preferences,
+            resolver_provider,
+        )
+        .await
+    }
+
+    async fn resolve_episode_candidates_with_provider(
+        &self,
+        candidates: Vec<&DiscoveryStream>,
+        metadata: &ResolveMetadata,
+        preferences: &ResolvePreferences,
+        resolver_provider: ResolverProvider,
+    ) -> AppResult<Value> {
         if candidates.is_empty() {
             return Err(ApiError::internal(
                 "No stream candidates were returned for this episode.",
@@ -1640,13 +1742,6 @@ impl ResolverService {
             };
             match resolved_result {
                 Ok(resolved) => {
-                    if resolver_provider.is_real_debrid() {
-                        self.spawn_real_debrid_file_cache_warm(
-                            resolved.clone(),
-                            metadata.clone(),
-                            preferences.clone(),
-                        );
-                    }
                     return self
                         .build_resolved_response(
                             resolved,
@@ -1667,103 +1762,41 @@ impl ResolverService {
         Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
     }
 
-    async fn resolve_episode_candidates_fastest(
+    async fn resolve_episode_candidates_auto(
         &self,
         candidates: Vec<&DiscoveryStream>,
         metadata: &ResolveMetadata,
         preferences: &ResolvePreferences,
     ) -> AppResult<Value> {
-        if candidates.is_empty() {
-            return Err(ApiError::internal(
-                "No stream candidates were returned for this episode.",
-            ));
-        }
-
-        let fallback_name = if metadata.episode_title.is_empty() {
-            format!(
-                "{} S{:02}E{:02}",
-                metadata.display_title, metadata.season_number, metadata.episode_number
+        let real_debrid_result = self
+            .resolve_episode_candidates_with_provider(
+                candidates.clone(),
+                metadata,
+                preferences,
+                ResolverProvider::RealDebrid,
             )
-        } else {
-            format!(
-                "{} S{:02}E{:02} {}",
-                metadata.display_title,
-                metadata.season_number,
-                metadata.episode_number,
-                metadata.episode_title
-            )
-        };
-        let mut races = self
-            .spawn_fastest_resolve_jobs(select_fastest_race_candidates(candidates), fallback_name);
-
-        let mut last_error = None;
-        while let Some(join_result) = races.join_next().await {
-            let (provider, stream, result) = match join_result {
-                Ok(result) => result,
-                Err(error) => {
-                    last_error = Some(ApiError::internal(format!(
-                        "Resolver worker failed: {error}"
-                    )));
-                    continue;
-                }
-            };
-            match result.and_then(|resolved| validate_resolved_episode_source(resolved, metadata)) {
-                Ok(resolved) => {
-                    if provider.is_real_debrid() {
-                        self.spawn_real_debrid_file_cache_warm(
-                            resolved.clone(),
-                            metadata.clone(),
-                            preferences.clone(),
-                        );
-                    }
-                    races.abort_all();
-                    let response = self
-                        .build_resolved_response(
-                            resolved,
-                            metadata.clone(),
-                            preferences.clone(),
-                            provider,
-                            true,
-                        )
-                        .await;
-                    while races.join_next().await.is_some() {}
-                    return response;
-                }
-                Err(error) => {
-                    self.record_source_resolve_failure(&stream, &error).await;
-                    last_error = Some(error);
-                }
-            }
+            .await;
+        match real_debrid_result {
+            Ok(result) => Ok(result),
+            Err(real_debrid_error) => match self
+                .resolve_episode_candidates_with_provider(
+                    candidates,
+                    metadata,
+                    preferences,
+                    ResolverProvider::LocalTorrent,
+                )
+                .await
+            {
+                Ok(result) => Ok(result),
+                Err(local_torrent_error) => Err(
+                    if is_persistent_source_resolve_error(&local_torrent_error) {
+                        local_torrent_error
+                    } else {
+                        real_debrid_error
+                    },
+                ),
+            },
         }
-
-        races.abort_all();
-        while races.join_next().await.is_some() {}
-        Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
-    }
-
-    fn spawn_fastest_resolve_jobs(
-        &self,
-        candidates: Vec<&DiscoveryStream>,
-        fallback_name: String,
-    ) -> JoinSet<(ResolverProvider, DiscoveryStream, AppResult<ResolvedSource>)> {
-        let mut race_jobs = JoinSet::new();
-        for candidate in candidates {
-            for provider in [ResolverProvider::LocalTorrent, ResolverProvider::RealDebrid] {
-                let service = self.clone();
-                let stream = (*candidate).clone();
-                let task_fallback_name = fallback_name.clone();
-                race_jobs.spawn(async move {
-                    let result = timeout(
-                        Duration::from_millis(FASTEST_RESOLVE_MAX_MS as u64),
-                        service.resolve_candidate_stream(&stream, &task_fallback_name, provider),
-                    )
-                    .await
-                    .unwrap_or_else(|_| Err(ApiError::bad_gateway("Resolving stream timed out.")));
-                    (provider, stream, result)
-                });
-            }
-        }
-        race_jobs
     }
 
     async fn build_resolved_response(
@@ -1921,67 +1954,6 @@ impl ResolverService {
         }
         self.resolve_local_torrent_candidate_stream(stream, fallback_name)
             .await
-    }
-
-    fn spawn_real_debrid_file_cache_warm(
-        &self,
-        resolved: ResolvedSource,
-        metadata: ResolveMetadata,
-        preferences: ResolvePreferences,
-    ) {
-        let service = self.clone();
-        let cache_source_url = extract_playable_source_input(&resolved.playable_url);
-        let source_hash = resolved.source_hash.clone();
-        let tmdb_id = metadata.tmdb_id.clone();
-        tokio::spawn(async move {
-            let result = service
-                .local_torrent
-                .cache_direct_file(DirectFileCacheRequest {
-                    source_hash: resolved.source_hash.clone(),
-                    file_id: resolved.selected_file.clone(),
-                    source_url: cache_source_url,
-                    filename: resolved.filename.clone(),
-                    selected_file_path: resolved.selected_file_path.clone(),
-                })
-                .await
-                .map(local_torrent_resolved_source_to_resolved_source)
-                .and_then(|resolved| {
-                    if metadata.media_type == "tv" {
-                        validate_resolved_episode_source(resolved, &metadata)
-                    } else {
-                        validate_resolved_movie_source(resolved, &metadata)
-                    }
-                });
-            match result {
-                Ok(resolved) => {
-                    if let Err(error) = service
-                        .build_resolved_response(
-                            resolved,
-                            metadata,
-                            preferences,
-                            ResolverProvider::LocalTorrent,
-                            true,
-                        )
-                        .await
-                    {
-                        warn!(
-                            tmdb_id = %tmdb_id,
-                            source_hash = %source_hash,
-                            error = ?error,
-                            "Failed to persist local cache playback session"
-                        );
-                    }
-                }
-                Err(error) => {
-                    warn!(
-                        tmdb_id = %tmdb_id,
-                        source_hash = %source_hash,
-                        error = ?error,
-                        "Background local cache warm failed"
-                    );
-                }
-            }
-        });
     }
 
     async fn find_local_cache_upgrade_from_session(
@@ -2637,6 +2609,9 @@ impl ResolverService {
         if !playback_session_matches_resolver_provider(&session, resolver_provider) {
             return Ok(None);
         }
+        if should_skip_unpinned_torrent_session_reuse(&session, filters) {
+            return Ok(None);
+        }
 
         let match_name = playback_session_match_name(&session);
         let is_valid_match = if metadata.media_type == "tv" {
@@ -2736,6 +2711,9 @@ impl ResolverService {
                 continue;
             }
             if !playback_session_matches_resolver_provider(&session, resolver_provider) {
+                continue;
+            }
+            if should_skip_unpinned_torrent_session_reuse(&session, filters) {
                 continue;
             }
 
@@ -3379,10 +3357,12 @@ fn build_movie_resolve_lock_key(
     source_language: &str,
     source_audio_profile: &str,
     resolver_provider: ResolverProvider,
+    skip_external_embed: bool,
 ) -> String {
     format!(
-        "movie|provider:{}|tmdb:{}|audio:{}|sub:{}|quality:{}|session:{}|hash:{}|{}",
+        "movie|provider:{}|skipEmbed:{}|tmdb:{}|audio:{}|sub:{}|quality:{}|session:{}|hash:{}|{}",
         resolver_provider.as_str(),
+        u8::from(skip_external_embed),
         tmdb_id.trim(),
         normalize_preferred_audio_lang(preferred_audio_lang),
         normalize_subtitle_preference(preferred_subtitle_lang),
@@ -3416,6 +3396,7 @@ fn build_tv_resolve_lock_key(
     source_language: &str,
     source_audio_profile: &str,
     resolver_provider: ResolverProvider,
+    skip_external_embed: bool,
 ) -> String {
     let season_number = normalize_episode_ordinal(
         if season_number.trim().is_empty() {
@@ -3434,8 +3415,9 @@ fn build_tv_resolve_lock_key(
         1,
     );
     format!(
-        "tv|provider:{}|tmdb:{}|s:{}|e:{}|audio:{}|sub:{}|quality:{}|container:{}|session:{}|hash:{}|{}",
+        "tv|provider:{}|skipEmbed:{}|tmdb:{}|s:{}|e:{}|audio:{}|sub:{}|quality:{}|container:{}|session:{}|hash:{}|{}",
         resolver_provider.as_str(),
+        u8::from(skip_external_embed),
         tmdb_id.trim(),
         season_number,
         episode_number,
@@ -3612,6 +3594,7 @@ fn select_top_episode_candidates<'a>(
     }
 }
 
+#[cfg(test)]
 fn select_fastest_race_candidates(candidates: Vec<&DiscoveryStream>) -> Vec<&DiscoveryStream> {
     let safe_limit = FASTEST_PARALLEL_CANDIDATES.max(1);
     let mut selected = Vec::new();
@@ -3648,6 +3631,7 @@ fn select_fastest_race_candidates(candidates: Vec<&DiscoveryStream>) -> Vec<&Dis
     selected
 }
 
+#[cfg(test)]
 fn score_fastest_local_candidate(stream: &DiscoveryStream) -> i64 {
     let seed_count = parse_seed_count(if stream.title.is_empty() {
         stream.name.as_str()
@@ -4586,10 +4570,12 @@ fn extract_stream_size_label(stream: &DiscoveryStream) -> String {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 fn parse_stream_size_bytes(stream: &DiscoveryStream) -> i64 {
     parse_size_label_bytes(&extract_stream_size_label(stream))
 }
 
+#[cfg(test)]
 fn parse_size_label_bytes(label: &str) -> i64 {
     let mut parts = label.split_whitespace();
     let Some(number_part) = parts.next() else {
@@ -4726,6 +4712,79 @@ fn external_embed_source_for_source_hash(
         .find(|source| external_embed_source_hash(*source, metadata) == normalized_hash)
 }
 
+fn default_external_embed_source(metadata: &ResolveMetadata) -> Option<ExternalEmbedSource> {
+    preferred_external_embed_hls_sources(metadata)
+        .into_iter()
+        .next()
+        .or_else(|| {
+            external_embed_sources()
+                .into_iter()
+                .find(|source| external_embed_url(*source, metadata).is_some())
+        })
+}
+
+fn preferred_external_embed_hls_sources(metadata: &ResolveMetadata) -> Vec<ExternalEmbedSource> {
+    external_embed_sources()
+        .into_iter()
+        .filter(|source| is_external_embed_hls_capable_source(*source))
+        .filter(|source| external_embed_url(*source, metadata).is_some())
+        .collect()
+}
+
+fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) -> bool {
+    matches!(source.provider.id, "videasy" | "vidking")
+}
+
+fn should_prefer_default_external_embed(
+    filters: &ResolveFilters,
+    resolver_provider: ResolverProvider,
+) -> bool {
+    filters.source_hash.is_empty()
+        && !matches!(
+            resolver_provider,
+            ResolverProvider::RealDebrid | ResolverProvider::LocalTorrent
+        )
+}
+
+async fn build_external_embed_resolved_playback_payload(
+    metadata: &ResolveMetadata,
+    source: ExternalEmbedSource,
+    preferences: &ResolvePreferences,
+    allow_native_fallback: bool,
+) -> Option<Value> {
+    let mut candidates = Vec::from([source]);
+    if allow_native_fallback {
+        for candidate in preferred_external_embed_hls_sources(metadata) {
+            if candidate != source {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    for candidate in candidates {
+        let Some(embed_url) = external_embed_url(candidate, metadata) else {
+            continue;
+        };
+        let Some(hls_source) = resolve_external_embed_hls_playback_source(&embed_url).await else {
+            continue;
+        };
+        let playable_url = crate::live::build_live_hls_playback_source(
+            hls_source.playback_url.as_str(),
+            hls_source.referer.as_deref(),
+        );
+        return Some(build_external_embed_resolved_payload_with_playable_url(
+            metadata,
+            candidate,
+            preferences,
+            playable_url,
+            embed_url,
+        ));
+    }
+
+    None
+}
+
+#[cfg(test)]
 fn build_external_embed_resolved_payload(
     metadata: &ResolveMetadata,
     source: ExternalEmbedSource,
@@ -4733,11 +4792,28 @@ fn build_external_embed_resolved_payload(
 ) -> Value {
     let embed_url = external_embed_url(source, metadata).unwrap_or_default();
     let playable_url = build_live_iframe_playback_source(&embed_url);
+    build_external_embed_resolved_payload_with_playable_url(
+        metadata,
+        source,
+        preferences,
+        playable_url,
+        embed_url,
+    )
+}
+
+fn build_external_embed_resolved_payload_with_playable_url(
+    metadata: &ResolveMetadata,
+    source: ExternalEmbedSource,
+    preferences: &ResolvePreferences,
+    playable_url: String,
+    source_input: String,
+) -> Value {
     let source_hash = external_embed_source_hash(source, metadata);
     let filename = external_embed_source_filename(source);
+    let fallback_urls = external_embed_fallback_playback_urls(metadata, source, 4);
     let resolved = ResolvedSource {
         playable_url: playable_url.clone(),
-        fallback_urls: Vec::new(),
+        fallback_urls: fallback_urls.clone(),
         filename: filename.clone(),
         source_hash: source_hash.clone(),
         selected_file: String::new(),
@@ -4747,13 +4823,13 @@ fn build_external_embed_resolved_payload(
     response_metadata["resolverProvider"] = json!(EXTERNAL_EMBED_RESOLVER_PROVIDER);
     json!({
         "playableUrl": playable_url,
-        "fallbackUrls": [],
+        "fallbackUrls": fallback_urls,
         "filename": filename,
         "sourceHash": source_hash,
         "selectedFile": "",
         "selectedFilePath": "",
         "resolverProvider": EXTERNAL_EMBED_RESOLVER_PROVIDER,
-        "sourceInput": embed_url,
+        "sourceInput": source_input,
         "tracks": MediaProbe {
             durationSeconds: metadata.runtime_seconds,
             ..MediaProbe::default()
@@ -4767,6 +4843,22 @@ fn build_external_embed_resolved_payload(
         },
         "metadata": response_metadata
     })
+}
+
+fn external_embed_fallback_playback_urls(
+    metadata: &ResolveMetadata,
+    selected: ExternalEmbedSource,
+    limit: usize,
+) -> Vec<String> {
+    let selected_hash = external_embed_source_hash(selected, metadata);
+    external_embed_sources()
+        .into_iter()
+        .filter(|candidate| external_embed_source_hash(*candidate, metadata) != selected_hash)
+        .filter_map(|candidate| external_embed_url(candidate, metadata))
+        .map(|url| build_live_iframe_playback_source(&url))
+        .filter(|url| !url.trim().is_empty())
+        .take(limit)
+        .collect()
 }
 
 fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> Option<String> {
@@ -4799,6 +4891,43 @@ fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -
         ("2embed", "movie") => Some(format!("https://www.2embed.cc/embed/{tmdb_id}")),
         ("2embed", "tv") => Some(format!(
             "https://www.2embed.cc/embedtv/{}&s={}&e={}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        // Fast CDN-based embed sources (primary)
+        // embed.su - Fast, reliable streaming
+        ("embedsu", "movie") => Some(format!("https://embed.su/embed/movie/{tmdb_id}")),
+        ("embedsu", "tv") => Some(format!(
+            "https://embed.su/embed/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        // vidsrc — primary fast embed (vidsrc.me redirects to vidsrcme.ru)
+        ("vidsrc", "movie") => Some(format!("https://vidsrcme.ru/embed/movie/{tmdb_id}")),
+        ("vidsrc", "tv") => Some(format!(
+            "https://vidsrcme.ru/embed/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        // autoembed.xyz - Fast, multi-source
+        ("autoembed", "movie") => Some(format!("https://autoembed.xyz/embed/movie/{tmdb_id}")),
+        ("autoembed", "tv") => Some(format!(
+            "https://autoembed.xyz/embed/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        // vidlink - High quality streaming
+        ("vidlink", "movie") => Some(format!("https://vidlink.pro/embed/movie/{tmdb_id}")),
+        ("vidlink", "tv") => Some(format!(
+            "https://vidlink.pro/embed/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        // superembed - Reliable streaming
+        ("superembed", "movie") => Some(format!("https://superembed.com/embed/movie/{tmdb_id}")),
+        ("superembed", "tv") => Some(format!(
+            "https://superembed.com/embed/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        // moviesapi - Fast API-based streaming
+        ("moviesapi", "movie") => Some(format!("https://moviesapi.club/embed/movie/{tmdb_id}")),
+        ("moviesapi", "tv") => Some(format!(
+            "https://moviesapi.club/embed/tv/{}/{}/{}",
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
         _ => None,
@@ -4915,10 +5044,129 @@ fn fnv1a64(bytes: &[u8], seed: u64) -> u64 {
     })
 }
 
+fn embed_iframe_proxy_enabled() -> bool {
+    match std::env::var("EMBED_IFRAME_PROXY")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("0" | "false" | "no" | "off") => false,
+        Some("1" | "true" | "yes" | "on") => true,
+        _ => std::env::var("OUTBOUND_HTTP_PROXY")
+            .ok()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false),
+    }
+}
+
+fn is_external_embed_url(value: &str) -> bool {
+    value.starts_with("https://") || value.starts_with("http://")
+}
+
 fn build_live_iframe_playback_source(embed_url: &str) -> String {
+    let trimmed = embed_url.trim();
+    let iframe_target = if embed_iframe_proxy_enabled() && is_external_embed_url(trimmed) {
+        format!(
+            "/api/embed/frame?url={}",
+            crate::embed_proxy::encode_query_value(trimmed)
+        )
+    } else {
+        trimmed.to_owned()
+    };
     let encoded =
-        url::form_urlencoded::byte_serialize(embed_url.trim().as_bytes()).collect::<String>();
+        url::form_urlencoded::byte_serialize(iframe_target.as_bytes()).collect::<String>();
     format!("{LIVE_IFRAME_SOURCE_PREFIX}{encoded}")
+}
+
+async fn resolve_external_embed_hls_playback_source(
+    embed_url: &str,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    let embed_url = Url::parse(embed_url.trim()).ok()?;
+    if !is_supported_external_embed_hls_embed_url(&embed_url) {
+        return None;
+    }
+
+    let script_path = std::env::var("EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT.to_owned());
+    if matches!(
+        script_path.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "off" | "disabled"
+    ) {
+        return None;
+    }
+
+    let mut command = Command::new("node");
+    command
+        .arg(script_path)
+        .arg(embed_url.as_str())
+        .env(
+            "EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS",
+            (EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS * 1000).to_string(),
+        )
+        .kill_on_drop(true);
+
+    let output = timeout(
+        Duration::from_secs(EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS + 4),
+        command.output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let resolver_output =
+        serde_json::from_slice::<ExternalEmbedHlsResolverOutput>(&output.stdout).ok()?;
+    let playback_url = Url::parse(resolver_output.playback_url.trim()).ok()?;
+    if !is_supported_external_embed_hls_url(&playback_url) {
+        return None;
+    }
+    let referer = normalize_external_embed_hls_referer(&resolver_output.referer)
+        .or_else(|| normalize_external_embed_hls_referer(embed_url.as_str()));
+    Some(ExternalEmbedHlsPlaybackSource {
+        playback_url,
+        referer,
+    })
+}
+
+fn is_supported_external_embed_hls_embed_url(url: &Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = url.host_str().map(|value| value.to_ascii_lowercase()) else {
+        return false;
+    };
+    match host.as_str() {
+        "player.videasy.net" => url.path().starts_with("/movie/") || url.path().starts_with("/tv/"),
+        "vidking.net" | "www.vidking.net" => {
+            url.path().starts_with("/embed/movie/") || url.path().starts_with("/embed/tv/")
+        }
+        _ => false,
+    }
+}
+
+fn is_supported_external_embed_hls_url(url: &Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = url.host_str().map(|value| value.to_ascii_lowercase()) else {
+        return false;
+    };
+    host == "easy.speedsterwave.app" && url.path().to_ascii_lowercase().ends_with(".m3u8")
+}
+
+fn normalize_external_embed_hls_referer(value: &str) -> Option<String> {
+    let mut url = Url::parse(value.trim()).ok()?;
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return None;
+    }
+    url.host_str()?;
+    url.set_fragment(None);
+    Some(url.to_string())
 }
 
 fn should_try_torznab_discovery(
@@ -5774,6 +6022,19 @@ fn should_allow_latest_playback_session_fallback(filters: &ResolveFilters) -> bo
     filters.source_hash.is_empty()
 }
 
+fn playback_session_is_local_torrent(session: &PlaybackSession) -> bool {
+    playback_session_resolver_provider(session) == ResolverProvider::LocalTorrent
+        || session.playable_url.contains("/api/local-torrent/stream")
+        || session.playable_url.contains("/api/local-cache/stream")
+}
+
+fn should_skip_unpinned_torrent_session_reuse(
+    session: &PlaybackSession,
+    filters: &ResolveFilters,
+) -> bool {
+    filters.source_hash.is_empty() && playback_session_is_local_torrent(session)
+}
+
 fn looks_like_http_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
 }
@@ -6451,18 +6712,20 @@ mod tests {
         build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_torznab_request_url,
         build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
         compute_source_health_score, compute_torrentio_cache_deadlines,
-        does_filename_likely_match_movie, external_embed_source_for_source_hash,
-        external_embed_source_hash, external_embed_sources, external_embed_url,
-        extract_info_hash_from_magnet, is_persistent_source_resolve_error,
+        default_external_embed_source, does_filename_likely_match_movie,
+        external_embed_source_for_source_hash, external_embed_source_hash, external_embed_sources,
+        external_embed_url, extract_info_hash_from_magnet, is_persistent_source_resolve_error,
+        is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
         normalize_allowed_formats, normalize_resolved_source_for_software_decode,
         normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
         now_ms, parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
         parse_torznab_xml, playback_session_matches_preferred_container,
         playback_session_matches_source_hash, ready_info_has_selected_file_id,
         select_fastest_race_candidates, select_top_episode_candidates, select_top_movie_candidates,
-        should_allow_latest_playback_session_fallback, should_prefer_software_decode_source,
-        should_skip_playback_session_reuse, should_try_torznab_discovery, sort_movie_candidates,
-        stream_list_contains_hash, stringify_json, user_facing_real_debrid_error,
+        should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
+        should_prefer_software_decode_source, should_skip_playback_session_reuse,
+        should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
+        stringify_json, user_facing_real_debrid_error,
     };
 
     #[test]
@@ -6479,11 +6742,13 @@ mod tests {
         let metadata = sample_movie_metadata();
         let sources = build_external_embed_source_summaries(&metadata);
 
-        assert_eq!(sources.len(), VIDFAST_EMBED_SERVERS.len() + 3);
-        assert_eq!(sources[0].primary, "vFast");
-        assert_eq!(sources[0].provider, "VidFast");
-        assert_eq!(sources[0].filename, "VidFast vFast embed");
-        assert_eq!(sources[0].qualityLabel, "4K iframe");
+        // 6 new fast providers + vidfast (with servers) + videasy + vidking + 2embed
+        assert_eq!(sources.len(), VIDFAST_EMBED_SERVERS.len() + 9);
+        // vidsrc is the default fast provider
+        assert_eq!(sources[0].primary, "VidSrc");
+        assert_eq!(sources[0].provider, "LivNet");
+        assert_eq!(sources[0].filename, "VidSrc embed");
+        assert_eq!(sources[0].qualityLabel, "Fast iframe");
         assert_eq!(sources[0].container, "iframe");
         assert_eq!(
             normalize_source_hash(&sources[0].sourceHash),
@@ -6492,16 +6757,75 @@ mod tests {
 
         let source = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
             .expect("matching external provider");
-        assert_eq!(source.provider.id, "vidfast");
-        assert_eq!(source.server.expect("vidfast server").id, "vFast");
+        assert_eq!(source.provider.id, "vidsrc");
         assert_eq!(
             external_embed_url(source, &metadata).unwrap(),
-            "https://vidfast.me/movie/1368166?theme=FF0000&hideServer=true&server=vFast"
+            "https://vidsrcme.ru/embed/movie/1368166"
         );
         assert_eq!(
             external_embed_source_hash(source, &metadata),
             sources[0].sourceHash
         );
+
+        // Test vidfast is still present but at lower priority
+        let vidfast_source = external_embed_sources()
+            .into_iter()
+            .find(|s| {
+                s.provider.id == "vidfast" && s.server.map(|srv| srv.id == "vFast").unwrap_or(false)
+            })
+            .expect("vidfast vFast server");
+        assert_eq!(
+            external_embed_url(vidfast_source, &metadata).unwrap(),
+            "https://vidfast.me/movie/1368166?theme=FF0000&hideServer=true&server=vFast"
+        );
+    }
+
+    #[test]
+    fn default_external_embed_prefers_native_hls_provider_for_unpinned_fastest_requests() {
+        let metadata = sample_movie_metadata();
+        let source = default_external_embed_source(&metadata).expect("default embed source");
+        assert_eq!(source.provider.id, "videasy");
+
+        let filters = ResolveFilters {
+            source_hash: String::new(),
+            preferred_container: String::new(),
+            source_filters: sample_source_filters(),
+        };
+        assert!(should_prefer_default_external_embed(
+            &filters,
+            ResolverProvider::Fastest
+        ));
+        assert!(!should_prefer_default_external_embed(
+            &filters,
+            ResolverProvider::LocalTorrent
+        ));
+    }
+
+    #[test]
+    fn external_embed_hls_resolver_accepts_known_hosts_only() {
+        let videasy_embed: url::Url = "https://player.videasy.net/movie/1368166"
+            .parse()
+            .expect("videasy embed");
+        let vidking_embed: url::Url = "https://www.vidking.net/embed/tv/1396/1/1"
+            .parse()
+            .expect("vidking embed");
+        let unsupported_embed: url::Url = "https://vidsrcme.ru/embed/movie/1368166"
+            .parse()
+            .expect("unsupported embed");
+        let hls: url::Url = "https://easy.speedsterwave.app/example/index.m3u8"
+            .parse()
+            .expect("hls url");
+        let unsupported_hls: url::Url = "https://example.com/example/index.m3u8"
+            .parse()
+            .expect("unsupported hls url");
+
+        assert!(is_supported_external_embed_hls_embed_url(&videasy_embed));
+        assert!(is_supported_external_embed_hls_embed_url(&vidking_embed));
+        assert!(!is_supported_external_embed_hls_embed_url(
+            &unsupported_embed
+        ));
+        assert!(is_supported_external_embed_hls_url(&hls));
+        assert!(!is_supported_external_embed_hls_url(&unsupported_hls));
     }
 
     #[test]
@@ -6628,14 +6952,14 @@ mod tests {
     }
 
     #[test]
-    fn real_debrid_and_fastest_reuse_warmed_local_cache_sessions() {
+    fn real_debrid_and_fastest_reuse_real_debrid_sessions() {
         assert_eq!(
             ResolverProvider::Fastest.cache_reuse_provider(),
-            ResolverProvider::LocalTorrent
+            ResolverProvider::RealDebrid
         );
         assert_eq!(
             ResolverProvider::RealDebrid.cache_reuse_provider(),
-            ResolverProvider::LocalTorrent
+            ResolverProvider::RealDebrid
         );
         assert_eq!(
             ResolverProvider::LocalTorrent.cache_reuse_provider(),
@@ -6673,9 +6997,10 @@ mod tests {
                 "mkv mp4",
                 "EN",
                 "single",
-                ResolverProvider::RealDebrid
+                ResolverProvider::RealDebrid,
+                false,
             ),
-            "movie|provider:real-debrid|tmdb:123|audio:en|sub:off|quality:1080p|session:local-torrent:123:en:1080p|hash:|min:5|formats:mkv,mp4|lang:en|profile:single"
+            "movie|provider:real-debrid|skipEmbed:0|tmdb:123|audio:en|sub:off|quality:1080p|session:local-torrent:123:en:1080p|hash:|min:5|formats:mkv,mp4|lang:en|profile:single"
         );
         assert_eq!(
             build_tv_resolve_lock_key(
@@ -6694,9 +7019,10 @@ mod tests {
                 "mp4",
                 "auto",
                 "multi",
-                ResolverProvider::LocalTorrent
+                ResolverProvider::LocalTorrent,
+                false,
             ),
-            "tv|provider:local-torrent|tmdb:123|s:2|e:7|audio:auto|sub:en|quality:2160p|container:mp4|session:|hash:|min:0|formats:mp4|lang:any|profile:any"
+            "tv|provider:local-torrent|skipEmbed:0|tmdb:123|s:2|e:7|audio:auto|sub:en|quality:2160p|container:mp4|session:|hash:|min:0|formats:mp4|lang:any|profile:any"
         );
     }
 

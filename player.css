@@ -1270,7 +1270,20 @@ body {
     overflow: hidden;
 }
 
+.source-popover {
+    right: 0;
+    width: min(430px, calc(100vw - 22px));
+    max-height: min(52vh, 430px);
+    padding: 16px 0 14px;
+    overflow: hidden;
+}
+
 .live-stream-popover-title {
+    margin: 0 22px 12px;
+    font-size: clamp(1.28rem, 1.8vw, 1.7rem);
+}
+
+.source-popover-title {
     margin: 0 22px 12px;
     font-size: clamp(1.28rem, 1.8vw, 1.7rem);
 }
@@ -1280,6 +1293,13 @@ body {
     padding: 0 16px;
     margin: 0;
     gap: 4px;
+}
+
+.source-popover-options.source-options {
+    max-height: min(42vh, 340px);
+    padding: 0 16px;
+    margin: 0;
+    gap: 8px;
 }
 
 .live-stream-option {
@@ -1833,6 +1853,7 @@ body {
     /* --- Popovers: open downward from top-right --- */
     .controls-right .speed-menu-wrap,
     .controls-right .audio-menu-wrap,
+    .controls-right .source-menu-wrap,
     .controls-right .episodes-menu-wrap {
         position: relative;
     }
@@ -1860,6 +1881,14 @@ body {
         top: calc(100% + 8px);
         width: min(84vw, 320px);
         max-height: min(46vh, 300px);
+    }
+
+    .source-popover {
+        right: 0;
+        bottom: auto;
+        top: calc(100% + 8px);
+        width: min(88vw, 380px);
+        max-height: min(54vh, 360px);
     }
 
     .episodes-popover {
@@ -2011,6 +2040,11 @@ body {
     .source-options {
         max-height: min(38vh, 280px);
         gap: 7px;
+    }
+
+    .source-popover-options.source-options {
+        max-height: min(42vh, 300px);
+        padding: 0 12px;
     }
 
     .audio-option.source-option {
@@ -2215,6 +2249,10 @@ body {
 
     .live-stream-popover {
         width: min(96vw, 310px);
+    }
+
+    .source-popover {
+        width: min(96vw, 350px);
     }
 
     .audio-popover.subtitles-popover {

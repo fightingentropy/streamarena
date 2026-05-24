@@ -21,7 +21,6 @@
     "mini:install-agents": "./scripts/install-mini-agents.sh",
     "mini:map-ports": "./scripts/map-mini-ports.sh",
     "mini:update-dns": "./scripts/update-mini-dns.sh",
-    "hero:refresh": "python3 ./scripts/refresh-hero-previews.py",
     "bench:playback": "node ./scripts/playback-benchmark.mjs",
     "bench:load": "node ./scripts/playback-load-benchmark.mjs",
     "bench:resolve": "node ./scripts/resolver-load-benchmark.mjs",

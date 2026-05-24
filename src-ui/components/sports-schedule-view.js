@@ -10,13 +10,13 @@ const SPORT_CONFIGS = Object.freeze({
   football: Object.freeze({
     apiUrl: "/api/football/matches",
     sportName: "Football",
-    streamResolver: "football",
+    streamResolver: "sports",
     slugFallback: "football",
   }),
   basketball: Object.freeze({
     apiUrl: "/api/basketball/matches",
     sportName: "Basketball",
-    streamResolver: "basketball",
+    streamResolver: "sports",
     slugFallback: "basketball",
   }),
   tennis: Object.freeze({
@@ -104,7 +104,7 @@ function formatDateKey(timestamp) {
 }
 
 function matchDateKey(match) {
-  return match.sourceMatchDate || formatDateKey(match.startTimestamp);
+  return formatDateKey(match.startTimestamp) || match.sourceMatchDate;
 }
 
 function formatTabWeekday(dateKey) {
@@ -167,6 +167,30 @@ function normalizeMatches(payload, sportName) {
       };
     })
     .sort((a, b) => a.startTimestamp - b.startTimestamp);
+}
+
+function sourceHostLabel(source) {
+  const value = String(source || "").trim();
+  if (!value) return "";
+  try {
+    const host = new URL(value).hostname.replace(/^www\./, "");
+    if (host === "streamed.pk") return "Streamed";
+    return host;
+  } catch {
+    return value;
+  }
+}
+
+function formatSourceLabel(payload = {}) {
+  const rawSources = Array.isArray(payload?.sources)
+    ? payload.sources
+    : [payload?.source];
+  const labels = rawSources
+    .map(sourceHostLabel)
+    .filter(Boolean)
+    .filter((label, index, values) => values.indexOf(label) === index);
+  if (!labels.length) return "schedule providers";
+  return labels.join(" + ");
 }
 
 function isLive(match, now) {
@@ -285,6 +309,7 @@ export default function SportsScheduleView(options = {}) {
   const [status, setStatus] = createSignal("loading");
   const [errorText, setErrorText] = createSignal("");
   const [fetchedAt, setFetchedAt] = createSignal(0);
+  const [sourceLabel, setSourceLabel] = createSignal("schedule providers");
   const [now, setNow] = createSignal(Date.now());
   const timeZone = getLocalTimeZone();
   const config = createMemo(() => SPORT_CONFIGS[selectedSport()] || SPORT_CONFIGS.football);
@@ -333,6 +358,7 @@ export default function SportsScheduleView(options = {}) {
       if (requestId !== loadSequence) return;
       setMatches(nextMatches);
       setFetchedAt(Number(payload?.fetchedAt || Date.now()));
+      setSourceLabel(formatSourceLabel(payload));
 
       const nextDates = Array.from(
         new Set(nextMatches.map((match) => matchDateKey(match))),
@@ -361,6 +387,7 @@ export default function SportsScheduleView(options = {}) {
     setFilterMode("all");
     setGroupMode("match");
     setFetchedAt(0);
+    setSourceLabel("schedule providers");
     updateSportsUrl(nextSport);
     void loadMatches();
   }
@@ -514,7 +541,7 @@ export default function SportsScheduleView(options = {}) {
               : html`<div class="sports-match-list">${renderGroupedMatches()}</div>`}
 
         <div class="sports-source-row">
-          <span>Fetched from super.league.st</span>
+          <span>Fetched from ${() => sourceLabel()}</span>
           <span>${() => (fetchedAt() ? `Updated ${formatTime(fetchedAt())}` : "")}</span>
           <button type="button" onClick=${loadMatches}>Refresh</button>
         </div>

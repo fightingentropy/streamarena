@@ -23,6 +23,8 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "cdn.skycdp.com",
     "msvdn.net",
     "siliconweb.com",
+    "strmd.top",
+    "easy.speedsterwave.app",
     "ttvnw.net",
 ];
 
@@ -194,6 +196,10 @@ fn encode_query_value(value: &str) -> String {
     byte_serialize(value.as_bytes()).collect::<String>()
 }
 
+pub fn build_live_hls_playback_source(input: &str, referer: Option<&str>) -> String {
+    live_hls_proxy_playlist_url(input, referer)
+}
+
 fn live_hls_proxy_playlist_url(input: &str, referer: Option<&str>) -> String {
     live_hls_proxy_url("/api/live/hls.m3u8", input, referer)
 }
@@ -295,6 +301,15 @@ fn rewrite_live_hls_media_playlist(
     lines: &[&str],
     referer: Option<&str>,
 ) -> String {
+    let is_vod_playlist = lines.iter().any(|line| {
+        let line = line.trim();
+        line.eq_ignore_ascii_case("#EXT-X-ENDLIST")
+            || line.eq_ignore_ascii_case("#EXT-X-PLAYLIST-TYPE:VOD")
+    });
+    if is_vod_playlist {
+        return rewrite_vod_hls_media_playlist(base_url, lines, referer);
+    }
+
     let mut header = Vec::new();
     let mut pending_block = Vec::new();
     let mut segment_blocks: Vec<Vec<String>> = Vec::new();
@@ -372,6 +387,33 @@ fn rewrite_live_hls_media_playlist(
     rewritten.join("\n")
 }
 
+fn rewrite_vod_hls_media_playlist(base_url: &Url, lines: &[&str], referer: Option<&str>) -> String {
+    let mut rewritten = Vec::with_capacity(lines.len());
+    for raw_line in lines {
+        let line = raw_line.trim_end();
+        if line.trim().is_empty() {
+            rewritten.push(line.to_owned());
+            continue;
+        }
+
+        if line.starts_with('#') {
+            rewritten.push(rewrite_hls_uri_attribute(
+                base_url,
+                line,
+                referer,
+                live_hls_proxy_resource_url,
+            ));
+            continue;
+        }
+
+        let segment_uri = resolve_hls_uri(base_url, line)
+            .map(|absolute_uri| live_hls_proxy_resource_url(&absolute_uri, referer))
+            .unwrap_or_else(|| line.to_owned());
+        rewritten.push(segment_uri);
+    }
+    rewritten.join("\n")
+}
+
 fn rewrite_hls_uri_attribute(
     base_url: &Url,
     line: &str,
@@ -441,6 +483,13 @@ mod tests {
             "https://91334ab1a2f2.j.cloudfront.hls.ttvnw.net/v1/segment/live.ts"
                 .parse()
                 .expect("twitch segment url");
+        let streamed_sports: url::Url =
+            "https://lb12.strmd.top/secure/token/rtmp/stream/id/1/playlist.m3u8"
+                .parse()
+                .expect("streamed sports url");
+        let external_embed: url::Url = "https://easy.speedsterwave.app/example/index.m3u8"
+            .parse()
+            .expect("external embed url");
         let disallowed: url::Url = "https://example.com/live.m3u8"
             .parse()
             .expect("disallowed url");
@@ -457,6 +506,8 @@ mod tests {
         assert!(is_allowed_live_hls_url(&twitch_master));
         assert!(is_allowed_live_hls_url(&twitch_variant));
         assert!(is_allowed_live_hls_url(&twitch_segment));
+        assert!(is_allowed_live_hls_url(&streamed_sports));
+        assert!(is_allowed_live_hls_url(&external_embed));
         assert!(!is_allowed_live_hls_url(&disallowed));
         assert!(!is_allowed_live_hls_url(&local));
     }
@@ -499,5 +550,22 @@ mod tests {
         assert!(rewritten.contains("/api/live/hls-resource?input="));
         assert!(rewritten.contains("seg-1.ts"));
         assert!(rewritten.contains("referer=https%3A%2F%2Fhelpless.click%2Fe%2Fplayer"));
+    }
+
+    #[test]
+    fn preserves_vod_media_playlist_segments_through_live_proxy() {
+        let base: url::Url = "https://easy.speedsterwave.app/title/index.m3u8"
+            .parse()
+            .expect("base url");
+        let playlist = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:4.0,\nseg-1.ts\n#EXTINF:4.0,\nseg-2.ts\n#EXTINF:4.0,\nseg-3.ts\n#EXTINF:4.0,\nseg-4.ts\n#EXTINF:4.0,\nseg-5.ts\n#EXTINF:4.0,\nseg-6.ts\n#EXTINF:4.0,\nseg-7.ts\n#EXTINF:4.0,\nseg-8.ts\n#EXTINF:4.0,\nseg-9.ts\n#EXT-X-ENDLIST\n";
+        let rewritten =
+            rewrite_live_hls_playlist(&base, playlist, Some("https://player.videasy.net/movie/1"));
+
+        assert!(rewritten.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
+        assert!(rewritten.contains("#EXT-X-MEDIA-SEQUENCE:1"));
+        assert!(rewritten.contains("#EXT-X-ENDLIST"));
+        assert!(rewritten.contains("seg-1.ts"));
+        assert!(rewritten.contains("seg-9.ts"));
+        assert!(!rewritten.contains("#EXT-X-START:TIME-OFFSET=-18"));
     }
 }

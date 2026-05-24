@@ -10,11 +10,9 @@ WATCHDOG_URL="${WATCHDOG_URL:-http://127.0.0.1:5173/}"
 WATCHDOG_INTERVAL_SECONDS="${WATCHDOG_INTERVAL_SECONDS:-60}"
 WATCHDOG_FAILURE_THRESHOLD="${WATCHDOG_FAILURE_THRESHOLD:-1}"
 WATCHDOG_TIMEOUT_SECONDS="${WATCHDOG_TIMEOUT_SECONDS:-5}"
-HERO_PREVIEW_INTERVAL_SECONDS="${HERO_PREVIEW_INTERVAL_SECONDS:-604800}"
-HERO_PREVIEW_LIMIT="${HERO_PREVIEW_LIMIT:-10}"
 
 ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$MINI_HOST" \
-  "REMOTE_APP='$REMOTE_APP' DISK_MAX_PERCENT='$DISK_MAX_PERCENT' DISK_MIN_FREE_GB='$DISK_MIN_FREE_GB' WATCHDOG_URL='$WATCHDOG_URL' WATCHDOG_INTERVAL_SECONDS='$WATCHDOG_INTERVAL_SECONDS' WATCHDOG_FAILURE_THRESHOLD='$WATCHDOG_FAILURE_THRESHOLD' WATCHDOG_TIMEOUT_SECONDS='$WATCHDOG_TIMEOUT_SECONDS' HERO_PREVIEW_INTERVAL_SECONDS='$HERO_PREVIEW_INTERVAL_SECONDS' HERO_PREVIEW_LIMIT='$HERO_PREVIEW_LIMIT' bash -s" <<'REMOTE'
+  "REMOTE_APP='$REMOTE_APP' DISK_MAX_PERCENT='$DISK_MAX_PERCENT' DISK_MIN_FREE_GB='$DISK_MIN_FREE_GB' WATCHDOG_URL='$WATCHDOG_URL' WATCHDOG_INTERVAL_SECONDS='$WATCHDOG_INTERVAL_SECONDS' WATCHDOG_FAILURE_THRESHOLD='$WATCHDOG_FAILURE_THRESHOLD' WATCHDOG_TIMEOUT_SECONDS='$WATCHDOG_TIMEOUT_SECONDS' bash -s" <<'REMOTE'
 set -euo pipefail
 
 uid="$(id -u)"
@@ -23,6 +21,13 @@ bin_dir="$HOME/.local/bin"
 agents_dir="$HOME/Library/LaunchAgents"
 mkdir -p "$state_dir" "$bin_dir" "$agents_dir"
 chmod 700 "$state_dir" "$bin_dir" "$agents_dir"
+launchctl bootout "gui/$uid" "$agents_dir/com.fightingentropy.netflix-hero-previews.plist" 2>/dev/null || true
+rm -f \
+  "$agents_dir/com.fightingentropy.netflix-hero-previews.plist" \
+  "$bin_dir/netflix-refresh-hero-previews" \
+  "$REMOTE_APP/bin/netflix-refresh-hero-previews.py" \
+  "$REMOTE_APP/assets/hero-previews.json"
+rm -rf "$REMOTE_APP/assets/videos/hero-previews"
 
 cat > "$bin_dir/netflix-rotate-logs" <<'SCRIPT'
 #!/bin/bash
@@ -221,7 +226,7 @@ record_failures "$count"
 log "FAIL url=$url http=$http_code failures=$count threshold=$failure_threshold"
 
 if [[ "$count" -ge "$failure_threshold" ]]; then
-  restart_backend "library_http_$http_code failures=$count threshold=$failure_threshold"
+  restart_backend "probe_http_$http_code failures=$count threshold=$failure_threshold"
 fi
 SCRIPT
 sed -i '' \
@@ -231,33 +236,10 @@ sed -i '' \
   -e "s|__WATCHDOG_FAILURE_THRESHOLD__|$WATCHDOG_FAILURE_THRESHOLD|g" \
   "$bin_dir/netflix-watchdog"
 
-cat > "$bin_dir/netflix-refresh-hero-previews" <<'SCRIPT'
-#!/bin/bash
-set -euo pipefail
-
-app="__REMOTE_APP__"
-limit="__HERO_PREVIEW_LIMIT__"
-
-export NETFLIX_APP_DIR="$app"
-export HERO_PREVIEW_LIMIT="$limit"
-
-if [[ ! -f "$app/bin/netflix-refresh-hero-previews.py" ]]; then
-  echo "missing_refresh_script=$app/bin/netflix-refresh-hero-previews.py" >&2
-  exit 66
-fi
-
-/usr/bin/python3 "$app/bin/netflix-refresh-hero-previews.py" --app-dir "$app" --limit "$limit"
-SCRIPT
-sed -i '' \
-  -e "s|__REMOTE_APP__|$REMOTE_APP|g" \
-  -e "s|__HERO_PREVIEW_LIMIT__|$HERO_PREVIEW_LIMIT|g" \
-  "$bin_dir/netflix-refresh-hero-previews"
-
-chmod 700 "$bin_dir/netflix-rotate-logs" "$bin_dir/netflix-disk-monitor" "$bin_dir/netflix-watchdog" "$bin_dir/netflix-refresh-hero-previews"
+chmod 700 "$bin_dir/netflix-rotate-logs" "$bin_dir/netflix-disk-monitor" "$bin_dir/netflix-watchdog"
 bash -n "$bin_dir/netflix-rotate-logs"
 bash -n "$bin_dir/netflix-disk-monitor"
 bash -n "$bin_dir/netflix-watchdog"
-bash -n "$bin_dir/netflix-refresh-hero-previews"
 
 cat > "$agents_dir/com.fightingentropy.netflix-log-rotation.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -335,31 +317,6 @@ PLIST
 
 chmod 600 "$agents_dir/com.fightingentropy.netflix-watchdog.plist"
 
-cat > "$agents_dir/com.fightingentropy.netflix-hero-previews.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.fightingentropy.netflix-hero-previews</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/hermes/.local/bin/netflix-refresh-hero-previews</string>
-  </array>
-  <key>StartInterval</key>
-  <integer>$HERO_PREVIEW_INTERVAL_SECONDS</integer>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>/Users/hermes/.local/state/netflix/hero-previews.launchd.log</string>
-  <key>StandardErrorPath</key>
-  <string>/Users/hermes/.local/state/netflix/hero-previews.launchd.err.log</string>
-</dict>
-</plist>
-PLIST
-
-chmod 600 "$agents_dir/com.fightingentropy.netflix-hero-previews.plist"
-
 # Remove the old cron-based rotation now that launchd owns it.
 tmp_cron="$(mktemp)"
 crontab -l 2>/dev/null | grep -v 'netflix-rotate-logs' > "$tmp_cron" || true
@@ -381,7 +338,6 @@ load_agent() {
 load_agent "com.fightingentropy.netflix-log-rotation" "$agents_dir/com.fightingentropy.netflix-log-rotation.plist"
 load_agent "com.fightingentropy.netflix-disk-monitor" "$agents_dir/com.fightingentropy.netflix-disk-monitor.plist"
 load_agent "com.fightingentropy.netflix-watchdog" "$agents_dir/com.fightingentropy.netflix-watchdog.plist"
-load_agent "com.fightingentropy.netflix-hero-previews" "$agents_dir/com.fightingentropy.netflix-hero-previews.plist"
 launchctl kickstart -k "gui/$uid/com.fightingentropy.netflix-disk-monitor" 2>/dev/null || true
 launchctl kickstart -k "gui/$uid/com.fightingentropy.netflix-watchdog" 2>/dev/null || true
 
@@ -392,13 +348,10 @@ printf 'installed_agents=ok\n'
 launchctl print "gui/$uid/com.fightingentropy.netflix-log-rotation" 2>/dev/null | awk '/state =|path =|program =/ {print}'
 launchctl print "gui/$uid/com.fightingentropy.netflix-disk-monitor" 2>/dev/null | awk '/state =|path =|program =|last exit code =/ {print}'
 launchctl print "gui/$uid/com.fightingentropy.netflix-watchdog" 2>/dev/null | awk '/state =|path =|program =|last exit code =/ {print}'
-launchctl print "gui/$uid/com.fightingentropy.netflix-hero-previews" 2>/dev/null | awk '/state =|path =|program =|last exit code =/ {print}'
 printf 'crontab_leftover='
 crontab -l 2>/dev/null | grep -c 'netflix-rotate-logs' || true
 printf 'disk_log_tail=\n'
 tail -5 "$state_dir/disk-monitor.log"
 printf 'watchdog_log_tail=\n'
 tail -5 "$state_dir/watchdog.log"
-printf 'hero_preview_log_tail=\n'
-tail -5 "$state_dir/hero-previews.launchd.log" 2>/dev/null || true
 REMOTE

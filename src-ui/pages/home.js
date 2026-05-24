@@ -26,7 +26,6 @@ import {
   getStoredAudioLangForTmdbMovie,
 } from "../lib/preferences.js";
 import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
-import LiveChannelsView from "../components/live-channels-view.js";
 import {
   addCurrentReturnToParam,
   saveWatchParams,
@@ -60,7 +59,6 @@ const SEARCH_RESULTS_LIMIT = 40;
 const STALE_HERO_PREVIEW_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
 const HERO_PREVIEW_ENTER_VISIBLE_RATIO = 0.3;
 const HERO_PREVIEW_LEAVE_VISIBLE_RATIO = 0.08;
-const HERO_PREVIEW_MANIFEST_URL = "assets/hero-previews.json";
 const FEATURED_HERO_ROTATION_MS = 24 * 60 * 60 * 1000;
 const FEATURED_HERO_CAROUSEL_MS = 20000;
 const FEATURED_HERO_STORAGE_KEY = "netflix-featured-hero-v2";
@@ -70,7 +68,121 @@ const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
 const JEFFREY_EPSTEIN_SERIES_ID = "jeffrey-epstein-filthy-rich";
 const JEFFREY_EPSTEIN_EPISODE_1_SOURCE =
   "assets/videos/jeffrey-epstein-filthy-rich-s01e01-2160p-hevc.mp4";
-const POPULAR_TITLES_LIMIT = 10;
+const POPULAR_TITLES_LIMIT = 14;
+const BROWSE_RAIL_LIMIT = 14;
+const TOP_TEN_RAIL_LIMIT = 10;
+const HOME_BOOTSTRAP_FETCH_TIMEOUT_MS = 2500;
+const HOME_BOOTSTRAP_WARM_RETRY_MS = 1200;
+const HOME_BOOTSTRAP_WARM_RETRY_LIMIT = 8;
+
+function isWarmingHomeBootstrap(payload) {
+  return String(payload?._meta?.status || "").trim() === "warming";
+}
+
+async function resolveHomeBootstrap() {
+  if (
+    window.__HOME_BOOTSTRAP__ &&
+    typeof window.__HOME_BOOTSTRAP__ === "object" &&
+    !isWarmingHomeBootstrap(window.__HOME_BOOTSTRAP__)
+  ) {
+    return window.__HOME_BOOTSTRAP__;
+  }
+  if (window.__HOME_BOOTSTRAP_PROMISE__) {
+    try {
+      const payload = await window.__HOME_BOOTSTRAP_PROMISE__;
+      if (payload && typeof payload === "object") {
+        window.__HOME_BOOTSTRAP_PROMISE__ = null;
+        if (!isWarmingHomeBootstrap(payload)) {
+          window.__HOME_BOOTSTRAP__ = payload;
+        }
+        return payload;
+      }
+    } catch {
+      // Fall through to direct fetch.
+    }
+  }
+  const controller = new AbortController();
+  const timeout = window.setTimeout(
+    () => controller.abort(),
+    HOME_BOOTSTRAP_FETCH_TIMEOUT_MS,
+  );
+  try {
+    const response = await fetch("/api/home/bootstrap", { signal: controller.signal });
+    const payload = await response.json().catch(() => null);
+    if (response.ok && payload && typeof payload === "object") {
+      if (!isWarmingHomeBootstrap(payload)) {
+        window.__HOME_BOOTSTRAP__ = payload;
+      }
+      return payload;
+    }
+  } catch {
+    // Ignore bootstrap fetch failures.
+  } finally {
+    window.clearTimeout(timeout);
+  }
+  return null;
+}
+
+function toPopularMoviesPayload(bootstrap) {
+  return {
+    results: Array.isArray(bootstrap?.popular?.results) ? bootstrap.popular.results : [],
+    genres: Array.isArray(bootstrap?.genres) ? bootstrap.genres : [],
+    imageBase: bootstrap?.imageBase || TMDB_IMAGE_BASE,
+  };
+}
+
+function buildGenreMapFromPayload(payload) {
+  const genreMap = new Map();
+  (Array.isArray(payload?.genres) ? payload.genres : []).forEach((genre) => {
+    genreMap.set(genre.id, genre.name);
+  });
+  return genreMap;
+}
+
+function getTmdbItemMediaType(item) {
+  const explicitType = String(item?.media_type || item?.mediaType || "")
+    .trim()
+    .toLowerCase();
+  if (explicitType === "tv" || explicitType === "movie") {
+    return explicitType;
+  }
+  return item?.name || item?.first_air_date || item?.firstAirDate ? "tv" : "movie";
+}
+
+function getTmdbItemTitle(item) {
+  const mediaType = getTmdbItemMediaType(item);
+  const primary = mediaType === "tv" ? item?.name || item?.title : item?.title || item?.name;
+  return String(primary || "").trim() || (mediaType === "tv" ? "Series" : "Movie");
+}
+
+function getTmdbItemReleaseDate(item) {
+  const mediaType = getTmdbItemMediaType(item);
+  return String(
+    mediaType === "tv"
+      ? item?.first_air_date || item?.firstAirDate || item?.release_date || item?.releaseDate || ""
+      : item?.release_date || item?.releaseDate || item?.first_air_date || item?.firstAirDate || "",
+  ).trim();
+}
+
+function getTmdbItemIdentity(item) {
+  const mediaType = getTmdbItemMediaType(item);
+  const tmdbId = String(item?.id || "").trim();
+  if (tmdbId) {
+    return `${mediaType}:${tmdbId}`;
+  }
+  const titleKey = getTmdbItemTitle(item).toLowerCase().replace(/\s+/g, " ").trim();
+  return titleKey ? `${mediaType}:title:${titleKey}` : "";
+}
+
+function getBootstrapResults(bootstrap, ...keys) {
+  for (const key of keys) {
+    const results = bootstrap?.[key]?.results;
+    if (Array.isArray(results) && results.length > 0) {
+      return results;
+    }
+  }
+  return [];
+}
 
 // ---------------------------------------------------------------------------
 // Pure utility functions (no signals needed)
@@ -517,7 +629,7 @@ function createFeaturedHeroFromTmdbItem(
   const posterPath = String(item?.poster_path || "").trim();
   const backdropPath = String(item?.backdrop_path || posterPath || "").trim();
   const poster = backdropPath
-    ? `${imageBase}/original${backdropPath}`
+    ? `${imageBase}/w1280${backdropPath}`
     : posterPath
       ? `${imageBase}/w780${posterPath}`
       : "assets/images/thumbnail-top10-h.jpg";
@@ -718,14 +830,7 @@ function selectFeaturedHeroCandidate(candidates) {
 }
 
 function normalizeHeroPreviewPath(value) {
-  const path = String(value || "").trim();
-  if (!path || /^https?:\/\//i.test(path) || path.startsWith("//")) {
-    return "";
-  }
-  const normalized = path.replace(/^\/+/, "");
-  return normalized.startsWith("assets/videos/hero-previews/")
-    ? normalized
-    : "";
+  return "";
 }
 
 function normalizeHeroPreviewManifest(payload) {
@@ -747,18 +852,7 @@ function normalizeHeroPreviewManifest(payload) {
 }
 
 async function fetchHeroPreviewManifest() {
-  try {
-    const response = await fetch(HERO_PREVIEW_MANIFEST_URL, {
-      cache: "no-store",
-    });
-    if (!response.ok) {
-      return new Map();
-    }
-    return normalizeHeroPreviewManifest(await response.json());
-  } catch (error) {
-    console.warn("Failed to load hero preview manifest:", error);
-    return new Map();
-  }
+  return new Map();
 }
 
 function createSearchResultDetails(item, imageBase = TMDB_IMAGE_BASE) {
@@ -1118,6 +1212,9 @@ export default function HomePage() {
   let pageRootRef;
   let continueCardsRef;
   let cardsContainerRef;
+  let trendingCardsContainerRef;
+  let nowPlayingCardsContainerRef;
+  let topRatedCardsContainerRef;
   let myListCardsRef;
   let myListLibraryEntries = [];
   let searchResultsGridRef;
@@ -1128,6 +1225,7 @@ export default function HomePage() {
   let detailsCloseButtonRef;
   let accountMenuPanelRef;
   let searchContextMenuRef;
+  let liveViewLoadPromise = null;
 
   // ---- Signals ----
   const [isMuted, setIsMuted] = createSignal(true);
@@ -1149,9 +1247,13 @@ export default function HomePage() {
   const [continueEmptyVisible, setContinueEmptyVisible] = createSignal(false);
   const [popularRowVisible, setPopularRowVisible] = createSignal(false);
   const [popularRowTitle, setPopularRowTitle] = createSignal("Trending Now");
+  const [trendingRowVisible, setTrendingRowVisible] = createSignal(false);
+  const [nowPlayingRowVisible, setNowPlayingRowVisible] = createSignal(false);
+  const [topRatedRowVisible, setTopRatedRowVisible] = createSignal(false);
   const [myListRowVisible, setMyListRowVisible] = createSignal(false);
   const [myListEmptyVisible, setMyListEmptyVisible] = createSignal(false);
   const [activeView, setActiveView] = createSignal("home");
+  const [LiveChannelsComponent, setLiveChannelsComponent] = createSignal(null);
 
   const [detailsModalVisible, setDetailsModalVisible] = createSignal(false);
   const [detailsModalOpen, setDetailsModalOpen] = createSignal(false);
@@ -1207,6 +1309,11 @@ export default function HomePage() {
   let activeLibraryEditContext = null;
   let isSavingLibraryEdit = false;
   let activeLibraryEditCategory = "title";
+  let homeBrowseContentReady = false;
+
+  function markHomeBrowseContentReady() {
+    homeBrowseContentReady = true;
+  }
 
   // ---- Player navigation ----
   function openPlayerPage({
@@ -2490,8 +2597,9 @@ export default function HomePage() {
   }
 
   function buildCardFromTmdbElement(item, genreMap, imageBase = TMDB_IMAGE_BASE, cardIndex = 0) {
-    const title = item.title || "Untitled";
-    const releaseDate = item.release_date || "";
+    const mediaType = getTmdbItemMediaType(item);
+    const title = getTmdbItemTitle(item);
+    const releaseDate = getTmdbItemReleaseDate(item);
     const year = releaseDate ? releaseDate.slice(0, 4) : "2024";
     const posterPath = item.poster_path || item.backdrop_path;
     const backdropPath = item.backdrop_path || item.poster_path;
@@ -2499,11 +2607,12 @@ export default function HomePage() {
       ? `${imageBase}/w780${backdropPath}`
       : posterPath
         ? `${imageBase}/w780${posterPath}`
-        : "assets/images/thumbnail.jpg";
+      : "assets/images/thumbnail.jpg";
     const heroUrl = backdropPath
-      ? `${imageBase}/original${backdropPath}`
+      ? `${imageBase}/w1280${backdropPath}`
       : posterUrl;
     const maturity = item.adult ? "18" : "13+";
+    const mediaLabel = mediaType === "tv" ? "Series" : "Movie";
     const genreNames = (item.genre_ids || [])
       .map((id) => genreMap.get(id))
       .filter(Boolean)
@@ -2519,11 +2628,11 @@ export default function HomePage() {
         .toUpperCase(),
     );
     const top10BadgeMarkup =
-      cardIndex < POPULAR_TITLES_LIMIT
+      cardIndex >= 0 && cardIndex < TOP_TEN_RAIL_LIMIT
         ? `<span class="card-top10-badge" aria-hidden="true"><span class="card-top10-badge-label">TOP</span><span class="card-top10-badge-rank">${cardIndex + 1}</span></span>`
         : "";
     const recentBadgeMarkup =
-      cardIndex < POPULAR_TITLES_LIMIT
+      cardIndex >= 0 && cardIndex < TOP_TEN_RAIL_LIMIT
         ? `<span class="card-recent-badge">Recently Added</span>`
         : "";
 
@@ -2535,7 +2644,7 @@ export default function HomePage() {
     card.dataset.src = "";
     card.dataset.thumb = heroUrl;
     card.dataset.year = year;
-    card.dataset.runtime = "Movie";
+    card.dataset.runtime = mediaLabel;
     card.dataset.maturity = maturity;
     card.dataset.quality = "HD";
     card.dataset.audio = "Stereo";
@@ -2543,23 +2652,26 @@ export default function HomePage() {
     card.dataset.cast = "Loading cast...";
     card.dataset.genres = genreNames.length
       ? genreNames.join(", ")
-      : "Popular title";
-    card.dataset.vibe = "Trending, Popular, High-energy";
+      : mediaLabel;
+    card.dataset.vibe =
+      mediaType === "tv"
+        ? "Binge-worthy, Popular, Series"
+        : "Trending, Popular, High-energy";
     card.dataset.tmdbId = String(item.id);
-    card.dataset.mediaType = "movie";
+    card.dataset.mediaType = mediaType;
 
     card.innerHTML = `
       <div class="card-base">
         <div class="card-rail-art">
           ${top10BadgeMarkup}
-          <img src="${posterUrl}" alt="${safeTitle}" loading="lazy" />
+          <img src="${posterUrl}" alt="${safeTitle}" loading="lazy" decoding="async" />
           <div class="card-rail-shade" aria-hidden="true"></div>
           <span class="card-rail-title" aria-hidden="true">${displayTitle}</span>
         </div>
         ${recentBadgeMarkup}
       </div>
       <div class="card-hover">
-        <img class="card-hover-image" src="${heroUrl}" alt="${safeTitle} preview" loading="lazy" />
+        <img class="card-hover-image" src="${heroUrl}" alt="${safeTitle} preview" loading="lazy" decoding="async" />
         <div class="card-hover-body">
           <div class="card-hover-controls">
             <div class="card-hover-actions">
@@ -2578,7 +2690,7 @@ export default function HomePage() {
             <span class="meta-age">${maturity}</span>
             <span>${year}</span>
             <span class="meta-chip">HD</span>
-            <span class="meta-spatial">Movie</span>
+            <span class="meta-spatial">${mediaLabel}</span>
           </div>
           <p class="card-hover-tags">${tagLine}</p>
         </div>
@@ -2856,6 +2968,145 @@ export default function HomePage() {
     return null;
   }
 
+  function buildBrowseRailCards(
+    results,
+    genreMap,
+    imageBase,
+    { limit = BROWSE_RAIL_LIMIT, top10 = false, seenKeys = null } = {},
+  ) {
+    const seenIds = new Set();
+    const sharedSeenKeys = seenKeys instanceof Set ? seenKeys : null;
+    const cards = [];
+    (Array.isArray(results) ? results : []).some((item) => {
+      const identity = getTmdbItemIdentity(item);
+      if (!identity || seenIds.has(identity) || sharedSeenKeys?.has(identity)) {
+        return false;
+      }
+      seenIds.add(identity);
+      sharedSeenKeys?.add(identity);
+      cards.push(
+        buildCardFromTmdbElement(
+          item,
+          genreMap,
+          imageBase,
+          top10 ? cards.length : -1,
+        ),
+      );
+      return cards.length >= limit;
+    });
+    return cards;
+  }
+
+  function renderBrowseRailContainer(container, cardsToRender) {
+    if (!(container instanceof HTMLElement)) {
+      return;
+    }
+    container.innerHTML = "";
+    const fragment = document.createDocumentFragment();
+    cardsToRender.forEach((card, index) => {
+      if (index >= Math.max(1, cardsToRender.length - 2)) {
+        card.classList.add("card--align-right");
+      }
+      fragment.appendChild(card);
+      attachCardInteractions(card);
+    });
+    container.appendChild(fragment);
+  }
+
+  function applyLibrarySnapshot(localLibrary) {
+    if (!localLibrary || typeof localLibrary !== "object") {
+      return;
+    }
+    myListLibraryEntries = buildLibraryMyListEntries(localLibrary);
+    renderMyListRow();
+  }
+
+  function applyHomeBootstrapPayload(bootstrap, { heroPreviewMap = null } = {}) {
+    if (!bootstrap || typeof bootstrap !== "object" || isWarmingHomeBootstrap(bootstrap)) {
+      return false;
+    }
+
+    const popularPayload = toPopularMoviesPayload(bootstrap);
+    const genreMap = buildGenreMapFromPayload({
+      genres: Array.isArray(bootstrap?.genres)
+        ? bootstrap.genres
+        : popularPayload.genres,
+    });
+    const imageBase = popularPayload.imageBase || TMDB_IMAGE_BASE;
+    const library = bootstrap.library || null;
+    const seenHomeRailKeys = new Set();
+
+    applyLibrarySnapshot(library);
+
+    const popularCards = buildBrowseRailCards(
+      getBootstrapResults(bootstrap, "bingeworthy", "nowPlaying", "popular"),
+      genreMap,
+      imageBase,
+      { seenKeys: seenHomeRailKeys },
+    );
+    if (popularCards.length > 0) {
+      applyFeaturedHeroFromPopularPayload(popularPayload, library, heroPreviewMap);
+      setPopularRowTitle("Bingeworthy Series");
+      setPopularRowVisible(true);
+      renderPopularCards(popularCards);
+    } else if (Array.isArray(popularPayload.results) && popularPayload.results.length > 0) {
+      applyFeaturedHeroFromPopularPayload(popularPayload, library, heroPreviewMap);
+      setPopularRowVisible(false);
+      renderPopularCards([]);
+    } else {
+      setPopularRowVisible(false);
+      renderPopularCards([]);
+    }
+
+    const trendingCards = buildBrowseRailCards(
+      getBootstrapResults(bootstrap, "crowdPleasers", "trending"),
+      genreMap,
+      imageBase,
+      { seenKeys: seenHomeRailKeys },
+    );
+    setTrendingRowVisible(trendingCards.length > 0);
+    renderBrowseRailContainer(trendingCardsContainerRef, trendingCards);
+
+    const nowPlayingCards = buildBrowseRailCards(
+      getBootstrapResults(bootstrap, "topSeries", "nowPlaying"),
+      genreMap,
+      imageBase,
+      { limit: TOP_TEN_RAIL_LIMIT, top10: true, seenKeys: seenHomeRailKeys },
+    );
+    setNowPlayingRowVisible(nowPlayingCards.length > 0);
+    renderBrowseRailContainer(nowPlayingCardsContainerRef, nowPlayingCards);
+
+    const topRatedCards = buildBrowseRailCards(
+      getBootstrapResults(bootstrap, "criticallyAcclaimed", "topRated"),
+      genreMap,
+      imageBase,
+      { seenKeys: seenHomeRailKeys },
+    );
+    setTopRatedRowVisible(topRatedCards.length > 0);
+    renderBrowseRailContainer(topRatedCardsContainerRef, topRatedCards);
+
+    const hasBrowseContent =
+      popularCards.length > 0 ||
+      trendingCards.length > 0 ||
+      nowPlayingCards.length > 0 ||
+      topRatedCards.length > 0;
+    if (hasBrowseContent) {
+      markHomeBrowseContentReady();
+    }
+    return hasBrowseContent;
+  }
+
+  async function initializeHomeContent() {
+    const bootstrap = await resolveHomeBootstrap();
+    if (bootstrap) {
+      const previewResult = await fetchHeroPreviewManifest().catch(() => null);
+      if (applyHomeBootstrapPayload(bootstrap, { heroPreviewMap: previewResult })) {
+        return;
+      }
+    }
+    void loadPopularTitles();
+  }
+
   function renderPopularCards(cardsToRender) {
     const container = getPopularCardsContainer();
     if (!container) return;
@@ -2977,11 +3228,11 @@ export default function HomePage() {
     const seenIds = new Set();
     return (Array.isArray(payload?.results) ? payload.results : [])
       .filter((item) => {
-        const tmdbId = String(item?.id || "").trim();
-        if (!tmdbId || seenIds.has(tmdbId)) {
+        const identity = getTmdbItemIdentity(item);
+        if (!identity || seenIds.has(identity)) {
           return false;
         }
-        seenIds.add(tmdbId);
+        seenIds.add(identity);
         return true;
       })
       .slice(0, POPULAR_TITLES_LIMIT)
@@ -2999,6 +3250,9 @@ export default function HomePage() {
   }
 
   function applyLocalLibraryFallbackHome(localLibrary) {
+    if (homeBrowseContentReady) {
+      return;
+    }
     const localEntries = buildLibraryMyListEntries(localLibrary);
     const localHero = createFeaturedHeroFromLocalEntry(localEntries[0]);
     const localCards = buildLocalFallbackCards(localEntries);
@@ -3132,7 +3386,7 @@ export default function HomePage() {
         details?.backdrop_path || details?.poster_path || "",
       ).trim();
       const poster = backdropPath
-        ? `${TMDB_IMAGE_BASE}/original${backdropPath}`
+        ? `${TMDB_IMAGE_BASE}/w1280${backdropPath}`
         : hero.poster;
       setFeaturedHero((current) => {
         if (String(current?.tmdbId || "").trim() !== tmdbId) {
@@ -3172,12 +3426,12 @@ export default function HomePage() {
   }
 
   // ---- Load popular titles ----
-  async function loadPopularTitles({ allowRetry = true } = {}) {
+  async function loadPopularTitles({ allowRetry = true, warmingRetry = 0 } = {}) {
     const container = getPopularCardsContainer();
     if (!container) {
       if (allowRetry) {
         requestAnimationFrame(() => {
-          void loadPopularTitles({ allowRetry: false });
+          void loadPopularTitles({ allowRetry: false, warmingRetry });
         });
       }
       return;
@@ -3187,11 +3441,7 @@ export default function HomePage() {
       (value) => ({ status: "fulfilled", value }),
       (reason) => ({ status: "rejected", reason }),
     );
-    const popularRequest = apiFetchWithTimeout(
-      "/api/tmdb/popular-movies",
-      { page: "1" },
-      22000,
-    ).then(
+    const bootstrapRequest = resolveHomeBootstrap().then(
       (value) => ({ status: "fulfilled", value }),
       (reason) => ({ status: "rejected", reason }),
     );
@@ -3200,26 +3450,56 @@ export default function HomePage() {
       (reason) => ({ status: "rejected", reason }),
     );
 
-    const libraryResult = await libraryRequest;
     let hasLocalFallback = false;
-
-    if (libraryResult.status === "fulfilled") {
-      myListLibraryEntries = buildLibraryMyListEntries(libraryResult.value);
+    void libraryRequest.then((libraryResult) => {
+      if (libraryResult.status !== "fulfilled") {
+        console.error("Failed to load local library titles:", libraryResult.reason);
+        myListLibraryEntries = [];
+        renderMyListRow();
+        return;
+      }
+      applyLibrarySnapshot(libraryResult.value);
       hasLocalFallback = myListLibraryEntries.length > 0;
-    } else {
-      console.error("Failed to load local library titles:", libraryResult.reason);
-      myListLibraryEntries = [];
-    }
-    renderMyListRow();
-
-    if (libraryResult.status === "fulfilled") {
       applyLocalLibraryFallbackHome(libraryResult.value);
-    }
+    });
 
-    const [popularResult, previewResult] = await Promise.all([
-      popularRequest,
+    const [bootstrapResult, previewResult] = await Promise.all([
+      bootstrapRequest,
       previewRequest,
     ]);
+
+    if (
+      bootstrapResult.status === "fulfilled" &&
+      isWarmingHomeBootstrap(bootstrapResult.value)
+    ) {
+      if (warmingRetry < HOME_BOOTSTRAP_WARM_RETRY_LIMIT) {
+        window.setTimeout(() => {
+          void loadPopularTitles({
+            allowRetry,
+            warmingRetry: warmingRetry + 1,
+          });
+        }, HOME_BOOTSTRAP_WARM_RETRY_MS);
+      }
+      return;
+    }
+
+    if (bootstrapResult.status === "fulfilled" && bootstrapResult.value) {
+      const previewMap =
+        previewResult.status === "fulfilled" ? previewResult.value : null;
+      if (applyHomeBootstrapPayload(bootstrapResult.value, { heroPreviewMap: previewMap })) {
+        return;
+      }
+    }
+
+    const popularRequest = apiFetchWithTimeout(
+      "/api/tmdb/popular-movies",
+      { page: "1" },
+      3500,
+    ).then(
+      (value) => ({ status: "fulfilled", value }),
+      (reason) => ({ status: "rejected", reason }),
+    );
+    const popularResult = await popularRequest;
 
     if (popularResult.status !== "fulfilled") {
       const logPopularFailure = hasLocalFallback ? console.warn : console.error;
@@ -3231,16 +3511,20 @@ export default function HomePage() {
       );
       if (allowRetry) {
         await new Promise((resolve) => window.setTimeout(resolve, 1500));
-        return loadPopularTitles({ allowRetry: false });
+        return loadPopularTitles({ allowRetry: false, warmingRetry });
       }
       if (!hasLocalFallback) {
         setFeaturedHeroReady(false);
         setPopularRowVisible(false);
+        setTrendingRowVisible(false);
+        setNowPlayingRowVisible(false);
+        setTopRatedRowVisible(false);
         renderPopularCards([]);
       }
       return;
     }
 
+    const libraryResult = await libraryRequest;
     const cardsToRender = buildPopularTitleCards(popularResult.value);
     if (!cardsToRender.length && hasLocalFallback) {
       return;
@@ -3252,6 +3536,7 @@ export default function HomePage() {
     );
     setPopularRowTitle(getPopularRowTitle(popularResult.value));
     setPopularRowVisible(cardsToRender.length > 0);
+    markHomeBrowseContentReady();
     renderPopularCards(cardsToRender);
   }
 
@@ -3997,10 +4282,30 @@ export default function HomePage() {
     stopHeroPreview();
   }
 
+  function ensureLiveViewLoaded() {
+    if (!liveViewLoadPromise) {
+      liveViewLoadPromise = Promise.all([
+        import("../../live.css"),
+        import("../components/live-channels-view.js"),
+      ])
+        .then(([, module]) => {
+          if (typeof module.default === "function") {
+            setLiveChannelsComponent(() => module.default);
+          }
+        })
+        .catch((error) => {
+          console.error("Failed to load live view assets:", error);
+          liveViewLoadPromise = null;
+        });
+    }
+    return liveViewLoadPromise;
+  }
+
   function showLiveView({ push = true } = {}) {
     if (isSearchModeActive()) {
       closeSearchMode({ clearInput: false });
     }
+    void ensureLiveViewLoaded();
     setActiveView("live");
     if (push && window.location.pathname !== "/live") {
       window.history.pushState({ view: "live" }, "", "/live");
@@ -4193,9 +4498,13 @@ export default function HomePage() {
     applyLibraryEditModeClass();
     renderMyListRow();
     void loadContinueWatching();
-    queueMicrotask(() => {
-      void loadPopularTitles();
-    });
+    let appliedInjectedBootstrap = false;
+    if (window.__HOME_BOOTSTRAP__ && typeof window.__HOME_BOOTSTRAP__ === "object") {
+      appliedInjectedBootstrap = applyHomeBootstrapPayload(window.__HOME_BOOTSTRAP__);
+    }
+    if (!appliedInjectedBootstrap) {
+      void initializeHomeContent();
+    }
     applyAccountAvatarStyle();
     closeAccountMenu();
     if (window.location.pathname === "/live") {
@@ -4512,21 +4821,32 @@ export default function HomePage() {
               role="menu"
               style=${() => accountMenuOpen() ? "" : "display:none"}
             >
-              <a
-                class="account-menu-item account-menu-item--muted"
-                href="#"
-                role="menuitem"
-                tabindex="-1"
-              ><span id="profileName">${displayName || "Account"}</span></a>
-              <a class="account-menu-item" href="/settings" role="menuitem">Upload Media</a>
-              <a class="account-menu-item" href="/settings" role="menuitem">Settings</a>
+              <a class="account-menu-item account-menu-link" href="/settings" role="menuitem">
+                <span class="account-menu-icon" aria-hidden="true">
+                  <svg viewBox="0 0 48 48">
+                    <circle cx="24" cy="15.5" r="7.5"></circle>
+                    <path d="M9.5 40.5c.9-9.2 6.4-14 14.5-14s13.6 4.8 14.5 14"></path>
+                  </svg>
+                </span>
+                <span>Account</span>
+              </a>
+              <a class="account-menu-item account-menu-link" href="https://help.netflix.com/" target="_blank" rel="noreferrer" role="menuitem">
+                <span class="account-menu-icon" aria-hidden="true">
+                  <svg viewBox="0 0 48 48">
+                    <circle cx="24" cy="24" r="19"></circle>
+                    <path d="M18.5 18.2c.9-3.7 4.1-6 8-5.4 3.5.6 6 3.2 6 6.5 0 4.9-5.6 5.8-7.2 9.3"></path>
+                    <circle cx="24" cy="35.5" r="1.5"></circle>
+                  </svg>
+                </span>
+                <span>Help Centre</span>
+              </a>
               <a
                 id="signOutBtn"
-                class="account-menu-item"
+                class="account-menu-item account-menu-signout"
                 href="#"
                 role="menuitem"
                 onClick=${handleSignOut}
-              >Sign Out</a>
+              >Sign out of Netflix</a>
             </div>
           </div>
         </div>
@@ -4575,7 +4895,10 @@ export default function HomePage() {
         class="live-tab-view"
         style=${() => activeView() === "live" && !showSearchExperience() ? "" : "display:none"}
       >
-        <${LiveChannelsView} />
+        ${() => {
+          const Component = LiveChannelsComponent();
+          return Component ? Component({}) : null;
+        }}
       </div>
 
       <section
@@ -4592,6 +4915,7 @@ export default function HomePage() {
           alt=""
           aria-hidden="true"
           decoding="async"
+          fetchpriority="high"
           loading="eager"
         />
         <div class="hero-preview-stage" aria-hidden="true">
@@ -4740,23 +5064,6 @@ export default function HomePage() {
       </section>
 
       <section
-        id="popularRow"
-        class="popular-row home-popular-row"
-        style=${() => activeView() === "home" && popularRowVisible() ? "" : "display:none"}
-      >
-        <div class="popular-row-inner">
-          <div class="rail-header">
-            <h2 id="popularRowTitle">${() => popularRowTitle()}</h2>
-          </div>
-          <div
-            id="cardsContainer"
-            class="cards popular-cards"
-            ref=${(el) => (cardsContainerRef = el)}
-          ></div>
-        </div>
-      </section>
-
-      <section
         id="continueRow"
         class="continue-row"
         style=${() => activeView() === "home" && continueRowVisible() ? "" : "display:none"}
@@ -4774,6 +5081,74 @@ export default function HomePage() {
         >
           Start a movie and it will appear here.
         </p>
+      </section>
+
+      <section
+        id="popularRow"
+        class="popular-row home-popular-row"
+        style=${() => activeView() === "home" && popularRowVisible() ? "" : "display:none"}
+      >
+        <div class="popular-row-inner">
+          <div class="rail-header">
+            <h2 id="popularRowTitle">${() => popularRowTitle()}</h2>
+          </div>
+          <div
+            id="cardsContainer"
+            class="cards popular-cards"
+            ref=${(el) => (cardsContainerRef = el)}
+          ></div>
+        </div>
+      </section>
+
+      <section
+        id="trendingRow"
+        class="popular-row home-popular-row"
+        style=${() => activeView() === "home" && trendingRowVisible() ? "" : "display:none"}
+      >
+        <div class="popular-row-inner">
+          <div class="rail-header">
+            <h2>Crowd-pleasers</h2>
+          </div>
+          <div
+            id="trendingCardsContainer"
+            class="cards popular-cards"
+            ref=${(el) => (trendingCardsContainerRef = el)}
+          ></div>
+        </div>
+      </section>
+
+      <section
+        id="nowPlayingRow"
+        class="popular-row home-popular-row"
+        style=${() => activeView() === "home" && nowPlayingRowVisible() ? "" : "display:none"}
+      >
+        <div class="popular-row-inner">
+          <div class="rail-header">
+            <h2>Top 10 Series in the UK Today</h2>
+          </div>
+          <div
+            id="nowPlayingCardsContainer"
+            class="cards popular-cards"
+            ref=${(el) => (nowPlayingCardsContainerRef = el)}
+          ></div>
+        </div>
+      </section>
+
+      <section
+        id="topRatedRow"
+        class="popular-row home-popular-row"
+        style=${() => activeView() === "home" && topRatedRowVisible() ? "" : "display:none"}
+      >
+        <div class="popular-row-inner">
+          <div class="rail-header">
+            <h2>Critically Acclaimed</h2>
+          </div>
+          <div
+            id="topRatedCardsContainer"
+            class="cards popular-cards"
+            ref=${(el) => (topRatedCardsContainerRef = el)}
+          ></div>
+        </div>
       </section>
     </div>
 

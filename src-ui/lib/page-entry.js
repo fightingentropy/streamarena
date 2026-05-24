@@ -1,4 +1,4 @@
-import { hydrateFromServer, requireAuth } from "./auth.js";
+import { hydrateFromServer } from "./auth.js";
 import { mountPage } from "./mount-page.js";
 
 async function loadPageComponent(loadPage) {
@@ -7,9 +7,25 @@ async function loadPageComponent(loadPage) {
 }
 
 export async function mountAuthenticatedPage(loadPage, options = {}) {
-  await requireAuth();
-  await hydrateFromServer();
+  const authPromise = fetch("/api/auth/me")
+    .then(async (response) => {
+      if (!response.ok) {
+        return null;
+      }
+      const user = await response.json();
+      window.__currentUser = user;
+      return user;
+    })
+    .catch(() => null);
+
   mountPage(await loadPageComponent(loadPage), options);
+
+  void hydrateFromServer();
+
+  const user = await authPromise;
+  if (!user) {
+    window.location.href = "/login.html";
+  }
 }
 
 export async function mountPublicPage(loadPage, options = {}) {

@@ -6,11 +6,13 @@ use axum::http::header::{
     ACCEPT_RANGES, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, HeaderValue, RANGE,
 };
 use axum::http::{Method, Response, StatusCode};
+use tokio::fs;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_util::io::ReaderStream;
 
 use crate::error::{ApiError, AppResult};
+use crate::home_bootstrap;
 use crate::routes::AppState;
 
 const CACHE_NO_STORE: &str = "no-store";
@@ -51,6 +53,37 @@ pub async fn serve_static(
         .unwrap_or("application/octet-stream")
         .to_owned();
     let cache_control = cache_control_for_path(uri.path(), &content_type);
+
+    if should_inject_home_bootstrap(uri.path(), &content_type) {
+        let html = fs::read_to_string(&file_path)
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        let bootstrap = state
+            .home_bootstrap_cache
+            .payload_or_refresh(state.clone())
+            .await;
+        let html = home_bootstrap::inject_bootstrap_into_html(&html, &bootstrap)?;
+        let body_bytes = html.into_bytes();
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .body(if method == Method::HEAD {
+                Body::empty()
+            } else {
+                Body::from(body_bytes.clone())
+            })
+            .expect("bootstrap html response");
+        let headers = response.headers_mut();
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static(CACHE_NO_STORE));
+        headers.insert(
+            CONTENT_LENGTH,
+            HeaderValue::from_str(&body_bytes.len().to_string()).unwrap(),
+        );
+        return Ok(response);
+    }
 
     if let Some(range_header) = headers.get(RANGE).and_then(|value| value.to_str().ok()) {
         let Some((start, end)) = parse_range(range_header, file_size) else {
@@ -212,6 +245,12 @@ fn parse_range(header: &str, file_size: u64) -> Option<(u64, u64)> {
         return None;
     }
     Some((start, end))
+}
+
+fn should_inject_home_bootstrap(pathname: &str, content_type: &str) -> bool {
+    pathname == "/"
+        || pathname == "/index.html"
+        || (content_type.starts_with("text/html") && pathname.ends_with("/index.html"))
 }
 
 fn cache_control_for_path(pathname: &str, content_type: &str) -> &'static str {

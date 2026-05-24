@@ -1,512 +1,625 @@
-# Netflix Clone (Rust + SolidJS)
-
-This project is a local Netflix-style streaming app with:
-
-- A browse/home UI (`index.html`)
-- A full custom player (`player.html`)
-- A settings UI (`settings.html`)
-- A local upload workflow (`upload.html`)
-- A Rust backend that handles metadata, stream resolving, remux/subtitles, caching, and local library management
-
-## Table of Contents
-
-1. Overview
-2. Architecture
-3. Features
-4. Page-by-Page Behavior
-5. API Reference
-6. Environment Variables
-7. Data, Cache, and Persistence
-8. Local Development
-9. Operational Notes
-10. Troubleshooting
-11. Clean URL Routing
-12. Remux Pipeline Notes
-
-## 1) Overview
-
-The app combines two media paths:
-
-- Remote resolver path:
-  - TMDB metadata + Torrentio stream candidates + optional Torznab fallback + Real-Debrid unrestricted links
-  - Server selects candidates, probes tracks, and returns a playable source
-- Local media path:
-  - You upload `.mp4` / `.mkv`
-  - Server processes files into `assets/videos` and updates `assets/library.json`
-  - Home and player can play those local sources
-
-## 2) Architecture
-
-### Runtime
-
-- Backend: Rust (Axum) in `src/`
-- Frontend: multi-page Solid + Vite app with page entries in `src-ui/`
-- External tools: `ffmpeg`, `ffprobe`
-- Caching: in-memory + persistent SQLite-backed cache data (managed by the Rust backend)
-
-### Main files
-
-- `src/`: Rust API, static serving, resolving, remux/subtitles, upload processing, caching, health/debug
-- `src-ui/`: Solid page shells and entrypoints for the multi-page frontend
-- `index.html` + `script.js`: home screen structure + browse behavior
-- `player.html` + `player.js`: video playback UI, source selection, subtitles/audio handling, fallback logic
-- `settings.html` + `settings.js`: quality/source/profile/remux preferences
-- `upload.html` + `upload.js`: upload and metadata inference flow
-- `assets/library.json`: local media catalog
-
-## 3) Features
-
-### Playback and streaming
-
-- Custom HTML5 player controls (play/pause, seek ±10s, volume/mute, speed, captions, fullscreen)
-- Multiple playback modes:
-  - direct `src`
-  - TMDB resolve flow (`/api/resolve/movie`, `/api/resolve/tv`)
-  - fallback asset playback
-- Server remux endpoint (`/api/remux`) with selectable audio/subtitle stream indexes
-- Native HLS playback via browser-native `<video>` support (Chrome 142+, Safari, Edge 142+) with automatic remux fallback
-- HLS endpoints for playlist + segment serving
-- Subtitle extraction to VTT from embedded streams and external subtitle providers
-- Automatic subtitle prewarm for selected subtitle streams on resolve responses
-
-### Metadata and discovery
-
-- TMDB popular movies
-- TMDB details (movie/tv + credits)
-- TMDB TV season episode metadata helper
-- Details modal on home cards
-
-### Source selection and quality filters
-
-- Stored stream quality preference (`auto`, `2160p`, `1080p`, `720p`)
-- Source filter settings:
-  - minimum seeders
-  - results limit (1-20)
-  - language filter (`en`, `any`, `fr`, `es`, `de`, `it`, `pt`)
-  - allowed container formats (MP4 and MKV)
-- Preference-aware resolving (language/quality/filter params passed to resolve endpoints)
-
-### Upload and local library
-
-- Drag/drop upload UI
-- Supported input: `.mp4`, `.mkv`
-- Chunked upload session flow (start/chunk/finish)
-- Post-upload compatibility probe using `ffprobe`
-- Optional audio-only transcode to AAC (video stream copied) for browser-audio compatibility
-- Upload metadata inference endpoint (`/api/upload/infer`) for movie/episode autofill
-- Local catalog endpoint (`/api/library`) feeds uploaded media into browse/player flows
-
-### Continue watching and resume
-
-- Local resume storage (`netflix-resume:*`)
-- Continue watching metadata store (`netflix-continue-watching-meta`)
-- Server-side playback sessions supported via `/api/session/progress` when enabled
-
-### User preferences
-
-- Subtitle color preference
-- Profile avatar preset or custom uploaded image
-- Remux video mode preference (`auto`/`copy`/`normalize`)
-- Per-title language preference persistence (`/api/title/preferences`)
-
-### Operations and debugging
-
-- Health endpoint with ffmpeg/ffprobe capability info
-- Cache stats endpoint + cache clear action
-- Settings page button to clear all server caches
-
-## 4) Page-by-Page Behavior
-
-### Home (`index.html` + `script.js`)
-
-- Rotating featured hero sourced from current TMDB popular movies with:
-  - play button -> opens player
-  - info button -> opens details context
-  - mute toggle
-- Continue watching row built from resume metadata
-- Popular/content rows hydrated from backend + local library items
-- Uploaded local `/media/...` launches include `audioLang=en` by default
-- Details modal for richer metadata and playback launch
-- Account menu links to Upload and Settings
-
-### Player (`player.html` + `player.js`)
-
-- Accepts URL params including `tmdbId`, `mediaType`, `title`, `src`, `audioLang`, `quality`, `subtitleLang`
-- Clean URL routing: `/watch/<slug>` and `/watch/<slug>/<episodeIndex>` via Vite middleware rewrite
-- Slug-based library lookup on page load for clean URL refresh support
-- Chooses source path based on params and resolver results
-- Attaches subtitles/audio tracks and keeps selected preferences
-- Explicit/local `src` playback can probe media tracks via `/api/media/tracks` and preselect audio/subtitle streams
-- For uploaded local media, English audio is preferred when an English track exists
-- Handles stream fallback and recovery behavior
-- Uses native HLS, remux, and subtitle endpoints when needed (no hls.js dependency — relies on browser-native HLS support)
-- On seek, the previous video source is explicitly torn down (pause + remove src + load) before setting the new source, ensuring the old HTTP stream connection is closed and the server-side ffmpeg process is killed
-
-Keyboard controls:
-
-- `Space`: play/pause
-- `ArrowLeft` / `ArrowRight`: seek -10s / +10s
-- `M`: mute
-- `F`: fullscreen
-- `[` / `]`: adjust audio sync (remux path)
-- `Escape`: close overlays or exit flow/fullscreen state
-
-### Settings (`settings.html` + `settings.js`)
-
-- Stream quality preference
-- Subtitle color picker/reset
-- Source filters (seeders, result limit, language, formats)
-- Remux mode preference
-- Avatar style presets + custom image crop/resize pipeline
-- Cache clear action hitting `/api/debug/cache?clear=1`
-
-### Upload (`upload.html` + `upload.js`)
-
-- Drag/drop or file picker
-- Content type: movie or episode
-- Filename inference call to `/api/upload/infer`
-- Chunked transfer to:
-  - `POST /api/upload/session/start`
-  - `POST /api/upload/session/chunk`
-  - `POST /api/upload/session/finish`
-
-## 5) API Reference
-
-All API routes are served by the Rust backend.
-
-### Config, health, debug
-
-- `GET /api/config`
-- `GET /api/health[?refresh=1]`
-- `GET /api/debug/cache`
-- `GET /api/debug/cache?clear=1`
-
-### Library and uploads
-
-- `GET /api/library`
-- `POST /api/upload`
-- `POST /api/upload/infer`
-- `POST /api/upload/session/start`
-- `POST /api/upload/session/chunk?sessionId=...`
-- `POST /api/upload/session/finish`
-
-### TMDB
-
-- `GET /api/tmdb/popular-movies?page=...`
-- `GET /api/tmdb/details?tmdbId=...&mediaType=movie|tv`
-- `GET /api/tmdb/tv/season?tmdbId=...&seasonNumber=...`
-
-### Resolver
-
-- `GET /api/resolve/sources?...` (candidate list)
-- `GET /api/resolve/movie?...`
-- `GET /api/resolve/tv?...`
-
-Common resolver query params include:
-
-- `tmdbId`
-- `audioLang`
-- `quality`
-- `subtitleLang`
-- `sourceHash`
-- `minSeeders`
-- `allowedFormats`
-- `sourceLang`
-
-TV-specific params:
-
-- `seasonNumber` / `season`
-- `episodeNumber` / `episodeOrdinal`
-
-### Playback, subtitles, preferences, sessions
-
-- `GET /api/media/tracks?input=...&audioLang=...&subtitleLang=...`
-- `GET /api/remux?input=...&start=...&audioStream=...&subtitleStream=...&audioSyncMs=...&videoMode=...`
-- `GET /api/hls/master.m3u8?input=...&audioStream=...`
-- `GET /api/hls/segment.ts?input=...&index=...&audioStream=...`
-- `GET /api/subtitles.vtt?input=...&subtitleStream=...`
-- `GET /api/subtitles.external.vtt?download=...`
-- `GET|POST|DELETE /api/title/preferences`
-- `POST /api/session/progress`
-
-## 6) Environment Variables
-
-Copy `.env.example` to `.env` and fill required keys.
-
-Required integrations:
-
-- `TMDB_API_KEY` (TMDB v3 API key or v4 read access token)
-- `REAL_DEBRID_TOKEN`
-
-Runtime:
-
-- `TORRENTIO_BASE_URL`
-- `TORZNAB_API_URL` (optional fallback discovery endpoint; empty disables it)
-- `TORZNAB_API_KEY` (optional)
-- `TORZNAB_MOVIE_CATEGORIES` (default `2000,2040,2045`)
-- `TORZNAB_TV_CATEGORIES` (default `5000,5040,5045`)
-- `TORZNAB_LIMIT` (default `50`, max `100`)
-- `TORZNAB_TIMEOUT_MS` (default `15000`)
-- `HOST`
-- `PORT`
-- `MAX_UPLOAD_BYTES`
-- `HLS_HWACCEL` (`none|auto|videotoolbox|cuda|qsv`)
-- `HLS_MAX_TRANSCODE_JOBS` (default `1`)
-- `HLS_MAX_SEGMENT_RENDERS` (default `2`)
-- `HLS_SEGMENT_QUEUE_TIMEOUT_MS` (default `2000`)
-- `AUTO_AUDIO_SYNC` (`0|1`)
-- `REMUX_VIDEO_MODE` (`auto|copy|normalize`)
-- `REMUX_MAX_CONCURRENT` (default `2`)
-- `REMUX_QUEUE_TIMEOUT_MS` (default `2000`)
-- `REMUX_PROCESS_TIMEOUT_SECONDS` (default `14400`)
-- `RESOLVER_MAX_CONCURRENT` (default `2`)
-- `RESOLVER_QUEUE_TIMEOUT_MS` (default `3000`)
-- `PLAYBACK_SESSIONS` (`0|1`)
-
-Torznab fallback notes:
-
-- The primary discovery backend remains Torrentio. Torznab is only queried when Torrentio fails, returns no usable candidates, all Torrentio candidates fail to resolve, or a pinned `sourceHash` is missing from Torrentio.
-- Use a generic Torznab URL from Prowlarr, Jackett, or another compatible indexer. Examples: `http://127.0.0.1:9696/1/api` for Prowlarr or `http://127.0.0.1:9117/api/v2.0/indexers/yts/results/torznab/api` for Jackett.
-- Prefer a filtered/specific indexer endpoint over Jackett's broad `all` endpoint so searches stay fast and relevant.
-- Torznab is discovery-only. Real-Debrid still resolves the selected magnet/info hash into a playable link.
-
-## 7) Data, Cache, and Persistence
-
-### LocalStorage keys
-
-- `netflix-stream-quality-pref`
-- `netflix-subtitle-color-pref`
-- `netflix-source-filter-min-seeders`
-- `netflix-source-filter-allowed-formats`
-- `netflix-source-filter-language`
-- `netflix-source-filter-results-limit`
-- `netflix-remux-video-mode`
-- `netflix-profile-avatar-style`
-- `netflix-profile-avatar-mode`
-- `netflix-profile-avatar-image`
-- `netflix-audio-lang:movie:<tmdbId>`
-- `netflix-subtitle-lang:movie:<tmdbId>`
-- `netflix-subtitle-stream:movie:<tmdbId>`
-- `netflix-resume:<sourceIdentity>`
-- `netflix-continue-watching-meta`
-
-### Server-managed persistence/caching
-
-- In-memory TTL caches for TMDB responses, resolved streams, quick-start and lookup data
-- Persistent cache tables used for resolved data/session/probe/source-health/title-preference retention
-- Periodic cache sweeping and stale upload-session cleanup
-
-### Local media files
-
-- Upload temp files under `cache/uploads`
-- Final media files under `assets/videos`
-- Catalog metadata in `assets/library.json`
-
-## 8) Local Development
+# Netflix App
+
+A private Netflix-style streaming app backed by a Rust/Axum server and a multi-page SolidJS/Vite frontend.
+
+The app serves local library titles, resolves remote movie and TV sources, plays live channels, shows live sports schedules, tracks per-user progress, and deploys to an always-on Mac mini behind Caddy.
+
+## Contents
+
+1. Current App Shape
+2. Quick Start
+3. How The App Works
+4. Features
+5. Pages
+6. Backend API
+7. Configuration
+8. Data And Persistence
+9. Scripts
+10. Mac Mini Infrastructure
+11. Troubleshooting
+12. Cleanup Notes
+
+## Current App Shape
+
+The repository is a single full-stack app:
+
+- Backend: Rust 2024, Axum, Tokio, SQLite via `rusqlite`.
+- Frontend: SolidJS with Vite in multi-page app mode.
+- Player: custom HTML5 video UI with direct playback, remux, HLS, subtitles, live streams, and source switching.
+- Discovery: TMDB metadata, Torrentio source discovery, optional Torznab fallback, Real-Debrid unrestricted links, local torrent streaming/cache, and selected embed/HLS fallbacks.
+- Local library: `assets/library.json` plus uploaded/managed videos under `assets/videos`.
+- Persistence: SQLite cache and user data in `cache/resolver-cache.sqlite`.
+- Production target: a Mac mini runtime tree served locally on `127.0.0.1:5173` and exposed through Caddy.
+
+Important paths:
+
+- `src/` - Rust services, routes, static serving, auth, resolver, media processing, uploads, live/sports, persistence.
+- `src-ui/entries/` - page entrypoints loaded by each HTML shell.
+- `src-ui/pages/` - Solid page components for home, login, player, settings, upload, live, and sports.
+- `src-ui/player/` - player-specific helpers for sources, HLS, subtitles, episodes, fullscreen, resume, and live stream menus.
+- `assets/library.json` - local catalog. It currently contains empty `movies` and `series` arrays in this checkout.
+- `public/` - PWA manifest, service worker, and offline page copied by Vite into `dist/`.
+- `scripts/` - development checks, benchmarks, resolver helpers, and Mac mini deployment/maintenance tools.
+
+## Quick Start
 
 Prerequisites:
 
-- Rust toolchain
-- Bun or another package runner if you want to use the `package.json` scripts
-- `ffmpeg` and `ffprobe` on `PATH`
+- Rust toolchain.
+- Bun, or another package runner that can run the `package.json` scripts.
+- Node.js, used by Vite and resolver helper scripts.
+- `ffmpeg` and `ffprobe` on `PATH`.
+- Playwright Chromium if you use frontend smoke tests, playback benchmarks, or embed HLS resolver scripts.
+
 Setup:
 
 ```bash
 cp .env.example .env
 bun install
+bun run bench:playback:install
+```
+
+Fill `.env` with at least:
+
+```bash
+TMDB_API_KEY=...
+REAL_DEBRID_TOKEN=...
+```
+
+OpenSubtitles and Torznab are optional but improve subtitles and fallback source discovery.
+
+Run the full app:
+
+```bash
 bun run dev
 ```
 
-Open:
+Then open:
 
-- `http://127.0.0.1:5173`
-
-Scripts:
-
-- `bun run dev` -> Rust server
-- `bun run bench:playback:install` -> installs the Chromium browser used by the playback benchmark suite
-- `bun run bench:playback -- --source assets/videos/<file>.mp4` -> runs a headless playback comparison across direct, remux, and native-HLS transport paths
-- `bun run bench:load -- --source assets/videos/<file>.mp4` -> runs a multi-client HLS segment load benchmark against a running backend
-- `bun run bench:resolve -- --tmdb-id <id>` -> runs a multi-client resolver coalescing benchmark against a running backend
-
-### Playback Benchmark Suite
-
-The repo includes a browser-driven playback benchmark that exercises the real `/player` page in headless Chromium.
-
-It measures:
-
-- cold-start playback latency
-- pause/resume latency
-- seek latency
-- dropped-frame ratio
-- effective decoded frame rate
-- frame processing duration from `requestVideoFrameCallback`
-- transport bytes received for remux/native-HLS/direct playback during startup, steady-state playback, and the full run
-
-It can rank strategies for different goals:
-
-- `balanced` -> general playback quality and responsiveness
-- `latency` -> fastest startup / seek / resume
-- `efficiency` -> lowest transport overhead while maintaining decode quality
-
-Example:
-
-```bash
-bun run bench:playback:install
-bun run bench:playback -- --source assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4
+```text
+http://127.0.0.1:5173
 ```
 
-You can also compare explicit remux modes:
+The first visit should go through `login.html`. Create an account, then the app stores an HttpOnly `session` cookie and syncs profile/preferences/progress through the server.
+
+Frontend-only development:
 
 ```bash
-bun run bench:playback -- \
-  --source assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4 \
-  --strategy direct,remux:auto,remux:copy,remux:normalize,hls
+cargo run
+bun run dev:vite
 ```
 
-JSON output is also supported:
+Then open:
 
-```bash
-bun run bench:playback -- \
-  --source assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4 \
-  --objective efficiency \
-  --output tmp/playback-benchmark.json
+```text
+http://127.0.0.1:4173
 ```
 
-For server-side pressure testing, run the HLS load benchmark against an already-running backend:
+Vite proxies `/api/*` to the Rust backend on `127.0.0.1:5173`. The Rust server is still required for auth, library data, resolving, uploads, remux, HLS, live/sports, and user sync.
 
-```bash
-bun run bench:load -- \
-  --base-url http://127.0.0.1:5173 \
-  --source assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4 \
-  --clients 4 \
-  --segments 6 \
-  --pattern staggered
-```
+## How The App Works
 
-Use `--pattern same` to verify duplicate clients collapse onto shared segment cache work, and `--output tmp/playback-load.json` to keep the full per-client report.
+Startup flow:
 
-To pressure-test the resolver path, run concurrent identical resolve requests and compare `/api/health.resolver` before and after:
+1. `src/main.rs` loads `.env`, builds `Config`, initializes the SQLite database, and creates shared services.
+2. The app creates a shared HTTP client. If `OUTBOUND_HTTP_PROXY` is set, server outbound HTTP uses that proxy.
+3. Services are wired into `AppState`: TMDB, media probing/subtitles, local torrent/cache, resolver, streaming/remux/HLS, uploads, runtime ffmpeg capabilities, sports schedule cache, and home bootstrap cache.
+4. A background task runs every 60 seconds to sweep stale SQLite/cache data, upload sessions, and streaming jobs.
+5. `HomeBootstrapCache` starts warming TMDB/home data as soon as the server boots.
+6. Axum serves public API routes, protected API routes behind auth middleware, and static frontend files.
 
-```bash
-bun run bench:resolve -- \
-  --base-url http://127.0.0.1:5173 \
-  --media-type movie \
-  --tmdb-id 4348 \
-  --title "Pride & Prejudice" \
-  --year 2005 \
-  --clients 4 \
-  --output tmp/resolver-load.json
-```
+Static file flow:
 
-The report includes success count, p50/p95 latency, unique resolved sources, and resolver deltas such as `coalescedWaits`, `externalStarted`, and `externalRejected`.
-- `bun run dev:rust` -> Rust server
-- `bun run dev:vite` -> frontend-only Vite dev server
-- `bun run build` / `bun run preview` -> Vite build/preview flow
+1. `bun run dev` runs `vite build`, producing `dist/`.
+2. If `dist/` exists, the Rust server serves frontend files from `dist/`; otherwise it falls back to the repo root for local development.
+3. `/assets/*` is served from the repo `assets/` directory so local library artwork and videos remain outside the Vite bundle.
+4. `/watch/...` maps to `player.html`; extensionless page routes such as `/sports` map to their `.html` page.
+5. `index.html` is special: Rust injects the current home bootstrap payload when possible, and the HTML also starts a fallback `/api/home/bootstrap` fetch before the home bundle loads.
 
-## 9) Operational Notes
+Frontend page flow:
 
-- `bun run dev` is the full-stack runtime: Rust serves `/api/*` and the frontend.
-- `bun run dev:vite` is frontend-only and does not replace the Rust backend APIs.
-- Upload processing depends on ffmpeg availability.
-- Upload compatibility handling:
-  - media is probed after upload
-  - audio-only AAC transcode can be applied when enabled and needed
-- Cache clear from Settings applies globally (all titles/sources).
+1. Each HTML shell loads a page entry from `src-ui/entries/`.
+2. Authenticated entries call `mountAuthenticatedPage`, mount the UI immediately, hydrate browser storage from `/api/user/*`, and redirect to `login.html` if `/api/auth/me` returns `401`.
+3. `login.html` uses `mountPublicPage`, handles sign in/sign up, and migrates old localStorage preferences/progress/list data to the server.
+4. The service worker from `public/sw.js` is registered by `mount-page.js` and caches app shell files, icons, the manifest, and offline fallback pages. API calls and video files are not cached by the service worker.
 
-### Mac mini direct server deployment
+Playback flow for TMDB titles:
 
-The Mac mini at `m4mini.local` is the always-on server for this app. The MacBook
-checkout remains the development repo.
+1. The player reads URL params such as `tmdbId`, `mediaType`, `title`, `year`, `seasonNumber`, `episodeNumber`, `audioLang`, `quality`, `subtitleLang`, `sourceHash`, and `sessionKey`.
+2. It applies stored quality/audio/subtitle preferences and remembered continue-watching source state.
+3. It calls `/api/resolve/movie` or `/api/resolve/tv`.
+4. The resolver uses TMDB context, source candidates, persisted sessions, source health, Torrentio, optional Torznab, Real-Debrid, local torrent/cache, and supported external embed fallbacks to return a playable source.
+5. The player probes tracks when needed through `/api/media/tracks`, selects audio/subtitle streams, and chooses direct, HLS, remux, local torrent, local cache, or iframe playback.
+6. Playback progress is stored locally for responsiveness and synced to `/api/user/watch-progress`, `/api/user/continue-watching`, and `/api/session/progress` when enabled.
+
+Playback flow for local titles:
+
+1. Home reads local library entries from `assets/library.json`.
+2. A local movie or episode opens `/watch/<slug>` with a saved query containing `src`, title metadata, artwork, and optional audio/subtitle params.
+3. The player treats explicit `src` URLs as local/direct playback, probes tracks, prefers the configured audio language when possible, and falls back to remux/HLS for browser-incompatible codecs.
+
+Live and sports flow:
+
+1. `/live` renders static live channels from `src-ui/lib/live-channels.js`.
+2. HLS live channel playlists and segments are proxied through `/api/live/hls.m3u8` and `/api/live/hls-resource` with an allowlist in `src/live.rs`.
+3. Twitch-backed live sources resolve through `/api/twitch/stream`.
+4. `/sports` fetches schedules for football, basketball, tennis, hockey, baseball, American football, and cricket from Streamed providers through `src/football.rs`.
+5. Live sports streams resolve through `/api/sports/stream`; the server attempts a Playwright-based HLS extraction with `scripts/resolve-streamed-hls.mjs` and can fall back to iframe playback.
+
+## Features
+
+Authentication and user sync:
+
+- Sign up, sign in, sign out.
+- HttpOnly session cookie with 30-day max age.
+- Protected app APIs via auth middleware.
+- Server-backed preferences, watch progress, continue watching, and My List.
+- Legacy localStorage migration on login.
+- Browser localStorage remains a fast local mirror for UI state.
+
+Home and browsing:
+
+- Featured hero sourced from current TMDB/bootstrap data.
+- Rails for popular movies, TV, trending, now playing, top rated, local library, continue watching, and My List.
+- TMDB search across movies and TV.
+- Details modal with metadata, cast, playback launch, and My List actions.
+- Continue watching entries enriched from local library and server state.
+- My List stored locally and synced to `/api/user/my-list`.
+- Library editor mode via `netflix-library-edit-mode`, with edit/delete support for local movies and series entries and an upload handoff for new episodes.
+- `/live` can be opened as a full page or as an in-home live view.
+- `/sports` is linked from navigation.
+
+Player:
+
+- Custom controls: play/pause, seek, volume/mute, fullscreen, playback speed, captions, audio tracks, source selection, episodes, live stream selection, and return navigation.
+- Keyboard controls:
+  - `Space` - play/pause.
+  - `ArrowLeft` / `ArrowRight` - seek backward/forward 10 seconds.
+  - `M` - mute.
+  - `F` - fullscreen.
+  - `[` / `]` - manual audio sync offset for remux playback.
+  - `Escape` - close overlays or leave transient UI states.
+- Clean watch URLs with saved query params.
+- Direct local/media playback.
+- TMDB movie and TV resolving.
+- Source list popover backed by `/api/resolve/sources`.
+- Remembered source hash/session state through continue-watching metadata.
+- Direct browser-safe source playback when possible.
+- Native browser HLS where supported, with dynamic `hls.js` fallback where needed.
+- Server HLS path through `/api/hls/master.m3u8` and `/api/hls/segment.ts`.
+- Server remux path through `/api/remux`, including start offsets, audio stream selection, subtitle stream burn-in, manual sync, and video mode.
+- Local torrent streaming through `/api/local-torrent/stream`.
+- Direct local cache streaming through `/api/local-cache/stream`.
+- Live HLS and iframe playback.
+- Playback recovery for buffering, server errors, offline state, source failure, and alternate source attempts.
+- Progress and continue-watching sync.
+- Optional `saveToGallery=1` flow through `/api/gallery/save-stream`.
+
+Subtitles and tracks:
+
+- Embedded audio and subtitle probing through `ffprobe`.
+- Local sidecar subtitle discovery.
+- Embedded subtitle extraction to VTT through `/api/subtitles.vtt`.
+- OpenSubtitles search and download when configured.
+- OpenSubtitles VTT serving through `/api/subtitles.opensubtitles.vtt`.
+- Direct external subtitle conversion through `/api/subtitles.external.vtt`.
+- Subtitle language and local subtitle stream preferences.
+- Subtitle color preference in Settings.
+
+Uploads and library management:
+
+- Drag/drop or file-picker upload UI.
+- `.mp4` and `.mkv` inputs.
+- Movie or episode metadata forms.
+- Filename metadata inference through `/api/upload/infer`.
+- Chunked upload sessions:
+  - `POST /api/upload/session/start`
+  - `POST /api/upload/session/chunk?sessionId=...`
+  - `POST /api/upload/session/finish`
+- Direct upload fallback through `POST /api/upload`.
+- Client-side thumbnail preview generation.
+- Server-side probe and compatibility checks.
+- MKV-to-MP4 remux during processing.
+- Optional audio transcode to AAC for Chrome-compatible playback.
+- Library metadata written back to `assets/library.json`.
+
+Settings:
+
+- Playback quality preference: Auto, 4K, or 1080p.
+- Default audio language.
+- Subtitle color with reset.
+- Avatar preset colors or custom uploaded image.
+- Preferences are saved to localStorage and `/api/user/preferences`.
+- Old source-filter and remux-mode preference keys are intentionally pruned by the settings page.
+
+Live TV:
+
+- Bloomberg TV US.
+- BBC News with official and Roku stream options.
+- Sky News.
+- ERT1.
+- MEGA News.
+- ANT1.
+- Alpha TV.
+- Top News through Twitch-backed resolving.
+
+Sports:
+
+- Tabs for football, basketball, tennis, hockey, baseball, American football, and cricket.
+- Schedule grouping by date.
+- Live/upcoming state.
+- Stream source counts and stream selector handoff to the player.
+- Server schedule cache with stale-if-error fallback.
+
+PWA/offline behavior:
+
+- Web app manifest with app icons and Live shortcut.
+- Service worker app-shell caching.
+- Offline page for navigation fallback.
+- API and media streaming requests bypass the service worker cache.
+
+Operational features:
+
+- `/api/health` reports uptime, streaming counters, resolver counters, and ffmpeg/ffprobe capabilities.
+- `/api/config` reports configured integrations, resolver providers, upload limit, remux/HLS limits, and effective hardware acceleration.
+- `/api/debug/cache` reports persistent and in-memory cache counts.
+- `/api/debug/cache?clear=1` clears persistent resolver/TMDB/session/media caches and HLS cache data.
+- Runtime sweeps stale DB/cache/upload/streaming state every minute.
+
+## Pages
+
+`/` and `/index.html`
+
+- Home browse UI.
+- Uses injected/fetched home bootstrap data.
+- Requires authentication.
+
+`/login.html`
+
+- Public sign-in/sign-up page.
+- Migrates old localStorage data to server user tables after successful auth.
+
+`/watch/<slug>` and `/player.html`
+
+- Custom player.
+- Accepts direct `src`, TMDB movie/TV params, live params, saved watch params, and source/session pins.
+
+`/settings.html`
+
+- Authenticated preferences page.
+
+`/upload.html`
+
+- Authenticated upload and metadata workflow.
+
+`/live` and `/live.html`
+
+- Authenticated live channel page.
+
+`/sports` and `/sports.html`
+
+- Authenticated sports schedule page.
+
+## Backend API
+
+Public API routes:
+
+- `GET /api/health[?refresh=1]`
+- `GET /api/config`
+- `GET /api/home/bootstrap`
+- `POST /api/auth/signup`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/football/matches`
+- `GET /api/basketball/matches`
+- `GET /api/tennis/matches`
+- `GET /api/hockey/matches`
+- `GET /api/baseball/matches`
+- `GET /api/american-football/matches`
+- `GET /api/cricket/matches`
+- `GET /api/football/stream`
+- `GET /api/basketball/stream`
+- `GET /api/sports/stream`
+- `GET /api/twitch/stream`
+- `GET /api/live/hls.m3u8`
+- `GET /api/live/hls-resource`
+- `GET /api/embed/frame`
+
+Protected API routes:
+
+- `GET|PUT /api/library`
+- `GET|POST /api/debug/cache`
+- `GET|POST|DELETE /api/title/preferences`
+- `POST /api/session/progress`
+- `GET /api/tmdb/popular-movies`
+- `GET /api/tmdb/search`
+- `GET /api/tmdb/details`
+- `GET /api/tmdb/tv/season`
+- `POST /api/upload/infer`
+- `POST /api/upload`
+- `POST /api/upload/session/start`
+- `POST /api/upload/session/chunk?sessionId=...`
+- `POST /api/upload/session/finish`
+- `POST /api/gallery/save-stream`
+- `GET /api/resolve/sources`
+- `GET /api/resolve/movie`
+- `GET /api/resolve/tv`
+- `GET /api/resolve/local-upgrade`
+- `GET|HEAD /api/local-torrent/stream`
+- `GET|HEAD /api/local-cache/stream`
+- `GET /api/remux`
+- `GET /api/hls/master.m3u8`
+- `GET /api/hls/segment.ts`
+- `GET /api/media/tracks`
+- `GET /api/subtitles.vtt`
+- `GET /api/subtitles.opensubtitles.vtt`
+- `GET /api/subtitles.external.vtt`
+- `GET /api/auth/me`
+- `GET|PUT /api/user/preferences`
+- `GET|PUT|DELETE /api/user/watch-progress`
+- `GET|PUT|DELETE /api/user/continue-watching`
+- `GET|PUT /api/user/my-list`
+- `POST /api/user/sync`
+
+Common resolver query params:
+
+- `tmdbId`
+- `mediaType=movie|tv`
+- `title`
+- `year`
+- `audioLang`
+- `quality`
+- `subtitleLang`
+- `preferredContainer=mp4|mkv`
+- `sourceHash`
+- `sessionKey`
+- `minSeeders`
+- `allowedFormats`
+- `sourceLang`
+- `sourceAudioProfile`
+- `resolverProvider=fastest|local-torrent|real-debrid`
+- `skipExternalEmbed=1`
+
+TV-specific resolver params:
+
+- `seasonNumber` or `season`
+- `episodeNumber` or `episodeOrdinal`
+
+## Configuration
+
+Copy `.env.example` to `.env`.
+
+Required for the full remote-resolve experience:
+
+- `TMDB_API_KEY` - TMDB v3 API key or v4 read access token.
+- `REAL_DEBRID_TOKEN` - Real-Debrid API token.
+
+Optional integrations:
+
+- `OPENSUBTITLES_API_KEY`
+- `OPENSUBTITLES_USER_AGENT`
+- `TORRENTIO_BASE_URL`
+- `TORZNAB_API_URL`
+- `TORZNAB_API_KEY`
+- `TORZNAB_MOVIE_CATEGORIES`
+- `TORZNAB_TV_CATEGORIES`
+- `TORZNAB_LIMIT`
+- `TORZNAB_TIMEOUT_MS`
+
+Server:
+
+- `HOST` - default `127.0.0.1`.
+- `PORT` - default `5173`.
+- `OUTBOUND_HTTP_PROXY` - optional HTTP/SOCKS proxy for server outbound requests.
+- `MAX_UPLOAD_BYTES` - default 10 GiB, clamped to at least 50 MiB.
+
+Embed/live resolver helpers:
+
+- `EMBED_IFRAME_PROXY` - `auto`, `1`, or `0`; `auto` enables iframe proxying when `OUTBOUND_HTTP_PROXY` is set.
+- `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable.
+- `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
+- `EXTERNAL_EMBED_BROWSER_PROXY` - optional Playwright proxy override for external embeds.
+- `STREAMED_EMBED_BROWSER_PROXY` - optional Playwright proxy override for Streamed sports embeds.
+
+Remux/HLS:
+
+- `HLS_HWACCEL` - `none`, `auto`, `videotoolbox`, `cuda`, or `qsv`.
+- `HLS_MAX_TRANSCODE_JOBS`
+- `HLS_MAX_SEGMENT_RENDERS`
+- `HLS_SEGMENT_QUEUE_TIMEOUT_MS`
+- `REMUX_HWACCEL`
+- `AUTO_AUDIO_SYNC`
+- `REMUX_VIDEO_MODE` - `auto`, `copy`, or `normalize`.
+- `REMUX_MAX_CONCURRENT`
+- `REMUX_QUEUE_TIMEOUT_MS`
+- `REMUX_PROCESS_TIMEOUT_SECONDS`
+
+Resolver/local cache:
+
+- `RESOLVER_MAX_CONCURRENT`
+- `RESOLVER_QUEUE_TIMEOUT_MS`
+- `LOCAL_TORRENT_MAX_BYTES`
+- `LOCAL_TORRENT_METADATA_TIMEOUT_MS`
+- `LOCAL_TORRENT_READY_TIMEOUT_MS`
+- `PLAYBACK_SESSIONS`
+
+Torznab behavior:
+
+- Torrentio remains the primary discovery source.
+- Torznab is a fallback for missing/failed Torrentio results or pinned hashes absent from Torrentio.
+- Torznab is discovery only. Real-Debrid or local torrent/cache still supplies the playable media path.
+- Prefer filtered Prowlarr/Jackett endpoints over broad `all` endpoints.
+
+## Data And Persistence
+
+Server-managed files:
+
+- `cache/resolver-cache.sqlite` - SQLite DB for auth, user sync, resolver/session/cache data.
+- `cache/hls/` - generated HLS playlists/segments and transcode work.
+- `cache/local-torrents/` - local torrent files and direct file cache.
+- `cache/uploads/` - active upload sessions and temp files.
+- `assets/library.json` - local library metadata.
+- `assets/videos/` - local video files or symlinks in development.
+- `assets/images/` and `assets/icons/` - library artwork, live channel art, and app icons.
+
+SQLite stores:
+
+- Users and auth sessions.
+- User preferences.
+- Watch progress.
+- Continue watching entries.
+- My List entries.
+- TMDB response cache.
+- Resolved stream cache.
+- Movie quick-start cache.
+- Playback sessions.
+- Source health stats.
+- Media probe cache.
+- Title track preferences.
+
+Browser localStorage keys currently used:
+
+- `netflix-stream-quality-pref`
+- `netflix-default-audio-lang`
+- `netflix-subtitle-color-pref`
+- `netflix-profile-avatar-style`
+- `netflix-profile-avatar-mode`
+- `netflix-profile-avatar-image`
+- `netflix-library-edit-mode`
+- `netflix-audio-lang:movie:<tmdbId>`
+- `netflix-subtitle-lang:movie:<tmdbId>`
+- `netflix-subtitle-stream:movie:<tmdbId>`
+- `netflix-subtitle-lang:local:<source>`
+- `netflix-subtitle-stream:local:<source>`
+- `netflix-source-audio-sync:<sourceHash>`
+- `netflix-playback-speed`
+- `netflix-resume:<sourceIdentity>`
+- `netflix-continue-watching-meta`
+- `netflix-my-list-v1`
+- `netflix-watch-params:<slug>`
+- `netflix-featured-hero-v2`
+
+Deprecated keys intentionally pruned by the current app:
+
+- `netflix-hero-trailer-muted-v2`
+- `netflix-source-filter-allowed-formats`
+- `netflix-source-filter-results-limit`
+- `netflix-source-filter-min-seeders`
+- `netflix-source-filter-language`
+- `netflix-source-filter-audio-profile`
+- `netflix-resolver-provider`
+- `netflix-remux-video-mode`
+
+## Scripts
+
+Development and checks:
+
+- `bun run dev` - build the frontend, then run the Rust server.
+- `bun run dev:rust` - run `cargo run` only. Use after `dist/` exists or alongside `dev:vite`.
+- `bun run dev:vite` - run the Vite dev server on `localhost:4173` with `/api` proxied to Rust.
+- `bun run build` - Vite production build to `dist/`.
+- `bun run preview` - Vite preview server.
+- `bun run lint:frontend` - JavaScript syntax check for `src-ui`, `scripts`, and `vite.config.js`.
+- `bun run test:rust` - Rust tests.
+- `bun run test:frontend` - Playwright smoke test against a mocked API.
+- `bun run check:architecture` - guardrails for app shape, frontend dependencies, entrypoints, source sizes, and bundle sizes.
+- `bun run check` - frontend lint, build, architecture check, Rust tests, and frontend smoke test.
+
+Benchmarks:
+
+- `bun run bench:playback:install` - install Playwright Chromium.
+- `bun run bench:playback -- --source assets/videos/<file>.mp4` - browser playback benchmark across direct/remux/HLS strategies.
+- `bun run bench:load -- --source assets/videos/<file>.mp4` - HLS load benchmark against a running backend.
+- `bun run bench:resolve -- --tmdb-id <id>` - concurrent resolver benchmark against a running backend.
+
+Mac mini:
+
+- `bun run mini:install-server` - install/update Caddy, backend runner, and LaunchDaemons.
+- `bun run mini:install-agents` - install/update log rotation, disk monitor, and watchdog LaunchAgents; also removes obsolete hero-preview jobs/files.
+- `bun run mini:map-ports` - create router UPnP forwards for TCP 80 and 443.
+- `CF_API_TOKEN=... bun run mini:update-dns` - update Cloudflare DNS-only A records.
+- `bun run mini:check` - verify runtime tree, protected API auth status, Caddy, launchd, env permissions, agents, disk space, and public response.
+- `bun run mini:deploy` - build, deploy `dist`, backend binary, library metadata, images, and icons, then restart/check.
+- `bun run mini:deploy -- --skip-build` - reuse existing `dist/` and release binary.
+- `bun run mini:deploy -- --video assets/videos/<file>.mp4` - copy that symlink target as a real mini video file.
+- `bun run mini:backup -- <backup-root>` - full timestamped backup.
+- `bun run mini:backup -- --config-only <backup-root>` - backup secrets/config/plists/helper scripts only.
+
+Internal resolver helpers:
+
+- `scripts/resolve-external-embed-hls.mjs` - Playwright helper for selected movie/TV embed HLS extraction.
+- `scripts/resolve-streamed-hls.mjs` - Playwright helper for Streamed sports HLS extraction.
+
+## Mac Mini Infrastructure
 
 Development machine:
 
-- Path: `/Users/erlinhoxha/Developer/netflix`
-- Git-tracked source of truth.
-- Local media is stored under `/Users/erlinhoxha/Movies/...`.
-- `assets/videos` should contain symlinks only and should not store real video files.
-- Some full-catalog titles are intentionally not present on the MacBook to save space. For example, Requiem for a Dream and Hot Fuzz are kept on the Mac mini, not locally.
+- Checkout: `/Users/erlinhoxha/Developer/netflix`.
+- Source of truth is the git checkout.
+- Large media should not be committed.
+- `assets/videos` should contain symlinks or local-only files in development.
 
 Server machine:
 
-- Host: `hermes@m4mini.local`
-- Runtime path: `/Users/hermes/Developer/netflix`
-- Public hostnames: `fightingentropy.org` and `www.fightingentropy.org`
-- Public ingress: Cloudflare DNS-only `A` records -> home public IP -> router TCP `80`/`443` -> Mac mini `192.168.1.189`
-- Reverse proxy: Caddy on `:80` and `:443`
-- Backend listener: `127.0.0.1:5173`
+- Host: `hermes@m4mini.local`.
+- Runtime path: `/Users/hermes/Developer/netflix`.
+- Public hosts: `fightingentropy.org` and `www.fightingentropy.org`.
+- Ingress: Cloudflare DNS-only A records -> home public IP -> router TCP 80/443 -> Mac mini.
+- Reverse proxy: Caddy on ports 80 and 443.
+- Backend listener: `127.0.0.1:5173`.
 - Runtime tree only:
   - `assets`
   - `bin`
   - `cache`
   - `dist`
-- The server deploy is not a git checkout and intentionally has no `.git`, source folders, `node_modules`, Rust `target`, `Cargo.toml`, or `package.json`.
 
-Server processes are supervised by system LaunchDaemons:
+The server deploy is intentionally not a git checkout. It should not contain `.git`, source folders, `node_modules`, `target`, `Cargo.toml`, `package.json`, or `.env`.
 
-- `/Library/LaunchDaemons/com.fightingentropy.netflix-app.plist`
-- `/Library/LaunchDaemons/com.fightingentropy.netflix-caddy.plist`
+LaunchDaemons:
 
-The app daemon runs:
+- App: `/Library/LaunchDaemons/com.fightingentropy.netflix-app.plist`
+- Caddy: `/Library/LaunchDaemons/com.fightingentropy.netflix-caddy.plist`
+
+Backend daemon:
 
 - Working directory: `/Users/hermes/Developer/netflix`
-- Backend binary: `/Users/hermes/Developer/netflix/bin/netflix-rust-backend`
-- Launcher script: `/Users/hermes/.local/bin/netflix-run-backend`
+- Binary: `/Users/hermes/Developer/netflix/bin/netflix-rust-backend`
+- Runner: `/Users/hermes/.local/bin/netflix-run-backend`
 
-The Caddy daemon runs:
+Caddy daemon:
 
 - Binary: `/usr/local/bin/caddy`
 - Config: `/Users/hermes/.config/caddy/Caddyfile`
-- TLS: Caddy-managed public certificates
+- TLS: Caddy-managed public certs by default
 - Data dir: `/var/db/netflix-caddy`
 
-Secrets on the server live outside the deploy tree:
+Secrets:
 
 - Env file: `/Users/hermes/.config/netflix/env`
-- Permissions: `600`
+- Required permissions: `600`
 - Do not put server secrets back into `/Users/hermes/Developer/netflix/.env`.
 
-Server logs:
+Logs:
 
 - Backend stdout: `/Users/hermes/.local/state/netflix/backend.log`
 - Backend stderr: `/Users/hermes/.local/state/netflix/backend.err.log`
 - Caddy stdout: `/Users/hermes/.local/state/netflix/caddy.log`
 - Caddy stderr: `/Users/hermes/.local/state/netflix/caddy.err.log`
 - Caddy access log: `/Users/hermes/.local/state/netflix/caddy-access.log`
-- Log rotation script: `/Users/hermes/.local/bin/netflix-rotate-logs`
-- Log rotation LaunchAgent: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-log-rotation.plist`
-- Rotation schedule: daily at `03:17`
+- Disk monitor log: `/Users/hermes/.local/state/netflix/disk-monitor.log`
+- Watchdog log: `/Users/hermes/.local/state/netflix/watchdog.log`
 
-Disk monitoring:
+Maintenance LaunchAgents:
 
-- Monitor script: `/Users/hermes/.local/bin/netflix-disk-monitor`
-- LaunchAgent: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-disk-monitor.plist`
-- Schedule: hourly
-- Thresholds: warn at `90%` disk usage or below `50G` free
-- Log: `/Users/hermes/.local/state/netflix/disk-monitor.log`
+- Log rotation: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-log-rotation.plist`
+- Disk monitor: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-disk-monitor.plist`
+- Watchdog: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-watchdog.plist`
 
-Watchdog/self-healing:
+Current maintenance defaults:
 
-- Watchdog script: `/Users/hermes/.local/bin/netflix-watchdog`
-- LaunchAgent: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-watchdog.plist`
-- Schedule: every `60` seconds and at load
-- Probe: `GET http://127.0.0.1:5173/api/library`
-- Restart threshold: `3` consecutive failed probes
-- Restart behavior: logs the failed probe reason, kills stale `ffmpeg` processes, stops the backend, then restarts it through the app LaunchDaemon or `/Users/hermes/.local/bin/netflix-run-backend`
-- Log: `/Users/hermes/.local/state/netflix/watchdog.log`
-
-MacBook helper scripts:
-
-- `bun run mini:install-server` -> installs/updates Caddy, the backend runner, and the app/Caddy LaunchDaemons.
-- `bun run mini:map-ports` -> creates router UPnP forwards for TCP `80` and `443` to the mini.
-- `CF_API_TOKEN=... bun run mini:update-dns` -> sets DNS-only `A` records for the mini's current home public IP.
-- `bun run mini:check` -> verifies the mini runtime, Caddy, public app response, app login, asset shape, env permissions, maintenance agents, disk space, and that the old Cloudflare Tunnel is gone.
-- `bun run mini:deploy` -> builds locally, syncs `dist`, the backend binary, and non-video assets, restarts the mini backend, then runs `mini:check`.
-- `bun run mini:deploy -- --skip-build` -> deploys existing local build artifacts and restarts/checks the mini.
-- `bun run mini:deploy -- --video assets/videos/<file>.mp4` -> copies that symlink target as a real file to the mini.
-- `bun run mini:install-agents` -> installs/updates the log rotation, disk monitor, and watchdog LaunchAgents on the mini.
-- `bun run mini:backup -- <backup-root>` -> creates a timestamped full mini backup.
-- `bun run mini:backup -- --config-only <backup-root>` -> backs up only secrets/config/plists/helper scripts.
+- Log rotation runs daily at 03:17 and keeps compressed rotated logs.
+- Disk monitor runs hourly, warning at 90 percent disk usage or below 50 GiB free.
+- Watchdog probes `http://127.0.0.1:5173/` every 60 seconds, restarts after 1 failed probe by default, kills stale `ffmpeg`, and restarts through launchd or the runner script.
 
 Health checks:
 
@@ -515,151 +628,116 @@ ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
   'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1:5173'
 
 ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
-  'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1/api/library'
+  'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1:5173/api/library'
 
 curl -sSI --max-time 10 https://fightingentropy.org | sed -n '1,8p'
 ```
 
 Expected results:
 
-- Mini backend: `200`
-- Mini Caddy proxy API route: `401` (unauthenticated)
-- Public host: `HTTP/2 200`
-- Public app auth when logged out: `401`
+- Mini backend root: `200`
+- Protected `/api/library` without login: `401`
+- Public host root: `200`
+- Public `/api/auth/me` without login: `401`
 
-Deploying code changes from the MacBook:
+Deploying code:
 
 ```bash
 bun run mini:deploy
 ```
 
-`mini:deploy` intentionally does not sync `assets/videos`.
-
 Deploying assets:
 
-- Do not run `rsync --delete assets/` from the MacBook to the Mac mini. The MacBook no longer has the full catalog locally, and `--delete` would remove mini-only videos.
-- To update non-video asset metadata, sync only the explicit files/directories:
-
-```bash
-rsync -a -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' \
-  assets/library.json hermes@m4mini.local:/Users/hermes/Developer/netflix/assets/library.json
-
-rsync -a --delete -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' \
-  assets/images/ hermes@m4mini.local:/Users/hermes/Developer/netflix/assets/images/
-
-rsync -a --delete -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' \
-  assets/icons/ hermes@m4mini.local:/Users/hermes/Developer/netflix/assets/icons/
-```
-
-- To add a new local symlinked video from the MacBook to the mini, follow symlinks and copy the target as a real file:
-
-```bash
-rsync -aL --partial -e 'ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes' assets/videos/<file>.mp4 \
-  hermes@m4mini.local:/Users/hermes/Developer/netflix/assets/videos/<file>.mp4
-```
-
-If a future deploy should intentionally remove a title from the Mac mini, delete that specific file explicitly on the mini and update `assets/library.json`.
+- `mini:deploy` syncs `assets/library.json`, `assets/images/`, and `assets/icons/`.
+- It does not sync all of `assets/videos`.
+- Do not run `rsync --delete assets/` from the MacBook to the Mac mini, because the MacBook may not have the full mini video catalog.
+- Use `bun run mini:deploy -- --video assets/videos/<file>.mp4` for an explicit video.
 
 Backups:
 
-- Use an external drive or another large volume for full backups. The mini assets are about `153G`.
-- Full backup example:
-
 ```bash
 bun run mini:backup -- /Volumes/Backup/netflix-mini
-```
-
-- Config-only backup example:
-
-```bash
 bun run mini:backup -- --config-only ~/Backups/netflix-mini-config
 ```
 
-The backup script writes timestamped snapshots and maintains a `latest` symlink. Full backups use `rsync --link-dest` against the previous snapshot when available, so unchanged files can be hard-linked on backup volumes that support hard links.
+Full backups include runtime assets, binary, cache, dist, secrets/config, helper scripts, and launchd plists. The script maintains a `latest` symlink and uses `rsync --link-dest` when possible.
 
-Restore outline for a replacement Mac mini:
+Restore outline:
 
-1. Copy `runtime/{assets,bin,cache,dist}` from the latest backup to `/Users/hermes/Developer/netflix`.
+1. Copy `runtime/{assets,bin,cache,dist}` from backup to `/Users/hermes/Developer/netflix`.
 2. Restore `config/env` to `/Users/hermes/.config/netflix/env` and set permissions to `600`.
-3. Restore `caddy/` to `/Users/hermes/.config/caddy`.
-4. Restore `local-bin/netflix-run-backend`, `local-bin/netflix-rotate-logs`, `local-bin/netflix-disk-monitor`, and `local-bin/netflix-watchdog` to `/Users/hermes/.local/bin` and make them executable.
-5. Run `bun run mini:install-server` and `bun run mini:install-agents` from the MacBook checkout.
-6. Run `bun run mini:map-ports` or configure router forwards manually.
-7. Verify Cloudflare DNS-only `A` records point at the current home public IP.
-8. Run `bun run mini:check` from the MacBook checkout.
+3. Restore Caddy config to `/Users/hermes/.config/caddy`.
+4. Restore helper scripts to `/Users/hermes/.local/bin` and make them executable.
+5. Run `bun run mini:install-server`.
+6. Run `bun run mini:install-agents`.
+7. Run `bun run mini:map-ports` or configure router forwards manually.
+8. Verify Cloudflare DNS-only A records point at the current home public IP.
+9. Run `bun run mini:check`.
 
-## 10) Troubleshooting
+## Troubleshooting
 
-- `TMDB`/resolver errors:
-  - verify `TMDB_API_KEY`, `REAL_DEBRID_TOKEN`, optional `TORZNAB_API_URL` / `TORZNAB_API_KEY`, and network access
-- Upload fails:
-  - ensure file is `.mp4`/`.mkv`
-  - check `MAX_UPLOAD_BYTES`
-  - ensure ffmpeg is installed
-- Subtitles unavailable:
-  - stream may not include text subtitle track
-  - external subtitle provider may not have matching data
-- Playback stutter/compatibility issues:
-  - use remux mode `normalize` for toughest sources
-  - check `/api/health` and `/api/config` for ffmpeg/hwaccel status and remux pressure
-  - browser-safe Real-Debrid MP4 sources are tried directly first, with remux kept as a fallback
-  - remux-prone MKV/WebM/AVI/WMV/TS sources prefer native HLS on browsers that support it, so seeks reuse cached HLS segments instead of restarting remux
-  - `HLS_HWACCEL=auto` uses VideoToolbox on macOS when available
-- Audio out of sync:
-  - often caused by non-browser-safe audio codecs (AC3, DTS, TrueHD) that need re-encoding to AAC — the original audio start time offset can be lost during transcode
-  - the server auto-detects audio/video start time offsets and applies `adelay` compensation when `AUTO_AUDIO_SYNC=1`
-  - this applies to MKV sources, normalize mode, and any source with audio that needs re-encoding
-  - manual sync can also be adjusted with `[` / `]` keys during remux playback
-- Zombie ffmpeg processes / high CPU after seeking:
-  - each seek on a remux stream may spawn a new server-side ffmpeg process
-  - the backend caps simultaneous remux jobs with `REMUX_MAX_CONCURRENT` and returns HTTP 429 after `REMUX_QUEUE_TIMEOUT_MS`
-  - `/api/health` exposes active, canceled, rejected, timed-out, and failed remux counters
-  - the Mac mini watchdog restarts the backend after repeated failed `/api/library` probes and kills stale `ffmpeg` during restart
-- Stale service worker causing page load failures or screen flashing:
-  - if a `sw.js` was previously registered and the file no longer exists, the stale service worker will intercept fetches and fail
-  - fix: Chrome DevTools -> Application -> Service Workers -> Unregister, then clear site data and hard refresh (Cmd+Shift+R)
-- Clean URL icons/assets broken:
-  - all asset paths in the player must be absolute (e.g. `/assets/icons/...`) since the page loads at `/watch/<slug>` — relative paths resolve incorrectly
-  - similarly, navigation links must be absolute (`/` not `index.html`)
+Cannot sign in or protected APIs return `401`:
 
-## 11) Clean URL Routing
+- Create an account from `login.html`.
+- Check that cookies are allowed for the host.
+- On the public site, `GET /api/auth/me` should return `401` when logged out and `200` when logged in.
 
-The player supports clean URLs: `/watch/<slug>` and `/watch/<slug>/<episodeIndex>`.
+Home is empty or only shows local titles:
 
-### How it works
+- Check `TMDB_API_KEY`.
+- Check `/api/home/bootstrap`.
+- Check `/api/health` and server logs for TMDB/network errors.
 
-1. Vite middleware in `vite.config.js` rewrites `/watch/*` requests to `player.html`
-2. On page load, the player parses the URL path to extract the slug and optional episode index
-3. The slug is looked up against `assets/library.json` to resolve the media entry and populate query params
-4. `history.replaceState` is called synchronously at module scope to avoid a visible URL flash from query params to the clean URL
-5. Series resolution variables are re-derived after the async slug lookup completes (they use `let` not `const` to allow this)
+Resolver errors:
 
-### Important conventions
+- Check `TMDB_API_KEY`, `REAL_DEBRID_TOKEN`, and network access.
+- If using Torznab, check `TORZNAB_API_URL`, `TORZNAB_API_KEY`, category IDs, and timeout.
+- If local torrent is selected or auto-used, check local disk budget and `cache/local-torrents`.
 
-- All asset paths (icons, images) must be absolute — the page loads at `/watch/<slug>`, so relative paths break
-- Navigation back to home must use `/` not `index.html`
-- Do not use `<base href="/">` — it interferes with Vite HMR WebSocket connections
+Embed/live sports stream fails:
 
-## 12) Remux Pipeline Notes
+- Install Playwright Chromium with `bun run bench:playback:install`.
+- Check `STREAMED_HLS_RESOLVER_SCRIPT` or `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT`.
+- If a provider needs a proxy, set `OUTBOUND_HTTP_PROXY` or the resolver-specific browser proxy env var.
 
-### Video modes
+Upload fails:
 
-- `copy`: stream-copies video, re-encodes audio to AAC. Fast, low CPU. Used for MP4 sources.
-- `normalize`: re-encodes video (H.264) + audio (AAC). High CPU but maximum compatibility. Used for MKV/WebM sources or when the video codec is not browser-safe.
-- `auto` (default): picks `copy` or `normalize` based on container format and codec probing.
+- Confirm file extension is `.mp4` or `.mkv`.
+- Increase `MAX_UPLOAD_BYTES` for large files.
+- Confirm `ffmpeg` and `ffprobe` are available.
+- Check `cache/uploads` and backend logs.
 
-### Audio sync compensation
+Playback stutters or fails:
 
-When audio needs re-encoding (AC3, DTS, etc.), the original audio start time offset may differ from the video start time. The server probes both timestamps and applies:
-- `adelay` filter for positive offsets (audio starts after video)
-- `atrim` + `asetpts` for negative offsets (audio starts before video)
-- `aresample=async=1000:first_pts=0` when video PTS is also reset (normalize mode)
-- `aresample=async=1000` when video is copied (preserves original video PTS)
+- Check `/api/health` for ffmpeg availability, streaming counters, and resolver counters.
+- Use HLS or remux fallback for MKV/WebM/HEVC/audio-codec issues.
+- `HLS_HWACCEL=auto` uses VideoToolbox on macOS when supported.
+- `REMUX_VIDEO_MODE=normalize` is more expensive but can help difficult timestamp/container cases.
 
-### Seeking and process cleanup
+Audio is out of sync:
 
-Each seek on a remux stream starts a new ffmpeg process with `-ss <seconds>`. The frontend explicitly tears down the previous `<video>` source before setting the new URL, which closes the HTTP connection and allows the server to kill the old ffmpeg child process via `kill_on_drop(true)`.
+- Keep `AUTO_AUDIO_SYNC=1`.
+- Use `[` and `]` in the player to adjust remux audio sync manually.
+- Some sources lose timing metadata when audio must be transcoded to AAC.
 
-### HEVC / 4K content
+Repeated seeking creates high CPU:
 
-4K HEVC content in MP4 containers is stream-copied (no server-side re-encoding), but the browser must decode it — this is CPU-intensive and can cause fan noise. Hardware HEVC decoding depends on browser and GPU support.
+- Remux seeks can create new ffmpeg processes.
+- `REMUX_MAX_CONCURRENT`, `REMUX_QUEUE_TIMEOUT_MS`, and `REMUX_PROCESS_TIMEOUT_SECONDS` cap the damage.
+- The Mac mini watchdog kills stale ffmpeg processes during backend restart.
+
+Stale service worker:
+
+- Open browser DevTools -> Application -> Service Workers.
+- Unregister `/sw.js`.
+- Clear site data and hard refresh.
+
+## Cleanup Notes
+
+Current cleanup state:
+
+- Hero-preview generation has been removed from package scripts, deployment, agent installation, and mini checks.
+- `assets/hero-previews.json` and `scripts/refresh-hero-previews.py` are deleted in this worktree.
+- The old one-off Interstellar mini helper scripts have been removed.
+- `scripts/install-mini-agents.sh` removes any stale hero-preview LaunchAgent, helper, manifest, deployed script, and cached preview folder from the Mac mini.
+- `scripts/check-mini.sh` now validates only the current maintenance agents: log rotation, disk monitor, and watchdog.

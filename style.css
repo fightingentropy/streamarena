@@ -109,7 +109,7 @@
     position: relative;
     width: 100%;
     height: clamp(420px, 56.25vw, 80vh);
-    margin: 0 0 clamp(108px, 14vh, 152px);
+    margin: 0 0 clamp(52px, 7vh, 84px);
     border-radius: 0;
     overflow: hidden;
     background: #000;
@@ -448,7 +448,7 @@
     left: auto;
     right: auto;
     bottom: auto;
-    margin: 0 0 28px;
+    margin: 0 0 44px;
     padding: 0;
     z-index: 12;
     background: #000;
@@ -459,10 +459,10 @@
 #myListRow .popular-row-inner h2 {
     margin: 0 var(--home-side-padding) 10px;
     color: #e5e5e5;
-    font-size: 1.5rem;
+    font-size: 1.45rem;
     line-height: 1.25;
     letter-spacing: 0;
-    font-weight: 500;
+    font-weight: 700;
 }
 
 .popular-row.home-popular-row {
@@ -470,8 +470,8 @@
     --home-card-width: calc((100% - 128px) / 5);
     position: relative;
     z-index: 12;
-    margin-top: clamp(-48px, -4vw, -32px);
-    padding: 0 0 28px;
+    margin-top: 0;
+    padding: 0 0 48px;
     background: transparent;
 }
 
@@ -491,7 +491,7 @@
 #myListRow.popular-row {
     --home-side-padding: 4%;
     --home-card-width: calc((100% - 128px) / 5);
-    padding: 0 0 28px;
+    padding: 0 0 44px;
     background: #000;
 }
 
@@ -507,7 +507,7 @@
 
 .home-popular-row .cards.popular-cards {
     gap: 10px;
-    padding-bottom: 12px;
+    padding-bottom: 10px;
 }
 
 .home-page .continue-row .cards.popular-cards,
@@ -770,7 +770,7 @@ body.is-search-mode .home-member-footer {
     .popular-row.home-popular-row,
     #myListRow.popular-row {
         --home-side-padding: 4%;
-        --home-card-width: calc((100% - 152px) / 5);
+        --home-card-width: calc((100% - 160px) / 6);
     }
 }
 
@@ -811,11 +811,7 @@ body.is-search-mode .home-member-footer {
 
     .featured-hero {
         height: clamp(380px, 75vh, 620px);
-        margin-bottom: 96px;
-    }
-
-    .popular-row.home-popular-row {
-        margin-top: -28px;
+        margin-bottom: 64px;
     }
 
     .home-page .hero-content {
@@ -878,11 +874,7 @@ body.is-search-mode .home-member-footer {
 
     .featured-hero {
         height: clamp(340px, 72vh, 520px);
-        margin-bottom: 72px;
-    }
-
-    .popular-row.home-popular-row {
-        margin-top: 0;
+        margin-bottom: 44px;
     }
 
     .home-page .hero-content {
@@ -1303,15 +1295,16 @@ body.modal-open {
 
 .account-menu-panel {
     position: absolute;
-    top: calc(100% + 12px);
+    top: calc(100% + 14px);
     right: 0;
-    min-width: 210px;
-    border-radius: 10px;
+    width: min(270px, calc(100vw - 32px));
+    min-width: min(240px, calc(100vw - 32px));
+    border-radius: 0;
     overflow: hidden;
-    background: rgba(16, 16, 16, 0.96);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.56);
-    backdrop-filter: blur(6px);
+    background: rgba(9, 6, 6, 0.88);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    box-shadow: 0 22px 52px rgba(0, 0, 0, 0.68);
+    backdrop-filter: blur(10px);
     z-index: 60;
 }
 
@@ -1320,25 +1313,59 @@ body.modal-open {
 }
 
 .account-menu-item {
-    display: block;
-    color: #f3f3f3;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    color: #f5f5f5;
     text-decoration: none;
-    padding: 11px 14px;
-    font-size: 0.95rem;
-    letter-spacing: -0.01em;
+    padding: 10px 20px;
+    min-height: 52px;
+    font-size: 1rem;
+    line-height: 1.2;
+    letter-spacing: 0;
+    font-weight: 400;
     transition:
         background-color 140ms ease,
         color 140ms ease;
 }
 
 .account-menu-item:hover {
-    background: rgba(255, 255, 255, 0.11);
+    background: rgba(255, 255, 255, 0.08);
+    text-decoration: underline;
 }
 
 .account-menu-item--muted {
     color: rgba(255, 255, 255, 0.62);
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     pointer-events: none;
+}
+
+.account-menu-icon {
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    color: rgba(255, 255, 255, 0.74);
+}
+
+.account-menu-icon svg {
+    width: 32px;
+    height: 32px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 3.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.account-menu-signout {
+    justify-content: center;
+    min-height: 54px;
+    padding: 13px 20px;
+    border-top: 1px solid rgba(255, 255, 255, 0.28);
+    font-size: 1rem;
+    text-align: center;
 }
 
 .hero-content {
@@ -1746,6 +1773,9 @@ body.is-search-mode .subtitle,
 body.is-search-mode .hero-controls,
 body.is-search-mode #continueRow,
 body.is-search-mode #popularRow,
+body.is-search-mode #trendingRow,
+body.is-search-mode #nowPlayingRow,
+body.is-search-mode #topRatedRow,
 body.is-search-mode #myListRow {
     display: none !important;
 }

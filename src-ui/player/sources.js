@@ -292,6 +292,18 @@ export function sortSourcesBySeeders(sources = [], { preferContainer = "" } = {}
       return Number(rightEmbed) - Number(leftEmbed);
     }
 
+    if (rightEmbed && leftEmbed) {
+      const rightScore = Number(right?.score);
+      const leftScore = Number(left?.score);
+      if (Number.isFinite(rightScore) || Number.isFinite(leftScore)) {
+        const safeRightScore = Number.isFinite(rightScore) ? rightScore : 0;
+        const safeLeftScore = Number.isFinite(leftScore) ? leftScore : 0;
+        if (safeRightScore !== safeLeftScore) {
+          return safeRightScore - safeLeftScore;
+        }
+      }
+    }
+
     if (normalizedPreferredContainer) {
       const rightPreferred = isSourceOptionLikelyContainer(
         right,

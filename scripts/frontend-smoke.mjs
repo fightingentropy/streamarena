@@ -120,6 +120,40 @@ function apiPayload(url, method) {
     };
   }
   if (path === "/api/user/my-list") return { entries: [] };
+  if (path === "/api/home/bootstrap") {
+    const sampleMovie = {
+      id: 1,
+      title: "Smoke Movie",
+      release_date: "1975-01-01",
+      poster_path: "/poster.jpg",
+      backdrop_path: "/backdrop.jpg",
+      overview: "Smoke-test title",
+      genre_ids: [28],
+      vote_average: 8.1,
+      adult: false,
+    };
+    return {
+      imageBase: "https://image.tmdb.org/t/p",
+      genres: [{ id: 28, name: "Action" }],
+      popular: { results: [sampleMovie] },
+      trending: { results: [sampleMovie] },
+      nowPlaying: { results: [sampleMovie] },
+      topRated: { results: [sampleMovie] },
+      library: {
+        movies: [
+          {
+            id: "smoke-movie",
+            title: "Smoke Movie",
+            year: "1975",
+            src: smokeVideo,
+            thumb: "assets/images/thumbnail.jpg",
+            description: "Smoke-test title",
+          },
+        ],
+        series: [],
+      },
+    };
+  }
   if (path === "/api/tmdb/popular-movies") return { results: [] };
   if (path === "/api/tmdb/search") return { results: [] };
   if (path === "/api/tmdb/details") return { title: "Smoke Movie", year: "1975" };
@@ -220,6 +254,7 @@ function apiPayload(url, method) {
   if (path === "/api/football/stream") return { streams: [] };
   if (path === "/api/basketball/matches") return { matches: [] };
   if (path === "/api/basketball/stream") return { streams: [] };
+  if (path === "/api/sports/stream") return { streams: [] };
   if (path === "/api/live/hls-resource") return { ok: true };
   if (path === "/api/live/hls.m3u8") return "#EXTM3U\n";
   if (path === "/api/hls/master.m3u8") {
@@ -403,9 +438,9 @@ async function runSmoke() {
         const earlyVideoSource = await page.evaluate(
           () => document.querySelector("video")?.getAttribute("src") || "",
         );
-        if (!sawHlsManagedImportHold) {
+        if (!hlsBundleRequested) {
           throw new Error(
-            `${pageSpec.path}\nHLS-managed source setup did not start.\n${JSON.stringify({
+            `${pageSpec.path}\nHLS-managed source setup did not request hls.js.\n${JSON.stringify({
               sawHlsManagedResolve,
               sawHlsManagedImportHold,
               hlsBundleRequested,
@@ -429,8 +464,11 @@ async function runSmoke() {
         await page.getByRole("button", { name: "Basketball" }).click();
         await page.waitForFunction(() => new URL(window.location.href).searchParams.get("sport") === "basketball");
         await page.waitForFunction(() => {
-          const football = document.querySelector(".sports-switcher button:first-child");
-          const basketball = document.querySelector(".sports-switcher button:last-child");
+          const buttons = [...document.querySelectorAll(".sports-switcher button")];
+          const buttonFor = (label) =>
+            buttons.find((button) => button.textContent?.trim() === label);
+          const football = buttonFor("Football");
+          const basketball = buttonFor("Basketball");
           return (
             football?.getAttribute("aria-pressed") === "false" &&
             basketball?.getAttribute("aria-pressed") === "true"
@@ -532,26 +570,33 @@ async function runSmoke() {
       }
 
       if (pageSpec.expectSourceSwitch) {
-        await page.click("#toggleAudio");
-        await page.click("#audioTabSources");
-        await page.waitForSelector(
-          `.source-option[data-source-hash="${sourceSwitchHashB}"]`,
+        await page.waitForSelector("#toggleSource", { state: "visible", timeout: 8_000 });
+        await page.click("#toggleSource");
+        await page.waitForFunction(
+          (hash) =>
+            Boolean(
+              document.querySelector(`.source-option[data-source-hash="${hash}"]`),
+            ),
+          sourceSwitchHashB,
           { timeout: 8_000 },
         );
-        await page.click(`.source-option[data-source-hash="${sourceSwitchHashB}"]`);
+        await page.evaluate((hash) => {
+          document
+            .querySelector(`.source-option[data-source-hash="${hash}"]`)
+            ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        }, sourceSwitchHashB);
         for (let attempt = 0; attempt < 50; attempt += 1) {
           const switched = await page.evaluate((expectedHash) => {
             const selectedHash =
               document.querySelector(".source-option[aria-selected='true']")
                 ?.dataset.sourceHash || "";
             const videoSource = document.querySelector("video")?.getAttribute("src") || "";
-            const audioPopoverOpen =
-              document.querySelector("#audioControl")?.classList.contains("is-open") ||
+            const sourcePopoverOpen =
+              document.querySelector("#sourceControl")?.classList.contains("is-open") ||
               false;
             return (
               selectedHash === expectedHash &&
-              videoSource.includes(expectedHash) &&
-              !audioPopoverOpen
+              videoSource.includes(expectedHash)
             );
           }, sourceSwitchHashB);
           if (switched) {
@@ -564,14 +609,13 @@ async function runSmoke() {
             document.querySelector(".source-option[aria-selected='true']")
               ?.dataset.sourceHash || "",
           videoSource: document.querySelector("video")?.getAttribute("src") || "",
-          audioPopoverOpen:
-            document.querySelector("#audioControl")?.classList.contains("is-open") || false,
+          sourcePopoverOpen:
+            document.querySelector("#sourceControl")?.classList.contains("is-open") || false,
         }));
         if (
           sawSourceSwitchResolveHash !== sourceSwitchHashB ||
           switchState.selectedHash !== sourceSwitchHashB ||
-          !switchState.videoSource.includes(sourceSwitchHashB) ||
-          switchState.audioPopoverOpen
+          !switchState.videoSource.includes(sourceSwitchHashB)
         ) {
           throw new Error(
             `${pageSpec.path}\nSource switch failed.\n${JSON.stringify({

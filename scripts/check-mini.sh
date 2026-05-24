@@ -66,12 +66,6 @@ watchdog_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.netflix
 watchdog_helper=$(test -x "$HOME/.local/bin/netflix-watchdog" && echo yes || echo no)
 watchdog_log=$(test -f "$HOME/.local/state/netflix/watchdog.log" && echo yes || echo no)
 watchdog_launch_state=$(launchctl print "gui/$(id -u)/com.fightingentropy.netflix-watchdog" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}')
-hero_preview_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.netflix-hero-previews.plist" && echo yes || echo no)
-hero_preview_helper=$(test -x "$HOME/.local/bin/netflix-refresh-hero-previews" && echo yes || echo no)
-hero_preview_script=$(test -f "$app/bin/netflix-refresh-hero-previews.py" && echo yes || echo no)
-hero_preview_manifest=$(test -f "$app/assets/hero-previews.json" && echo yes || echo no)
-hero_preview_launch_state=$(launchctl print "gui/$(id -u)/com.fightingentropy.netflix-hero-previews" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}')
-hero_preview_files=$(find "$app/assets/videos/hero-previews" -type f -name '*.mp4' 2>/dev/null | wc -l | tr -d ' ')
 cron_leftover=$(crontab -l 2>/dev/null | grep -c 'netflix-rotate-logs' || true)
 
 df_line=$(df -Pk "$app" | awk 'NR == 2 {print $4 " " $5}')
@@ -112,12 +106,6 @@ printf 'watchdog_agent=%s\n' "$watchdog_agent"
 printf 'watchdog_helper=%s\n' "$watchdog_helper"
 printf 'watchdog_log=%s\n' "$watchdog_log"
 printf 'watchdog_launch_state=%s\n' "${watchdog_launch_state:-missing}"
-printf 'hero_preview_agent=%s\n' "$hero_preview_agent"
-printf 'hero_preview_helper=%s\n' "$hero_preview_helper"
-printf 'hero_preview_script=%s\n' "$hero_preview_script"
-printf 'hero_preview_manifest=%s\n' "$hero_preview_manifest"
-printf 'hero_preview_launch_state=%s\n' "${hero_preview_launch_state:-missing}"
-printf 'hero_preview_files=%s\n' "$hero_preview_files"
 printf 'cron_leftover=%s\n' "$cron_leftover"
 printf 'disk_capacity_percent=%s\n' "$capacity"
 printf 'disk_available_gb=%s\n' "$available_gb"
@@ -162,12 +150,6 @@ watchdog_agent=$(value_for watchdog_agent)
 watchdog_helper=$(value_for watchdog_helper)
 watchdog_log=$(value_for watchdog_log)
 watchdog_launch_state=$(value_for watchdog_launch_state)
-hero_preview_agent=$(value_for hero_preview_agent)
-hero_preview_helper=$(value_for hero_preview_helper)
-hero_preview_script=$(value_for hero_preview_script)
-hero_preview_manifest=$(value_for hero_preview_manifest)
-hero_preview_launch_state=$(value_for hero_preview_launch_state)
-hero_preview_files=$(value_for hero_preview_files)
 cron_leftover=$(value_for cron_leftover)
 disk_capacity_percent=$(value_for disk_capacity_percent)
 disk_available_gb=$(value_for disk_available_gb)
@@ -197,12 +179,6 @@ public_ip=$(value_for public_ip)
 [[ "$watchdog_helper" == "yes" ]] && pass "watchdog helper is executable" || bad "watchdog helper missing or not executable"
 [[ "$watchdog_log" == "yes" ]] && pass "watchdog log exists" || bad "watchdog log missing"
 [[ "$watchdog_launch_state" != "missing" ]] && pass "watchdog launchd state is $watchdog_launch_state" || bad "watchdog LaunchAgent is not loaded"
-[[ "$hero_preview_agent" == "yes" ]] && pass "hero preview LaunchAgent exists" || bad "hero preview LaunchAgent missing"
-[[ "$hero_preview_helper" == "yes" ]] && pass "hero preview helper is executable" || bad "hero preview helper missing or not executable"
-[[ "$hero_preview_script" == "yes" ]] && pass "hero preview refresh script is deployed" || bad "hero preview refresh script missing"
-[[ "$hero_preview_manifest" == "yes" ]] && pass "hero preview manifest exists" || bad "hero preview manifest missing"
-[[ "$hero_preview_launch_state" != "missing" ]] && pass "hero preview launchd state is $hero_preview_launch_state" || bad "hero preview LaunchAgent is not loaded"
-[[ -n "$hero_preview_files" ]] && pass "hero preview cache contains $hero_preview_files MP4 file(s)" || bad "hero preview cache could not be inspected"
 [[ "$cron_leftover" == "0" ]] && pass "old cron log rotation removed" || bad "old cron log rotation still present"
 
 [[ "$tunnel_pid" == "missing" ]] && pass "cloudflared tunnel process is removed" || bad "cloudflared tunnel process is still running ($tunnel_pid)"

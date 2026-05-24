@@ -66,6 +66,7 @@ export default function PlayerPage() {
   let durationText, togglePlay, rewind10, forward10, volumeControl, volumeSlider;
   let toggleMutePlayer, toggleFullscreen, toggleSpeed, speedControl;
   let toggleLiveStream, liveStreamControl, liveStreamMenu, liveStreamOptionsContainer;
+  let toggleSource, sourceControl, sourceMenu;
   let nextEpisode, toggleEpisodes, episodesControl, episodesList, episodesPopoverTitle;
   let episodesBackToSeasons, episodesOverline;
   let autoPlayOverlay, autoPlayThumb, autoPlayTitle, autoPlayEpLabel;
@@ -100,10 +101,12 @@ const LIVE_EDGE_PLAYBACK_OFFSET_SECONDS = 0.5;
 const LIVE_EDGE_REJOIN_TOLERANCE_SECONDS = 2.5;
 const LIVE_EMBED_FALLBACK_SOURCE_LIMIT = 5;
 const LIVE_IFRAME_SOURCE_PREFIX = "live-iframe:";
+const LIVE_IFRAME_FALLBACK_PROBE_MS = 5000;
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
 let liveStreamPopoverCloseTimeout = null;
+let sourcePopoverCloseTimeout = null;
 let episodesPopoverCloseTimeout = null;
 let episodesPopoverSticky = false;
 let audioPopoverCloseTimeout = null;
@@ -119,6 +122,8 @@ let singleClickPlaybackToggleTimeout = null;
 let seekLoadingTimeout = null;
 let tmdbSourceQueue = [];
 let tmdbSourceAttemptIndex = 0;
+let tmdbSkipExternalEmbed = false;
+let embedIframeFallbackTimer = null;
 let tmdbResolveRetries = 0;
 let knownDurationSeconds = 0;
 let expectedDurationSeconds = 0;
@@ -140,6 +145,7 @@ let selectedSubtitleStreamIndex = -1;
 let availableAudioTracks = [];
 let availableSubtitleTracks = [];
 let availablePlaybackSources = [];
+let isFetchingPlaybackSources = false;
 let resolverFailedSourceHashes = new Set();
 let subtitleTrackElement = null;
 let customSubtitleCues = [];
@@ -172,7 +178,7 @@ let selectedLiveStreamId = "";
 let isLivePlayback = false;
 let liveEdgePinned = true;
 let shouldResolveLiveEmbedSource = false;
-let liveEmbedResolver = "football";
+let liveEmbedResolver = "sports";
 let lastRequestedPlaybackSource = "";
 let lastRequestedAbsolutePlaybackSource = "";
 let activeHlsController = null;
@@ -250,13 +256,13 @@ function isTruthyParamValue(value) {
 }
 
 function normalizeLiveEmbedResolver(value) {
-  const resolver = String(value || "football")
+  const resolver = String(value || "sports")
     .trim()
     .toLowerCase();
-  if (resolver === "basketball" || resolver === "sports" || resolver === "twitch") {
+  if (resolver === "football" || resolver === "basketball" || resolver === "sports" || resolver === "twitch") {
     return resolver;
   }
-  return "football";
+  return "sports";
 }
 
 function refreshLiveStreamStateFromParams(queryParams = params) {
@@ -1021,17 +1027,6 @@ function applyRememberedTmdbSourcePin() {
       activeTrackSourceInput = activeTrackSourceInput || remembered.sourceInput;
     }
   }
-  if (!sourceSelectionPinned) {
-    if (remembered.sourceHash) {
-      selectedSourceHash = remembered.sourceHash;
-      sourceSelectionPinned = true;
-      currentTmdbPlaybackSessionKey = remembered.sessionKey;
-      currentTmdbResolverProvider = remembered.resolverProvider;
-      currentTmdbResolvedFilename = remembered.filename;
-      activeTrackSourceInput = remembered.sourceInput || activeTrackSourceInput;
-      applyPreferredSourceAudioSync(selectedSourceHash);
-    }
-  }
 }
 
 applyRememberedTmdbSourcePin();
@@ -1576,8 +1571,8 @@ function showResolverError(
   fallbackMessage = "Unable to resolve this stream.",
   {
     clearVideoSource = false,
-    showRetry = isTmdbResolvedPlayback || hasRecoverablePlaybackSource(),
-    showAlternate = isTmdbResolvedPlayback,
+    showRetry = !isTmdbResolvedPlayback && hasRecoverablePlaybackSource(),
+    showAlternate = false,
   } = {},
 ) {
   clearPlaybackRecovery({ hideOverlay: false });
@@ -2158,41 +2153,62 @@ function renderSelectedSourceDetails() {
   sourceOptionDetails.textContent = details;
 }
 
-function syncSourcePanelVisibility() {
-  const sourceTabVisible = isTmdbResolvedPlayback;
-  if (!sourceTabVisible && activeAudioTab === "sources") {
-    activeAudioTab = "subtitles";
+function shouldShowTmdbSourceControls() {
+  return Boolean(isTmdbResolvedPlayback);
+}
+
+function syncTmdbSourceControls() {
+  const shouldShow = shouldShowTmdbSourceControls();
+  if (sourceControl) {
+    sourceControl.hidden = !shouldShow;
+  }
+  if (!shouldShow) {
+    closeSourcePopover(false, { force: true });
   }
 
-  if (audioTabSources) {
-    const isSourcesActive = activeAudioTab === "sources" && sourceTabVisible;
-    audioTabSources.hidden = !sourceTabVisible;
-    audioTabSources.disabled = !sourceTabVisible;
-    audioTabSources.classList.toggle("is-active", isSourcesActive);
-    audioTabSources.setAttribute(
-      "aria-selected",
-      isSourcesActive ? "true" : "false",
+  const selectedOption =
+    getSourceOptionByHash(selectedSourceHash) ||
+    availablePlaybackSources[0] ||
+    null;
+  const sourceLabel = selectedOption
+    ? getSourceSelectLabel(selectedOption)
+    : "Playback sources";
+  if (toggleSource) {
+    toggleSource.setAttribute("aria-label", `Sources (${sourceLabel})`);
+    toggleSource.setAttribute("title", `Sources (${sourceLabel})`);
+    toggleSource.setAttribute(
+      "aria-expanded",
+      sourceControl?.classList.contains("is-open") ? "true" : "false",
     );
-    audioTabSources.tabIndex = isSourcesActive ? 0 : -1;
+  }
+  if (sourceMenu) {
+    sourceMenu.setAttribute("aria-label", `Sources (${sourceLabel})`);
+  }
+}
+
+function syncSourcePanelVisibility() {
+  activeAudioTab = "subtitles";
+
+  if (audioTabSources) {
+    audioTabSources.hidden = true;
+    audioTabSources.disabled = true;
+    audioTabSources.classList.remove("is-active");
+    audioTabSources.setAttribute("aria-selected", "false");
+    audioTabSources.tabIndex = -1;
   }
 
   if (audioTabSubtitles) {
-    const isSubtitlesActive =
-      activeAudioTab === "subtitles" || !sourceTabVisible;
-    audioTabSubtitles.classList.toggle("is-active", isSubtitlesActive);
-    audioTabSubtitles.setAttribute(
-      "aria-selected",
-      isSubtitlesActive ? "true" : "false",
-    );
-    audioTabSubtitles.tabIndex = isSubtitlesActive ? 0 : -1;
+    audioTabSubtitles.classList.add("is-active");
+    audioTabSubtitles.setAttribute("aria-selected", "true");
+    audioTabSubtitles.tabIndex = 0;
   }
 
   if (subtitlePanel) {
-    subtitlePanel.hidden = activeAudioTab !== "subtitles" && sourceTabVisible;
+    subtitlePanel.hidden = false;
   }
 
   if (sourcePanel) {
-    sourcePanel.hidden = !sourceTabVisible || activeAudioTab !== "sources";
+    sourcePanel.hidden = true;
   }
 }
 
@@ -2258,12 +2274,15 @@ function renderSourceOptionButtons() {
   if (!availablePlaybackSources.length) {
     const emptyState = document.createElement("p");
     emptyState.className = "source-option-empty";
-    emptyState.textContent = "No alternate sources available yet.";
+    emptyState.textContent = isFetchingPlaybackSources
+      ? "Loading sources..."
+      : "No alternate sources available yet.";
     sourceOptionsContainer.appendChild(emptyState);
     if (sourceOptionDetails) {
       sourceOptionDetails.hidden = true;
       sourceOptionDetails.textContent = "";
     }
+    syncTmdbSourceControls();
     return;
   }
 
@@ -2367,6 +2386,7 @@ function renderSourceOptionButtons() {
 
   syncSourceSelectionState();
   renderSelectedSourceDetails();
+  syncTmdbSourceControls();
   syncLiveStreamControls();
 }
 
@@ -3596,7 +3616,43 @@ function navigateBackFromPlayer() {
   window.location.href = getFallbackPlayerReturnPath();
 }
 
+function clearEmbedIframeFallbackTimer() {
+  if (embedIframeFallbackTimer) {
+    window.clearTimeout(embedIframeFallbackTimer);
+    embedIframeFallbackTimer = null;
+  }
+}
+
+function scheduleEmbedIframeFallbackProbe() {
+  clearEmbedIframeFallbackTimer();
+  if (
+    tmdbSkipExternalEmbed ||
+    !isLiveIframePlaybackActive() ||
+    tmdbSourceAttemptIndex >= tmdbSourceQueue.length
+  ) {
+    return;
+  }
+  embedIframeFallbackTimer = window.setTimeout(() => {
+    embedIframeFallbackTimer = null;
+    if (!isLiveIframePlaybackActive()) {
+      return;
+    }
+    if (tmdbSourceAttemptIndex >= tmdbSourceQueue.length) {
+      attemptTmdbRecovery("Embed unavailable. Trying torrent...");
+      return;
+    }
+    void tryNextTmdbSource().then((advanced) => {
+      if (advanced) {
+        scheduleEmbedIframeFallbackProbe();
+        return;
+      }
+      attemptTmdbRecovery("Embed unavailable. Trying torrent...");
+    });
+  }, LIVE_IFRAME_FALLBACK_PROBE_MS);
+}
+
 function clearLiveIframePlayback() {
+  clearEmbedIframeFallbackTimer();
   if (liveEmbedFrame) {
     liveEmbedFrame.hidden = true;
     liveEmbedFrame.removeAttribute("src");
@@ -3630,6 +3686,7 @@ function setLiveIframePlaybackSource(embedUrl, encodedSource) {
   }
   playerShell?.classList.add("live-iframe-active");
   syncDurationText();
+  scheduleEmbedIframeFallbackProbe();
 }
 
 function isLiveIframePlaybackActive() {
@@ -3954,10 +4011,12 @@ async function tryNextTmdbSource() {
 
   const nextSource = tmdbSourceQueue[tmdbSourceAttemptIndex];
   tmdbSourceAttemptIndex += 1;
-  showResolver(
-    `Trying alternate source (${tmdbSourceAttemptIndex}/${tmdbSourceQueue.length})...`,
-  );
-  setVideoSource(nextSource);
+  const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
+  showResolver("Switching source...");
+  setVideoSource(nextSource, {
+    startSeconds: resumeAt,
+    resetInitialResume: false,
+  });
   await tryPlay();
   return true;
 }
@@ -4039,9 +4098,14 @@ async function resolveTmdbSourcesAndPlay({
   allowContainerFallback = true,
   allowSourceFallback = true,
   requiredSourceHash = "",
+  skipExternalEmbed = tmdbSkipExternalEmbed,
+  startSeconds = 0,
 } = {}) {
   stopLocalCacheUpgradeWatch();
   hasUpgradedToLocalCache = false;
+  if (!skipExternalEmbed) {
+    tmdbSkipExternalEmbed = false;
+  }
   if (!availablePlaybackSources.length) {
     void fetchTmdbSourceOptionsViaBackend();
   }
@@ -4055,10 +4119,12 @@ async function resolveTmdbSourcesAndPlay({
         {
           allowContainerFallback,
           allowSourceFallback,
+          skipExternalEmbed,
         },
       )
     : await resolveTmdbMovieViaBackend(tmdbId, {
         allowSourceFallback,
+        skipExternalEmbed,
       });
   const resolvedSourceHash = normalizeSourceHash(
     resolved?.sourceHash || selectedSourceHash,
@@ -4067,6 +4133,11 @@ async function resolveTmdbSourcesAndPlay({
   currentTmdbResolverProvider = String(
     resolved?.resolverProvider || resolved?.session?.resolverProvider || resolved?.metadata?.resolverProvider || "",
   ).trim();
+  if (currentTmdbResolverProvider !== "external-embed") {
+    tmdbSkipExternalEmbed = false;
+    tmdbResolveRetries = 0;
+    clearEmbedIframeFallbackTimer();
+  }
   currentTmdbResolvedFilename = String(resolved?.filename || "").trim();
   currentTmdbSelectedFile = String(resolved?.selectedFile || "").trim();
   if (
@@ -4177,7 +4248,11 @@ async function resolveTmdbSourcesAndPlay({
   void queueGallerySaveIfRequested(resolved);
   const preferredSource =
     tmdbSourceQueue[0] || preferredBrowserSource || nativePreferredSource;
-  setVideoSource(preferredSource, { startSeconds: getInitialPlaybackStartSeconds() });
+  const explicitStartSeconds = normalizeResumeStartSeconds(startSeconds);
+  setVideoSource(preferredSource, {
+    startSeconds: explicitStartSeconds || getInitialPlaybackStartSeconds(),
+    resetInitialResume: explicitStartSeconds <= 0,
+  });
   applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
   syncAudioState();
   hideResolver();
@@ -4224,9 +4299,10 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
     return false;
   }
 
+  const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
   stopLocalCacheUpgradeWatch();
   isRecoveringTmdbStream = true;
-  showResolver(message);
+  showResolver(message || "Switching source...");
 
   if (tmdbSourceAttemptIndex < tmdbSourceQueue.length) {
     void tryNextTmdbSource().finally(() => {
@@ -4237,8 +4313,9 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
 
   if (tmdbResolveRetries < maxTmdbResolveRetries) {
     tmdbResolveRetries += 1;
+    tmdbSkipExternalEmbed = true;
     showResolver(
-      `Refreshing source (${tmdbResolveRetries}/${maxTmdbResolveRetries})...`,
+      `Trying torrent fallback (${tmdbResolveRetries}/${maxTmdbResolveRetries})...`,
     );
     const invalidateCurrentSession = reportCurrentTmdbPlaybackFailure(
       failureMessage || message || "Playback failed.",
@@ -4246,7 +4323,7 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
       { includeSourceHash: false, dedupe: false },
     );
     void invalidateCurrentSession
-      .then(() => resolveTmdbSourcesAndPlay())
+      .then(() => resolveTmdbSourcesAndPlay({ startSeconds: resumeAt }))
       .catch((error) => {
         console.error("Failed to refresh TMDB playback source:", error);
         const fallbackMessage =
@@ -4966,6 +5043,7 @@ function openEpisodesPopover({ sticky = false } = {}) {
   }
 
   closeLiveStreamPopover(false);
+  closeSourcePopover(false);
   closeSpeedPopover(false);
   closeAudioPopover();
   window.clearTimeout(episodesPopoverCloseTimeout);
@@ -5343,8 +5421,14 @@ function parseLiveIframePlaybackSource(source) {
     return "";
   }
   try {
-    const embedUrl = decodeURIComponent(value.slice(LIVE_IFRAME_SOURCE_PREFIX.length));
-    return /^https?:\/\//i.test(embedUrl) ? embedUrl : "";
+    const payload = decodeURIComponent(value.slice(LIVE_IFRAME_SOURCE_PREFIX.length));
+    if (/^https?:\/\//i.test(payload)) {
+      return payload;
+    }
+    if (payload.startsWith("/")) {
+      return payload;
+    }
+    return "";
   } catch {
     return "";
   }
@@ -5407,6 +5491,7 @@ function openLiveStreamPopover() {
   }
 
   closeEpisodesPopover(false);
+  closeSourcePopover(false);
   closeAudioPopover();
   closeSpeedPopover(false);
   window.clearTimeout(liveStreamPopoverCloseTimeout);
@@ -5437,6 +5522,49 @@ function closeLiveStreamPopover(withDelay = false) {
   }
 
   liveStreamPopoverCloseTimeout = window.setTimeout(close, 140);
+}
+
+function openSourcePopover() {
+  if (!sourceControl || !shouldShowTmdbSourceControls() || isResolvingSource()) {
+    return;
+  }
+
+  closeLiveStreamPopover(false);
+  closeEpisodesPopover(false);
+  closeAudioPopover();
+  closeSpeedPopover(false);
+  window.clearTimeout(sourcePopoverCloseTimeout);
+  if (!availablePlaybackSources.length && !isFetchingPlaybackSources) {
+    void fetchTmdbSourceOptionsViaBackend();
+  }
+  showControls();
+  clearControlsHideTimer();
+  sourceControl.classList.add("is-open");
+  toggleSource?.setAttribute("aria-expanded", "true");
+  syncTmdbSourceControls();
+}
+
+function closeSourcePopover(withDelay = false, { force = false } = {}) {
+  if (!sourceControl) {
+    return;
+  }
+
+  window.clearTimeout(sourcePopoverCloseTimeout);
+
+  const close = () => {
+    if (!force && sourceControl.matches(":hover, :focus-within")) {
+      return;
+    }
+    sourceControl.classList.remove("is-open");
+    toggleSource?.setAttribute("aria-expanded", "false");
+  };
+
+  if (!withDelay) {
+    close();
+    return;
+  }
+
+  sourcePopoverCloseTimeout = window.setTimeout(close, 140);
 }
 
 async function switchLiveStream(streamId) {
@@ -5540,6 +5668,7 @@ function syncAudioState() {
 
   syncSourceSelectionState();
   renderSelectedSourceDetails();
+  syncTmdbSourceControls();
 }
 
 function getCurrentAudioSyncSourceHash() {
@@ -5742,6 +5871,7 @@ function openSpeedPopover() {
   }
 
   closeLiveStreamPopover(false);
+  closeSourcePopover(false);
   closeEpisodesPopover(false);
   window.clearTimeout(speedPopoverCloseTimeout);
   speedControl.classList.add("is-open");
@@ -5790,6 +5920,7 @@ function openAudioPopover() {
   }
 
   closeLiveStreamPopover(false);
+  closeSourcePopover(false);
   closeEpisodesPopover(false);
   window.clearTimeout(audioPopoverCloseTimeout);
   if (isTmdbResolvedPlayback && !availablePlaybackSources.length) {
@@ -5959,6 +6090,11 @@ function recoverSilentAudioPlayback() {
   lastAudioDecodeRecoveryAt = now;
   resetAudioDecodeWatchState();
 
+  if (isTmdbResolvedPlayback && attemptTmdbRecovery("Switching source...")) {
+    audioDecodeRecoveryInFlight = false;
+    return true;
+  }
+
   showResolver("Audio stalled. Reconnecting stream...", {
     isRecovery: true,
     showStatus: true,
@@ -6082,6 +6218,7 @@ function hideControls() {
 
   closeSpeedPopover(false);
   closeLiveStreamPopover(false);
+  closeSourcePopover(false);
   closeEpisodesPopover(false);
   closeAudioPopover();
   playerShell.classList.add("controls-hidden");
@@ -6594,6 +6731,10 @@ function showPlaybackRecoveryOverlay(mode, message, delayMs) {
   });
 }
 
+function shouldUseQuietTmdbRecovery(mode) {
+  return isTmdbResolvedPlayback && mode === "buffering";
+}
+
 function schedulePlaybackRecovery(
   mode,
   message = "",
@@ -6609,11 +6750,26 @@ function schedulePlaybackRecovery(
   }
   playbackRecoveryMode = normalizedMode;
   const effectiveDelayMs =
-    delayMs === null ? getPlaybackRecoveryDelayMs(normalizedMode) : delayMs;
+    shouldUseQuietTmdbRecovery(normalizedMode)
+      ? 0
+      : delayMs === null
+        ? getPlaybackRecoveryDelayMs(normalizedMode)
+        : delayMs;
   const sequence = (playbackRecoverySequence += 1);
   const deadlineMs = Date.now() + effectiveDelayMs;
 
   clearPlaybackRecoveryTimers();
+  if (shouldUseQuietTmdbRecovery(normalizedMode)) {
+    showResolver(message || "Switching source...");
+    playbackRecoveryTimeout = window.setTimeout(() => {
+      if (sequence !== playbackRecoverySequence) {
+        return;
+      }
+      void runPlaybackRecoveryAttempt(sequence, normalizedMode);
+    }, effectiveDelayMs);
+    return true;
+  }
+
   showPlaybackRecoveryOverlay(normalizedMode, message, effectiveDelayMs);
   updatePlaybackRecoveryCountdown(deadlineMs);
   playbackRecoveryCountdownInterval = window.setInterval(() => {
@@ -6710,6 +6866,20 @@ async function runPlaybackRecoveryAttempt(sequence, mode) {
 
   if (isBrowserOffline()) {
     schedulePlaybackRecovery("offline", "", { delayMs: 5000 });
+    return;
+  }
+
+  if (shouldUseQuietTmdbRecovery(mode)) {
+    showResolver("Switching source...");
+    if (attemptTmdbRecovery("Switching source...")) {
+      clearPlaybackRecovery({ hideOverlay: false });
+      return;
+    }
+    if (retryCurrentPlaybackFromSavedPosition()) {
+      showResolver("Reconnecting stream...");
+      return;
+    }
+    showResolverError("Unable to resume this stream. Try another source.");
     return;
   }
 
@@ -6898,11 +7068,13 @@ async function resolveTmdbFromResolverAction({
   }
 
   tmdbResolveRetries = 0;
+  const resumeFrom = getEffectiveCurrentTime();
   showResolver(isAlternate ? "Trying another source..." : "Loading video...");
   try {
     await resolveTmdbSourcesAndPlay({
       allowSourceFallback: !normalizedSourceHash,
       requiredSourceHash: normalizedSourceHash,
+      startSeconds: resumeFrom,
     });
   } catch (error) {
     if (normalizedSourceHash) {
@@ -6939,7 +7111,7 @@ async function resolveAlternateTmdbSourceFromResolverError() {
       "No alternate sources are available for this title.",
       "No alternate sources are available for this title.",
       {
-        showRetry: true,
+        showRetry: false,
         showAlternate: false,
       },
     );
@@ -7312,7 +7484,7 @@ async function resolveExplicitSourceTrackSelection(sourceInput) {
 
 async function resolveTmdbMovieViaBackend(
   tmdbMovieId,
-  { allowSourceFallback = true } = {},
+  { allowSourceFallback = true, skipExternalEmbed = false } = {},
 ) {
   const buildQuery = ({
     sourceHash = "",
@@ -7320,6 +7492,7 @@ async function resolveTmdbMovieViaBackend(
     includeSourceFilters = true,
     audioLang = preferredAudioLang,
     quality = preferredQuality,
+    skipExternalEmbed: skipEmbed = skipExternalEmbed,
   } = {}) => {
     const query = new URLSearchParams({
       tmdbId: tmdbMovieId,
@@ -7329,6 +7502,9 @@ async function resolveTmdbMovieViaBackend(
       quality,
       resolverProvider: preferredResolverProvider,
     });
+    if (skipEmbed) {
+      query.set("skipExternalEmbed", "1");
+    }
     if (preferredSubtitleLang) {
       query.set("subtitleLang", preferredSubtitleLang);
     }
@@ -7398,7 +7574,11 @@ async function resolveTmdbTvEpisodeViaBackend(
   tmdbSeriesId,
   season,
   episodeOrdinal,
-  { allowContainerFallback = true, allowSourceFallback = true } = {},
+  {
+    allowContainerFallback = true,
+    allowSourceFallback = true,
+    skipExternalEmbed = false,
+  } = {},
 ) {
   const buildQuery = (
     containerPreference = "",
@@ -7408,6 +7588,7 @@ async function resolveTmdbTvEpisodeViaBackend(
       includeSourceFilters = true,
       audioLang = preferredAudioLang,
       quality = preferredQuality,
+      skipExternalEmbed: skipEmbed = skipExternalEmbed,
     } = {},
   ) => {
     const query = new URLSearchParams({
@@ -7422,6 +7603,9 @@ async function resolveTmdbTvEpisodeViaBackend(
       quality,
       resolverProvider: preferredResolverProvider,
     });
+    if (skipEmbed) {
+      query.set("skipExternalEmbed", "1");
+    }
     if (preferredSubtitleLang) {
       query.set("subtitleLang", preferredSubtitleLang);
     }
@@ -7525,10 +7709,10 @@ async function resolveTmdbTvEpisodeViaBackend(
 async function fetchTmdbSourceOptionsViaBackend() {
   if (!isTmdbResolvedPlayback || !tmdbId) {
     availablePlaybackSources = [];
+    isFetchingPlaybackSources = false;
     renderSourceOptionsWhenStable();
     return;
   }
-
   const query = new URLSearchParams({
     tmdbId,
     mediaType: isTmdbTvPlayback ? "tv" : "movie",
@@ -7566,6 +7750,8 @@ async function fetchTmdbSourceOptionsViaBackend() {
     query.set("sourceAudioProfile", preferredSourceAudioProfile);
   }
 
+  isFetchingPlaybackSources = true;
+  renderSourceOptionsWhenStable();
   try {
     const payload = await requestJson(
       `/api/resolve/sources?${query.toString()}`,
@@ -7598,9 +7784,11 @@ async function fetchTmdbSourceOptionsViaBackend() {
       applyPreferredSourceAudioSync(selectedSourceHash);
       persistSourceHashInUrl();
     }
+    isFetchingPlaybackSources = false;
     renderSourceOptionsWhenStable();
   } catch {
     availablePlaybackSources = [];
+    isFetchingPlaybackSources = false;
     renderSourceOptionsWhenStable();
   }
 }
@@ -8319,6 +8507,17 @@ if (toggleLiveStream) {
   });
 }
 
+if (toggleSource) {
+  trackListener(toggleSource, "click", (event) => {
+    event.preventDefault();
+    if (!sourceControl || isResolvingSource()) {
+      return;
+    }
+
+    openSourcePopover();
+  });
+}
+
 if (toggleAudio) {
   trackListener(toggleAudio, "click", (event) => {
     event.preventDefault();
@@ -8382,6 +8581,38 @@ if (liveStreamControl) {
       return;
     }
     closeLiveStreamPopover(true);
+  });
+}
+
+if (sourceControl) {
+  trackListener(sourceControl, "mouseenter", () => {
+    if (isResolvingSource()) {
+      return;
+    }
+    openSourcePopover();
+  });
+  trackListener(sourceControl, "mouseleave", () =>
+    closeSourcePopover(true),
+  );
+  trackListener(sourceControl, "focusin", () => {
+    if (isResolvingSource()) {
+      return;
+    }
+    openSourcePopover();
+  });
+  trackListener(sourceControl, "focusout", (event) => {
+    if (!(event.target instanceof Node)) {
+      closeSourcePopover(true);
+      return;
+    }
+
+    if (
+      event.relatedTarget instanceof Node &&
+      sourceControl.contains(event.relatedTarget)
+    ) {
+      return;
+    }
+    closeSourcePopover(true);
   });
 }
 
@@ -8671,11 +8902,13 @@ async function handleSourceOptionSelection(nextSourceHash) {
   const wasPaused = video.paused;
   tmdbResolveRetries = 0;
   closeAudioPopover(false, { force: true });
+  closeSourcePopover(false, { force: true });
   showResolver("Switching source...");
   try {
     const result = await resolveTmdbSourcesAndPlay({
       allowSourceFallback: false,
       requiredSourceHash: normalizedNextSourceHash,
+      startSeconds: resumeFrom,
     });
     if (result?.nativeLaunched) {
       return;
@@ -8805,6 +9038,18 @@ trackListener(document, "pointerdown", (event) => {
   }
 
   closeLiveStreamPopover();
+});
+
+trackListener(document, "pointerdown", (event) => {
+  if (!sourceControl) {
+    return;
+  }
+
+  if (sourceControl.contains(event.target)) {
+    return;
+  }
+
+  closeSourcePopover();
 });
 
 trackListener(document, "pointerdown", (event) => {
@@ -9357,6 +9602,11 @@ async function handleKeydown(event) {
       return;
     }
 
+    if (sourceControl?.classList.contains("is-open")) {
+      closeSourcePopover(false, { force: true });
+      return;
+    }
+
     if (audioControl?.classList.contains("is-open")) {
       closeAudioPopover();
       return;
@@ -9748,6 +9998,42 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
                     ></div>
                   </div>
                 </div>
+                <div
+                  id="sourceControl"
+                  ref=${el => sourceControl = el}
+                  class="speed-menu-wrap source-menu-wrap"
+                  hidden
+                >
+                  <button
+                    id="toggleSource"
+                    ref=${el => toggleSource = el}
+                    class="control-btn source-btn"
+                    type="button"
+                    aria-label="Sources"
+                    aria-haspopup="listbox"
+                    aria-controls="sourceMenu"
+                    aria-expanded="false"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4 5.5h11.5v2H4v-2Zm0 5h8v2H4v-2Zm0 5h11.5v2H4v-2Zm13.4-5.2 4.2 2.7-4.2 2.7v-5.4Z"></path>
+                    </svg>
+                  </button>
+                  <div
+                    id="sourceMenu"
+                    ref=${el => sourceMenu = el}
+                    class="speed-popover source-popover"
+                    role="listbox"
+                    aria-label="Sources"
+                  >
+                    <p class="speed-popover-title source-popover-title">Sources</p>
+                    <div
+                      id="sourceOptions"
+                      ref=${el => sourceOptionsContainer = el}
+                      class="audio-options source-options source-popover-options"
+                      aria-label="Playback sources"
+                    ></div>
+                  </div>
+                </div>
                 <div id="audioControl" ref=${el => audioControl = el} class="speed-menu-wrap audio-menu-wrap">
                   <button
                     id="toggleAudio"
@@ -9850,17 +10136,6 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
                           >
                             Subtitles
                           </button>
-                          <button
-                            id="audioTabSources"
-                            ref=${el => audioTabSources = el}
-                            class="audio-tab"
-                            type="button"
-                            role="tab"
-                            aria-selected="false"
-                            aria-controls="sourcePanel"
-                          >
-                            Sources
-                          </button>
                         </div>
                         <section
                           id="subtitlePanel"
@@ -9885,28 +10160,6 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
                               Off
                             </button>
                           </div>
-                        </section>
-                        <section
-                          id="sourcePanel"
-                          ref=${el => sourcePanel = el}
-                          class="audio-tab-panel audio-source-panel"
-                          role="tabpanel"
-                          aria-labelledby="audioTabSources"
-                          hidden
-                        >
-                          <h3
-                            id="sourceOptionsTitle"
-                            class="audio-column-title audio-source-title"
-                          >
-                            Sources
-                          </h3>
-                          <div
-                            id="sourceOptions"
-                            ref=${el => sourceOptionsContainer = el}
-                            class="audio-options source-options"
-                            role="listbox"
-                            aria-label="Playback sources"
-                          ></div>
                         </section>
                       </section>
                     </div>

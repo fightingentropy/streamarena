@@ -76,10 +76,22 @@ impl IntoResponse for ApiError {
 }
 
 pub fn json_response(payload: Value) -> Response {
+    json_response_with_cache(payload, "no-store")
+}
+
+pub fn json_response_with_cache(payload: Value, cache_control: &str) -> Response {
     let mut response = Json(payload).into_response();
     response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store"),
+        HeaderValue::from_str(cache_control)
+            .unwrap_or_else(|_| HeaderValue::from_static("no-store")),
     );
     response
+}
+
+pub fn json_response_public_cache(payload: Value, max_age_seconds: u64) -> Response {
+    json_response_with_cache(
+        payload,
+        &format!("public, max-age={max_age_seconds}, stale-while-revalidate=60"),
+    )
 }

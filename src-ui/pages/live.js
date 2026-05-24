@@ -154,20 +154,31 @@ export default function LivePage() {
                 role="menu"
                 style=${() => (accountMenuOpen() ? "" : "display:none")}
               >
+                <a class="account-menu-item account-menu-link" href="/settings" role="menuitem">
+                  <span class="account-menu-icon" aria-hidden="true">
+                    <svg viewBox="0 0 48 48">
+                      <circle cx="24" cy="15.5" r="7.5"></circle>
+                      <path d="M9.5 40.5c.9-9.2 6.4-14 14.5-14s13.6 4.8 14.5 14"></path>
+                    </svg>
+                  </span>
+                  <span>Account</span>
+                </a>
+                <a class="account-menu-item account-menu-link" href="https://help.netflix.com/" target="_blank" rel="noreferrer" role="menuitem">
+                  <span class="account-menu-icon" aria-hidden="true">
+                    <svg viewBox="0 0 48 48">
+                      <circle cx="24" cy="24" r="19"></circle>
+                      <path d="M18.5 18.2c.9-3.7 4.1-6 8-5.4 3.5.6 6 3.2 6 6.5 0 4.9-5.6 5.8-7.2 9.3"></path>
+                      <circle cx="24" cy="35.5" r="1.5"></circle>
+                    </svg>
+                  </span>
+                  <span>Help Centre</span>
+                </a>
                 <a
-                  class="account-menu-item account-menu-item--muted"
-                  href="#"
-                  role="menuitem"
-                  tabindex="-1"
-                >${displayName}</a>
-                <a class="account-menu-item" href="/settings" role="menuitem">Upload Media</a>
-                <a class="account-menu-item" href="/settings" role="menuitem">Settings</a>
-                <a
-                  class="account-menu-item"
+                  class="account-menu-item account-menu-signout"
                   href="#"
                   role="menuitem"
                   onClick=${handleSignOut}
-                >Sign Out</a>
+                >Sign out of Netflix</a>
               </div>
             </div>
           </div>

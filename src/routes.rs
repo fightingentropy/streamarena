@@ -15,13 +15,17 @@ use axum::http::HeaderMap;
 
 use crate::auth;
 use crate::config::Config;
-use crate::error::{ApiError, AppResult, json_response};
+use crate::embed_proxy::embed_frame_handler;
+use crate::error::{
+    ApiError, AppResult, json_response, json_response_public_cache, json_response_with_cache,
+};
 use crate::football::{
     SportsScheduleCache, american_football_matches_handler, baseball_matches_handler,
     basketball_matches_handler, basketball_stream_resolve_handler, cricket_matches_handler,
     football_matches_handler, football_stream_resolve_handler, hockey_matches_handler,
     streamed_sports_stream_resolve_handler, tennis_matches_handler,
 };
+use crate::home_bootstrap;
 use crate::library::{
     normalize_upload_content_type, normalize_upload_episode_ordinal, normalize_whitespace,
     normalize_year, read_local_library, strip_file_extension, title_from_filename_token,
@@ -59,6 +63,7 @@ pub struct AppState {
     pub upload: UploadService,
     pub runtime: RuntimeServices,
     pub sports_schedule_cache: SportsScheduleCache,
+    pub home_bootstrap_cache: home_bootstrap::HomeBootstrapCache,
     pub started_at_ms: i64,
 }
 
@@ -98,9 +103,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/twitch/stream", get(twitch_stream_resolve_handler))
         .route("/api/live/hls.m3u8", any(live_hls_handler))
         .route("/api/live/hls-resource", any(live_hls_resource_handler))
+        .route("/api/embed/frame", any(embed_frame_handler))
         .route("/api/auth/signup", any(auth_signup_handler))
         .route("/api/auth/login", any(auth_login_handler))
-        .route("/api/auth/logout", any(auth_logout_handler));
+        .route("/api/auth/logout", any(auth_logout_handler))
+        .route("/api/home/bootstrap", get(home_bootstrap_handler));
 
     let protected_api = Router::new()
         .route(
@@ -618,6 +625,23 @@ pub async fn tmdb_popular_movies_handler(
     })))
 }
 
+pub async fn home_bootstrap_handler(
+    State(state): State<AppState>,
+    method: Method,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed."));
+    }
+    let payload = state
+        .home_bootstrap_cache
+        .payload_or_refresh(state.clone())
+        .await;
+    if home_bootstrap::is_warming_payload(&payload) {
+        return Ok(json_response_with_cache(payload, "no-store"));
+    }
+    Ok(json_response_public_cache(payload, 900))
+}
+
 pub async fn tmdb_search_handler(
     State(state): State<AppState>,
     method: Method,
@@ -1018,6 +1042,10 @@ pub async fn resolve_movie_handler(
             "Missing or invalid tmdbId query parameter.",
         ));
     }
+    let skip_external_embed = params.get("skipExternalEmbed").is_some_and(|value| {
+        let normalized = value.trim();
+        normalized == "1" || normalized.eq_ignore_ascii_case("true")
+    });
     let payload = state
         .resolver
         .resolve_movie(
@@ -1064,6 +1092,7 @@ pub async fn resolve_movie_handler(
                 .get("resolverProvider")
                 .map(String::as_str)
                 .unwrap_or_default(),
+            skip_external_embed,
         )
         .await?;
     Ok(json_response(payload))
@@ -1136,6 +1165,10 @@ pub async fn resolve_tv_handler(
             "Missing or invalid tmdbId query parameter.",
         ));
     }
+    let skip_external_embed = params.get("skipExternalEmbed").is_some_and(|value| {
+        let normalized = value.trim();
+        normalized == "1" || normalized.eq_ignore_ascii_case("true")
+    });
     let payload = state
         .resolver
         .resolve_tv(
@@ -1199,6 +1232,7 @@ pub async fn resolve_tv_handler(
                 .get("resolverProvider")
                 .map(String::as_str)
                 .unwrap_or_default(),
+            skip_external_embed,
         )
         .await?;
     Ok(json_response(payload))
@@ -2083,9 +2117,35 @@ async fn user_sync_handler(
 
     // My list
     if let Some(my_list_arr) = payload.get("myList").and_then(Value::as_array) {
+        let mut merged_entries = state.db.get_user_my_list(user.id).await?;
+        let mut known_identities = BTreeMap::new();
+        for entry in &merged_entries {
+            let item_identity = entry
+                .get("itemIdentity")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            if !item_identity.is_empty() {
+                known_identities.insert(item_identity, true);
+            }
+        }
+        for entry in my_list_arr {
+            let item_identity = entry
+                .get("itemIdentity")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            if item_identity.is_empty() || known_identities.contains_key(&item_identity) {
+                continue;
+            }
+            known_identities.insert(item_identity, true);
+            merged_entries.push(entry.clone());
+        }
         state
             .db
-            .replace_user_my_list(user.id, my_list_arr.clone())
+            .replace_user_my_list(user.id, merged_entries)
             .await?;
     }
 

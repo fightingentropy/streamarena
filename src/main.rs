@@ -1,7 +1,9 @@
 mod auth;
 mod config;
+mod embed_proxy;
 mod error;
 mod football;
+mod home_bootstrap;
 mod library;
 mod live;
 mod local_torrent;
@@ -127,8 +129,11 @@ async fn main() -> AppResult<()> {
         upload,
         runtime,
         sports_schedule_cache: SportsScheduleCache::new(),
+        home_bootstrap_cache: crate::home_bootstrap::HomeBootstrapCache::new(),
         started_at_ms,
     };
+
+    state.home_bootstrap_cache.spawn_refresh(state.clone());
 
     let app = build_router(state)
         .layer(DefaultBodyLimit::max(config.max_upload_bytes))
