@@ -194,6 +194,8 @@ def download_preview(source_url: str, output_path: Path, force: bool) -> bool:
         "--no-playlist",
         "--quiet",
         "--no-warnings",
+        "--extractor-args",
+        "youtube:player_client=android",
         "--format",
         YTDLP_FORMAT,
         "--merge-output-format",
