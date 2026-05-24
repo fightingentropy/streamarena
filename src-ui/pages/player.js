@@ -14,6 +14,7 @@ import {
   getSourceDisplayHint,
   getSourceDisplayMeta,
   isSourceOptionLikelyContainer,
+  isSourceOptionEmbed,
   parseSourceOptionVerticalResolution,
   getDetectedSourceOptionLanguages,
   sortSourcesBySeeders,
@@ -2465,6 +2466,12 @@ function shouldWatchForLocalCacheUpgrade(resolved) {
   const playbackSource = String(
     resolved?.playableUrl || lastRequestedPlaybackSource || "",
   ).trim();
+  if (
+    resolverProvider === "external-embed" ||
+    parseLiveIframePlaybackSource(playbackSource)
+  ) {
+    return false;
+  }
   return playbackSource && !isLocalPlaybackSource(playbackSource);
 }
 
@@ -6789,6 +6796,9 @@ function isLikelySourcePack(sourceOption) {
 }
 
 function scoreResolverAlternateSource(sourceOption) {
+  if (isSourceOptionEmbed(sourceOption)) {
+    return 100000;
+  }
   const seeders = Math.max(0, Number(sourceOption?.seeders) || 0);
   const sizeGb = parseSourceSizeGb(sourceOption?.size);
   const resolution = parseSourceOptionVerticalResolution(sourceOption);

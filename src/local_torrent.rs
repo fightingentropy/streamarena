@@ -190,7 +190,8 @@ impl LocalTorrentService {
             updated_at_ms: now_ms(),
         };
         let handle = self.ensure_handle(session, &entry).await?;
-        self.wait_for_first_byte(handle.clone(), entry.file_id).await?;
+        self.wait_for_first_byte(handle.clone(), entry.file_id)
+            .await?;
 
         let file_id_key = entry.file_id.to_string();
         if let Some(optimized) = self
@@ -320,12 +321,8 @@ impl LocalTorrentService {
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
 
-        let optimized = optimize_playback_cache_file_best_effort(
-            &final_path,
-            &output_folder,
-            &filename,
-        )
-        .await;
+        let optimized =
+            optimize_playback_cache_file_best_effort(&final_path, &output_folder, &filename).await;
 
         let mut entry = DirectFileCacheEntry {
             source_hash,
@@ -363,7 +360,9 @@ impl LocalTorrentService {
         {
             return Ok(None);
         }
-        entry.file_length = metadata.map(|value| value.len()).unwrap_or(entry.file_length);
+        entry.file_length = metadata
+            .map(|value| value.len())
+            .unwrap_or(entry.file_length);
         self.refresh_direct_file_entry_access_best_effort(&mut entry)
             .await;
         Ok(Some(direct_file_entry_to_resolved_source(&entry)))
@@ -729,7 +728,11 @@ impl LocalTorrentService {
         }
     }
 
-    fn try_spawn_torrent_optimize(&self, entry: LocalTorrentCacheEntry, handle: Arc<ManagedTorrent>) {
+    fn try_spawn_torrent_optimize(
+        &self,
+        entry: LocalTorrentCacheEntry,
+        handle: Arc<ManagedTorrent>,
+    ) {
         let job_key = format!("{}:{}", entry.source_hash, entry.file_id);
         if self.optimize_jobs.contains_key(&job_key) {
             return;
@@ -782,12 +785,9 @@ impl LocalTorrentService {
         }
 
         let output_folder = self.direct_file_output_folder(&entry.source_hash, &file_id_key);
-        let optimized = optimize_playback_cache_file_best_effort(
-            &input_path,
-            &output_folder,
-            &entry.filename,
-        )
-        .await;
+        let optimized =
+            optimize_playback_cache_file_best_effort(&input_path, &output_folder, &entry.filename)
+                .await;
 
         let mut direct_entry = DirectFileCacheEntry {
             source_hash: entry.source_hash,

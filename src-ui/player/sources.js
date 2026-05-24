@@ -159,6 +159,20 @@ export function isSourceOptionLikelyContainer(option = {}, container = "") {
   return false;
 }
 
+/**
+ * Determine whether a source is an iframe/embed handoff instead of a torrent
+ * file. These are already player-ready, so keep them easy to reach.
+ *
+ * @param {object} option
+ * @returns {boolean}
+ */
+export function isSourceOptionEmbed(option = {}) {
+  const container = String(option?.container || "")
+    .trim()
+    .toLowerCase();
+  return container === "iframe" || container === "embed";
+}
+
 // -------------------------------------------------------------------------
 // Resolution / quality parsing
 // -------------------------------------------------------------------------
@@ -272,6 +286,12 @@ export function sortSourcesBySeeders(sources = [], { preferContainer = "" } = {}
     .trim()
     .toLowerCase();
   return [...sources].sort((left, right) => {
+    const rightEmbed = isSourceOptionEmbed(right);
+    const leftEmbed = isSourceOptionEmbed(left);
+    if (rightEmbed !== leftEmbed) {
+      return Number(rightEmbed) - Number(leftEmbed);
+    }
+
     if (normalizedPreferredContainer) {
       const rightPreferred = isSourceOptionLikelyContainer(
         right,

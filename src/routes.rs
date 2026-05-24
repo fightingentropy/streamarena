@@ -135,7 +135,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/resolve/sources", any(resolve_sources_handler))
         .route("/api/resolve/movie", any(resolve_movie_handler))
         .route("/api/resolve/tv", any(resolve_tv_handler))
-        .route("/api/resolve/local-upgrade", any(resolve_local_upgrade_handler))
+        .route(
+            "/api/resolve/local-upgrade",
+            any(resolve_local_upgrade_handler),
+        )
         .route(
             "/api/local-torrent/stream",
             any(local_torrent_stream_handler),
