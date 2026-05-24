@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
-use futures_util::stream::{FuturesUnordered, StreamExt};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use regex::Regex;
@@ -13,6 +12,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
 
 use crate::config::Config;
@@ -290,10 +290,11 @@ impl ResolverProvider {
     }
 
     fn cache_reuse_provider(self) -> ResolverProvider {
-        if self.is_fastest() {
-            ResolverProvider::LocalTorrent
-        } else {
-            self
+        match self {
+            ResolverProvider::Fastest | ResolverProvider::RealDebrid => {
+                ResolverProvider::LocalTorrent
+            }
+            ResolverProvider::LocalTorrent => ResolverProvider::LocalTorrent,
         }
     }
 
@@ -1261,25 +1262,20 @@ impl ResolverService {
         let fallback_name = normalize_whitespace(
             format!("{} {}", metadata.display_title, metadata.display_year).trim(),
         );
-        let mut futures = FuturesUnordered::new();
-        for candidate in select_fastest_race_candidates(candidates) {
-            for provider in [ResolverProvider::LocalTorrent, ResolverProvider::RealDebrid] {
-                let stream = (*candidate).clone();
-                let task_fallback_name = fallback_name.clone();
-                futures.push(async move {
-                    let result = timeout(
-                        Duration::from_millis(FASTEST_RESOLVE_MAX_MS as u64),
-                        self.resolve_candidate_stream(&stream, &task_fallback_name, provider),
-                    )
-                    .await
-                    .unwrap_or_else(|_| Err(ApiError::bad_gateway("Resolving stream timed out.")));
-                    (provider, stream, result)
-                });
-            }
-        }
+        let mut races = self
+            .spawn_fastest_resolve_jobs(select_fastest_race_candidates(candidates), fallback_name);
 
         let mut last_error = None;
-        while let Some((provider, stream, result)) = futures.next().await {
+        while let Some(join_result) = races.join_next().await {
+            let (provider, stream, result) = match join_result {
+                Ok(result) => result,
+                Err(error) => {
+                    last_error = Some(ApiError::internal(format!(
+                        "Resolver worker failed: {error}"
+                    )));
+                    continue;
+                }
+            };
             match result.and_then(|resolved| validate_resolved_movie_source(resolved, metadata)) {
                 Ok(resolved) => {
                     if provider.is_real_debrid() {
@@ -1289,7 +1285,8 @@ impl ResolverService {
                             preferences.clone(),
                         );
                     }
-                    return self
+                    races.abort_all();
+                    let response = self
                         .build_resolved_response(
                             resolved,
                             metadata.clone(),
@@ -1298,6 +1295,8 @@ impl ResolverService {
                             true,
                         )
                         .await;
+                    while races.join_next().await.is_some() {}
+                    return response;
                 }
                 Err(error) => {
                     self.record_source_resolve_failure(&stream, &error).await;
@@ -1306,6 +1305,8 @@ impl ResolverService {
             }
         }
 
+        races.abort_all();
+        while races.join_next().await.is_some() {}
         Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
     }
 
@@ -1415,25 +1416,20 @@ impl ResolverService {
                 metadata.episode_title
             )
         };
-        let mut futures = FuturesUnordered::new();
-        for candidate in select_fastest_race_candidates(candidates) {
-            for provider in [ResolverProvider::LocalTorrent, ResolverProvider::RealDebrid] {
-                let stream = (*candidate).clone();
-                let task_fallback_name = fallback_name.clone();
-                futures.push(async move {
-                    let result = timeout(
-                        Duration::from_millis(FASTEST_RESOLVE_MAX_MS as u64),
-                        self.resolve_candidate_stream(&stream, &task_fallback_name, provider),
-                    )
-                    .await
-                    .unwrap_or_else(|_| Err(ApiError::bad_gateway("Resolving stream timed out.")));
-                    (provider, stream, result)
-                });
-            }
-        }
+        let mut races = self
+            .spawn_fastest_resolve_jobs(select_fastest_race_candidates(candidates), fallback_name);
 
         let mut last_error = None;
-        while let Some((provider, stream, result)) = futures.next().await {
+        while let Some(join_result) = races.join_next().await {
+            let (provider, stream, result) = match join_result {
+                Ok(result) => result,
+                Err(error) => {
+                    last_error = Some(ApiError::internal(format!(
+                        "Resolver worker failed: {error}"
+                    )));
+                    continue;
+                }
+            };
             match result.and_then(|resolved| validate_resolved_episode_source(resolved, metadata)) {
                 Ok(resolved) => {
                     if provider.is_real_debrid() {
@@ -1443,7 +1439,8 @@ impl ResolverService {
                             preferences.clone(),
                         );
                     }
-                    return self
+                    races.abort_all();
+                    let response = self
                         .build_resolved_response(
                             resolved,
                             metadata.clone(),
@@ -1452,6 +1449,8 @@ impl ResolverService {
                             true,
                         )
                         .await;
+                    while races.join_next().await.is_some() {}
+                    return response;
                 }
                 Err(error) => {
                     self.record_source_resolve_failure(&stream, &error).await;
@@ -1460,7 +1459,34 @@ impl ResolverService {
             }
         }
 
+        races.abort_all();
+        while races.join_next().await.is_some() {}
         Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
+    }
+
+    fn spawn_fastest_resolve_jobs(
+        &self,
+        candidates: Vec<&DiscoveryStream>,
+        fallback_name: String,
+    ) -> JoinSet<(ResolverProvider, DiscoveryStream, AppResult<ResolvedSource>)> {
+        let mut race_jobs = JoinSet::new();
+        for candidate in candidates {
+            for provider in [ResolverProvider::LocalTorrent, ResolverProvider::RealDebrid] {
+                let service = self.clone();
+                let stream = (*candidate).clone();
+                let task_fallback_name = fallback_name.clone();
+                race_jobs.spawn(async move {
+                    let result = timeout(
+                        Duration::from_millis(FASTEST_RESOLVE_MAX_MS as u64),
+                        service.resolve_candidate_stream(&stream, &task_fallback_name, provider),
+                    )
+                    .await
+                    .unwrap_or_else(|_| Err(ApiError::bad_gateway("Resolving stream timed out.")));
+                    (provider, stream, result)
+                });
+            }
+        }
+        race_jobs
     }
 
     async fn build_resolved_response(
@@ -2221,6 +2247,9 @@ impl ResolverService {
         {
             return Ok(None);
         }
+        if !playback_session_matches_source_hash(&session, filters) {
+            return Ok(None);
+        }
         if !playback_session_matches_preferred_container(&session, filters) {
             return Ok(None);
         }
@@ -2317,6 +2346,9 @@ impl ResolverService {
 
         for session in sessions {
             if session.tmdb_id != metadata.tmdb_id || session.playable_url.trim().is_empty() {
+                continue;
+            }
+            if !playback_session_matches_source_hash(&session, filters) {
                 continue;
             }
             if !playback_session_matches_preferred_container(&session, filters) {
@@ -5099,8 +5131,7 @@ fn resolve_effective_preferred_subtitle_lang(
 }
 
 fn should_skip_playback_session_reuse(filters: &ResolveFilters) -> bool {
-    !filters.source_hash.is_empty()
-        || !filters.preferred_container.is_empty()
+    !filters.preferred_container.is_empty()
         || filters.source_filters.min_seeders > 0
         || !filters.source_filters.allowed_formats.is_empty()
         || filters.source_filters.source_language != SOURCE_LANGUAGE_FILTER_DEFAULT
@@ -5308,6 +5339,14 @@ fn playback_session_looks_like_container(session: &PlaybackSession, container: &
     ]
     .iter()
     .any(|value| value.to_lowercase().contains(&needle))
+}
+
+fn playback_session_matches_source_hash(
+    session: &PlaybackSession,
+    filters: &ResolveFilters,
+) -> bool {
+    let requested_hash = normalize_source_hash(&filters.source_hash);
+    requested_hash.is_empty() || normalize_source_hash(&session.source_hash) == requested_hash
 }
 
 fn does_filename_likely_match_movie(filename: &str, movie_title: &str, movie_year: &str) -> bool {
@@ -5778,11 +5817,11 @@ mod tests {
         normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
         parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
         parse_torznab_xml, playback_session_matches_preferred_container,
-        ready_info_has_selected_file_id, select_fastest_race_candidates,
-        select_top_episode_candidates, select_top_movie_candidates,
+        playback_session_matches_source_hash, ready_info_has_selected_file_id,
+        select_fastest_race_candidates, select_top_episode_candidates, select_top_movie_candidates,
         should_allow_latest_playback_session_fallback, should_prefer_software_decode_source,
-        should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
-        user_facing_real_debrid_error,
+        should_skip_playback_session_reuse, should_try_torznab_discovery, sort_movie_candidates,
+        stream_list_contains_hash, user_facing_real_debrid_error,
     };
 
     #[test]
@@ -5848,6 +5887,22 @@ mod tests {
         assert!(ResolverProvider::RealDebrid.is_real_debrid());
         assert!(!ResolverProvider::LocalTorrent.is_real_debrid());
         assert!(ResolverProvider::Fastest.is_fastest());
+    }
+
+    #[test]
+    fn real_debrid_and_fastest_reuse_warmed_local_cache_sessions() {
+        assert_eq!(
+            ResolverProvider::Fastest.cache_reuse_provider(),
+            ResolverProvider::LocalTorrent
+        );
+        assert_eq!(
+            ResolverProvider::RealDebrid.cache_reuse_provider(),
+            ResolverProvider::LocalTorrent
+        );
+        assert_eq!(
+            ResolverProvider::LocalTorrent.cache_reuse_provider(),
+            ResolverProvider::LocalTorrent
+        );
     }
 
     #[test]
@@ -5947,6 +6002,33 @@ mod tests {
 
         filters.source_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned();
         assert!(!should_allow_latest_playback_session_fallback(&filters));
+    }
+
+    #[test]
+    fn pinned_source_hash_can_reuse_matching_playback_session() {
+        let filters = ResolveFilters {
+            source_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            preferred_container: String::new(),
+            source_filters: sample_source_filters(),
+        };
+        let matching_session = PlaybackSession {
+            source_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            ..PlaybackSession::default()
+        };
+        let different_session = PlaybackSession {
+            source_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+            ..PlaybackSession::default()
+        };
+
+        assert!(!should_skip_playback_session_reuse(&filters));
+        assert!(playback_session_matches_source_hash(
+            &matching_session,
+            &filters
+        ));
+        assert!(!playback_session_matches_source_hash(
+            &different_session,
+            &filters
+        ));
     }
 
     #[test]

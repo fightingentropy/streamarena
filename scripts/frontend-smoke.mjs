@@ -261,6 +261,11 @@ const pages = [
     expectHlsMaster: true,
   },
   {
+    path: "/player.html?tmdbId=auto-fallback-tv&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1",
+    selector: ".player-shell",
+    expectAutomaticSourceFallback: true,
+  },
+  {
     path: "/player.html?tmdbId=source-switch-tv&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1",
     selector: ".player-shell",
     expectSourceSwitch: true,
@@ -284,6 +289,8 @@ async function runSmoke() {
       let sawHlsManagedResolve = false;
       let sawSportsBasketballMatches = false;
       let sawHlsManagedImportHold = false;
+      let automaticFallbackResolveCount = 0;
+      let sawAutomaticFallbackResolveHash = "";
       let hlsBundleRequested = false;
       let hlsBundleReleased = false;
 
@@ -335,6 +342,16 @@ async function runSmoke() {
           const sourceHash = url.searchParams.get("sourceHash") || "";
           if (sourceHash) {
             sawSourceSwitchResolveHash = sourceHash;
+          }
+        }
+        if (
+          pageSpec.expectAutomaticSourceFallback &&
+          url.pathname === "/api/resolve/tv"
+        ) {
+          automaticFallbackResolveCount += 1;
+          const sourceHash = url.searchParams.get("sourceHash") || "";
+          if (sourceHash) {
+            sawAutomaticFallbackResolveHash = sourceHash;
           }
         }
         if (
@@ -456,6 +473,61 @@ async function runSmoke() {
         }
         if (!sawHlsMasterRequest) {
           throw new Error(`${pageSpec.path}\nHEVC/HDR source did not use HLS fallback.`);
+        }
+      }
+
+      if (pageSpec.expectAutomaticSourceFallback) {
+        await page.waitForFunction(
+          (hash) =>
+            Boolean(
+              document.querySelector(`.source-option[data-source-hash="${hash}"]`),
+            ) &&
+            (document.querySelector("video")?.getAttribute("src") || "").includes(hash),
+          sourceSwitchHashA,
+          { timeout: 8_000 },
+        );
+
+        for (let errorIndex = 0; errorIndex < 3; errorIndex += 1) {
+          const expectedResolveCount = automaticFallbackResolveCount + 1;
+          await page.evaluate(() => {
+            document.querySelector("video")?.dispatchEvent(new Event("error"));
+          });
+          for (let attempt = 0; attempt < 80; attempt += 1) {
+            if (automaticFallbackResolveCount >= expectedResolveCount) {
+              break;
+            }
+            await delay(100);
+          }
+        }
+
+        for (
+          let attempt = 0;
+          attempt < 80 && sawAutomaticFallbackResolveHash !== sourceSwitchHashB;
+          attempt += 1
+        ) {
+          await delay(100);
+        }
+        const fallbackState = await page.evaluate(() => ({
+          selectedHash:
+            document.querySelector(".source-option[aria-selected='true']")
+              ?.dataset.sourceHash || "",
+          videoSource: document.querySelector("video")?.getAttribute("src") || "",
+          resolverText:
+            document.querySelector(".resolver-overlay:not([hidden]) .resolver-card")
+              ?.textContent || "",
+        }));
+        if (
+          sawAutomaticFallbackResolveHash !== sourceSwitchHashB ||
+          fallbackState.selectedHash !== sourceSwitchHashB ||
+          !fallbackState.videoSource.includes(sourceSwitchHashB)
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nAutomatic source fallback failed.\n${JSON.stringify({
+              sawAutomaticFallbackResolveHash,
+              automaticFallbackResolveCount,
+              fallbackState,
+            })}`,
+          );
         }
       }
 

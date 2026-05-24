@@ -524,6 +524,7 @@ let playbackBenchmark = null;
 let selectedSourceHash = normalizeSourceHash(sourceHashParam);
 let currentTmdbPlaybackSessionKey = "";
 let sourceSelectionPinned = false;
+let automaticTmdbAlternateRecoveryInFlight = false;
 
 function getPinnedSourceHashForRequests() {
   if (!sourceSelectionPinned) {
@@ -3255,15 +3256,11 @@ function setVideoSource(nextSource, { resetInitialResume = true } = {}) {
       destroyActiveHlsController();
       const fallbackMessage =
         String(message || "").trim() || "HLS playback failed.";
-      if (isBrowserOffline()) {
-        schedulePlaybackRecovery("offline", "", { resetAttempts: true });
-        return;
-      }
-      if (attemptTmdbRecovery("Trying alternate source...")) {
-        return;
-      }
-      showResolverError(fallbackMessage);
-      reportCurrentTmdbPlaybackFailure(fallbackMessage);
+      void handlePlaybackErrorRecovery(fallbackMessage).then((recovered) => {
+        if (!recovered && isTmdbResolvedPlayback) {
+          reportCurrentTmdbPlaybackFailure(fallbackMessage);
+        }
+      });
     };
 
     if (hasNativeHlsPlaybackSupport()) {
@@ -3425,32 +3422,53 @@ function setTmdbSourceQueue(primaryUrl, fallbackUrls = []) {
   tmdbSourceAttemptIndex = queue.length > 0 ? 1 : 0;
 }
 
-function reportCurrentTmdbPlaybackFailure(message, eventType = "playback_error") {
+function reportCurrentTmdbPlaybackFailure(
+  message,
+  eventType = "playback_error",
+  { includeSourceHash = true, dedupe = true } = {},
+) {
   const sourceHash = normalizeSourceHash(selectedSourceHash);
-  if (!isTmdbResolvedPlayback || !tmdbId || !sourceHash) {
-    return;
+  if (
+    !isTmdbResolvedPlayback ||
+    !tmdbId ||
+    (includeSourceHash && !sourceHash) ||
+    (!includeSourceHash && !currentTmdbPlaybackSessionKey)
+  ) {
+    return Promise.resolve(false);
   }
-  const failureKey = `${tmdbId}:${sourceHash}:${eventType}`;
-  if (reportedPlaybackFailureKeys.has(failureKey)) {
-    return;
+  const failureKey = [
+    tmdbId,
+    includeSourceHash ? sourceHash : currentTmdbPlaybackSessionKey,
+    eventType,
+    includeSourceHash ? "source" : "session",
+  ].join(":");
+  if (dedupe && reportedPlaybackFailureKeys.has(failureKey)) {
+    return Promise.resolve(false);
   }
-  reportedPlaybackFailureKeys.add(failureKey);
-  fetch("/api/session/progress", {
+  if (dedupe) {
+    reportedPlaybackFailureKeys.add(failureKey);
+  }
+  const payload = {
+    tmdbId,
+    sessionKey: currentTmdbPlaybackSessionKey,
+    audioLang: preferredAudioLang || "auto",
+    quality: preferredQuality || DEFAULT_STREAM_QUALITY_PREFERENCE,
+    positionSeconds: Math.max(0, getEffectiveCurrentTime()),
+    healthState: "invalid",
+    eventType,
+    lastError: String(message || "Playback failed.").slice(0, 500),
+  };
+  if (includeSourceHash) {
+    payload.sourceHash = sourceHash;
+  }
+  return fetch("/api/session/progress", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      tmdbId,
-      sessionKey: currentTmdbPlaybackSessionKey,
-      audioLang: preferredAudioLang || "auto",
-      quality: preferredQuality || DEFAULT_STREAM_QUALITY_PREFERENCE,
-      positionSeconds: Math.max(0, getEffectiveCurrentTime()),
-      healthState: "invalid",
-      sourceHash,
-      eventType,
-      lastError: String(message || "Playback failed.").slice(0, 500),
-    }),
+    body: JSON.stringify(payload),
     keepalive: true,
-  }).catch(() => {});
+  })
+    .then((response) => response.ok)
+    .catch(() => false);
 }
 
 async function tryNextTmdbSource() {
@@ -3717,7 +3735,7 @@ async function resolveTmdbSourcesAndPlay({
   return { nativeLaunched: false, resolved };
 }
 
-function attemptTmdbRecovery(message) {
+function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
   if (!isTmdbResolvedPlayback || isRecoveringTmdbStream) {
     return false;
   }
@@ -3737,7 +3755,13 @@ function attemptTmdbRecovery(message) {
     showResolver(
       `Refreshing source (${tmdbResolveRetries}/${maxTmdbResolveRetries})...`,
     );
-    void resolveTmdbSourcesAndPlay()
+    const invalidateCurrentSession = reportCurrentTmdbPlaybackFailure(
+      failureMessage || message || "Playback failed.",
+      "playback_error",
+      { includeSourceHash: false, dedupe: false },
+    );
+    void invalidateCurrentSession
+      .then(() => resolveTmdbSourcesAndPlay())
       .catch((error) => {
         console.error("Failed to refresh TMDB playback source:", error);
         const fallbackMessage =
@@ -5948,7 +5972,9 @@ function scoreResolverAlternateSource(sourceOption) {
   return score;
 }
 
-function pickResolverAlternateSourceHash() {
+function pickResolverAlternateSourceHash({
+  allowPreviouslyFailedFallback = true,
+} = {}) {
   const currentHash = normalizeSourceHash(selectedSourceHash);
   const options = availablePlaybackSources
     .map((option, index) => ({
@@ -5970,7 +5996,9 @@ function pickResolverAlternateSourceHash() {
   );
   const candidates = unfailed.length
     ? unfailed
-    : options.filter((item) => item.sourceHash !== currentHash);
+    : allowPreviouslyFailedFallback
+      ? options.filter((item) => item.sourceHash !== currentHash)
+      : [];
   if (!candidates.length) {
     return "";
   }
@@ -6066,6 +6094,44 @@ async function resolveAlternateTmdbSourceFromResolverError() {
   });
 }
 
+async function attemptAutomaticAlternateTmdbSource(message) {
+  if (!isTmdbResolvedPlayback || automaticTmdbAlternateRecoveryInFlight) {
+    return false;
+  }
+
+  automaticTmdbAlternateRecoveryInFlight = true;
+  try {
+    const failedSourceHash = normalizeSourceHash(selectedSourceHash);
+    if (failedSourceHash) {
+      resolverFailedSourceHashes.add(failedSourceHash);
+      await reportCurrentTmdbPlaybackFailure(
+        message || "Playback failed.",
+        "playback_error",
+      );
+    }
+
+    if (!availablePlaybackSources.length) {
+      showResolver("Loading alternate sources...", { showStatus: true });
+      await fetchTmdbSourceOptionsViaBackend();
+    }
+
+    const nextSourceHash = pickResolverAlternateSourceHash({
+      allowPreviouslyFailedFallback: false,
+    });
+    if (!nextSourceHash) {
+      return false;
+    }
+
+    await resolveTmdbFromResolverAction({
+      sourceHash: nextSourceHash,
+      isAlternate: true,
+    });
+    return true;
+  } finally {
+    automaticTmdbAlternateRecoveryInFlight = false;
+  }
+}
+
 function retryResolverActionNow() {
   if (isTmdbResolvedPlayback) {
     void resolveTmdbFromResolverAction();
@@ -6110,7 +6176,15 @@ async function handlePlaybackErrorRecovery(message) {
     return true;
   }
 
-  if (attemptTmdbRecovery("Trying alternate source...")) {
+  if (
+    attemptTmdbRecovery("Trying alternate source...", {
+      failureMessage: fallbackMessage,
+    })
+  ) {
+    return true;
+  }
+
+  if (await attemptAutomaticAlternateTmdbSource(fallbackMessage)) {
     return true;
   }
 
