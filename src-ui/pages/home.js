@@ -888,6 +888,14 @@ function getRecommendationIdentity(details) {
   return title ? `title:${title}|${year}` : "";
 }
 
+function normalizeLibraryTitleKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
 function normalizeMyListEntry(entry) {
   const details = entry && typeof entry === "object" ? entry : {};
   const normalizedEpisodeIndex = Number(details.episodeIndex);
@@ -915,6 +923,72 @@ function normalizeMyListEntry(entry) {
     String(details.itemIdentity || "").trim() ||
     getRecommendationIdentity(normalized);
   return normalized;
+}
+
+function findLocalMovieForMyListEntry(entry, libraryEntries = []) {
+  const details = normalizeMyListEntry(entry);
+  const tmdbId = String(details.tmdbId || "").trim();
+  const titleKey = normalizeLibraryTitleKey(details.title || "");
+  const year = String(details.year || "").trim();
+  return (
+    (Array.isArray(libraryEntries) ? libraryEntries : [])
+      .filter((candidate) => candidate?.type === "movie")
+      .map((candidate) => candidate.item)
+      .find((movie) => {
+        const src = String(movie?.src || "").trim();
+        if (!src) {
+          return false;
+        }
+        const movieTmdbId = String(movie?.tmdbId || "").trim();
+        if (tmdbId && movieTmdbId && tmdbId === movieTmdbId) {
+          return true;
+        }
+        const movieTitleKey = normalizeLibraryTitleKey(movie?.title || "");
+        const movieYear = String(movie?.year || "").trim();
+        return Boolean(
+          titleKey &&
+            movieTitleKey &&
+            titleKey === movieTitleKey &&
+            (!year || !movieYear || year === movieYear),
+        );
+      }) || null
+  );
+}
+
+function hydrateMyListEntryWithLocalLibrary(entry, libraryEntries = []) {
+  const normalized = normalizeMyListEntry(entry);
+  if (normalized.mediaType === "tv" || normalized.seriesId) {
+    return normalized;
+  }
+
+  const localMovie = findLocalMovieForMyListEntry(normalized, libraryEntries);
+  const localSrc = String(localMovie?.src || "").trim();
+  if (!localSrc) {
+    return normalized;
+  }
+
+  const hydrated = {
+    ...normalized,
+    title:
+      String(localMovie?.title || "").trim() ||
+      String(normalized.title || "").trim(),
+    src: localSrc,
+    thumb:
+      String(localMovie?.thumb || "").trim() ||
+      String(normalized.thumb || "").trim(),
+    tmdbId:
+      String(localMovie?.tmdbId || "").trim() ||
+      String(normalized.tmdbId || "").trim(),
+    mediaType: "movie",
+    year:
+      String(localMovie?.year || "").trim() ||
+      String(normalized.year || "").trim(),
+    libraryType: "movie",
+    libraryId: String(localMovie?.id || normalized.libraryId || "").trim(),
+    librarySrc: localSrc,
+  };
+  hydrated.itemIdentity = getRecommendationIdentity(hydrated);
+  return hydrated;
 }
 
 function readMyListEntries() {
@@ -1139,6 +1213,7 @@ export default function HomePage() {
     title,
     episode,
     src,
+    librarySrc,
     thumb,
     tmdbId,
     mediaType,
@@ -1163,6 +1238,8 @@ export default function HomePage() {
       return raw;
     };
     const normalizedSrc = normalizePlaybackSource(src);
+    const normalizedLibrarySrc = normalizePlaybackSource(librarySrc);
+    const playbackSrc = normalizedSrc || normalizedLibrarySrc;
     const normalizedMediaType = String(mediaType || "")
       .trim()
       .toLowerCase();
@@ -1185,8 +1262,8 @@ export default function HomePage() {
       params.set("episode", normalizedEpisode);
     }
 
-    if (normalizedSrc) {
-      params.set("src", normalizedSrc);
+    if (playbackSrc) {
+      params.set("src", playbackSrc);
     }
     if (thumb) {
       params.set("thumb", thumb);
@@ -1234,7 +1311,7 @@ export default function HomePage() {
       params.set("episodeNumber", String(Math.floor(parsedEpisodeNumber)));
     }
 
-    if (!src && tmdbId && normalizedMediaType === "movie") {
+    if (!playbackSrc && tmdbId && normalizedMediaType === "movie") {
       const preferredAudioLang = getStoredAudioLangForTmdbMovie(tmdbId);
       const preferredQuality = getStoredStreamQualityPreference();
       if (preferredAudioLang !== "auto") {
@@ -1245,7 +1322,7 @@ export default function HomePage() {
       }
     }
 
-    const normalizedSource = String(normalizedSrc || "")
+    const normalizedSource = String(playbackSrc || "")
       .trim()
       .toLowerCase();
     const isUploadedLocalMedia =
@@ -1256,11 +1333,11 @@ export default function HomePage() {
       normalizedSource.includes("/videos/") ||
       normalizedSource.startsWith("assets/videos/") ||
       normalizedSource.includes("/assets/videos/");
-    if (normalizedSrc && isUploadedLocalMedia && !params.has("audioLang")) {
+    if (playbackSrc && isUploadedLocalMedia && !params.has("audioLang")) {
       params.set("audioLang", "en");
     }
 
-    if (!normalizedSrc && !tmdbId && !normalizedSeriesId) {
+    if (!playbackSrc && !tmdbId && !normalizedSeriesId) {
       params.set("src", JEFFREY_EPSTEIN_EPISODE_1_SOURCE);
     }
 
@@ -1943,6 +2020,7 @@ export default function HomePage() {
 
   function buildMyListCardElement(entry) {
     const details = normalizeMyListEntry(entry);
+    const playableSrc = details.src || details.librarySrc;
     const contentTypeLabel =
       details.mediaType === "tv" || details.seriesId ? "Series" : "Movie";
     const displayYear = details.year || "Local";
@@ -1954,7 +2032,7 @@ export default function HomePage() {
     card.tabIndex = 0;
     card.dataset.title = details.title;
     card.dataset.episode = details.episode;
-    card.dataset.src = details.src;
+    card.dataset.src = playableSrc;
     card.dataset.thumb = details.thumb;
     card.dataset.tmdbId = details.tmdbId;
     card.dataset.mediaType = details.mediaType;
@@ -2012,7 +2090,14 @@ export default function HomePage() {
     if (!myListCardsRef) {
       return;
     }
-    const savedEntries = readMyListEntries().sort(
+    const storedEntries = readMyListEntries();
+    const hydratedEntries = storedEntries.map((entry) =>
+      hydrateMyListEntryWithLocalLibrary(entry, myListLibraryEntries),
+    );
+    if (JSON.stringify(storedEntries) !== JSON.stringify(hydratedEntries)) {
+      writeMyListEntries(hydratedEntries);
+    }
+    const savedEntries = hydratedEntries.sort(
       (left, right) => Number(right.addedAt || 0) - Number(left.addedAt || 0),
     );
     myListCardsRef.innerHTML = "";

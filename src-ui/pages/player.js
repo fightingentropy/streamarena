@@ -7500,6 +7500,100 @@ function cleanUrlIfNeeded() {
   } catch { /* cosmetic — don't break playback */ }
 }
 
+function findLocalMoviePlaybackEntry(libraryPayload) {
+  const movies = Array.isArray(libraryPayload?.movies) ? libraryPayload.movies : [];
+  const normalizedTmdbId = String(tmdbId || "").trim();
+  const normalizedTitleSlug = slugify(title);
+  const normalizedYear = String(year || "").trim();
+  return (
+    movies.find((movie) => {
+      const localSrc = String(movie?.src || "").trim();
+      if (!localSrc) {
+        return false;
+      }
+      const movieTmdbId = String(movie?.tmdbId || "").trim();
+      if (normalizedTmdbId && movieTmdbId && normalizedTmdbId === movieTmdbId) {
+        return true;
+      }
+      const movieTitleSlug = slugify(movie?.title || "");
+      const movieYear = String(movie?.year || "").trim();
+      return Boolean(
+        normalizedTitleSlug &&
+          movieTitleSlug &&
+          normalizedTitleSlug === movieTitleSlug &&
+          (!normalizedYear || !movieYear || normalizedYear === movieYear),
+      );
+    }) || null
+  );
+}
+
+function applyLocalMoviePlaybackEntry(localMovie) {
+  const localSrc = normalizePlaybackSourceValue(localMovie?.src || "");
+  if (!localSrc) {
+    return false;
+  }
+  const currentSrc = normalizePlaybackSourceValue(src || "");
+  if (currentSrc === localSrc && hasExplicitSource) {
+    return false;
+  }
+
+  params.set("src", localSrc);
+  if (localMovie?.title && !params.has("title")) {
+    params.set("title", String(localMovie.title).trim());
+  }
+  if (localMovie?.tmdbId && !params.has("tmdbId")) {
+    params.set("tmdbId", String(localMovie.tmdbId).trim());
+  }
+  if (localMovie?.year && !params.has("year")) {
+    params.set("year", String(localMovie.year).trim());
+  }
+  if (localMovie?.thumb && !params.has("thumb")) {
+    params.set("thumb", String(localMovie.thumb).trim());
+  }
+  if (!params.has("mediaType")) {
+    params.set("mediaType", "movie");
+  }
+
+  rawSourceParam = localSrc;
+  normalizedRawSourceParam = localSrc;
+  src = localSrc;
+  hasExplicitSource = true;
+  isExplicitLocalUploadSource = computeIsExplicitLocalUploadSource();
+  title = String(localMovie?.title || title || "").trim() || title;
+  tmdbId = String(localMovie?.tmdbId || tmdbId || "").trim();
+  mediaType = "movie";
+  year = String(localMovie?.year || year || "").trim();
+  isTmdbMoviePlayback = false;
+  isTmdbTvPlayback = false;
+  isTmdbResolvedPlayback = false;
+  return true;
+}
+
+async function preferLocalMoviePlaybackSourceFromLibrary() {
+  if (isLivePlayback || isSeriesPlayback) {
+    return false;
+  }
+  const normalizedMediaType = String(mediaType || "").trim().toLowerCase();
+  if (normalizedMediaType && normalizedMediaType !== "movie") {
+    return false;
+  }
+  if (!tmdbId && !title) {
+    return false;
+  }
+
+  try {
+    const response = await fetch("/api/library", { cache: "no-store" });
+    if (!response.ok) {
+      return false;
+    }
+    const libraryPayload = await response.json();
+    const localMovie = findLocalMoviePlaybackEntry(libraryPayload);
+    return applyLocalMoviePlaybackEntry(localMovie);
+  } catch {
+    return false;
+  }
+}
+
 async function initPlaybackSource() {
   // Ensure local series library is loaded before resolving playback
   await _seriesLibraryReady;
@@ -7643,6 +7737,7 @@ async function initPlaybackSource() {
   isTmdbMoviePlayback = Boolean(!hasExplicitSource && tmdbId && mediaType === "movie");
   isTmdbTvPlayback = Boolean(!hasExplicitSource && tmdbId && mediaType === "tv");
   isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
+  await preferLocalMoviePlaybackSourceFromLibrary();
   if (isTmdbTvPlayback && !isSeriesPlayback) {
     await hydrateTmdbTvEpisodeCatalog();
     hasSeriesEpisodeControls =

@@ -729,12 +729,16 @@ export function enrichContinueEntriesWithLocalLibrary(entries, localLibrary) {
   const seriesList = Array.isArray(localLibrary?.series) ? localLibrary.series : [];
 
   const localMoviesBySrc = new Map();
+  const localMoviesByTmdb = new Map();
   movies.forEach((movie) => {
     const src = normalizeLocalAssetPathForCompare(movie?.src || "");
-    if (!src) {
-      return;
+    if (src) {
+      localMoviesBySrc.set(src, movie);
     }
-    localMoviesBySrc.set(src, movie);
+    const tmdbId = String(movie?.tmdbId || "").trim();
+    if (src && tmdbId) {
+      localMoviesByTmdb.set(tmdbId, movie);
+    }
   });
 
   const localSeriesById = new Map();
@@ -775,18 +779,13 @@ export function enrichContinueEntriesWithLocalLibrary(entries, localLibrary) {
     }
 
     const tmdbId = String(entry?.tmdbId || "").trim();
-    const likelyLocalMovie = !tmdbId;
-    if (!likelyLocalMovie) {
-      return entry;
-    }
-
     const sourceCandidates = [
       normalizeLocalAssetPathForCompare(entry?.src || ""),
       normalizeLocalAssetPathForCompare(entry?.sourceIdentity || ""),
     ].filter(Boolean);
-    const localMovieMatch = sourceCandidates
-      .map((candidate) => localMoviesBySrc.get(candidate))
-      .find(Boolean);
+    const localMovieMatch =
+      localMoviesByTmdb.get(tmdbId) ||
+      sourceCandidates.map((candidate) => localMoviesBySrc.get(candidate)).find(Boolean);
     if (!localMovieMatch) {
       return entry;
     }
