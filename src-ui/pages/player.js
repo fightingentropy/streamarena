@@ -83,6 +83,7 @@ const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const controlsHideDelayMs = 3000;
 const singleClickToggleDelayMs = 220;
 const seekLoadingTimeoutMs = 9000;
+const SEEK_JUMP_SECONDS = 10;
 const playbackRecoveryStallDelayMs = 8000;
 const playbackRecoveryServerTimeoutMs = 3500;
 const playbackRecoveryInitialDelayMs = 3000;
@@ -2272,6 +2273,10 @@ function renderSourceOptionButtons() {
   const rankedSources = sortSourcesBySeeders(availablePlaybackSources, {
     preferContainer: getSourceListPreferredContainer(),
   });
+  const sourceDisplayLimit = Math.max(
+    preferredSourceResultsLimit,
+    rankedSources.filter((option) => isSourceOptionEmbed(option)).length,
+  );
   const selectedSourceIndex = rankedSources.findIndex(
     (option) =>
       normalizeSourceHash(option?.sourceHash || option?.infoHash || "") ===
@@ -2282,7 +2287,7 @@ function renderSourceOptionButtons() {
     rankedSources.unshift(selectedSource);
   }
   for (const option of rankedSources) {
-    if (seenHashes.size >= preferredSourceResultsLimit) {
+    if (seenHashes.size >= sourceDisplayLimit) {
       break;
     }
     const sourceHash = normalizeSourceHash(
@@ -8078,6 +8083,37 @@ async function initPlaybackSource() {
     }
   }
 
+  function animateSeekTurn(control, direction) {
+    if (!control) {
+      return;
+    }
+
+    const className =
+      direction === "backward" ? "is-turning-backward" : "is-turning-forward";
+    control.classList.remove("is-turning-backward", "is-turning-forward");
+    void control.offsetWidth;
+    control.classList.add(className);
+  }
+
+  function clearSeekTurnAnimation(control) {
+    control?.classList.remove("is-turning-backward", "is-turning-forward");
+  }
+
+  function seekByJumpSeconds(direction) {
+    if (!hasActiveSource() || isResolvingSource()) {
+      return;
+    }
+
+    if (direction === "backward") {
+      animateSeekTurn(rewind10, "backward");
+      seekToAbsoluteTime(getEffectiveCurrentTime() - SEEK_JUMP_SECONDS);
+      return;
+    }
+
+    animateSeekTurn(forward10, "forward");
+    seekToAbsoluteTime(getEffectiveCurrentTime() + SEEK_JUMP_SECONDS);
+  }
+
   onMount(() => {
     collectSpeedOptionRefs();
     startAudioDecodeWatch();
@@ -8116,19 +8152,19 @@ trackListener(goBack, "click", () => {
 trackListener(togglePlay, "click", togglePlayback);
 
 trackListener(rewind10, "click", () => {
-  if (!hasActiveSource() || isResolvingSource()) {
-    return;
-  }
-
-  seekToAbsoluteTime(getEffectiveCurrentTime() - 10);
+  seekByJumpSeconds("backward");
 });
 
 trackListener(forward10, "click", () => {
-  if (!hasActiveSource() || isResolvingSource()) {
-    return;
-  }
+  seekByJumpSeconds("forward");
+});
 
-  seekToAbsoluteTime(getEffectiveCurrentTime() + 10);
+[rewind10, forward10].forEach((seekControl) => {
+  trackListener(seekControl, "animationend", (event) => {
+    if (String(event.animationName || "").startsWith("seek-turn-")) {
+      clearSeekTurnAnimation(seekControl);
+    }
+  });
 });
 
 trackListener(toggleMutePlayer, "click", () => {
@@ -9273,20 +9309,14 @@ async function handleKeydown(event) {
     if (isInteractiveTarget(event.target)) {
       return;
     }
-    if (hasActiveSource() && !isResolvingSource()) {
-      seekToAbsoluteTime(getEffectiveCurrentTime() - 10);
-    }
+    seekByJumpSeconds("backward");
   }
 
   if (event.key === "ArrowRight") {
     if (isInteractiveTarget(event.target)) {
       return;
     }
-    if (!hasActiveSource() || isResolvingSource()) {
-      return;
-    }
-
-    seekToAbsoluteTime(getEffectiveCurrentTime() + 10);
+    seekByJumpSeconds("forward");
   }
 
   if (event.key.toLowerCase() === "m") {

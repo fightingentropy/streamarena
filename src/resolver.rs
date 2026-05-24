@@ -246,6 +246,20 @@ struct ExternalEmbedProvider {
     priority: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExternalEmbedServer {
+    id: &'static str,
+    label: &'static str,
+    quality_label: &'static str,
+    priority: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExternalEmbedSource {
+    provider: ExternalEmbedProvider,
+    server: Option<ExternalEmbedServer>,
+}
+
 const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
     ExternalEmbedProvider {
         id: "vidfast",
@@ -266,6 +280,87 @@ const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
         id: "2embed",
         label: "2Embed",
         priority: 3,
+    },
+];
+
+const VIDFAST_EMBED_SERVERS: &[ExternalEmbedServer] = &[
+    ExternalEmbedServer {
+        id: "vFast",
+        label: "vFast",
+        quality_label: "4K iframe",
+        priority: 0,
+    },
+    ExternalEmbedServer {
+        id: "vEdge",
+        label: "vEdge",
+        quality_label: "Fast iframe",
+        priority: 1,
+    },
+    ExternalEmbedServer {
+        id: "Alpha",
+        label: "Alpha",
+        quality_label: "Fast iframe",
+        priority: 2,
+    },
+    ExternalEmbedServer {
+        id: "vRapid",
+        label: "vRapid",
+        quality_label: "Fast iframe",
+        priority: 3,
+    },
+    ExternalEmbedServer {
+        id: "Mega",
+        label: "Mega",
+        quality_label: "Fast iframe",
+        priority: 4,
+    },
+    ExternalEmbedServer {
+        id: "Max",
+        label: "Max",
+        quality_label: "Fast iframe",
+        priority: 5,
+    },
+    ExternalEmbedServer {
+        id: "Charlie",
+        label: "Charlie",
+        quality_label: "Fast iframe",
+        priority: 6,
+    },
+    ExternalEmbedServer {
+        id: "Close",
+        label: "Close",
+        quality_label: "Fast iframe",
+        priority: 7,
+    },
+    ExternalEmbedServer {
+        id: "Oscar",
+        label: "Oscar",
+        quality_label: "Fast iframe",
+        priority: 8,
+    },
+    ExternalEmbedServer {
+        id: "Rido",
+        label: "Rido",
+        quality_label: "Fast iframe",
+        priority: 9,
+    },
+    ExternalEmbedServer {
+        id: "Beta",
+        label: "Beta",
+        quality_label: "Fast iframe",
+        priority: 10,
+    },
+    ExternalEmbedServer {
+        id: "Cobra",
+        label: "Cobra",
+        quality_label: "Fast iframe",
+        priority: 11,
+    },
+    ExternalEmbedServer {
+        id: "Gamma",
+        label: "Gamma",
+        quality_label: "Fast iframe",
+        priority: 12,
     },
 ];
 
@@ -498,8 +593,7 @@ impl ResolverService {
             let external_sources = build_external_embed_source_summaries(&metadata);
             let has_external_sources = !external_sources.is_empty();
             let pinned_external_source =
-                external_embed_provider_for_source_hash(&metadata, &normalized_source_hash)
-                    .is_some();
+                external_embed_source_for_source_hash(&metadata, &normalized_source_hash).is_some();
             let torrentio_result = self
                 .fetch_torrentio_episode_streams(
                     &metadata.imdb_id,
@@ -616,7 +710,7 @@ impl ResolverService {
         let external_sources = build_external_embed_source_summaries(&metadata);
         let has_external_sources = !external_sources.is_empty();
         let pinned_external_source =
-            external_embed_provider_for_source_hash(&metadata, &normalized_source_hash).is_some();
+            external_embed_source_for_source_hash(&metadata, &normalized_source_hash).is_some();
         let torrentio_result = self.fetch_torrentio_movie_streams(&metadata.imdb_id).await;
         let sources = match torrentio_result {
             Ok(streams) => {
@@ -886,7 +980,7 @@ impl ResolverService {
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
         if let Some(provider) =
-            external_embed_provider_for_source_hash(&metadata, &filters.source_hash)
+            external_embed_source_for_source_hash(&metadata, &filters.source_hash)
         {
             external_guard.mark_completed();
             return Ok(build_external_embed_resolved_payload(
@@ -1200,7 +1294,7 @@ impl ResolverService {
             )
             .await?;
         if let Some(provider) =
-            external_embed_provider_for_source_hash(&metadata, &filters.source_hash)
+            external_embed_source_for_source_hash(&metadata, &filters.source_hash)
         {
             external_guard.mark_completed();
             return Ok(build_external_embed_resolved_payload(
@@ -4593,54 +4687,54 @@ fn combine_external_embed_source_summaries(
 }
 
 fn build_external_embed_source_summaries(metadata: &ResolveMetadata) -> Vec<SourceSummary> {
-    EXTERNAL_EMBED_PROVIDERS
-        .iter()
-        .copied()
-        .filter_map(|provider| {
-            let source_hash = external_embed_source_hash(provider, metadata);
-            if source_hash.is_empty() || external_embed_url(provider, metadata).is_none() {
+    external_embed_sources()
+        .into_iter()
+        .filter_map(|source| {
+            let source_hash = external_embed_source_hash(source, metadata);
+            if source_hash.is_empty() || external_embed_url(source, metadata).is_none() {
                 return None;
             }
+            let display_name = external_embed_source_display_name(source);
+            let filename = external_embed_source_filename(source);
             Some(SourceSummary {
                 sourceHash: source_hash.clone(),
                 infoHash: source_hash,
-                provider: "LivNet".to_owned(),
-                primary: provider.label.to_owned(),
-                filename: format!("{} embed", provider.label),
-                qualityLabel: "Fast iframe".to_owned(),
+                provider: external_embed_source_provider_label(source).to_owned(),
+                primary: display_name,
+                filename,
+                qualityLabel: external_embed_source_quality_label(source).to_owned(),
                 container: "iframe".to_owned(),
                 seeders: 0,
                 size: String::new(),
                 releaseGroup: String::new(),
-                score: 1_000_000 - provider.priority,
+                score: 1_000_000 - external_embed_source_priority(source),
             })
         })
         .collect()
 }
 
-fn external_embed_provider_for_source_hash(
+fn external_embed_source_for_source_hash(
     metadata: &ResolveMetadata,
     source_hash: &str,
-) -> Option<ExternalEmbedProvider> {
+) -> Option<ExternalEmbedSource> {
     let normalized_hash = normalize_source_hash(source_hash);
     if normalized_hash.is_empty() {
         return None;
     }
-    EXTERNAL_EMBED_PROVIDERS
-        .iter()
-        .copied()
-        .find(|provider| external_embed_source_hash(*provider, metadata) == normalized_hash)
+    external_embed_sources()
+        .into_iter()
+        .find(|source| external_embed_source_hash(*source, metadata) == normalized_hash)
 }
 
 fn build_external_embed_resolved_payload(
     metadata: &ResolveMetadata,
-    provider: ExternalEmbedProvider,
+    source: ExternalEmbedSource,
     preferences: &ResolvePreferences,
 ) -> Value {
-    let embed_url = external_embed_url(provider, metadata).unwrap_or_default();
+    let embed_url = external_embed_url(source, metadata).unwrap_or_default();
     let playable_url = build_live_iframe_playback_source(&embed_url);
-    let source_hash = external_embed_source_hash(provider, metadata);
-    let filename = format!("{} embed", provider.label);
+    let source_hash = external_embed_source_hash(source, metadata);
+    let filename = external_embed_source_filename(source);
     let resolved = ResolvedSource {
         playable_url: playable_url.clone(),
         fallback_urls: Vec::new(),
@@ -4675,19 +4769,22 @@ fn build_external_embed_resolved_payload(
     })
 }
 
-fn external_embed_url(
-    provider: ExternalEmbedProvider,
-    metadata: &ResolveMetadata,
-) -> Option<String> {
+fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> Option<String> {
     let tmdb_id = metadata.tmdb_id.trim();
     if tmdb_id.is_empty() {
         return None;
     }
-    match (provider.id, metadata.media_type.as_str()) {
-        ("vidfast", "movie") => Some(format!("https://vidfast.me/movie/{tmdb_id}?theme=FF0000")),
-        ("vidfast", "tv") => Some(format!(
-            "https://vidfast.me/tv/{}/{}/{}?theme=FF0000",
-            tmdb_id, metadata.season_number, metadata.episode_number
+    match (source.provider.id, metadata.media_type.as_str()) {
+        ("vidfast", "movie") => Some(build_vidfast_embed_url(
+            &format!("https://vidfast.me/movie/{tmdb_id}"),
+            source.server,
+        )),
+        ("vidfast", "tv") => Some(build_vidfast_embed_url(
+            &format!(
+                "https://vidfast.me/tv/{}/{}/{}",
+                tmdb_id, metadata.season_number, metadata.episode_number
+            ),
+            source.server,
         )),
         ("videasy", "movie") => Some(format!("https://player.videasy.net/movie/{tmdb_id}")),
         ("videasy", "tv") => Some(format!(
@@ -4708,22 +4805,99 @@ fn external_embed_url(
     }
 }
 
-fn external_embed_source_hash(
-    provider: ExternalEmbedProvider,
-    metadata: &ResolveMetadata,
-) -> String {
-    if external_embed_url(provider, metadata).is_none() {
+fn external_embed_source_hash(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> String {
+    if external_embed_url(source, metadata).is_none() {
         return String::new();
     }
     let identity = format!(
-        "external-embed|{}|{}|{}|{}|{}",
-        provider.id,
+        "external-embed|{}|{}|{}|{}|{}|{}",
+        source.provider.id,
+        source.server.map(|server| server.id).unwrap_or("default"),
         metadata.media_type,
         metadata.tmdb_id.trim(),
         metadata.season_number,
         metadata.episode_number
     );
     deterministic_40_hex(&identity)
+}
+
+fn external_embed_sources() -> Vec<ExternalEmbedSource> {
+    let mut sources = Vec::new();
+    for provider in EXTERNAL_EMBED_PROVIDERS.iter().copied() {
+        if provider.id == "vidfast" {
+            sources.extend(VIDFAST_EMBED_SERVERS.iter().copied().map(|server| {
+                ExternalEmbedSource {
+                    provider,
+                    server: Some(server),
+                }
+            }));
+            continue;
+        }
+        sources.push(ExternalEmbedSource {
+            provider,
+            server: None,
+        });
+    }
+    sources
+}
+
+fn external_embed_source_priority(source: ExternalEmbedSource) -> i64 {
+    if let Some(server) = source.server {
+        return source.provider.priority * 100 + server.priority;
+    }
+    source.provider.priority * 100
+}
+
+fn external_embed_source_display_name(source: ExternalEmbedSource) -> String {
+    source
+        .server
+        .map(|server| server.label.to_owned())
+        .unwrap_or_else(|| source.provider.label.to_owned())
+}
+
+fn external_embed_source_provider_label(source: ExternalEmbedSource) -> &'static str {
+    if source.server.is_some() {
+        source.provider.label
+    } else {
+        "LivNet"
+    }
+}
+
+fn external_embed_source_quality_label(source: ExternalEmbedSource) -> &'static str {
+    source
+        .server
+        .map(|server| server.quality_label)
+        .unwrap_or("Fast iframe")
+}
+
+fn external_embed_source_filename(source: ExternalEmbedSource) -> String {
+    if let Some(server) = source.server {
+        format!("{} {} embed", source.provider.label, server.label)
+    } else {
+        format!("{} embed", source.provider.label)
+    }
+}
+
+fn build_vidfast_embed_url(base_url: &str, server: Option<ExternalEmbedServer>) -> String {
+    let mut pairs = vec![
+        ("theme".to_owned(), "FF0000".to_owned()),
+        ("hideServer".to_owned(), "true".to_owned()),
+    ];
+    if let Some(server) = server {
+        pairs.push(("server".to_owned(), server.id.to_owned()));
+    }
+    let query = pairs
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                url::form_urlencoded::byte_serialize(key.as_bytes()).collect::<String>(),
+                url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{base_url}?{query}")
 }
 
 fn deterministic_40_hex(value: &str) -> String {
@@ -6267,22 +6441,22 @@ mod tests {
     use crate::error::ApiError;
 
     use super::{
-        DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, ExternalEmbedProvider,
+        DiscoveryBehaviorHints, DiscoveryStream, ExternalEmbedProvider, ExternalEmbedSource,
         PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters, ResolveMetadata,
         ResolvePreferences, ResolvedSource, ResolverExternalGuard, ResolverMetrics,
         ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
-        build_external_embed_resolved_payload, build_external_embed_source_summaries,
-        build_live_iframe_playback_source, build_movie_resolve_lock_key,
-        build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
-        build_torrentio_stream_cache_key, build_torznab_request_url,
+        VIDFAST_EMBED_SERVERS, build_external_embed_resolved_payload,
+        build_external_embed_source_summaries, build_live_iframe_playback_source,
+        build_movie_resolve_lock_key, build_playback_session_key_for_metadata,
+        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_torznab_request_url,
         build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
         compute_source_health_score, compute_torrentio_cache_deadlines,
-        does_filename_likely_match_movie, external_embed_provider_for_source_hash,
-        external_embed_source_hash, external_embed_url, extract_info_hash_from_magnet,
-        is_persistent_source_resolve_error, normalize_allowed_formats,
-        normalize_resolved_source_for_software_decode, normalize_resolver_provider,
-        normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
-        parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
+        does_filename_likely_match_movie, external_embed_source_for_source_hash,
+        external_embed_source_hash, external_embed_sources, external_embed_url,
+        extract_info_hash_from_magnet, is_persistent_source_resolve_error,
+        normalize_allowed_formats, normalize_resolved_source_for_software_decode,
+        normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
+        now_ms, parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
         parse_torznab_xml, playback_session_matches_preferred_container,
         playback_session_matches_source_hash, ready_info_has_selected_file_id,
         select_fastest_race_candidates, select_top_episode_candidates, select_top_movie_candidates,
@@ -6305,25 +6479,27 @@ mod tests {
         let metadata = sample_movie_metadata();
         let sources = build_external_embed_source_summaries(&metadata);
 
-        assert_eq!(sources.len(), 4);
-        assert_eq!(sources[0].primary, "VidFast");
-        assert_eq!(sources[0].provider, "LivNet");
+        assert_eq!(sources.len(), VIDFAST_EMBED_SERVERS.len() + 3);
+        assert_eq!(sources[0].primary, "vFast");
+        assert_eq!(sources[0].provider, "VidFast");
+        assert_eq!(sources[0].filename, "VidFast vFast embed");
+        assert_eq!(sources[0].qualityLabel, "4K iframe");
         assert_eq!(sources[0].container, "iframe");
         assert_eq!(
             normalize_source_hash(&sources[0].sourceHash),
             sources[0].sourceHash
         );
 
-        let provider = external_embed_provider_for_source_hash(&metadata, &sources[0].sourceHash)
+        let source = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
             .expect("matching external provider");
-        assert_eq!(provider, EXTERNAL_EMBED_PROVIDERS[0]);
-        assert_eq!(provider.id, "vidfast");
+        assert_eq!(source.provider.id, "vidfast");
+        assert_eq!(source.server.expect("vidfast server").id, "vFast");
         assert_eq!(
-            external_embed_url(provider, &metadata).unwrap(),
-            "https://vidfast.me/movie/1368166?theme=FF0000"
+            external_embed_url(source, &metadata).unwrap(),
+            "https://vidfast.me/movie/1368166?theme=FF0000&hideServer=true&server=vFast"
         );
         assert_eq!(
-            external_embed_source_hash(provider, &metadata),
+            external_embed_source_hash(source, &metadata),
             sources[0].sourceHash
         );
     }
@@ -6331,17 +6507,16 @@ mod tests {
     #[test]
     fn external_embed_resolved_payload_uses_live_iframe_handoff() {
         let metadata = sample_movie_metadata();
-        let provider = ExternalEmbedProvider {
-            id: "videasy",
-            label: "VidEasy",
-            priority: 1,
-        };
+        let source = external_embed_sources()
+            .into_iter()
+            .find(|source| source.provider.id == "videasy")
+            .expect("videasy source");
         let preferences = ResolvePreferences {
             audio_lang: "auto".to_owned(),
             subtitle_lang: "off".to_owned(),
             quality: "auto".to_owned(),
         };
-        let payload = build_external_embed_resolved_payload(&metadata, provider, &preferences);
+        let payload = build_external_embed_resolved_payload(&metadata, source, &preferences);
 
         assert_eq!(
             stringify_json(payload.get("resolverProvider")),
@@ -6358,6 +6533,40 @@ mod tests {
         assert!(stringify_json(payload.get("playableUrl")).starts_with("live-iframe:"));
         assert_eq!(
             build_live_iframe_playback_source("https://player.videasy.net/movie/1368166"),
+            stringify_json(payload.get("playableUrl"))
+        );
+    }
+
+    #[test]
+    fn external_embed_resolved_payload_can_pin_vidfast_server() {
+        let metadata = sample_movie_metadata();
+        let source = ExternalEmbedSource {
+            provider: ExternalEmbedProvider {
+                id: "vidfast",
+                label: "VidFast",
+                priority: 0,
+            },
+            server: Some(VIDFAST_EMBED_SERVERS[0]),
+        };
+        let preferences = ResolvePreferences {
+            audio_lang: "auto".to_owned(),
+            subtitle_lang: "off".to_owned(),
+            quality: "auto".to_owned(),
+        };
+        let payload = build_external_embed_resolved_payload(&metadata, source, &preferences);
+
+        assert_eq!(
+            stringify_json(payload.get("filename")),
+            "VidFast vFast embed"
+        );
+        assert_eq!(
+            stringify_json(payload.get("sourceInput")),
+            "https://vidfast.me/movie/1368166?theme=FF0000&hideServer=true&server=vFast"
+        );
+        assert_eq!(
+            build_live_iframe_playback_source(
+                "https://vidfast.me/movie/1368166?theme=FF0000&hideServer=true&server=vFast"
+            ),
             stringify_json(payload.get("playableUrl"))
         );
     }
