@@ -7,6 +7,7 @@ mod live;
 mod local_torrent;
 mod media;
 mod persistence;
+mod playback_optimize;
 mod process;
 mod resolver;
 mod routes;

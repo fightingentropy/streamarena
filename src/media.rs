@@ -710,6 +710,28 @@ impl MediaService {
     }
 }
 
+pub async fn probe_local_media_file(path: &Path) -> AppResult<MediaProbe> {
+    let source_input = path
+        .to_str()
+        .ok_or_else(|| ApiError::bad_request("Local media path is invalid."))?
+        .to_owned();
+    let command = vec![
+        "ffprobe".to_owned(),
+        "-v".to_owned(),
+        "error".to_owned(),
+        "-print_format".to_owned(),
+        "json".to_owned(),
+        "-show_streams".to_owned(),
+        "-show_format".to_owned(),
+        source_input.clone(),
+    ];
+    let raw = run_process_capture_text(&command, 15_000)
+        .await
+        .map_err(ApiError::bad_gateway)?;
+    let payload = serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
+    Ok(parse_probe_tracks_from_ffprobe_payload(&payload, &source_input))
+}
+
 pub fn choose_audio_track_from_probe(
     probe: &MediaProbe,
     preferred_lang: &str,

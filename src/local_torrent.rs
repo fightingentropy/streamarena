@@ -24,6 +24,7 @@ use tokio_util::io::ReaderStream;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
 use crate::persistence::Db;
+use crate::playback_optimize::optimize_playback_cache_file_best_effort;
 use crate::resolver::pick_video_file_ids;
 use crate::utils::now_ms;
 
@@ -303,14 +304,21 @@ impl LocalTorrentService {
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
 
+        let optimized = optimize_playback_cache_file_best_effort(
+            &final_path,
+            &output_folder,
+            &filename,
+        )
+        .await;
+
         let mut entry = DirectFileCacheEntry {
             source_hash,
             file_id,
             source_url: source_url.to_owned(),
-            filename,
+            filename: optimized.filename,
             selected_file_path: request.selected_file_path,
-            file_path: final_path.to_string_lossy().to_string(),
-            file_length: downloaded,
+            file_path: optimized.path.to_string_lossy().to_string(),
+            file_length: optimized.file_length,
             updated_at_ms: now_ms(),
         };
         self.refresh_direct_file_entry_access(&mut entry).await?;
