@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
+use tracing::warn;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
@@ -684,6 +685,68 @@ impl ResolverService {
             resolver_provider,
         )
         .await
+    }
+
+    pub async fn check_local_cache_upgrade(
+        &self,
+        tmdb_id: &str,
+        preferred_audio_lang: &str,
+        preferred_quality: &str,
+        source_hash: &str,
+        selected_file: &str,
+        media_type: &str,
+        season_number: i64,
+        episode_number: i64,
+    ) -> AppResult<Value> {
+        if !self.config.playback_sessions_enabled {
+            return Ok(json!({ "ready": false }));
+        }
+        let tmdb_id = tmdb_id.trim();
+        let normalized_hash = normalize_source_hash(source_hash);
+        if tmdb_id.is_empty() || normalized_hash.is_empty() {
+            return Ok(json!({ "ready": false }));
+        }
+
+        let stored_preference = self
+            .db
+            .get_title_preference(tmdb_id.to_owned())
+            .await?;
+        let effective_audio_lang = self
+            .resolve_effective_preferred_audio_lang(
+                tmdb_id,
+                stored_preference
+                    .as_ref()
+                    .map(|value| value.audioLang.as_str())
+                    .unwrap_or_default(),
+                preferred_audio_lang,
+            )
+            .await?;
+        let normalized_quality = normalize_preferred_stream_quality(preferred_quality);
+
+        if let Some(upgrade) = self
+            .find_local_cache_upgrade_from_session(
+                tmdb_id,
+                &effective_audio_lang,
+                &normalized_quality,
+                &normalized_hash,
+                media_type,
+                season_number,
+                episode_number,
+            )
+            .await?
+        {
+            return Ok(upgrade);
+        }
+
+        if let Some(resolved) = self
+            .local_torrent
+            .try_direct_file_resolved_source(&normalized_hash, selected_file)
+            .await?
+        {
+            return Ok(self.build_local_cache_upgrade_payload(resolved));
+        }
+
+        Ok(json!({ "ready": false }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1673,13 +1736,16 @@ impl ResolverService {
         preferences: ResolvePreferences,
     ) {
         let service = self.clone();
+        let cache_source_url = extract_playable_source_input(&resolved.playable_url);
+        let source_hash = resolved.source_hash.clone();
+        let tmdb_id = metadata.tmdb_id.clone();
         tokio::spawn(async move {
             let result = service
                 .local_torrent
                 .cache_direct_file(DirectFileCacheRequest {
                     source_hash: resolved.source_hash.clone(),
                     file_id: resolved.selected_file.clone(),
-                    source_url: resolved.playable_url.clone(),
+                    source_url: cache_source_url,
                     filename: resolved.filename.clone(),
                     selected_file_path: resolved.selected_file_path.clone(),
                 })
@@ -1692,18 +1758,110 @@ impl ResolverService {
                         validate_resolved_movie_source(resolved, &metadata)
                     }
                 });
-            if let Ok(resolved) = result {
-                let _ = service
-                    .build_resolved_response(
-                        resolved,
-                        metadata,
-                        preferences,
-                        ResolverProvider::LocalTorrent,
-                        true,
-                    )
-                    .await;
+            match result {
+                Ok(resolved) => {
+                    if let Err(error) = service
+                        .build_resolved_response(
+                            resolved,
+                            metadata,
+                            preferences,
+                            ResolverProvider::LocalTorrent,
+                            true,
+                        )
+                        .await
+                    {
+                        warn!(
+                            tmdb_id = %tmdb_id,
+                            source_hash = %source_hash,
+                            error = ?error,
+                            "Failed to persist local cache playback session"
+                        );
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        tmdb_id = %tmdb_id,
+                        source_hash = %source_hash,
+                        error = ?error,
+                        "Background local cache warm failed"
+                    );
+                }
             }
         });
+    }
+
+    async fn find_local_cache_upgrade_from_session(
+        &self,
+        tmdb_id: &str,
+        audio_lang: &str,
+        quality: &str,
+        source_hash: &str,
+        media_type: &str,
+        season_number: i64,
+        episode_number: i64,
+    ) -> AppResult<Option<Value>> {
+        let session_key = if media_type == "tv" {
+            format!(
+                "local-torrent:{}",
+                build_tv_playback_session_key(
+                    tmdb_id,
+                    season_number,
+                    episode_number,
+                    audio_lang,
+                    quality,
+                )
+            )
+        } else {
+            format!(
+                "local-torrent:{}",
+                build_playback_session_key(tmdb_id, audio_lang, quality)
+            )
+        };
+        let Some(session) = self.db.get_playback_session(session_key).await? else {
+            return Ok(None);
+        };
+        if session.tmdb_id != tmdb_id
+            || session.health_state == "invalid"
+            || normalize_source_hash(&session.source_hash) != source_hash
+            || !is_local_playback_session_url(&session.playable_url)
+        {
+            return Ok(None);
+        }
+        if session.playable_url.contains("/api/local-cache/stream")
+            && !self
+                .local_torrent
+                .try_direct_file_resolved_source(&session.source_hash, &session.selected_file)
+                .await?
+                .is_some()
+        {
+            return Ok(None);
+        }
+        Ok(Some(self.build_local_cache_upgrade_payload_from_session(session)))
+    }
+
+    fn build_local_cache_upgrade_payload(&self, resolved: LocalTorrentResolvedSource) -> Value {
+        json!({
+            "ready": true,
+            "playableUrl": resolved.playable_url,
+            "sourceInput": extract_playable_source_input(&resolved.playable_url),
+            "filename": resolved.filename,
+            "sourceHash": resolved.source_hash,
+            "selectedFile": resolved.selected_file,
+            "resolverProvider": ResolverProvider::LocalTorrent.as_str(),
+        })
+    }
+
+    fn build_local_cache_upgrade_payload_from_session(&self, session: PlaybackSession) -> Value {
+        json!({
+            "ready": true,
+            "playableUrl": session.playable_url,
+            "sourceInput": extract_playable_source_input(&session.playable_url),
+            "filename": session.filename,
+            "sourceHash": session.source_hash,
+            "selectedFile": session.selected_file,
+            "resolverProvider": ResolverProvider::LocalTorrent.as_str(),
+            "session": build_playback_session_payload(&session),
+        })
     }
 
     async fn resolve_local_torrent_candidate_stream(
@@ -5724,6 +5882,11 @@ fn extract_playable_source_input(source_url: &str) -> String {
     parse_playback_proxy_url(source_url)
         .map(|meta| meta.input)
         .unwrap_or_else(|| source_url.trim().to_owned())
+}
+
+fn is_local_playback_session_url(value: &str) -> bool {
+    let input = extract_playable_source_input(value);
+    input.contains("/api/local-cache/stream") || input.contains("/api/local-torrent/stream")
 }
 
 fn normalize_resolved_source_for_software_decode(

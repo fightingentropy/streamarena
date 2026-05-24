@@ -111,10 +111,15 @@ struct CacheDirEntry {
 
 impl LocalTorrentService {
     pub fn new(config: Config, db: Db, http_client: reqwest::Client) -> Self {
+        let download_client = reqwest::Client::builder()
+            .user_agent("netflix-rust-backend")
+            .connect_timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or(http_client);
         Self {
             config,
             db,
-            http_client,
+            http_client: download_client,
             session: Arc::new(OnceCell::new()),
             handles: Arc::new(DashMap::new()),
             locks: Arc::new(DashMap::new()),
@@ -310,6 +315,34 @@ impl LocalTorrentService {
         };
         self.refresh_direct_file_entry_access(&mut entry).await?;
         Ok(direct_file_entry_to_resolved_source(&entry))
+    }
+
+    pub(crate) async fn try_direct_file_resolved_source(
+        &self,
+        source_hash: &str,
+        file_id: &str,
+    ) -> AppResult<Option<LocalTorrentResolvedSource>> {
+        let source_hash = normalize_torrent_hash(source_hash);
+        let file_id = normalize_direct_file_id(file_id);
+        if source_hash.is_empty() || file_id.is_empty() {
+            return Ok(None);
+        }
+        let Some(mut entry) = self.load_direct_file_entry(&source_hash, &file_id).await? else {
+            return Ok(None);
+        };
+        let file_path = PathBuf::from(&entry.file_path);
+        let metadata = tokio::fs::metadata(&file_path).await.ok();
+        if !metadata
+            .as_ref()
+            .map(|value| value.is_file() && value.len() > 0)
+            .unwrap_or(false)
+        {
+            return Ok(None);
+        }
+        entry.file_length = metadata.map(|value| value.len()).unwrap_or(entry.file_length);
+        self.refresh_direct_file_entry_access_best_effort(&mut entry)
+            .await;
+        Ok(Some(direct_file_entry_to_resolved_source(&entry)))
     }
 
     pub(crate) async fn create_stream_response(

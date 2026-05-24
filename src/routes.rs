@@ -119,6 +119,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/resolve/sources", any(resolve_sources_handler))
         .route("/api/resolve/movie", any(resolve_movie_handler))
         .route("/api/resolve/tv", any(resolve_tv_handler))
+        .route("/api/resolve/local-upgrade", any(resolve_local_upgrade_handler))
         .route(
             "/api/local-torrent/stream",
             any(local_torrent_stream_handler),
@@ -1044,6 +1045,58 @@ pub async fn resolve_movie_handler(
                 .get("resolverProvider")
                 .map(String::as_str)
                 .unwrap_or_default(),
+        )
+        .await?;
+    Ok(json_response(payload))
+}
+
+pub async fn resolve_local_upgrade_handler(
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed."));
+    }
+    let params = query_pairs(uri.query().unwrap_or_default());
+    let tmdb_id = params.get("tmdbId").cloned().unwrap_or_default();
+    if !is_numeric_id(&tmdb_id) {
+        return Err(ApiError::bad_request(
+            "Missing or invalid tmdbId query parameter.",
+        ));
+    }
+    let payload = state
+        .resolver
+        .check_local_cache_upgrade(
+            &tmdb_id,
+            params
+                .get("audioLang")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            params
+                .get("quality")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            params
+                .get("sourceHash")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            params
+                .get("selectedFile")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            params
+                .get("mediaType")
+                .map(String::as_str)
+                .unwrap_or("movie"),
+            params
+                .get("seasonNumber")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(1),
+            params
+                .get("episodeNumber")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(1),
         )
         .await?;
     Ok(json_response(payload))

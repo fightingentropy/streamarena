@@ -485,6 +485,8 @@ const INITIAL_RESUME_MAX_ATTEMPTS = 120;
 const INITIAL_RESUME_APPLY_WINDOW_MS = 30000;
 const INITIAL_RESUME_TOLERANCE_SECONDS = 2;
 const RESUME_CLEAR_AT_END_THRESHOLD_SECONDS = 8;
+const LOCAL_CACHE_UPGRADE_POLL_MS = 20_000;
+const LOCAL_CACHE_UPGRADE_INITIAL_DELAY_MS = 8_000;
 const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
 const SUBTITLE_LINE_FROM_BOTTOM = -4;
 const SUBTITLE_FALLBACK_LINE_PERCENT = 80;
@@ -538,6 +540,11 @@ let selectedSourceHash = normalizeSourceHash(sourceHashParam);
 let currentTmdbPlaybackSessionKey = "";
 let currentTmdbResolverProvider = "";
 let currentTmdbResolvedFilename = "";
+let currentTmdbSelectedFile = "";
+let localCacheUpgradePollTimer = 0;
+let localCacheUpgradeInitialTimer = 0;
+let hasUpgradedToLocalCache = false;
+let localCacheUpgradeInFlight = false;
 let sourceSelectionPinned = Boolean(selectedSourceHash);
 let automaticTmdbAlternateRecoveryInFlight = false;
 
@@ -2421,6 +2428,155 @@ function extractPlaybackSourceInput(source) {
   return String(source || "").trim();
 }
 
+function isLocalPlaybackSource(source) {
+  const normalizedSource = extractPlaybackSourceInput(source) || String(source || "").trim();
+  return (
+    normalizedSource.includes("/api/local-cache/stream") ||
+    normalizedSource.includes("/api/local-torrent/stream")
+  );
+}
+
+function shouldWatchForLocalCacheUpgrade(resolved) {
+  if (!isTmdbResolvedPlayback || hasUpgradedToLocalCache) {
+    return false;
+  }
+  const resolverProvider = String(
+    resolved?.resolverProvider ||
+      resolved?.session?.resolverProvider ||
+      currentTmdbResolverProvider ||
+      "",
+  )
+    .trim()
+    .toLowerCase();
+  if (resolverProvider === "local-torrent") {
+    return false;
+  }
+  const playbackSource = String(
+    resolved?.playableUrl || lastRequestedPlaybackSource || "",
+  ).trim();
+  return playbackSource && !isLocalPlaybackSource(playbackSource);
+}
+
+function buildLocalCacheUpgradeUrl() {
+  const query = new URLSearchParams({
+    tmdbId: String(tmdbId || "").trim(),
+    sourceHash: normalizeSourceHash(selectedSourceHash),
+    audioLang: preferredAudioLang,
+    quality: preferredQuality,
+  });
+  if (currentTmdbSelectedFile) {
+    query.set("selectedFile", currentTmdbSelectedFile);
+  }
+  if (isTmdbTvPlayback) {
+    query.set("mediaType", "tv");
+    query.set("seasonNumber", String(Math.max(1, seasonNumber)));
+    query.set("episodeNumber", String(Math.max(1, episodeNumber)));
+  }
+  return `/api/resolve/local-upgrade?${query.toString()}`;
+}
+
+function stopLocalCacheUpgradeWatch() {
+  if (localCacheUpgradePollTimer) {
+    window.clearInterval(localCacheUpgradePollTimer);
+    localCacheUpgradePollTimer = 0;
+  }
+  if (localCacheUpgradeInitialTimer) {
+    window.clearTimeout(localCacheUpgradeInitialTimer);
+    localCacheUpgradeInitialTimer = 0;
+  }
+}
+
+function startLocalCacheUpgradeWatch(resolved) {
+  stopLocalCacheUpgradeWatch();
+  hasUpgradedToLocalCache = false;
+  if (!shouldWatchForLocalCacheUpgrade(resolved)) {
+    return;
+  }
+  localCacheUpgradeInitialTimer = window.setTimeout(() => {
+    localCacheUpgradeInitialTimer = 0;
+    void pollLocalCacheUpgrade();
+  }, LOCAL_CACHE_UPGRADE_INITIAL_DELAY_MS);
+  localCacheUpgradePollTimer = window.setInterval(() => {
+    void pollLocalCacheUpgrade();
+  }, LOCAL_CACHE_UPGRADE_POLL_MS);
+}
+
+async function pollLocalCacheUpgrade() {
+  if (
+    localCacheUpgradeInFlight ||
+    hasUpgradedToLocalCache ||
+    !isTmdbResolvedPlayback ||
+    isResolvingSource() ||
+    isRecoveringTmdbStream ||
+    !selectedSourceHash
+  ) {
+    return;
+  }
+  const activeSource = String(
+    lastRequestedPlaybackSource || video.currentSrc || "",
+  ).trim();
+  if (!activeSource || isLocalPlaybackSource(activeSource)) {
+    stopLocalCacheUpgradeWatch();
+    return;
+  }
+  localCacheUpgradeInFlight = true;
+  try {
+    const payload = await requestJson(buildLocalCacheUpgradeUrl(), {}, 8000);
+    if (!payload?.ready || !payload?.playableUrl) {
+      return;
+    }
+    await upgradePlaybackToLocalCache(payload);
+  } catch {
+    // Best effort; keep streaming from the current remote source.
+  } finally {
+    localCacheUpgradeInFlight = false;
+  }
+}
+
+async function upgradePlaybackToLocalCache(payload) {
+  if (hasUpgradedToLocalCache) {
+    return;
+  }
+  const localUrl = String(payload.playableUrl || "").trim();
+  if (!localUrl || isLocalPlaybackSource(lastRequestedPlaybackSource)) {
+    return;
+  }
+  const resumeSeconds = getEffectiveCurrentTime();
+  if (!Number.isFinite(resumeSeconds) || resumeSeconds < 0) {
+    return;
+  }
+
+  hasUpgradedToLocalCache = true;
+  stopLocalCacheUpgradeWatch();
+
+  activeTrackSourceInput = String(payload.sourceInput || localUrl).trim();
+  currentTmdbPlaybackSessionKey =
+    String(payload.session?.key || "").trim() || currentTmdbPlaybackSessionKey;
+  currentTmdbResolverProvider = String(
+    payload.resolverProvider || "local-torrent",
+  ).trim();
+  if (payload.filename) {
+    currentTmdbResolvedFilename = String(payload.filename).trim();
+  }
+  if (payload.selectedFile) {
+    currentTmdbSelectedFile = String(payload.selectedFile).trim();
+  }
+
+  const preferredSource = buildPreferredBrowserPlaybackSource(
+    localUrl,
+    activeTrackSourceInput,
+    selectedAudioStreamIndex,
+    selectedSubtitleStreamIndex,
+  );
+  setVideoSource(preferredSource, {
+    startSeconds: resumeSeconds,
+    resetInitialResume: false,
+  });
+  applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
+  syncAudioState();
+  await tryPlay();
+}
+
 function getNativeHlsSupport() {
   try {
     return String(video?.canPlayType?.("application/vnd.apple.mpegURL") || "");
@@ -3675,6 +3831,8 @@ async function resolveTmdbSourcesAndPlay({
   allowSourceFallback = true,
   requiredSourceHash = "",
 } = {}) {
+  stopLocalCacheUpgradeWatch();
+  hasUpgradedToLocalCache = false;
   if (!availablePlaybackSources.length) {
     void fetchTmdbSourceOptionsViaBackend();
   }
@@ -3701,6 +3859,7 @@ async function resolveTmdbSourcesAndPlay({
     resolved?.resolverProvider || resolved?.session?.resolverProvider || resolved?.metadata?.resolverProvider || "",
   ).trim();
   currentTmdbResolvedFilename = String(resolved?.filename || "").trim();
+  currentTmdbSelectedFile = String(resolved?.selectedFile || "").trim();
   if (
     normalizedRequiredSourceHash &&
     resolvedSourceHash !== normalizedRequiredSourceHash
@@ -3847,6 +4006,7 @@ async function resolveTmdbSourcesAndPlay({
   }
 
   await tryPlay();
+  startLocalCacheUpgradeWatch(resolved);
   return { nativeLaunched: false, resolved };
 }
 
@@ -3855,6 +4015,7 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
     return false;
   }
 
+  stopLocalCacheUpgradeWatch();
   isRecoveringTmdbStream = true;
   showResolver(message);
 
@@ -9381,6 +9542,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     clearStreamStallRecovery();
     clearPlaybackRecovery();
     clearAudioDecodeWatch();
+    stopLocalCacheUpgradeWatch();
     clearSeekLoadingTimeout();
     destroyActiveHlsController();
     stopSubtitleRafLoop();

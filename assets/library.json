@@ -1,6 +1,16 @@
 {
   "movies": [
     {
+      "id": "local-movie-interstellar-2014",
+      "title": "Interstellar",
+      "tmdbId": "157336",
+      "year": "2014",
+      "src": "assets/videos/interstellar-2014-1080p-hevc.mp4",
+      "thumb": "assets/images/interstellar-2014-thumb.jpg",
+      "description": "The adventures of a group of explorers who make use of a newly discovered wormhole to surpass the limitations on human space travel and conquer the vast distances involved in an interstellar voyage.",
+      "uploadedAt": 1748078400000
+    },
+    {
       "id": "local-movie-fantozzi-1975",
       "title": "Fantozzi",
       "tmdbId": "25606",
