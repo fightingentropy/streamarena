@@ -3620,6 +3620,13 @@ function setLiveIframePlaybackSource(embedUrl, encodedSource) {
   syncDurationText();
 }
 
+function isLiveIframePlaybackActive() {
+  return Boolean(
+    parseLiveIframePlaybackSource(lastRequestedPlaybackSource) ||
+      (liveEmbedFrame && !liveEmbedFrame.hidden && liveEmbedFrame.src),
+  );
+}
+
 function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 0 } = {}) {
   if (!nextSource) {
     return;
@@ -6254,6 +6261,11 @@ function persistResumeTime(force = false) {
 }
 
 async function tryPlay() {
+  if (isLiveIframePlaybackActive()) {
+    syncPlayState();
+    return;
+  }
+
   const attributeSource = video.getAttribute("src") || "";
   const fallbackRequestedSource =
     lastRequestedAbsolutePlaybackSource ||
@@ -9154,6 +9166,10 @@ trackListener(video, "canplay", () => {
   }
 });
 trackListener(video, "error", () => {
+  if (isLiveIframePlaybackActive()) {
+    return;
+  }
+
   hideSeekLoadingIndicator();
 
   const mediaError = video.error;
