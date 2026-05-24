@@ -14,6 +14,7 @@ mod routes;
 mod static_files;
 mod streaming;
 mod tmdb;
+mod twitch;
 mod upload;
 mod utils;
 

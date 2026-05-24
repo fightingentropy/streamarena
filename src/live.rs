@@ -18,7 +18,12 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "jmp2.uk",
     "www.bloomberg.com",
     "28585519.net",
+    "antennaplus.gr",
+    "broadpeak-aas.com",
     "cdn.skycdp.com",
+    "msvdn.net",
+    "siliconweb.com",
+    "ttvnw.net",
 ];
 
 struct LiveHlsRequest {
@@ -412,6 +417,30 @@ mod tests {
         let sky_news: url::Url = "https://linear417-gb-hls1-prd-ak.cdn.skycdp.com/100e/Content/HLS_001_1080_30/Live/channel(skynews)/index_1080-30.m3u8"
             .parse()
             .expect("sky news url");
+        let ert1: url::Url = "https://ert-ucdn.broadpeak-aas.com/bpk-tv/ERT1/default/index.m3u8"
+            .parse()
+            .expect("ert1 url");
+        let mega_news: url::Url = "https://streamcdnb2-c98db5952cb54b358365984178fb898a.msvdn.net/live/S99841657/NU0xOarAMJ5X/playlist.m3u8"
+            .parse()
+            .expect("mega news url");
+        let ant1: url::Url = "https://pcdn.antennaplus.gr/live/media0/antenna-gr/HLS/index.m3u8"
+            .parse()
+            .expect("ant1 url");
+        let alpha_tv: url::Url =
+            "https://alphatvlive2-ak.siliconweb.com/alphatvlive/live_abr/playlist.m3u8"
+                .parse()
+                .expect("alpha tv url");
+        let twitch_master: url::Url =
+            "https://usher.ttvnw.net/api/channel/hls/topmedia_topnews.m3u8"
+                .parse()
+                .expect("twitch master url");
+        let twitch_variant: url::Url = "https://euw12.playlist.ttvnw.net/v1/playlist/live.m3u8"
+            .parse()
+            .expect("twitch variant url");
+        let twitch_segment: url::Url =
+            "https://91334ab1a2f2.j.cloudfront.hls.ttvnw.net/v1/segment/live.ts"
+                .parse()
+                .expect("twitch segment url");
         let disallowed: url::Url = "https://example.com/live.m3u8"
             .parse()
             .expect("disallowed url");
@@ -421,6 +450,13 @@ mod tests {
         assert!(is_allowed_live_hls_url(&bloomberg_variant));
         assert!(is_allowed_live_hls_url(&bloomberg_akamai_variant));
         assert!(is_allowed_live_hls_url(&sky_news));
+        assert!(is_allowed_live_hls_url(&ert1));
+        assert!(is_allowed_live_hls_url(&mega_news));
+        assert!(is_allowed_live_hls_url(&ant1));
+        assert!(is_allowed_live_hls_url(&alpha_tv));
+        assert!(is_allowed_live_hls_url(&twitch_master));
+        assert!(is_allowed_live_hls_url(&twitch_variant));
+        assert!(is_allowed_live_hls_url(&twitch_segment));
         assert!(!is_allowed_live_hls_url(&disallowed));
         assert!(!is_allowed_live_hls_url(&local));
     }

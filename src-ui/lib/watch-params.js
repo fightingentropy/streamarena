@@ -1,5 +1,6 @@
 const SESSION_PREFIX = "watch:";
 const LOCAL_PREFIX = "netflix-watch-params:";
+const WATCH_PATH_PATTERN = /^\/watch(?:\/|$)/;
 
 export function slugifyTitle(title) {
   return String(title || "")
@@ -48,6 +49,41 @@ export function saveWatchParams(slug, paramsString, disambiguation = {}) {
     sessionStorage.setItem(`${SESSION_PREFIX}${slug}`, paramsString);
   } catch {
     // Ignore storage failures.
+  }
+}
+
+export function normalizeInternalReturnToPath(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (url.origin !== window.location.origin) {
+      return "";
+    }
+    if (
+      WATCH_PATH_PATTERN.test(url.pathname) ||
+      url.pathname === "/login" ||
+      url.pathname === "/login.html"
+    ) {
+      return "";
+    }
+    return `${url.pathname || "/"}${url.search || ""}${url.hash || ""}`;
+  } catch {
+    return "";
+  }
+}
+
+export function getCurrentReturnToPath() {
+  return normalizeInternalReturnToPath(window.location.href) || "/";
+}
+
+export function addCurrentReturnToParam(params) {
+  const returnTo = getCurrentReturnToPath();
+  if (returnTo) {
+    params.set("returnTo", returnTo);
   }
 }
 
