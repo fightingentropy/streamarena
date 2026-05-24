@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::http::header::{
@@ -20,6 +20,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::{Mutex, OnceCell};
 use tokio::time::timeout;
 use tokio_util::io::ReaderStream;
+use tracing::warn;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
@@ -32,6 +33,8 @@ const LOCAL_TORRENT_RECENT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const LOCAL_TORRENT_ACCESS_MARKER: &str = ".last-accessed";
 const CACHE_CONTROL_STREAM: &str = "no-store";
 const DIRECT_FILE_CACHE_FOLDER: &str = "direct";
+const TORRENT_OPTIMIZE_POLL_MS: u64 = 5_000;
+const TORRENT_OPTIMIZE_WAIT_MS: u64 = 6 * 60 * 60 * 1000;
 
 #[derive(Clone)]
 pub struct LocalTorrentService {
@@ -41,6 +44,7 @@ pub struct LocalTorrentService {
     session: Arc<OnceCell<Arc<Session>>>,
     handles: Arc<DashMap<String, Arc<ManagedTorrent>>>,
     locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    optimize_jobs: Arc<DashMap<String, ()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +128,7 @@ impl LocalTorrentService {
             session: Arc::new(OnceCell::new()),
             handles: Arc::new(DashMap::new()),
             locks: Arc::new(DashMap::new()),
+            optimize_jobs: Arc::new(DashMap::new()),
         }
     }
 
@@ -185,7 +190,18 @@ impl LocalTorrentService {
             updated_at_ms: now_ms(),
         };
         let handle = self.ensure_handle(session, &entry).await?;
-        self.wait_for_first_byte(handle, entry.file_id).await?;
+        self.wait_for_first_byte(handle.clone(), entry.file_id).await?;
+
+        let file_id_key = entry.file_id.to_string();
+        if let Some(optimized) = self
+            .try_direct_file_resolved_source(&source_hash, &file_id_key)
+            .await?
+        {
+            self.refresh_entry_access_best_effort(&mut entry).await;
+            return Ok(optimized);
+        }
+
+        self.try_spawn_torrent_optimize(entry.clone(), handle.clone());
         self.refresh_entry_access(&mut entry).await?;
 
         Ok(LocalTorrentResolvedSource {
@@ -372,6 +388,7 @@ impl LocalTorrentService {
             .ok_or_else(|| ApiError::not_found("Local torrent stream was not found."))?;
         let session = self.session().await?;
         let handle = self.ensure_handle(session, &entry).await?;
+        self.try_spawn_torrent_optimize(entry.clone(), handle.clone());
         self.refresh_entry_access_best_effort(&mut entry).await;
         let mut stream = handle.clone().stream(file_id).map_err(|error| {
             ApiError::bad_gateway(format!("Local torrent stream failed: {error}"))
@@ -710,6 +727,116 @@ impl LocalTorrentService {
                 "Local torrent first byte failed: {error}"
             ))),
         }
+    }
+
+    fn try_spawn_torrent_optimize(&self, entry: LocalTorrentCacheEntry, handle: Arc<ManagedTorrent>) {
+        let job_key = format!("{}:{}", entry.source_hash, entry.file_id);
+        if self.optimize_jobs.contains_key(&job_key) {
+            return;
+        }
+        self.optimize_jobs.insert(job_key.clone(), ());
+        let service = self.clone();
+        tokio::spawn(async move {
+            let result = service
+                .optimize_torrent_entry_when_complete(entry, handle)
+                .await;
+            if let Err(error) = result {
+                warn!(
+                    job_key = %job_key,
+                    error = ?error,
+                    "Torrent playback optimization failed"
+                );
+            }
+            service.optimize_jobs.remove(&job_key);
+        });
+    }
+
+    async fn optimize_torrent_entry_when_complete(
+        &self,
+        entry: LocalTorrentCacheEntry,
+        handle: Arc<ManagedTorrent>,
+    ) -> AppResult<()> {
+        let file_id_key = entry.file_id.to_string();
+        if self
+            .try_direct_file_resolved_source(&entry.source_hash, &file_id_key)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+
+        if !self
+            .wait_for_torrent_file_complete(&handle, entry.file_id, entry.file_length)
+            .await
+        {
+            return Err(ApiError::bad_gateway(
+                "Timed out waiting for the torrent download to finish.",
+            ));
+        }
+
+        let input_path = self.resolve_torrent_file_path(&entry);
+        if !input_path.is_file() {
+            return Err(ApiError::bad_gateway(
+                "Completed torrent file was not found on disk.",
+            ));
+        }
+
+        let output_folder = self.direct_file_output_folder(&entry.source_hash, &file_id_key);
+        let optimized = optimize_playback_cache_file_best_effort(
+            &input_path,
+            &output_folder,
+            &entry.filename,
+        )
+        .await;
+
+        let mut direct_entry = DirectFileCacheEntry {
+            source_hash: entry.source_hash,
+            file_id: file_id_key,
+            source_url: String::new(),
+            filename: optimized.filename,
+            selected_file_path: entry.file_path,
+            file_path: optimized.path.to_string_lossy().to_string(),
+            file_length: optimized.file_length,
+            updated_at_ms: now_ms(),
+        };
+        self.refresh_direct_file_entry_access(&mut direct_entry)
+            .await?;
+        Ok(())
+    }
+
+    async fn wait_for_torrent_file_complete(
+        &self,
+        handle: &ManagedTorrent,
+        file_id: usize,
+        expected_length: u64,
+    ) -> bool {
+        let started = Instant::now();
+        let max_wait = Duration::from_millis(TORRENT_OPTIMIZE_WAIT_MS);
+        let poll_interval = Duration::from_millis(TORRENT_OPTIMIZE_POLL_MS);
+        loop {
+            let stats = handle.stats();
+            if stats.finished {
+                return true;
+            }
+            if file_id < stats.file_progress.len() {
+                let downloaded = stats.file_progress[file_id];
+                if expected_length > 0 && downloaded + 1024 >= expected_length {
+                    return true;
+                }
+            }
+            if started.elapsed() >= max_wait {
+                return false;
+            }
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+
+    fn resolve_torrent_file_path(&self, entry: &LocalTorrentCacheEntry) -> PathBuf {
+        let path = PathBuf::from(&entry.file_path);
+        if path.is_absolute() {
+            return path;
+        }
+        PathBuf::from(&entry.output_folder).join(path)
     }
 
     async fn persist_entry(&self, entry: &LocalTorrentCacheEntry) -> AppResult<()> {
