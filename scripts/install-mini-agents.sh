@@ -6,7 +6,7 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
 REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/netflix}"
 DISK_MAX_PERCENT="${DISK_MAX_PERCENT:-90}"
 DISK_MIN_FREE_GB="${DISK_MIN_FREE_GB:-50}"
-WATCHDOG_URL="${WATCHDOG_URL:-http://127.0.0.1:5173/api/library}"
+WATCHDOG_URL="${WATCHDOG_URL:-http://127.0.0.1:5173/}"
 WATCHDOG_INTERVAL_SECONDS="${WATCHDOG_INTERVAL_SECONDS:-60}"
 WATCHDOG_FAILURE_THRESHOLD="${WATCHDOG_FAILURE_THRESHOLD:-1}"
 WATCHDOG_TIMEOUT_SECONDS="${WATCHDOG_TIMEOUT_SECONDS:-5}"
@@ -237,13 +237,6 @@ set -euo pipefail
 
 app="__REMOTE_APP__"
 limit="__HERO_PREVIEW_LIMIT__"
-env_file="/Users/hermes/.config/netflix/env"
-
-if [[ -f "$env_file" ]]; then
-  set -a
-  source "$env_file"
-  set +a
-fi
 
 export NETFLIX_APP_DIR="$app"
 export HERO_PREVIEW_LIMIT="$limit"
