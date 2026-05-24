@@ -729,7 +729,10 @@ pub async fn probe_local_media_file(path: &Path) -> AppResult<MediaProbe> {
         .await
         .map_err(ApiError::bad_gateway)?;
     let payload = serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
-    Ok(parse_probe_tracks_from_ffprobe_payload(&payload, &source_input))
+    Ok(parse_probe_tracks_from_ffprobe_payload(
+        &payload,
+        &source_input,
+    ))
 }
 
 pub fn choose_audio_track_from_probe(

@@ -69,6 +69,8 @@ const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "mp2", "opus", "vorbi
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
     &["ac3", "eac3", "dts", "dca", "truehd", "mlp", "pcm_", "wma"];
 const DEFAULT_ALLOWED_SOURCE_FORMATS: &[&str] = &["mp4", "mkv"];
+const EXTERNAL_EMBED_RESOLVER_PROVIDER: &str = "external-embed";
+const LIVE_IFRAME_SOURCE_PREFIX: &str = "live-iframe:";
 
 static SEED_COUNT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"👤\s*([0-9.,]+)").expect("valid seed regex"));
@@ -236,6 +238,36 @@ struct SourceSummary {
     releaseGroup: String,
     score: i64,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExternalEmbedProvider {
+    id: &'static str,
+    label: &'static str,
+    priority: i64,
+}
+
+const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
+    ExternalEmbedProvider {
+        id: "vidfast",
+        label: "VidFast",
+        priority: 0,
+    },
+    ExternalEmbedProvider {
+        id: "videasy",
+        label: "VidEasy",
+        priority: 1,
+    },
+    ExternalEmbedProvider {
+        id: "vidking",
+        label: "VidKing",
+        priority: 2,
+    },
+    ExternalEmbedProvider {
+        id: "2embed",
+        label: "2Embed",
+        priority: 3,
+    },
+];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ResolvedSource {
@@ -463,6 +495,11 @@ impl ResolverService {
                     episode_number,
                 )
                 .await?;
+            let external_sources = build_external_embed_source_summaries(&metadata);
+            let has_external_sources = !external_sources.is_empty();
+            let pinned_external_source =
+                external_embed_provider_for_source_hash(&metadata, &normalized_source_hash)
+                    .is_some();
             let torrentio_result = self
                 .fetch_torrentio_episode_streams(
                     &metadata.imdb_id,
@@ -484,7 +521,8 @@ impl ResolverService {
                             &source_filters,
                         )
                         .await?;
-                    let pinned_missing = !normalized_source_hash.is_empty()
+                    let pinned_missing = !pinned_external_source
+                        && !normalized_source_hash.is_empty()
                         && !stream_list_contains_hash(&streams, &normalized_source_hash);
                     if should_try_torznab_discovery(
                         false,
@@ -492,7 +530,17 @@ impl ResolverService {
                         pinned_missing,
                         false,
                     ) {
-                        let torznab_streams = self.fetch_torznab_episode_streams(&metadata).await?;
+                        let torznab_streams =
+                            match self.fetch_torznab_episode_streams(&metadata).await {
+                                Ok(streams) => streams,
+                                Err(torznab_error) => {
+                                    if has_external_sources {
+                                        Vec::new()
+                                    } else {
+                                        return Err(torznab_error);
+                                    }
+                                }
+                            };
                         let torznab_sources = self
                             .summarize_episode_sources_from_streams(
                                 &torznab_streams,
@@ -521,7 +569,17 @@ impl ResolverService {
                     }
                 }
                 Err(error) => {
-                    let torznab_streams = self.fetch_torznab_episode_streams(&metadata).await?;
+                    let torznab_streams = match self.fetch_torznab_episode_streams(&metadata).await
+                    {
+                        Ok(streams) => streams,
+                        Err(torznab_error) => {
+                            if has_external_sources {
+                                Vec::new()
+                            } else {
+                                return Err(torznab_error);
+                            }
+                        }
+                    };
                     let torznab_sources = self
                         .summarize_episode_sources_from_streams(
                             &torznab_streams,
@@ -534,12 +592,13 @@ impl ResolverService {
                             &source_filters,
                         )
                         .await?;
-                    if torznab_sources.is_empty() {
+                    if torznab_sources.is_empty() && !has_external_sources {
                         return Err(error);
                     }
                     torznab_sources
                 }
             };
+            let sources = combine_external_embed_source_summaries(external_sources, sources);
             external_guard.mark_completed();
             return Ok(json!({
                 "mediaType": "tv",
@@ -554,6 +613,10 @@ impl ResolverService {
         let metadata = self
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
+        let external_sources = build_external_embed_source_summaries(&metadata);
+        let has_external_sources = !external_sources.is_empty();
+        let pinned_external_source =
+            external_embed_provider_for_source_hash(&metadata, &normalized_source_hash).is_some();
         let torrentio_result = self.fetch_torrentio_movie_streams(&metadata.imdb_id).await;
         let sources = match torrentio_result {
             Ok(streams) => {
@@ -568,10 +631,20 @@ impl ResolverService {
                         &source_filters,
                     )
                     .await?;
-                let pinned_missing = !normalized_source_hash.is_empty()
+                let pinned_missing = !pinned_external_source
+                    && !normalized_source_hash.is_empty()
                     && !stream_list_contains_hash(&streams, &normalized_source_hash);
                 if should_try_torznab_discovery(false, sources.is_empty(), pinned_missing, false) {
-                    let torznab_streams = self.fetch_torznab_movie_streams(&metadata).await?;
+                    let torznab_streams = match self.fetch_torznab_movie_streams(&metadata).await {
+                        Ok(streams) => streams,
+                        Err(torznab_error) => {
+                            if has_external_sources {
+                                Vec::new()
+                            } else {
+                                return Err(torznab_error);
+                            }
+                        }
+                    };
                     let torznab_sources = self
                         .summarize_movie_sources_from_streams(
                             &torznab_streams,
@@ -596,7 +669,16 @@ impl ResolverService {
                 }
             }
             Err(error) => {
-                let torznab_streams = self.fetch_torznab_movie_streams(&metadata).await?;
+                let torznab_streams = match self.fetch_torznab_movie_streams(&metadata).await {
+                    Ok(streams) => streams,
+                    Err(torznab_error) => {
+                        if has_external_sources {
+                            Vec::new()
+                        } else {
+                            return Err(torznab_error);
+                        }
+                    }
+                };
                 let torznab_sources = self
                     .summarize_movie_sources_from_streams(
                         &torznab_streams,
@@ -608,12 +690,13 @@ impl ResolverService {
                         &source_filters,
                     )
                     .await?;
-                if torznab_sources.is_empty() {
+                if torznab_sources.is_empty() && !has_external_sources {
                     return Err(error);
                 }
                 torznab_sources
             }
         };
+        let sources = combine_external_embed_source_summaries(external_sources, sources);
         external_guard.mark_completed();
         Ok(json!({
             "mediaType": "movie",
@@ -707,10 +790,7 @@ impl ResolverService {
             return Ok(json!({ "ready": false }));
         }
 
-        let stored_preference = self
-            .db
-            .get_title_preference(tmdb_id.to_owned())
-            .await?;
+        let stored_preference = self.db.get_title_preference(tmdb_id.to_owned()).await?;
         let effective_audio_lang = self
             .resolve_effective_preferred_audio_lang(
                 tmdb_id,
@@ -805,6 +885,16 @@ impl ResolverService {
         let metadata = self
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
+        if let Some(provider) =
+            external_embed_provider_for_source_hash(&metadata, &filters.source_hash)
+        {
+            external_guard.mark_completed();
+            return Ok(build_external_embed_resolved_payload(
+                &metadata,
+                provider,
+                &preferences,
+            ));
+        }
         let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
             .try_reuse_playback_session(
@@ -1109,6 +1199,16 @@ impl ResolverService {
                 episode_number,
             )
             .await?;
+        if let Some(provider) =
+            external_embed_provider_for_source_hash(&metadata, &filters.source_hash)
+        {
+            external_guard.mark_completed();
+            return Ok(build_external_embed_resolved_payload(
+                &metadata,
+                provider,
+                &preferences,
+            ));
+        }
         let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
             .try_reuse_playback_session(
@@ -1836,7 +1936,9 @@ impl ResolverService {
         {
             return Ok(None);
         }
-        Ok(Some(self.build_local_cache_upgrade_payload_from_session(session)))
+        Ok(Some(
+            self.build_local_cache_upgrade_payload_from_session(session),
+        ))
     }
 
     fn build_local_cache_upgrade_payload(&self, resolved: LocalTorrentResolvedSource) -> Value {
@@ -4478,6 +4580,173 @@ fn stream_list_contains_hash(streams: &[DiscoveryStream], source_hash: &str) -> 
             .any(|stream| get_stream_info_hash(stream) == normalized_hash)
 }
 
+fn combine_external_embed_source_summaries(
+    external_sources: Vec<SourceSummary>,
+    torrent_sources: Vec<SourceSummary>,
+) -> Vec<SourceSummary> {
+    if external_sources.is_empty() {
+        return torrent_sources;
+    }
+    let mut sources = external_sources;
+    sources.extend(torrent_sources);
+    sources
+}
+
+fn build_external_embed_source_summaries(metadata: &ResolveMetadata) -> Vec<SourceSummary> {
+    EXTERNAL_EMBED_PROVIDERS
+        .iter()
+        .copied()
+        .filter_map(|provider| {
+            let source_hash = external_embed_source_hash(provider, metadata);
+            if source_hash.is_empty() || external_embed_url(provider, metadata).is_none() {
+                return None;
+            }
+            Some(SourceSummary {
+                sourceHash: source_hash.clone(),
+                infoHash: source_hash,
+                provider: "LivNet".to_owned(),
+                primary: provider.label.to_owned(),
+                filename: format!("{} embed", provider.label),
+                qualityLabel: "Fast iframe".to_owned(),
+                container: "iframe".to_owned(),
+                seeders: 0,
+                size: String::new(),
+                releaseGroup: String::new(),
+                score: 1_000_000 - provider.priority,
+            })
+        })
+        .collect()
+}
+
+fn external_embed_provider_for_source_hash(
+    metadata: &ResolveMetadata,
+    source_hash: &str,
+) -> Option<ExternalEmbedProvider> {
+    let normalized_hash = normalize_source_hash(source_hash);
+    if normalized_hash.is_empty() {
+        return None;
+    }
+    EXTERNAL_EMBED_PROVIDERS
+        .iter()
+        .copied()
+        .find(|provider| external_embed_source_hash(*provider, metadata) == normalized_hash)
+}
+
+fn build_external_embed_resolved_payload(
+    metadata: &ResolveMetadata,
+    provider: ExternalEmbedProvider,
+    preferences: &ResolvePreferences,
+) -> Value {
+    let embed_url = external_embed_url(provider, metadata).unwrap_or_default();
+    let playable_url = build_live_iframe_playback_source(&embed_url);
+    let source_hash = external_embed_source_hash(provider, metadata);
+    let filename = format!("{} embed", provider.label);
+    let resolved = ResolvedSource {
+        playable_url: playable_url.clone(),
+        fallback_urls: Vec::new(),
+        filename: filename.clone(),
+        source_hash: source_hash.clone(),
+        selected_file: String::new(),
+        selected_file_path: String::new(),
+    };
+    let mut response_metadata = build_resolved_metadata_payload(metadata, &resolved, &filename);
+    response_metadata["resolverProvider"] = json!(EXTERNAL_EMBED_RESOLVER_PROVIDER);
+    json!({
+        "playableUrl": playable_url,
+        "fallbackUrls": [],
+        "filename": filename,
+        "sourceHash": source_hash,
+        "selectedFile": "",
+        "selectedFilePath": "",
+        "resolverProvider": EXTERNAL_EMBED_RESOLVER_PROVIDER,
+        "sourceInput": embed_url,
+        "tracks": MediaProbe {
+            durationSeconds: metadata.runtime_seconds,
+            ..MediaProbe::default()
+        },
+        "selectedAudioStreamIndex": -1,
+        "selectedSubtitleStreamIndex": -1,
+        "preferences": {
+            "audioLang": preferences.audio_lang.clone(),
+            "subtitleLang": preferences.subtitle_lang.clone(),
+            "quality": preferences.quality.clone()
+        },
+        "metadata": response_metadata
+    })
+}
+
+fn external_embed_url(
+    provider: ExternalEmbedProvider,
+    metadata: &ResolveMetadata,
+) -> Option<String> {
+    let tmdb_id = metadata.tmdb_id.trim();
+    if tmdb_id.is_empty() {
+        return None;
+    }
+    match (provider.id, metadata.media_type.as_str()) {
+        ("vidfast", "movie") => Some(format!("https://vidfast.me/movie/{tmdb_id}?theme=FF0000")),
+        ("vidfast", "tv") => Some(format!(
+            "https://vidfast.me/tv/{}/{}/{}?theme=FF0000",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        ("videasy", "movie") => Some(format!("https://player.videasy.net/movie/{tmdb_id}")),
+        ("videasy", "tv") => Some(format!(
+            "https://player.videasy.net/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        ("vidking", "movie") => Some(format!("https://www.vidking.net/embed/movie/{tmdb_id}")),
+        ("vidking", "tv") => Some(format!(
+            "https://www.vidking.net/embed/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        ("2embed", "movie") => Some(format!("https://www.2embed.cc/embed/{tmdb_id}")),
+        ("2embed", "tv") => Some(format!(
+            "https://www.2embed.cc/embedtv/{}&s={}&e={}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        _ => None,
+    }
+}
+
+fn external_embed_source_hash(
+    provider: ExternalEmbedProvider,
+    metadata: &ResolveMetadata,
+) -> String {
+    if external_embed_url(provider, metadata).is_none() {
+        return String::new();
+    }
+    let identity = format!(
+        "external-embed|{}|{}|{}|{}|{}",
+        provider.id,
+        metadata.media_type,
+        metadata.tmdb_id.trim(),
+        metadata.season_number,
+        metadata.episode_number
+    );
+    deterministic_40_hex(&identity)
+}
+
+fn deterministic_40_hex(value: &str) -> String {
+    let a = fnv1a64(value.as_bytes(), 0xcbf2_9ce4_8422_2325);
+    let b = fnv1a64(value.as_bytes(), 0x9e37_79b9_7f4a_7c15);
+    let c = fnv1a64(value.as_bytes(), 0x94d0_49bb_1331_11eb);
+    format!("{a:016x}{b:016x}{:08x}", (c >> 32) as u32)
+}
+
+fn fnv1a64(bytes: &[u8], seed: u64) -> u64 {
+    bytes.iter().fold(seed, |mut hash, byte| {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        hash
+    })
+}
+
+fn build_live_iframe_playback_source(embed_url: &str) -> String {
+    let encoded =
+        url::form_urlencoded::byte_serialize(embed_url.trim().as_bytes()).collect::<String>();
+    format!("{LIVE_IFRAME_SOURCE_PREFIX}{encoded}")
+}
+
 fn should_try_torznab_discovery(
     torrentio_failed: bool,
     torrentio_candidates_empty: bool,
@@ -5998,14 +6267,18 @@ mod tests {
     use crate::error::ApiError;
 
     use super::{
-        DiscoveryBehaviorHints, DiscoveryStream, PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR,
-        ResolveFilters, ResolveMetadata, ResolvedSource, ResolverExternalGuard, ResolverMetrics,
+        DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, ExternalEmbedProvider,
+        PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters, ResolveMetadata,
+        ResolvePreferences, ResolvedSource, ResolverExternalGuard, ResolverMetrics,
         ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
-        build_movie_resolve_lock_key, build_playback_session_key_for_metadata,
-        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_torznab_request_url,
+        build_external_embed_resolved_payload, build_external_embed_source_summaries,
+        build_live_iframe_playback_source, build_movie_resolve_lock_key,
+        build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
+        build_torrentio_stream_cache_key, build_torznab_request_url,
         build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
         compute_source_health_score, compute_torrentio_cache_deadlines,
-        does_filename_likely_match_movie, extract_info_hash_from_magnet,
+        does_filename_likely_match_movie, external_embed_provider_for_source_hash,
+        external_embed_source_hash, external_embed_url, extract_info_hash_from_magnet,
         is_persistent_source_resolve_error, normalize_allowed_formats,
         normalize_resolved_source_for_software_decode, normalize_resolver_provider,
         normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
@@ -6015,7 +6288,7 @@ mod tests {
         select_fastest_race_candidates, select_top_episode_candidates, select_top_movie_candidates,
         should_allow_latest_playback_session_fallback, should_prefer_software_decode_source,
         should_skip_playback_session_reuse, should_try_torznab_discovery, sort_movie_candidates,
-        stream_list_contains_hash, user_facing_real_debrid_error,
+        stream_list_contains_hash, stringify_json, user_facing_real_debrid_error,
     };
 
     #[test]
@@ -6025,6 +6298,68 @@ mod tests {
             "0123456789abcdef0123456789abcdef01234567"
         );
         assert!(normalize_source_hash("bad-hash").is_empty());
+    }
+
+    #[test]
+    fn external_embed_sources_use_stable_hashes_and_iframe_urls() {
+        let metadata = sample_movie_metadata();
+        let sources = build_external_embed_source_summaries(&metadata);
+
+        assert_eq!(sources.len(), 4);
+        assert_eq!(sources[0].primary, "VidFast");
+        assert_eq!(sources[0].provider, "LivNet");
+        assert_eq!(sources[0].container, "iframe");
+        assert_eq!(
+            normalize_source_hash(&sources[0].sourceHash),
+            sources[0].sourceHash
+        );
+
+        let provider = external_embed_provider_for_source_hash(&metadata, &sources[0].sourceHash)
+            .expect("matching external provider");
+        assert_eq!(provider, EXTERNAL_EMBED_PROVIDERS[0]);
+        assert_eq!(provider.id, "vidfast");
+        assert_eq!(
+            external_embed_url(provider, &metadata).unwrap(),
+            "https://vidfast.me/movie/1368166?theme=FF0000"
+        );
+        assert_eq!(
+            external_embed_source_hash(provider, &metadata),
+            sources[0].sourceHash
+        );
+    }
+
+    #[test]
+    fn external_embed_resolved_payload_uses_live_iframe_handoff() {
+        let metadata = sample_movie_metadata();
+        let provider = ExternalEmbedProvider {
+            id: "videasy",
+            label: "VidEasy",
+            priority: 1,
+        };
+        let preferences = ResolvePreferences {
+            audio_lang: "auto".to_owned(),
+            subtitle_lang: "off".to_owned(),
+            quality: "auto".to_owned(),
+        };
+        let payload = build_external_embed_resolved_payload(&metadata, provider, &preferences);
+
+        assert_eq!(
+            stringify_json(payload.get("resolverProvider")),
+            "external-embed"
+        );
+        assert_eq!(
+            stringify_json(payload.get("sourceInput")),
+            "https://player.videasy.net/movie/1368166"
+        );
+        assert_eq!(
+            stringify_json(payload.pointer("/metadata/resolverProvider")),
+            "external-embed"
+        );
+        assert!(stringify_json(payload.get("playableUrl")).starts_with("live-iframe:"));
+        assert_eq!(
+            build_live_iframe_playback_source("https://player.videasy.net/movie/1368166"),
+            stringify_json(payload.get("playableUrl"))
+        );
     }
 
     #[test]

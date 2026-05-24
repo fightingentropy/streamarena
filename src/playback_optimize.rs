@@ -13,7 +13,13 @@ const CHROME_SUPPORTED_VIDEO_CODECS: &[&str] = &[
     "h264", "avc1", "hevc", "h265", "hev1", "hvc1", "vp8", "vp9", "av1", "mpeg4", "theora",
 ];
 const CHROME_SUPPORTED_AUDIO_CODECS: &[&str] = &[
-    "aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_s24le",
+    "aac",
+    "mp3",
+    "opus",
+    "vorbis",
+    "flac",
+    "pcm_s16le",
+    "pcm_s24le",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,11 +159,7 @@ async fn run_playback_optimize(
         }
     }
 
-    command.extend([
-        "-movflags".to_owned(),
-        "+faststart".to_owned(),
-        output,
-    ]);
+    command.extend(["-movflags".to_owned(), "+faststart".to_owned(), output]);
 
     run_process_capture_text(&command, PLAYBACK_OPTIMIZE_TIMEOUT_MS)
         .await
