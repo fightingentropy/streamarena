@@ -18,6 +18,7 @@ mod twitch;
 mod upload;
 mod utils;
 
+use std::env;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -61,9 +62,20 @@ async fn main() -> AppResult<()> {
 
     let config = Config::load();
     let db = Db::initialize(&config).await?;
-    let http_client = reqwest::Client::builder()
+    let mut http_client_builder = reqwest::Client::builder()
         .user_agent("netflix-rust-backend")
-        .timeout(Duration::from_secs(SHARED_HTTP_CLIENT_TIMEOUT_SECONDS))
+        .timeout(Duration::from_secs(SHARED_HTTP_CLIENT_TIMEOUT_SECONDS));
+    if let Some(proxy_url) = env::var("OUTBOUND_HTTP_PROXY")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        let proxy = reqwest::Proxy::all(&proxy_url).map_err(|error| {
+            crate::error::ApiError::internal(format!("Invalid OUTBOUND_HTTP_PROXY: {error}"))
+        })?;
+        http_client_builder = http_client_builder.proxy(proxy);
+    }
+    let http_client = http_client_builder
         .build()
         .map_err(|error| crate::error::ApiError::internal(error.to_string()))?;
     let tmdb = TmdbService::new(config.clone(), db.clone(), http_client.clone());

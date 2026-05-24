@@ -75,7 +75,7 @@ export default function PlayerPage() {
   let subtitleOverlay, resolverOverlay, resolverStatus, resolverLoader;
   let resolverTitle, resolverDetail, resolverCountdown;
   let resolverRetryButton, resolverAlternateButton;
-  let seekLoadingOverlay, playerShell;
+  let seekLoadingOverlay, playerShell, liveEmbedFrame;
   let speedOptions = [];
 
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -96,6 +96,8 @@ const audioDecodeVideoAdvanceThresholdSeconds = 6;
 const LIVE_EDGE_PIN_RATIO = 0.985;
 const LIVE_EDGE_PLAYBACK_OFFSET_SECONDS = 0.5;
 const LIVE_EDGE_REJOIN_TOLERANCE_SECONDS = 2.5;
+const LIVE_EMBED_FALLBACK_SOURCE_LIMIT = 5;
+const LIVE_IFRAME_SOURCE_PREFIX = "live-iframe:";
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
@@ -3582,10 +3584,52 @@ function navigateBackFromPlayer() {
   window.location.href = getFallbackPlayerReturnPath();
 }
 
+function clearLiveIframePlayback() {
+  if (liveEmbedFrame) {
+    liveEmbedFrame.hidden = true;
+    liveEmbedFrame.removeAttribute("src");
+  }
+  playerShell?.classList.remove("live-iframe-active");
+}
+
+function setLiveIframePlaybackSource(embedUrl, encodedSource) {
+  lastRequestedPlaybackSource = encodedSource;
+  lastRequestedAbsolutePlaybackSource = embedUrl;
+  lastPlaybackSourceSetAt = performance.now();
+  liveEdgePinned = true;
+  resetAudioDecodeWatchState();
+  clearStreamStallRecovery();
+  clearSubtitleTrack();
+  destroyActiveHlsController();
+  activeTranscodeInput = "";
+  transcodeBaseOffsetSeconds = 0;
+  activeAudioStreamIndex = -1;
+  activeAudioSyncMs = 0;
+  activeTrackSourceInput = "";
+  knownDurationSeconds = 0;
+  if (video.src) {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  }
+  if (liveEmbedFrame) {
+    liveEmbedFrame.src = embedUrl;
+    liveEmbedFrame.hidden = false;
+  }
+  playerShell?.classList.add("live-iframe-active");
+  syncDurationText();
+}
+
 function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 0 } = {}) {
   if (!nextSource) {
     return;
   }
+  const iframeSource = parseLiveIframePlaybackSource(nextSource);
+  if (iframeSource) {
+    setLiveIframePlaybackSource(iframeSource, nextSource);
+    return;
+  }
+  clearLiveIframePlayback();
   const requestedStartSeconds = normalizeResumeStartSeconds(startSeconds);
   const sourceWithStart = withRemuxResumeStart(nextSource, requestedStartSeconds, window.location.origin);
   const sourceWithAudioSync = withPreferredAudioSyncForRemuxSource(
@@ -5251,6 +5295,42 @@ function renderLiveStreamOptions() {
   syncLiveStreamControls();
 }
 
+function getLiveEmbedFallbackSources(source) {
+  const normalizedSource = normalizePlaybackSourceValue(source);
+  const seenSources = new Set([normalizedSource]);
+  return liveStreamOptions
+    .map((option) => normalizePlaybackSourceValue(option?.source))
+    .filter((candidateSource) => {
+      if (!candidateSource || seenSources.has(candidateSource)) {
+        return false;
+      }
+      seenSources.add(candidateSource);
+      return true;
+    })
+    .slice(0, LIVE_EMBED_FALLBACK_SOURCE_LIMIT);
+}
+
+function buildLiveIframePlaybackSource(embedUrl) {
+  const normalizedEmbedUrl = normalizePlaybackSourceValue(embedUrl);
+  if (!/^https?:\/\//i.test(normalizedEmbedUrl)) {
+    return "";
+  }
+  return `${LIVE_IFRAME_SOURCE_PREFIX}${encodeURIComponent(normalizedEmbedUrl)}`;
+}
+
+function parseLiveIframePlaybackSource(source) {
+  const value = String(source || "").trim();
+  if (!value.startsWith(LIVE_IFRAME_SOURCE_PREFIX)) {
+    return "";
+  }
+  try {
+    const embedUrl = decodeURIComponent(value.slice(LIVE_IFRAME_SOURCE_PREFIX.length));
+    return /^https?:\/\//i.test(embedUrl) ? embedUrl : "";
+  } catch {
+    return "";
+  }
+}
+
 async function resolveLivePlaybackSource(source) {
   const normalizedSource = normalizePlaybackSourceValue(source);
   if (!normalizedSource) {
@@ -5261,19 +5341,44 @@ async function resolveLivePlaybackSource(source) {
   }
 
   const query = new URLSearchParams({ url: normalizedSource });
+  const fallbackSources = getLiveEmbedFallbackSources(normalizedSource);
+  if (fallbackSources.length > 0) {
+    query.set("fallbackUrls", JSON.stringify(fallbackSources));
+  }
   const payload = await requestJson(
     `/api/${liveEmbedResolver}/stream?${query.toString()}`,
     {},
-    20000,
+    30000,
   );
   const playbackUrl = normalizePlaybackSourceValue(
     payload?.playbackUrl || payload?.streamUrl || "",
   );
+  const playbackType = String(payload?.playbackType || "")
+    .trim()
+    .toLowerCase();
+  const resolvedSource = normalizePlaybackSourceValue(payload?.source || normalizedSource);
+  if (resolvedSource && resolvedSource !== normalizedSource) {
+    const resolvedOption = liveStreamOptions.find(
+      (option) => normalizePlaybackSourceValue(option?.source) === resolvedSource,
+    );
+    if (resolvedOption) {
+      selectedLiveStreamId = resolvedOption.id;
+      setExplicitPlaybackSourceState(resolvedOption.source);
+      syncLiveStreamControls();
+    }
+  }
+  if (playbackType === "iframe") {
+    const iframeSource = buildLiveIframePlaybackSource(payload?.embedUrl || playbackUrl);
+    if (!iframeSource) {
+      throw new Error("Could not resolve this live stream.");
+    }
+    return iframeSource;
+  }
   if (!playbackUrl) {
     throw new Error("Could not resolve this live stream.");
   }
   return getLivePlaybackSource(playbackUrl, true, {
-    referer: payload?.playerPage || normalizedSource,
+    referer: payload?.playerPage || resolvedSource || normalizedSource,
   });
 }
 
@@ -9338,6 +9443,16 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
         playsinline
         preload="metadata"
       ></video>
+      <iframe
+        id="liveEmbedFrame"
+        ref=${el => liveEmbedFrame = el}
+        class="live-embed-frame"
+        title="Live stream player"
+        allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+        allowfullscreen
+        referrerpolicy="strict-origin-when-cross-origin"
+        hidden
+      ></iframe>
 
       <div id="subtitleOverlay" ref=${el => subtitleOverlay = el} class="custom-subtitle-overlay" hidden></div>
       <div class="player-ui">
