@@ -989,6 +989,16 @@ let resumeFlushIntervalId = 0;
 
 function emptyRememberedTmdbSourceState() { return { sourceHash: "", sessionKey: "", resolverProvider: "", sourceInput: "", filename: "" }; }
 
+function normalizeRememberedResolverProvider(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "real-debrid" || normalized === "local-torrent" || normalized === "external-embed") {
+    return normalized;
+  }
+  return "";
+}
+
 function getRememberedContinueWatchingSourceState() {
   const normalizedSource = String(sourceIdentity || "").trim();
   if (!normalizedSource) {
@@ -1003,7 +1013,7 @@ function getRememberedContinueWatchingSourceState() {
     return {
       sourceHash: normalizeSourceHash(entry.sourceHash || ""),
       sessionKey: String(entry.sessionKey || "").trim(),
-      resolverProvider: String(entry.resolverProvider || "").trim(),
+      resolverProvider: normalizeRememberedResolverProvider(entry.resolverProvider),
       sourceInput: String(entry.sourceInput || "").trim(),
       filename: String(entry.filename || "").trim(),
     };
@@ -1012,11 +1022,49 @@ function getRememberedContinueWatchingSourceState() {
   }
 }
 
+function rememberServerContinueWatchingEntry(entry) {
+  const normalizedSource = String(sourceIdentity || "").trim();
+  const sourceFromEntry = String(entry?.sourceIdentity || "").trim();
+  if (!normalizedSource || sourceFromEntry !== normalizedSource) {
+    return false;
+  }
+
+  try {
+    const metaMap = readContinueWatchingMetaMap();
+    const existing =
+      metaMap?.[normalizedSource] && typeof metaMap[normalizedSource] === "object"
+        ? metaMap[normalizedSource]
+        : {};
+    const nextEntry = {
+      ...existing,
+      ...entry,
+      sourceIdentity: normalizedSource,
+      sourceHash: normalizeSourceHash(entry.sourceHash || existing.sourceHash || ""),
+      sessionKey: String(entry.sessionKey || existing.sessionKey || "").trim(),
+      resolverProvider: normalizeRememberedResolverProvider(
+        entry.resolverProvider || existing.resolverProvider,
+      ),
+      sourceInput: String(entry.sourceInput || existing.sourceInput || "").trim(),
+      filename: String(entry.filename || existing.filename || "").trim(),
+      resumeSeconds: Number(entry.resumeSeconds || existing.resumeSeconds || 0),
+      updatedAt: Number(entry.updatedAt || existing.updatedAt || Date.now()),
+    };
+    metaMap[normalizedSource] = nextEntry;
+    localStorage.setItem(CONTINUE_WATCHING_META_KEY, JSON.stringify(metaMap));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function applyRememberedTmdbSourcePin() {
   if (!isTmdbResolvedPlayback) {
-    return;
+    return false;
   }
   const remembered = getRememberedContinueWatchingSourceState();
+  if (!selectedSourceHash && remembered.sourceHash) {
+    selectedSourceHash = remembered.sourceHash;
+  }
   if (selectedSourceHash) {
     sourceSelectionPinned = true;
     if (remembered.sourceHash === selectedSourceHash) {
@@ -1025,8 +1073,18 @@ function applyRememberedTmdbSourcePin() {
       currentTmdbResolverProvider = currentTmdbResolverProvider || remembered.resolverProvider;
       currentTmdbResolvedFilename = currentTmdbResolvedFilename || remembered.filename;
       activeTrackSourceInput = activeTrackSourceInput || remembered.sourceInput;
+      if (
+        remembered.resolverProvider === "real-debrid" ||
+        remembered.resolverProvider === "local-torrent"
+      ) {
+        preferredResolverProvider = remembered.resolverProvider;
+        tmdbSkipExternalEmbed = true;
+      }
     }
+    applyPreferredSourceAudioSync(selectedSourceHash);
+    return true;
   }
+  return false;
 }
 
 applyRememberedTmdbSourcePin();
@@ -8088,7 +8146,39 @@ async function initPlaybackSource() {
       lastPersistedResumeTime = storedResume;
     }
   } catch {}
-  // If localStorage still has no resume, try the server.
+  const rememberedBeforeServer = getRememberedContinueWatchingSourceState();
+  if (
+    isTmdbResolvedPlayback &&
+    !rememberedBeforeServer.sourceHash
+  ) {
+    try {
+      const res = await fetch("/api/user/continue-watching");
+      if (res.ok) {
+        const data = await res.json();
+        const entry = (data?.entries || []).find(
+          (e) => e.sourceIdentity === sourceIdentity,
+        );
+        if (entry) {
+          rememberServerContinueWatchingEntry(entry);
+          applyRememberedTmdbSourcePin();
+          if (
+            !(resumeTime > 1) &&
+            Number.isFinite(entry.resumeSeconds) &&
+            entry.resumeSeconds > 1
+          ) {
+            resumeTime = entry.resumeSeconds;
+            lastPersistedResumeTime = entry.resumeSeconds;
+            resetInitialResumeApplication();
+            try {
+              localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // If localStorage still has no resume, try the lighter progress endpoint.
   if (!(resumeTime > 1)) {
     try {
       const res = await fetch("/api/user/watch-progress");
