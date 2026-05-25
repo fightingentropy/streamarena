@@ -212,6 +212,12 @@ function parseWatchPath() {
 const _watchPath = parseWatchPath();
 const _isCleanUrl = Boolean(_watchPath);
 
+function stripEpisodeScopedSourceParams(searchParams) {
+  searchParams.delete("sourceHash");
+  searchParams.delete("sessionKey");
+  searchParams.delete("skipExternalEmbed");
+}
+
 // Hydrate params from session/local storage (set before navigation) or slug resolve.
 let _sessionParams = null;
 if (_isCleanUrl && _watchPath.slug) {
@@ -221,6 +227,24 @@ if (_isCleanUrl && _watchPath.slug) {
   }
 }
 const params = _sessionParams || new URLSearchParams(window.location.search);
+if (_isCleanUrl && _watchPath?.episodeIndex !== undefined) {
+  const pathEpisodeIndex = Number(_watchPath.episodeIndex);
+  if (Number.isFinite(pathEpisodeIndex) && pathEpisodeIndex >= 0) {
+    const hasStoredEpisodeIndex = params.has("episodeIndex");
+    const storedEpisodeIndex = Number(params.get("episodeIndex") || 0);
+    if (
+      (hasStoredEpisodeIndex &&
+        Number.isFinite(storedEpisodeIndex) &&
+        Math.floor(storedEpisodeIndex) !== Math.floor(pathEpisodeIndex)) ||
+      (!hasStoredEpisodeIndex &&
+        Math.floor(pathEpisodeIndex) !== 0 &&
+        (params.has("sourceHash") || params.has("sessionKey")))
+    ) {
+      stripEpisodeScopedSourceParams(params);
+    }
+    params.set("episodeIndex", String(Math.floor(pathEpisodeIndex)));
+  }
+}
 const _needsSlugResolve = _isCleanUrl && _watchPath.slug && !_sessionParams;
 
 const benchmarkModeEnabled = new Set(["1", "true", "yes", "on"]).has(
@@ -4914,9 +4938,6 @@ function navigateToSeriesEpisode(nextIndex) {
   }
   if (preferredQuality && preferredQuality !== DEFAULT_STREAM_QUALITY_PREFERENCE) {
     nextParams.set("quality", preferredQuality);
-  }
-  if (sourceSelectionPinned && selectedSourceHash) {
-    nextParams.set("sourceHash", selectedSourceHash);
   }
   const returnTo = getExplicitPlayerReturnPath();
   if (returnTo) {
