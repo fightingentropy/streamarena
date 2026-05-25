@@ -72,7 +72,6 @@ body {
 
 .player-shell.live-iframe-active .player-video,
 .player-shell.live-iframe-active .custom-subtitle-overlay,
-.player-shell.live-iframe-active .top-row,
 .player-shell.live-iframe-active .controls-panel {
     display: none;
 }
@@ -82,7 +81,7 @@ body {
 }
 
 .player-shell.live-iframe-active.controls-hidden .player-ui {
-    pointer-events: auto;
+    pointer-events: none;
 }
 
 #playerVideo::cue {
@@ -316,11 +315,112 @@ body {
 }
 
 .top-row {
-    padding: 30px 34px 0;
+    position: relative;
+    z-index: 46;
+    padding: 18px 24px 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: 16px;
+    pointer-events: auto;
+}
+
+.top-row-left,
+.top-row-actions {
+    min-width: 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    pointer-events: auto;
+}
+
+.top-row-left {
+    justify-self: start;
+    gap: 6px;
+}
+
+.top-row-actions {
+    justify-self: end;
+}
+
+.top-source-label {
+    display: block;
+    max-width: min(28vw, 340px);
+    overflow: hidden;
+    color: rgba(248, 248, 248, 0.76);
+    font-size: clamp(0.9rem, 1.1vw, 1.06rem);
+    font-weight: 500;
+    line-height: 1.1;
+    text-overflow: ellipsis;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.78);
+    white-space: nowrap;
+}
+
+.top-watching-title {
+    margin: 0;
+    color: #fff;
+    font-size: clamp(1.06rem, 1.55vw, 1.38rem);
+    font-weight: 800;
+    line-height: 1;
+    text-align: center;
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.82);
+    white-space: nowrap;
+}
+
+.top-source-control {
+    position: relative;
+}
+
+.control-btn.top-server-btn {
+    min-width: 0;
+    height: 38px;
+    padding: 0 10px;
+    gap: 7px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+    background: rgba(5, 5, 5, 0.32);
+    color: rgba(248, 248, 248, 0.84);
+    font-size: 0.92rem;
+    font-weight: 600;
+    line-height: 1;
+    backdrop-filter: blur(14px);
+}
+
+.control-btn.top-server-btn:hover,
+.control-btn.top-server-btn:focus-visible,
+.top-source-control.is-open .top-server-btn {
+    opacity: 1;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.control-btn.top-server-btn:focus-visible {
+    outline: 1px solid rgba(255, 255, 255, 0.62);
+    outline-offset: 2px;
+}
+
+.control-btn.top-server-btn svg {
+    flex: 0 0 auto;
+    width: 17px;
+    height: 17px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+}
+
+.top-server-chevron {
+    width: 15px !important;
+    height: 15px !important;
+    opacity: 0.72;
+}
+
+.top-source-control .source-popover {
+    right: 0;
+    bottom: auto;
+    top: calc(100% + 10px);
+    width: min(420px, calc(100vw - 28px));
+    max-height: min(58vh, 500px);
+    z-index: 70;
 }
 
 .player-shell.controls-hidden .player-ui {
@@ -1721,6 +1821,22 @@ body {
         grid-column: 1;
         z-index: 3;
         padding: calc(16px + env(safe-area-inset-top)) 16px 0;
+        gap: 10px;
+    }
+
+    .top-source-label {
+        max-width: 24vw;
+        font-size: 0.92rem;
+    }
+
+    .top-watching-title {
+        font-size: 1rem;
+    }
+
+    .control-btn.top-server-btn {
+        height: 36px;
+        padding: 0 9px;
+        font-size: 0.86rem;
     }
 
     /* --- Seek bar: bottom of screen --- */
@@ -1868,7 +1984,6 @@ body {
     /* --- Popovers: open downward from top-right --- */
     .controls-right .speed-menu-wrap,
     .controls-right .audio-menu-wrap,
-    .controls-right .source-menu-wrap,
     .controls-right .episodes-menu-wrap {
         position: relative;
     }
@@ -1904,6 +2019,11 @@ body {
         top: calc(100% + 8px);
         width: min(92vw, 440px);
         max-height: min(58vh, 430px);
+    }
+
+    .top-source-control .source-popover {
+        top: calc(100% + 8px);
+        width: min(92vw, 390px);
     }
 
     .episodes-popover {
@@ -2257,6 +2377,25 @@ body {
 
     .top-row {
         padding: 12px 12px 0;
+        gap: 8px;
+    }
+
+    .top-source-label {
+        max-width: 30vw;
+        font-size: 0.82rem;
+    }
+
+    .top-watching-title {
+        font-size: 0.9rem;
+    }
+
+    .control-btn.top-server-btn {
+        height: 34px;
+        padding: 0 8px;
+    }
+
+    .top-server-label {
+        display: none;
     }
 
     .speed-popover {
