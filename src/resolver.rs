@@ -276,46 +276,52 @@ struct ExternalEmbedHlsPlaybackSource {
 }
 
 const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
-    // Fast CDN-based embed sources (primary - fastest loading)
-    ExternalEmbedProvider {
-        id: "vidsrc",
-        label: "VidSrc",
-        priority: 0,
-    },
-    ExternalEmbedProvider {
-        id: "autoembed",
-        label: "AutoEmbed",
-        priority: 1,
-    },
-    ExternalEmbedProvider {
-        id: "vidlink",
-        label: "VidLink",
-        priority: 2,
-    },
-    ExternalEmbedProvider {
-        id: "superembed",
-        label: "SuperEmbed",
-        priority: 3,
-    },
+    // Match LivNet's movie/series iframe order: VidFast first, then simple fallbacks.
     ExternalEmbedProvider {
         id: "vidfast",
         label: "VidFast",
-        priority: 4,
+        priority: 0,
     },
     ExternalEmbedProvider {
         id: "videasy",
         label: "VidEasy",
-        priority: 5,
+        priority: 1,
     },
     ExternalEmbedProvider {
         id: "vidking",
         label: "VidKing",
-        priority: 6,
+        priority: 2,
     },
     ExternalEmbedProvider {
         id: "2embed",
         label: "2Embed",
-        priority: 7,
+        priority: 3,
+    },
+    ExternalEmbedProvider {
+        id: "vidnest",
+        label: "VidNest",
+        priority: 4,
+    },
+    // Keep other iframe providers available after the LivNet-compatible set.
+    ExternalEmbedProvider {
+        id: "vidsrc",
+        label: "VidSrc",
+        priority: 80,
+    },
+    ExternalEmbedProvider {
+        id: "autoembed",
+        label: "AutoEmbed",
+        priority: 81,
+    },
+    ExternalEmbedProvider {
+        id: "vidlink",
+        label: "VidLink",
+        priority: 82,
+    },
+    ExternalEmbedProvider {
+        id: "superembed",
+        label: "SuperEmbed",
+        priority: 83,
     },
     // Unreliable / often blocked — keep as last-resort fallbacks only
     ExternalEmbedProvider {
@@ -327,87 +333,6 @@ const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
         id: "moviesapi",
         label: "MoviesAPI",
         priority: 91,
-    },
-];
-
-const VIDFAST_EMBED_SERVERS: &[ExternalEmbedServer] = &[
-    ExternalEmbedServer {
-        id: "vFast",
-        label: "vFast",
-        quality_label: "4K iframe",
-        priority: 0,
-    },
-    ExternalEmbedServer {
-        id: "vEdge",
-        label: "vEdge",
-        quality_label: "Fast iframe",
-        priority: 1,
-    },
-    ExternalEmbedServer {
-        id: "Alpha",
-        label: "Alpha",
-        quality_label: "Fast iframe",
-        priority: 2,
-    },
-    ExternalEmbedServer {
-        id: "vRapid",
-        label: "vRapid",
-        quality_label: "Fast iframe",
-        priority: 3,
-    },
-    ExternalEmbedServer {
-        id: "Mega",
-        label: "Mega",
-        quality_label: "Fast iframe",
-        priority: 4,
-    },
-    ExternalEmbedServer {
-        id: "Max",
-        label: "Max",
-        quality_label: "Fast iframe",
-        priority: 5,
-    },
-    ExternalEmbedServer {
-        id: "Charlie",
-        label: "Charlie",
-        quality_label: "Fast iframe",
-        priority: 6,
-    },
-    ExternalEmbedServer {
-        id: "Close",
-        label: "Close",
-        quality_label: "Fast iframe",
-        priority: 7,
-    },
-    ExternalEmbedServer {
-        id: "Oscar",
-        label: "Oscar",
-        quality_label: "Fast iframe",
-        priority: 8,
-    },
-    ExternalEmbedServer {
-        id: "Rido",
-        label: "Rido",
-        quality_label: "Fast iframe",
-        priority: 9,
-    },
-    ExternalEmbedServer {
-        id: "Beta",
-        label: "Beta",
-        quality_label: "Fast iframe",
-        priority: 10,
-    },
-    ExternalEmbedServer {
-        id: "Cobra",
-        label: "Cobra",
-        quality_label: "Fast iframe",
-        priority: 11,
-    },
-    ExternalEmbedServer {
-        id: "Gamma",
-        label: "Gamma",
-        quality_label: "Fast iframe",
-        priority: 12,
     },
 ];
 
@@ -4928,6 +4853,11 @@ fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -
             "https://www.2embed.cc/embedtv/{}&s={}&e={}",
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
+        ("vidnest", "movie") => Some(format!("https://vidnest.fun/embed/movie/{tmdb_id}")),
+        ("vidnest", "tv") => Some(format!(
+            "https://vidnest.fun/embed/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
         // Fast CDN-based embed sources (primary)
         // embed.su - Fast, reliable streaming
         ("embedsu", "movie") => Some(format!("https://embed.su/embed/movie/{tmdb_id}")),
@@ -4986,23 +4916,14 @@ fn external_embed_source_hash(source: ExternalEmbedSource, metadata: &ResolveMet
 }
 
 fn external_embed_sources() -> Vec<ExternalEmbedSource> {
-    let mut sources = Vec::new();
-    for provider in EXTERNAL_EMBED_PROVIDERS.iter().copied() {
-        if provider.id == "vidfast" {
-            sources.extend(VIDFAST_EMBED_SERVERS.iter().copied().map(|server| {
-                ExternalEmbedSource {
-                    provider,
-                    server: Some(server),
-                }
-            }));
-            continue;
-        }
-        sources.push(ExternalEmbedSource {
+    EXTERNAL_EMBED_PROVIDERS
+        .iter()
+        .copied()
+        .map(|provider| ExternalEmbedSource {
             provider,
             server: None,
-        });
-    }
-    sources
+        })
+        .collect()
 }
 
 fn external_embed_source_priority(source: ExternalEmbedSource) -> i64 {
@@ -5043,11 +4964,9 @@ fn external_embed_source_filename(source: ExternalEmbedSource) -> String {
 }
 
 fn build_vidfast_embed_url(base_url: &str, server: Option<ExternalEmbedServer>) -> String {
-    let mut pairs = vec![
-        ("theme".to_owned(), "FF0000".to_owned()),
-        ("hideServer".to_owned(), "true".to_owned()),
-    ];
+    let mut pairs = vec![("theme".to_owned(), "FF0000".to_owned())];
     if let Some(server) = server {
+        pairs.push(("hideServer".to_owned(), "true".to_owned()));
         pairs.push(("server".to_owned(), server.id.to_owned()));
     }
     let query = pairs
@@ -6778,21 +6697,21 @@ mod tests {
     use crate::error::ApiError;
 
     use super::{
-        DiscoveryBehaviorHints, DiscoveryStream, ExternalEmbedProvider, ExternalEmbedSource,
-        PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters, ResolveMetadata,
-        ResolvePreferences, ResolvedSource, ResolverExternalGuard, ResolverMetrics,
-        ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
-        VIDFAST_EMBED_SERVERS, build_external_embed_resolved_payload,
-        build_external_embed_resolved_playback_payload, build_external_embed_source_summaries,
-        build_live_iframe_playback_source, build_live_iframe_playback_source_with_proxy,
-        build_movie_resolve_lock_key, build_playback_session_key_for_metadata,
-        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_torznab_request_url,
+        DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, PlaybackSession,
+        RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters, ResolveMetadata, ResolvePreferences,
+        ResolvedSource, ResolverExternalGuard, ResolverMetrics, ResolverProvider,
+        SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
+        build_external_embed_resolved_payload, build_external_embed_resolved_playback_payload,
+        build_external_embed_source_summaries, build_live_iframe_playback_source,
+        build_live_iframe_playback_source_with_proxy, build_movie_resolve_lock_key,
+        build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
+        build_torrentio_stream_cache_key, build_torznab_request_url,
         build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
         compute_source_health_score, compute_torrentio_cache_deadlines,
         default_external_embed_source, does_filename_likely_match_movie,
-        embed_iframe_proxy_enabled_from_value, external_embed_source_for_source_hash,
-        external_embed_source_hash, external_embed_sources, external_embed_url,
-        extract_info_hash_from_magnet, is_persistent_source_resolve_error,
+        embed_iframe_proxy_enabled_from_value, external_embed_fallback_playback_urls,
+        external_embed_source_for_source_hash, external_embed_source_hash, external_embed_sources,
+        external_embed_url, extract_info_hash_from_magnet, is_persistent_source_resolve_error,
         is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
         normalize_allowed_formats, normalize_resolved_source_for_software_decode,
         normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
@@ -6821,12 +6740,11 @@ mod tests {
         let metadata = sample_movie_metadata();
         let sources = build_external_embed_source_summaries(&metadata);
 
-        // 6 new fast providers + vidfast (with servers) + videasy + vidking + 2embed
-        assert_eq!(sources.len(), VIDFAST_EMBED_SERVERS.len() + 9);
-        // vidsrc is the default fast provider
-        assert_eq!(sources[0].primary, "VidSrc");
+        // LivNet order first, with older providers kept as lower-priority fallbacks.
+        assert_eq!(sources.len(), EXTERNAL_EMBED_PROVIDERS.len());
+        assert_eq!(sources[0].primary, "VidFast");
         assert_eq!(sources[0].provider, "LivNet");
-        assert_eq!(sources[0].filename, "VidSrc embed");
+        assert_eq!(sources[0].filename, "VidFast embed");
         assert_eq!(sources[0].qualityLabel, "Fast iframe");
         assert_eq!(sources[0].container, "iframe");
         assert_eq!(
@@ -6836,26 +6754,34 @@ mod tests {
 
         let source = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
             .expect("matching external provider");
-        assert_eq!(source.provider.id, "vidsrc");
+        assert_eq!(source.provider.id, "vidfast");
         assert_eq!(
             external_embed_url(source, &metadata).unwrap(),
-            "https://vidsrcme.ru/embed/movie/1368166"
+            "https://vidfast.me/movie/1368166?theme=FF0000"
         );
         assert_eq!(
             external_embed_source_hash(source, &metadata),
             sources[0].sourceHash
         );
 
-        // Test vidfast is still present but at lower priority
-        let vidfast_source = external_embed_sources()
-            .into_iter()
-            .find(|s| {
-                s.provider.id == "vidfast" && s.server.map(|srv| srv.id == "vFast").unwrap_or(false)
-            })
-            .expect("vidfast vFast server");
+        let fallback_urls = external_embed_fallback_playback_urls(&metadata, source, 4);
         assert_eq!(
-            external_embed_url(vidfast_source, &metadata).unwrap(),
-            "https://vidfast.me/movie/1368166?theme=FF0000&hideServer=true&server=vFast"
+            fallback_urls,
+            vec![
+                build_live_iframe_playback_source("https://player.videasy.net/movie/1368166"),
+                build_live_iframe_playback_source("https://www.vidking.net/embed/movie/1368166"),
+                build_live_iframe_playback_source("https://www.2embed.cc/embed/1368166"),
+                build_live_iframe_playback_source("https://vidnest.fun/embed/movie/1368166"),
+            ]
+        );
+
+        let vidsrc_source = external_embed_sources()
+            .into_iter()
+            .find(|source| source.provider.id == "vidsrc")
+            .expect("vidsrc fallback source");
+        assert_eq!(
+            external_embed_url(vidsrc_source, &metadata).unwrap(),
+            "https://vidsrcme.ru/embed/movie/1368166"
         );
     }
 
@@ -6863,7 +6789,7 @@ mod tests {
     fn default_external_embed_prefers_first_iframe_provider_for_unpinned_fastest_requests() {
         let metadata = sample_movie_metadata();
         let source = default_external_embed_source(&metadata).expect("default embed source");
-        assert_eq!(source.provider.id, "vidsrc");
+        assert_eq!(source.provider.id, "vidfast");
 
         let filters = ResolveFilters {
             source_hash: String::new(),
@@ -6895,10 +6821,10 @@ mod tests {
                 .await
                 .expect("iframe payload");
 
-        assert_eq!(source.provider.id, "vidsrc");
+        assert_eq!(source.provider.id, "vidfast");
         assert_eq!(
             stringify_json(payload.get("playableUrl")),
-            build_live_iframe_playback_source("https://vidsrcme.ru/embed/movie/1368166")
+            build_live_iframe_playback_source("https://vidfast.me/movie/1368166?theme=FF0000")
         );
         assert_eq!(
             stringify_json(payload.get("resolverProvider")),
@@ -6992,16 +6918,12 @@ mod tests {
     }
 
     #[test]
-    fn external_embed_resolved_payload_can_pin_vidfast_server() {
+    fn external_embed_resolved_payload_uses_livnet_vidfast_url() {
         let metadata = sample_movie_metadata();
-        let source = ExternalEmbedSource {
-            provider: ExternalEmbedProvider {
-                id: "vidfast",
-                label: "VidFast",
-                priority: 0,
-            },
-            server: Some(VIDFAST_EMBED_SERVERS[0]),
-        };
+        let source = external_embed_sources()
+            .into_iter()
+            .find(|source| source.provider.id == "vidfast")
+            .expect("vidfast source");
         let preferences = ResolvePreferences {
             audio_lang: "auto".to_owned(),
             subtitle_lang: "off".to_owned(),
@@ -7009,18 +6931,13 @@ mod tests {
         };
         let payload = build_external_embed_resolved_payload(&metadata, source, &preferences);
 
-        assert_eq!(
-            stringify_json(payload.get("filename")),
-            "VidFast vFast embed"
-        );
+        assert_eq!(stringify_json(payload.get("filename")), "VidFast embed");
         assert_eq!(
             stringify_json(payload.get("sourceInput")),
-            "https://vidfast.me/movie/1368166?theme=FF0000&hideServer=true&server=vFast"
+            "https://vidfast.me/movie/1368166?theme=FF0000"
         );
         assert_eq!(
-            build_live_iframe_playback_source(
-                "https://vidfast.me/movie/1368166?theme=FF0000&hideServer=true&server=vFast"
-            ),
+            build_live_iframe_playback_source("https://vidfast.me/movie/1368166?theme=FF0000"),
             stringify_json(payload.get("playableUrl"))
         );
     }

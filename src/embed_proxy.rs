@@ -17,6 +17,7 @@ const EMBED_PROXY_ALLOWED_HOSTS: &[&str] = &[
     "vidlink.pro",
     "superembed.com",
     "vidfast.me",
+    "vidnest.fun",
     "player.videasy.net",
     "www.vidking.net",
     "www.2embed.cc",
