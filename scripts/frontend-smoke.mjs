@@ -272,6 +272,11 @@ const pages = [
   { path: "/sports", selector: ".sports-page", expectSportsTabs: true },
   { path: "/index.html", selector: ".home-page" },
   {
+    path: "/index.html",
+    selector: ".home-page",
+    expectServerContinueWatchingTruth: true,
+  },
+  {
     path: `/player.html?src=${encodeURIComponent(smokeVideo)}&title=Smoke%20Movie&year=1975`,
     selector: ".player-shell",
     expectOfflineRecovery: true,
@@ -402,6 +407,13 @@ async function runSmoke() {
           await route.fulfill(jsonResponse({ error: "Not authenticated." }, 401));
           return;
         }
+        if (
+          pageSpec.expectServerContinueWatchingTruth &&
+          url.pathname === "/api/user/continue-watching"
+        ) {
+          await route.fulfill(jsonResponse({ entries: [] }));
+          return;
+        }
         const payload = apiPayload(url, request.method());
         if (url.pathname === "/api/live/hls.m3u8" || url.pathname === "/api/hls/master.m3u8") {
           await route.fulfill({
@@ -421,6 +433,26 @@ async function runSmoke() {
         }
         await route.fulfill(jsonResponse(payload));
       });
+
+      if (pageSpec.expectServerContinueWatchingTruth) {
+        await context.addInitScript(() => {
+          const staleSource = "tmdb:movie:999999";
+          localStorage.setItem(`netflix-resume:${staleSource}`, "120");
+          localStorage.setItem(
+            "netflix-continue-watching-meta",
+            JSON.stringify({
+              [staleSource]: {
+                sourceIdentity: staleSource,
+                title: "Ghost Movie",
+                mediaType: "movie",
+                tmdbId: "999999",
+                resumeSeconds: 120,
+                updatedAt: Date.now(),
+              },
+            }),
+          );
+        });
+      }
 
       await page.goto(`${baseUrl}${pageSpec.path}`, { waitUntil: "domcontentloaded" });
       if (pageSpec.expectHlsManagedDuringImport) {
@@ -459,6 +491,30 @@ async function runSmoke() {
       }
 
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+
+      if (pageSpec.expectServerContinueWatchingTruth) {
+        await page.waitForFunction(
+          () =>
+            !localStorage.getItem("netflix-resume:tmdb:movie:999999") &&
+            !(localStorage.getItem("netflix-continue-watching-meta") || "").includes("Ghost Movie"),
+          null,
+          { timeout: 8_000 },
+        );
+        const staleState = await page.evaluate(() => ({
+          rowText: document.querySelector("#continueCards")?.textContent || "",
+          resume: localStorage.getItem("netflix-resume:tmdb:movie:999999"),
+          meta: localStorage.getItem("netflix-continue-watching-meta") || "",
+        }));
+        if (
+          /Ghost Movie/.test(staleState.rowText) ||
+          staleState.resume ||
+          /Ghost Movie/.test(staleState.meta)
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nServer Continue Watching should remove stale local entries.\n${JSON.stringify(staleState)}`,
+          );
+        }
+      }
 
       if (pageSpec.expectSportsTabs) {
         await page.getByRole("button", { name: "Basketball" }).click();

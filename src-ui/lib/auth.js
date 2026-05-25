@@ -44,6 +44,7 @@ export async function signOut() {
 const RESUME_STORAGE_PREFIX = "netflix-resume:";
 const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
 const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
+export const SERVER_HYDRATED_EVENT = "netflix:server-hydrated";
 const DEPRECATED_BROWSER_PREF_KEYS = new Set([
   "netflix-hero-trailer-muted-v2",
   "netflix-source-filter-allowed-formats",
@@ -77,6 +78,12 @@ function pruneLocalResumeKeys(serverResumeSources) {
  * Server is the source of truth; this replaces the local cache.
  */
 export async function hydrateFromServer() {
+  const result = {
+    ok: false,
+    didLoadProgress: false,
+    didLoadContinueWatching: false,
+    didLoadMyList: false,
+  };
   try {
     const [prefsRes, progressRes, continueRes, listRes] = await Promise.all([
       fetch("/api/user/preferences"),
@@ -101,6 +108,8 @@ export async function hydrateFromServer() {
     const serverResumeSources = new Set();
     const didLoadProgress = progressRes.ok;
     const didLoadContinueWatching = continueRes.ok;
+    result.didLoadProgress = didLoadProgress;
+    result.didLoadContinueWatching = didLoadContinueWatching;
 
     if (didLoadProgress) {
       const progress = await progressRes.json();
@@ -146,6 +155,7 @@ export async function hydrateFromServer() {
     }
 
     if (listRes.ok) {
+      result.didLoadMyList = true;
       const list = await listRes.json();
       const listEntries = Array.isArray(list?.entries)
         ? list.entries
@@ -158,7 +168,11 @@ export async function hydrateFromServer() {
         localStorage.removeItem(MY_LIST_STORAGE_KEY);
       }
     }
+    result.ok = true;
   } catch {
     // Offline or server error — use existing localStorage data
+  } finally {
+    window.dispatchEvent(new CustomEvent(SERVER_HYDRATED_EVENT, { detail: result }));
   }
+  return result;
 }

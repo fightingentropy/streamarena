@@ -25,6 +25,7 @@ import {
   getStoredStreamQualityPreference,
   getStoredAudioLangForTmdbMovie,
 } from "../lib/preferences.js";
+import { hydrateFromServer, SERVER_HYDRATED_EVENT } from "../lib/auth.js";
 import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
 import {
   addCurrentReturnToParam,
@@ -36,14 +37,13 @@ import {
   DEFAULT_LOCAL_THUMBNAIL,
   RESUME_STORAGE_PREFIX,
   enrichContinueEntriesWithLocalLibrary,
-  fetchServerContinueWatchingEntries,
+  fetchServerContinueWatchingState,
   formatResumeTimestamp,
   formatRuntime,
   getContinueWatchingEntries,
   getFallbackThumbnailForSource,
   inferContinueMediaType,
   isLikelyLocalMediaSource,
-  mergeContinueWatchingEntries,
   normalizeArtworkPath,
   normalizeLocalMovieDisplayTitle,
   removeContinueWatchingEntry,
@@ -1226,6 +1226,7 @@ export default function HomePage() {
   let accountMenuPanelRef;
   let searchContextMenuRef;
   let liveViewLoadPromise = null;
+  let accountHydratePromise = null;
 
   // ---- Signals ----
   const [isMuted, setIsMuted] = createSignal(true);
@@ -1313,6 +1314,16 @@ export default function HomePage() {
 
   function markHomeBrowseContentReady() {
     homeBrowseContentReady = true;
+  }
+
+  function refreshAccountBackedCaches() {
+    if (accountHydratePromise) {
+      return accountHydratePromise;
+    }
+    accountHydratePromise = hydrateFromServer().finally(() => {
+      accountHydratePromise = null;
+    });
+    return accountHydratePromise;
   }
 
   // ---- Player navigation ----
@@ -3547,13 +3558,14 @@ export default function HomePage() {
     }
     const loadVersion = ++continueWatchingLoadVersion;
 
-    const [entriesRaw, serverEntriesRaw, localLibrary] = await Promise.all([
+    const [entriesRaw, serverState, localLibrary] = await Promise.all([
       Promise.resolve(getContinueWatchingEntries()),
-      fetchServerContinueWatchingEntries(),
+      fetchServerContinueWatchingState(),
       apiFetch("/api/library").catch(() => ({ movies: [], series: [] })),
     ]);
+    const accountEntries = serverState.ok ? serverState.entries : entriesRaw;
     const entries = enrichContinueEntriesWithLocalLibrary(
-      mergeContinueWatchingEntries(serverEntriesRaw, entriesRaw),
+      accountEntries,
       localLibrary,
     );
     if (loadVersion !== continueWatchingLoadVersion) {
@@ -4647,11 +4659,25 @@ export default function HomePage() {
     const handlePageshow = () => {
       applyLibraryEditModeClass();
       stopHeroPreview();
+      void refreshAccountBackedCaches();
     };
 
     const handleVisibilityChange = () => {
       if (document.hidden) {
         stopHeroPreview();
+        return;
+      }
+      void refreshAccountBackedCaches();
+    };
+
+    const handleServerHydrated = (event) => {
+      const detail = event.detail || {};
+      if (detail.didLoadContinueWatching || detail.didLoadProgress) {
+        void loadContinueWatching();
+      }
+      if (detail.didLoadMyList) {
+        renderMyListRow();
+        syncAllMyListButtons();
       }
     };
 
@@ -4675,6 +4701,7 @@ export default function HomePage() {
     window.addEventListener("storage", handleStorage);
     window.addEventListener("pageshow", handlePageshow);
     window.addEventListener("popstate", handlePopstate);
+    window.addEventListener(SERVER_HYDRATED_EVENT, handleServerHydrated);
 
     onCleanup(() => {
       cleanupHorizontalRailScrollers();
@@ -4690,6 +4717,7 @@ export default function HomePage() {
       window.removeEventListener("storage", handleStorage);
       window.removeEventListener("pageshow", handlePageshow);
       window.removeEventListener("popstate", handlePopstate);
+      window.removeEventListener(SERVER_HYDRATED_EVENT, handleServerHydrated);
 
       if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
       if (searchBoxHideTimer) clearTimeout(searchBoxHideTimer);

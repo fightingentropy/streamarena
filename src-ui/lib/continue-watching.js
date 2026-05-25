@@ -466,11 +466,11 @@ function normalizeServerContinueEntry(entry) {
   });
 }
 
-export async function fetchServerContinueWatchingEntries() {
+export async function fetchServerContinueWatchingState() {
   try {
     const response = await fetch("/api/user/continue-watching");
     if (!response.ok) {
-      return [];
+      return { ok: false, entries: [] };
     }
     const data = await response.json();
     const rawEntries = Array.isArray(data?.entries)
@@ -478,10 +478,18 @@ export async function fetchServerContinueWatchingEntries() {
       : Array.isArray(data)
         ? data
         : [];
-    return rawEntries.map(normalizeServerContinueEntry).filter(Boolean);
+    return {
+      ok: true,
+      entries: rawEntries.map(normalizeServerContinueEntry).filter(Boolean),
+    };
   } catch {
-    return [];
+    return { ok: false, entries: [] };
   }
+}
+
+export async function fetchServerContinueWatchingEntries() {
+  const state = await fetchServerContinueWatchingState();
+  return state.entries;
 }
 
 export async function removeContinueWatchingEntry(sourceIdentity, seriesId = "") {
