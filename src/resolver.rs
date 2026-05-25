@@ -5080,17 +5080,13 @@ fn fnv1a64(bytes: &[u8], seed: u64) -> u64 {
 }
 
 fn embed_iframe_proxy_enabled() -> bool {
-    match std::env::var("EMBED_IFRAME_PROXY")
-        .ok()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("0" | "false" | "no" | "off") => false,
+    embed_iframe_proxy_enabled_from_value(std::env::var("EMBED_IFRAME_PROXY").ok().as_deref())
+}
+
+fn embed_iframe_proxy_enabled_from_value(value: Option<&str>) -> bool {
+    match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
         Some("1" | "true" | "yes" | "on") => true,
-        _ => std::env::var("OUTBOUND_HTTP_PROXY")
-            .ok()
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false),
+        _ => false,
     }
 }
 
@@ -5099,8 +5095,12 @@ fn is_external_embed_url(value: &str) -> bool {
 }
 
 fn build_live_iframe_playback_source(embed_url: &str) -> String {
+    build_live_iframe_playback_source_with_proxy(embed_url, embed_iframe_proxy_enabled())
+}
+
+fn build_live_iframe_playback_source_with_proxy(embed_url: &str, proxy_enabled: bool) -> String {
     let trimmed = embed_url.trim();
-    let iframe_target = if embed_iframe_proxy_enabled() && is_external_embed_url(trimmed) {
+    let iframe_target = if proxy_enabled && is_external_embed_url(trimmed) {
         format!(
             "/api/embed/frame?url={}",
             crate::embed_proxy::encode_query_value(trimmed)
@@ -6784,14 +6784,15 @@ mod tests {
         ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
         VIDFAST_EMBED_SERVERS, build_external_embed_resolved_payload,
         build_external_embed_resolved_playback_payload, build_external_embed_source_summaries,
-        build_live_iframe_playback_source, build_movie_resolve_lock_key,
-        build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
-        build_torrentio_stream_cache_key, build_torznab_request_url,
+        build_live_iframe_playback_source, build_live_iframe_playback_source_with_proxy,
+        build_movie_resolve_lock_key, build_playback_session_key_for_metadata,
+        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_torznab_request_url,
         build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
         compute_source_health_score, compute_torrentio_cache_deadlines,
         default_external_embed_source, does_filename_likely_match_movie,
-        external_embed_source_for_source_hash, external_embed_source_hash, external_embed_sources,
-        external_embed_url, extract_info_hash_from_magnet, is_persistent_source_resolve_error,
+        embed_iframe_proxy_enabled_from_value, external_embed_source_for_source_hash,
+        external_embed_source_hash, external_embed_sources, external_embed_url,
+        extract_info_hash_from_magnet, is_persistent_source_resolve_error,
         is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
         normalize_allowed_formats, normalize_resolved_source_for_software_decode,
         normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
@@ -6902,6 +6903,31 @@ mod tests {
         assert_eq!(
             stringify_json(payload.get("resolverProvider")),
             "external-embed"
+        );
+    }
+
+    #[test]
+    fn iframe_proxy_requires_explicit_embed_proxy_flag() {
+        assert!(!embed_iframe_proxy_enabled_from_value(None));
+        assert!(!embed_iframe_proxy_enabled_from_value(Some("")));
+        assert!(!embed_iframe_proxy_enabled_from_value(Some("false")));
+        assert!(!embed_iframe_proxy_enabled_from_value(Some("0")));
+        assert!(embed_iframe_proxy_enabled_from_value(Some("true")));
+        assert!(embed_iframe_proxy_enabled_from_value(Some("on")));
+    }
+
+    #[test]
+    fn iframe_playback_source_is_direct_unless_proxy_is_explicitly_enabled() {
+        let embed_url = "https://vidfast.me/movie/1318447";
+
+        assert_eq!(
+            build_live_iframe_playback_source_with_proxy(embed_url, false),
+            "live-iframe:https%3A%2F%2Fvidfast.me%2Fmovie%2F1318447"
+        );
+
+        assert_eq!(
+            build_live_iframe_playback_source_with_proxy(embed_url, true),
+            "live-iframe:%2Fapi%2Fembed%2Fframe%3Furl%3Dhttps%253A%252F%252Fvidfast.me%252Fmovie%252F1318447"
         );
     }
 
