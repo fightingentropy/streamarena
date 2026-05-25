@@ -1730,6 +1730,9 @@ function hideResolver() {
   if (resolverAlternateButton) {
     resolverAlternateButton.hidden = true;
   }
+  if (isLiveIframePlaybackActive()) {
+    scheduleControlsHide();
+  }
 }
 
 function normalizeResolverFailureMessage(
