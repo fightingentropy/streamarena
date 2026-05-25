@@ -534,8 +534,6 @@ impl ResolverService {
             source_language: normalize_source_language_filter(source_language),
             source_audio_profile: normalize_source_audio_profile_filter(source_audio_profile),
         };
-        let mut external_guard = self.acquire_external_resolve_permit().await?;
-
         if media_type == "tv" {
             let season_number = normalize_episode_ordinal(
                 if season_number.trim().is_empty() {
@@ -566,6 +564,20 @@ impl ResolverService {
             let has_external_sources = !external_sources.is_empty();
             let pinned_external_source =
                 external_embed_source_for_source_hash(&metadata, &normalized_source_hash).is_some();
+            let mut external_guard = match self.acquire_external_resolve_permit().await {
+                Ok(guard) => guard,
+                Err(error) if has_external_sources => {
+                    return Ok(json!({
+                        "mediaType": "tv",
+                        "tmdbId": tmdb_id.trim(),
+                        "resolverProvider": resolver_provider.as_str(),
+                        "seasonNumber": metadata.season_number,
+                        "episodeNumber": metadata.episode_number,
+                        "sources": external_sources
+                    }));
+                }
+                Err(error) => return Err(error),
+            };
             let torrentio_result = self
                 .fetch_torrentio_episode_streams(
                     &metadata.imdb_id,
@@ -683,6 +695,18 @@ impl ResolverService {
         let has_external_sources = !external_sources.is_empty();
         let pinned_external_source =
             external_embed_source_for_source_hash(&metadata, &normalized_source_hash).is_some();
+        let mut external_guard = match self.acquire_external_resolve_permit().await {
+            Ok(guard) => guard,
+            Err(error) if has_external_sources => {
+                return Ok(json!({
+                    "mediaType": "movie",
+                    "tmdbId": tmdb_id.trim(),
+                    "resolverProvider": resolver_provider.as_str(),
+                    "sources": external_sources
+                }));
+            }
+            Err(error) => return Err(error),
+        };
         let torrentio_result = self.fetch_torrentio_movie_streams(&metadata.imdb_id).await;
         let sources = match torrentio_result {
             Ok(streams) => {
@@ -951,7 +975,6 @@ impl ResolverService {
                 source_audio_profile: normalize_source_audio_profile_filter(source_audio_profile),
             },
         };
-        let mut external_guard = self.acquire_external_resolve_permit().await?;
         let metadata = self
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
@@ -967,7 +990,6 @@ impl ResolverService {
             )
             .await
             {
-                external_guard.mark_completed();
                 return Ok(payload);
             }
             return Err(ApiError::bad_gateway(
@@ -986,7 +1008,6 @@ impl ResolverService {
             )
             .await
             {
-                external_guard.mark_completed();
                 return Ok(payload);
             }
         }
@@ -1001,7 +1022,6 @@ impl ResolverService {
             )
             .await?
         {
-            external_guard.mark_completed();
             return Ok(reused);
         }
         if should_allow_latest_playback_session_fallback(&filters)
@@ -1014,9 +1034,9 @@ impl ResolverService {
                 )
                 .await?
         {
-            external_guard.mark_completed();
             return Ok(reused);
         }
+        let mut external_guard = self.acquire_external_resolve_permit().await?;
         let mut last_error;
         match self.fetch_torrentio_movie_streams(&metadata.imdb_id).await {
             Ok(streams) => {
@@ -1288,7 +1308,6 @@ impl ResolverService {
             },
             1,
         );
-        let mut external_guard = self.acquire_external_resolve_permit().await?;
         let metadata = self
             .fetch_tv_episode_metadata(
                 tmdb_id,
@@ -1310,7 +1329,6 @@ impl ResolverService {
             )
             .await
             {
-                external_guard.mark_completed();
                 return Ok(payload);
             }
             return Err(ApiError::bad_gateway(
@@ -1329,7 +1347,6 @@ impl ResolverService {
             )
             .await
             {
-                external_guard.mark_completed();
                 return Ok(payload);
             }
         }
@@ -1344,7 +1361,6 @@ impl ResolverService {
             )
             .await?
         {
-            external_guard.mark_completed();
             return Ok(reused);
         }
         if should_allow_latest_playback_session_fallback(&filters)
@@ -1357,9 +1373,9 @@ impl ResolverService {
                 )
                 .await?
         {
-            external_guard.mark_completed();
             return Ok(reused);
         }
+        let mut external_guard = self.acquire_external_resolve_permit().await?;
         let mut last_error;
         match self
             .fetch_torrentio_episode_streams(
