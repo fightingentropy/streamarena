@@ -1038,7 +1038,7 @@ impl ResolverService {
                 &metadata,
                 provider,
                 &preferences,
-                true,
+                false,
             )
             .await
             {
@@ -1381,7 +1381,7 @@ impl ResolverService {
                 &metadata,
                 provider,
                 &preferences,
-                true,
+                false,
             )
             .await
             {
@@ -4764,6 +4764,16 @@ async fn build_external_embed_resolved_playback_payload(
     preferences: &ResolvePreferences,
     allow_native_fallback: bool,
 ) -> Option<Value> {
+    let selected_embed_url = external_embed_url(source, metadata)?;
+    if !is_external_embed_hls_capable_source(source) {
+        return Some(build_external_embed_iframe_resolved_payload(
+            metadata,
+            source,
+            preferences,
+            selected_embed_url,
+        ));
+    }
+
     let mut candidates = Vec::from([source]);
     if allow_native_fallback {
         for candidate in preferred_external_embed_hls_sources(metadata) {
@@ -4793,7 +4803,32 @@ async fn build_external_embed_resolved_playback_payload(
         ));
     }
 
-    None
+    if allow_native_fallback {
+        return None;
+    }
+
+    Some(build_external_embed_iframe_resolved_payload(
+        metadata,
+        source,
+        preferences,
+        selected_embed_url,
+    ))
+}
+
+fn build_external_embed_iframe_resolved_payload(
+    metadata: &ResolveMetadata,
+    source: ExternalEmbedSource,
+    preferences: &ResolvePreferences,
+    embed_url: String,
+) -> Value {
+    let playable_url = build_live_iframe_playback_source(&embed_url);
+    build_external_embed_resolved_payload_with_playable_url(
+        metadata,
+        source,
+        preferences,
+        playable_url,
+        embed_url,
+    )
 }
 
 #[cfg(test)]
@@ -4803,14 +4838,7 @@ fn build_external_embed_resolved_payload(
     preferences: &ResolvePreferences,
 ) -> Value {
     let embed_url = external_embed_url(source, metadata).unwrap_or_default();
-    let playable_url = build_live_iframe_playback_source(&embed_url);
-    build_external_embed_resolved_payload_with_playable_url(
-        metadata,
-        source,
-        preferences,
-        playable_url,
-        embed_url,
-    )
+    build_external_embed_iframe_resolved_payload(metadata, source, preferences, embed_url)
 }
 
 fn build_external_embed_resolved_payload_with_playable_url(
@@ -6760,9 +6788,10 @@ mod tests {
         ResolvePreferences, ResolvedSource, ResolverExternalGuard, ResolverMetrics,
         ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
         VIDFAST_EMBED_SERVERS, build_external_embed_resolved_payload,
-        build_external_embed_source_summaries, build_live_iframe_playback_source,
-        build_movie_resolve_lock_key, build_playback_session_key_for_metadata,
-        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_torznab_request_url,
+        build_external_embed_resolved_playback_payload, build_external_embed_source_summaries,
+        build_live_iframe_playback_source, build_movie_resolve_lock_key,
+        build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
+        build_torrentio_stream_cache_key, build_torznab_request_url,
         build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
         compute_source_health_score, compute_torrentio_cache_deadlines,
         default_external_embed_source, does_filename_likely_match_movie,
@@ -6946,6 +6975,38 @@ mod tests {
                 "https://vidfast.me/movie/1368166?theme=FF0000&hideServer=true&server=vFast"
             ),
             stringify_json(payload.get("playableUrl"))
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_non_hls_external_embed_uses_iframe_handoff() {
+        let metadata = sample_movie_metadata();
+        let source = external_embed_sources()
+            .into_iter()
+            .find(|source| source.provider.id == "vidsrc")
+            .expect("vidsrc source");
+        let preferences = ResolvePreferences {
+            audio_lang: "auto".to_owned(),
+            subtitle_lang: "off".to_owned(),
+            quality: "auto".to_owned(),
+        };
+
+        let payload =
+            build_external_embed_resolved_playback_payload(&metadata, source, &preferences, false)
+                .await
+                .expect("iframe payload");
+
+        assert_eq!(
+            stringify_json(payload.get("sourceHash")),
+            external_embed_source_hash(source, &metadata)
+        );
+        assert_eq!(
+            stringify_json(payload.get("sourceInput")),
+            "https://vidsrcme.ru/embed/movie/1368166"
+        );
+        assert_eq!(
+            stringify_json(payload.get("playableUrl")),
+            build_live_iframe_playback_source("https://vidsrcme.ru/embed/movie/1368166")
         );
     }
 
