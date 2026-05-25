@@ -1030,8 +1030,9 @@ impl ResolverService {
         let metadata = self
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
-        if let Some(provider) =
-            external_embed_source_for_source_hash(&metadata, &filters.source_hash)
+        if !skip_external_embed
+            && let Some(provider) =
+                external_embed_source_for_source_hash(&metadata, &filters.source_hash)
         {
             if let Some(payload) = build_external_embed_resolved_playback_payload(
                 &metadata,
@@ -1372,8 +1373,9 @@ impl ResolverService {
                 episode_number,
             )
             .await?;
-        if let Some(provider) =
-            external_embed_source_for_source_hash(&metadata, &filters.source_hash)
+        if !skip_external_embed
+            && let Some(provider) =
+                external_embed_source_for_source_hash(&metadata, &filters.source_hash)
         {
             if let Some(payload) = build_external_embed_resolved_playback_payload(
                 &metadata,
@@ -2606,6 +2608,9 @@ impl ResolverService {
         if !playback_session_matches_preferred_container(&session, filters) {
             return Ok(None);
         }
+        if !playback_session_matches_preferred_quality(&session, preferences, filters) {
+            return Ok(None);
+        }
         if !playback_session_matches_resolver_provider(&session, resolver_provider) {
             return Ok(None);
         }
@@ -2708,6 +2713,9 @@ impl ResolverService {
                 continue;
             }
             if !playback_session_matches_preferred_container(&session, filters) {
+                continue;
+            }
+            if !playback_session_matches_preferred_quality(&session, preferences, filters) {
                 continue;
             }
             if !playback_session_matches_resolver_provider(&session, resolver_provider) {
@@ -4443,7 +4451,11 @@ fn parse_runtime_from_label_seconds(value: &str) -> i64 {
 }
 
 fn parse_stream_vertical_resolution(stream: &DiscoveryStream) -> i64 {
-    let stream_text = build_stream_text(stream);
+    parse_vertical_resolution_from_text(&build_stream_text(stream))
+}
+
+fn parse_vertical_resolution_from_text(value: &str) -> i64 {
+    let stream_text = value.to_lowercase();
     if stream_text.is_empty() {
         return 0;
     }
@@ -6197,6 +6209,47 @@ fn playback_session_matches_preferred_container(
         "mkv" => playback_session_looks_like_container(session, "mkv"),
         _ => true,
     }
+}
+
+fn playback_session_matches_preferred_quality(
+    session: &PlaybackSession,
+    preferences: &ResolvePreferences,
+    filters: &ResolveFilters,
+) -> bool {
+    if !normalize_source_hash(&filters.source_hash).is_empty() {
+        return true;
+    }
+
+    let preferred_quality = normalize_preferred_stream_quality(&preferences.quality);
+    if preferred_quality == "auto" {
+        return true;
+    }
+
+    let session_quality = normalize_preferred_stream_quality(&session.preferred_quality);
+    if session_quality == preferred_quality {
+        return true;
+    }
+
+    let target_height = stream_quality_target(&preferred_quality);
+    if target_height == 0 {
+        return true;
+    }
+
+    let source_input = extract_playable_source_input(&session.playable_url);
+    let selected_file_path = playback_session_selected_file_path(session);
+    let session_text = [
+        source_input.as_str(),
+        session.playable_url.as_str(),
+        session.filename.as_str(),
+        session.selected_file.as_str(),
+        selected_file_path.as_str(),
+    ]
+    .into_iter()
+    .filter(|value| !value.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join(" ");
+    let session_height = parse_vertical_resolution_from_text(&session_text);
+    session_height == 0 || session_height == target_height
 }
 
 fn playback_session_matches_resolver_provider(

@@ -516,6 +516,7 @@ const DEFAULT_SOURCE_LANGUAGE = "en";
 const DEFAULT_SOURCE_AUDIO_PROFILE = "single";
 const DEFAULT_RESOLVER_PROVIDER = "fastest";
 const DEFAULT_REMUX_VIDEO_MODE = "auto";
+const MOBILE_DEFAULT_STREAM_QUALITY_PREFERENCE = "720p";
 // SOURCE_LANGUAGE_TOKENS — imported from ./src-ui/player/sources.js
 const AUDIO_SYNC_MIN_MS = -2500;
 const AUDIO_SYNC_MAX_MS = 2500;
@@ -979,6 +980,7 @@ let preferredQuality = normalizePreferredQuality(qualityParam);
 if (isTmdbMoviePlayback && !hasQualityParam) {
   preferredQuality = getStoredPreferredQuality();
 }
+applyMobileLightTmdbDefaults();
 let preferredSourceMinSeeders = DEFAULT_SOURCE_MIN_SEEDERS;
 let preferredSourceResultsLimit = DEFAULT_SOURCE_RESULTS_LIMIT;
 let preferredSourceFormats = [...supportedSourceFormats];
@@ -1012,6 +1014,42 @@ let lastPersistedResumeAt = 0;
 let resumeFlushIntervalId = 0;
 
 function emptyRememberedTmdbSourceState() { return { sourceHash: "", sessionKey: "", resolverProvider: "", sourceInput: "", filename: "" }; }
+
+function shouldPreferMobileLightTmdbSources() {
+  return Boolean(isTmdbResolvedPlayback && isMobileOrTabletVideoEnvironment());
+}
+
+function shouldUseFreshMobileTmdbSourceOrder() {
+  return shouldPreferMobileLightTmdbSources() && !normalizeSourceHash(sourceHashParam);
+}
+
+function applyMobileLightTmdbDefaults() {
+  if (!shouldPreferMobileLightTmdbSources()) {
+    return;
+  }
+  if (!hasQualityParam) {
+    preferredQuality = MOBILE_DEFAULT_STREAM_QUALITY_PREFERENCE;
+  }
+  if (isTmdbTvPlayback && !preferredContainerParam) {
+    preferredContainer = "mp4";
+  }
+}
+
+function clearRememberedTmdbSourcePinForFreshResolve() {
+  if (normalizeSourceHash(sourceHashParam)) {
+    return;
+  }
+  selectedSourceHash = "";
+  sourceSelectionPinned = false;
+  currentTmdbPlaybackSessionKey = "";
+  currentTmdbResolverProvider = "";
+  currentTmdbResolvedFilename = "";
+  currentTmdbSelectedFile = "";
+  activeTrackSourceInput = "";
+  preferredResolverProvider = DEFAULT_RESOLVER_PROVIDER;
+  tmdbSkipExternalEmbed = false;
+  applyPreferredSourceAudioSync(selectedSourceHash);
+}
 
 function normalizeRememberedResolverProvider(value) {
   const normalized = String(value || "")
@@ -1063,13 +1101,31 @@ function rememberServerContinueWatchingEntry(entry) {
       ...existing,
       ...entry,
       sourceIdentity: normalizedSource,
-      sourceHash: normalizeSourceHash(entry.sourceHash || existing.sourceHash || ""),
-      sessionKey: String(entry.sessionKey || existing.sessionKey || "").trim(),
-      resolverProvider: normalizeRememberedResolverProvider(
-        entry.resolverProvider || existing.resolverProvider,
+      sourceHash: normalizeSourceHash(
+        Object.prototype.hasOwnProperty.call(entry, "sourceHash")
+          ? entry.sourceHash
+          : existing.sourceHash || "",
       ),
-      sourceInput: String(entry.sourceInput || existing.sourceInput || "").trim(),
-      filename: String(entry.filename || existing.filename || "").trim(),
+      sessionKey: String(
+        Object.prototype.hasOwnProperty.call(entry, "sessionKey")
+          ? entry.sessionKey
+          : existing.sessionKey || "",
+      ).trim(),
+      resolverProvider: normalizeRememberedResolverProvider(
+        Object.prototype.hasOwnProperty.call(entry, "resolverProvider")
+          ? entry.resolverProvider
+          : existing.resolverProvider,
+      ),
+      sourceInput: String(
+        Object.prototype.hasOwnProperty.call(entry, "sourceInput")
+          ? entry.sourceInput
+          : existing.sourceInput || "",
+      ).trim(),
+      filename: String(
+        Object.prototype.hasOwnProperty.call(entry, "filename")
+          ? entry.filename
+          : existing.filename || "",
+      ).trim(),
       resumeSeconds: Number(entry.resumeSeconds || existing.resumeSeconds || 0),
       updatedAt: Number(entry.updatedAt || existing.updatedAt || Date.now()),
     };
@@ -1081,12 +1137,32 @@ function rememberServerContinueWatchingEntry(entry) {
   }
 }
 
-function applyRememberedTmdbSourcePin() {
+function applyRememberedTmdbSourcePin({ force = false } = {}) {
   if (!isTmdbResolvedPlayback) {
     return false;
   }
   const remembered = getRememberedContinueWatchingSourceState();
-  if (!selectedSourceHash && remembered.sourceHash) {
+  if (remembered.sourceHash && shouldUseFreshMobileTmdbSourceOrder()) {
+    clearRememberedTmdbSourcePinForFreshResolve();
+    return false;
+  }
+  if (force) {
+    selectedSourceHash = remembered.sourceHash;
+    sourceSelectionPinned = Boolean(selectedSourceHash);
+    currentTmdbPlaybackSessionKey = remembered.sessionKey;
+    currentTmdbResolverProvider = remembered.resolverProvider;
+    currentTmdbResolvedFilename = remembered.filename;
+    activeTrackSourceInput = remembered.sourceInput;
+    if (
+      remembered.resolverProvider === "real-debrid" ||
+      remembered.resolverProvider === "local-torrent"
+    ) {
+      preferredResolverProvider = remembered.resolverProvider;
+      tmdbSkipExternalEmbed = true;
+    } else if (remembered.resolverProvider === "external-embed") {
+      tmdbSkipExternalEmbed = false;
+    }
+  } else if (!selectedSourceHash && remembered.sourceHash) {
     selectedSourceHash = remembered.sourceHash;
   }
   if (selectedSourceHash) {
@@ -1293,6 +1369,30 @@ function persistContinueWatchingEntry(resumeSeconds) {
   } catch {
     // Ignore storage access issues.
   }
+}
+
+function syncContinueWatchingEntryToServer(resumeSeconds, { keepalive = false } = {}) {
+  const normalizedSource = String(sourceIdentity || "").trim();
+  if (
+    !normalizedSource ||
+    !Number.isFinite(resumeSeconds) ||
+    resumeSeconds < 1
+  ) {
+    return;
+  }
+
+  const metadata = getCanonicalContinueWatchingMetadata();
+  fetch("/api/user/continue-watching", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sourceIdentity: normalizedSource,
+      resumeSeconds,
+      ...metadata,
+      updatedAt: Date.now(),
+    }),
+    keepalive,
+  }).catch(() => {});
 }
 
 function removeContinueWatchingEntry() {
@@ -2139,7 +2239,66 @@ function scoreSourceOptionLanguageForDefault(
   return -5;
 }
 
+function buildSourceOptionSearchText(option = {}) {
+  return [
+    option?.primary,
+    option?.filename,
+    option?.provider,
+    option?.qualityLabel,
+    option?.container,
+    option?.size,
+    option?.releaseGroup,
+  ]
+    .map((value) => String(value || "").toLowerCase())
+    .join(" ");
+}
+
+function scoreMobileLightSourceOption(option = {}) {
+  if (isSourceOptionEmbed(option)) {
+    return 10000;
+  }
+
+  const resolution = parseSourceOptionVerticalResolution(option);
+  const sizeGb = parseSourceSizeGb(option?.size);
+  const text = buildSourceOptionSearchText(option);
+  let score = 0;
+
+  if (isSourceOptionLikelyContainer(option, "mp4")) score += 320;
+  if (isSourceOptionLikelyContainer(option, "mkv")) score -= 80;
+
+  if (resolution === 720) score += 280;
+  else if (resolution > 0 && resolution < 720) score += 120;
+  else if (resolution === 1080) score += 40;
+  else if (resolution >= 2160) score -= 260;
+
+  if (sizeGb > 0) {
+    if (sizeGb <= 2.5) score += 190;
+    else if (sizeGb <= 5) score += 140;
+    else if (sizeGb <= 8) score += 60;
+    else if (sizeGb > 18) score -= 220;
+    else if (sizeGb > 12) score -= 120;
+  }
+
+  if (/\b(h\.?264|x264|avc)\b/.test(text)) score += 120;
+  if (/\b(hevc|h\.?265|x265|10bit|10-bit|hdr|dolby\s*vision|dv|av1)\b/.test(text)) {
+    score -= 240;
+  }
+
+  const seeders = Number.isFinite(Number(option?.seeders))
+    ? Math.max(0, Math.floor(Number(option.seeders)))
+    : 0;
+  return score + Math.min(seeders, 200) * 0.2;
+}
+
 function compareSourceOptionsForDefault(left = {}, right = {}) {
+  if (shouldPreferMobileLightTmdbSources()) {
+    const leftMobileScore = scoreMobileLightSourceOption(left);
+    const rightMobileScore = scoreMobileLightSourceOption(right);
+    if (leftMobileScore !== rightMobileScore) {
+      return rightMobileScore - leftMobileScore;
+    }
+  }
+
   const leftLangScore = scoreSourceOptionLanguageForDefault(left);
   const rightLangScore = scoreSourceOptionLanguageForDefault(right);
   if (leftLangScore !== rightLangScore) {
@@ -2180,6 +2339,9 @@ function getSourceListPreferredContainer() {
 }
 
 function getDefaultSourceContainerPreference() {
+  if (shouldPreferMobileLightTmdbSources()) {
+    return "";
+  }
   const explicitPreference = getSourceListPreferredContainer();
   if (explicitPreference) {
     return explicitPreference;
@@ -3863,6 +4025,12 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
       destroyActiveHlsController();
       const fallbackMessage =
         String(message || "").trim() || "HLS playback failed.";
+      if (isCurrentTmdbExternalEmbedSource()) {
+        // External embed HLS failures are usually provider-side. Skip iframe
+        // fallbacks on mobile and move straight to the lightweight resolver path.
+        tmdbSourceAttemptIndex = tmdbSourceQueue.length;
+        demoteCurrentExternalEmbedSourceForRecovery(fallbackMessage);
+      }
       void handlePlaybackErrorRecovery(fallbackMessage).then((recovered) => {
         if (!recovered && isTmdbResolvedPlayback) {
           reportCurrentTmdbPlaybackFailure(fallbackMessage);
@@ -4083,6 +4251,46 @@ function reportCurrentTmdbPlaybackFailure(
     .catch(() => false);
 }
 
+function isCurrentTmdbExternalEmbedSource() {
+  if (!isTmdbResolvedPlayback) {
+    return false;
+  }
+  if (currentTmdbResolverProvider === "external-embed") {
+    return true;
+  }
+  const selectedOption = getSourceOptionByHash(selectedSourceHash);
+  return Boolean(selectedOption && isSourceOptionEmbed(selectedOption));
+}
+
+function demoteCurrentExternalEmbedSourceForRecovery(message = "") {
+  if (!isCurrentTmdbExternalEmbedSource()) {
+    return false;
+  }
+
+  const failedSourceHash = normalizeSourceHash(selectedSourceHash);
+  if (failedSourceHash) {
+    resolverFailedSourceHashes.add(failedSourceHash);
+    void reportCurrentTmdbPlaybackFailure(
+      message || "External HLS playback failed.",
+      "playback_error",
+      { includeSourceHash: true, dedupe: false },
+    );
+  }
+
+  selectedSourceHash = "";
+  sourceSelectionPinned = false;
+  currentTmdbPlaybackSessionKey = "";
+  currentTmdbResolverProvider = "";
+  currentTmdbResolvedFilename = "";
+  currentTmdbSelectedFile = "";
+  activeTrackSourceInput = "";
+  tmdbSkipExternalEmbed = true;
+  applyPreferredSourceAudioSync(selectedSourceHash);
+  persistSourceHashInUrl();
+  syncSourceSelectionState();
+  return true;
+}
+
 async function tryNextTmdbSource() {
   if (
     !isTmdbResolvedPlayback ||
@@ -4261,6 +4469,7 @@ async function resolveTmdbSourcesAndPlay({
   persistSourceHashInUrl();
   if (resumeTime > 1) {
     persistContinueWatchingEntry(resumeTime);
+    syncContinueWatchingEntryToServer(resumeTime);
   }
 
   if (resolvedTrackPreferenceAudio && resolvedTrackPreferenceAudio !== "auto") {
@@ -4385,6 +4594,12 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
   stopLocalCacheUpgradeWatch();
   isRecoveringTmdbStream = true;
   showResolver(message || "Switching source...");
+  const demotedExternalEmbed = demoteCurrentExternalEmbedSourceForRecovery(
+    failureMessage || message || "External HLS playback failed.",
+  );
+  if (demotedExternalEmbed) {
+    tmdbSourceAttemptIndex = tmdbSourceQueue.length;
+  }
 
   if (tmdbSourceAttemptIndex < tmdbSourceQueue.length) {
     void tryNextTmdbSource().finally(() => {
@@ -4955,6 +5170,74 @@ function navigateToSeriesEpisode(nextIndex) {
   window.location.href = _episodePath;
 }
 
+function getSeriesEpisodeSourceIdentity(index) {
+  const seriesId = String(activeSeries?.id || "").trim().toLowerCase();
+  const safeIndex = Math.max(0, Math.floor(Number(index) || 0));
+  return seriesId ? `series:${seriesId}:episode:${safeIndex}` : "";
+}
+
+function getStoredSeriesEpisodeResumeSeconds(index) {
+  const episodeSourceIdentity = getSeriesEpisodeSourceIdentity(index);
+  if (!episodeSourceIdentity) {
+    return 0;
+  }
+
+  try {
+    const storedValue = Number(
+      localStorage.getItem(`netflix-resume:${episodeSourceIdentity}`),
+    );
+    return Number.isFinite(storedValue) && storedValue > 0 ? storedValue : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function getSeriesEpisodeProgressRatio(index) {
+  if (!Number.isFinite(Number(index))) {
+    return 0;
+  }
+
+  const durationSeconds = Number(getDisplayDurationSeconds());
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return 0;
+  }
+
+  const safeIndex = Math.max(0, Math.floor(Number(index) || 0));
+  const progressSeconds =
+    safeIndex === seriesEpisodeIndex
+      ? Math.max(0, getEffectiveCurrentTime())
+      : getStoredSeriesEpisodeResumeSeconds(safeIndex);
+
+  if (!Number.isFinite(progressSeconds) || progressSeconds <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(1, progressSeconds / durationSeconds));
+}
+
+function syncEpisodeProgressIndicators() {
+  if (!episodesList || !episodesControl?.classList.contains("is-open")) {
+    return;
+  }
+
+  episodesList
+    .querySelectorAll(".episode-preview-item[data-episode-index]")
+    .forEach((item) => {
+      const progress = item.querySelector(".episode-preview-progress");
+      if (!(progress instanceof HTMLElement)) {
+        return;
+      }
+
+      const ratio = getSeriesEpisodeProgressRatio(
+        Number(item.dataset.episodeIndex || 0),
+      );
+      progress.style.setProperty(
+        "--episode-progress",
+        `${Math.round(ratio * 1000) / 10}%`,
+      );
+    });
+}
+
 function renderSeriesEpisodePreview() {
   if (!episodesList) {
     return;
@@ -5114,6 +5397,7 @@ function renderSeriesEpisodePreview() {
     }
     episodesList.appendChild(item);
   });
+  syncEpisodeProgressIndicators();
 }
 
 function openEpisodesPopover({ sticky = false } = {}) {
@@ -6393,6 +6677,7 @@ function syncSeekState() {
     seekBar.value,
     getBufferedSeekValue(seekScaleDurationSeconds),
   );
+  syncEpisodeProgressIndicators();
 }
 
 function persistResumeTime(force = false) {
@@ -6435,6 +6720,7 @@ function persistResumeTime(force = false) {
       resumeTime = 0;
       lastPersistedResumeTime = 0;
       lastPersistedResumeAt = 0;
+      syncEpisodeProgressIndicators();
       return;
     }
 
@@ -6461,6 +6747,7 @@ function persistResumeTime(force = false) {
     resumeTime = nextResumeTime;
     lastPersistedResumeTime = nextResumeTime;
     lastPersistedResumeAt = now;
+    syncEpisodeProgressIndicators();
 
     // Sync watch progress to server in background
     fetch("/api/user/watch-progress", {
@@ -6470,19 +6757,9 @@ function persistResumeTime(force = false) {
       keepalive: Boolean(force),
     }).catch(() => {});
 
-    // Sync continue-watching entry to server in background
-    const metadata = getCanonicalContinueWatchingMetadata();
-    fetch("/api/user/continue-watching", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sourceIdentity,
-        resumeSeconds: nextResumeTime,
-        ...metadata,
-        updatedAt: Date.now(),
-      }),
+    syncContinueWatchingEntryToServer(nextResumeTime, {
       keepalive: Boolean(force),
-    }).catch(() => {});
+    });
   } catch {
     // Ignore storage access issues.
   }
@@ -7058,6 +7335,9 @@ function scoreResolverAlternateSource(sourceOption) {
   const resolution = parseSourceOptionVerticalResolution(sourceOption);
   const backendScore = Number(sourceOption?.score);
   let score = Number.isFinite(backendScore) ? backendScore / 100 : 0;
+  if (shouldPreferMobileLightTmdbSources()) {
+    score += scoreMobileLightSourceOption(sourceOption);
+  }
 
   score += Math.min(seeders, 300) * 0.25;
   if (sizeGb > 0) {
@@ -7313,6 +7593,7 @@ function isTransientResolveError(error) {
     message.includes("request timed out") ||
     message.includes("real-debrid request timed out") ||
     message.includes("torrentio request failed") ||
+    message.includes("selected external hls source is unavailable") ||
     message.includes("failed to fetch")
   );
 }
@@ -7326,6 +7607,7 @@ function isSourceFallbackResolveError(error) {
   const message = String(error?.message || "").toLowerCase();
   return (
     message.includes("real-debrid blocked this source") ||
+    message.includes("selected external hls source is unavailable") ||
     message.includes("all stream candidates failed")
   );
 }
@@ -7623,9 +7905,13 @@ async function resolveTmdbMovieViaBackend(
   } catch (error) {
     lastError = error;
     if (allowSourceFallback && pinnedSourceHash) {
+      const skipEmbedFallback =
+        skipExternalEmbed || isSourceFallbackResolveError(error);
       try {
         return await requestResolveJson(
-          `/api/resolve/movie?${buildQuery().toString()}`,
+          `/api/resolve/movie?${buildQuery({
+            skipExternalEmbed: skipEmbedFallback,
+          }).toString()}`,
         );
       } catch (fallbackError) {
         lastError = fallbackError;
@@ -7641,7 +7927,10 @@ async function resolveTmdbMovieViaBackend(
       `/api/resolve/movie?${buildQuery({
         includeSourceFilters: false,
         audioLang: "auto",
-        quality: DEFAULT_STREAM_QUALITY_PREFERENCE,
+        quality: shouldPreferMobileLightTmdbSources()
+          ? preferredQuality
+          : DEFAULT_STREAM_QUALITY_PREFERENCE,
+        skipExternalEmbed: true,
       }).toString()}`,
     );
   }
@@ -7726,6 +8015,8 @@ async function resolveTmdbTvEpisodeViaBackend(
     let lastError = error;
     const fallbackAttempts = [];
     const seen = new Set([`${preferredContainer}::${pinnedSourceHash}`]);
+    const skipEmbedFallback =
+      skipExternalEmbed || isSourceFallbackResolveError(error);
 
     const pushFallback = (
       containerPreference,
@@ -7761,6 +8052,7 @@ async function resolveTmdbTvEpisodeViaBackend(
           `/api/resolve/tv?${buildQuery(fallbackContainer, fallbackSource, {
             sessionKey: fallbackSessionKey,
             includeSourceFilters: !fallbackSource,
+            skipExternalEmbed: skipEmbedFallback,
           }).toString()}`,
         );
       } catch (fallbackError) {
@@ -7776,7 +8068,10 @@ async function resolveTmdbTvEpisodeViaBackend(
         `/api/resolve/tv?${buildQuery("", "", {
           includeSourceFilters: false,
           audioLang: "auto",
-          quality: DEFAULT_STREAM_QUALITY_PREFERENCE,
+          quality: shouldPreferMobileLightTmdbSources()
+            ? preferredQuality
+            : DEFAULT_STREAM_QUALITY_PREFERENCE,
+          skipExternalEmbed: true,
         }).toString()}`,
       );
     }
@@ -8136,6 +8431,7 @@ async function initPlaybackSource() {
   isTmdbMoviePlayback = Boolean(!hasExplicitSource && tmdbId && mediaType === "movie");
   isTmdbTvPlayback = Boolean(!hasExplicitSource && tmdbId && mediaType === "tv");
   isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
+  applyMobileLightTmdbDefaults();
   await preferLocalMoviePlaybackSourceFromLibrary();
   if (isTmdbTvPlayback && !isSeriesPlayback) {
     await hydrateTmdbTvEpisodeCatalog();
@@ -8167,11 +8463,7 @@ async function initPlaybackSource() {
       lastPersistedResumeTime = storedResume;
     }
   } catch {}
-  const rememberedBeforeServer = getRememberedContinueWatchingSourceState();
-  if (
-    isTmdbResolvedPlayback &&
-    !rememberedBeforeServer.sourceHash
-  ) {
+  if (isTmdbResolvedPlayback) {
     try {
       const res = await fetch("/api/user/continue-watching");
       if (res.ok) {
@@ -8181,7 +8473,7 @@ async function initPlaybackSource() {
         );
         if (entry) {
           rememberServerContinueWatchingEntry(entry);
-          applyRememberedTmdbSourcePin();
+          applyRememberedTmdbSourcePin({ force: true });
           if (
             !(resumeTime > 1) &&
             Number.isFinite(entry.resumeSeconds) &&

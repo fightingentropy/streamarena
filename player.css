@@ -1226,7 +1226,11 @@ body {
     align-self: center;
     border-radius: 999px;
     background:
-        linear-gradient(90deg, var(--ui-accent) 0 86%, rgba(255, 255, 255, 0.24) 86% 100%);
+        linear-gradient(
+            90deg,
+            var(--ui-accent) 0 var(--episode-progress, 0%),
+            rgba(255, 255, 255, 0.24) var(--episode-progress, 0%) 100%
+        );
 }
 
 .episode-preview-item.is-previewed .episode-preview-progress {
@@ -1272,8 +1276,8 @@ body {
 
 .source-popover {
     right: 0;
-    width: min(430px, calc(100vw - 22px));
-    max-height: min(52vh, 430px);
+    width: min(520px, calc(100vw - 22px));
+    max-height: min(56vh, 500px);
     padding: 16px 0 14px;
     overflow: hidden;
 }
@@ -1296,8 +1300,8 @@ body {
 }
 
 .source-popover-options.source-options {
-    max-height: min(42vh, 340px);
-    padding: 0 16px;
+    max-height: min(46vh, 410px);
+    padding: 0 18px;
     margin: 0;
     gap: 8px;
 }
@@ -1417,17 +1421,17 @@ body {
 }
 
 .audio-option.source-option {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: center;
+    gap: 6px;
     width: 100%;
     min-width: 0;
-    min-height: 76px;
-    padding: 12px 14px 12px 40px;
+    min-height: 88px;
+    padding: 14px 16px 14px 44px;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 7px;
-    background: rgba(255, 255, 255, 0.035);
-    justify-content: center;
+    background: rgba(255, 255, 255, 0.04);
     overflow: hidden;
     box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
 }
@@ -1441,17 +1445,21 @@ body {
 .audio-option.source-option[aria-selected="true"] {
     border-color: rgba(229, 9, 20, 0.72);
     background:
-        linear-gradient(90deg, rgba(229, 9, 20, 0.2), transparent 38%),
-        rgba(255, 255, 255, 0.07);
+        linear-gradient(90deg, rgba(229, 9, 20, 0.24), transparent 42%),
+        rgba(255, 255, 255, 0.08);
+    box-shadow:
+        inset 0 0 0 1px rgba(229, 9, 20, 0.22),
+        0 12px 34px rgba(0, 0, 0, 0.22);
 }
 
 .audio-option.source-option::before {
-    left: 13px;
-    font-size: 1.08rem;
+    left: 15px;
+    font-size: 1.18rem;
 }
 
 .source-option-name {
-    font-size: clamp(0.92rem, 1.08vw, 1rem);
+    min-width: 0;
+    font-size: 1rem;
     line-height: 1.24;
     color: #fff;
     white-space: normal;
@@ -1466,7 +1474,8 @@ body {
 
 .source-option-hint {
     display: block;
-    font-size: clamp(0.74rem, 0.9vw, 0.84rem);
+    min-width: 0;
+    font-size: 0.84rem;
     line-height: 1.2;
     color: rgba(245, 245, 245, 0.82);
     white-space: nowrap;
@@ -1476,7 +1485,8 @@ body {
 
 .source-option-meta {
     display: block;
-    font-size: clamp(0.68rem, 0.84vw, 0.78rem);
+    min-width: 0;
+    font-size: 0.76rem;
     line-height: 1.15;
     color: rgba(245, 245, 245, 0.7);
     white-space: nowrap;
@@ -1887,8 +1897,8 @@ body {
         right: 0;
         bottom: auto;
         top: calc(100% + 8px);
-        width: min(88vw, 380px);
-        max-height: min(54vh, 360px);
+        width: min(92vw, 440px);
+        max-height: min(58vh, 430px);
     }
 
     .episodes-popover {
@@ -2038,36 +2048,37 @@ body {
     }
 
     .source-options {
-        max-height: min(38vh, 280px);
+        max-height: min(42vh, 330px);
         gap: 7px;
     }
 
     .source-popover-options.source-options {
-        max-height: min(42vh, 300px);
+        max-height: min(46vh, 360px);
         padding: 0 12px;
     }
 
     .audio-option.source-option {
-        min-height: 66px;
-        padding: 10px 12px 10px 34px;
+        min-height: 78px;
+        padding: 12px 12px 12px 36px;
         border-radius: 7px;
+        gap: 5px;
     }
 
     .audio-option.source-option::before {
-        left: 10px;
-        font-size: 0.98rem;
+        left: 11px;
+        font-size: 1rem;
     }
 
     .source-option-name {
-        font-size: clamp(0.8rem, 3.2vw, 0.92rem);
+        font-size: 0.9rem;
     }
 
     .source-option-hint {
-        font-size: clamp(0.7rem, 2.8vw, 0.82rem);
+        font-size: 0.78rem;
     }
 
     .source-option-meta {
-        font-size: clamp(0.64rem, 2.5vw, 0.74rem);
+        font-size: 0.7rem;
     }
 
     .source-option-details {
@@ -2252,7 +2263,7 @@ body {
     }
 
     .source-popover {
-        width: min(96vw, 350px);
+        width: min(96vw, 390px);
     }
 
     .audio-popover.subtitles-popover {
