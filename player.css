@@ -80,6 +80,10 @@ body {
     background: linear-gradient(180deg, rgba(0, 0, 0, 0.4) 0%, rgba(0, 0, 0, 0.04) 28%, rgba(0, 0, 0, 0) 100%);
 }
 
+.player-shell.live-iframe-active.controls-hidden .player-ui {
+    pointer-events: auto;
+}
+
 #playerVideo::cue {
     color: #b8bcc3;
     background: transparent !important;
