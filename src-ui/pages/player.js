@@ -101,7 +101,6 @@ const LIVE_EDGE_PLAYBACK_OFFSET_SECONDS = 0.5;
 const LIVE_EDGE_REJOIN_TOLERANCE_SECONDS = 2.5;
 const LIVE_EMBED_FALLBACK_SOURCE_LIMIT = 5;
 const LIVE_IFRAME_SOURCE_PREFIX = "live-iframe:";
-const LIVE_IFRAME_FALLBACK_PROBE_MS = 5000;
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
@@ -123,7 +122,6 @@ let seekLoadingTimeout = null;
 let tmdbSourceQueue = [];
 let tmdbSourceAttemptIndex = 0;
 let tmdbSkipExternalEmbed = false;
-let embedIframeFallbackTimer = null;
 let tmdbResolveRetries = 0;
 let knownDurationSeconds = 0;
 let expectedDurationSeconds = 0;
@@ -3892,43 +3890,18 @@ function navigateBackFromPlayer() {
   window.location.href = getFallbackPlayerReturnPath();
 }
 
-function clearEmbedIframeFallbackTimer() {
-  if (embedIframeFallbackTimer) {
-    window.clearTimeout(embedIframeFallbackTimer);
-    embedIframeFallbackTimer = null;
-  }
-}
-
-function scheduleEmbedIframeFallbackProbe() {
-  clearEmbedIframeFallbackTimer();
-  if (
-    tmdbSkipExternalEmbed ||
-    !isLiveIframePlaybackActive() ||
-    tmdbSourceAttemptIndex >= tmdbSourceQueue.length
-  ) {
+function handleLiveIframePlaybackError() {
+  if (!isTmdbResolvedPlayback || !isLiveIframePlaybackActive()) {
     return;
   }
-  embedIframeFallbackTimer = window.setTimeout(() => {
-    embedIframeFallbackTimer = null;
-    if (!isLiveIframePlaybackActive()) {
-      return;
-    }
-    if (tmdbSourceAttemptIndex >= tmdbSourceQueue.length) {
-      attemptTmdbRecovery("Embed unavailable. Trying torrent...");
-      return;
-    }
-    void tryNextTmdbSource().then((advanced) => {
-      if (advanced) {
-        scheduleEmbedIframeFallbackProbe();
-        return;
-      }
-      attemptTmdbRecovery("Embed unavailable. Trying torrent...");
-    });
-  }, LIVE_IFRAME_FALLBACK_PROBE_MS);
+  if (tmdbSourceAttemptIndex < tmdbSourceQueue.length) {
+    void tryNextTmdbSource();
+    return;
+  }
+  attemptTmdbRecovery("Embed unavailable. Trying torrent...");
 }
 
 function clearLiveIframePlayback() {
-  clearEmbedIframeFallbackTimer();
   if (liveEmbedFrame) {
     liveEmbedFrame.hidden = true;
     liveEmbedFrame.removeAttribute("src");
@@ -3962,7 +3935,6 @@ function setLiveIframePlaybackSource(embedUrl, encodedSource) {
   }
   playerShell?.classList.add("live-iframe-active");
   syncDurationText();
-  scheduleEmbedIframeFallbackProbe();
 }
 
 function isLiveIframePlaybackActive() {
@@ -10192,6 +10164,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
         allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
         allowfullscreen
         referrerpolicy="strict-origin-when-cross-origin"
+        onError=${handleLiveIframePlaybackError}
         hidden
       ></iframe>
 
