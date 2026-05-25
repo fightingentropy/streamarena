@@ -6773,8 +6773,9 @@ mod tests {
         normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
         now_ms, parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
         parse_torznab_xml, playback_session_matches_preferred_container,
-        playback_session_matches_source_hash, ready_info_has_selected_file_id,
-        select_fastest_race_candidates, select_top_episode_candidates, select_top_movie_candidates,
+        playback_session_matches_preferred_quality, playback_session_matches_source_hash,
+        ready_info_has_selected_file_id, select_fastest_race_candidates,
+        select_top_episode_candidates, select_top_movie_candidates,
         should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
         should_prefer_software_decode_source, should_skip_playback_session_reuse,
         should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
@@ -7733,6 +7734,44 @@ mod tests {
         assert!(playback_session_matches_preferred_container(
             &mp4_session,
             &filters
+        ));
+    }
+
+    #[test]
+    fn skips_heavy_unpinned_session_for_mobile_quality_preference() {
+        let filters = ResolveFilters {
+            source_hash: String::new(),
+            preferred_container: String::new(),
+            source_filters: sample_source_filters(),
+        };
+        let preferences = ResolvePreferences {
+            audio_lang: "auto".to_owned(),
+            subtitle_lang: "off".to_owned(),
+            quality: "720p".to_owned(),
+        };
+        let session = PlaybackSession {
+            preferred_quality: "auto".to_owned(),
+            filename: "Off.Campus.S01E02.1080p.HEVC.x265-MeGusta.mkv".to_owned(),
+            playable_url:
+                "/api/remux?input=https%3A%2F%2Fdownload.real-debrid.com%2FOff.Campus.S01E02.1080p.HEVC.x265-MeGusta.mkv"
+                    .to_owned(),
+            ..PlaybackSession::default()
+        };
+
+        assert!(!playback_session_matches_preferred_quality(
+            &session,
+            &preferences,
+            &filters
+        ));
+
+        let pinned_filters = ResolveFilters {
+            source_hash: "1111111111111111111111111111111111111111".to_owned(),
+            ..filters
+        };
+        assert!(playback_session_matches_preferred_quality(
+            &session,
+            &preferences,
+            &pinned_filters
         ));
     }
 
