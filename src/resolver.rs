@@ -276,7 +276,8 @@ struct ExternalEmbedHlsPlaybackSource {
 }
 
 const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
-    // Match LivNet's movie/series iframe order: VidFast first, then simple fallbacks.
+    // Keep VidFast first for quick iframe handoff, while matching the
+    // Lekuluent-compatible server URL shapes for the shared providers.
     ExternalEmbedProvider {
         id: "vidfast",
         label: "VidFast",
@@ -302,7 +303,7 @@ const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
         label: "VidNest",
         priority: 4,
     },
-    // Keep other iframe providers available after the LivNet-compatible set.
+    // Keep other iframe providers available after the high-priority set.
     ExternalEmbedProvider {
         id: "vidsrc",
         label: "VidSrc",
@@ -4865,21 +4866,23 @@ fn external_embed_url_with_subtitle(
     }
     match (source.provider.id, metadata.media_type.as_str()) {
         ("vidfast", "movie") => Some(build_vidfast_embed_url(
-            &format!("https://vidfast.me/movie/{tmdb_id}"),
+            &format!("https://vidfast.pro/movie/{tmdb_id}"),
             source.server,
             vidfast_subtitle_lang,
         )),
         ("vidfast", "tv") => Some(build_vidfast_embed_url(
             &format!(
-                "https://vidfast.me/tv/{}/{}/{}",
+                "https://vidfast.pro/tv/{}/{}/{}",
                 tmdb_id, metadata.season_number, metadata.episode_number
             ),
             source.server,
             vidfast_subtitle_lang,
         )),
-        ("videasy", "movie") => Some(format!("https://player.videasy.net/movie/{tmdb_id}")),
+        ("videasy", "movie") => Some(format!(
+            "https://player.videasy.net/movie/{tmdb_id}?color=ffd700"
+        )),
         ("videasy", "tv") => Some(format!(
-            "https://player.videasy.net/tv/{}/{}/{}",
+            "https://player.videasy.net/tv/{}/{}/{}?nextEpisode=true&autoplayNextEpisode=true&episodeSelector=false&overlay=true&color=ffd700",
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
         ("vidking", "movie") => Some(format!("https://www.vidking.net/embed/movie/{tmdb_id}")),
@@ -4917,9 +4920,9 @@ fn external_embed_url_with_subtitle(
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
         // vidlink - High quality streaming
-        ("vidlink", "movie") => Some(format!("https://vidlink.pro/embed/movie/{tmdb_id}")),
+        ("vidlink", "movie") => Some(format!("https://vidlink.pro/movie/{tmdb_id}")),
         ("vidlink", "tv") => Some(format!(
-            "https://vidlink.pro/embed/tv/{}/{}/{}",
+            "https://vidlink.pro/tv/{}/{}/{}",
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
         // superembed - Reliable streaming
@@ -5007,7 +5010,12 @@ fn build_vidfast_embed_url(
     server: Option<ExternalEmbedServer>,
     subtitle_lang: Option<&str>,
 ) -> String {
-    let mut pairs = vec![("theme".to_owned(), "FF0000".to_owned())];
+    let autoplay_key = if base_url.contains("/tv/") {
+        "autoplay"
+    } else {
+        "autoPlay"
+    };
+    let mut pairs = vec![(autoplay_key.to_owned(), "true".to_owned())];
     if let Some(server) = server {
         pairs.push(("hideServer".to_owned(), "true".to_owned()));
         pairs.push(("server".to_owned(), server.id.to_owned()));
@@ -6805,7 +6813,7 @@ mod tests {
         let metadata = sample_movie_metadata();
         let sources = build_external_embed_source_summaries(&metadata);
 
-        // LivNet order first, with older providers kept as lower-priority fallbacks.
+        // Iframe providers first, with older providers kept as lower-priority fallbacks.
         assert_eq!(sources.len(), EXTERNAL_EMBED_PROVIDERS.len());
         assert_eq!(sources[0].primary, "VidFast");
         assert_eq!(sources[0].provider, "LivNet");
@@ -6822,7 +6830,7 @@ mod tests {
         assert_eq!(source.provider.id, "vidfast");
         assert_eq!(
             external_embed_url(source, &metadata).unwrap(),
-            "https://vidfast.me/movie/1368166?theme=FF0000"
+            "https://vidfast.pro/movie/1368166?autoPlay=true"
         );
         assert_eq!(
             external_embed_source_hash(source, &metadata),
@@ -6839,7 +6847,9 @@ mod tests {
         assert_eq!(
             fallback_urls,
             vec![
-                build_live_iframe_playback_source("https://player.videasy.net/movie/1368166"),
+                build_live_iframe_playback_source(
+                    "https://player.videasy.net/movie/1368166?color=ffd700"
+                ),
                 build_live_iframe_playback_source("https://www.vidking.net/embed/movie/1368166"),
                 build_live_iframe_playback_source("https://www.2embed.cc/embed/1368166"),
                 build_live_iframe_playback_source("https://vidnest.fun/embed/movie/1368166"),
@@ -6853,6 +6863,37 @@ mod tests {
         assert_eq!(
             external_embed_url(vidsrc_source, &metadata).unwrap(),
             "https://vidsrcme.ru/embed/movie/1368166"
+        );
+
+        let vidlink_source = external_embed_sources()
+            .into_iter()
+            .find(|source| source.provider.id == "vidlink")
+            .expect("vidlink fallback source");
+        assert_eq!(
+            external_embed_url(vidlink_source, &metadata).unwrap(),
+            "https://vidlink.pro/movie/1368166"
+        );
+
+        let tv_metadata = sample_tv_metadata();
+        let videasy_source = external_embed_sources()
+            .into_iter()
+            .find(|source| source.provider.id == "videasy")
+            .expect("videasy fallback source");
+        assert_eq!(
+            external_embed_url(source, &tv_metadata).unwrap(),
+            "https://vidfast.pro/tv/76331/1/1?autoplay=true"
+        );
+        assert_eq!(
+            external_embed_url(videasy_source, &tv_metadata).unwrap(),
+            "https://player.videasy.net/tv/76331/1/1?nextEpisode=true&autoplayNextEpisode=true&episodeSelector=false&overlay=true&color=ffd700"
+        );
+        assert_eq!(
+            external_embed_url(vidlink_source, &tv_metadata).unwrap(),
+            "https://vidlink.pro/tv/76331/1/1"
+        );
+        assert_eq!(
+            external_embed_url(vidsrc_source, &tv_metadata).unwrap(),
+            "https://vidsrcme.ru/embed/tv/76331/1/1"
         );
     }
 
@@ -6895,7 +6936,7 @@ mod tests {
         assert_eq!(source.provider.id, "vidfast");
         assert_eq!(
             stringify_json(payload.get("playableUrl")),
-            build_live_iframe_playback_source("https://vidfast.me/movie/1368166?theme=FF0000")
+            build_live_iframe_playback_source("https://vidfast.pro/movie/1368166?autoPlay=true")
         );
         assert_eq!(
             stringify_json(payload.get("resolverProvider")),
@@ -6915,22 +6956,22 @@ mod tests {
 
     #[test]
     fn iframe_playback_source_is_direct_unless_proxy_is_explicitly_enabled() {
-        let embed_url = "https://vidfast.me/movie/1318447";
+        let embed_url = "https://vidfast.pro/movie/1318447";
 
         assert_eq!(
             build_live_iframe_playback_source_with_proxy(embed_url, false),
-            "live-iframe:https%3A%2F%2Fvidfast.me%2Fmovie%2F1318447"
+            "live-iframe:https%3A%2F%2Fvidfast.pro%2Fmovie%2F1318447"
         );
 
         assert_eq!(
             build_live_iframe_playback_source_with_proxy(embed_url, true),
-            "live-iframe:%2Fapi%2Fembed%2Fframe%3Furl%3Dhttps%253A%252F%252Fvidfast.me%252Fmovie%252F1318447"
+            "live-iframe:%2Fapi%2Fembed%2Fframe%3Furl%3Dhttps%253A%252F%252Fvidfast.pro%252Fmovie%252F1318447"
         );
     }
 
     #[test]
     fn external_embed_hls_resolver_accepts_known_hosts_only() {
-        let videasy_embed: url::Url = "https://player.videasy.net/movie/1368166"
+        let videasy_embed: url::Url = "https://player.videasy.net/movie/1368166?color=ffd700"
             .parse()
             .expect("videasy embed");
         let vidking_embed: url::Url = "https://www.vidking.net/embed/tv/1396/1/1"
@@ -6975,7 +7016,7 @@ mod tests {
         );
         assert_eq!(
             stringify_json(payload.get("sourceInput")),
-            "https://player.videasy.net/movie/1368166"
+            "https://player.videasy.net/movie/1368166?color=ffd700"
         );
         assert_eq!(
             stringify_json(payload.pointer("/metadata/resolverProvider")),
@@ -6983,13 +7024,15 @@ mod tests {
         );
         assert!(stringify_json(payload.get("playableUrl")).starts_with("live-iframe:"));
         assert_eq!(
-            build_live_iframe_playback_source("https://player.videasy.net/movie/1368166"),
+            build_live_iframe_playback_source(
+                "https://player.videasy.net/movie/1368166?color=ffd700"
+            ),
             stringify_json(payload.get("playableUrl"))
         );
     }
 
     #[test]
-    fn external_embed_resolved_payload_uses_livnet_vidfast_url() {
+    fn external_embed_resolved_payload_uses_lekuluent_vidfast_url() {
         let metadata = sample_movie_metadata();
         let source = external_embed_sources()
             .into_iter()
@@ -7005,10 +7048,10 @@ mod tests {
         assert_eq!(stringify_json(payload.get("filename")), "VidFast embed");
         assert_eq!(
             stringify_json(payload.get("sourceInput")),
-            "https://vidfast.me/movie/1368166?theme=FF0000"
+            "https://vidfast.pro/movie/1368166?autoPlay=true"
         );
         assert_eq!(
-            build_live_iframe_playback_source("https://vidfast.me/movie/1368166?theme=FF0000"),
+            build_live_iframe_playback_source("https://vidfast.pro/movie/1368166?autoPlay=true"),
             stringify_json(payload.get("playableUrl"))
         );
     }
@@ -7029,17 +7072,17 @@ mod tests {
 
         assert_eq!(
             stringify_json(payload.get("sourceInput")),
-            "https://vidfast.me/movie/1368166?theme=FF0000&sub=en"
+            "https://vidfast.pro/movie/1368166?autoPlay=true&sub=en"
         );
         assert_eq!(
             build_live_iframe_playback_source(
-                "https://vidfast.me/movie/1368166?theme=FF0000&sub=en"
+                "https://vidfast.pro/movie/1368166?autoPlay=true&sub=en"
             ),
             stringify_json(payload.get("playableUrl"))
         );
         assert_eq!(
             external_embed_url(source, &metadata).unwrap(),
-            "https://vidfast.me/movie/1368166?theme=FF0000"
+            "https://vidfast.pro/movie/1368166?autoPlay=true"
         );
     }
 
@@ -7059,7 +7102,7 @@ mod tests {
 
         assert_eq!(
             stringify_json(payload.get("sourceInput")),
-            "https://vidfast.me/movie/1368166?theme=FF0000&sub=en"
+            "https://vidfast.pro/movie/1368166?autoPlay=true&sub=en"
         );
     }
 

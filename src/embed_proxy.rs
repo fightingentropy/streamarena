@@ -17,6 +17,7 @@ const EMBED_PROXY_ALLOWED_HOSTS: &[&str] = &[
     "vidlink.pro",
     "superembed.com",
     "vidfast.me",
+    "vidfast.pro",
     "vidnest.fun",
     "player.videasy.net",
     "www.vidking.net",
@@ -151,6 +152,9 @@ mod tests {
     fn allows_known_embed_hosts() {
         let url = Url::parse("https://vidsrcme.ru/embed/movie/278").expect("url");
         assert!(is_allowed_embed_proxy_url(&url));
+
+        let lekuluent_vidfast = Url::parse("https://vidfast.pro/movie/278").expect("url");
+        assert!(is_allowed_embed_proxy_url(&lekuluent_vidfast));
     }
 
     #[test]
