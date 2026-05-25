@@ -72,6 +72,7 @@ body {
 
 .player-shell.live-iframe-active .player-video,
 .player-shell.live-iframe-active .custom-subtitle-overlay,
+.player-shell.live-iframe-active .top-row,
 .player-shell.live-iframe-active .controls-panel {
     display: none;
 }
