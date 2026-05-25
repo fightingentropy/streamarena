@@ -1142,7 +1142,10 @@ function applyRememberedTmdbSourcePin({ force = false } = {}) {
     return false;
   }
   const remembered = getRememberedContinueWatchingSourceState();
-  if (remembered.sourceHash && shouldUseFreshMobileTmdbSourceOrder()) {
+  if (
+    shouldUseFreshMobileTmdbSourceOrder() &&
+    (remembered.sourceHash || remembered.sessionKey || remembered.resolverProvider)
+  ) {
     clearRememberedTmdbSourcePinForFreshResolve();
     return false;
   }

@@ -57,9 +57,19 @@ const SPORT_TABS = Object.freeze(
   ),
 );
 
+const SPORTS_SOURCE_OPTIONS = Object.freeze([
+  Object.freeze({ id: "streamed", label: "Streamed" }),
+  Object.freeze({ id: "matchstream", label: "MatchStream" }),
+]);
+
 function normalizeSport(value) {
   const sport = String(value || "").trim().toLowerCase();
   return Object.prototype.hasOwnProperty.call(SPORT_CONFIGS, sport) ? sport : "football";
+}
+
+function normalizeSportsSource(value) {
+  const source = String(value || "").trim().toLowerCase();
+  return SPORTS_SOURCE_OPTIONS.some((option) => option.id === source) ? source : "streamed";
 }
 
 function readInitialSport(options = {}) {
@@ -72,7 +82,17 @@ function readInitialSport(options = {}) {
   }
 }
 
-function updateSportsUrl(sport) {
+function readInitialSportsSource(options = {}) {
+  const optionSource = normalizeSportsSource(options.initialSource);
+  if (optionSource !== "streamed") return optionSource;
+  try {
+    return normalizeSportsSource(new URLSearchParams(window.location.search).get("source"));
+  } catch {
+    return "streamed";
+  }
+}
+
+function updateSportsUrl(sport, source) {
   try {
     const url = new URL(window.location.href);
     if (!url.pathname.endsWith(".html")) {
@@ -83,10 +103,31 @@ function updateSportsUrl(sport) {
     } else {
       url.searchParams.set("sport", sport);
     }
+    if (source === "streamed") {
+      url.searchParams.delete("source");
+    } else {
+      url.searchParams.set("source", source);
+    }
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   } catch {
     // History updates are progressive enhancement; tab switching still works without them.
   }
+}
+
+function buildSportsApiUrl(apiUrl, source) {
+  const query = new URLSearchParams();
+  if (source && source !== "streamed") {
+    query.set("source", source);
+  }
+  const suffix = query.toString();
+  return suffix ? `${apiUrl}?${suffix}` : apiUrl;
+}
+
+function sportsSourceLabel(source) {
+  return (
+    SPORTS_SOURCE_OPTIONS.find((option) => option.id === source)?.label ||
+    SPORTS_SOURCE_OPTIONS[0].label
+  );
 }
 
 function getLocalTimeZone() {
@@ -167,30 +208,6 @@ function normalizeMatches(payload, sportName) {
       };
     })
     .sort((a, b) => a.startTimestamp - b.startTimestamp);
-}
-
-function sourceHostLabel(source) {
-  const value = String(source || "").trim();
-  if (!value) return "";
-  try {
-    const host = new URL(value).hostname.replace(/^www\./, "");
-    if (host === "streamed.pk") return "Streamed";
-    return host;
-  } catch {
-    return value;
-  }
-}
-
-function formatSourceLabel(payload = {}) {
-  const rawSources = Array.isArray(payload?.sources)
-    ? payload.sources
-    : [payload?.source];
-  const labels = rawSources
-    .map(sourceHostLabel)
-    .filter(Boolean)
-    .filter((label, index, values) => values.indexOf(label) === index);
-  if (!labels.length) return "schedule providers";
-  return labels.join(" + ");
 }
 
 function isLive(match, now) {
@@ -302,6 +319,7 @@ function renderMatchRow(match, now, config) {
 
 export default function SportsScheduleView(options = {}) {
   const [selectedSport, setSelectedSport] = createSignal(readInitialSport(options));
+  const [selectedSource, setSelectedSource] = createSignal(readInitialSportsSource(options));
   const [matches, setMatches] = createSignal([]);
   const [selectedDate, setSelectedDate] = createSignal("");
   const [filterMode, setFilterMode] = createSignal("all");
@@ -309,7 +327,6 @@ export default function SportsScheduleView(options = {}) {
   const [status, setStatus] = createSignal("loading");
   const [errorText, setErrorText] = createSignal("");
   const [fetchedAt, setFetchedAt] = createSignal(0);
-  const [sourceLabel, setSourceLabel] = createSignal("schedule providers");
   const [now, setNow] = createSignal(Date.now());
   const timeZone = getLocalTimeZone();
   const config = createMemo(() => SPORT_CONFIGS[selectedSport()] || SPORT_CONFIGS.football);
@@ -344,21 +361,24 @@ export default function SportsScheduleView(options = {}) {
   async function loadMatches() {
     const requestId = ++loadSequence;
     const activeConfig = config();
+    const activeSource = selectedSource();
     setStatus("loading");
     setErrorText("");
     try {
-      const response = await fetch(activeConfig.apiUrl, { cache: "no-store" });
+      const response = await fetch(buildSportsApiUrl(activeConfig.apiUrl, activeSource), {
+        cache: "no-store",
+      });
       const payload = await response.json().catch(() => null);
       if (!response.ok) {
         throw new Error(
-          payload?.error || `${activeConfig.sportName} schedule failed (${response.status})`,
+          payload?.error ||
+            `${sportsSourceLabel(activeSource)} ${activeConfig.sportName} schedule failed (${response.status})`,
         );
       }
       const nextMatches = normalizeMatches(payload, activeConfig.sportName);
       if (requestId !== loadSequence) return;
       setMatches(nextMatches);
       setFetchedAt(Number(payload?.fetchedAt || Date.now()));
-      setSourceLabel(formatSourceLabel(payload));
 
       const nextDates = Array.from(
         new Set(nextMatches.map((match) => matchDateKey(match))),
@@ -387,8 +407,20 @@ export default function SportsScheduleView(options = {}) {
     setFilterMode("all");
     setGroupMode("match");
     setFetchedAt(0);
-    setSourceLabel("schedule providers");
-    updateSportsUrl(nextSport);
+    updateSportsUrl(nextSport, selectedSource());
+    void loadMatches();
+  }
+
+  function switchSource(source) {
+    const nextSource = normalizeSportsSource(source);
+    if (selectedSource() === nextSource) return;
+    setSelectedSource(nextSource);
+    setMatches([]);
+    setSelectedDate("");
+    setFilterMode("all");
+    setGroupMode("match");
+    setFetchedAt(0);
+    updateSportsUrl(selectedSport(), nextSource);
     void loadMatches();
   }
 
@@ -446,7 +478,7 @@ export default function SportsScheduleView(options = {}) {
   }
 
   onMount(() => {
-    updateSportsUrl(selectedSport());
+    updateSportsUrl(selectedSport(), selectedSource());
     void loadMatches();
     intervalId = window.setInterval(() => setNow(Date.now()), 1000);
   });
@@ -541,7 +573,19 @@ export default function SportsScheduleView(options = {}) {
               : html`<div class="sports-match-list">${renderGroupedMatches()}</div>`}
 
         <div class="sports-source-row">
-          <span>Fetched from ${() => sourceLabel()}</span>
+          <label class="sports-source-picker">
+            <span>Fetched from</span>
+            <select
+              class="sports-source-select"
+              aria-label="Sports source"
+              value=${() => selectedSource()}
+              onInput=${(event) => switchSource(event.currentTarget.value)}
+            >
+              ${SPORTS_SOURCE_OPTIONS.map((source) => html`
+                <option value=${source.id}>${source.label}</option>
+              `)}
+            </select>
+          </label>
           <span>${() => (fetchedAt() ? `Updated ${formatTime(fetchedAt())}` : "")}</span>
           <button type="button" onClick=${loadMatches}>Refresh</button>
         </div>
