@@ -67,6 +67,7 @@ export default function PlayerPage() {
   let toggleMutePlayer, toggleFullscreen, toggleSpeed, speedControl;
   let toggleLiveStream, liveStreamControl, liveStreamMenu, liveStreamOptionsContainer;
   let toggleSource, sourceControl, sourceMenu;
+  let topSourceLabel;
   let nextEpisode, toggleEpisodes, episodesControl, episodesList, episodesPopoverTitle;
   let episodesBackToSeasons, episodesOverline;
   let autoPlayOverlay, autoPlayThumb, autoPlayTitle, autoPlayEpLabel;
@@ -2537,6 +2538,33 @@ function getSourceSelectLabel(option = {}) {
   return name;
 }
 
+function normalizeTopSourceLabel(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+(?:embed|iframe)$/i, "")
+    .trim();
+}
+
+function getTopSourceDisplayLabel(selectedOption = null) {
+  const optionLabel = normalizeTopSourceLabel(
+    selectedOption ? getSourceDisplayName(selectedOption) : "",
+  );
+  if (optionLabel) {
+    return optionLabel;
+  }
+
+  const filenameLabel = normalizeTopSourceLabel(currentTmdbResolvedFilename);
+  if (filenameLabel) {
+    return filenameLabel;
+  }
+
+  if (currentTmdbResolverProvider === "external-embed") {
+    return "VidFast";
+  }
+
+  return "Server";
+}
+
 function renderSelectedSourceDetails() {
   if (!sourceOptionDetails) {
     return;
@@ -2580,16 +2608,23 @@ function syncTmdbSourceControls() {
   const sourceLabel = selectedOption
     ? getSourceSelectLabel(selectedOption)
     : "Playback sources";
+  const topSourceText = getTopSourceDisplayLabel(selectedOption);
+
+  if (topSourceLabel) {
+    topSourceLabel.hidden = !shouldShow;
+    topSourceLabel.textContent = shouldShow ? topSourceText : "";
+    topSourceLabel.setAttribute("title", topSourceText);
+  }
   if (toggleSource) {
-    toggleSource.setAttribute("aria-label", `Sources (${sourceLabel})`);
-    toggleSource.setAttribute("title", `Sources (${sourceLabel})`);
+    toggleSource.setAttribute("aria-label", `Server (${sourceLabel})`);
+    toggleSource.setAttribute("title", `Server (${sourceLabel})`);
     toggleSource.setAttribute(
       "aria-expanded",
       sourceControl?.classList.contains("is-open") ? "true" : "false",
     );
   }
   if (sourceMenu) {
-    sourceMenu.setAttribute("aria-label", `Sources (${sourceLabel})`);
+    sourceMenu.setAttribute("aria-label", `Server (${sourceLabel})`);
   }
 }
 
@@ -9111,6 +9146,11 @@ if (toggleSource) {
       return;
     }
 
+    if (sourceControl.classList.contains("is-open")) {
+      closeSourcePopover(false, { force: true });
+      return;
+    }
+
     openSourcePopover();
   });
 }
@@ -9474,12 +9514,14 @@ async function handleSourceOptionSelection(nextSourceHash) {
   if (!normalizedNextSourceHash) {
     syncSourceSelectionState();
     renderSelectedSourceDetails();
+    closeSourcePopover(false, { force: true });
     return;
   }
 
   if (normalizedNextSourceHash === selectedSourceHash) {
     syncSourceSelectionState();
     renderSelectedSourceDetails();
+    closeSourcePopover(false, { force: true });
     return;
   }
 
@@ -10364,17 +10406,73 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
       <div id="subtitleOverlay" ref=${el => subtitleOverlay = el} class="custom-subtitle-overlay" hidden></div>
       <div class="player-ui">
         <header class="top-row">
-          <button
-            id="goBack"
-            ref=${el => goBack = el}
-            class="icon-btn"
-            type="button"
-            aria-label="Back to browse"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M14.6 4.6 7.2 12l7.4 7.4-1.4 1.4L4.4 12l8.8-8.8Z"></path>
-            </svg>
-          </button>
+          <div class="top-row-left">
+            <button
+              id="goBack"
+              ref=${el => goBack = el}
+              class="icon-btn"
+              type="button"
+              aria-label="Back to browse"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14.6 4.6 7.2 12l7.4 7.4-1.4 1.4L4.4 12l8.8-8.8Z"></path>
+              </svg>
+            </button>
+            <span
+              id="topSourceLabel"
+              ref=${el => topSourceLabel = el}
+              class="top-source-label"
+              hidden
+            >Server</span>
+          </div>
+
+          <p class="top-watching-title">You're Watching</p>
+
+          <div class="top-row-actions">
+            <div
+              id="sourceControl"
+              ref=${el => sourceControl = el}
+              class="speed-menu-wrap source-menu-wrap top-source-control"
+              hidden
+            >
+              <button
+                id="toggleSource"
+                ref=${el => toggleSource = el}
+                class="control-btn source-btn top-server-btn"
+                type="button"
+                aria-label="Server"
+                aria-haspopup="listbox"
+                aria-controls="sourceMenu"
+                aria-expanded="false"
+              >
+                <svg class="top-server-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7h12"></path>
+                  <path d="M4 12h9"></path>
+                  <path d="M4 17h12"></path>
+                  <path d="M18 10.5 21.5 12 18 13.5z"></path>
+                </svg>
+                <span class="top-server-label">Server</span>
+                <svg class="top-server-chevron" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m7 9 5 5 5-5"></path>
+                </svg>
+              </button>
+              <div
+                id="sourceMenu"
+                ref=${el => sourceMenu = el}
+                class="speed-popover source-popover"
+                role="listbox"
+                aria-label="Server"
+              >
+                <p class="speed-popover-title source-popover-title">Server</p>
+                <div
+                  id="sourceOptions"
+                  ref=${el => sourceOptionsContainer = el}
+                  class="audio-options source-options source-popover-options"
+                  aria-label="Playback servers"
+                ></div>
+              </div>
+            </div>
+          </div>
         </header>
 
         <section class="controls-panel">
@@ -10596,42 +10694,6 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
                       id="liveStreamOptions"
                       ref=${el => liveStreamOptionsContainer = el}
                       class="audio-options live-stream-options"
-                    ></div>
-                  </div>
-                </div>
-                <div
-                  id="sourceControl"
-                  ref=${el => sourceControl = el}
-                  class="speed-menu-wrap source-menu-wrap"
-                  hidden
-                >
-                  <button
-                    id="toggleSource"
-                    ref=${el => toggleSource = el}
-                    class="control-btn source-btn"
-                    type="button"
-                    aria-label="Sources"
-                    aria-haspopup="listbox"
-                    aria-controls="sourceMenu"
-                    aria-expanded="false"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M4 5.5h11.5v2H4v-2Zm0 5h8v2H4v-2Zm0 5h11.5v2H4v-2Zm13.4-5.2 4.2 2.7-4.2 2.7v-5.4Z"></path>
-                    </svg>
-                  </button>
-                  <div
-                    id="sourceMenu"
-                    ref=${el => sourceMenu = el}
-                    class="speed-popover source-popover"
-                    role="listbox"
-                    aria-label="Sources"
-                  >
-                    <p class="speed-popover-title source-popover-title">Sources</p>
-                    <div
-                      id="sourceOptions"
-                      ref=${el => sourceOptionsContainer = el}
-                      class="audio-options source-options source-popover-options"
-                      aria-label="Playback sources"
                     ></div>
                   </div>
                 </div>
