@@ -101,6 +101,13 @@ const LIVE_EDGE_PLAYBACK_OFFSET_SECONDS = 0.5;
 const LIVE_EDGE_REJOIN_TOLERANCE_SECONDS = 2.5;
 const LIVE_EMBED_FALLBACK_SOURCE_LIMIT = 5;
 const LIVE_IFRAME_SOURCE_PREFIX = "live-iframe:";
+const LIVE_IFRAME_ALLOW_POLICY = "autoplay; fullscreen; picture-in-picture; encrypted-media";
+const LIVE_IFRAME_SANDBOX_POLICY = [
+  "allow-forms",
+  "allow-presentation",
+  "allow-same-origin",
+  "allow-scripts",
+].join(" ");
 const LIVE_IFRAME_SUBTITLE_STREAM_INDEX_BASE = 9_000_000;
 const LIVE_IFRAME_SUBTITLE_LANGS = ["en", "fr", "es", "de", "it", "pt", "ja", "ko", "zh"];
 
@@ -4057,6 +4064,15 @@ function clearLiveIframePlayback() {
   playerShell?.classList.remove("live-iframe-active");
 }
 
+function hardenLiveEmbedFrame() {
+  if (!liveEmbedFrame) {
+    return;
+  }
+  liveEmbedFrame.setAttribute("allow", LIVE_IFRAME_ALLOW_POLICY);
+  liveEmbedFrame.setAttribute("sandbox", LIVE_IFRAME_SANDBOX_POLICY);
+  liveEmbedFrame.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+}
+
 function applyLiveIframeSubtitlePreference(subtitleLang) {
   if (!isLiveIframePlaybackActive()) {
     return false;
@@ -4103,6 +4119,7 @@ function setLiveIframePlaybackSource(embedUrl, encodedSource) {
     video.load();
   }
   if (liveEmbedFrame) {
+    hardenLiveEmbedFrame();
     liveEmbedFrame.src = embedUrl;
     liveEmbedFrame.hidden = false;
   }
@@ -10337,10 +10354,14 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
       ></video>
       <iframe
         id="liveEmbedFrame"
-        ref=${el => liveEmbedFrame = el}
+        ref=${el => {
+          liveEmbedFrame = el;
+          hardenLiveEmbedFrame();
+        }}
         class="live-embed-frame"
         title="Live stream player"
-        allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+        allow=${LIVE_IFRAME_ALLOW_POLICY}
+        sandbox=${LIVE_IFRAME_SANDBOX_POLICY}
         allowfullscreen
         referrerpolicy="strict-origin-when-cross-origin"
         onError=${handleLiveIframePlaybackError}
