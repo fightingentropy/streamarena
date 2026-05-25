@@ -2249,7 +2249,7 @@ export default function HomePage() {
     });
 
     if (!cards.length) {
-      setMyListRowVisible(false);
+      setMyListRowVisible(true);
       setMyListEmptyVisible(true);
       return;
     }
