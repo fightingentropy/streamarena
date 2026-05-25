@@ -4684,7 +4684,7 @@ async fn build_external_embed_resolved_playback_payload(
     preferences: &ResolvePreferences,
     allow_native_fallback: bool,
 ) -> Option<Value> {
-    let selected_embed_url = external_embed_url(source, metadata)?;
+    let selected_embed_url = external_embed_playback_url(source, metadata, preferences)?;
     if !is_external_embed_hls_capable_source(source) {
         return Some(build_external_embed_iframe_resolved_payload(
             metadata,
@@ -4704,7 +4704,7 @@ async fn build_external_embed_resolved_playback_payload(
     }
 
     for candidate in candidates {
-        let Some(embed_url) = external_embed_url(candidate, metadata) else {
+        let Some(embed_url) = external_embed_playback_url(candidate, metadata, preferences) else {
             continue;
         };
         let Some(hls_source) = resolve_external_embed_hls_playback_source(&embed_url).await else {
@@ -4757,7 +4757,7 @@ fn build_external_embed_resolved_payload(
     source: ExternalEmbedSource,
     preferences: &ResolvePreferences,
 ) -> Value {
-    let embed_url = external_embed_url(source, metadata).unwrap_or_default();
+    let embed_url = external_embed_playback_url(source, metadata, preferences).unwrap_or_default();
     build_external_embed_iframe_resolved_payload(metadata, source, preferences, embed_url)
 }
 
@@ -4770,7 +4770,7 @@ fn build_external_embed_resolved_payload_with_playable_url(
 ) -> Value {
     let source_hash = external_embed_source_hash(source, metadata);
     let filename = external_embed_source_filename(source);
-    let fallback_urls = external_embed_fallback_playback_urls(metadata, source, 4);
+    let fallback_urls = external_embed_fallback_playback_urls(metadata, source, preferences, 4);
     let resolved = ResolvedSource {
         playable_url: playable_url.clone(),
         fallback_urls: fallback_urls.clone(),
@@ -4808,13 +4808,14 @@ fn build_external_embed_resolved_payload_with_playable_url(
 fn external_embed_fallback_playback_urls(
     metadata: &ResolveMetadata,
     selected: ExternalEmbedSource,
+    preferences: &ResolvePreferences,
     limit: usize,
 ) -> Vec<String> {
     let selected_hash = external_embed_source_hash(selected, metadata);
     external_embed_sources()
         .into_iter()
         .filter(|candidate| external_embed_source_hash(*candidate, metadata) != selected_hash)
-        .filter_map(|candidate| external_embed_url(candidate, metadata))
+        .filter_map(|candidate| external_embed_playback_url(candidate, metadata, preferences))
         .map(|url| build_live_iframe_playback_source(&url))
         .filter(|url| !url.trim().is_empty())
         .take(limit)
@@ -4822,6 +4823,26 @@ fn external_embed_fallback_playback_urls(
 }
 
 fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> Option<String> {
+    external_embed_url_with_subtitle(source, metadata, None)
+}
+
+fn external_embed_playback_url(
+    source: ExternalEmbedSource,
+    metadata: &ResolveMetadata,
+    preferences: &ResolvePreferences,
+) -> Option<String> {
+    external_embed_url_with_subtitle(
+        source,
+        metadata,
+        vidfast_subtitle_query_value(&preferences.subtitle_lang).as_deref(),
+    )
+}
+
+fn external_embed_url_with_subtitle(
+    source: ExternalEmbedSource,
+    metadata: &ResolveMetadata,
+    vidfast_subtitle_lang: Option<&str>,
+) -> Option<String> {
     let tmdb_id = metadata.tmdb_id.trim();
     if tmdb_id.is_empty() {
         return None;
@@ -4830,6 +4851,7 @@ fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -
         ("vidfast", "movie") => Some(build_vidfast_embed_url(
             &format!("https://vidfast.me/movie/{tmdb_id}"),
             source.server,
+            vidfast_subtitle_lang,
         )),
         ("vidfast", "tv") => Some(build_vidfast_embed_url(
             &format!(
@@ -4837,6 +4859,7 @@ fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -
                 tmdb_id, metadata.season_number, metadata.episode_number
             ),
             source.server,
+            vidfast_subtitle_lang,
         )),
         ("videasy", "movie") => Some(format!("https://player.videasy.net/movie/{tmdb_id}")),
         ("videasy", "tv") => Some(format!(
@@ -4963,11 +4986,21 @@ fn external_embed_source_filename(source: ExternalEmbedSource) -> String {
     }
 }
 
-fn build_vidfast_embed_url(base_url: &str, server: Option<ExternalEmbedServer>) -> String {
+fn build_vidfast_embed_url(
+    base_url: &str,
+    server: Option<ExternalEmbedServer>,
+    subtitle_lang: Option<&str>,
+) -> String {
     let mut pairs = vec![("theme".to_owned(), "FF0000".to_owned())];
     if let Some(server) = server {
         pairs.push(("hideServer".to_owned(), "true".to_owned()));
         pairs.push(("server".to_owned(), server.id.to_owned()));
+    }
+    if let Some(lang) = subtitle_lang {
+        let normalized = lang.trim();
+        if !normalized.is_empty() {
+            pairs.push(("sub".to_owned(), normalized.to_owned()));
+        }
     }
     let query = pairs
         .iter()
@@ -4981,6 +5014,22 @@ fn build_vidfast_embed_url(base_url: &str, server: Option<ExternalEmbedServer>) 
         .collect::<Vec<_>>()
         .join("&");
     format!("{base_url}?{query}")
+}
+
+fn vidfast_subtitle_query_value(preferred_subtitle_lang: &str) -> Option<String> {
+    let normalized = normalize_subtitle_preference(preferred_subtitle_lang);
+    if normalized == "off" {
+        return None;
+    }
+    let lang = if normalized.is_empty() || normalized == "un" {
+        "en".to_owned()
+    } else {
+        normalized
+    };
+    if lang.len() == 2 && lang.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return Some(lang);
+    }
+    None
 }
 
 fn deterministic_40_hex(value: &str) -> String {
@@ -6764,7 +6813,13 @@ mod tests {
             sources[0].sourceHash
         );
 
-        let fallback_urls = external_embed_fallback_playback_urls(&metadata, source, 4);
+        let preferences = ResolvePreferences {
+            audio_lang: "auto".to_owned(),
+            subtitle_lang: "off".to_owned(),
+            quality: "auto".to_owned(),
+        };
+        let fallback_urls =
+            external_embed_fallback_playback_urls(&metadata, source, &preferences, 4);
         assert_eq!(
             fallback_urls,
             vec![
@@ -6939,6 +6994,56 @@ mod tests {
         assert_eq!(
             build_live_iframe_playback_source("https://vidfast.me/movie/1368166?theme=FF0000"),
             stringify_json(payload.get("playableUrl"))
+        );
+    }
+
+    #[test]
+    fn vidfast_playback_url_carries_subtitle_preference() {
+        let metadata = sample_movie_metadata();
+        let source = external_embed_sources()
+            .into_iter()
+            .find(|source| source.provider.id == "vidfast")
+            .expect("vidfast source");
+        let preferences = ResolvePreferences {
+            audio_lang: "auto".to_owned(),
+            subtitle_lang: "en".to_owned(),
+            quality: "auto".to_owned(),
+        };
+        let payload = build_external_embed_resolved_payload(&metadata, source, &preferences);
+
+        assert_eq!(
+            stringify_json(payload.get("sourceInput")),
+            "https://vidfast.me/movie/1368166?theme=FF0000&sub=en"
+        );
+        assert_eq!(
+            build_live_iframe_playback_source(
+                "https://vidfast.me/movie/1368166?theme=FF0000&sub=en"
+            ),
+            stringify_json(payload.get("playableUrl"))
+        );
+        assert_eq!(
+            external_embed_url(source, &metadata).unwrap(),
+            "https://vidfast.me/movie/1368166?theme=FF0000"
+        );
+    }
+
+    #[test]
+    fn vidfast_playback_url_defaults_empty_subtitle_preference_to_english() {
+        let metadata = sample_movie_metadata();
+        let source = external_embed_sources()
+            .into_iter()
+            .find(|source| source.provider.id == "vidfast")
+            .expect("vidfast source");
+        let preferences = ResolvePreferences {
+            audio_lang: "auto".to_owned(),
+            subtitle_lang: String::new(),
+            quality: "auto".to_owned(),
+        };
+        let payload = build_external_embed_resolved_payload(&metadata, source, &preferences);
+
+        assert_eq!(
+            stringify_json(payload.get("sourceInput")),
+            "https://vidfast.me/movie/1368166?theme=FF0000&sub=en"
         );
     }
 
