@@ -3935,6 +3935,8 @@ function setLiveIframePlaybackSource(embedUrl, encodedSource) {
   }
   playerShell?.classList.add("live-iframe-active");
   syncDurationText();
+  showControls();
+  scheduleControlsHide();
 }
 
 function isLiveIframePlaybackActive() {
@@ -6579,7 +6581,7 @@ function renderSourceOptionsWhenStable() {
 }
 
 function hideControls() {
-  if (video.paused) {
+  if (video.paused && !isLiveIframePlaybackActive()) {
     return;
   }
 
@@ -6597,7 +6599,7 @@ function showControls() {
 
 function scheduleControlsHide() {
   clearControlsHideTimer();
-  if (video.paused || isResolvingSource()) {
+  if ((video.paused && !isLiveIframePlaybackActive()) || isResolvingSource()) {
     return;
   }
 
