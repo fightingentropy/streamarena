@@ -1057,7 +1057,7 @@ impl ResolverService {
                 &metadata,
                 provider,
                 &preferences,
-                true,
+                false,
             )
             .await
             {
@@ -1400,7 +1400,7 @@ impl ResolverService {
                 &metadata,
                 provider,
                 &preferences,
-                true,
+                false,
             )
             .await
             {
@@ -4725,14 +4725,9 @@ fn external_embed_source_for_source_hash(
 }
 
 fn default_external_embed_source(metadata: &ResolveMetadata) -> Option<ExternalEmbedSource> {
-    preferred_external_embed_hls_sources(metadata)
+    external_embed_sources()
         .into_iter()
-        .next()
-        .or_else(|| {
-            external_embed_sources()
-                .into_iter()
-                .find(|source| external_embed_url(*source, metadata).is_some())
-        })
+        .find(|source| external_embed_url(*source, metadata).is_some())
 }
 
 fn preferred_external_embed_hls_sources(metadata: &ResolveMetadata) -> Vec<ExternalEmbedSource> {
@@ -6864,10 +6859,10 @@ mod tests {
     }
 
     #[test]
-    fn default_external_embed_prefers_native_hls_provider_for_unpinned_fastest_requests() {
+    fn default_external_embed_prefers_first_iframe_provider_for_unpinned_fastest_requests() {
         let metadata = sample_movie_metadata();
         let source = default_external_embed_source(&metadata).expect("default embed source");
-        assert_eq!(source.provider.id, "videasy");
+        assert_eq!(source.provider.id, "vidsrc");
 
         let filters = ResolveFilters {
             source_hash: String::new(),
@@ -6882,6 +6877,32 @@ mod tests {
             &filters,
             ResolverProvider::LocalTorrent
         ));
+    }
+
+    #[tokio::test]
+    async fn default_external_embed_resolve_uses_iframe_handoff_first() {
+        let metadata = sample_movie_metadata();
+        let source = default_external_embed_source(&metadata).expect("default embed source");
+        let preferences = ResolvePreferences {
+            audio_lang: "auto".to_owned(),
+            subtitle_lang: "off".to_owned(),
+            quality: "auto".to_owned(),
+        };
+
+        let payload =
+            build_external_embed_resolved_playback_payload(&metadata, source, &preferences, false)
+                .await
+                .expect("iframe payload");
+
+        assert_eq!(source.provider.id, "vidsrc");
+        assert_eq!(
+            stringify_json(payload.get("playableUrl")),
+            build_live_iframe_playback_source("https://vidsrcme.ru/embed/movie/1368166")
+        );
+        assert_eq!(
+            stringify_json(payload.get("resolverProvider")),
+            "external-embed"
+        );
     }
 
     #[test]

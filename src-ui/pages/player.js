@@ -472,6 +472,9 @@ const subtitleLangParam = (params.get("subtitleLang") || "")
   .trim()
   .toLowerCase();
 const sourceHashParam = (params.get("sourceHash") || "").trim().toLowerCase();
+const hasDirectSourceHashParam = new URLSearchParams(window.location.search).has(
+  "sourceHash",
+);
 const saveToGalleryParam = (params.get("saveToGallery") || "")
   .trim()
   .toLowerCase();
@@ -1036,7 +1039,7 @@ function applyMobileLightTmdbDefaults() {
 }
 
 function clearRememberedTmdbSourcePinForFreshResolve() {
-  if (normalizeSourceHash(sourceHashParam)) {
+  if (hasDirectSourceHashParam && normalizeSourceHash(sourceHashParam)) {
     return;
   }
   selectedSourceHash = "";
@@ -1059,6 +1062,28 @@ function normalizeRememberedResolverProvider(value) {
     return normalized;
   }
   return "";
+}
+
+function shouldIgnoreRememberedTmdbSourcePinForIframeFirst(remembered) {
+  const hasRememberedPin = Boolean(
+    normalizeSourceHash(selectedSourceHash) ||
+      remembered.sourceHash ||
+      remembered.sessionKey ||
+      remembered.resolverProvider,
+  );
+  if (!hasRememberedPin || hasDirectSourceHashParam) {
+    return false;
+  }
+  if (remembered.resolverProvider === "external-embed") {
+    return false;
+  }
+  if (
+    preferredResolverProvider === "real-debrid" ||
+    preferredResolverProvider === "local-torrent"
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function getRememberedContinueWatchingSourceState() {
@@ -1142,6 +1167,10 @@ function applyRememberedTmdbSourcePin({ force = false } = {}) {
     return false;
   }
   const remembered = getRememberedContinueWatchingSourceState();
+  if (shouldIgnoreRememberedTmdbSourcePinForIframeFirst(remembered)) {
+    clearRememberedTmdbSourcePinForFreshResolve();
+    return false;
+  }
   if (
     shouldUseFreshMobileTmdbSourceOrder() &&
     (remembered.sourceHash || remembered.sessionKey || remembered.resolverProvider)
