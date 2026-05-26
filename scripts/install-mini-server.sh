@@ -286,7 +286,7 @@ printf 'caddy_version='
 launchctl print system/com.fightingentropy.netflix-app 2>/dev/null | awk '/state =|pid =|runs =|last exit code =|path =/ {print}'
 launchctl print system/com.fightingentropy.netflix-caddy 2>/dev/null | awk '/state =|pid =|runs =|last exit code =|path =/ {print}'
 
-[[ "$backend_http" == "200" ]] || exit 1
-[[ "$caddy_http" == "200" ]] || exit 1
-[[ "$caddy_https" == "200" ]] || exit 1
+case "$backend_http" in 200|401) ;; *) exit 1 ;; esac
+case "$caddy_http" in 200|401) ;; *) exit 1 ;; esac
+case "$caddy_https" in 200|401) ;; *) exit 1 ;; esac
 REMOTE

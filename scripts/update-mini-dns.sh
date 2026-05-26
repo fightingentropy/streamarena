@@ -101,7 +101,7 @@ for host in hosts:
     records = request("GET", f"/zones/{zone_id}/dns_records", {"name": host, "per_page": 100})["result"]
     editable = [record for record in records if record["type"] in {"A", "AAAA", "CNAME"}]
     if not editable:
-        created = request("POST", f"/zones/{zone_id}/dns_records", {
+        created = request("POST", f"/zones/{zone_id}/dns_records", body={
             "type": "A",
             "name": host,
             "content": public_ip,
@@ -113,7 +113,7 @@ for host in hosts:
         continue
 
     primary, *stale = editable
-    updated = request("PUT", f"/zones/{zone_id}/dns_records/{primary['id']}", {
+    updated = request("PUT", f"/zones/{zone_id}/dns_records/{primary['id']}", body={
         "type": "A",
         "name": host,
         "content": public_ip,
