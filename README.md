@@ -585,7 +585,7 @@ Server machine:
 
 - Host: `hermes@m4mini.local`.
 - Runtime path: `/Users/hermes/Developer/netflix`.
-- Public hosts: `fightingentropy.org` and `www.fightingentropy.org`.
+- Public hosts: `streamthatshit.com` and `www.streamthatshit.com`.
 - Ingress: Cloudflare DNS-only A records -> home public IP -> router TCP 80/443 -> Mac mini.
 - Reverse proxy: Caddy on ports 80 and 443.
 - Backend listener: `127.0.0.1:5173`.
@@ -652,7 +652,7 @@ ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
 ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
   'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1:5173/api/library'
 
-curl -sSI --max-time 10 https://fightingentropy.org | sed -n '1,8p'
+curl -sSI --max-time 10 https://streamthatshit.com | sed -n '1,8p'
 ```
 
 Expected results:
