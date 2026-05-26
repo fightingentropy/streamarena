@@ -2860,6 +2860,12 @@ body.is-search-mode #myListRow {
 }
 
 @media (hover: none) and (pointer: coarse) {
+    .cards.popular-cards {
+        cursor: auto;
+        pointer-events: auto;
+        touch-action: pan-x pan-y;
+    }
+
     .top-nav nav a.optional:not(.nav-mobile-primary):not(.is-active) {
         display: none !important;
     }

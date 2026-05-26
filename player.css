@@ -85,7 +85,6 @@ body {
 }
 
 .player-shell.live-iframe-active .top-source-label,
-.player-shell.live-iframe-active .top-watching-title,
 .player-shell.live-iframe-active .top-row-actions {
     display: none;
 }
@@ -329,7 +328,7 @@ body {
     z-index: 46;
     padding: 18px 24px 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 16px;
     pointer-events: auto;
@@ -361,17 +360,6 @@ body {
     line-height: 1.1;
     text-overflow: ellipsis;
     text-shadow: 0 2px 10px rgba(0, 0, 0, 0.78);
-    white-space: nowrap;
-}
-
-.top-watching-title {
-    margin: 0;
-    color: #fff;
-    font-size: clamp(1.06rem, 1.55vw, 1.38rem);
-    font-weight: 800;
-    line-height: 1;
-    text-align: center;
-    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.82);
     white-space: nowrap;
 }
 
@@ -1839,10 +1827,6 @@ body {
         font-size: 0.92rem;
     }
 
-    .top-watching-title {
-        font-size: 1rem;
-    }
-
     .control-btn.top-server-btn {
         height: 36px;
         padding: 0 9px;
@@ -2393,10 +2377,6 @@ body {
     .top-source-label {
         max-width: 30vw;
         font-size: 0.82rem;
-    }
-
-    .top-watching-title {
-        font-size: 0.9rem;
     }
 
     .control-btn.top-server-btn {

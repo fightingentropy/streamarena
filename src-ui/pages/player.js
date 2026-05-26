@@ -9647,8 +9647,6 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
             >Server</span>
           </div>
 
-          <p class="top-watching-title">You're Watching</p>
-
           <div class="top-row-actions">
             <div
               id="sourceControl"

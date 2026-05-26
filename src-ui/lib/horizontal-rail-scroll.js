@@ -42,6 +42,11 @@ function isInteractiveControl(target) {
   );
 }
 
+function shouldUseNativeTouchScroll(event) {
+  const pointerType = String(event.pointerType || "").toLowerCase();
+  return pointerType === "touch" || pointerType === "pen";
+}
+
 export function bindHorizontalRailScroll(rail) {
   if (!(rail instanceof HTMLElement)) {
     return () => {};
@@ -81,6 +86,10 @@ export function bindHorizontalRailScroll(rail) {
   };
 
   const handlePointerDown = (event) => {
+    if (shouldUseNativeTouchScroll(event)) {
+      stopDragging();
+      return;
+    }
     if (event.button !== 0 || isInteractiveControl(event.target) || getMaxScrollLeft(rail) <= 1) {
       return;
     }
