@@ -195,6 +195,8 @@ let audioDecodeRecoveryAttempts = 0;
 let lastAudioDecodeRecoveryAt = 0;
 let lastPlaybackSourceSetAt = 0;
 let lastPlaybackSeekAt = 0;
+let liveIframePlaybackBaseSeconds = 0;
+let liveIframePlaybackStartedAtMs = 0;
 
 const _cleanups = [];
 function trackListener(target, event, handler, options) {
@@ -1355,8 +1357,17 @@ function getCanonicalContinueWatchingMetadata() {
   const normalizedSourceHash = isTmdbResolvedPlayback
     ? normalizeSourceHash(selectedSourceHash)
     : "";
+  const activeIframeSourceInput = isLiveIframePlaybackActive()
+    ? parseLiveIframePlaybackSource(lastRequestedPlaybackSource) ||
+      lastRequestedAbsolutePlaybackSource
+    : "";
   const resolvedSourceInput = isTmdbResolvedPlayback
-    ? String(activeTrackSourceInput || activeTranscodeInput || "").trim()
+    ? String(
+        activeTrackSourceInput ||
+          activeTranscodeInput ||
+          activeIframeSourceInput ||
+          "",
+      ).trim()
     : "";
   return {
     title: String(title || "Title"),
@@ -3390,7 +3401,44 @@ function isTranscodeSourceActive() {
   return Boolean(activeTranscodeInput);
 }
 
+function getLiveIframePlaybackClockSeconds(nowMs = performance.now()) {
+  const baseSeconds = Math.max(0, Number(liveIframePlaybackBaseSeconds) || 0);
+  const startedAtMs = Number(liveIframePlaybackStartedAtMs) || 0;
+  if (startedAtMs <= 0) {
+    return baseSeconds;
+  }
+  return baseSeconds + Math.max(0, (nowMs - startedAtMs) / 1000);
+}
+
+function startLiveIframeProgressClock(startSeconds = 0) {
+  liveIframePlaybackBaseSeconds = normalizeResumeStartSeconds(startSeconds);
+  liveIframePlaybackStartedAtMs = performance.now();
+}
+
+function pauseLiveIframeProgressClock() {
+  if (liveIframePlaybackStartedAtMs <= 0) {
+    return;
+  }
+  liveIframePlaybackBaseSeconds = getLiveIframePlaybackClockSeconds();
+  liveIframePlaybackStartedAtMs = 0;
+}
+
+function resumeLiveIframeProgressClock() {
+  if (!isLiveIframePlaybackActive() || liveIframePlaybackStartedAtMs > 0) {
+    return;
+  }
+  liveIframePlaybackStartedAtMs = performance.now();
+}
+
+function resetLiveIframeProgressClock() {
+  liveIframePlaybackBaseSeconds = 0;
+  liveIframePlaybackStartedAtMs = 0;
+}
+
 function getEffectiveCurrentTime() {
+  if (isLiveIframePlaybackActive()) {
+    return getLiveIframePlaybackClockSeconds();
+  }
   if (isTranscodeSourceActive()) {
     return transcodeBaseOffsetSeconds + (Number(video.currentTime) || 0);
   }
@@ -3545,6 +3593,7 @@ function clearLiveIframePlayback() {
     liveEmbedFrame.hidden = true;
     liveEmbedFrame.removeAttribute("src");
   }
+  resetLiveIframeProgressClock();
   playerShell?.classList.remove("live-iframe-active");
 }
 
@@ -3582,10 +3631,16 @@ function applyLiveIframeSubtitlePreference(subtitleLang) {
   return true;
 }
 
-function setLiveIframePlaybackSource(embedUrl, encodedSource) {
+function setLiveIframePlaybackSource(embedUrl, encodedSource, { startSeconds = null } = {}) {
+  const hasExplicitStartSeconds =
+    startSeconds !== null && startSeconds !== undefined;
+  const nextStartSeconds = hasExplicitStartSeconds
+    ? normalizeResumeStartSeconds(startSeconds)
+    : getLiveIframePlaybackClockSeconds();
   lastRequestedPlaybackSource = encodedSource;
   lastRequestedAbsolutePlaybackSource = embedUrl;
   lastPlaybackSourceSetAt = performance.now();
+  startLiveIframeProgressClock(nextStartSeconds);
   liveEdgePinned = true;
   resetAudioDecodeWatchState();
   clearStreamStallRecovery();
@@ -3624,13 +3679,15 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
   if (!nextSource) {
     return;
   }
+  const requestedStartSeconds = normalizeResumeStartSeconds(startSeconds);
   const iframeSource = parseLiveIframePlaybackSource(nextSource);
   if (iframeSource) {
-    setLiveIframePlaybackSource(iframeSource, nextSource);
+    setLiveIframePlaybackSource(iframeSource, nextSource, {
+      startSeconds: requestedStartSeconds,
+    });
     return;
   }
   clearLiveIframePlayback();
-  const requestedStartSeconds = normalizeResumeStartSeconds(startSeconds);
   const sourceWithStart = withRemuxResumeStart(nextSource, requestedStartSeconds, window.location.origin);
   const sourceWithAudioSync = withPreferredAudioSyncForRemuxSource(
     sourceWithStart,
@@ -6248,7 +6305,9 @@ function persistResumeTime(force = false) {
   }
 
   const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
+  const isIframeProgressEstimate = isLiveIframePlaybackActive();
   const isNearEnd =
+    !isIframeProgressEstimate &&
     Number.isFinite(seekScaleDurationSeconds) &&
     seekScaleDurationSeconds > 0 &&
     effectiveCurrentTime >=
@@ -6291,7 +6350,16 @@ function persistResumeTime(force = false) {
       }
     }
 
-    const nextResumeTime = Number(effectiveCurrentTime.toFixed(2));
+    const cappedResumeTime =
+      isIframeProgressEstimate &&
+      Number.isFinite(seekScaleDurationSeconds) &&
+      seekScaleDurationSeconds > RESUME_CLEAR_AT_END_THRESHOLD_SECONDS + 1
+        ? Math.min(
+            effectiveCurrentTime,
+            Math.max(1, seekScaleDurationSeconds - RESUME_CLEAR_AT_END_THRESHOLD_SECONDS),
+          )
+        : effectiveCurrentTime;
+    const nextResumeTime = Number(cappedResumeTime.toFixed(2));
     localStorage.setItem(resumeStorageKey, String(nextResumeTime));
     persistContinueWatchingEntry(nextResumeTime);
     resumeTime = nextResumeTime;
@@ -8121,7 +8189,10 @@ async function initPlaybackSource() {
   function handleDocumentVisibilityChange() {
     if (document.visibilityState === "hidden") {
       handleGlobalBeforeunload();
+      pauseLiveIframeProgressClock();
+      return;
     }
+    resumeLiveIframeProgressClock();
   }
 
   function animateSeekTurn(control, direction) {
