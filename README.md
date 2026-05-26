@@ -26,7 +26,7 @@ The repository is a single full-stack app:
 - Backend: Rust 2024, Axum, Tokio, SQLite via `rusqlite`.
 - Frontend: SolidJS with Vite in multi-page app mode.
 - Player: custom HTML5 video UI with direct playback, remux, HLS, subtitles, live streams, and source switching.
-- Discovery: TMDB metadata, Torrentio source discovery, optional Torznab fallback, Real-Debrid unrestricted links, local torrent streaming/cache, and selected embed/HLS fallbacks.
+- Discovery: TMDB metadata, selected external embed fallbacks, Torrentio source discovery, optional Torznab fallback, Real-Debrid unrestricted links, and local torrent streaming/cache.
 - Local library: `assets/library.json` plus uploaded/managed videos under `assets/videos`.
 - Persistence: SQLite cache and user data in `cache/resolver-cache.sqlite`.
 - Production target: a Mac mini runtime tree served locally on `127.0.0.1:5173` and exposed through Caddy.
@@ -128,9 +128,21 @@ Playback flow for TMDB titles:
 1. The player reads URL params such as `tmdbId`, `mediaType`, `title`, `year`, `seasonNumber`, `episodeNumber`, `audioLang`, `quality`, `subtitleLang`, `sourceHash`, and `sessionKey`.
 2. It applies stored quality/audio/subtitle preferences and remembered continue-watching source state.
 3. It calls `/api/resolve/movie` or `/api/resolve/tv`.
-4. The resolver uses TMDB context, source candidates, persisted sessions, source health, Torrentio, optional Torznab, Real-Debrid, local torrent/cache, and supported external embed fallbacks to return a playable source.
+4. For default unpinned TMDB playback, the resolver tries the external embed stack first: VidEasy native HLS, VidLink native HLS, then a chromeless VidFast iframe.
 5. The player probes tracks when needed through `/api/media/tracks`, selects audio/subtitle streams, and chooses direct, HLS, remux, local torrent, local cache, or iframe playback.
-6. Playback progress is stored locally for responsiveness and synced to `/api/user/watch-progress`, `/api/user/continue-watching`, and `/api/session/progress` when enabled.
+6. If the external HLS/iframe path fails in the browser, the player retries with `skipExternalEmbed=1`; the resolver then uses persisted sessions, Torrentio, optional Torznab, Real-Debrid, local torrent/cache, and source health.
+7. Playback progress is stored locally for responsiveness and synced to `/api/user/watch-progress`, `/api/user/continue-watching`, and `/api/session/progress` when enabled.
+
+External movie/TV embed stack:
+
+- Default order: VidEasy native HLS -> VidLink native HLS -> VidFast iframe -> Real-Debrid -> local torrent/cache.
+- VidEasy embeds are built from `https://player.videasy.net/movie/...` or `/tv/...`; the extracted HLS playlist host is `easy.speedsterwave.app`.
+- VidLink embeds are built from `https://vidlink.pro/movie/...` or `/tv/...`; the extracted HLS playlist host is `storm.vodvidl.site`.
+- VidFast is kept as the iframe handoff only. Its URL is built with chromeless parameters to hide title, poster, server, Chromecast, and fullscreen chrome from the embedded player.
+- Native external HLS is resolved by `scripts/resolve-external-embed-hls.mjs` through Playwright. The backend only accepts VidEasy/VidLink embed URLs and only accepts `.m3u8` outputs on the two known HLS hosts above.
+- Native external HLS playback is proxied through `/api/live/hls.m3u8` and `/api/live/hls-resource` so playlist child URLs, segment URLs, and required referers stay under backend control.
+- `EMBED_IFRAME_PROXY=1` can proxy the iframe HTML through `/api/embed/frame`; by default iframe URLs are direct.
+- Older/failed providers such as VidKing, 2Embed, VidSrc, VidNest, AutoEmbed, SuperEmbed, Embed.su, MoviesAPI, and VidFast-native extraction are intentionally not part of the current stack.
 
 Playback flow for local titles:
 
@@ -188,6 +200,8 @@ Player:
 - Native browser HLS where supported, with dynamic `hls.js` fallback where needed.
 - Server HLS path through `/api/hls/master.m3u8` and `/api/hls/segment.ts`.
 - Server remux path through `/api/remux`, including start offsets, audio stream selection, subtitle stream burn-in, manual sync, and video mode.
+- Native external HLS from VidEasy/VidLink when those providers resolve cleanly.
+- Chromeless VidFast iframe fallback before torrent resolution.
 - Local torrent streaming through `/api/local-torrent/stream`.
 - Direct local cache streaming through `/api/local-cache/stream`.
 - Live HLS and iframe playback.
@@ -415,11 +429,19 @@ Server:
 
 Embed/live resolver helpers:
 
-- `EMBED_IFRAME_PROXY` - `auto`, `1`, or `0`; `auto` enables iframe proxying when `OUTBOUND_HTTP_PROXY` is set.
-- `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable.
+- `EMBED_IFRAME_PROXY` - `1`/`true`/`on` proxies movie/TV iframe HTML through `/api/embed/frame`; `0`/`false`/unset keeps iframe URLs direct.
+- `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable native external HLS extraction.
+- `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - timeout budget for VidEasy/VidLink native HLS extraction; default 24000.
 - `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
 - `EXTERNAL_EMBED_BROWSER_PROXY` - optional Playwright proxy override for external embeds.
 - `STREAMED_EMBED_BROWSER_PROXY` - optional Playwright proxy override for Streamed sports embeds.
+
+Supported movie/TV embed hosts:
+
+- Native HLS embeds: `player.videasy.net`, `vidlink.pro`.
+- Native HLS playlist outputs: `easy.speedsterwave.app`, `storm.vodvidl.site`.
+- Iframe fallback/proxy allowlist: `vidfast.pro`, `vidfast.me`, `player.videasy.net`, `vidlink.pro`.
+- The native resolver does not accept arbitrary embed URLs or arbitrary `.m3u8` hosts.
 
 Remux/HLS:
 
@@ -547,7 +569,7 @@ Mac mini:
 
 Internal resolver helpers:
 
-- `scripts/resolve-external-embed-hls.mjs` - Playwright helper for selected movie/TV embed HLS extraction.
+- `scripts/resolve-external-embed-hls.mjs` - Playwright helper for VidEasy/VidLink movie/TV native HLS extraction.
 - `scripts/resolve-streamed-hls.mjs` - Playwright helper for Streamed sports HLS extraction.
 
 ## Mac Mini Infrastructure
@@ -694,11 +716,19 @@ Resolver errors:
 - If using Torznab, check `TORZNAB_API_URL`, `TORZNAB_API_KEY`, category IDs, and timeout.
 - If local torrent is selected or auto-used, check local disk budget and `cache/local-torrents`.
 
-Embed/live sports stream fails:
+Movie/TV external embed fails:
 
 - Install Playwright Chromium with `bun run bench:playback:install`.
-- Check `STREAMED_HLS_RESOLVER_SCRIPT` or `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT`.
-- If a provider needs a proxy, set `OUTBOUND_HTTP_PROXY` or the resolver-specific browser proxy env var.
+- Check `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` and `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS`.
+- Confirm the host is one of the supported native providers: VidEasy or VidLink.
+- If a provider needs a VPN/proxy, set `EXTERNAL_EMBED_BROWSER_PROXY`; if server outbound requests also need the proxy, set `OUTBOUND_HTTP_PROXY`.
+- VidFast is iframe-only in the current stack. If VidFast iframe playback fails, the player should retry with `skipExternalEmbed=1` and fall through to Real-Debrid/local torrent.
+
+Live sports stream fails:
+
+- Install Playwright Chromium with `bun run bench:playback:install`.
+- Check `STREAMED_HLS_RESOLVER_SCRIPT`.
+- If a provider needs a proxy, set `STREAMED_EMBED_BROWSER_PROXY`; if server outbound requests also need the proxy, set `OUTBOUND_HTTP_PROXY`.
 
 Upload fails:
 
@@ -741,3 +771,6 @@ Current cleanup state:
 - The old one-off Interstellar mini helper scripts have been removed.
 - `scripts/install-mini-agents.sh` removes any stale hero-preview LaunchAgent, helper, manifest, deployed script, and cached preview folder from the Mac mini.
 - `scripts/check-mini.sh` now validates only the current maintenance agents: log rotation, disk monitor, and watchdog.
+- External movie/TV fallback cleanup is complete: only VidEasy native HLS, VidLink native HLS, and VidFast iframe remain in the active provider stack.
+- Dead external providers and experiment knobs from the earlier investigation have been removed from resolver/provider lists, proxy allowlists, tests, and `.env.example`.
+- `EMBED_IFRAME_PROXY` is explicit-only now; use `1`/`true`/`on` only when iframe HTML should go through `/api/embed/frame`.

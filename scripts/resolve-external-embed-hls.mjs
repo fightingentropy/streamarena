@@ -22,9 +22,8 @@ function isSupportedEmbedUrl(value) {
       url.protocol === "https:" &&
       ((host === "player.videasy.net" &&
         (url.pathname.startsWith("/movie/") || url.pathname.startsWith("/tv/"))) ||
-        ((host === "vidking.net" || host === "www.vidking.net") &&
-          (url.pathname.startsWith("/embed/movie/") ||
-            url.pathname.startsWith("/embed/tv/"))))
+        (host === "vidlink.pro" &&
+          (url.pathname.startsWith("/movie/") || url.pathname.startsWith("/tv/"))))
     );
   } catch {
     return false;
@@ -39,8 +38,8 @@ function isAllowedRequestUrl(value) {
     return (
       host === "videasy.net" ||
       host.endsWith(".videasy.net") ||
-      host === "vidking.net" ||
-      host === "www.vidking.net" ||
+      host === "vidlink.pro" ||
+      host === "storm.vodvidl.site" ||
       host === "easy.speedsterwave.app"
     );
   } catch {
@@ -52,7 +51,8 @@ function isStreamPlaylistUrl(value) {
   try {
     const url = new URL(value);
     return (
-      url.hostname.toLowerCase() === "easy.speedsterwave.app" &&
+      (url.hostname.toLowerCase() === "easy.speedsterwave.app" ||
+        url.hostname.toLowerCase() === "storm.vodvidl.site") &&
       url.pathname.toLowerCase().endsWith(".m3u8")
     );
   } catch {
@@ -70,16 +70,86 @@ function normalizeReferer(value, fallback) {
   }
 }
 
-if (!isSupportedEmbedUrl(embedUrl)) {
-  console.error("Usage: resolve-external-embed-hls.mjs https://player.videasy.net/... | https://www.vidking.net/embed/...");
-  process.exit(2);
+function attachPlaylistWatchers(page, onResolved) {
+  page.on("request", (request) => {
+    const requestUrl = request.url();
+    if (isStreamPlaylistUrl(requestUrl)) {
+      onResolved(requestUrl);
+    }
+  });
+
+  page.on("response", (response) => {
+    const responseUrl = response.url();
+    if (response.status() < 400 && isStreamPlaylistUrl(responseUrl)) {
+      onResolved(responseUrl);
+    }
+  });
 }
 
-let browser;
-let resolvedUrl = "";
-let playerPageUrl = embedUrl;
+async function resolvePlaylistFromPerformanceEntries(page) {
+  const resourceUrls = await page
+    .evaluate(() =>
+      performance
+        .getEntriesByType("resource")
+        .map((entry) => entry.name)
+        .filter(Boolean),
+    )
+    .catch(() => []);
+  return resourceUrls.find((url) => isStreamPlaylistUrl(url)) || "";
+}
 
-try {
+async function captureResolvedPlaylistFromPage(page) {
+  if (resolvedUrl) return;
+  const performanceUrl = await resolvePlaylistFromPerformanceEntries(page);
+  if (performanceUrl) {
+    resolvedUrl = performanceUrl;
+  }
+}
+
+async function activateEmbeddedPlayer(page) {
+  await page.mouse.click(640, 360).catch(() => {});
+  await page
+    .evaluate(() => {
+      const isVisible = (element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          Number(style.opacity || 1) > 0
+        );
+      };
+      const labelFor = (element) =>
+        [
+          element.textContent,
+          element.getAttribute("aria-label"),
+          element.getAttribute("title"),
+          element.getAttribute("class"),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+      const controls = Array.from(
+        document.querySelectorAll("button,[role='button'],video"),
+      ).filter(isVisible);
+      const control =
+        controls.find((element) =>
+          /\b(play|watch|start|continue|resume)\b/.test(labelFor(element)),
+        ) ||
+        controls.find((element) => element.tagName.toLowerCase() === "video") ||
+        null;
+      control?.click?.();
+      const video = document.querySelector("video");
+      if (video && typeof video.play === "function") {
+        video.play().catch(() => {});
+      }
+    })
+    .catch(() => {});
+}
+
+async function resolveWithPlaywrightBrowser() {
   const proxyServer = normalizeProxyServer(rawProxy);
   browser = await chromium.launch({
     headless: true,
@@ -118,39 +188,49 @@ try {
     await route.abort("blockedbyclient");
   });
 
-  page.on("request", (request) => {
-    const requestUrl = request.url();
-    if (!resolvedUrl && isStreamPlaylistUrl(requestUrl)) {
-      resolvedUrl = requestUrl;
-    }
+  attachPlaylistWatchers(page, (url) => {
+    if (!resolvedUrl) resolvedUrl = url;
   });
 
-  page.on("response", (response) => {
-    const responseUrl = response.url();
-    if (!resolvedUrl && response.status() < 400 && isStreamPlaylistUrl(responseUrl)) {
-      resolvedUrl = responseUrl;
-    }
-  });
-
-  await page.goto(embedUrl, {
+  const response = await page.goto(embedUrl, {
     waitUntil: "domcontentloaded",
     timeout: Math.max(5000, Math.min(timeoutMs, 30000)),
   });
+  if (response?.status?.() === 403) {
+    throw new Error("External embed page was blocked by the provider.");
+  }
   playerPageUrl = normalizeReferer(page.url(), embedUrl);
 
   const deadline = Date.now() + timeoutMs;
   let clicked = false;
   while (!resolvedUrl && Date.now() < deadline) {
+    await captureResolvedPlaylistFromPage(page);
+    if (resolvedUrl) break;
     if (!clicked && Date.now() + 2500 < deadline) {
       await delay(2500);
       if (!resolvedUrl) {
         clicked = true;
-        await page.mouse.click(640, 360).catch(() => {});
+        await activateEmbeddedPlayer(page);
       }
       continue;
     }
     await delay(250);
   }
+}
+
+if (!isSupportedEmbedUrl(embedUrl)) {
+  console.error(
+    "Usage: resolve-external-embed-hls.mjs https://player.videasy.net/... | https://vidlink.pro/...",
+  );
+  process.exit(2);
+}
+
+let browser;
+let resolvedUrl = "";
+let playerPageUrl = embedUrl;
+
+try {
+  await resolveWithPlaywrightBrowser();
 
   if (!resolvedUrl) {
     console.error("Timed out waiting for external embed HLS playlist.");

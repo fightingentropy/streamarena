@@ -10,20 +10,10 @@ use crate::error::{ApiError, AppResult};
 use crate::routes::AppState;
 
 const EMBED_PROXY_ALLOWED_HOSTS: &[&str] = &[
-    "vidsrc.me",
-    "vidsrcme.ru",
-    "www.vidsrcme.ru",
-    "autoembed.xyz",
     "vidlink.pro",
-    "superembed.com",
     "vidfast.me",
     "vidfast.pro",
-    "vidnest.fun",
     "player.videasy.net",
-    "www.vidking.net",
-    "www.2embed.cc",
-    "embed.su",
-    "moviesapi.club",
 ];
 
 pub async fn embed_frame_handler(
@@ -150,11 +140,11 @@ mod tests {
 
     #[test]
     fn allows_known_embed_hosts() {
-        let url = Url::parse("https://vidsrcme.ru/embed/movie/278").expect("url");
-        assert!(is_allowed_embed_proxy_url(&url));
+        let vidlink = Url::parse("https://vidlink.pro/movie/278").expect("url");
+        assert!(is_allowed_embed_proxy_url(&vidlink));
 
-        let lekuluent_vidfast = Url::parse("https://vidfast.pro/movie/278").expect("url");
-        assert!(is_allowed_embed_proxy_url(&lekuluent_vidfast));
+        let vidfast = Url::parse("https://vidfast.pro/movie/278").expect("url");
+        assert!(is_allowed_embed_proxy_url(&vidfast));
     }
 
     #[test]
@@ -165,8 +155,8 @@ mod tests {
 
     #[test]
     fn injects_base_tag_when_missing() {
-        let base = Url::parse("https://vidsrcme.ru/embed/movie/278").expect("url");
+        let base = Url::parse("https://vidlink.pro/movie/278").expect("url");
         let prepared = prepare_embed_html("<html><head></head><body></body></html>", &base);
-        assert!(prepared.contains("<base href=\"https://vidsrcme.ru/embed/movie/278\">"));
+        assert!(prepared.contains("<base href=\"https://vidlink.pro/movie/278\">"));
     }
 }

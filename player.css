@@ -77,11 +77,21 @@ body {
 }
 
 .player-shell.live-iframe-active .player-ui {
-    background: linear-gradient(180deg, rgba(0, 0, 0, 0.4) 0%, rgba(0, 0, 0, 0.04) 28%, rgba(0, 0, 0, 0) 100%);
+    background: transparent;
 }
 
 .player-shell.live-iframe-active.controls-hidden .player-ui {
     pointer-events: none;
+}
+
+.player-shell.live-iframe-active .top-source-label,
+.player-shell.live-iframe-active .top-watching-title,
+.player-shell.live-iframe-active .top-row-actions {
+    display: none;
+}
+
+.player-shell.live-iframe-active .top-row {
+    grid-template-columns: auto 1fr;
 }
 
 #playerVideo::cue {

@@ -13,10 +13,7 @@ import {
   getSourceDisplayName,
   getSourceDisplayHint,
   getSourceDisplayMeta,
-  isSourceOptionLikelyContainer,
   isSourceOptionEmbed,
-  parseSourceOptionVerticalResolution,
-  getDetectedSourceOptionLanguages,
   sortSourcesBySeeders,
   isBrowserSafeAudioCodec,
 } from "../player/sources.js";
@@ -31,7 +28,6 @@ import {
   DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
   SUBTITLE_COLOR_PREF_KEY,
   normalizeDefaultAudioLanguage,
-  normalizeRemuxVideoMode,
   normalizeSubtitleColor,
 } from "../lib/preferences.js";
 import { LIVE_CHANNEL_PLAYBACK_FALLBACKS } from "../lib/live-channels.js";
@@ -44,8 +40,16 @@ import {
   shouldShowLiveStreamControls as shouldShowLiveStreamControlsForState,
   syncLiveStreamControls as syncLiveStreamControlsDom,
 } from "../player/live-streams.js";
-import { isHlsPlaybackSource, shouldUseHlsJsForPlayback } from "../player/hls-playback.js";
+import { createHlsPlaybackController } from "../player/hls-controller.js";
+import {
+  createPlaybackRouting,
+  isHlsPlaybackSource,
+} from "../player/playback-routing.js";
 import { createPlaybackBenchmarkApi } from "../player/playback-benchmark-api.js";
+import {
+  createRemuxRouting,
+  normalizeAudioSyncMs,
+} from "../player/remux-routing.js";
 import { normalizeResumeStartSeconds, withRemuxResumeStart } from "../player/resume-start.js";
 import {
   attachFullscreenControl,
@@ -183,9 +187,6 @@ let shouldResolveLiveEmbedSource = false;
 let liveEmbedResolver = "sports";
 let lastRequestedPlaybackSource = "";
 let lastRequestedAbsolutePlaybackSource = "";
-let activeHlsController = null;
-let hlsConstructorPromise = null;
-let pendingHlsJsPlaybackSource = "";
 let audioDecodeWatchInterval = null;
 let audioDecodeWatchState = null;
 let audioDecodeRecoveryInFlight = false;
@@ -200,6 +201,74 @@ function trackListener(target, event, handler, options) {
   target.addEventListener(event, handler, options);
   _cleanups.push(() => target.removeEventListener(event, handler, options));
 }
+
+const remuxRouting = createRemuxRouting({
+  getOrigin: () => window.location.origin,
+  getSelectedSourceHash: () => selectedSourceHash,
+  getAvailableAudioTracks: () => availableAudioTracks,
+  getSelectedAudioStreamIndex: () => selectedAudioStreamIndex,
+  getSelectedSubtitleStreamIndex: () => selectedSubtitleStreamIndex,
+  getPreferredAudioSyncMs: () => preferredAudioSyncMs,
+  getPreferredRemuxVideoMode: () => preferredRemuxVideoMode,
+  isBrowserSafeAudioCodec,
+  shouldMapSubtitleStreamIndex,
+});
+const {
+  getDefaultEmbeddedAudioTrack,
+  getSelectedEmbeddedAudioTrack,
+  shouldForceRemuxForEmbeddedAudio,
+  withPreferredAudioSyncForRemuxSource,
+  buildSoftwareDecodeUrl,
+  parseTranscodeSource,
+} = remuxRouting;
+
+const playbackRouting = createPlaybackRouting({
+  getVideo: () => video,
+  getOrigin: () => window.location.origin,
+  getSelectedAudioStreamIndex: () => selectedAudioStreamIndex,
+  getSelectedSubtitleStreamIndex: () => selectedSubtitleStreamIndex,
+  getPreferredSourceLanguage: () => preferredSourceLanguage,
+  getPreferredContainer: () => preferredContainer,
+  getPreferredSourceFormats: () => preferredSourceFormats,
+  getPreferredResolverProvider: () => preferredResolverProvider,
+  getSupportedSourceFormatSet: () => supportedSourceFormatSet,
+  shouldPreferMobileLightTmdbSources: () => shouldPreferMobileLightTmdbSources(),
+  shouldMapSubtitleStreamIndex,
+  parseTranscodeSource,
+  getSubtitleTrackByStreamIndex,
+  shouldUseNativeEmbeddedSubtitleTrack,
+});
+const {
+  parseHlsMasterSource,
+  buildHlsPlaybackUrl,
+  extractPlaybackSourceInput,
+  hasNativeHlsPlaybackSupport,
+  hasHlsJsPlaybackSupport,
+  hasHlsPlaybackSupport,
+  shouldUseHlsJsForSource,
+  shouldAvoidRemuxFallbackForHls,
+  isMobileOrTabletVideoEnvironment,
+  buildPreferredBrowserPlaybackSource,
+  shouldUseSoftwareDecode,
+  scoreMobileLightSourceOption,
+  getSourceListPreferredContainer,
+  pickResolverAlternateSourceHash: pickResolverAlternateSourceHashFromRouting,
+  getPreferredDefaultSourceHash,
+} = playbackRouting;
+
+const hlsPlaybackController = createHlsPlaybackController({
+  getVideo: () => video,
+  getLastRequestedAbsolutePlaybackSource: () => lastRequestedAbsolutePlaybackSource,
+  hasNativeHlsPlaybackSupport,
+  hasHlsJsPlaybackSupport,
+  shouldAvoidRemuxFallbackForHls,
+  buildSoftwareDecodeUrl,
+  getEffectiveCurrentTime: () => getEffectiveCurrentTime(),
+  tryPlay: () => tryPlay(),
+  scheduleStreamStallRecovery: () => scheduleStreamStallRecovery(),
+  schedulePlaybackRecovery: (...args) => schedulePlaybackRecovery(...args),
+  isBrowserOffline: () => isBrowserOffline(),
+});
 
 // ─── Clean URL support: /watch/<slug> or /watch/<slug>/<episodeIndex> ───
 function slugify(text) {
@@ -525,8 +594,6 @@ const DEFAULT_RESOLVER_PROVIDER = "fastest";
 const DEFAULT_REMUX_VIDEO_MODE = "auto";
 const MOBILE_DEFAULT_STREAM_QUALITY_PREFERENCE = "720p";
 // SOURCE_LANGUAGE_TOKENS — imported from ./src-ui/player/sources.js
-const AUDIO_SYNC_MIN_MS = -2500;
-const AUDIO_SYNC_MAX_MS = 2500;
 const AUDIO_SYNC_STEP_MS = 50;
 const RESUME_SAVE_MIN_INTERVAL_MS = 3000;
 const RESUME_SAVE_MIN_DELTA_SECONDS = 1.5;
@@ -565,24 +632,6 @@ const subtitleLanguageNames = {
   ko: "Korean",
   zh: "Chinese",
 };
-
-function normalizeSourceLanguage(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (!normalized || normalized === "eng" || normalized === "english") {
-    return "en";
-  }
-  if (
-    normalized === "any" ||
-    normalized === "all" ||
-    normalized === "auto" ||
-    normalized === "*"
-  ) {
-    return "any";
-  }
-  return /^[a-z]{2}$/.test(normalized) ? normalized : "en";
-}
 
 // Benchmark API is deferred to onMount (needs video ref)
 let playbackBenchmark = null;
@@ -705,19 +754,6 @@ function applySubtitleCueColor(
     }
   `;
 }
-
-function normalizeAudioSyncMs(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return 0;
-  }
-  const clamped = Math.max(
-    AUDIO_SYNC_MIN_MS,
-    Math.min(AUDIO_SYNC_MAX_MS, Math.round(parsed)),
-  );
-  return clamped;
-}
-
 
 function isRecognizedAudioLang(value) {
   const normalized = String(value || "")
@@ -1912,7 +1948,12 @@ function isVidfastEmbedUrl(value) {
   try {
     const url = new URL(String(value || "").trim());
     const hostname = url.hostname.toLowerCase();
-    return hostname === "vidfast.me" || hostname.endsWith(".vidfast.me");
+    return (
+      hostname === "vidfast.me" ||
+      hostname.endsWith(".vidfast.me") ||
+      hostname === "vidfast.pro" ||
+      hostname.endsWith(".vidfast.pro")
+    );
   } catch {
     return false;
   }
@@ -2367,7 +2408,7 @@ function applyPreferredSourceAudioSync(sourceHash = selectedSourceHash) {
 
 // getSourceDisplayName, getSourceDisplayHint, getSourceDisplayMeta — imported from ./src-ui/player/sources.js
 
-// isSourceOptionLikelyContainer, sortSourcesBySeeders — imported from ./src-ui/player/sources.js
+// sortSourcesBySeeders — imported from ./src-ui/player/sources.js
 
 function getSourceOptionByHash(sourceHash) {
   const normalizedHash = normalizeSourceHash(sourceHash);
@@ -2379,153 +2420,6 @@ function getSourceOptionByHash(sourceHash) {
       (option) =>
         normalizeSourceHash(option?.sourceHash || "") === normalizedHash,
     ) || null
-  );
-}
-
-// parseSourceOptionVerticalResolution, getDetectedSourceOptionLanguages — imported from ./src-ui/player/sources.js
-
-function scoreSourceOptionLanguageForDefault(
-  option = {},
-  preferredLanguage = preferredSourceLanguage,
-) {
-  const normalizedPreferred = normalizeSourceLanguage(preferredLanguage);
-  if (normalizedPreferred === "any") {
-    return 0;
-  }
-
-  const detected = getDetectedSourceOptionLanguages(option);
-  if (detected.has(normalizedPreferred)) {
-    return detected.size === 1 ? 4 : 2;
-  }
-  if (detected.size === 0 && normalizedPreferred === "en") {
-    return 1;
-  }
-  return -5;
-}
-
-function buildSourceOptionSearchText(option = {}) {
-  return [
-    option?.primary,
-    option?.filename,
-    option?.provider,
-    option?.qualityLabel,
-    option?.container,
-    option?.size,
-    option?.releaseGroup,
-  ]
-    .map((value) => String(value || "").toLowerCase())
-    .join(" ");
-}
-
-function scoreMobileLightSourceOption(option = {}) {
-  if (isSourceOptionEmbed(option)) {
-    return 10000;
-  }
-
-  const resolution = parseSourceOptionVerticalResolution(option);
-  const sizeGb = parseSourceSizeGb(option?.size);
-  const text = buildSourceOptionSearchText(option);
-  let score = 0;
-
-  if (isSourceOptionLikelyContainer(option, "mp4")) score += 320;
-  if (isSourceOptionLikelyContainer(option, "mkv")) score -= 80;
-
-  if (resolution === 720) score += 280;
-  else if (resolution > 0 && resolution < 720) score += 120;
-  else if (resolution === 1080) score += 40;
-  else if (resolution >= 2160) score -= 260;
-
-  if (sizeGb > 0) {
-    if (sizeGb <= 2.5) score += 190;
-    else if (sizeGb <= 5) score += 140;
-    else if (sizeGb <= 8) score += 60;
-    else if (sizeGb > 18) score -= 220;
-    else if (sizeGb > 12) score -= 120;
-  }
-
-  if (/\b(h\.?264|x264|avc)\b/.test(text)) score += 120;
-  if (/\b(hevc|h\.?265|x265|10bit|10-bit|hdr|dolby\s*vision|dv|av1)\b/.test(text)) {
-    score -= 240;
-  }
-
-  const seeders = Number.isFinite(Number(option?.seeders))
-    ? Math.max(0, Math.floor(Number(option.seeders)))
-    : 0;
-  return score + Math.min(seeders, 200) * 0.2;
-}
-
-function compareSourceOptionsForDefault(left = {}, right = {}) {
-  if (shouldPreferMobileLightTmdbSources()) {
-    const leftMobileScore = scoreMobileLightSourceOption(left);
-    const rightMobileScore = scoreMobileLightSourceOption(right);
-    if (leftMobileScore !== rightMobileScore) {
-      return rightMobileScore - leftMobileScore;
-    }
-  }
-
-  const leftLangScore = scoreSourceOptionLanguageForDefault(left);
-  const rightLangScore = scoreSourceOptionLanguageForDefault(right);
-  if (leftLangScore !== rightLangScore) {
-    return rightLangScore - leftLangScore;
-  }
-
-  const leftResolution = parseSourceOptionVerticalResolution(left);
-  const rightResolution = parseSourceOptionVerticalResolution(right);
-  if (leftResolution !== rightResolution) {
-    return rightResolution - leftResolution;
-  }
-
-  const leftSeeders = Number.isFinite(Number(left?.seeders))
-    ? Math.max(0, Math.floor(Number(left.seeders)))
-    : 0;
-  const rightSeeders = Number.isFinite(Number(right?.seeders))
-    ? Math.max(0, Math.floor(Number(right.seeders)))
-    : 0;
-  if (leftSeeders !== rightSeeders) {
-    return rightSeeders - leftSeeders;
-  }
-
-  return getSourceDisplayName(left).localeCompare(
-    getSourceDisplayName(right),
-    undefined,
-    { sensitivity: "base" },
-  );
-}
-
-function getSourceListPreferredContainer() {
-  if (preferredContainer) {
-    return preferredContainer;
-  }
-  if (preferredSourceFormats.length === 1) {
-    return preferredSourceFormats[0];
-  }
-  return "";
-}
-
-function getDefaultSourceContainerPreference() {
-  if (shouldPreferMobileLightTmdbSources()) {
-    return "";
-  }
-  const explicitPreference = getSourceListPreferredContainer();
-  if (explicitPreference) {
-    return explicitPreference;
-  }
-  return supportedSourceFormatSet.has("mp4") ? "mp4" : "";
-}
-
-function getPreferredDefaultSourceHash(options = []) {
-  const preferredContainerOption =
-    [...options]
-      .filter((option) =>
-        isSourceOptionLikelyContainer(
-          option,
-          getDefaultSourceContainerPreference(),
-        ),
-      )
-      .sort(compareSourceOptionsForDefault)[0] || null;
-  const defaultOption = preferredContainerOption || options[0] || null;
-  return normalizeSourceHash(
-    defaultOption?.sourceHash || defaultOption?.infoHash || "",
   );
 }
 
@@ -2832,33 +2726,6 @@ function renderSourceOptionButtons() {
   syncLiveStreamControls();
 }
 
-function parseHlsMasterSource(source) {
-  if (!source) {
-    return null;
-  }
-
-  try {
-    const url = new URL(source, window.location.origin);
-    if (url.pathname !== "/api/hls/master.m3u8") {
-      return null;
-    }
-    const input = url.searchParams.get("input");
-    if (!input) {
-      return null;
-    }
-
-    const rawAudio = Number(url.searchParams.get("audioStream") || -1);
-    const rawSubtitle = Number(url.searchParams.get("subtitleStream") || -1);
-    return {
-      input,
-      audioStreamIndex: Number.isFinite(rawAudio) ? rawAudio : -1,
-      subtitleStreamIndex: Number.isFinite(rawSubtitle) ? rawSubtitle : -1,
-    };
-  } catch {
-    return null;
-  }
-}
-
 function shouldMapSubtitleStreamIndex(streamIndex) {
   const safeStreamIndex = Number.isFinite(streamIndex)
     ? Math.floor(streamIndex)
@@ -2875,36 +2742,6 @@ function shouldMapSubtitleStreamIndex(streamIndex) {
   }
 
   return !selectedTrack.isExternal;
-}
-
-function buildHlsPlaybackUrl(
-  input,
-  audioStreamIndex = -1,
-  subtitleStreamIndex = -1,
-) {
-  const query = new URLSearchParams({ input: String(input || "") });
-  if (Number.isFinite(audioStreamIndex) && audioStreamIndex >= 0) {
-    query.set("audioStream", String(Math.floor(audioStreamIndex)));
-  }
-  if (shouldMapSubtitleStreamIndex(subtitleStreamIndex)) {
-    query.set("subtitleStream", String(Math.floor(subtitleStreamIndex)));
-  }
-  return `/api/hls/master.m3u8?${query.toString()}`;
-}
-
-function extractPlaybackSourceInput(source) {
-  if (!source) {
-    return "";
-  }
-  const transcodeMeta = parseTranscodeSource(source);
-  if (transcodeMeta?.input) {
-    return transcodeMeta.input;
-  }
-  const hlsMeta = parseHlsMasterSource(source);
-  if (hlsMeta?.input) {
-    return hlsMeta.input;
-  }
-  return String(source || "").trim();
 }
 
 function isLocalPlaybackSource(source) {
@@ -3062,221 +2899,9 @@ async function upgradePlaybackToLocalCache(payload) {
   await tryPlay();
 }
 
-function getNativeHlsSupport() {
-  try {
-    return String(video?.canPlayType?.("application/vnd.apple.mpegURL") || "");
-  } catch {
-    return "";
-  }
-}
-
-function isAppleMobileOrTabletVideoEnvironment() {
-  const nav = window.navigator || {};
-  const userAgent = String(nav.userAgent || "");
-  const platform = String(nav.platform || "");
-  return (
-    /\b(iPad|iPhone|iPod)\b/i.test(userAgent) ||
-    (platform === "MacIntel" && Number(nav.maxTouchPoints || 0) > 1)
-  );
-}
-
-function isDesktopSafariVideoEnvironment() {
-  const nav = window.navigator || {};
-  const userAgent = String(nav.userAgent || "");
-  const vendor = String(nav.vendor || "");
-  const platform = String(nav.platform || "");
-  const isSafari =
-    /\bSafari\//i.test(userAgent) &&
-    /\bApple\b/i.test(vendor) &&
-    !/\b(Chrome|Chromium|CriOS|FxiOS|Edg|EdgiOS|OPR|Opera)\b/i.test(userAgent);
-  const isDesktopApple = /\bMac\b/i.test(platform) || /\bMacintosh\b/i.test(userAgent);
-  return isSafari && isDesktopApple && !isAppleMobileOrTabletVideoEnvironment();
-}
-
-function isMobileOrTabletVideoEnvironment() {
-  if (isAppleMobileOrTabletVideoEnvironment()) {
-    return true;
-  }
-
-  const nav = window.navigator || {};
-  const userAgent = String(nav.userAgent || "");
-  const platform = String(nav.platform || "");
-  if (/\b(Android|Mobile|Phone|Tablet|Silk|Kindle)\b/i.test(userAgent)) {
-    return true;
-  }
-  if (/\b(Android|iPad|iPhone|iPod)\b/i.test(platform)) {
-    return true;
-  }
-
-  try {
-    return Boolean(
-      window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches &&
-        window.matchMedia?.("(max-width: 1180px)")?.matches,
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isAppleNativeHlsEnvironment() {
-  return (
-    isAppleMobileOrTabletVideoEnvironment() ||
-    isDesktopSafariVideoEnvironment()
-  );
-}
-
-function hasNativeHlsPlaybackSupport() {
-  const support = getNativeHlsSupport();
-  return (
-    isAppleNativeHlsEnvironment() &&
-    (support === "maybe" ||
-      support === "probably" ||
-      isAppleMobileOrTabletVideoEnvironment())
-  );
-}
-
-function hasHlsJsPlaybackSupport() {
-  try {
-    const MediaSourceCtor = window.MediaSource || window.WebKitMediaSource;
-    return Boolean(
-      MediaSourceCtor &&
-        typeof MediaSourceCtor.isTypeSupported === "function" &&
-        MediaSourceCtor.isTypeSupported(
-          'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
-        ),
-    );
-  } catch {
-    return false;
-  }
-}
-
-function hasHlsPlaybackSupport() {
-  return hasNativeHlsPlaybackSupport() || hasHlsJsPlaybackSupport();
-}
-
-function shouldUseHlsJsForSource(source) {
-  return shouldUseHlsJsForPlayback(source, {
-    hasNativeHlsPlaybackSupport,
-    hasHlsJsPlaybackSupport,
-  });
-}
-
 function getFullscreenContext() {
   return { video, playerShell, toggleFullscreen };
 }
-
-function loadHlsConstructor() {
-  if (!hlsConstructorPromise) {
-    hlsConstructorPromise = import("hls.js").then(
-      (module) => module.default || module.Hls || module,
-    );
-  }
-  return hlsConstructorPromise;
-}
-
-function destroyActiveHlsController() {
-  pendingHlsJsPlaybackSource = "";
-  if (!activeHlsController) {
-    return;
-  }
-  try {
-    activeHlsController.destroy();
-  } catch {
-    // Ignore teardown failures while switching streams.
-  }
-  activeHlsController = null;
-}
-
-function shouldAvoidRemuxFallbackForHls() {
-  return isAppleMobileOrTabletVideoEnvironment();
-}
-
-function shouldPreferBrowserHlsPlayback(
-  source,
-  subtitleStreamIndex = selectedSubtitleStreamIndex,
-) {
-  if (!hasHlsPlaybackSupport()) {
-    return false;
-  }
-  const normalizedSource = String(source || "").toLowerCase();
-  const isRemuxCandidate = normalizedSource.includes("/api/remux");
-  const sourceInput = extractPlaybackSourceInput(source).toLowerCase();
-  const shouldConvertUnsafeVideo =
-    isMobileOrTabletVideoEnvironment() &&
-    looksLikeBrowserUnsafeVideoSource(sourceInput);
-  if (
-    !sourceInput ||
-    (!shouldConvertUnsafeVideo &&
-      ![".mkv", ".mk3d", ".webm", ".avi", ".wmv", ".ts"].some((needle) =>
-        sourceInput.includes(needle),
-      ))
-  ) {
-    return false;
-  }
-  const selectedSubtitleTrack = getSubtitleTrackByStreamIndex(subtitleStreamIndex);
-  if (shouldUseNativeEmbeddedSubtitleTrack(selectedSubtitleTrack)) {
-    return false;
-  }
-
-  const normalizedText = getNormalizedPlaybackSourceText(sourceInput);
-  if (!normalizedText) {
-    return false;
-  }
-
-  if (shouldConvertUnsafeVideo) {
-    return true;
-  }
-
-  if (isRemuxCandidate) {
-    return true;
-  }
-
-  if (/\b(bdrip x264|bluray x264|h264|x264|avc)\b/.test(normalizedText)) {
-    return false;
-  }
-
-  return /\b(hevc|x265|h265|h 265|10bit|10 bit|hdr|dolby vision|dv|av1)\b/.test(
-    normalizedText,
-  );
-}
-
-function getNormalizedPlaybackSourceText(source) {
-  return String(source || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
-}
-
-function looksLikeBrowserUnsafeVideoSource(source) {
-  const normalizedText = getNormalizedPlaybackSourceText(source);
-  return /\b(hevc|x265|h265|h 265|10bit|10 bit|hdr|dolby vision|dv|av1)\b/.test(
-    normalizedText,
-  );
-}
-
-function buildPreferredBrowserPlaybackSource(
-  source,
-  sourceInput = "",
-  audioStreamIndex = selectedAudioStreamIndex,
-  subtitleStreamIndex = selectedSubtitleStreamIndex,
-) {
-  const normalizedSource = String(source || "").trim();
-  if (!normalizedSource) {
-    return "";
-  }
-  const normalizedSourceInput = String(
-    sourceInput || extractPlaybackSourceInput(normalizedSource),
-  ).trim();
-  if (
-    !normalizedSourceInput ||
-    !shouldPreferBrowserHlsPlayback(normalizedSourceInput, subtitleStreamIndex)
-  ) {
-    return normalizedSource;
-  }
-  return buildHlsPlaybackUrl(normalizedSourceInput, audioStreamIndex, -1);
-}
-
 
 function clearSubtitleTrack() {
   if (!subtitleTrackElement) {
@@ -3761,176 +3386,6 @@ function rebuildTrackOptionButtons() {
   syncAudioSubtitleControlVisibility();
 }
 
-function shouldUseSoftwareDecode(source) {
-  if (isHlsPlaybackSource(source)) {
-    return !hasHlsPlaybackSupport();
-  }
-  const value = String(source || "").toLowerCase();
-  return (
-    (isMobileOrTabletVideoEnvironment() &&
-      looksLikeBrowserUnsafeVideoSource(value)) ||
-    value.includes(".mkv") ||
-    value.includes(".avi") ||
-    value.includes(".wmv") ||
-    value.includes(".ts")
-  );
-}
-
-// browserSafeAudioCodecSet, browserUnsafeAudioCodecPrefixes, isBrowserSafeAudioCodec
-// — imported from ./src-ui/player/sources.js
-
-function getDefaultEmbeddedAudioTrack() {
-  return (
-    availableAudioTracks.find((track) => Boolean(track?.isDefault)) ||
-    availableAudioTracks[0] ||
-    null
-  );
-}
-
-function getSelectedEmbeddedAudioTrack() {
-  if (selectedAudioStreamIndex >= 0) {
-    return (
-      availableAudioTracks.find(
-        (track) => Number(track?.streamIndex) === selectedAudioStreamIndex,
-      ) || null
-    );
-  }
-  return getDefaultEmbeddedAudioTrack();
-}
-
-function shouldForceRemuxForEmbeddedAudio() {
-  const selectedTrack = getSelectedEmbeddedAudioTrack();
-  if (!selectedTrack) {
-    return false;
-  }
-
-  if (!isBrowserSafeAudioCodec(selectedTrack.codec)) {
-    return true;
-  }
-
-  const defaultTrack = getDefaultEmbeddedAudioTrack();
-  if (!defaultTrack) {
-    return false;
-  }
-
-  return Number(selectedTrack.streamIndex) !== Number(defaultTrack.streamIndex);
-}
-
-function withPreferredAudioSyncForRemuxSource(
-  source,
-  audioSyncMs = preferredAudioSyncMs,
-  remuxVideoMode = preferredRemuxVideoMode,
-) {
-  try {
-    const url = new URL(source, window.location.origin);
-    if (url.pathname !== "/api/remux") {
-      return source;
-    }
-    const normalizedSync = normalizeAudioSyncMs(audioSyncMs);
-    if (normalizedSync === 0) {
-      url.searchParams.delete("audioSyncMs");
-    } else {
-      url.searchParams.set("audioSyncMs", String(normalizedSync));
-    }
-    const normalizedSourceHash = normalizeSourceHash(selectedSourceHash);
-    if (normalizedSourceHash) {
-      url.searchParams.set("sourceHash", normalizedSourceHash);
-    } else {
-      url.searchParams.delete("sourceHash");
-    }
-    url.searchParams.set("videoMode", normalizeRemuxVideoMode(remuxVideoMode));
-    return `${url.pathname}?${url.searchParams.toString()}`;
-  } catch {
-    return source;
-  }
-}
-
-function buildSoftwareDecodeUrl(
-  source,
-  startSeconds = 0,
-  audioStreamIndex = -1,
-  audioSyncMs = preferredAudioSyncMs,
-  subtitleStreamIndex = selectedSubtitleStreamIndex,
-  sourceHash = selectedSourceHash,
-  remuxVideoMode = preferredRemuxVideoMode,
-) {
-  const params = new URLSearchParams({ input: String(source || "") });
-  if (Number.isFinite(startSeconds) && startSeconds > 0) {
-    params.set("start", String(Math.floor(startSeconds)));
-  }
-  if (Number.isFinite(audioStreamIndex) && audioStreamIndex >= 0) {
-    params.set("audioStream", String(Math.floor(audioStreamIndex)));
-  }
-  if (shouldMapSubtitleStreamIndex(subtitleStreamIndex)) {
-    params.set("subtitleStream", String(Math.floor(subtitleStreamIndex)));
-  }
-  const normalizedSync = normalizeAudioSyncMs(audioSyncMs);
-  if (normalizedSync !== 0) {
-    params.set("audioSyncMs", String(normalizedSync));
-  }
-  const normalizedSourceHash = normalizeSourceHash(sourceHash);
-  if (normalizedSourceHash) {
-    params.set("sourceHash", normalizedSourceHash);
-  }
-  params.set("videoMode", normalizeRemuxVideoMode(remuxVideoMode));
-  return `/api/remux?${params.toString()}`;
-}
-
-function parseTranscodeSource(source) {
-  if (!source) {
-    return null;
-  }
-
-  try {
-    const url = new URL(source, window.location.origin);
-    if (url.pathname !== "/api/remux") {
-      return null;
-    }
-
-    const input = url.searchParams.get("input");
-    if (!input) {
-      return null;
-    }
-
-    const rawStart = Number(url.searchParams.get("start") || 0);
-    const startSeconds =
-      Number.isFinite(rawStart) && rawStart > 0 ? rawStart : 0;
-    const rawAudioStreamIndex = Number(
-      url.searchParams.get("audioStream") || -1,
-    );
-    const audioStreamIndex =
-      Number.isFinite(rawAudioStreamIndex) && rawAudioStreamIndex >= 0
-        ? Math.floor(rawAudioStreamIndex)
-        : -1;
-    const rawSubtitleStreamIndex = Number(
-      url.searchParams.get("subtitleStream") || -1,
-    );
-    const subtitleStreamIndex =
-      Number.isFinite(rawSubtitleStreamIndex) && rawSubtitleStreamIndex >= 0
-        ? Math.floor(rawSubtitleStreamIndex)
-        : -1;
-    const rawAudioSyncMs = Number(url.searchParams.get("audioSyncMs") || 0);
-    const audioSyncMs = normalizeAudioSyncMs(rawAudioSyncMs);
-    const sourceHash = normalizeSourceHash(
-      url.searchParams.get("sourceHash") || "",
-    );
-    const remuxVideoMode = normalizeRemuxVideoMode(
-      url.searchParams.get("videoMode") || "auto",
-    );
-    return {
-      input,
-      startSeconds,
-      audioStreamIndex,
-      subtitleStreamIndex,
-      audioSyncMs,
-      sourceHash,
-      remuxVideoMode,
-    };
-  } catch {
-    return null;
-  }
-}
-
 function isTranscodeSourceActive() {
   return Boolean(activeTranscodeInput);
 }
@@ -4135,7 +3590,7 @@ function setLiveIframePlaybackSource(embedUrl, encodedSource) {
   resetAudioDecodeWatchState();
   clearStreamStallRecovery();
   clearSubtitleTrack();
-  destroyActiveHlsController();
+  hlsPlaybackController.destroy();
   activeTranscodeInput = "";
   transcodeBaseOffsetSeconds = 0;
   activeAudioStreamIndex = -1;
@@ -4192,7 +3647,7 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
 
   clearStreamStallRecovery();
   clearSubtitleTrack();
-  destroyActiveHlsController();
+  hlsPlaybackController.destroy();
 
   // Explicitly tear down the previous source to close the HTTP connection
   // and let the server kill the old ffmpeg process (kill_on_drop).
@@ -4244,16 +3699,12 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
 
   if (isHlsSource) {
     const hlsMeta = parseHlsMasterSource(sourceWithAudioSync);
-    const hlsStartPosition = hlsMeta?.input && requestedStartSeconds > 0 ? requestedStartSeconds : -1;
-
     const handleHlsPlaybackFailure = (message) => {
-      destroyActiveHlsController();
+      hlsPlaybackController.destroy();
       const fallbackMessage =
         String(message || "").trim() || "HLS playback failed.";
       if (isCurrentTmdbExternalEmbedSource()) {
-        // External embed HLS failures are usually provider-side. Skip iframe
-        // fallbacks on mobile and move straight to the lightweight resolver path.
-        tmdbSourceAttemptIndex = tmdbSourceQueue.length;
+        // Let queued embed fallbacks run before escalating to torrent resolution.
         demoteCurrentExternalEmbedSourceForRecovery(fallbackMessage);
       }
       void handlePlaybackErrorRecovery(fallbackMessage).then((recovered) => {
@@ -4263,139 +3714,13 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
       });
     };
 
-    if (hasNativeHlsPlaybackSupport()) {
-      video.setAttribute("src", absoluteSource);
-      video.load();
-
-      const onNativeHlsError = () => {
-        video.removeEventListener("error", onNativeHlsError);
-        if (shouldAvoidRemuxFallbackForHls() || !hlsMeta?.input) {
-          handleHlsPlaybackFailure("HLS playback failed.");
-          return;
-        }
-        const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
-        const remuxFallback = buildSoftwareDecodeUrl(
-          hlsMeta.input,
-          resumeAt,
-          hlsMeta.audioStreamIndex,
-          preferredAudioSyncMs,
-          hlsMeta.subtitleStreamIndex,
-        );
-        video.setAttribute(
-          "src",
-          new URL(remuxFallback, window.location.origin).toString(),
-        );
-        video.load();
-        void tryPlay();
-      };
-      video.addEventListener("error", onNativeHlsError, { once: true });
-
-      void tryPlay();
-      scheduleStreamStallRecovery();
-      return;
-    }
-
-    if (hasHlsJsPlaybackSupport()) {
-      pendingHlsJsPlaybackSource = absoluteSource;
-      void loadHlsConstructor()
-        .then((HlsConstructor) => {
-          if (lastRequestedAbsolutePlaybackSource !== absoluteSource) {
-            return;
-          }
-          pendingHlsJsPlaybackSource = "";
-          if (!HlsConstructor?.isSupported?.()) {
-            handleHlsPlaybackFailure("This browser cannot play the HLS stream.");
-            return;
-          }
-
-          const hls = new HlsConstructor({
-            backBufferLength: 90,
-            maxBufferLength: 60,
-            autoStartLoad: hlsStartPosition < 0,
-            startPosition: hlsStartPosition,
-          });
-          let hlsRecoveryAttempts = 0;
-          activeHlsController = hls;
-
-          hls.on(HlsConstructor.Events.ERROR, (_event, data = {}) => {
-            if (activeHlsController !== hls || !data?.fatal) {
-              return;
-            }
-            if (
-              data.type === HlsConstructor.ErrorTypes.NETWORK_ERROR &&
-              hlsRecoveryAttempts < 1
-            ) {
-              hlsRecoveryAttempts += 1;
-              hls.startLoad();
-              return;
-            }
-            if (data.type === HlsConstructor.ErrorTypes.NETWORK_ERROR) {
-              schedulePlaybackRecovery(
-                isBrowserOffline() ? "offline" : "buffering",
-                "Network interrupted. Retrying stream...",
-              );
-              return;
-            }
-            if (
-              data.type === HlsConstructor.ErrorTypes.MEDIA_ERROR &&
-              hlsRecoveryAttempts < 2
-            ) {
-              hlsRecoveryAttempts += 1;
-              hls.recoverMediaError();
-              return;
-            }
-            handleHlsPlaybackFailure(
-              data.details
-                ? `HLS playback failed (${data.details}).`
-                : "HLS playback failed.",
-            );
-          });
-          hls.on(HlsConstructor.Events.MEDIA_ATTACHED, () => {
-            if (activeHlsController === hls) {
-              hls.loadSource(absoluteSource);
-            }
-          });
-          hls.on(HlsConstructor.Events.MANIFEST_PARSED, () => {
-            if (activeHlsController === hls) {
-              if (hlsStartPosition >= 0) {
-                hls.startLoad(hlsStartPosition);
-              }
-              void tryPlay();
-            }
-          });
-          hls.attachMedia(video);
-        })
-        .catch(() => {
-          if (lastRequestedAbsolutePlaybackSource === absoluteSource) {
-            pendingHlsJsPlaybackSource = "";
-            handleHlsPlaybackFailure("Unable to load HLS playback support.");
-          }
-        });
-
-      scheduleStreamStallRecovery();
-      return;
-    }
-
-    if (hlsMeta?.input) {
-      const resumeAt = hlsStartPosition >= 0 ? hlsStartPosition : Math.max(0, Math.floor(getEffectiveCurrentTime()));
-      const remuxFallback = buildSoftwareDecodeUrl(
-        hlsMeta.input,
-        resumeAt,
-        hlsMeta.audioStreamIndex,
-        preferredAudioSyncMs,
-        hlsMeta.subtitleStreamIndex,
-      );
-      video.setAttribute(
-        "src",
-        new URL(remuxFallback, window.location.origin).toString(),
-      );
-      video.load();
-      void tryPlay();
-      scheduleStreamStallRecovery();
-      return;
-    }
-
-    handleHlsPlaybackFailure("This browser cannot play the HLS stream.");
+    hlsPlaybackController.play({
+      absoluteSource,
+      hlsMeta,
+      requestedStartSeconds,
+      preferredAudioSyncMs,
+      handleHlsPlaybackFailure,
+    });
     return;
   }
 
@@ -4651,7 +3976,6 @@ async function resolveTmdbSourcesAndPlay({
   if (currentTmdbResolverProvider !== "external-embed") {
     tmdbSkipExternalEmbed = false;
     tmdbResolveRetries = 0;
-    clearEmbedIframeFallbackTimer();
   }
   currentTmdbResolvedFilename = String(resolved?.filename || "").trim();
   currentTmdbSelectedFile = String(resolved?.selectedFile || "").trim();
@@ -4823,12 +4147,9 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
   stopLocalCacheUpgradeWatch();
   isRecoveringTmdbStream = true;
   showResolver(message || "Switching source...");
-  const demotedExternalEmbed = demoteCurrentExternalEmbedSourceForRecovery(
+  demoteCurrentExternalEmbedSourceForRecovery(
     failureMessage || message || "External HLS playback failed.",
   );
-  if (demotedExternalEmbed) {
-    tmdbSourceAttemptIndex = tmdbSourceQueue.length;
-  }
 
   if (tmdbSourceAttemptIndex < tmdbSourceQueue.length) {
     void tryNextTmdbSource().finally(() => {
@@ -7026,8 +6347,8 @@ async function tryPlay() {
       window.location.origin,
     ).toString();
     if (
-      !activeHlsController &&
-      pendingHlsJsPlaybackSource !== absoluteRestoreSource
+      !hlsPlaybackController.isActive() &&
+      !hlsPlaybackController.isPendingSource(absoluteRestoreSource)
     ) {
       setVideoSource(restoreSource, { resetInitialResume: false });
     }
@@ -7524,115 +6845,15 @@ function retryPlaybackRecoveryNow() {
   void runPlaybackRecoveryAttempt(sequence, mode);
 }
 
-function parseSourceSizeGb(sizeLabel) {
-  const match = /([\d.]+)\s*(tb|gb|mb)\b/i.exec(String(sizeLabel || ""));
-  if (!match) {
-    return 0;
-  }
-  const value = Number(match[1]);
-  if (!Number.isFinite(value) || value <= 0) {
-    return 0;
-  }
-  const unit = match[2].toLowerCase();
-  if (unit === "tb") {
-    return value * 1024;
-  }
-  if (unit === "mb") {
-    return value / 1024;
-  }
-  return value;
-}
-
-function isLikelySourcePack(sourceOption) {
-  const text = [
-    sourceOption?.primary,
-    sourceOption?.filename,
-    sourceOption?.provider,
-    sourceOption?.releaseGroup,
-  ]
-    .map((value) => String(value || "").toLowerCase())
-    .join(" ");
-  return /\b(pack|collection|top\s*\d+|gdrive|movies)\b/.test(text);
-}
-
-function scoreResolverAlternateSource(sourceOption) {
-  if (isSourceOptionEmbed(sourceOption)) {
-    return 100000;
-  }
-  const seeders = Math.max(0, Number(sourceOption?.seeders) || 0);
-  const sizeGb = parseSourceSizeGb(sourceOption?.size);
-  const resolution = parseSourceOptionVerticalResolution(sourceOption);
-  const backendScore = Number(sourceOption?.score);
-  let score = Number.isFinite(backendScore) ? backendScore / 100 : 0;
-  if (shouldPreferMobileLightTmdbSources()) {
-    score += scoreMobileLightSourceOption(sourceOption);
-  }
-
-  score += Math.min(seeders, 300) * 0.25;
-  if (sizeGb > 0) {
-    if (sizeGb <= 3) score += 85;
-    else if (sizeGb <= 6) score += 70;
-    else if (sizeGb <= 10) score += 50;
-    else if (sizeGb <= 16) score += 20;
-    else if (sizeGb > 60) score -= 120;
-    else if (sizeGb > 30) score -= 80;
-  }
-  if (resolution === 1080) score += 35;
-  else if (resolution === 720) score += 15;
-  else if (resolution >= 2160) score += sizeGb > 0 && sizeGb <= 10 ? 8 : -30;
-
-  if (isSourceOptionLikelyContainer(sourceOption, "mp4")) score += 25;
-  if (isSourceOptionLikelyContainer(sourceOption, "mkv")) score -= 5;
-  if (isLikelySourcePack(sourceOption)) score -= 110;
-
-  return score;
-}
-
 function pickResolverAlternateSourceHash({
   allowPreviouslyFailedFallback = true,
 } = {}) {
-  const currentHash = normalizeSourceHash(selectedSourceHash);
-  const options = availablePlaybackSources
-    .map((option, index) => ({
-      option,
-      index,
-      sourceHash: normalizeSourceHash(
-        option?.sourceHash || option?.infoHash || "",
-      ),
-    }))
-    .filter((item) => item.sourceHash);
-  if (!options.length) {
-    return "";
-  }
-
-  const unfailed = options.filter(
-    (item) =>
-      item.sourceHash !== currentHash &&
-      !resolverFailedSourceHashes.has(item.sourceHash),
-  );
-  const candidates = unfailed.length
-    ? unfailed
-    : allowPreviouslyFailedFallback
-      ? options.filter((item) => item.sourceHash !== currentHash)
-      : [];
-  if (!candidates.length) {
-    return "";
-  }
-
-  if (preferredResolverProvider !== "real-debrid") {
-    candidates.sort((left, right) => {
-      const scoreDelta =
-        scoreResolverAlternateSource(right.option) -
-        scoreResolverAlternateSource(left.option);
-      if (scoreDelta !== 0) {
-        return scoreDelta > 0 ? 1 : -1;
-      }
-      return left.index - right.index;
-    });
-    return candidates[0].sourceHash;
-  }
-
-  return candidates[0].sourceHash;
+  return pickResolverAlternateSourceHashFromRouting({
+    availablePlaybackSources,
+    resolverFailedSourceHashes,
+    selectedSourceHash,
+    allowPreviouslyFailedFallback,
+  });
 }
 
 async function resolveTmdbFromResolverAction({
@@ -10369,7 +9590,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     clearAudioDecodeWatch();
     stopLocalCacheUpgradeWatch();
     clearSeekLoadingTimeout();
-    destroyActiveHlsController();
+    hlsPlaybackController.destroy();
     stopSubtitleRafLoop();
     if (speedPopoverCloseTimeout) clearTimeout(speedPopoverCloseTimeout);
     if (liveStreamPopoverCloseTimeout) clearTimeout(liveStreamPopoverCloseTimeout);

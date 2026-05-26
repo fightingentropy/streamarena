@@ -25,6 +25,7 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "siliconweb.com",
     "strmd.top",
     "easy.speedsterwave.app",
+    "storm.vodvidl.site",
     "ttvnw.net",
 ];
 
@@ -236,7 +237,14 @@ fn is_allowed_live_hls_url(url: &Url) -> bool {
 
     LIVE_HLS_ALLOWED_HOSTS
         .iter()
-        .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
+        .any(|allowed| host_matches_allowed_live_hls_host(&host, allowed))
+}
+
+fn host_matches_allowed_live_hls_host(host: &str, allowed: &str) -> bool {
+    host == allowed
+        || host
+            .strip_suffix(allowed)
+            .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 fn rewrite_live_hls_playlist(base_url: &Url, playlist: &str, referer: Option<&str>) -> String {
@@ -443,7 +451,9 @@ fn rewrite_hls_uri_attribute(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_allowed_live_hls_url, rewrite_live_hls_playlist};
+    use super::{
+        host_matches_allowed_live_hls_host, is_allowed_live_hls_url, rewrite_live_hls_playlist,
+    };
 
     #[test]
     fn live_hls_proxy_rejects_unapproved_hosts() {
@@ -487,9 +497,12 @@ mod tests {
             "https://lb12.strmd.top/secure/token/rtmp/stream/id/1/playlist.m3u8"
                 .parse()
                 .expect("streamed sports url");
-        let external_embed: url::Url = "https://easy.speedsterwave.app/example/index.m3u8"
+        let videasy_hls: url::Url = "https://easy.speedsterwave.app/example/index.m3u8"
             .parse()
-            .expect("external embed url");
+            .expect("videasy hls url");
+        let vidlink_hls: url::Url = "https://storm.vodvidl.site/example/index.m3u8"
+            .parse()
+            .expect("vidlink hls url");
         let disallowed: url::Url = "https://example.com/live.m3u8"
             .parse()
             .expect("disallowed url");
@@ -507,9 +520,30 @@ mod tests {
         assert!(is_allowed_live_hls_url(&twitch_variant));
         assert!(is_allowed_live_hls_url(&twitch_segment));
         assert!(is_allowed_live_hls_url(&streamed_sports));
-        assert!(is_allowed_live_hls_url(&external_embed));
+        assert!(is_allowed_live_hls_url(&videasy_hls));
+        assert!(is_allowed_live_hls_url(&vidlink_hls));
         assert!(!is_allowed_live_hls_url(&disallowed));
         assert!(!is_allowed_live_hls_url(&local));
+    }
+
+    #[test]
+    fn live_hls_host_matching_requires_domain_boundary() {
+        assert!(host_matches_allowed_live_hls_host(
+            "media.example.com",
+            "example.com"
+        ));
+        assert!(host_matches_allowed_live_hls_host(
+            "example.com",
+            "example.com"
+        ));
+        assert!(!host_matches_allowed_live_hls_host(
+            "badexample.com",
+            "example.com"
+        ));
+        assert!(!host_matches_allowed_live_hls_host(
+            "example.com.evil.test",
+            "example.com"
+        ));
     }
 
     #[test]
