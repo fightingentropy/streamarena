@@ -2344,16 +2344,40 @@ export default function HomePage() {
     card.closest(".continue-row, .popular-row")?.classList.remove("is-card-hovering");
   }
 
+  function shouldUseCardHover(event = null) {
+    const pointerType = String(event?.pointerType || "").toLowerCase();
+    if (pointerType && pointerType !== "mouse") {
+      return false;
+    }
+    return window.matchMedia?.("(hover: hover) and (pointer: fine)").matches ?? true;
+  }
+
+  function prepareCardTouchSurfaces(card) {
+    card.querySelectorAll("img").forEach((image) => {
+      image.setAttribute("draggable", "false");
+      image.draggable = false;
+    });
+  }
+
   function attachCardInteractions(card) {
     if (!card || card.dataset.interactionsBound === "true") {
       return;
     }
     ensureCardLibraryEditButton(card);
+    prepareCardTouchSurfaces(card);
     card.dataset.interactionsBound = "true";
 
-    card.addEventListener("pointerenter", () => showCardHover(card));
+    card.addEventListener("pointerenter", (event) => {
+      if (shouldUseCardHover(event)) {
+        showCardHover(card);
+      }
+    });
     card.addEventListener("pointerleave", () => hideCardHover(card));
-    card.addEventListener("focusin", () => showCardHover(card));
+    card.addEventListener("focusin", () => {
+      if (shouldUseCardHover()) {
+        showCardHover(card);
+      }
+    });
     card.addEventListener("focusout", () => {
       window.setTimeout(() => {
         if (!card.matches(":focus-within")) {

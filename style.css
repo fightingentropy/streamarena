@@ -2860,10 +2860,36 @@ body.is-search-mode #myListRow {
 }
 
 @media (hover: none) and (pointer: coarse) {
+    .cards.popular-cards,
+    .cards.popular-cards .card,
+    .cards.popular-cards .card-base,
+    .cards.popular-cards .card-rail-art,
+    .cards.popular-cards img {
+        touch-action: pan-x pan-y;
+    }
+
     .cards.popular-cards {
         cursor: auto;
         pointer-events: auto;
-        touch-action: pan-x pan-y;
+    }
+
+    .cards.popular-cards img {
+        -webkit-user-drag: none;
+        user-select: none;
+    }
+
+    .card.is-hovering {
+        z-index: auto;
+    }
+
+    .card.is-hovering .card-base {
+        opacity: 1;
+        transform: none;
+    }
+
+    .card.is-hovering .card-hover {
+        display: none;
+        pointer-events: none;
     }
 
     .top-nav nav a.optional:not(.nav-mobile-primary):not(.is-active) {
