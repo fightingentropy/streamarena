@@ -9,6 +9,7 @@ PUBLIC_HOST="${PUBLIC_HOST:-streamthatshit.com}"
 MAX_DISK_PERCENT="${MAX_DISK_PERCENT:-90}"
 MIN_FREE_GB="${MIN_FREE_GB:-50}"
 PROTECTED_ENDPOINT_STATUS="${PROTECTED_ENDPOINT_STATUS:-401}"
+SPORTS_PROXY_EXPECTED="${SPORTS_PROXY_EXPECTED:-http://127.0.0.1:40000}"
 
 SSH_OPTS=(
   -i "$SSH_KEY"
@@ -28,7 +29,7 @@ bad() {
 }
 
 remote_output="$(ssh "${SSH_OPTS[@]}" "$MINI_HOST" \
-  "REMOTE_APP='$REMOTE_APP' PUBLIC_HOST='$PUBLIC_HOST' MAX_DISK_PERCENT='$MAX_DISK_PERCENT' MIN_FREE_GB='$MIN_FREE_GB' bash -s" <<'REMOTE'
+  "REMOTE_APP='$REMOTE_APP' PUBLIC_HOST='$PUBLIC_HOST' MAX_DISK_PERCENT='$MAX_DISK_PERCENT' MIN_FREE_GB='$MIN_FREE_GB' SPORTS_PROXY_EXPECTED='$SPORTS_PROXY_EXPECTED' bash -s" <<'REMOTE'
 set -euo pipefail
 
 app="$REMOTE_APP"
@@ -56,6 +57,10 @@ video_files=$(find "$app/assets/videos" -type f | wc -l | tr -d ' ')
 asset_symlinks=$(find "$app/assets" -type l | wc -l | tr -d ' ')
 env_mode=$(stat -f '%Lp' "$HOME/.config/netflix/env" 2>/dev/null || echo missing)
 env_in_app=$(test -e "$app/.env" && echo yes || echo no)
+sports_http_proxy=$(
+  awk -F= '/^SPORTS_HTTP_PROXY=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/netflix/env" 2>/dev/null || true
+)
+sports_proxy_matches_expected=$([[ "$sports_http_proxy" == "$SPORTS_PROXY_EXPECTED" ]] && echo yes || echo no)
 app_daemon=$(test -f "/Library/LaunchDaemons/com.fightingentropy.netflix-app.plist" && echo yes || echo no)
 caddy_daemon=$(test -f "/Library/LaunchDaemons/com.fightingentropy.netflix-caddy.plist" && echo yes || echo no)
 app_launch_state=$(launchctl print "system/com.fightingentropy.netflix-app" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}')
@@ -93,6 +98,22 @@ const { chromium } = require(playwrightPath);
 process.stdout.write(fs.existsSync(chromium.executablePath()) ? "yes" : "no");
 NODE
 )
+warp_cli=$(command -v warp-cli || true)
+warp_status=$(
+  if [[ -n "$warp_cli" ]]; then
+    "$warp_cli" --accept-tos status 2>/dev/null | awk -F: '/Status update:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}'
+  fi
+)
+warp_mode=$(
+  if [[ -n "$warp_cli" ]]; then
+    "$warp_cli" --accept-tos settings list 2>/dev/null | awk -F: '/Mode:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}'
+  fi
+)
+streamed_proxy_http=$(
+  if [[ -n "$sports_http_proxy" ]]; then
+    curl -sS --proxy "$sports_http_proxy" -o /dev/null -w "%{http_code}" --max-time 12 https://streamed.pk/api/matches/football 2>/dev/null || true
+  fi
+)
 
 printf 'runtime_tree=%s\n' "$runtime_tree"
 printf 'expected_tree=%s\n' "$expected_tree"
@@ -113,6 +134,7 @@ printf 'video_files=%s\n' "$video_files"
 printf 'asset_symlinks=%s\n' "$asset_symlinks"
 printf 'env_mode=%s\n' "$env_mode"
 printf 'env_in_app=%s\n' "$env_in_app"
+printf 'sports_proxy_matches_expected=%s\n' "$sports_proxy_matches_expected"
 printf 'app_daemon=%s\n' "$app_daemon"
 printf 'caddy_daemon=%s\n' "$caddy_daemon"
 printf 'app_launch_state=%s\n' "${app_launch_state:-missing}"
@@ -137,6 +159,10 @@ printf 'node_bin=%s\n' "${node_bin:-missing}"
 printf 'bun_bin=%s\n' "${bun_bin:-missing}"
 printf 'playwright_module=%s\n' "$playwright_module"
 printf 'playwright_chromium=%s\n' "$playwright_chromium"
+printf 'warp_cli=%s\n' "${warp_cli:-missing}"
+printf 'warp_status=%s\n' "${warp_status:-missing}"
+printf 'warp_mode=%s\n' "${warp_mode:-missing}"
+printf 'streamed_proxy_http=%s\n' "${streamed_proxy_http:-missing}"
 REMOTE
 )"
 
@@ -163,6 +189,7 @@ caddy_version=$(value_for caddy_version)
 asset_symlinks=$(value_for asset_symlinks)
 env_mode=$(value_for env_mode)
 env_in_app=$(value_for env_in_app)
+sports_proxy_matches_expected=$(value_for sports_proxy_matches_expected)
 app_daemon=$(value_for app_daemon)
 caddy_daemon=$(value_for caddy_daemon)
 app_launch_state=$(value_for app_launch_state)
@@ -185,6 +212,10 @@ node_bin=$(value_for node_bin)
 bun_bin=$(value_for bun_bin)
 playwright_module=$(value_for playwright_module)
 playwright_chromium=$(value_for playwright_chromium)
+warp_cli=$(value_for warp_cli)
+warp_status=$(value_for warp_status)
+warp_mode=$(value_for warp_mode)
+streamed_proxy_http=$(value_for streamed_proxy_http)
 
 [[ "$runtime_tree" == "$expected_tree" ]] && pass "runtime tree is $runtime_tree" || bad "runtime tree is $runtime_tree, expected $expected_tree"
 [[ "$app_http" == "200" ]] && pass "mini app returns HTTP 200" || bad "mini app returned HTTP $app_http"
@@ -206,6 +237,11 @@ playwright_chromium=$(value_for playwright_chromium)
 [[ "$playwright_chromium" == "yes" ]] && pass "Playwright Chromium is installed for resolver helpers" || bad "Playwright Chromium is missing for resolver helpers"
 [[ "$env_mode" == "600" ]] && pass "server env permissions are 600" || bad "server env permissions are $env_mode"
 [[ "$env_in_app" == "no" ]] && pass "server env is outside deploy tree" || bad "server .env still exists in deploy tree"
+[[ "$sports_proxy_matches_expected" == "yes" ]] && pass "SPORTS_HTTP_PROXY points at WARP local proxy" || bad "SPORTS_HTTP_PROXY does not match expected WARP local proxy"
+[[ "$warp_cli" != "missing" ]] && pass "WARP CLI is installed ($warp_cli)" || bad "WARP CLI is missing"
+[[ "$warp_status" == "Connected" ]] && pass "WARP is connected" || bad "WARP status is $warp_status"
+[[ "$warp_mode" == "WarpProxy on port 40000" ]] && pass "WARP is in local proxy mode on port 40000" || bad "WARP mode is $warp_mode"
+[[ "$streamed_proxy_http" == "200" ]] && pass "Streamed schedule is reachable through WARP proxy" || bad "Streamed schedule through WARP proxy returned HTTP $streamed_proxy_http"
 [[ "$app_daemon" == "yes" ]] && pass "backend LaunchDaemon exists" || bad "backend LaunchDaemon missing"
 [[ "$caddy_daemon" == "yes" ]] && pass "Caddy LaunchDaemon exists" || bad "Caddy LaunchDaemon missing"
 [[ "$app_launch_state" == "running" ]] && pass "backend launchd state is running (runs=$app_runs)" || bad "backend launchd state is $app_launch_state"
