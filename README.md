@@ -562,7 +562,7 @@ Mac mini:
 - `bun run mini:install-agents` - install/update log rotation, disk monitor, and watchdog LaunchAgents; also removes obsolete hero-preview jobs/files.
 - `bun run mini:map-ports` - create router UPnP forwards for TCP 80 and 443.
 - `CF_API_TOKEN=... bun run mini:update-dns` - update Cloudflare DNS-only A records.
-- `bun run mini:check` - verify runtime tree, protected API auth status, Caddy, launchd, env permissions, agents, disk space, and public response.
+- `bun run mini:check` - verify runtime tree, protected API auth status, Caddy, launchd, env permissions, sports WARP proxy, resolver helpers, agents, disk space, and public response.
 - `bun run mini:deploy` - build, deploy `dist`, backend binary, library metadata, images, and icons, then restart/check.
 - `bun run mini:deploy -- --skip-build` - reuse existing `dist/` and release binary.
 - `bun run mini:deploy -- --video assets/videos/<file>.mp4` - copy that symlink target as a real mini video file.
@@ -599,6 +599,35 @@ Server machine:
 
 The server deploy is intentionally not a git checkout. It should not contain `.git`, source folders, `node_modules`, `target`, `Cargo.toml`, `package.json`, or `.env`.
 Playwright resolver dependencies live outside this tree at `~/.local/share/netflix-node`.
+
+Sports proxy/WARP:
+
+- The Mac mini runs Cloudflare WARP in local proxy mode for blocked sports providers.
+- WARP CLI: `/usr/local/bin/warp-cli`.
+- Expected WARP status: `Connected`.
+- Expected WARP mode: `WarpProxy on port 40000`.
+- Server env file: `/Users/hermes/.config/netflix/env`.
+- Required sports env: `SPORTS_HTTP_PROXY=http://127.0.0.1:40000`.
+- Existing full-backend proxy env may also point at the same listener: `OUTBOUND_HTTP_PROXY=http://127.0.0.1:40000`.
+- Streamed may fail directly from the ISP path; the expected healthy path is through WARP's local proxy.
+- `scripts/check-mini.sh` validates WARP status, WARP proxy mode, the `SPORTS_HTTP_PROXY` value, and a real proxied `https://streamed.pk/api/matches/football` request.
+- `scripts/deploy-mini.sh` deploys both resolver helpers:
+  - `bin/resolve-external-embed-hls.mjs` for movie/TV native HLS.
+  - `bin/resolve-streamed-hls.mjs` for Streamed sports native HLS.
+
+Useful sports proxy checks:
+
+```bash
+ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
+  'export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"; warp-cli --accept-tos status; warp-cli --accept-tos settings list | grep -E "Mode:|WARP tunnel protocol"'
+
+ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
+  'curl -sS --proxy http://127.0.0.1:40000 -o /dev/null -w "%{http_code}\n" --max-time 12 https://streamed.pk/api/matches/football'
+
+curl -sS --max-time 60 \
+  'https://streamthatshit.com/api/sports/stream?url=https%3A%2F%2Fstreamed.pk%2Fapi%2Fstream%2Fadmin%2Fppv-crystal-palace-vs-rayo-vallecano' \
+  | python3 -m json.tool
+```
 
 LaunchDaemons:
 
