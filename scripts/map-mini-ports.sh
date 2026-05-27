@@ -141,13 +141,25 @@ def get_mapping(control_url, service_type, port):
             fields[key] = text[start + len(key) + 2:end]
     return fields
 
+def delete_mapping(control_url, service_type, port):
+    body = f"""
+      <NewRemoteHost></NewRemoteHost>
+      <NewExternalPort>{port}</NewExternalPort>
+      <NewProtocol>TCP</NewProtocol>"""
+    try:
+        soap(control_url, service_type, "DeletePortMapping", body)
+    except urllib.error.HTTPError:
+        return False
+    return True
+
 def add_mapping(control_url, service_type, local_ip, port):
     existing = get_mapping(control_url, service_type, port)
     if existing:
         if existing.get("NewInternalClient") == local_ip and existing.get("NewInternalPort") == str(port):
             print(f"port={port} status=exists internal={local_ip}:{port}")
             return
-        raise RuntimeError(f"port {port} already maps to {existing}")
+        print(f"port={port} status=replacing old={existing.get('NewInternalClient')}:{existing.get('NewInternalPort')}")
+        delete_mapping(control_url, service_type, port)
     body = f"""
       <NewRemoteHost></NewRemoteHost>
       <NewExternalPort>{port}</NewExternalPort>
