@@ -74,9 +74,174 @@ const TOP_TEN_RAIL_LIMIT = 10;
 const HOME_BOOTSTRAP_FETCH_TIMEOUT_MS = 2500;
 const HOME_BOOTSTRAP_WARM_RETRY_MS = 1200;
 const HOME_BOOTSTRAP_WARM_RETRY_LIMIT = 8;
+const OFFLINE_ARTWORK_WARM_DELAY_MS = 300;
+const OFFLINE_ARTWORK_WARM_LIMIT = 100;
+const HOME_BOOTSTRAP_ARTWORK_KEYS = [
+  "popular",
+  "bingeworthy",
+  "crowdPleasers",
+  "topSeries",
+  "criticallyAcclaimed",
+  "trending",
+  "nowPlaying",
+  "topRated",
+];
+
+let offlineArtworkWarmTimer = null;
+const pendingOfflineArtworkUrls = new Set();
 
 function isWarmingHomeBootstrap(payload) {
   return String(payload?._meta?.status || "").trim() === "warming";
+}
+
+function toCacheableArtworkUrl(value) {
+  try {
+    const raw = String(value || "").trim();
+    if (
+      !raw ||
+      raw.startsWith("data:") ||
+      raw.startsWith("blob:") ||
+      raw.startsWith("#")
+    ) {
+      return "";
+    }
+    const url = new URL(raw, window.location.href);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return "";
+    }
+    if (
+      url.origin !== window.location.origin &&
+      url.hostname !== "image.tmdb.org"
+    ) {
+      return "";
+    }
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
+function queueOfflineArtworkCache(urls) {
+  if (!("serviceWorker" in navigator) || !Array.isArray(urls)) {
+    return;
+  }
+  urls
+    .map(toCacheableArtworkUrl)
+    .filter(Boolean)
+    .forEach((url) => pendingOfflineArtworkUrls.add(url));
+  if (!pendingOfflineArtworkUrls.size || offlineArtworkWarmTimer) {
+    return;
+  }
+  offlineArtworkWarmTimer = window.setTimeout(() => {
+    offlineArtworkWarmTimer = null;
+    const urlsToCache = Array.from(pendingOfflineArtworkUrls).slice(0, OFFLINE_ARTWORK_WARM_LIMIT);
+    urlsToCache.forEach((url) => pendingOfflineArtworkUrls.delete(url));
+    navigator.serviceWorker.ready
+      .then((registration) => {
+        const worker = registration.active || navigator.serviceWorker.controller;
+        worker?.postMessage({ type: "CACHE_URLS", urls: urlsToCache });
+      })
+      .catch(() => {});
+    if (pendingOfflineArtworkUrls.size) {
+      queueOfflineArtworkCache([]);
+    }
+  }, OFFLINE_ARTWORK_WARM_DELAY_MS);
+}
+
+function queueOfflineArtworkFromElement(root) {
+  if (!(root instanceof Element)) {
+    return;
+  }
+  const urls = [];
+  root.querySelectorAll("img").forEach((image) => {
+    urls.push(image.currentSrc || image.src || image.getAttribute("src") || "");
+  });
+  if (root instanceof HTMLElement) {
+    urls.push(root.dataset.thumb || "");
+  }
+  root.querySelectorAll("[data-thumb]").forEach((element) => {
+    if (element instanceof HTMLElement) {
+      urls.push(element.dataset.thumb || "");
+    }
+  });
+  queueOfflineArtworkCache(urls);
+}
+
+function collectLocalLibraryArtworkUrls(localLibrary) {
+  const urls = [];
+  (Array.isArray(localLibrary?.movies) ? localLibrary.movies : []).forEach((movie) => {
+    urls.push(movie?.thumb || "");
+  });
+  (Array.isArray(localLibrary?.series) ? localLibrary.series : []).forEach((series) => {
+    (Array.isArray(series?.episodes) ? series.episodes : []).forEach((episode) => {
+      urls.push(episode?.thumb || "");
+    });
+  });
+  return urls;
+}
+
+function collectTmdbItemArtworkUrls(item, imageBase = TMDB_IMAGE_BASE) {
+  const posterPath = String(item?.poster_path || item?.posterPath || "").trim();
+  const backdropPath = String(
+    item?.backdrop_path || item?.backdropPath || "",
+  ).trim();
+  const urls = [];
+  if (backdropPath) {
+    urls.push(`${imageBase}/w1280${backdropPath}`);
+    urls.push(`${imageBase}/w780${backdropPath}`);
+  }
+  if (posterPath) {
+    urls.push(`${imageBase}/w780${posterPath}`);
+    urls.push(`${imageBase}/w500${posterPath}`);
+  }
+  return urls;
+}
+
+function collectHomeBootstrapArtworkUrls(bootstrap, imageBase = TMDB_IMAGE_BASE) {
+  const urls = [];
+  HOME_BOOTSTRAP_ARTWORK_KEYS.forEach((key) => {
+    const results = bootstrap?.[key]?.results;
+    (Array.isArray(results) ? results : []).forEach((item) => {
+      urls.push(...collectTmdbItemArtworkUrls(item, imageBase));
+    });
+  });
+  urls.push(...collectLocalLibraryArtworkUrls(bootstrap?.library));
+  return urls;
+}
+
+function setArtworkImageFallback(image) {
+  if (!(image instanceof HTMLImageElement)) {
+    return;
+  }
+  const fallbackPath = image.classList.contains("hero-poster")
+    ? "assets/images/thumbnail-top10-h.jpg"
+    : DEFAULT_LOCAL_THUMBNAIL;
+  const fallbackUrl = new URL(fallbackPath, window.location.href).href;
+  if (image.src !== fallbackUrl) {
+    image.src = fallbackPath;
+  }
+}
+
+function handleArtworkImageError(event) {
+  setArtworkImageFallback(event.currentTarget);
+}
+
+function attachArtworkImageFallbacks(root) {
+  if (!(root instanceof Element)) {
+    return;
+  }
+  root.querySelectorAll("img").forEach((image) => {
+    if (!(image instanceof HTMLImageElement)) {
+      return;
+    }
+    if (!image.dataset.artworkFallbackAttached) {
+      image.dataset.artworkFallbackAttached = "true";
+      image.addEventListener("error", handleArtworkImageError);
+    }
+    if (image.complete && image.naturalWidth === 0) {
+      setArtworkImageFallback(image);
+    }
+  });
 }
 
 async function resolveHomeBootstrap() {
@@ -2263,6 +2428,8 @@ export default function HomePage() {
       attachCardInteractions(card);
     });
     myListCardsRef.appendChild(fragment);
+    attachArtworkImageFallbacks(myListCardsRef);
+    queueOfflineArtworkFromElement(myListCardsRef);
     syncAllMyListButtons();
     setMyListRowVisible(true);
     setMyListEmptyVisible(false);
@@ -2363,6 +2530,8 @@ export default function HomePage() {
     if (!card || card.dataset.interactionsBound === "true") {
       return;
     }
+    attachArtworkImageFallbacks(card);
+    queueOfflineArtworkFromElement(card);
     ensureCardLibraryEditButton(card);
     prepareCardTouchSurfaces(card);
     card.dataset.interactionsBound = "true";
@@ -2494,7 +2663,7 @@ export default function HomePage() {
         getFallbackThumbnailForSource(entry.src || entry.sourceIdentity) ||
         "assets/images/thumbnail.jpg";
     const heroUrl = backdropPath
-      ? `${TMDB_IMAGE_BASE}/original${backdropPath}`
+      ? `${TMDB_IMAGE_BASE}/w1280${backdropPath}`
       : posterUrl;
     const runtimeMinutes =
       Number(
@@ -2759,7 +2928,7 @@ export default function HomePage() {
       ? `${TMDB_IMAGE_BASE}/w500${tmdbPosterPath}`
       : "";
     const tmdbHeroUrl = tmdbBackdropPath
-      ? `${TMDB_IMAGE_BASE}/original${tmdbBackdropPath}`
+      ? `${TMDB_IMAGE_BASE}/w1280${tmdbBackdropPath}`
       : tmdbPosterUrl;
     const preferredThumb =
       sourceSpecificThumb &&
@@ -2900,7 +3069,7 @@ export default function HomePage() {
       ? `${imageBase}/${backdropPath ? "w780" : "w500"}${seriesBasePath}`
       : localPosterUrl;
     const heroUrl = backdropPath
-      ? `${imageBase}/original${backdropPath}`
+      ? `${imageBase}/w1280${backdropPath}`
       : posterUrl;
     const safeTitle = escapeHtml(title);
     const maturity = tmdbDetails?.adult ? "18" : "13+";
@@ -3046,12 +3215,15 @@ export default function HomePage() {
       attachCardInteractions(card);
     });
     container.appendChild(fragment);
+    attachArtworkImageFallbacks(container);
+    queueOfflineArtworkFromElement(container);
   }
 
   function applyLibrarySnapshot(localLibrary) {
     if (!localLibrary || typeof localLibrary !== "object") {
       return;
     }
+    queueOfflineArtworkCache(collectLocalLibraryArtworkUrls(localLibrary));
     myListLibraryEntries = buildLibraryMyListEntries(localLibrary);
     renderMyListRow();
   }
@@ -3071,6 +3243,7 @@ export default function HomePage() {
     const library = bootstrap.library || null;
     const seenHomeRailKeys = new Set();
 
+    queueOfflineArtworkCache(collectHomeBootstrapArtworkUrls(bootstrap, imageBase));
     applyLibrarySnapshot(library);
 
     const popularCards = buildBrowseRailCards(
@@ -3155,6 +3328,8 @@ export default function HomePage() {
       attachCardInteractions(card);
     });
     container.appendChild(fragment);
+    attachArtworkImageFallbacks(container);
+    queueOfflineArtworkFromElement(container);
   }
 
   function normalizeLibraryTitleKey(value) {
@@ -3323,6 +3498,7 @@ export default function HomePage() {
     }
     setFeaturedHeroReady(true);
     setFeaturedHero(selected);
+    queueOfflineArtworkCache([selected.poster, selected.thumb]);
     void hydrateFeaturedHeroFromTmdb(selected);
   }
 
@@ -3423,6 +3599,7 @@ export default function HomePage() {
       const poster = backdropPath
         ? `${TMDB_IMAGE_BASE}/w1280${backdropPath}`
         : hero.poster;
+      queueOfflineArtworkCache([poster]);
       setFeaturedHero((current) => {
         if (String(current?.tmdbId || "").trim() !== tmdbId) {
           return current;
@@ -3650,6 +3827,8 @@ export default function HomePage() {
         attachCardInteractions(card);
       });
       continueCardsRef.appendChild(fragment);
+      attachArtworkImageFallbacks(continueCardsRef);
+      queueOfflineArtworkFromElement(continueCardsRef);
 
       setContinueRowVisible(true);
       setContinueEmptyVisible(false);
@@ -3731,6 +3910,7 @@ export default function HomePage() {
     img.src = String(details.thumb || "").trim() || DEFAULT_LOCAL_THUMBNAIL;
     img.alt = safeTitle;
     img.loading = "lazy";
+    img.addEventListener("error", handleArtworkImageError);
     card.appendChild(img);
     const titleEl = document.createElement("p");
     titleEl.className = "search-result-card-title";
@@ -3753,6 +3933,7 @@ export default function HomePage() {
       openSearchContextMenu(event, details);
     });
 
+    queueOfflineArtworkCache([details.thumb]);
     return card;
   }
 
@@ -4533,6 +4714,10 @@ export default function HomePage() {
     const cleanupHorizontalRailScrollers = bindHorizontalRailScrollers();
     applyLibraryEditModeClass();
     renderMyListRow();
+    if (pageRootRef) {
+      attachArtworkImageFallbacks(pageRootRef);
+      queueOfflineArtworkFromElement(pageRootRef);
+    }
     void loadContinueWatching();
     let appliedInjectedBootstrap = false;
     if (window.__HOME_BOOTSTRAP__ && typeof window.__HOME_BOOTSTRAP__ === "object") {
@@ -4969,6 +5154,7 @@ export default function HomePage() {
           decoding="async"
           fetchpriority="high"
           loading="eager"
+          onError=${handleArtworkImageError}
         />
         <div class="hero-preview-stage" aria-hidden="true">
           <video

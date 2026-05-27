@@ -1145,6 +1145,21 @@ function normalizeRememberedResolverProvider(value) {
   return "";
 }
 
+function isRememberedIframeOnlyExternalEmbed(remembered) {
+  if (remembered?.resolverProvider !== "external-embed") {
+    return false;
+  }
+  const sourceText = `${remembered.sourceInput || ""} ${remembered.filename || ""}`
+    .trim()
+    .toLowerCase();
+  return (
+    !sourceText ||
+    sourceText.includes("vidfast.pro") ||
+    sourceText.includes("vidfast") ||
+    sourceText.includes("iframe")
+  );
+}
+
 function shouldIgnoreRememberedTmdbSourcePinForIframeFirst(remembered) {
   const hasRememberedPin = Boolean(
     normalizeSourceHash(selectedSourceHash) ||
@@ -1154,6 +1169,9 @@ function shouldIgnoreRememberedTmdbSourcePinForIframeFirst(remembered) {
   );
   if (!hasRememberedPin || hasDirectSourceHashParam) {
     return false;
+  }
+  if (isRememberedIframeOnlyExternalEmbed(remembered)) {
+    return true;
   }
   if (remembered.resolverProvider === "external-embed") {
     return false;
