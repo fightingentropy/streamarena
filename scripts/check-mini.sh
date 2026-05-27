@@ -77,6 +77,7 @@ capacity=${capacity%%%}
 available_gb=$((available_kb / 1024 / 1024))
 public_ip=$(curl -fsS --max-time 5 https://api.ipify.org || true)
 hls_resolver=$(test -f "$app/bin/resolve-external-embed-hls.mjs" && echo yes || echo no)
+streamed_hls_resolver=$(test -f "$app/bin/resolve-streamed-hls.mjs" && echo yes || echo no)
 node_bin=$(command -v node || true)
 bun_bin=$(command -v bun || true)
 playwright_module=$(
@@ -131,6 +132,7 @@ printf 'max_disk_percent=%s\n' "$MAX_DISK_PERCENT"
 printf 'min_free_gb=%s\n' "$MIN_FREE_GB"
 printf 'public_ip=%s\n' "${public_ip:-missing}"
 printf 'hls_resolver=%s\n' "$hls_resolver"
+printf 'streamed_hls_resolver=%s\n' "$streamed_hls_resolver"
 printf 'node_bin=%s\n' "${node_bin:-missing}"
 printf 'bun_bin=%s\n' "${bun_bin:-missing}"
 printf 'playwright_module=%s\n' "$playwright_module"
@@ -178,6 +180,7 @@ disk_capacity_percent=$(value_for disk_capacity_percent)
 disk_available_gb=$(value_for disk_available_gb)
 public_ip=$(value_for public_ip)
 hls_resolver=$(value_for hls_resolver)
+streamed_hls_resolver=$(value_for streamed_hls_resolver)
 node_bin=$(value_for node_bin)
 bun_bin=$(value_for bun_bin)
 playwright_module=$(value_for playwright_module)
@@ -196,6 +199,7 @@ playwright_chromium=$(value_for playwright_chromium)
 [[ "$caddy_version" != "missing" ]] && pass "Caddy is installed ($caddy_version)" || bad "Caddy is missing"
 [[ "$asset_symlinks" == "0" ]] && pass "mini assets have no symlinks" || bad "mini assets have $asset_symlinks symlink(s)"
 [[ "$hls_resolver" == "yes" ]] && pass "external HLS resolver script is deployed" || bad "external HLS resolver script is missing"
+[[ "$streamed_hls_resolver" == "yes" ]] && pass "Streamed sports HLS resolver script is deployed" || bad "Streamed sports HLS resolver script is missing"
 [[ "$node_bin" != "missing" ]] && pass "Node is available for resolver helpers ($node_bin)" || bad "Node is missing for resolver helpers"
 [[ "$bun_bin" != "missing" ]] && pass "Bun is available for resolver dependency installs ($bun_bin)" || bad "Bun is missing for resolver dependency installs"
 [[ "$playwright_module" == "yes" ]] && pass "Playwright module is installed for resolver helpers" || bad "Playwright module is missing for resolver helpers"

@@ -1,12 +1,46 @@
 #!/usr/bin/env node
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 
-import { chromium } from "playwright";
+async function loadPlaywright() {
+  try {
+    return await import("playwright");
+  } catch (error) {
+    const fallbackDirs = [
+      process.env.PLAYWRIGHT_NODE_MODULES,
+      process.env.NETFLIX_NODE_DEPS_DIR,
+      process.env.HOME ? join(process.env.HOME, ".local/share/netflix-node") : "",
+    ].filter(Boolean);
+
+    for (const dir of fallbackDirs) {
+      const normalizedDir = String(dir).replace(/\/+$/, "");
+      const nodeModulesDir = normalizedDir.endsWith("/node_modules")
+        ? normalizedDir
+        : join(normalizedDir, "node_modules");
+      try {
+        return await import(
+          pathToFileURL(join(nodeModulesDir, "playwright", "index.mjs")).href
+        );
+      } catch {
+        // Try the next configured module directory.
+      }
+    }
+    throw error;
+  }
+}
+
+const { chromium } = await loadPlaywright();
 
 const embedUrl = String(process.argv[2] || "").trim();
 const timeoutMs = Number(process.env.STREAMED_HLS_RESOLVE_TIMEOUT_MS || 18000);
 const rawProxy =
-  String(process.env.STREAMED_EMBED_BROWSER_PROXY || process.env.OUTBOUND_HTTP_PROXY || "")
+  String(
+    process.env.STREAMED_EMBED_BROWSER_PROXY ||
+      process.env.SPORTS_HTTP_PROXY ||
+      process.env.OUTBOUND_HTTP_PROXY ||
+      "",
+  )
     .trim();
 
 function normalizeProxyServer(value) {

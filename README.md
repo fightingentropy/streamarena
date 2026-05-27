@@ -103,6 +103,7 @@ Startup flow:
 
 1. `src/main.rs` loads `.env`, builds `Config`, initializes the SQLite database, and creates shared services.
 2. The app creates a shared HTTP client. If `OUTBOUND_HTTP_PROXY` is set, server outbound HTTP uses that proxy.
+   Sports provider traffic can instead use `SPORTS_HTTP_PROXY` so only sports schedules, sports stream API calls, and Streamed browser HLS extraction go through that proxy.
 3. Services are wired into `AppState`: TMDB, media probing/subtitles, local torrent/cache, resolver, streaming/remux/HLS, uploads, runtime ffmpeg capabilities, sports schedule cache, and home bootstrap cache.
 4. A background task runs every 60 seconds to sweep stale SQLite/cache data, upload sessions, and streaming jobs.
 5. `HomeBootstrapCache` starts warming TMDB/home data as soon as the server boots.
@@ -155,7 +156,7 @@ Live and sports flow:
 1. `/live` renders static live channels from `src-ui/lib/live-channels.js`.
 2. HLS live channel playlists and segments are proxied through `/api/live/hls.m3u8` and `/api/live/hls-resource` with an allowlist in `src/live.rs`.
 3. Twitch-backed live sources resolve through `/api/twitch/stream`.
-4. `/sports` fetches schedules for football, basketball, tennis, hockey, baseball, American football, and cricket from Streamed providers through `src/football.rs`.
+4. `/sports` fetches schedules for football, basketball, tennis, hockey, baseball, American football, and cricket through `src/football.rs`; the default Auto source tries Streamed first and falls back to MatchStream if Streamed is unreachable.
 5. Live sports streams resolve through `/api/sports/stream`; the server attempts a Playwright-based HLS extraction with `scripts/resolve-streamed-hls.mjs` and can fall back to iframe playback.
 
 ## Features
@@ -425,6 +426,7 @@ Server:
 - `HOST` - default `127.0.0.1`.
 - `PORT` - default `5173`.
 - `OUTBOUND_HTTP_PROXY` - optional HTTP/SOCKS proxy for server outbound requests.
+- `SPORTS_HTTP_PROXY` - optional HTTP/SOCKS proxy only for sports provider schedule/stream requests and Streamed browser HLS extraction. For Cloudflare WARP proxy mode this is typically `socks5://127.0.0.1:40000`.
 - `MAX_UPLOAD_BYTES` - default 10 GiB, clamped to at least 50 MiB.
 
 Embed/live resolver helpers:
@@ -432,7 +434,7 @@ Embed/live resolver helpers:
 - `EMBED_IFRAME_PROXY` - `1`/`true`/`on` proxies movie/TV iframe HTML through `/api/embed/frame`; `0`/`false`/unset keeps iframe URLs direct.
 - `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs` when present, otherwise `bin/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable native external HLS extraction.
 - `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - timeout budget for VidEasy/VidLink native HLS extraction; default 24000.
-- `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
+- `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs` when present, otherwise `bin/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
 - `EXTERNAL_EMBED_BROWSER_PROXY` - optional Playwright proxy override for external embeds.
 - `STREAMED_EMBED_BROWSER_PROXY` - optional Playwright proxy override for Streamed sports embeds.
 
@@ -570,7 +572,7 @@ Mac mini:
 Internal resolver helpers:
 
 - `scripts/resolve-external-embed-hls.mjs` - Playwright helper for VidEasy/VidLink movie/TV native HLS extraction.
-- `scripts/resolve-streamed-hls.mjs` - Playwright helper for Streamed sports HLS extraction.
+- `scripts/resolve-streamed-hls.mjs` - Playwright helper for Streamed sports HLS extraction; mini deploy copies it to `bin/resolve-streamed-hls.mjs`.
 
 ## Mac Mini Infrastructure
 
@@ -729,7 +731,8 @@ Live sports stream fails:
 
 - Install Playwright Chromium with `bun run bench:playback:install`.
 - Check `STREAMED_HLS_RESOLVER_SCRIPT`.
-- If a provider needs a proxy, set `STREAMED_EMBED_BROWSER_PROXY`; if server outbound requests also need the proxy, set `OUTBOUND_HTTP_PROXY`.
+- If the default sports source fails to load, switch the `/sports` source picker to MatchStream or leave it on Auto so the backend can fall back when Streamed is unreachable.
+- If a sports provider needs a proxy, set `SPORTS_HTTP_PROXY`; use `STREAMED_EMBED_BROWSER_PROXY` only when the Streamed browser extractor needs a different proxy from the schedule/API requests.
 
 Upload fails:
 

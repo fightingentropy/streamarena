@@ -58,6 +58,7 @@ const SPORT_TABS = Object.freeze(
 );
 
 const SPORTS_SOURCE_OPTIONS = Object.freeze([
+  Object.freeze({ id: "auto", label: "Auto" }),
   Object.freeze({ id: "streamed", label: "Streamed" }),
   Object.freeze({ id: "matchstream", label: "MatchStream" }),
 ]);
@@ -69,7 +70,7 @@ function normalizeSport(value) {
 
 function normalizeSportsSource(value) {
   const source = String(value || "").trim().toLowerCase();
-  return SPORTS_SOURCE_OPTIONS.some((option) => option.id === source) ? source : "streamed";
+  return SPORTS_SOURCE_OPTIONS.some((option) => option.id === source) ? source : "auto";
 }
 
 function readInitialSport(options = {}) {
@@ -84,11 +85,11 @@ function readInitialSport(options = {}) {
 
 function readInitialSportsSource(options = {}) {
   const optionSource = normalizeSportsSource(options.initialSource);
-  if (optionSource !== "streamed") return optionSource;
+  if (optionSource !== "auto") return optionSource;
   try {
     return normalizeSportsSource(new URLSearchParams(window.location.search).get("source"));
   } catch {
-    return "streamed";
+    return "auto";
   }
 }
 
@@ -103,7 +104,7 @@ function updateSportsUrl(sport, source) {
     } else {
       url.searchParams.set("sport", sport);
     }
-    if (source === "streamed") {
+    if (source === "auto") {
       url.searchParams.delete("source");
     } else {
       url.searchParams.set("source", source);
@@ -116,7 +117,7 @@ function updateSportsUrl(sport, source) {
 
 function buildSportsApiUrl(apiUrl, source) {
   const query = new URLSearchParams();
-  if (source && source !== "streamed") {
+  if (source && source !== "auto") {
     query.set("source", source);
   }
   const suffix = query.toString();
@@ -320,6 +321,7 @@ function renderMatchRow(match, now, config) {
 export default function SportsScheduleView(options = {}) {
   const [selectedSport, setSelectedSport] = createSignal(readInitialSport(options));
   const [selectedSource, setSelectedSource] = createSignal(readInitialSportsSource(options));
+  const [actualSource, setActualSource] = createSignal("");
   const [matches, setMatches] = createSignal([]);
   const [selectedDate, setSelectedDate] = createSignal("");
   const [filterMode, setFilterMode] = createSignal("all");
@@ -378,6 +380,7 @@ export default function SportsScheduleView(options = {}) {
       const nextMatches = normalizeMatches(payload, activeConfig.sportName);
       if (requestId !== loadSequence) return;
       setMatches(nextMatches);
+      setActualSource(normalizeSportsSource(payload?.sourceProvider || activeSource));
       setFetchedAt(Number(payload?.fetchedAt || Date.now()));
 
       const nextDates = Array.from(
@@ -394,6 +397,7 @@ export default function SportsScheduleView(options = {}) {
       setErrorText(
         error?.message || `Could not load ${activeConfig.sportName.toLowerCase()} matches.`,
       );
+      setActualSource("");
       setStatus("error");
     }
   }
@@ -407,6 +411,7 @@ export default function SportsScheduleView(options = {}) {
     setFilterMode("all");
     setGroupMode("match");
     setFetchedAt(0);
+    setActualSource("");
     updateSportsUrl(nextSport, selectedSource());
     void loadMatches();
   }
@@ -420,6 +425,7 @@ export default function SportsScheduleView(options = {}) {
     setFilterMode("all");
     setGroupMode("match");
     setFetchedAt(0);
+    setActualSource("");
     updateSportsUrl(selectedSport(), nextSource);
     void loadMatches();
   }
@@ -586,7 +592,17 @@ export default function SportsScheduleView(options = {}) {
               `)}
             </select>
           </label>
-          <span>${() => (fetchedAt() ? `Updated ${formatTime(fetchedAt())}` : "")}</span>
+          <span>
+            ${() => {
+              if (!fetchedAt()) return "";
+              const provider = actualSource();
+              const providerLabel =
+                selectedSource() === "auto" && provider && provider !== "auto"
+                  ? ` • ${sportsSourceLabel(provider)}`
+                  : "";
+              return `Updated ${formatTime(fetchedAt())}${providerLabel}`;
+            }}
+          </span>
           <button type="button" onClick=${loadMatches}>Refresh</button>
         </div>
       </section>

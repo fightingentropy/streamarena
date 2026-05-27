@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+use std::env;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,6 +21,7 @@ use crate::utils::now_ms;
 
 const STREAMED_SOURCE_ID: &str = "streamed";
 const MATCHSTREAM_SOURCE_ID: &str = "matchstream";
+const AUTO_SOURCE_ID: &str = "auto";
 const STREAMED_FOOTBALL_CACHE_KEY: &str = "streamed:football";
 const STREAMED_BASKETBALL_CACHE_KEY: &str = "streamed:basketball";
 const STREAMED_TENNIS_CACHE_KEY: &str = "streamed:tennis";
@@ -40,11 +43,14 @@ const STREAMED_REFERER: &str = "https://streamed.pk/";
 const STREAMED_DEFAULT_DURATION_MINUTES: i64 = 180;
 const STREAMED_USER_AGENT: &str = "Mozilla/5.0";
 const STREAMED_EMBED_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-streamed-hls.mjs";
+const STREAMED_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-streamed-hls.mjs";
 const STREAMED_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
 const STREAMED_EMBED_REFERER: &str = "https://embedsports.top/";
 const MATCHSTREAM_WEBMASTER_URL: &str = "https://matchstream.do/webmaster";
 const MATCHSTREAM_VIEWER_URL: &str = "https://matchstream.do/viewer";
 const MATCHSTREAM_DEFAULT_DURATION_MINUTES: i64 = 180;
+const SPORTS_HTTP_PROXY_ENV: &str = "SPORTS_HTTP_PROXY";
+const SPORTS_HTTP_CLIENT_TIMEOUT_SECONDS: u64 = 30;
 const MAX_LIVE_STREAM_CANDIDATES: usize = 6;
 const SPORTS_SCHEDULE_CACHE_TTL_MS: i64 = 6 * 60 * 60 * 1000;
 const SPORTS_SCHEDULE_STALE_IF_ERROR_MS: i64 = 24 * 60 * 60 * 1000;
@@ -128,6 +134,7 @@ pub struct ResolveFootballStreamQuery {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SportsScheduleSource {
+    Auto,
     Streamed,
     Matchstream,
 }
@@ -312,10 +319,11 @@ impl SportsScheduleSource {
         match value
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .unwrap_or(STREAMED_SOURCE_ID)
+            .unwrap_or(AUTO_SOURCE_ID)
             .to_ascii_lowercase()
             .as_str()
         {
+            AUTO_SOURCE_ID => Ok(Self::Auto),
             STREAMED_SOURCE_ID => Ok(Self::Streamed),
             MATCHSTREAM_SOURCE_ID => Ok(Self::Matchstream),
             _ => Err(ApiError::bad_request("Unsupported sports schedule source.")),
@@ -437,6 +445,16 @@ async fn sport_matches_response(
     sport_name: &'static str,
 ) -> AppResult<Response<Body>> {
     match SportsScheduleSource::from_query(query.source.as_deref())? {
+        SportsScheduleSource::Auto => {
+            auto_sport_matches_response(
+                state,
+                streamed_cache_key,
+                matchstream_cache_key,
+                streamed_category,
+                sport_name,
+            )
+            .await
+        }
         SportsScheduleSource::Streamed => {
             streamed_sport_matches_response(
                 state,
@@ -450,6 +468,58 @@ async fn sport_matches_response(
             matchstream_sport_matches_response(state, matchstream_cache_key, sport_name).await
         }
     }
+}
+
+async fn auto_sport_matches_response(
+    state: &AppState,
+    streamed_cache_key: &'static str,
+    matchstream_cache_key: &'static str,
+    streamed_category: &'static str,
+    sport_name: &'static str,
+) -> AppResult<Response<Body>> {
+    let streamed_error = match streamed_sport_matches_response(
+        state,
+        streamed_cache_key,
+        streamed_category,
+        sport_name,
+    )
+    .await
+    {
+        Ok(response) => return Ok(response),
+        Err(error) => error,
+    };
+
+    match matchstream_sport_matches_response(state, matchstream_cache_key, sport_name).await {
+        Ok(response) => Ok(response),
+        Err(matchstream_error) => Err(ApiError::bad_gateway(format!(
+            "Sports schedule providers failed. Streamed: {} MatchStream: {}",
+            api_error_message(&streamed_error),
+            api_error_message(&matchstream_error)
+        ))),
+    }
+}
+
+fn api_error_message(error: &ApiError) -> &str {
+    error.message().unwrap_or("unknown error")
+}
+
+fn sports_http_client(state: &AppState) -> AppResult<reqwest::Client> {
+    let Some(proxy_url) = env::var(SPORTS_HTTP_PROXY_ENV)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(state.http_client.clone());
+    };
+
+    let proxy = reqwest::Proxy::all(&proxy_url)
+        .map_err(|error| ApiError::internal(format!("Invalid {SPORTS_HTTP_PROXY_ENV}: {error}")))?;
+    reqwest::Client::builder()
+        .user_agent("netflix-rust-backend")
+        .timeout(Duration::from_secs(SPORTS_HTTP_CLIENT_TIMEOUT_SECONDS))
+        .proxy(proxy)
+        .build()
+        .map_err(|error| ApiError::internal(error.to_string()))
 }
 
 async fn streamed_sport_matches_response(
@@ -490,8 +560,7 @@ async fn fetch_streamed_sport_matches_payload(
     sport_name: &'static str,
 ) -> AppResult<(Value, i64)> {
     let source_url = streamed_matches_url(streamed_category);
-    let response = state
-        .http_client
+    let response = sports_http_client(state)?
         .get(&source_url)
         .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
         .header(reqwest::header::REFERER, STREAMED_REFERER)
@@ -613,8 +682,7 @@ async fn fetch_matchstream_sport_matches_payload(
     sport_name: &'static str,
 ) -> AppResult<(Value, i64)> {
     let source_url = matchstream_viewer_url(sport_name);
-    let response = state
-        .http_client
+    let response = sports_http_client(state)?
         .get(&source_url)
         .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
         .header(reqwest::header::REFERER, MATCHSTREAM_WEBMASTER_URL)
@@ -917,8 +985,7 @@ async fn resolve_verified_matchstream_live_stream(
     source_url: &Url,
     candidate_index: usize,
 ) -> AppResult<ResolvedLiveStream> {
-    let response = state
-        .http_client
+    let response = sports_http_client(state)?
         .get(source_url.clone())
         .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
         .header(reqwest::header::REFERER, MATCHSTREAM_WEBMASTER_URL)
@@ -958,11 +1025,7 @@ async fn resolve_verified_matchstream_live_stream(
 }
 
 async fn resolve_streamed_embed_hls_url(embed_url: &Url) -> Option<Url> {
-    let script_path = std::env::var("STREAMED_HLS_RESOLVER_SCRIPT")
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| STREAMED_EMBED_HLS_RESOLVER_SCRIPT.to_owned());
+    let script_path = streamed_embed_hls_resolver_script_path();
     if matches!(
         script_path.trim().to_ascii_lowercase().as_str(),
         "0" | "false" | "off" | "disabled"
@@ -995,6 +1058,22 @@ async fn resolve_streamed_embed_hls_url(embed_url: &Url) -> Option<Url> {
         serde_json::from_slice::<StreamedHlsResolverOutput>(&output.stdout).ok()?;
     let playback_url = Url::parse(resolver_output.playback_url.trim()).ok()?;
     is_supported_streamed_hls_url(&playback_url).then_some(playback_url)
+}
+
+fn streamed_embed_hls_resolver_script_path() -> String {
+    if let Some(value) = std::env::var("STREAMED_HLS_RESOLVER_SCRIPT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+
+    if Path::new(STREAMED_EMBED_HLS_RESOLVER_SCRIPT).is_file() {
+        return STREAMED_EMBED_HLS_RESOLVER_SCRIPT.to_owned();
+    }
+
+    STREAMED_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT.to_owned()
 }
 
 fn live_stream_source_candidates(
@@ -1094,8 +1173,7 @@ async fn fetch_streamed_embed_streams(
     state: &AppState,
     source_url: &Url,
 ) -> AppResult<Vec<StreamedEmbedStream>> {
-    let response = state
-        .http_client
+    let response = sports_http_client(state)?
         .get(source_url.clone())
         .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
         .header(reqwest::header::REFERER, STREAMED_REFERER)
@@ -1436,8 +1514,8 @@ mod tests {
     use super::{
         MATCHSTREAM_WEBMASTER_URL, MAX_LIVE_STREAM_CANDIDATES, MatchstreamChannel,
         MatchstreamMatch, SPORTS_SCHEDULE_CACHE_TTL_MS, SPORTS_SCHEDULE_STALE_IF_ERROR_MS,
-        STREAMED_FOOTBALL_MATCHES_URL, SportsScheduleCache, StreamedMatch, StreamedSource,
-        StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
+        STREAMED_FOOTBALL_MATCHES_URL, SportsScheduleCache, SportsScheduleSource, StreamedMatch,
+        StreamedSource, StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
         build_streamed_football_matches_payload, extract_matchstream_matches,
         is_supported_matchstream_stream_url, is_supported_streamed_hls_url,
         live_stream_source_candidates, matchstream_live_stream_source_candidates,
@@ -1445,6 +1523,26 @@ mod tests {
     };
     use crate::utils::now_ms;
     use serde_json::json;
+
+    #[test]
+    fn sports_schedule_source_defaults_to_auto() {
+        assert_eq!(
+            SportsScheduleSource::from_query(None).unwrap(),
+            SportsScheduleSource::Auto
+        );
+        assert_eq!(
+            SportsScheduleSource::from_query(Some("")).unwrap(),
+            SportsScheduleSource::Auto
+        );
+        assert_eq!(
+            SportsScheduleSource::from_query(Some("auto")).unwrap(),
+            SportsScheduleSource::Auto
+        );
+        assert_eq!(
+            SportsScheduleSource::from_query(Some("matchstream")).unwrap(),
+            SportsScheduleSource::Matchstream
+        );
+    }
 
     #[test]
     fn parses_live_stream_fallback_urls_from_json() {
