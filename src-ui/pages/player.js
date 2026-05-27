@@ -71,7 +71,6 @@ export default function PlayerPage() {
   let toggleMutePlayer, toggleFullscreen, toggleSpeed, speedControl;
   let toggleLiveStream, liveStreamControl, liveStreamMenu, liveStreamOptionsContainer;
   let toggleSource, sourceControl, sourceMenu;
-  let topSourceLabel;
   let nextEpisode, toggleEpisodes, episodesControl, episodesList, episodesPopoverTitle;
   let episodesBackToSeasons, episodesOverline;
   let autoPlayOverlay, autoPlayThumb, autoPlayTitle, autoPlayEpLabel;
@@ -114,6 +113,7 @@ let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
 let liveStreamPopoverCloseTimeout = null;
 let sourcePopoverCloseTimeout = null;
+let sourceTogglePointerDownAt = 0;
 let episodesPopoverCloseTimeout = null;
 let episodesPopoverSticky = false;
 let audioPopoverCloseTimeout = null;
@@ -2461,33 +2461,6 @@ function getSourceSelectLabel(option = {}) {
   return name;
 }
 
-function normalizeTopSourceLabel(value) {
-  return String(value || "")
-    .trim()
-    .replace(/\s+(?:embed|iframe)$/i, "")
-    .trim();
-}
-
-function getTopSourceDisplayLabel(selectedOption = null) {
-  const optionLabel = normalizeTopSourceLabel(
-    selectedOption ? getSourceDisplayName(selectedOption) : "",
-  );
-  if (optionLabel) {
-    return optionLabel;
-  }
-
-  const filenameLabel = normalizeTopSourceLabel(currentTmdbResolvedFilename);
-  if (filenameLabel) {
-    return filenameLabel;
-  }
-
-  if (currentTmdbResolverProvider === "external-embed") {
-    return "VidFast";
-  }
-
-  return "Server";
-}
-
 function renderSelectedSourceDetails() {
   if (!sourceOptionDetails) {
     return;
@@ -2531,16 +2504,9 @@ function syncTmdbSourceControls() {
   const sourceLabel = selectedOption
     ? getSourceSelectLabel(selectedOption)
     : "Playback sources";
-  const topSourceText = getTopSourceDisplayLabel(selectedOption);
-
-  if (topSourceLabel) {
-    topSourceLabel.hidden = !shouldShow;
-    topSourceLabel.textContent = shouldShow ? topSourceText : "";
-    topSourceLabel.setAttribute("title", topSourceText);
-  }
   if (toggleSource) {
     toggleSource.setAttribute("aria-label", `Server (${sourceLabel})`);
-    toggleSource.setAttribute("title", `Server (${sourceLabel})`);
+    toggleSource.setAttribute("title", "Server");
     toggleSource.setAttribute(
       "aria-expanded",
       sourceControl?.classList.contains("is-open") ? "true" : "false",
@@ -5532,6 +5498,19 @@ function openSourcePopover() {
   syncTmdbSourceControls();
 }
 
+function toggleSourcePopoverFromControl() {
+  if (!sourceControl || isResolvingSource()) {
+    return;
+  }
+
+  if (sourceControl.classList.contains("is-open")) {
+    closeSourcePopover(false, { force: true });
+    return;
+  }
+
+  openSourcePopover();
+}
+
 function closeSourcePopover(withDelay = false, { force = false } = {}) {
   if (!sourceControl) {
     return;
@@ -8450,18 +8429,19 @@ if (toggleLiveStream) {
 }
 
 if (toggleSource) {
+  trackListener(toggleSource, "pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    sourceTogglePointerDownAt = Date.now();
+    toggleSourcePopoverFromControl();
+  });
   trackListener(toggleSource, "click", (event) => {
     event.preventDefault();
-    if (!sourceControl || isResolvingSource()) {
+    event.stopPropagation();
+    if (Date.now() - sourceTogglePointerDownAt < 500) {
       return;
     }
-
-    if (sourceControl.classList.contains("is-open")) {
-      closeSourcePopover(false, { force: true });
-      return;
-    }
-
-    openSourcePopover();
+    toggleSourcePopoverFromControl();
   });
 }
 
@@ -8532,21 +8512,9 @@ if (liveStreamControl) {
 }
 
 if (sourceControl) {
-  trackListener(sourceControl, "mouseenter", () => {
-    if (isResolvingSource()) {
-      return;
-    }
-    openSourcePopover();
-  });
   trackListener(sourceControl, "mouseleave", () =>
     closeSourcePopover(true),
   );
-  trackListener(sourceControl, "focusin", () => {
-    if (isResolvingSource()) {
-      return;
-    }
-    openSourcePopover();
-  });
   trackListener(sourceControl, "focusout", (event) => {
     if (!(event.target instanceof Node)) {
       closeSourcePopover(true);
@@ -9728,58 +9696,6 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
                 <path d="M14.6 4.6 7.2 12l7.4 7.4-1.4 1.4L4.4 12l8.8-8.8Z"></path>
               </svg>
             </button>
-            <span
-              id="topSourceLabel"
-              ref=${el => topSourceLabel = el}
-              class="top-source-label"
-              hidden
-            >Server</span>
-          </div>
-
-          <div class="top-row-actions">
-            <div
-              id="sourceControl"
-              ref=${el => sourceControl = el}
-              class="speed-menu-wrap source-menu-wrap top-source-control"
-              hidden
-            >
-              <button
-                id="toggleSource"
-                ref=${el => toggleSource = el}
-                class="control-btn source-btn top-server-btn"
-                type="button"
-                aria-label="Server"
-                aria-haspopup="listbox"
-                aria-controls="sourceMenu"
-                aria-expanded="false"
-              >
-                <svg class="top-server-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M4 7h12"></path>
-                  <path d="M4 12h9"></path>
-                  <path d="M4 17h12"></path>
-                  <path d="M18 10.5 21.5 12 18 13.5z"></path>
-                </svg>
-                <span class="top-server-label">Server</span>
-                <svg class="top-server-chevron" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m7 9 5 5 5-5"></path>
-                </svg>
-              </button>
-              <div
-                id="sourceMenu"
-                ref=${el => sourceMenu = el}
-                class="speed-popover source-popover"
-                role="listbox"
-                aria-label="Server"
-              >
-                <p class="speed-popover-title source-popover-title">Server</p>
-                <div
-                  id="sourceOptions"
-                  ref=${el => sourceOptionsContainer = el}
-                  class="audio-options source-options source-popover-options"
-                  aria-label="Playback servers"
-                ></div>
-              </div>
-            </div>
           </div>
         </header>
 
@@ -9887,6 +9803,45 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
 
             <div class="controls-right">
               <div class="controls-cluster">
+                <div
+                  id="sourceControl"
+                  ref=${el => sourceControl = el}
+                  class="speed-menu-wrap source-menu-wrap bottom-source-control"
+                  hidden
+                >
+                  <button
+                    id="toggleSource"
+                    ref=${el => toggleSource = el}
+                    class="control-btn source-btn bottom-server-btn"
+                    type="button"
+                    aria-label="Server"
+                    aria-haspopup="listbox"
+                    aria-controls="sourceMenu"
+                    aria-expanded="false"
+                  >
+                    <svg class="bottom-server-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4 7h12"></path>
+                      <path d="M4 12h9"></path>
+                      <path d="M4 17h12"></path>
+                      <path d="M18 10.5 21.5 12 18 13.5z"></path>
+                    </svg>
+                  </button>
+                  <div
+                    id="sourceMenu"
+                    ref=${el => sourceMenu = el}
+                    class="speed-popover source-popover"
+                    role="listbox"
+                    aria-label="Server"
+                  >
+                    <p class="speed-popover-title source-popover-title">Server</p>
+                    <div
+                      id="sourceOptions"
+                      ref=${el => sourceOptionsContainer = el}
+                      class="audio-options source-options source-popover-options"
+                      aria-label="Playback servers"
+                    ></div>
+                  </div>
+                </div>
                 <button
                   id="nextEpisode"
                   ref=${el => nextEpisode = el}
