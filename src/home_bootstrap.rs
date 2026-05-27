@@ -15,6 +15,44 @@ const BOOTSTRAP_PAGE: &str = "1";
 const HOME_BOOTSTRAP_REFRESH_AFTER_MS: i64 = 15 * 60 * 1000;
 const HOME_BOOTSTRAP_RAIL_LIMIT: usize = 14;
 
+const MOVIE_POPULAR_QUALITY: TmdbRailQuality = TmdbRailQuality {
+    min_vote_average: 7.0,
+    min_vote_count: 3_000,
+    release_date_key: "release_date",
+};
+const MOVIE_CROWD_QUALITY: TmdbRailQuality = TmdbRailQuality {
+    min_vote_average: 7.2,
+    min_vote_count: 5_000,
+    release_date_key: "release_date",
+};
+const MOVIE_ACCLAIMED_QUALITY: TmdbRailQuality = TmdbRailQuality {
+    min_vote_average: 7.7,
+    min_vote_count: 5_000,
+    release_date_key: "release_date",
+};
+const TV_BINGE_QUALITY: TmdbRailQuality = TmdbRailQuality {
+    min_vote_average: 7.8,
+    min_vote_count: 2_000,
+    release_date_key: "first_air_date",
+};
+const TV_POPULAR_QUALITY: TmdbRailQuality = TmdbRailQuality {
+    min_vote_average: 7.2,
+    min_vote_count: 1_000,
+    release_date_key: "first_air_date",
+};
+const TV_ACCLAIMED_QUALITY: TmdbRailQuality = TmdbRailQuality {
+    min_vote_average: 8.0,
+    min_vote_count: 2_000,
+    release_date_key: "first_air_date",
+};
+
+#[derive(Clone, Copy)]
+struct TmdbRailQuality {
+    min_vote_average: f64,
+    min_vote_count: i64,
+    release_date_key: &'static str,
+}
+
 #[derive(Clone, Default)]
 pub struct HomeBootstrapCache {
     inner: Arc<HomeBootstrapCacheInner>,
@@ -103,54 +141,72 @@ fn is_stale(refreshed_at_ms: i64) -> bool {
 }
 
 pub async fn build_home_bootstrap(state: &AppState, include_library: bool) -> AppResult<Value> {
-    let popular_params = page_params(BOOTSTRAP_PAGE);
-    let trending_movie_params = page_params("2");
-    let now_playing_params = page_params(BOOTSTRAP_PAGE);
-    let top_rated_movie_params = page_params(BOOTSTRAP_PAGE);
-    let tv_popular_params = page_params(BOOTSTRAP_PAGE);
-    let tv_trending_params = page_params(BOOTSTRAP_PAGE);
-    let tv_top_rated_params = page_params(BOOTSTRAP_PAGE);
+    let today = today_utc_date();
+    let movie_popular_params = movie_discover_params(
+        "popularity.desc",
+        MOVIE_POPULAR_QUALITY,
+        BOOTSTRAP_PAGE,
+        &today,
+    );
+    let movie_crowd_params = movie_discover_params(
+        "vote_count.desc",
+        MOVIE_CROWD_QUALITY,
+        BOOTSTRAP_PAGE,
+        &today,
+    );
+    let movie_acclaimed_params = movie_discover_params(
+        "vote_average.desc",
+        MOVIE_ACCLAIMED_QUALITY,
+        BOOTSTRAP_PAGE,
+        &today,
+    );
+    let tv_binge_params =
+        tv_discover_params("vote_count.desc", TV_BINGE_QUALITY, BOOTSTRAP_PAGE, &today);
+    let tv_popular_params = tv_discover_params(
+        "popularity.desc",
+        TV_POPULAR_QUALITY,
+        BOOTSTRAP_PAGE,
+        &today,
+    );
+    let tv_acclaimed_params = tv_discover_params(
+        "vote_average.desc",
+        TV_ACCLAIMED_QUALITY,
+        BOOTSTRAP_PAGE,
+        &today,
+    );
 
     let (
         movie_popular,
-        movie_trending,
-        movie_now_playing,
-        movie_top_rated,
+        movie_crowd,
+        movie_acclaimed,
+        tv_binge,
         tv_popular,
-        tv_trending,
-        tv_top_rated,
+        tv_acclaimed,
         movie_genres,
         tv_genres,
     ) = tokio::join!(
-        state
-            .tmdb
-            .fetch("/movie/popular", popular_params, TMDB_FETCH_TIMEOUT_MS),
         state.tmdb.fetch(
-            "/trending/movie/week",
-            trending_movie_params,
-            TMDB_FETCH_TIMEOUT_MS
-        ),
-        state.tmdb.fetch(
-            "/movie/now_playing",
-            now_playing_params,
-            TMDB_FETCH_TIMEOUT_MS
-        ),
-        state.tmdb.fetch(
-            "/movie/top_rated",
-            top_rated_movie_params,
+            "/discover/movie",
+            movie_popular_params,
             TMDB_FETCH_TIMEOUT_MS
         ),
         state
             .tmdb
-            .fetch("/tv/popular", tv_popular_params, TMDB_FETCH_TIMEOUT_MS),
+            .fetch("/discover/movie", movie_crowd_params, TMDB_FETCH_TIMEOUT_MS),
         state.tmdb.fetch(
-            "/trending/tv/week",
-            tv_trending_params,
+            "/discover/movie",
+            movie_acclaimed_params,
             TMDB_FETCH_TIMEOUT_MS
         ),
         state
             .tmdb
-            .fetch("/tv/top_rated", tv_top_rated_params, TMDB_FETCH_TIMEOUT_MS),
+            .fetch("/discover/tv", tv_binge_params, TMDB_FETCH_TIMEOUT_MS),
+        state
+            .tmdb
+            .fetch("/discover/tv", tv_popular_params, TMDB_FETCH_TIMEOUT_MS),
+        state
+            .tmdb
+            .fetch("/discover/tv", tv_acclaimed_params, TMDB_FETCH_TIMEOUT_MS),
         state
             .tmdb
             .fetch("/genre/movie/list", BTreeMap::new(), TMDB_FETCH_TIMEOUT_MS),
@@ -168,18 +224,43 @@ pub async fn build_home_bootstrap(state: &AppState, include_library: bool) -> Ap
     let tv_genres = tv_genres.unwrap_or_else(|_| json!({ "genres": [] }));
     let empty_results = || json!({ "results": [] });
     let movie_popular = movie_popular.unwrap_or_else(|_| empty_results());
+    let movie_acclaimed = movie_acclaimed.unwrap_or_else(|_| empty_results());
+    let movie_popular_payload =
+        tmdb_list_payload_with_quality(movie_popular, "movie", MOVIE_POPULAR_QUALITY);
+    let movie_crowd_payload = tmdb_list_payload_with_quality(
+        movie_crowd.unwrap_or_else(|_| empty_results()),
+        "movie",
+        MOVIE_CROWD_QUALITY,
+    );
+    let movie_acclaimed_payload =
+        tmdb_list_payload_with_quality(movie_acclaimed, "movie", MOVIE_ACCLAIMED_QUALITY);
+    let tv_binge_payload = tmdb_list_payload_with_quality(
+        tv_binge.unwrap_or_else(|_| empty_results()),
+        "tv",
+        TV_BINGE_QUALITY,
+    );
+    let tv_popular_payload = tmdb_list_payload_with_quality(
+        tv_popular.unwrap_or_else(|_| empty_results()),
+        "tv",
+        TV_POPULAR_QUALITY,
+    );
+    let tv_acclaimed_payload = tmdb_list_payload_with_quality(
+        tv_acclaimed.unwrap_or_else(|_| empty_results()),
+        "tv",
+        TV_ACCLAIMED_QUALITY,
+    );
 
     Ok(json!({
         "imageBase": "https://image.tmdb.org/t/p",
         "genres": merge_genres(&movie_genres, &tv_genres),
-        "popular": tmdb_list_payload(movie_popular.clone(), "movie"),
-        "bingeworthy": tmdb_list_payload(tv_popular.unwrap_or_else(|_| empty_results()), "tv"),
-        "crowdPleasers": tmdb_list_payload(movie_trending.unwrap_or_else(|_| empty_results()), "movie"),
-        "topSeries": tmdb_list_payload(tv_trending.unwrap_or_else(|_| empty_results()), "tv"),
-        "criticallyAcclaimed": tmdb_list_payload(movie_top_rated.unwrap_or_else(|_| empty_results()), "movie"),
-        "trending": tmdb_list_payload(movie_now_playing.unwrap_or_else(|_| empty_results()), "movie"),
-        "nowPlaying": tmdb_list_payload(tv_top_rated.unwrap_or_else(|_| empty_results()), "tv"),
-        "topRated": tmdb_list_payload(movie_popular, "movie"),
+        "popular": movie_popular_payload.clone(),
+        "bingeworthy": tv_binge_payload,
+        "crowdPleasers": movie_crowd_payload,
+        "topSeries": tv_popular_payload,
+        "criticallyAcclaimed": movie_acclaimed_payload.clone(),
+        "trending": movie_popular_payload,
+        "nowPlaying": tv_acclaimed_payload,
+        "topRated": movie_acclaimed_payload,
         "library": library
             .map(|value| serde_json::to_value(value).unwrap_or_else(|_| library_empty_value()))
             .unwrap_or_else(library_empty_value),
@@ -216,13 +297,75 @@ fn page_params(page: &str) -> BTreeMap<String, String> {
     BTreeMap::from([("page".to_owned(), page.to_owned())])
 }
 
-fn tmdb_list_payload(payload: Value, media_type: &str) -> Value {
+fn movie_discover_params(
+    sort_by: &str,
+    quality: TmdbRailQuality,
+    page: &str,
+    today: &str,
+) -> BTreeMap<String, String> {
+    let mut params = page_params(page);
+    params.insert("include_adult".to_owned(), "false".to_owned());
+    params.insert("include_video".to_owned(), "false".to_owned());
+    params.insert("sort_by".to_owned(), sort_by.to_owned());
+    params.insert(
+        "vote_average.gte".to_owned(),
+        quality.min_vote_average.to_string(),
+    );
+    params.insert(
+        "vote_count.gte".to_owned(),
+        quality.min_vote_count.to_string(),
+    );
+    params.insert("primary_release_date.lte".to_owned(), today.to_owned());
+    params
+}
+
+fn tv_discover_params(
+    sort_by: &str,
+    quality: TmdbRailQuality,
+    page: &str,
+    today: &str,
+) -> BTreeMap<String, String> {
+    let mut params = page_params(page);
+    params.insert("include_adult".to_owned(), "false".to_owned());
+    params.insert(
+        "include_null_first_air_dates".to_owned(),
+        "false".to_owned(),
+    );
+    params.insert("sort_by".to_owned(), sort_by.to_owned());
+    params.insert(
+        "vote_average.gte".to_owned(),
+        quality.min_vote_average.to_string(),
+    );
+    params.insert(
+        "vote_count.gte".to_owned(),
+        quality.min_vote_count.to_string(),
+    );
+    params.insert("first_air_date.lte".to_owned(), today.to_owned());
+    params
+}
+
+fn tmdb_list_payload_with_quality(
+    payload: Value,
+    media_type: &str,
+    quality: TmdbRailQuality,
+) -> Value {
+    let today = today_utc_date();
+    tmdb_list_payload_from_results(payload, media_type, |item| {
+        tmdb_item_passes_quality(item, quality, &today)
+    })
+}
+
+fn tmdb_list_payload_from_results<F>(payload: Value, media_type: &str, include_item: F) -> Value
+where
+    F: Fn(&Value) -> bool,
+{
     let results = payload
         .get("results")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
         .into_iter()
+        .filter(include_item)
         .take(HOME_BOOTSTRAP_RAIL_LIMIT)
         .map(|mut item| {
             if let Value::Object(object) = &mut item {
@@ -237,6 +380,49 @@ fn tmdb_list_payload(payload: Value, media_type: &str) -> Value {
     json!({
         "results": results,
     })
+}
+
+fn tmdb_item_passes_quality(item: &Value, quality: TmdbRailQuality, today: &str) -> bool {
+    let vote_average = item
+        .get("vote_average")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let vote_count = item.get("vote_count").and_then(Value::as_i64).unwrap_or(0);
+    if vote_average < quality.min_vote_average || vote_count < quality.min_vote_count {
+        return false;
+    }
+
+    if item.get("adult").and_then(Value::as_bool).unwrap_or(false) {
+        return false;
+    }
+
+    let has_art = ["backdrop_path", "poster_path"].iter().any(|key| {
+        item.get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    });
+    if !has_art {
+        return false;
+    }
+
+    let release_date = item
+        .get(quality.release_date_key)
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    is_released_tmdb_date(release_date, today)
+}
+
+fn is_released_tmdb_date(date: &str, today: &str) -> bool {
+    let date = date.trim();
+    date.len() == 10
+        && date.chars().enumerate().all(|(index, ch)| {
+            if index == 4 || index == 7 {
+                ch == '-'
+            } else {
+                ch.is_ascii_digit()
+            }
+        })
+        && date <= today
 }
 
 fn slim_tmdb_item(item: Value) -> Value {
@@ -258,6 +444,7 @@ fn slim_tmdb_item(item: Value) -> Value {
         "overview",
         "adult",
         "vote_average",
+        "vote_count",
         "original_language",
     ] {
         if let Some(value) = object.get(key) {
@@ -316,9 +503,37 @@ pub fn inject_bootstrap_into_html(html: &str, payload: &Value) -> AppResult<Stri
     Ok(format!("{script}\n{html}"))
 }
 
+fn today_utc_date() -> String {
+    utc_date_from_unix_days(now_ms().div_euclid(86_400_000))
+}
+
+fn utc_date_from_unix_days(days_since_unix_epoch: i64) -> String {
+    let (year, month, day) = civil_from_unix_days(days_since_unix_epoch);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn civil_from_unix_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
+    let days = days_since_unix_epoch + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 }.div_euclid(146_097);
+    let day_of_era = days - era * 146_097;
+    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524
+        - day_of_era / 146_096)
+        .div_euclid(365);
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2).div_euclid(153);
+    let day = day_of_year - (153 * month_prime + 2).div_euclid(5) + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    let year = year + i64::from(month <= 2);
+    (year as i32, month as u32, day as u32)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{bootstrap_script_tag, inject_bootstrap_into_html};
+    use super::{
+        MOVIE_POPULAR_QUALITY, bootstrap_script_tag, inject_bootstrap_into_html,
+        tmdb_list_payload_with_quality, utc_date_from_unix_days,
+    };
     use serde_json::json;
 
     #[test]
@@ -342,5 +557,61 @@ mod tests {
             injected.find("window.__HOME_BOOTSTRAP__=").unwrap()
                 < injected.find("</head>").unwrap()
         );
+    }
+
+    #[test]
+    fn filters_low_signal_unreleased_and_artless_tmdb_items() {
+        let payload = json!({
+            "results": [
+                {
+                    "id": 1,
+                    "title": "Crowd Favorite",
+                    "release_date": "2024-03-01",
+                    "backdrop_path": "/good.jpg",
+                    "vote_average": 7.0,
+                    "vote_count": 5000
+                },
+                {
+                    "id": 2,
+                    "title": "Too Early",
+                    "release_date": "2099-01-01",
+                    "backdrop_path": "/future.jpg",
+                    "vote_average": 8.0,
+                    "vote_count": 5000
+                },
+                {
+                    "id": 3,
+                    "title": "Too Thin",
+                    "release_date": "2024-03-01",
+                    "backdrop_path": "/thin.jpg",
+                    "vote_average": 9.2,
+                    "vote_count": 12
+                },
+                {
+                    "id": 4,
+                    "title": "No Art",
+                    "release_date": "2024-03-01",
+                    "vote_average": 8.0,
+                    "vote_count": 5000
+                }
+            ]
+        });
+
+        let curated = tmdb_list_payload_with_quality(payload, "movie", MOVIE_POPULAR_QUALITY);
+        let titles = curated
+            .get("results")
+            .and_then(|value| value.as_array())
+            .unwrap();
+
+        assert_eq!(titles.len(), 1);
+        assert_eq!(titles[0]["title"], "Crowd Favorite");
+        assert_eq!(titles[0]["media_type"], "movie");
+    }
+
+    #[test]
+    fn formats_unix_days_as_utc_dates() {
+        assert_eq!(utc_date_from_unix_days(0), "1970-01-01");
+        assert_eq!(utc_date_from_unix_days(10_957), "2000-01-01");
+        assert_eq!(utc_date_from_unix_days(20_600), "2026-05-27");
     }
 }

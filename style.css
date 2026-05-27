@@ -507,7 +507,7 @@
 
 .home-popular-row .cards.popular-cards {
     gap: 10px;
-    padding-bottom: 10px;
+    padding-bottom: 24px;
 }
 
 .home-page .continue-row .cards.popular-cards,
@@ -537,6 +537,7 @@
 .home-popular-row .popular-cards .card {
     border-radius: 6px;
     margin-bottom: 14px;
+    overflow: visible;
 }
 
 .home-page .continue-row .card-base,
@@ -2837,6 +2838,11 @@ body.is-search-mode #myListRow {
     .card {
         width: 46vw;
         overflow: hidden;
+    }
+
+    .home-popular-row .popular-cards .card,
+    .home-popular-row .card {
+        overflow: visible;
     }
 
     .card-hover {

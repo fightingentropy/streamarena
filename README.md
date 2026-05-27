@@ -173,7 +173,8 @@ Authentication and user sync:
 Home and browsing:
 
 - Featured hero sourced from current TMDB/bootstrap data.
-- Rails for popular movies, TV, trending, now playing, top rated, local library, continue watching, and My List.
+- Dashboard rails use TMDB discovery with rating/vote-count thresholds, release-date guards, and artwork checks instead of raw popularity/trending lists.
+- Rails for curated movies, series, critically acclaimed titles, local library, continue watching, and My List.
 - TMDB search across movies and TV.
 - Details modal with metadata, cast, playback launch, and My List actions.
 - Continue watching entries enriched from local library and server state.

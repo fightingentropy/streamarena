@@ -5362,7 +5362,7 @@ export default function HomePage() {
       >
         <div class="popular-row-inner">
           <div class="rail-header">
-            <h2>Top 10 Series in the UK Today</h2>
+            <h2>Top 10 Series Worth Watching</h2>
           </div>
           <div
             id="nowPlayingCardsContainer"
