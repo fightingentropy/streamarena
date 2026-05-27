@@ -162,7 +162,10 @@ cat > "$caddy_config_dir/Caddyfile" <<CADDY
 
 (netflix_proxy) {
   encode zstd gzip
-  reverse_proxy 127.0.0.1:5173
+  reverse_proxy 127.0.0.1:5173 {
+    lb_try_duration 30s
+    lb_try_interval 250ms
+  }
   log {
     output file $caddy_log_dir/caddy-access.log {
       roll_size 10MiB
