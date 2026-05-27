@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -72,6 +73,7 @@ const DEFAULT_ALLOWED_SOURCE_FORMATS: &[&str] = &["mp4", "mkv"];
 const EXTERNAL_EMBED_RESOLVER_PROVIDER: &str = "external-embed";
 const LIVE_IFRAME_SOURCE_PREFIX: &str = "live-iframe:";
 const EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-external-embed-hls.mjs";
+const EXTERNAL_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-external-embed-hls.mjs";
 const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
 const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS";
 
@@ -5062,11 +5064,7 @@ async fn resolve_external_embed_hls_playback_source(
         return None;
     }
 
-    let script_path = std::env::var("EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT")
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT.to_owned());
+    let script_path = external_embed_hls_resolver_script_path();
     if matches!(
         script_path.trim().to_ascii_lowercase().as_str(),
         "0" | "false" | "off" | "disabled"
@@ -5108,6 +5106,22 @@ async fn resolve_external_embed_hls_playback_source(
         playback_url,
         referer,
     })
+}
+
+fn external_embed_hls_resolver_script_path() -> String {
+    if let Some(value) = std::env::var("EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+
+    if Path::new(EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT).is_file() {
+        return EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT.to_owned();
+    }
+
+    EXTERNAL_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT.to_owned()
 }
 
 fn external_embed_hls_resolve_timeout_seconds() -> u64 {

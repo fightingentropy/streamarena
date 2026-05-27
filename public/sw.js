@@ -1,6 +1,25 @@
-// Bump CACHE_VERSION when shell assets change so clients pick up updates.
-const CACHE_VERSION = "netflix-pwa-v18";
+// Bump CACHE_PREFIX when shell assets change so clients pick up updates.
+const CACHE_PREFIX = "netflix-pwa-v19";
+const SHELL_CACHE = `${CACHE_PREFIX}:shell`;
+const PAGE_CACHE = `${CACHE_PREFIX}:pages`;
+const API_CACHE = `${CACHE_PREFIX}:api`;
+const ARTWORK_CACHE = `${CACHE_PREFIX}:artwork`;
+const RUNTIME_CACHE = `${CACHE_PREFIX}:runtime`;
+const CACHE_NAMES = new Set([
+  SHELL_CACHE,
+  PAGE_CACHE,
+  API_CACHE,
+  ARTWORK_CACHE,
+  RUNTIME_CACHE,
+]);
+
 const OFFLINE_URL = "/offline.html";
+const ARTWORK_FALLBACK_URL = "/assets/images/thumbnail.jpg";
+const ARTWORK_CACHE_MAX_ENTRIES = 320;
+const API_CACHE_MAX_ENTRIES = 140;
+const RUNTIME_CACHE_MAX_ENTRIES = 90;
+const WARM_CACHE_LIMIT = 100;
+
 const APP_SHELL_URLS = [
   "/",
   "/login.html",
@@ -11,17 +30,43 @@ const APP_SHELL_URLS = [
   "/player.html",
   OFFLINE_URL,
   "/manifest.webmanifest",
+  ARTWORK_FALLBACK_URL,
+  "/assets/images/thumbnail-top10-h.jpg",
   "/assets/icons/netflix-n.svg",
+  "/assets/icons/netflix-logo-clean.png",
   "/assets/icons/netflix-app-icon-180.png",
   "/assets/icons/netflix-app-icon-192.png",
   "/assets/icons/netflix-app-icon-512.png",
   "/assets/icons/netflix-maskable-icon-512.png",
 ];
 
+const TMDB_IMAGE_HOSTS = new Set(["image.tmdb.org"]);
+const CACHEABLE_API_PATHS = new Set([
+  "/api/auth/me",
+  "/api/home/bootstrap",
+  "/api/library",
+  "/api/tmdb/popular-movies",
+  "/api/tmdb/details",
+  "/api/tmdb/tv/season",
+  "/api/user/preferences",
+  "/api/user/watch-progress",
+  "/api/user/continue-watching",
+  "/api/user/my-list",
+]);
+const NETWORK_FIRST_API_PATHS = new Set([
+  "/api/auth/me",
+  "/api/library",
+  "/api/user/preferences",
+  "/api/user/watch-progress",
+  "/api/user/continue-watching",
+  "/api/user/my-list",
+]);
+const LOCAL_IMAGE_EXTENSIONS = /\.(?:avif|gif|jpe?g|png|svg|webp)$/i;
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
-      .open(CACHE_VERSION)
+      .open(SHELL_CACHE)
       .then((cache) => precacheUrls(cache, APP_SHELL_URLS))
       .then(() => self.skipWaiting()),
   );
@@ -34,7 +79,7 @@ self.addEventListener("activate", (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter((key) => key !== CACHE_VERSION)
+            .filter((key) => !CACHE_NAMES.has(key))
             .map((key) => caches.delete(key)),
         ),
       )
@@ -42,14 +87,54 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+self.addEventListener("message", (event) => {
+  const data = event.data && typeof event.data === "object" ? event.data : {};
+  if (data.type === "CACHE_URLS" && Array.isArray(data.urls)) {
+    event.waitUntil(warmUrls(data.urls));
+  }
+});
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
+  const url = new URL(request.url);
+
   if (request.method !== "GET") {
+    if (shouldClearApiCacheAfterMutation(request, url)) {
+      event.waitUntil(caches.delete(API_CACHE));
+    }
     return;
   }
 
-  const url = new URL(request.url);
+  if (isTmdbArtworkRequest(request, url)) {
+    event.respondWith(
+      staleWhileRevalidate(request, {
+        cacheName: ARTWORK_CACHE,
+        cacheOpaque: true,
+        fallbackUrl: ARTWORK_FALLBACK_URL,
+        maxEntries: ARTWORK_CACHE_MAX_ENTRIES,
+      }),
+    );
+    return;
+  }
+
   if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  if (isCacheableApiRequest(url)) {
+    event.respondWith(
+      NETWORK_FIRST_API_PATHS.has(url.pathname)
+        ? networkFirst(request, {
+            cacheName: API_CACHE,
+            maxEntries: API_CACHE_MAX_ENTRIES,
+            skipWarmingHomeBootstrap: true,
+          })
+        : staleWhileRevalidate(request, {
+            cacheName: API_CACHE,
+            maxEntries: API_CACHE_MAX_ENTRIES,
+            skipWarmingHomeBootstrap: true,
+          }),
+    );
     return;
   }
 
@@ -74,8 +159,24 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  if (isLocalArtworkRequest(request, url)) {
+    event.respondWith(
+      staleWhileRevalidate(request, {
+        cacheName: ARTWORK_CACHE,
+        fallbackUrl: ARTWORK_FALLBACK_URL,
+        maxEntries: ARTWORK_CACHE_MAX_ENTRIES,
+      }),
+    );
+    return;
+  }
+
   if (url.pathname.startsWith("/ui-assets/")) {
-    event.respondWith(staleWhileRevalidate(request));
+    event.respondWith(
+      staleWhileRevalidate(request, {
+        cacheName: RUNTIME_CACHE,
+        maxEntries: RUNTIME_CACHE_MAX_ENTRIES,
+      }),
+    );
     return;
   }
 
@@ -83,34 +184,46 @@ self.addEventListener("fetch", (event) => {
     url.pathname.startsWith("/assets/icons/") ||
     url.pathname === "/manifest.webmanifest"
   ) {
-    event.respondWith(cacheFirst(request));
+    event.respondWith(cacheFirst(request, { cacheName: SHELL_CACHE }));
     return;
   }
 
-  event.respondWith(networkFirst(request));
+  event.respondWith(
+    networkFirst(request, {
+      cacheName: RUNTIME_CACHE,
+      maxEntries: RUNTIME_CACHE_MAX_ENTRIES,
+    }),
+  );
 });
 
-async function cacheFirst(request) {
+async function cacheFirst(request, { cacheName }) {
   const cached = await caches.match(request);
   if (cached) {
     return cached;
   }
   const response = await fetch(request);
-  if (response.ok) {
-    const cache = await caches.open(CACHE_VERSION);
-    cache.put(request, response.clone());
-  }
+  await maybeCacheResponse(cacheName, request, response);
   return response;
 }
 
-async function staleWhileRevalidate(request) {
-  const cache = await caches.open(CACHE_VERSION);
+async function staleWhileRevalidate(
+  request,
+  {
+    cacheName,
+    cacheOpaque = false,
+    fallbackUrl = "",
+    maxEntries = 0,
+    skipWarmingHomeBootstrap = false,
+  },
+) {
   const cached = await caches.match(request);
   const networkPromise = fetch(request)
-    .then((response) => {
-      if (response.ok) {
-        cache.put(request, response.clone());
-      }
+    .then(async (response) => {
+      await maybeCacheResponse(cacheName, request, response, {
+        cacheOpaque,
+        maxEntries,
+        skipWarmingHomeBootstrap,
+      });
       return response;
     })
     .catch(() => null);
@@ -125,27 +238,36 @@ async function staleWhileRevalidate(request) {
     return network;
   }
 
-  return offlineResponse();
+  return fallbackResponse(fallbackUrl);
 }
 
 async function precacheUrls(cache, urls) {
   await Promise.allSettled(
     urls.map(async (url) => {
       const response = await fetch(url, { cache: "reload" });
-      if (response.ok) {
+      if (isCacheableResponse(response)) {
         await cache.put(url, response);
       }
     }),
   );
 }
 
-async function networkFirst(request) {
-  const cache = await caches.open(CACHE_VERSION);
+async function networkFirst(
+  request,
+  {
+    cacheName,
+    cacheOpaque = false,
+    maxEntries = 0,
+    skipWarmingHomeBootstrap = false,
+  },
+) {
   try {
     const response = await fetch(request);
-    if (response.ok) {
-      cache.put(request, response.clone());
-    }
+    await maybeCacheResponse(cacheName, request, response, {
+      cacheOpaque,
+      maxEntries,
+      skipWarmingHomeBootstrap,
+    });
     return response;
   } catch {
     const cached = await caches.match(request);
@@ -157,12 +279,9 @@ async function networkFirst(request) {
 }
 
 async function networkFirstNavigation(request, fallbackUrl = "") {
-  const cache = await caches.open(CACHE_VERSION);
   try {
     const response = await fetch(request);
-    if (response.ok) {
-      cache.put(request, response.clone());
-    }
+    await maybeCacheResponse(PAGE_CACHE, request, response);
     return response;
   } catch {
     const cached = await caches.match(request);
@@ -183,6 +302,64 @@ async function networkFirstNavigation(request, fallbackUrl = "") {
   }
 }
 
+async function maybeCacheResponse(
+  cacheName,
+  request,
+  response,
+  {
+    cacheOpaque = false,
+    maxEntries = 0,
+    skipWarmingHomeBootstrap = false,
+  } = {},
+) {
+  if (!isCacheableResponse(response, { cacheOpaque })) {
+    return;
+  }
+  if (
+    skipWarmingHomeBootstrap &&
+    new URL(request.url).pathname === "/api/home/bootstrap" &&
+    (await isWarmingHomeBootstrapResponse(response))
+  ) {
+    return;
+  }
+  const cache = await caches.open(cacheName);
+  await cache.put(request, response.clone());
+  if (maxEntries > 0) {
+    await trimCache(cache, maxEntries);
+  }
+}
+
+function isCacheableResponse(response, { cacheOpaque = false } = {}) {
+  return Boolean(response && (response.ok || (cacheOpaque && response.type === "opaque")));
+}
+
+async function isWarmingHomeBootstrapResponse(response) {
+  try {
+    const payload = await response.clone().json();
+    return String(payload?._meta?.status || "") === "warming";
+  } catch {
+    return false;
+  }
+}
+
+async function trimCache(cache, maxEntries) {
+  const keys = await cache.keys();
+  if (keys.length <= maxEntries) {
+    return;
+  }
+  await Promise.all(keys.slice(0, keys.length - maxEntries).map((key) => cache.delete(key)));
+}
+
+async function fallbackResponse(fallbackUrl) {
+  if (fallbackUrl) {
+    const fallback = await caches.match(fallbackUrl);
+    if (fallback) {
+      return fallback;
+    }
+  }
+  return offlineResponse();
+}
+
 async function offlineResponse() {
   const offline = await caches.match(OFFLINE_URL);
   if (offline) {
@@ -192,5 +369,85 @@ async function offlineResponse() {
     status: 503,
     statusText: "Offline",
     headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+}
+
+function isCacheableApiRequest(url) {
+  return url.origin === self.location.origin && CACHEABLE_API_PATHS.has(url.pathname);
+}
+
+function shouldClearApiCacheAfterMutation(request, url) {
+  return (
+    url.origin === self.location.origin &&
+    request.method !== "GET" &&
+    (url.pathname === "/api/auth/logout" ||
+      url.pathname === "/api/library" ||
+      url.pathname.startsWith("/api/user/"))
+  );
+}
+
+function isTmdbArtworkRequest(request, url) {
+  return TMDB_IMAGE_HOSTS.has(url.hostname) && isImageLikeRequest(request, url);
+}
+
+function isLocalArtworkRequest(request, url) {
+  return (
+    url.origin === self.location.origin &&
+    isImageLikeRequest(request, url) &&
+    (url.pathname.startsWith("/assets/images/") ||
+      url.pathname.startsWith("/assets/icons/") ||
+      LOCAL_IMAGE_EXTENSIONS.test(url.pathname))
+  );
+}
+
+function isImageLikeRequest(request, url) {
+  return request.destination === "image" || LOCAL_IMAGE_EXTENSIONS.test(url.pathname);
+}
+
+async function warmUrls(urls) {
+  const normalizedUrls = Array.from(
+    new Set(
+      urls
+        .map((url) => normalizeWarmUrl(url))
+        .filter(Boolean),
+    ),
+  ).slice(0, WARM_CACHE_LIMIT);
+
+  await Promise.allSettled(normalizedUrls.map((url) => warmUrl(url)));
+}
+
+function normalizeWarmUrl(value) {
+  try {
+    const url = new URL(String(value || ""), self.location.origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return "";
+    }
+    if (url.origin === self.location.origin && isLocalArtworkRequest(new Request(url.href), url)) {
+      return url.href;
+    }
+    if (TMDB_IMAGE_HOSTS.has(url.hostname) && LOCAL_IMAGE_EXTENSIONS.test(url.pathname)) {
+      return url.href;
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+async function warmUrl(rawUrl) {
+  const url = new URL(rawUrl);
+  const isTmdb = TMDB_IMAGE_HOSTS.has(url.hostname);
+  const request = isTmdb
+    ? new Request(url.href, { mode: "no-cors" })
+    : new Request(url.href, { credentials: "same-origin" });
+  const cache = await caches.open(ARTWORK_CACHE);
+  const cached = await cache.match(request);
+  if (cached) {
+    return;
+  }
+  const response = await fetch(request);
+  await maybeCacheResponse(ARTWORK_CACHE, request, response, {
+    cacheOpaque: isTmdb,
+    maxEntries: ARTWORK_CACHE_MAX_ENTRIES,
   });
 }

@@ -139,7 +139,7 @@ External movie/TV embed stack:
 - VidEasy embeds are built from `https://player.videasy.net/movie/...` or `/tv/...`; the extracted HLS playlist host is `easy.speedsterwave.app`.
 - VidLink embeds are built from `https://vidlink.pro/movie/...` or `/tv/...`; the extracted HLS playlist host is `storm.vodvidl.site`.
 - VidFast is kept as the iframe handoff only. Its URL is built with chromeless parameters to hide title, poster, server, Chromecast, and fullscreen chrome from the embedded player.
-- Native external HLS is resolved by `scripts/resolve-external-embed-hls.mjs` through Playwright. The backend only accepts VidEasy/VidLink embed URLs and only accepts `.m3u8` outputs on the two known HLS hosts above.
+- Native external HLS is resolved by `scripts/resolve-external-embed-hls.mjs` through Playwright in development. The mini deploy copies this helper to `bin/resolve-external-embed-hls.mjs` and keeps Playwright under `~/.local/share/netflix-node` outside the app runtime tree. The backend only accepts VidEasy/VidLink embed URLs and only accepts `.m3u8` outputs on the two known HLS hosts above.
 - Native external HLS playback is proxied through `/api/live/hls.m3u8` and `/api/live/hls-resource` so playlist child URLs, segment URLs, and required referers stay under backend control.
 - `EMBED_IFRAME_PROXY=1` can proxy the iframe HTML through `/api/embed/frame`; by default iframe URLs are direct.
 - Older/failed providers such as VidKing, 2Embed, VidSrc, VidNest, AutoEmbed, SuperEmbed, Embed.su, MoviesAPI, and VidFast-native extraction are intentionally not part of the current stack.
@@ -430,7 +430,7 @@ Server:
 Embed/live resolver helpers:
 
 - `EMBED_IFRAME_PROXY` - `1`/`true`/`on` proxies movie/TV iframe HTML through `/api/embed/frame`; `0`/`false`/unset keeps iframe URLs direct.
-- `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable native external HLS extraction.
+- `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs` when present, otherwise `bin/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable native external HLS extraction.
 - `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - timeout budget for VidEasy/VidLink native HLS extraction; default 24000.
 - `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
 - `EXTERNAL_EMBED_BROWSER_PROXY` - optional Playwright proxy override for external embeds.
@@ -596,6 +596,7 @@ Server machine:
   - `dist`
 
 The server deploy is intentionally not a git checkout. It should not contain `.git`, source folders, `node_modules`, `target`, `Cargo.toml`, `package.json`, or `.env`.
+Playwright resolver dependencies live outside this tree at `~/.local/share/netflix-node`.
 
 LaunchDaemons:
 
@@ -718,7 +719,7 @@ Resolver errors:
 
 Movie/TV external embed fails:
 
-- Install Playwright Chromium with `bun run bench:playback:install`.
+- Install Playwright Chromium with `scripts/deploy-mini.sh` or, for local development, `bun run bench:playback:install`.
 - Check `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` and `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS`.
 - Confirm the host is one of the supported native providers: VidEasy or VidLink.
 - If a provider needs a VPN/proxy, set `EXTERNAL_EMBED_BROWSER_PROXY`; if server outbound requests also need the proxy, set `OUTBOUND_HTTP_PROXY`.

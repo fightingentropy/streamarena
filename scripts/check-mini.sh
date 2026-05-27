@@ -35,6 +35,8 @@ app="$REMOTE_APP"
 expected_tree="assets,bin,cache,dist"
 caddy_bin="/usr/local/bin/caddy"
 tunnel_plist="/Library/LaunchDaemons/com.cloudflare.cloudflared.netflix.plist"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+node_deps_dir="${NETFLIX_NODE_DEPS_DIR:-$HOME/.local/share/netflix-node}"
 
 runtime_tree=$(find "$app" -maxdepth 1 -mindepth 1 -exec basename {} \; | sort | paste -sd, -)
 app_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173 || true)
@@ -74,6 +76,22 @@ capacity=${df_line##* }
 capacity=${capacity%%%}
 available_gb=$((available_kb / 1024 / 1024))
 public_ip=$(curl -fsS --max-time 5 https://api.ipify.org || true)
+hls_resolver=$(test -f "$app/bin/resolve-external-embed-hls.mjs" && echo yes || echo no)
+node_bin=$(command -v node || true)
+bun_bin=$(command -v bun || true)
+playwright_module=$(
+  NETFLIX_NODE_DEPS_DIR="$node_deps_dir" node -e 'require.resolve("playwright", { paths: [process.env.NETFLIX_NODE_DEPS_DIR] }); process.stdout.write("yes")' 2>/dev/null || echo no
+)
+playwright_chromium=$(
+  NETFLIX_NODE_DEPS_DIR="$node_deps_dir" node <<'NODE' 2>/dev/null || echo no
+const fs = require("fs");
+const playwrightPath = require.resolve("playwright", {
+  paths: [process.env.NETFLIX_NODE_DEPS_DIR],
+});
+const { chromium } = require(playwrightPath);
+process.stdout.write(fs.existsSync(chromium.executablePath()) ? "yes" : "no");
+NODE
+)
 
 printf 'runtime_tree=%s\n' "$runtime_tree"
 printf 'expected_tree=%s\n' "$expected_tree"
@@ -112,6 +130,11 @@ printf 'disk_available_gb=%s\n' "$available_gb"
 printf 'max_disk_percent=%s\n' "$MAX_DISK_PERCENT"
 printf 'min_free_gb=%s\n' "$MIN_FREE_GB"
 printf 'public_ip=%s\n' "${public_ip:-missing}"
+printf 'hls_resolver=%s\n' "$hls_resolver"
+printf 'node_bin=%s\n' "${node_bin:-missing}"
+printf 'bun_bin=%s\n' "${bun_bin:-missing}"
+printf 'playwright_module=%s\n' "$playwright_module"
+printf 'playwright_chromium=%s\n' "$playwright_chromium"
 REMOTE
 )"
 
@@ -154,6 +177,11 @@ cron_leftover=$(value_for cron_leftover)
 disk_capacity_percent=$(value_for disk_capacity_percent)
 disk_available_gb=$(value_for disk_available_gb)
 public_ip=$(value_for public_ip)
+hls_resolver=$(value_for hls_resolver)
+node_bin=$(value_for node_bin)
+bun_bin=$(value_for bun_bin)
+playwright_module=$(value_for playwright_module)
+playwright_chromium=$(value_for playwright_chromium)
 
 [[ "$runtime_tree" == "$expected_tree" ]] && pass "runtime tree is $runtime_tree" || bad "runtime tree is $runtime_tree, expected $expected_tree"
 [[ "$app_http" == "200" ]] && pass "mini app returns HTTP 200" || bad "mini app returned HTTP $app_http"
@@ -167,6 +195,11 @@ public_ip=$(value_for public_ip)
 [[ "$caddy_pid" != "missing" ]] && pass "Caddy process is running ($caddy_pid)" || bad "Caddy process missing"
 [[ "$caddy_version" != "missing" ]] && pass "Caddy is installed ($caddy_version)" || bad "Caddy is missing"
 [[ "$asset_symlinks" == "0" ]] && pass "mini assets have no symlinks" || bad "mini assets have $asset_symlinks symlink(s)"
+[[ "$hls_resolver" == "yes" ]] && pass "external HLS resolver script is deployed" || bad "external HLS resolver script is missing"
+[[ "$node_bin" != "missing" ]] && pass "Node is available for resolver helpers ($node_bin)" || bad "Node is missing for resolver helpers"
+[[ "$bun_bin" != "missing" ]] && pass "Bun is available for resolver dependency installs ($bun_bin)" || bad "Bun is missing for resolver dependency installs"
+[[ "$playwright_module" == "yes" ]] && pass "Playwright module is installed for resolver helpers" || bad "Playwright module is missing for resolver helpers"
+[[ "$playwright_chromium" == "yes" ]] && pass "Playwright Chromium is installed for resolver helpers" || bad "Playwright Chromium is missing for resolver helpers"
 [[ "$env_mode" == "600" ]] && pass "server env permissions are 600" || bad "server env permissions are $env_mode"
 [[ "$env_in_app" == "no" ]] && pass "server env is outside deploy tree" || bad "server .env still exists in deploy tree"
 [[ "$app_daemon" == "yes" ]] && pass "backend LaunchDaemon exists" || bad "backend LaunchDaemon missing"
