@@ -130,6 +130,7 @@ body {
     display: grid;
     place-items: center;
     padding: 20px;
+    pointer-events: none;
     background: radial-gradient(
         circle at center,
         rgba(0, 0, 0, 0.04) 0%,
@@ -246,6 +247,7 @@ body {
     font-size: 0.92rem;
     font-weight: 700;
     cursor: pointer;
+    pointer-events: auto;
 }
 
 .resolver-action:hover,
@@ -283,16 +285,8 @@ body {
     display: grid;
 }
 
-.resolver-overlay.is-recovery {
-    pointer-events: auto;
-}
-
 .resolver-overlay.is-error {
     pointer-events: none;
-}
-
-.resolver-overlay.is-error.has-actions {
-    pointer-events: auto;
 }
 
 .resolver-overlay.is-error .resolver-loader {
@@ -330,7 +324,7 @@ body {
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 16px;
-    pointer-events: auto;
+    pointer-events: none;
 }
 
 .top-row-left,
