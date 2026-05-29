@@ -33,7 +33,7 @@ async function loadPlaywright() {
 const { chromium } = await loadPlaywright();
 
 const embedUrl = String(process.argv[2] || "").trim();
-const timeoutMs = Number(process.env.EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS || 18000);
+const timeoutMs = Number(process.env.EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS || 10000);
 const rawProxy = String(
   process.env.EXTERNAL_EMBED_BROWSER_PROXY || process.env.OUTBOUND_HTTP_PROXY || "",
 ).trim();

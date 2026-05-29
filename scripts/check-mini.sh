@@ -40,7 +40,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PAT
 node_deps_dir="${NETFLIX_NODE_DEPS_DIR:-$HOME/.local/share/netflix-node}"
 
 runtime_tree=$(find "$app" -maxdepth 1 -mindepth 1 -exec basename {} \; | sort | paste -sd, -)
-app_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173 || true)
+app_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/health/live || true)
 library_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/library || true)
 caddy_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1/api/library || true)
 caddy_https=$(curl -k -sS -o /dev/null -w "%{http_code}" --resolve "$PUBLIC_HOST:443:127.0.0.1" --max-time 5 "https://$PUBLIC_HOST/api/library" || true)
@@ -218,7 +218,7 @@ warp_mode=$(value_for warp_mode)
 streamed_proxy_http=$(value_for streamed_proxy_http)
 
 [[ "$runtime_tree" == "$expected_tree" ]] && pass "runtime tree is $runtime_tree" || bad "runtime tree is $runtime_tree, expected $expected_tree"
-[[ "$app_http" == "200" ]] && pass "mini app returns HTTP 200" || bad "mini app returned HTTP $app_http"
+[[ "$app_http" == "200" ]] && pass "mini live health returns HTTP 200" || bad "mini live health returned HTTP $app_http"
 [[ "$library_http" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "API library endpoint returns HTTP $PROTECTED_ENDPOINT_STATUS" || bad "API library endpoint returned HTTP $library_http"
 [[ "$caddy_http" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "Caddy HTTP reverse proxy returns HTTP $PROTECTED_ENDPOINT_STATUS" || bad "Caddy HTTP reverse proxy returned HTTP $caddy_http"
 [[ "$caddy_https" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "Caddy HTTPS reverse proxy returns HTTP $PROTECTED_ENDPOINT_STATUS" || bad "Caddy HTTPS reverse proxy returned HTTP $caddy_https"

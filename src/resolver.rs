@@ -74,8 +74,10 @@ const EXTERNAL_EMBED_RESOLVER_PROVIDER: &str = "external-embed";
 const LIVE_IFRAME_SOURCE_PREFIX: &str = "live-iframe:";
 const EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-external-embed-hls.mjs";
 const EXTERNAL_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-external-embed-hls.mjs";
-const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
+const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 10;
 const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS";
+const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS: u64 = 12_000;
+const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS";
 
 static SEED_COUNT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"👤\s*([0-9.,]+)").expect("valid seed regex"));
@@ -944,6 +946,7 @@ impl ResolverService {
             && let Some(provider) =
                 external_embed_source_for_source_hash(&metadata, &filters.source_hash)
         {
+            let mut external_guard = self.acquire_external_resolve_permit().await?;
             if let Some(payload) = build_external_embed_resolved_playback_payload(
                 &metadata,
                 provider,
@@ -952,6 +955,7 @@ impl ResolverService {
             )
             .await
             {
+                external_guard.mark_completed();
                 return Ok(payload);
             }
             return Err(ApiError::bad_gateway(
@@ -962,6 +966,19 @@ impl ResolverService {
             && should_prefer_default_external_embed(&filters, resolver_provider)
             && let Some(provider) = default_external_embed_source(&metadata)
         {
+            let mut external_guard = match self.acquire_external_resolve_permit().await {
+                Ok(guard) => guard,
+                Err(_) => {
+                    if let Some(payload) =
+                        build_external_embed_iframe_only_payload(&metadata, provider, &preferences)
+                    {
+                        return Ok(payload);
+                    }
+                    return Err(ApiError::bad_gateway(
+                        "External iframe source is unavailable.",
+                    ));
+                }
+            };
             if let Some(payload) = build_external_embed_resolved_playback_payload(
                 &metadata,
                 provider,
@@ -970,6 +987,7 @@ impl ResolverService {
             )
             .await
             {
+                external_guard.mark_completed();
                 return Ok(payload);
             }
         }
@@ -1283,6 +1301,7 @@ impl ResolverService {
             && let Some(provider) =
                 external_embed_source_for_source_hash(&metadata, &filters.source_hash)
         {
+            let mut external_guard = self.acquire_external_resolve_permit().await?;
             if let Some(payload) = build_external_embed_resolved_playback_payload(
                 &metadata,
                 provider,
@@ -1291,6 +1310,7 @@ impl ResolverService {
             )
             .await
             {
+                external_guard.mark_completed();
                 return Ok(payload);
             }
             return Err(ApiError::bad_gateway(
@@ -1301,6 +1321,19 @@ impl ResolverService {
             && should_prefer_default_external_embed(&filters, resolver_provider)
             && let Some(provider) = default_external_embed_source(&metadata)
         {
+            let mut external_guard = match self.acquire_external_resolve_permit().await {
+                Ok(guard) => guard,
+                Err(_) => {
+                    if let Some(payload) =
+                        build_external_embed_iframe_only_payload(&metadata, provider, &preferences)
+                    {
+                        return Ok(payload);
+                    }
+                    return Err(ApiError::bad_gateway(
+                        "External iframe source is unavailable.",
+                    ));
+                }
+            };
             if let Some(payload) = build_external_embed_resolved_playback_payload(
                 &metadata,
                 provider,
@@ -1309,6 +1342,7 @@ impl ResolverService {
             )
             .await
             {
+                external_guard.mark_completed();
                 return Ok(payload);
             }
         }
@@ -4671,6 +4705,20 @@ fn should_prefer_default_external_embed(
         )
 }
 
+fn build_external_embed_iframe_only_payload(
+    metadata: &ResolveMetadata,
+    source: ExternalEmbedSource,
+    preferences: &ResolvePreferences,
+) -> Option<Value> {
+    let embed_url = external_embed_playback_url(source, metadata, preferences)?;
+    Some(build_external_embed_iframe_resolved_payload(
+        metadata,
+        source,
+        preferences,
+        embed_url,
+    ))
+}
+
 async fn build_external_embed_resolved_playback_payload(
     metadata: &ResolveMetadata,
     source: ExternalEmbedSource,
@@ -4679,12 +4727,25 @@ async fn build_external_embed_resolved_playback_payload(
 ) -> Option<Value> {
     let selected_embed_url = external_embed_playback_url(source, metadata, preferences)?;
     let candidates = external_embed_hls_candidate_sources(source, metadata, allow_native_fallback);
+    let hls_deadline_ms = now_ms() + external_embed_hls_total_timeout_ms() as i64;
 
     for candidate in candidates {
+        let remaining_ms = hls_deadline_ms - now_ms();
+        if remaining_ms < 5_000 {
+            break;
+        }
         let Some(embed_url) = external_embed_playback_url(candidate, metadata, preferences) else {
             continue;
         };
-        let Some(hls_source) = resolve_external_embed_hls_playback_source(&embed_url).await else {
+        let hls_timeout_ms = external_embed_hls_resolve_timeout_ms().min(remaining_ms as u64);
+        let hls_result = timeout(
+            Duration::from_millis(remaining_ms as u64),
+            resolve_external_embed_hls_playback_source(&embed_url, hls_timeout_ms),
+        )
+        .await
+        .ok()
+        .flatten();
+        let Some(hls_source) = hls_result else {
             continue;
         };
         let playable_url = crate::live::build_live_hls_playback_source(
@@ -5058,6 +5119,7 @@ fn build_live_iframe_playback_source_with_proxy(embed_url: &str, proxy_enabled: 
 
 async fn resolve_external_embed_hls_playback_source(
     embed_url: &str,
+    timeout_ms: u64,
 ) -> Option<ExternalEmbedHlsPlaybackSource> {
     let embed_url = Url::parse(embed_url.trim()).ok()?;
     if !is_supported_external_embed_hls_embed_url(&embed_url) {
@@ -5072,19 +5134,19 @@ async fn resolve_external_embed_hls_playback_source(
         return None;
     }
 
-    let resolve_timeout_seconds = external_embed_hls_resolve_timeout_seconds();
+    let resolve_timeout_ms = timeout_ms.clamp(1_000, 120_000);
     let mut command = Command::new("node");
     command
         .arg(script_path)
         .arg(embed_url.as_str())
         .env(
             EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS_ENV,
-            (resolve_timeout_seconds * 1000).to_string(),
+            resolve_timeout_ms.to_string(),
         )
         .kill_on_drop(true);
 
     let output = timeout(
-        Duration::from_secs(resolve_timeout_seconds + 4),
+        Duration::from_millis(resolve_timeout_ms.saturating_add(1_000)),
         command.output(),
     )
     .await
@@ -5131,6 +5193,18 @@ fn external_embed_hls_resolve_timeout_seconds() -> u64 {
         .map(|milliseconds| milliseconds.div_ceil(1000))
         .filter(|seconds| *seconds >= 5 && *seconds <= 120)
         .unwrap_or(EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS)
+}
+
+fn external_embed_hls_resolve_timeout_ms() -> u64 {
+    external_embed_hls_resolve_timeout_seconds() * 1000
+}
+
+fn external_embed_hls_total_timeout_ms() -> u64 {
+    std::env::var(EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|milliseconds| (1_000..=120_000).contains(milliseconds))
+        .unwrap_or(EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS)
 }
 
 fn is_supported_external_embed_hls_embed_url(url: &Url) -> bool {
@@ -6839,7 +6913,9 @@ mod tests {
             .expect("videasy fallback source");
         assert_eq!(
             external_embed_fallback_playback_urls(&metadata, videasy_source, &preferences, 4),
-            vec![build_live_iframe_playback_source(sample_vidfast_movie_embed_url())]
+            vec![build_live_iframe_playback_source(
+                sample_vidfast_movie_embed_url()
+            )]
         );
         assert_eq!(
             external_embed_url(source, &tv_metadata).unwrap(),

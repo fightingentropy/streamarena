@@ -321,6 +321,7 @@ Operational features:
 Public API routes:
 
 - `GET /api/health[?refresh=1]`
+- `GET /api/health/live`
 - `GET /api/config`
 - `GET /api/home/bootstrap`
 - `POST /api/auth/signup`
@@ -434,7 +435,8 @@ Embed/live resolver helpers:
 
 - `EMBED_IFRAME_PROXY` - `1`/`true`/`on` proxies movie/TV iframe HTML through `/api/embed/frame`; `0`/`false`/unset keeps iframe URLs direct.
 - `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs` when present, otherwise `bin/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable native external HLS extraction.
-- `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - timeout budget for VidEasy/VidLink native HLS extraction; default 24000.
+- `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - per-provider timeout budget for VidEasy/VidLink native HLS extraction; default 10000.
+- `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS` - total native HLS extraction budget before falling back to the iframe path; default 12000.
 - `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs` when present, otherwise `bin/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
 - `EXTERNAL_EMBED_BROWSER_PROXY` - optional Playwright proxy override for external embeds.
 - `STREAMED_EMBED_BROWSER_PROXY` - optional Playwright proxy override for Streamed sports embeds.
@@ -674,13 +676,13 @@ Current maintenance defaults:
 
 - Log rotation runs daily at 03:17 and keeps compressed rotated logs.
 - Disk monitor runs hourly, warning at 90 percent disk usage or below 50 GiB free.
-- Watchdog probes `http://127.0.0.1:5173/` every 60 seconds, restarts after 1 failed probe by default, kills stale `ffmpeg`, and restarts through launchd or the runner script.
+- Watchdog probes `http://127.0.0.1:5173/api/health/live` every 60 seconds with a 10 second timeout, restarts after 3 failed probes by default, kills stale `ffmpeg`, and restarts through launchd or the runner script.
 
 Health checks:
 
 ```bash
 ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
-  'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1:5173'
+  'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1:5173/api/health/live'
 
 ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
   'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1:5173/api/library'
@@ -752,7 +754,7 @@ Resolver errors:
 Movie/TV external embed fails:
 
 - Install Playwright Chromium with `scripts/deploy-mini.sh` or, for local development, `bun run bench:playback:install`.
-- Check `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` and `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS`.
+- Check `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT`, `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS`, and `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS`.
 - Confirm the host is one of the supported native providers: VidEasy or VidLink.
 - If a provider needs a VPN/proxy, set `EXTERNAL_EMBED_BROWSER_PROXY`; if server outbound requests also need the proxy, set `OUTBOUND_HTTP_PROXY`.
 - VidFast is iframe-only in the current stack. If VidFast iframe playback fails, the player should retry with `skipExternalEmbed=1` and fall through to Real-Debrid/local torrent.

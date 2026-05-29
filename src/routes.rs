@@ -79,6 +79,7 @@ async fn api_auth_middleware(
 
 pub fn build_router(state: AppState) -> Router {
     let public_api = Router::new()
+        .route("/api/health/live", any(health_live_handler))
         .route("/api/health", any(health_handler))
         .route("/api/config", any(config_handler))
         .route("/api/football/matches", get(football_matches_handler))
@@ -274,6 +275,19 @@ pub async fn health_handler(
         "streaming": state.streaming.stats(),
         "resolver": state.resolver.stats(),
         "ffmpeg": ffmpeg
+    })))
+}
+
+pub async fn health_live_handler(
+    State(state): State<AppState>,
+    method: Method,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed."));
+    }
+    Ok(json_response(json!({
+        "ok": true,
+        "uptimeSeconds": ((now_ms() - state.started_at_ms) / 1000).max(0)
     })))
 }
 
