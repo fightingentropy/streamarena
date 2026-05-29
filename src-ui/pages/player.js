@@ -86,6 +86,7 @@ export default function PlayerPage() {
 
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const controlsHideDelayMs = 3000;
+const popoverAutoOpenGraceMs = 650;
 const singleClickToggleDelayMs = 220;
 const seekLoadingTimeoutMs = 9000;
 const SEEK_JUMP_SECONDS = 10;
@@ -117,6 +118,7 @@ let sourceTogglePointerDownAt = 0;
 let episodesPopoverCloseTimeout = null;
 let episodesPopoverSticky = false;
 let audioPopoverCloseTimeout = null;
+const popoverAutoOpenedAt = new WeakMap();
 let streamStallRecoveryTimeout = null;
 let playbackRecoveryTimeout = null;
 let playbackRecoveryCountdownInterval = null;
@@ -4991,7 +4993,7 @@ function renderSeriesEpisodePreview() {
   syncEpisodeProgressIndicators();
 }
 
-function openEpisodesPopover({ sticky = false } = {}) {
+function openEpisodesPopover({ sticky = false, auto = false } = {}) {
   if (!episodesControl || !hasSeriesEpisodeControls || isResolvingSource()) {
     return;
   }
@@ -5006,6 +5008,9 @@ function openEpisodesPopover({ sticky = false } = {}) {
   toggleEpisodes?.setAttribute("aria-expanded", "true");
   if (sticky) {
     episodesPopoverSticky = true;
+  }
+  if (auto) {
+    markPopoverAutoOpened(episodesControl);
   }
   if (!wasAlreadyOpen) {
     episodesMenuMode = "episodes";
@@ -5037,6 +5042,7 @@ function closeEpisodesPopover(withDelay = false) {
       return;
     }
     episodesPopoverSticky = false;
+    clearPopoverAutoOpen(episodesControl);
     episodesControl.classList.remove("is-open");
     toggleEpisodes?.setAttribute("aria-expanded", "false");
   };
@@ -5832,7 +5838,7 @@ function syncDurationText(elapsedSeconds = getEffectiveCurrentTime()) {
   durationText.textContent = formatTime(remainingSeconds);
 }
 
-function openSpeedPopover() {
+function openSpeedPopover({ auto = false } = {}) {
   if (!speedControl) {
     return;
   }
@@ -5843,6 +5849,9 @@ function openSpeedPopover() {
   window.clearTimeout(speedPopoverCloseTimeout);
   speedControl.classList.add("is-open");
   toggleSpeed.setAttribute("aria-expanded", "true");
+  if (auto) {
+    markPopoverAutoOpened(speedControl);
+  }
 }
 
 function closeSpeedPopover(withDelay = true) {
@@ -5858,6 +5867,7 @@ function closeSpeedPopover(withDelay = true) {
     }
 
     speedControl.classList.remove("is-open");
+    clearPopoverAutoOpen(speedControl);
     toggleSpeed.setAttribute("aria-expanded", "false");
   };
 
@@ -5869,7 +5879,7 @@ function closeSpeedPopover(withDelay = true) {
   speedPopoverCloseTimeout = window.setTimeout(close, 140);
 }
 
-function openAudioPopover() {
+function openAudioPopover({ auto = false } = {}) {
   if (!audioControl || !shouldShowAudioSubtitleControl()) {
     return;
   }
@@ -5897,6 +5907,9 @@ function openAudioPopover() {
   audioControl.classList.add("is-open");
   playerShell?.classList.add("audio-popover-open");
   toggleAudio?.setAttribute("aria-expanded", "true");
+  if (auto) {
+    markPopoverAutoOpened(audioControl);
+  }
 }
 
 function closeAudioPopover(withDelay = false, { force = false } = {}) {
@@ -5912,6 +5925,7 @@ function closeAudioPopover(withDelay = false, { force = false } = {}) {
     }
 
     audioControl.classList.remove("is-open");
+    clearPopoverAutoOpen(audioControl);
     playerShell?.classList.remove("audio-popover-open");
     toggleAudio?.setAttribute("aria-expanded", "false");
   };
@@ -6170,6 +6184,30 @@ function clearSingleClickPlaybackToggle() {
   if (singleClickPlaybackToggleTimeout !== null) {
     window.clearTimeout(singleClickPlaybackToggleTimeout);
     singleClickPlaybackToggleTimeout = null;
+  }
+}
+
+function markPopoverAutoOpened(control) {
+  if (control instanceof Element) {
+    popoverAutoOpenedAt.set(control, performance.now());
+  }
+}
+
+function consumeRecentPopoverAutoOpen(control) {
+  if (!(control instanceof Element)) {
+    return false;
+  }
+  const openedAt = popoverAutoOpenedAt.get(control);
+  popoverAutoOpenedAt.delete(control);
+  return (
+    Number.isFinite(openedAt) &&
+    performance.now() - openedAt <= popoverAutoOpenGraceMs
+  );
+}
+
+function clearPopoverAutoOpen(control) {
+  if (control instanceof Element) {
+    popoverAutoOpenedAt.delete(control);
   }
 }
 
@@ -8381,7 +8419,9 @@ trackListener(toggleSpeed, "click", (event) => {
     return;
   }
 
-  const shouldOpen = !speedControl.classList.contains("is-open");
+  const shouldOpen =
+    !speedControl.classList.contains("is-open") ||
+    consumeRecentPopoverAutoOpen(speedControl);
   if (shouldOpen) {
     openSpeedPopover();
   } else {
@@ -8396,7 +8436,9 @@ if (toggleEpisodes) {
       return;
     }
 
-    const shouldOpen = !episodesControl.classList.contains("is-open");
+    const shouldOpen =
+      !episodesControl.classList.contains("is-open") ||
+      consumeRecentPopoverAutoOpen(episodesControl);
     if (shouldOpen) {
       openEpisodesPopover({ sticky: true });
     } else {
@@ -8452,7 +8494,9 @@ if (toggleAudio) {
       return;
     }
 
-    const shouldOpen = !audioControl.classList.contains("is-open");
+    const shouldOpen =
+      !audioControl.classList.contains("is-open") ||
+      consumeRecentPopoverAutoOpen(audioControl);
     if (shouldOpen) {
       openAudioPopover();
     } else {
@@ -8462,18 +8506,26 @@ if (toggleAudio) {
 }
 
 if (speedControl) {
-  trackListener(speedControl, "mouseenter", openSpeedPopover);
+  trackListener(speedControl, "mouseenter", () =>
+    openSpeedPopover({ auto: true }),
+  );
   trackListener(speedControl, "mouseleave", () => closeSpeedPopover(true));
-  trackListener(speedControl, "focusin", openSpeedPopover);
+  trackListener(speedControl, "focusin", () =>
+    openSpeedPopover({ auto: true }),
+  );
   trackListener(speedControl, "focusout", () => closeSpeedPopover(true));
 }
 
 if (episodesControl) {
-  trackListener(episodesControl, "mouseenter", openEpisodesPopover);
+  trackListener(episodesControl, "mouseenter", () =>
+    openEpisodesPopover({ auto: true }),
+  );
   trackListener(episodesControl, "mouseleave", () =>
     closeEpisodesPopover(true),
   );
-  trackListener(episodesControl, "focusin", openEpisodesPopover);
+  trackListener(episodesControl, "focusin", () =>
+    openEpisodesPopover({ auto: true }),
+  );
   trackListener(episodesControl, "focusout", () =>
     closeEpisodesPopover(true),
   );
@@ -8536,14 +8588,14 @@ if (audioControl) {
     if (isResolvingSource()) {
       return;
     }
-    openAudioPopover();
+    openAudioPopover({ auto: true });
   });
   trackListener(audioControl, "mouseleave", () => closeAudioPopover(true));
   trackListener(audioControl, "focusin", () => {
     if (isResolvingSource()) {
       return;
     }
-    openAudioPopover();
+    openAudioPopover({ auto: true });
   });
   trackListener(audioControl, "focusout", (event) => {
     if (!(event.target instanceof Node)) {
