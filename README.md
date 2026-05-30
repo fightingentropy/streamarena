@@ -241,12 +241,11 @@ Uploads and library management:
 
 Settings:
 
-- Playback quality preference: Auto, 4K, or 1080p.
 - Default audio language.
 - Subtitle color with reset.
 - Avatar preset colors or custom uploaded image.
 - Preferences are saved to localStorage and `/api/user/preferences`.
-- Old source-filter and remux-mode preference keys are intentionally pruned by the settings page.
+- Old stream-quality, source-filter, and remux-mode preference keys are intentionally pruned by the settings page.
 
 Live TV:
 
@@ -506,7 +505,6 @@ SQLite stores:
 
 Browser localStorage keys currently used:
 
-- `netflix-stream-quality-pref`
 - `netflix-default-audio-lang`
 - `netflix-subtitle-color-pref`
 - `netflix-profile-avatar-style`

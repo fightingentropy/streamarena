@@ -18,7 +18,6 @@ import {
   isBrowserSafeAudioCodec,
 } from "../player/sources.js";
 import {
-  STREAM_QUALITY_PREF_KEY,
   readContinueWatchingMetaMap,
 } from "../shared.js";
 import {
@@ -698,16 +697,13 @@ function normalizePreferredQuality(value) {
   return DEFAULT_STREAM_QUALITY_PREFERENCE;
 }
 
-function getStoredPreferredQuality() {
-  try {
-    return normalizePreferredQuality(
-      localStorage.getItem(STREAM_QUALITY_PREF_KEY),
-    );
-  } catch {
-    return DEFAULT_STREAM_QUALITY_PREFERENCE;
-  }
+function shouldIncludePreferredQualityInUrl(value) {
+  return Boolean(
+    value &&
+    value !== "auto" &&
+    value !== DEFAULT_STREAM_QUALITY_PREFERENCE,
+  );
 }
-
 
 function getStoredSubtitleColorPreference() {
   try {
@@ -1059,9 +1055,6 @@ if (isTmdbMoviePlayback && hasAudioLangParam) {
   persistAudioLangPreference(preferredAudioLang);
 }
 let preferredQuality = normalizePreferredQuality(qualityParam);
-if (isTmdbMoviePlayback && !hasQualityParam) {
-  preferredQuality = getStoredPreferredQuality();
-}
 applyMobileLightTmdbDefaults();
 let preferredSourceMinSeeders = DEFAULT_SOURCE_MIN_SEEDERS;
 let preferredSourceResultsLimit = DEFAULT_SOURCE_RESULTS_LIMIT;
@@ -4750,7 +4743,7 @@ function navigateToSeriesEpisode(nextIndex) {
   if (preferredAudioLang && preferredAudioLang !== "auto") {
     nextParams.set("audioLang", preferredAudioLang);
   }
-  if (preferredQuality && preferredQuality !== DEFAULT_STREAM_QUALITY_PREFERENCE) {
+  if (shouldIncludePreferredQualityInUrl(preferredQuality)) {
     nextParams.set("quality", preferredQuality);
   }
   const returnTo = getExplicitPlayerReturnPath();
@@ -7797,7 +7790,7 @@ function buildReproduciblePlaybackParams() {
   } else {
     nextParams.delete("audioLang");
   }
-  if (preferredQuality && preferredQuality !== DEFAULT_STREAM_QUALITY_PREFERENCE) {
+  if (shouldIncludePreferredQualityInUrl(preferredQuality)) {
     nextParams.set("quality", preferredQuality);
   } else {
     nextParams.delete("quality");
@@ -9749,7 +9742,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     if (
       isTmdbResolvedPlayback &&
       !hasQualityParam &&
-      preferredQuality !== DEFAULT_STREAM_QUALITY_PREFERENCE
+      shouldIncludePreferredQualityInUrl(preferredQuality)
     ) {
       persistQualityInUrl();
     }

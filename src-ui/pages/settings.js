@@ -1,7 +1,6 @@
 import html from "solid-js/html";
 import { createSignal, onCleanup } from "solid-js";
 import {
-  STREAM_QUALITY_PREF_KEY,
   PROFILE_AVATAR_STYLE_PREF_KEY,
   PROFILE_AVATAR_MODE_PREF_KEY,
   PROFILE_AVATAR_IMAGE_PREF_KEY,
@@ -17,11 +16,8 @@ import {
   SUBTITLE_COLOR_PREF_KEY,
   DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
   DEFAULT_SUBTITLE_COLOR,
-  DEFAULT_STREAM_QUALITY_PREFERENCE,
-  normalizeStreamQualityPreference,
   normalizeDefaultAudioLanguage,
   normalizeSubtitleColor,
-  getStoredStreamQualityPreference,
 } from "../lib/preferences.js";
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -42,15 +38,6 @@ function normalizeAvatarChoice(value) {
 
 function labelFromMap(value, labels, fallback) {
   return labels[String(value || "").trim().toLowerCase()] || fallback;
-}
-
-function getQualityLabel(value) {
-  return labelFromMap(value, {
-    auto: "Auto",
-    "2160p": "4K (2160p)",
-    "1080p": "Full HD (1080p)",
-    "720p": "HD (720p)",
-  }, "Full HD (1080p)");
 }
 
 function getLanguageLabel(value) {
@@ -95,20 +82,6 @@ function getStoredDefaultAudioLanguage() {
 }
 
 // ─── Persist helpers (localStorage + server sync) ───────────────────────────
-
-function persistSelectedQuality(value) {
-  const normalized = normalizeStreamQualityPreference(value);
-  try {
-    if (normalized === DEFAULT_STREAM_QUALITY_PREFERENCE) localStorage.removeItem(STREAM_QUALITY_PREF_KEY);
-    else localStorage.setItem(STREAM_QUALITY_PREF_KEY, normalized);
-  } catch {}
-  fetch("/api/user/preferences", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [STREAM_QUALITY_PREF_KEY]: normalized }),
-  }).catch(() => {});
-  return normalized;
-}
 
 function persistSubtitleColorPreference(value) {
   const normalized = normalizeSubtitleColor(value);
@@ -245,6 +218,7 @@ async function convertFileToAvatarImage(file) {
 
 function clearDeprecatedSourcePreferenceStorage() {
   const deprecatedKeys = [
+    "netflix-stream-quality-pref",
     "netflix-source-filter-allowed-formats",
     "netflix-source-filter-results-limit",
     "netflix-source-filter-min-seeders",
@@ -261,7 +235,6 @@ function clearDeprecatedSourcePreferenceStorage() {
 
 export default function SettingsPage() {
   // ── Reactive state ──────────────────────────────────────────────────────
-  const [selectedQuality, setSelectedQuality] = createSignal(getStoredStreamQualityPreference());
   const [subtitleColor, setSubtitleColor] = createSignal(getStoredSubtitleColorPreference());
   const [defaultAudioLang, setDefaultAudioLang] = createSignal(getStoredDefaultAudioLanguage());
 
@@ -341,10 +314,6 @@ export default function SettingsPage() {
 
   // ── Event handlers ──────────────────────────────────────────────────────
 
-  function handleQualityChange(value) {
-    setSelectedQuality(normalizeStreamQualityPreference(value));
-  }
-
   function handleSubtitleColorInput(e) {
     setSubtitleColor(normalizeSubtitleColor(e.target.value));
   }
@@ -382,9 +351,6 @@ export default function SettingsPage() {
 
   function handleFormSubmit(e) {
     e.preventDefault();
-
-    const savedQuality = persistSelectedQuality(selectedQuality());
-    setSelectedQuality(savedQuality);
 
     const savedSubtitleColor = persistSubtitleColorPreference(subtitleColor());
     setSubtitleColor(savedSubtitleColor);
@@ -462,7 +428,7 @@ export default function SettingsPage() {
       </aside>
 
       <section class="settings-content" aria-labelledby="settingsPageTitle">
-        <form class="quality-form" onSubmit=${handleFormSubmit}>
+        <form class="settings-form" onSubmit=${handleFormSubmit}>
           <div class="settings-page-heading">
             <h1 id="settingsPageTitle">Settings</h1>
             <p>Media preferences</p>
@@ -477,51 +443,6 @@ export default function SettingsPage() {
               Playback
             </h2>
             <div class="settings-list-card">
-              <section class="settings-list-row">
-                <span class="settings-row-icon settings-row-icon--quality" aria-hidden="true"></span>
-                <div class="settings-row-copy">
-                  <h3>Playback quality</h3>
-                  <p>${() => getQualityLabel(selectedQuality())}</p>
-                </div>
-                <div
-                  class="settings-row-control settings-segmented-control quality-choice-group"
-                  role="radiogroup"
-                  aria-label="Playback quality"
-                >
-                  <label class="quality-option">
-                    <input
-                      type="radio"
-                      name="quality"
-                      value="auto"
-                      checked=${() => selectedQuality() === "auto"}
-                      onChange=${() => handleQualityChange("auto")}
-                    />
-                    <span>Auto</span>
-                  </label>
-                  <label class="quality-option">
-                    <input
-                      type="radio"
-                      name="quality"
-                      value="2160p"
-                      checked=${() => selectedQuality() === "2160p"}
-                      onChange=${() => handleQualityChange("2160p")}
-                    />
-                    <span>4K</span>
-                  </label>
-                  <label class="quality-option">
-                    <input
-                      type="radio"
-                      name="quality"
-                      value="1080p"
-                      checked=${() => selectedQuality() === "1080p"}
-                      onChange=${() => handleQualityChange("1080p")}
-                    />
-                    <span>1080p</span>
-                  </label>
-                </div>
-                <span class="settings-row-chevron" aria-hidden="true"></span>
-              </section>
-
               <section class="settings-list-row">
                 <span class="settings-row-icon settings-row-icon--audio" aria-hidden="true"></span>
                 <div class="settings-row-copy">
