@@ -32,6 +32,11 @@ const LOCAL_TORRENT_RECENT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const LOCAL_TORRENT_ACCESS_MARKER: &str = ".last-accessed";
 const CACHE_CONTROL_STREAM: &str = "no-store";
 const DIRECT_FILE_CACHE_FOLDER: &str = "direct";
+/// Direct-cache downloads only ever target Real-Debrid unrestricted
+/// links. Restricting the host prevents this server-side fetch from being
+/// pointed at internal/metadata endpoints (SSRF).
+const DIRECT_CACHE_ALLOWED_DOWNLOAD_HOSTS: &[&str] =
+    &["download.real-debrid.com", "real-debrid.com"];
 
 #[derive(Clone)]
 pub struct LocalTorrentService {
@@ -225,9 +230,9 @@ impl LocalTorrentService {
             return Err(ApiError::bad_request("Direct cache file id is invalid."));
         }
         let source_url = request.source_url.trim();
-        if !source_url.starts_with("https://") {
+        if !is_allowed_direct_cache_url(source_url) {
             return Err(ApiError::bad_request(
-                "Direct cache source URL must be HTTPS.",
+                "Direct cache source URL host is not allowed.",
             ));
         }
 
@@ -947,6 +952,14 @@ impl LocalTorrentService {
     }
 }
 
+impl LocalTorrentService {
+    /// Drop per-hash lock entries that no active resolve/stream is holding so
+    /// the lock table does not grow unbounded over the process lifetime.
+    pub fn prune_idle_locks(&self) {
+        self.locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+}
+
 fn local_torrent_key_lock(map: &DashMap<String, Arc<Mutex<()>>>, key: &str) -> Arc<Mutex<()>> {
     map.entry(key.to_owned())
         .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -1042,6 +1055,19 @@ fn direct_file_cache_key(source_hash: &str, file_id: &str) -> String {
         normalize_torrent_hash(source_hash),
         normalize_direct_file_id(file_id)
     )
+}
+
+fn is_allowed_direct_cache_url(source_url: &str) -> bool {
+    url::Url::parse(source_url)
+        .ok()
+        .filter(|url| url.scheme() == "https")
+        .and_then(|url| {
+            let hostname = url.host_str()?.to_ascii_lowercase();
+            Some(DIRECT_CACHE_ALLOWED_DOWNLOAD_HOSTS.iter().any(|allowed| {
+                hostname == *allowed || hostname.ends_with(&format!(".{allowed}"))
+            }))
+        })
+        .unwrap_or(false)
 }
 
 fn normalize_torrent_hash(value: &str) -> String {
