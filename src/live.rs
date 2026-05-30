@@ -25,7 +25,9 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "siliconweb.com",
     "strmd.top",
     "easy.speedsterwave.app",
+    "easy.nightspeedster.app",
     "storm.vodvidl.site",
+    "typhoontigertribe.net",
     "ttvnw.net",
 ];
 
@@ -500,9 +502,15 @@ mod tests {
         let videasy_hls: url::Url = "https://easy.speedsterwave.app/example/index.m3u8"
             .parse()
             .expect("videasy hls url");
+        let videasy_new_hls: url::Url = "https://easy.nightspeedster.app/example/index.m3u8"
+            .parse()
+            .expect("videasy new hls url");
         let vidlink_hls: url::Url = "https://storm.vodvidl.site/example/index.m3u8"
             .parse()
             .expect("vidlink hls url");
+        let vidlink_new_hls: url::Url = "https://typhoontigertribe.net/example/index.m3u8"
+            .parse()
+            .expect("vidlink new hls url");
         let disallowed: url::Url = "https://example.com/live.m3u8"
             .parse()
             .expect("disallowed url");
@@ -521,7 +529,9 @@ mod tests {
         assert!(is_allowed_live_hls_url(&twitch_segment));
         assert!(is_allowed_live_hls_url(&streamed_sports));
         assert!(is_allowed_live_hls_url(&videasy_hls));
+        assert!(is_allowed_live_hls_url(&videasy_new_hls));
         assert!(is_allowed_live_hls_url(&vidlink_hls));
+        assert!(is_allowed_live_hls_url(&vidlink_new_hls));
         assert!(!is_allowed_live_hls_url(&disallowed));
         assert!(!is_allowed_live_hls_url(&local));
     }
