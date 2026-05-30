@@ -154,7 +154,8 @@ if [[ "$TLS_MODE" == "internal" ]]; then
   tls_line="  tls internal"
 fi
 
-cat > "$caddy_config_dir/Caddyfile" <<CADDY
+tmp_caddy_config="$(mktemp)"
+cat > "$tmp_caddy_config" <<CADDY
 {
   admin off
   auto_https disable_redirects
@@ -184,8 +185,9 @@ $tls_line
   import netflix_proxy
 }
 CADDY
-chmod 600 "$caddy_config_dir/Caddyfile"
-"$caddy_bin" fmt --overwrite "$caddy_config_dir/Caddyfile"
+"$caddy_bin" fmt --overwrite "$tmp_caddy_config"
+sudo install -m 600 "$tmp_caddy_config" "$caddy_config_dir/Caddyfile"
+rm -f "$tmp_caddy_config"
 sudo "$caddy_bin" validate --config "$caddy_config_dir/Caddyfile" --adapter caddyfile
 
 sudo mkdir -p "$caddy_data_dir/config" "$caddy_log_dir"
