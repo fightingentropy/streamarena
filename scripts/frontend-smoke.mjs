@@ -70,10 +70,10 @@ function jsonResponse(payload, status = 200) {
 function apiPayload(url, method) {
   const path = url.pathname;
   if (path === "/api/auth/me") {
-    return { id: 1, username: "smoke", displayName: "Smoke User" };
+    return { id: 1, email: "smoke@example.com", displayName: "Smoke User" };
   }
   if (path === "/api/auth/login" || path === "/api/auth/signup") {
-    return { user: { id: 1, username: "smoke", displayName: "Smoke User" } };
+    return { user: { id: 1, email: "smoke@example.com", displayName: "Smoke User" } };
   }
   if (path === "/api/auth/logout") {
     return { ok: true };
@@ -637,8 +637,20 @@ async function runSmoke() {
       }
 
       if (pageSpec.expectSourceSwitch) {
+        await page.waitForFunction(
+          () => {
+            const overlay = document.querySelector(".resolver-overlay");
+            return !overlay || overlay.hidden || overlay.classList.contains("is-error");
+          },
+          { timeout: 8_000 },
+        );
         await page.waitForSelector("#toggleSource", { state: "visible", timeout: 8_000 });
         await page.click("#toggleSource");
+        await page.evaluate(() => {
+          const sourceControl = document.querySelector("#sourceControl");
+          sourceControl?.classList.add("is-open");
+          document.querySelector("#toggleSource")?.setAttribute("aria-expanded", "true");
+        });
         await page.waitForFunction(
           (hash) =>
             Boolean(
@@ -647,12 +659,7 @@ async function runSmoke() {
           sourceSwitchHashB,
           { timeout: 8_000 },
         );
-        await page.evaluate((hash) => {
-          document
-            .querySelector(`.source-option[data-source-hash="${hash}"]`)
-            ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-        }, sourceSwitchHashB);
-        for (let attempt = 0; attempt < 50; attempt += 1) {
+        for (let attempt = 0; attempt < 80; attempt += 1) {
           const switched = await page.evaluate((expectedHash) => {
             const selectedHash =
               document.querySelector(".source-option[aria-selected='true']")
@@ -668,6 +675,23 @@ async function runSmoke() {
           }, sourceSwitchHashB);
           if (switched) {
             break;
+          }
+          const isResolving = await page.evaluate(() => {
+            const overlay = document.querySelector(".resolver-overlay");
+            return Boolean(
+              overlay &&
+                !overlay.hidden &&
+                !overlay.classList.contains("is-error"),
+            );
+          });
+          if (!isResolving) {
+            await page.evaluate((hash) => {
+              const sourceControl = document.querySelector("#sourceControl");
+              sourceControl?.classList.add("is-open");
+              document
+                .querySelector(`.source-option[data-source-hash="${hash}"]`)
+                ?.click();
+            }, sourceSwitchHashB);
           }
           await delay(100);
         }

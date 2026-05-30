@@ -8,7 +8,7 @@ use crate::persistence::Db;
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub id: i64,
-    pub username: String,
+    pub email: String,
     pub display_name: String,
 }
 
@@ -77,14 +77,14 @@ pub async fn require_auth(db: &Db, headers: &HeaderMap) -> AppResult<AuthUser> {
         return Err(ApiError::unauthorized("Session expired."));
     }
 
-    let (id, username, _password_hash, display_name) = db
+    let (id, email, _password_hash, display_name) = db
         .get_user_by_id(user_id)
         .await?
         .ok_or_else(|| ApiError::unauthorized("User not found."))?;
 
     Ok(AuthUser {
         id,
-        username,
+        email,
         display_name,
     })
 }

@@ -1,5 +1,5 @@
 import html from "solid-js/html";
-import { onMount } from "solid-js";
+import { onCleanup, onMount } from "solid-js";
 import { escapeHtml } from "../shared.js";
 import {
   formatBytes,
@@ -520,48 +520,49 @@ function selectFile(file) {
   void inferAndPopulateMetadata(file);
 }
 
-fileInput?.addEventListener("change", (event) => {
-  const file = event.target.files?.[0] || null;
-  selectFile(file);
-});
+function bindUploadInteractions() {
+  const handleFileInputChange = (event) => {
+    const file = event.target.files?.[0] || null;
+    selectFile(file);
+  };
 
-dropZone?.addEventListener("dragover", (event) => {
-  event.preventDefault();
-  dropZone.classList.add("is-active");
-});
+  const handleDropZoneDragOver = (event) => {
+    event.preventDefault();
+    dropZone.classList.add("is-active");
+  };
 
-dropZone?.addEventListener("dragleave", () => {
-  dropZone.classList.remove("is-active");
-});
+  const handleDropZoneDragLeave = () => {
+    dropZone.classList.remove("is-active");
+  };
 
-dropZone?.addEventListener("drop", (event) => {
-  event.preventDefault();
-  dropZone.classList.remove("is-active");
-  const file = event.dataTransfer?.files?.[0] || null;
-  selectFile(file);
-});
+  const handleDropZoneDrop = (event) => {
+    event.preventDefault();
+    dropZone.classList.remove("is-active");
+    const file = event.dataTransfer?.files?.[0] || null;
+    selectFile(file);
+  };
 
-changeFileButton?.addEventListener("click", () => {
-  fileInput?.click();
-});
+  const handleChangeFileClick = () => {
+    fileInput?.click();
+  };
 
-transcodeAudioToAacCheckbox?.addEventListener("change", () => {
-  updateSelectedFilePlan();
-  if (selectedFile instanceof File) {
-    renderIdleProcessingTimeline(selectedFile);
-  }
-});
+  const handleTranscodeAudioChange = () => {
+    updateSelectedFilePlan();
+    if (selectedFile instanceof File) {
+      renderIdleProcessingTimeline(selectedFile);
+    }
+  };
 
-uploadForm?.addEventListener("change", (event) => {
-  if (
-    event.target instanceof HTMLInputElement &&
-    event.target.name === "contentType"
-  ) {
-    updateFormForContentType();
-  }
-});
+  const handleUploadFormChange = (event) => {
+    if (
+      event.target instanceof HTMLInputElement &&
+      event.target.name === "contentType"
+    ) {
+      updateFormForContentType();
+    }
+  };
 
-uploadForm?.addEventListener("submit", async (event) => {
+  const handleUploadFormSubmit = async (event) => {
   event.preventDefault();
   if (!(selectedFile instanceof File)) {
     setStatus("Choose a file first.", "error");
@@ -686,7 +687,31 @@ uploadForm?.addEventListener("submit", async (event) => {
       updateSubmitState();
     }
   }
-});
+  };
+
+  fileInput?.addEventListener("change", handleFileInputChange);
+  dropZone?.addEventListener("dragover", handleDropZoneDragOver);
+  dropZone?.addEventListener("dragleave", handleDropZoneDragLeave);
+  dropZone?.addEventListener("drop", handleDropZoneDrop);
+  changeFileButton?.addEventListener("click", handleChangeFileClick);
+  transcodeAudioToAacCheckbox?.addEventListener("change", handleTranscodeAudioChange);
+  uploadForm?.addEventListener("change", handleUploadFormChange);
+  uploadForm?.addEventListener("submit", handleUploadFormSubmit);
+
+  return () => {
+    fileInput?.removeEventListener("change", handleFileInputChange);
+    dropZone?.removeEventListener("dragover", handleDropZoneDragOver);
+    dropZone?.removeEventListener("dragleave", handleDropZoneDragLeave);
+    dropZone?.removeEventListener("drop", handleDropZoneDrop);
+    changeFileButton?.removeEventListener("click", handleChangeFileClick);
+    transcodeAudioToAacCheckbox?.removeEventListener(
+      "change",
+      handleTranscodeAudioChange,
+    );
+    uploadForm?.removeEventListener("change", handleUploadFormChange);
+    uploadForm?.removeEventListener("submit", handleUploadFormSubmit);
+  };
+}
 
 function readUploadMetadataFromForm() {
   const formData = new FormData(uploadForm);
@@ -999,7 +1024,11 @@ async function inferAndPopulateMetadata(file) {
 }
 
 
+  let cleanupUploadInteractions = () => {};
+  onCleanup(() => cleanupUploadInteractions());
+
   onMount(() => {
+    cleanupUploadInteractions = bindUploadInteractions();
     updateFormForContentType();
     applySeriesUploadContext(parseSeriesUploadContextFromQuery());
     updateSubmitState();
@@ -1008,10 +1037,6 @@ async function inferAndPopulateMetadata(file) {
     resetSelectedMediaCard();
     renderProcessingTimeline([]);
   });
-
-  // No onCleanup needed: all addEventListener calls target local DOM refs
-  // (fileInput, dropZone, uploadForm, etc.) which are destroyed when the
-  // component unmounts, automatically removing their listeners.
 
   return html`<div data-solid-page-root="" style="display: contents">
     <main class="upload-page">

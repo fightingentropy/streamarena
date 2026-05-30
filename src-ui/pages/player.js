@@ -4055,9 +4055,11 @@ async function resolveTmdbSourcesAndPlay({
     resolved?.preferences?.subtitleLang || preferredSubtitleLang || "",
   ).trim();
   preferredSubtitleLang = normalizeSubtitlePreference(preferredSubtitleLang);
+  const resolvedLiveIframeSource = parseLiveIframePlaybackSource(resolved?.playableUrl);
   ensureLiveIframeSubtitlePreferenceTracks(
-    parseLiveIframePlaybackSource(resolved?.playableUrl) ||
-      String(resolved?.sourceInput || ""),
+    isVidfastEmbedUrl(resolvedLiveIframeSource)
+      ? resolvedLiveIframeSource
+      : String(resolved?.sourceInput || ""),
   );
   selectedSourceHash = resolvedSourceHash;
   applyPreferredSourceAudioSync(selectedSourceHash);

@@ -1249,7 +1249,7 @@ impl Db {
 
     pub async fn create_user(
         &self,
-        username: String,
+        email: String,
         password_hash: String,
         display_name: String,
     ) -> AppResult<i64> {
@@ -1261,7 +1261,7 @@ impl Db {
             connection.execute(
                 "INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?)",
-                params![username, password_hash, display_name, now, now],
+                params![email, password_hash, display_name, now, now],
             )?;
             let id = connection.last_insert_rowid();
             return_connection(&pool, connection);
@@ -1272,9 +1272,9 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
-    pub async fn get_user_by_username(
+    pub async fn get_user_by_email(
         &self,
-        username: String,
+        email: String,
     ) -> AppResult<Option<(i64, String, String, String)>> {
         let path = self.path.clone();
         let pool = self.pool.clone();
@@ -1283,7 +1283,7 @@ impl Db {
             let row = connection
                 .query_row(
                     "SELECT id, username, password_hash, display_name FROM users WHERE username = ?",
-                    [username.as_str()],
+                    [email.as_str()],
                     |row| {
                         Ok((
                             row.get::<_, i64>(0)?,

@@ -1,6 +1,6 @@
 /**
  * Check if user is logged in. If not, redirect to /login.
- * Returns the user object {id, username, displayName} on success.
+ * Returns the user object {id, email, displayName} on success.
  */
 export async function requireAuth() {
   try {

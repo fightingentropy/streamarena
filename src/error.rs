@@ -88,10 +88,3 @@ pub fn json_response_with_cache(payload: Value, cache_control: &str) -> Response
     );
     response
 }
-
-pub fn json_response_public_cache(payload: Value, max_age_seconds: u64) -> Response {
-    json_response_with_cache(
-        payload,
-        &format!("public, max-age={max_age_seconds}, stale-while-revalidate=60"),
-    )
-}

@@ -27,12 +27,12 @@ use crate::media::{
     merge_preferred_subtitle_tracks,
 };
 use crate::persistence::{Db, PersistPlaybackSessionInput, PlaybackSession, SourceHealthStats};
+use crate::tmdb::TmdbService;
+use crate::utils::now_ms;
 use crate::utils::{
     normalize_preferred_audio_lang, normalize_preferred_stream_quality,
     normalize_subtitle_preference,
 };
-use crate::tmdb::TmdbService;
-use crate::utils::now_ms;
 
 const REAL_DEBRID_API_BASE: &str = "https://api.real-debrid.com/rest/1.0";
 const SOURCE_LANGUAGE_FILTER_DEFAULT: &str = "en";
@@ -4757,7 +4757,18 @@ async fn build_external_embed_resolved_playback_payload(
         ));
     }
 
-    None
+    let iframe_source = external_embed_iframe_fallback_sources(metadata, source, preferences, 1)
+        .into_iter()
+        .next()?;
+    let embed_url = external_embed_playback_url(iframe_source, metadata, preferences)?;
+    let playable_url = build_live_iframe_playback_source(&embed_url);
+    Some(build_external_embed_resolved_payload_with_playable_url(
+        metadata,
+        iframe_source,
+        preferences,
+        playable_url,
+        embed_url,
+    ))
 }
 
 fn external_embed_hls_candidate_sources(
@@ -4823,12 +4834,38 @@ fn build_external_embed_resolved_payload_with_playable_url(
 }
 
 fn external_embed_fallback_playback_urls(
-    _metadata: &ResolveMetadata,
-    _selected: ExternalEmbedSource,
-    _preferences: &ResolvePreferences,
-    _limit: usize,
+    metadata: &ResolveMetadata,
+    selected: ExternalEmbedSource,
+    preferences: &ResolvePreferences,
+    limit: usize,
 ) -> Vec<String> {
-    Vec::new()
+    external_embed_iframe_fallback_sources(metadata, selected, preferences, limit)
+        .into_iter()
+        .filter_map(|source| {
+            external_embed_playback_url(source, metadata, preferences)
+                .map(|embed_url| build_live_iframe_playback_source(&embed_url))
+        })
+        .collect()
+}
+
+fn external_embed_iframe_fallback_sources(
+    metadata: &ResolveMetadata,
+    selected: ExternalEmbedSource,
+    preferences: &ResolvePreferences,
+    limit: usize,
+) -> Vec<ExternalEmbedSource> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut sources = external_embed_sources()
+        .into_iter()
+        .filter(|source| *source != selected)
+        .filter(|source| !is_external_embed_hls_capable_source(*source))
+        .filter(|source| external_embed_playback_url(*source, metadata, preferences).is_some())
+        .collect::<Vec<_>>();
+    sources.sort_by_key(|source| external_embed_source_priority(*source));
+    sources.truncate(limit);
+    sources
 }
 
 fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> Option<String> {
@@ -5028,10 +5065,10 @@ fn embed_iframe_proxy_enabled() -> bool {
 }
 
 fn embed_iframe_proxy_enabled_from_value(value: Option<&str>) -> bool {
-    match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-        Some("1" | "true" | "yes" | "on") => true,
-        _ => false,
-    }
+    matches!(
+        value.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
 }
 
 fn is_external_embed_url(value: &str) -> bool {
@@ -5172,7 +5209,9 @@ fn is_supported_external_embed_hls_url(url: &Url) -> bool {
     is_m3u8
         && matches!(
             host.as_str(),
-            "easy.speedsterwave.app" | "easy.nightspeedster.app" | "storm.vodvidl.site"
+            "easy.speedsterwave.app"
+                | "easy.nightspeedster.app"
+                | "storm.vodvidl.site"
                 | "typhoontigertribe.net"
         )
 }
@@ -6833,7 +6872,13 @@ mod tests {
         };
         let fallback_urls =
             external_embed_fallback_playback_urls(&metadata, source, &preferences, 4);
-        assert!(fallback_urls.is_empty());
+        assert_eq!(
+            fallback_urls,
+            vec![build_live_iframe_playback_source_with_proxy(
+                sample_vidfast_movie_embed_url(),
+                false
+            )]
+        );
 
         let vidlink_source = external_embed_sources()
             .into_iter()
@@ -6850,8 +6895,8 @@ mod tests {
             .find(|source| source.provider.id == "videasy")
             .expect("videasy fallback source");
         assert_eq!(
-            external_embed_fallback_playback_urls(&metadata, videasy_source, &preferences, 4),
-            Vec::<String>::new()
+            external_embed_fallback_playback_urls(&metadata, videasy_source, &preferences, 4).len(),
+            1
         );
         assert_eq!(
             external_embed_url(videasy_source, &tv_metadata).unwrap(),

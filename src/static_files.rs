@@ -11,6 +11,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_util::io::ReaderStream;
 
+use crate::auth;
 use crate::error::{ApiError, AppResult};
 use crate::home_bootstrap;
 use crate::routes::AppState;
@@ -18,7 +19,7 @@ use crate::routes::AppState;
 const CACHE_NO_STORE: &str = "no-store";
 const CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";
 const CACHE_STATIC_ASSET: &str = "public, max-age=86400";
-const CACHE_VIDEO_ASSET: &str = "public, max-age=3600";
+const CACHE_VIDEO_ASSET: &str = "private, max-age=3600";
 
 pub async fn serve_static(
     State(state): State<AppState>,
@@ -36,6 +37,17 @@ pub async fn serve_static(
     ) else {
         return Err(ApiError::not_found("Not found"));
     };
+    let injects_home_bootstrap = could_inject_home_bootstrap(uri.path());
+    let requires_auth = should_require_auth_for_static_path(uri.path())
+        || should_require_auth_for_static_file(&state.config.root_dir, &file_path);
+    let authenticated = if injects_home_bootstrap || requires_auth {
+        auth::require_auth(&state.db, &headers).await.is_ok()
+    } else {
+        false
+    };
+    if requires_auth && !authenticated {
+        return Err(ApiError::unauthorized("Not authenticated."));
+    }
     let file = File::open(&file_path)
         .await
         .map_err(|_| ApiError::not_found("Not found"))?;
@@ -58,10 +70,14 @@ pub async fn serve_static(
         let html = fs::read_to_string(&file_path)
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
-        let bootstrap = state
-            .home_bootstrap_cache
-            .payload_or_refresh(state.clone())
-            .await;
+        let bootstrap = if authenticated {
+            state
+                .home_bootstrap_cache
+                .payload_or_refresh(state.clone())
+                .await
+        } else {
+            home_bootstrap::default_home_bootstrap()
+        };
         let html = home_bootstrap::inject_bootstrap_into_html(&html, &bootstrap)?;
         let body_bytes = html.into_bytes();
         let mut response = Response::builder()
@@ -250,7 +266,22 @@ fn parse_range(header: &str, file_size: u64) -> Option<(u64, u64)> {
 fn should_inject_home_bootstrap(pathname: &str, content_type: &str) -> bool {
     pathname == "/"
         || pathname == "/index.html"
-        || (content_type.starts_with("text/html") && pathname.ends_with("/index.html"))
+        || (content_type.starts_with("text/html") && could_inject_home_bootstrap(pathname))
+}
+
+fn could_inject_home_bootstrap(pathname: &str) -> bool {
+    pathname == "/" || pathname == "/index.html" || pathname.ends_with("/index.html")
+}
+
+fn should_require_auth_for_static_path(pathname: &str) -> bool {
+    pathname == "/assets/library.json" || pathname.starts_with("/assets/videos/")
+}
+
+fn should_require_auth_for_static_file(repo_root: &Path, file_path: &Path) -> bool {
+    let asset_root = repo_root.join("assets");
+    let library_path = asset_root.join("library.json");
+    let videos_dir = asset_root.join("videos");
+    file_path == library_path || file_path.starts_with(videos_dir)
 }
 
 fn cache_control_for_path(pathname: &str, content_type: &str) -> &'static str {
@@ -281,7 +312,10 @@ fn cache_control_for_path(pathname: &str, content_type: &str) -> &'static str {
 mod tests {
     use std::path::Path;
 
-    use super::{CACHE_IMMUTABLE, CACHE_NO_STORE, CACHE_STATIC_ASSET, cache_control_for_path};
+    use super::{
+        CACHE_IMMUTABLE, CACHE_NO_STORE, CACHE_STATIC_ASSET, cache_control_for_path,
+        should_require_auth_for_static_file, should_require_auth_for_static_path,
+    };
     use super::{CACHE_VIDEO_ASSET, parse_range, resolve_local_path};
 
     #[test]
@@ -332,6 +366,28 @@ mod tests {
         )
         .unwrap();
         assert!(path.ends_with("player.html"));
+    }
+
+    #[test]
+    fn marks_private_static_media_and_library_as_auth_required() {
+        assert!(should_require_auth_for_static_path("/assets/library.json"));
+        assert!(should_require_auth_for_static_path(
+            "/assets/videos/movie.mp4"
+        ));
+        assert!(!should_require_auth_for_static_path(
+            "/assets/icons/netflix-n.svg"
+        ));
+        assert!(!should_require_auth_for_static_path(
+            "/assets/images/poster.jpg"
+        ));
+        assert!(should_require_auth_for_static_file(
+            Path::new("/tmp/app"),
+            Path::new("/tmp/app/assets/videos/movie.mp4")
+        ));
+        assert!(should_require_auth_for_static_file(
+            Path::new("/tmp/app"),
+            Path::new("/tmp/app/assets/library.json")
+        ));
     }
 
     #[test]

@@ -1242,7 +1242,12 @@ fn is_allowed_remote_transcode_url(url: &Url) -> bool {
 }
 
 fn is_path_inside_root_dir(root_dir: &Path, value: &str) -> bool {
-    let candidate = PathBuf::from(value);
+    let Ok(root_dir) = root_dir.canonicalize() else {
+        return false;
+    };
+    let Ok(candidate) = PathBuf::from(value).canonicalize() else {
+        return false;
+    };
     candidate == root_dir || candidate.starts_with(root_dir)
 }
 
@@ -1871,6 +1876,9 @@ fn json_number(value: &Value) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use url::Url;
 
     use super::{
@@ -1879,7 +1887,7 @@ mod tests {
         infer_sidecar_subtitle_language, is_allowed_external_subtitle_download_url,
         is_allowed_remote_transcode_url, is_local_app_playback_url, is_local_cache_stream_input,
         is_local_cache_stream_url, is_local_torrent_stream_input, is_local_torrent_stream_url,
-        local_cache_stream_file_path, merge_preferred_subtitle_tracks,
+        is_path_inside_root_dir, local_cache_stream_file_path, merge_preferred_subtitle_tracks,
         normalize_external_subtitle_download_url, normalize_subtitle_text_to_vtt,
     };
 
@@ -2076,6 +2084,40 @@ mod tests {
         assert!(!is_allowed_remote_transcode_url(
             &Url::parse("https://example.com/video.mkv").expect("example url")
         ));
+    }
+
+    #[test]
+    fn canonical_path_check_rejects_traversal_outside_root() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir();
+        let root = temp_dir.join(format!("netflix-media-root-{unique}"));
+        let outside = temp_dir.join(format!("netflix-media-outside-{unique}"));
+        fs::create_dir_all(&root).expect("root dir");
+        fs::create_dir_all(&outside).expect("outside dir");
+        let inside_file = root.join("video.mp4");
+        let outside_file = outside.join("secret.mp4");
+        fs::write(&inside_file, b"inside").expect("inside file");
+        fs::write(&outside_file, b"outside").expect("outside file");
+
+        assert!(is_path_inside_root_dir(
+            &root,
+            inside_file.to_str().expect("inside path")
+        ));
+
+        let traversal = root
+            .join("..")
+            .join(outside.file_name().expect("outside name"))
+            .join("secret.mp4");
+        assert!(!is_path_inside_root_dir(
+            &root,
+            traversal.to_str().expect("traversal path")
+        ));
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
     }
 
     #[test]

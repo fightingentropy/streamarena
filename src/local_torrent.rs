@@ -1063,9 +1063,11 @@ fn is_allowed_direct_cache_url(source_url: &str) -> bool {
         .filter(|url| url.scheme() == "https")
         .and_then(|url| {
             let hostname = url.host_str()?.to_ascii_lowercase();
-            Some(DIRECT_CACHE_ALLOWED_DOWNLOAD_HOSTS.iter().any(|allowed| {
-                hostname == *allowed || hostname.ends_with(&format!(".{allowed}"))
-            }))
+            Some(
+                DIRECT_CACHE_ALLOWED_DOWNLOAD_HOSTS.iter().any(|allowed| {
+                    hostname == *allowed || hostname.ends_with(&format!(".{allowed}"))
+                }),
+            )
         })
         .unwrap_or(false)
 }

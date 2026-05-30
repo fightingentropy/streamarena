@@ -16,9 +16,7 @@ use axum::http::HeaderMap;
 use crate::auth;
 use crate::config::Config;
 use crate::embed_proxy::embed_frame_handler;
-use crate::error::{
-    ApiError, AppResult, json_response, json_response_public_cache, json_response_with_cache,
-};
+use crate::error::{ApiError, AppResult, json_response};
 use crate::football::{
     SportsScheduleCache, american_football_matches_handler, baseball_matches_handler,
     basketball_matches_handler, basketball_stream_resolve_handler, cricket_matches_handler,
@@ -647,18 +645,17 @@ pub async fn tmdb_popular_movies_handler(
 pub async fn home_bootstrap_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
+    auth::require_auth(&state.db, &headers).await?;
     let payload = state
         .home_bootstrap_cache
         .payload_or_refresh(state.clone())
         .await;
-    if home_bootstrap::is_warming_payload(&payload) {
-        return Ok(json_response_with_cache(payload, "no-store"));
-    }
-    Ok(json_response_public_cache(payload, 900))
+    Ok(json_response(payload))
 }
 
 pub async fn tmdb_search_handler(
@@ -1645,11 +1642,13 @@ async fn auth_signup_handler(
         .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
     let payload = serde_json::from_slice::<Value>(&bytes)
         .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let username = payload
-        .get("username")
+    let email = payload
+        .get("email")
+        .or_else(|| payload.get("username"))
         .and_then(Value::as_str)
         .unwrap_or_default()
         .trim()
+        .to_lowercase()
         .to_owned();
     let password = payload
         .get("password")
@@ -1663,11 +1662,16 @@ async fn auth_signup_handler(
         .trim()
         .to_owned();
 
-    if username.is_empty() || username.len() > 64 {
-        return Err(ApiError::bad_request("Username must be 1-64 characters."));
+    if !is_valid_email(&email) {
+        return Err(ApiError::bad_request("Enter a valid email address."));
     }
     if password.len() < 6 || password.len() > 256 {
         return Err(ApiError::bad_request("Password must be 6-256 characters."));
+    }
+    if display_name.is_empty() || display_name.len() > 64 {
+        return Err(ApiError::bad_request(
+            "Display name must be 1-64 characters.",
+        ));
     }
 
     if !state.auth_rate_limiter.check_and_record("signup:global") {
@@ -1676,21 +1680,15 @@ async fn auth_signup_handler(
         ));
     }
 
-    // Check if username already taken
-    if state
-        .db
-        .get_user_by_username(username.clone())
-        .await?
-        .is_some()
-    {
-        return Err(ApiError::bad_request("Username already taken."));
+    if state.db.get_user_by_email(email.clone()).await?.is_some() {
+        return Err(ApiError::bad_request("Email already in use."));
     }
 
     let password_hash = auth::hash_password(&password).map_err(ApiError::internal)?;
 
     let user_id = state
         .db
-        .create_user(username.clone(), password_hash, display_name.clone())
+        .create_user(email.clone(), password_hash, display_name.clone())
         .await?;
 
     let token = auth::generate_session_token();
@@ -1704,7 +1702,7 @@ async fn auth_signup_handler(
         "ok": true,
         "user": {
             "id": user_id,
-            "username": username,
+            "email": email,
             "displayName": display_name
         }
     }));
@@ -1732,11 +1730,13 @@ async fn auth_login_handler(
         .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
     let payload = serde_json::from_slice::<Value>(&bytes)
         .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let username = payload
-        .get("username")
+    let email = payload
+        .get("email")
+        .or_else(|| payload.get("username"))
         .and_then(Value::as_str)
         .unwrap_or_default()
         .trim()
+        .to_lowercase()
         .to_owned();
     let password = payload
         .get("password")
@@ -1744,27 +1744,27 @@ async fn auth_login_handler(
         .unwrap_or_default()
         .to_owned();
 
-    if username.is_empty() || password.is_empty() {
-        return Err(ApiError::bad_request("Username and password are required."));
+    if email.is_empty() || password.is_empty() {
+        return Err(ApiError::bad_request("Email and password are required."));
     }
 
     if !state
         .auth_rate_limiter
-        .check_and_record(&format!("login:{}", username.to_lowercase()))
+        .check_and_record(&format!("login:{}", email))
     {
         return Err(ApiError::too_many_requests(
             "Too many login attempts. Please wait and try again.",
         ));
     }
 
-    let (user_id, db_username, password_hash, display_name) = state
+    let (user_id, db_email, password_hash, display_name) = state
         .db
-        .get_user_by_username(username.clone())
+        .get_user_by_email(email.clone())
         .await?
-        .ok_or_else(|| ApiError::unauthorized("Invalid username or password."))?;
+        .ok_or_else(|| ApiError::unauthorized("Invalid email or password."))?;
 
     if !auth::verify_password(&password, &password_hash) {
-        return Err(ApiError::unauthorized("Invalid username or password."));
+        return Err(ApiError::unauthorized("Invalid email or password."));
     }
 
     let token = auth::generate_session_token();
@@ -1778,7 +1778,7 @@ async fn auth_login_handler(
         "ok": true,
         "user": {
             "id": user_id,
-            "username": db_username,
+            "email": db_email,
             "displayName": display_name
         }
     }));
@@ -1825,9 +1825,34 @@ async fn auth_me_handler(
     let user = auth::require_auth(&state.db, &headers).await?;
     Ok(json_response(json!({
         "id": user.id,
-        "username": user.username,
+        "email": user.email,
         "displayName": user.display_name
     })))
+}
+
+fn is_valid_email(value: &str) -> bool {
+    if value.is_empty() || value.len() > 254 || value.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    if local.is_empty()
+        || local.len() > 64
+        || domain.is_empty()
+        || domain.len() > 253
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+        || !domain.contains('.')
+    {
+        return false;
+    }
+    domain.split('.').all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    })
 }
 
 async fn user_preferences_handler(
@@ -2073,6 +2098,70 @@ async fn user_my_list_handler(
     }
 }
 
+fn normalize_sync_watch_progress_entries(value: Option<&Value>) -> Vec<Value> {
+    match value {
+        Some(Value::Array(entries)) => entries.clone(),
+        Some(Value::Object(entries)) => entries
+            .iter()
+            .filter_map(|(source_identity, entry)| {
+                let source_identity = source_identity.trim();
+                if source_identity.is_empty() {
+                    return None;
+                }
+                let resume_seconds = entry
+                    .get("resumeSeconds")
+                    .and_then(Value::as_f64)
+                    .or_else(|| entry.as_f64())
+                    .unwrap_or(0.0);
+                let updated_at = entry
+                    .get("updatedAt")
+                    .and_then(Value::as_i64)
+                    .unwrap_or_else(now_ms);
+                Some(json!({
+                    "sourceIdentity": source_identity,
+                    "resumeSeconds": resume_seconds,
+                    "updatedAt": updated_at
+                }))
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn normalize_sync_continue_watching_entries(value: Option<&Value>) -> Vec<Value> {
+    match value {
+        Some(Value::Array(entries)) => entries.clone(),
+        Some(Value::Object(entries)) => entries
+            .iter()
+            .filter_map(|(source_identity, entry)| {
+                let fallback_source_identity = source_identity.trim();
+                if fallback_source_identity.is_empty() {
+                    return None;
+                }
+                let mut object = entry.as_object().cloned().unwrap_or_default();
+                let existing_source_identity = object
+                    .get("sourceIdentity")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or_default();
+                if existing_source_identity.is_empty() {
+                    object.insert(
+                        "sourceIdentity".to_owned(),
+                        Value::String(fallback_source_identity.to_owned()),
+                    );
+                }
+                if !object.contains_key("resumeSeconds")
+                    && let Some(resume_seconds) = entry.as_f64()
+                {
+                    object.insert("resumeSeconds".to_owned(), json!(resume_seconds));
+                }
+                Some(Value::Object(object))
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 async fn user_sync_handler(
     State(state): State<AppState>,
     method: Method,
@@ -2109,8 +2198,9 @@ async fn user_sync_handler(
     }
 
     // Watch progress
-    if let Some(progress_arr) = payload.get("watchProgress").and_then(Value::as_array) {
-        for entry in progress_arr {
+    let progress_entries = normalize_sync_watch_progress_entries(payload.get("watchProgress"));
+    if !progress_entries.is_empty() {
+        for entry in &progress_entries {
             let source_identity = entry
                 .get("sourceIdentity")
                 .and_then(Value::as_str)
@@ -2135,8 +2225,10 @@ async fn user_sync_handler(
     }
 
     // Continue watching
-    if let Some(cw_arr) = payload.get("continueWatching").and_then(Value::as_array) {
-        for entry in cw_arr {
+    let continue_watching_entries =
+        normalize_sync_continue_watching_entries(payload.get("continueWatching"));
+    if !continue_watching_entries.is_empty() {
+        for entry in &continue_watching_entries {
             let source_identity = entry
                 .get("sourceIdentity")
                 .and_then(Value::as_str)
@@ -2792,7 +2884,9 @@ impl StringExt for String {
 mod tests {
     use super::{
         absolute_request_url_with_authority, build_playback_session_key, find_episode_pattern,
-        normalize_preferred_audio_lang, normalize_subtitle_preference, query_flag_enabled,
+        is_valid_email, normalize_preferred_audio_lang, normalize_subtitle_preference,
+        normalize_sync_continue_watching_entries, normalize_sync_watch_progress_entries,
+        query_flag_enabled,
     };
     use axum::http::header::HOST;
     use axum::http::{HeaderMap, HeaderValue, Uri};
@@ -2828,6 +2922,51 @@ mod tests {
         assert!(!query_flag_enabled("notclear=1", "clear"));
         assert!(!query_flag_enabled("clearance=1", "clear"));
         assert!(!query_flag_enabled("clear=0", "clear"));
+    }
+
+    #[test]
+    fn validates_account_email_addresses() {
+        assert!(is_valid_email("viewer@example.com"));
+        assert!(is_valid_email("viewer.name+tag@example.co.uk"));
+        assert!(!is_valid_email(""));
+        assert!(!is_valid_email("viewer"));
+        assert!(!is_valid_email("viewer@example"));
+        assert!(!is_valid_email("viewer @example.com"));
+    }
+
+    #[test]
+    fn normalizes_legacy_user_sync_maps() {
+        let payload = serde_json::json!({
+            "watchProgress": {
+                "movie:1": 42.5,
+                "movie:2": { "resumeSeconds": 15.0, "updatedAt": 123 }
+            },
+            "continueWatching": {
+                "movie:1": { "title": "Movie One", "resumeSeconds": 42.5 },
+                "movie:2": 15.0
+            }
+        });
+
+        let progress = normalize_sync_watch_progress_entries(payload.get("watchProgress"));
+        assert_eq!(progress.len(), 2);
+        assert!(progress.iter().any(|entry| {
+            entry["sourceIdentity"] == "movie:1" && entry["resumeSeconds"] == 42.5
+        }));
+        assert!(
+            progress
+                .iter()
+                .any(|entry| { entry["sourceIdentity"] == "movie:2" && entry["updatedAt"] == 123 })
+        );
+
+        let continue_watching =
+            normalize_sync_continue_watching_entries(payload.get("continueWatching"));
+        assert_eq!(continue_watching.len(), 2);
+        assert!(continue_watching.iter().any(|entry| {
+            entry["sourceIdentity"] == "movie:1" && entry["title"] == "Movie One"
+        }));
+        assert!(continue_watching.iter().any(|entry| {
+            entry["sourceIdentity"] == "movie:2" && entry["resumeSeconds"] == 15.0
+        }));
     }
 
     #[test]

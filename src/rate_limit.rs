@@ -6,7 +6,7 @@ use crate::utils::now_ms;
 /// Small in-memory sliding-window rate limiter.
 ///
 /// Used to throttle authentication attempts. Keying is left to the caller:
-/// login is keyed per-username (so it survives the Caddy reverse proxy, where
+/// login is keyed per-email (so it survives the Caddy reverse proxy, where
 /// the peer IP is always localhost) and signup uses a single global key to cap
 /// mass account creation.
 pub struct RateLimiter {
@@ -29,7 +29,10 @@ impl RateLimiter {
     pub fn check_and_record(&self, key: &str) -> bool {
         let now = now_ms();
         let cutoff = now - self.window_ms;
-        let mut map = self.hits.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut map = self
+            .hits
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let entry = map.entry(key.to_owned()).or_default();
         entry.retain(|&timestamp| timestamp > cutoff);
         if entry.len() >= self.max_hits {
@@ -42,7 +45,10 @@ impl RateLimiter {
     /// Drops empty/expired buckets so the table does not grow unbounded.
     pub fn prune(&self) {
         let cutoff = now_ms() - self.window_ms;
-        let mut map = self.hits.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut map = self
+            .hits
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         map.retain(|_, timestamps| {
             timestamps.retain(|&timestamp| timestamp > cutoff);
             !timestamps.is_empty()

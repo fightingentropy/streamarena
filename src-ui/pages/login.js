@@ -17,11 +17,27 @@ async function migrateLocalStorageToServer() {
     if (val !== null) preferences[key] = val;
   }
 
-  const watchProgress = {};
-  const continueWatching = {};
+  const watchProgress = [];
+  const continueWatching = [];
   try {
     const metaRaw = localStorage.getItem("netflix-continue-watching-meta");
-    if (metaRaw) Object.assign(continueWatching, JSON.parse(metaRaw));
+    if (metaRaw) {
+      const parsed = JSON.parse(metaRaw);
+      const entries = Array.isArray(parsed)
+        ? parsed
+        : Object.entries(parsed || {}).map(([sourceIdentity, entry]) => ({
+            ...(entry && typeof entry === "object" ? entry : {}),
+            sourceIdentity:
+              String(entry?.sourceIdentity || "").trim() || sourceIdentity,
+            resumeSeconds:
+              Number(entry?.resumeSeconds ?? entry) > 0
+                ? Number(entry?.resumeSeconds ?? entry)
+                : Number(localStorage.getItem(`netflix-resume:${sourceIdentity}`) || 0),
+          }));
+      continueWatching.push(
+        ...entries.filter((entry) => String(entry?.sourceIdentity || "").trim()),
+      );
+    }
   } catch {}
 
   for (let i = 0; i < localStorage.length; i++) {
@@ -29,7 +45,13 @@ async function migrateLocalStorageToServer() {
     if (key?.startsWith("netflix-resume:")) {
       const id = key.slice("netflix-resume:".length);
       const val = Number(localStorage.getItem(key));
-      if (id && Number.isFinite(val) && val > 0) watchProgress[id] = val;
+      if (id && Number.isFinite(val) && val > 0) {
+        watchProgress.push({
+          sourceIdentity: id,
+          resumeSeconds: val,
+          updatedAt: Date.now(),
+        });
+      }
     }
   }
 
@@ -40,8 +62,8 @@ async function migrateLocalStorageToServer() {
 
   const hasData =
     Object.keys(preferences).length > 0 ||
-    Object.keys(watchProgress).length > 0 ||
-    Object.keys(continueWatching).length > 0 ||
+    watchProgress.length > 0 ||
+    continueWatching.length > 0 ||
     myList.length > 0;
   if (!hasData) return;
 
@@ -78,10 +100,11 @@ export default function LoginPage() {
     setSubmitting(true);
 
     const form = e.target;
-    const username = form.username.value.trim();
+    const email = form.email.value.trim();
     const password = form.password.value;
+    const displayName = form.displayName?.value.trim() || "";
 
-    if (!username || !password) {
+    if (!email || !password || (isSignUp() && !displayName)) {
       setError("Please fill in all fields.");
       setSubmitting(false);
       return;
@@ -90,8 +113,8 @@ export default function LoginPage() {
     try {
       const endpoint = isSignUp() ? "/api/auth/signup" : "/api/auth/login";
       const payload = isSignUp()
-        ? { username, password, displayName: form.displayName?.value.trim() || username }
-        : { username, password };
+        ? { email, password, displayName }
+        : { email, password };
 
       const res = await fetch(endpoint, {
         method: "POST",
@@ -134,12 +157,12 @@ export default function LoginPage() {
             />
           </div>
           <div class="login-field">
-            <label for="username">Username</label>
+            <label for="email">Email</label>
             <input
-              id="username"
-              name="username"
-              type="text"
-              autocomplete="username"
+              id="email"
+              name="email"
+              type="email"
+              autocomplete="email"
               required
             />
           </div>

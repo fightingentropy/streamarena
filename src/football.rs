@@ -878,8 +878,7 @@ async fn streamed_stream_resolve_response(
             Ok(resolved) => {
                 errors.push(format!(
                     "{}: unsupported playback type {}",
-                    source_url,
-                    resolved.playback_type
+                    source_url, resolved.playback_type
                 ));
             }
             Err(error) => {
@@ -925,8 +924,7 @@ async fn matchstream_stream_resolve_response(
             Ok(resolved) => {
                 errors.push(format!(
                     "{}: unsupported playback type {}",
-                    source_url,
-                    resolved.playback_type
+                    source_url, resolved.playback_type
                 ));
             }
             Err(error) => {

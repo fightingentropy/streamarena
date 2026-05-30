@@ -1,5 +1,5 @@
 // Bump CACHE_PREFIX when shell assets change so clients pick up updates.
-const CACHE_PREFIX = "netflix-pwa-v19";
+const CACHE_PREFIX = "netflix-pwa-v20";
 const SHELL_CACHE = `${CACHE_PREFIX}:shell`;
 const PAGE_CACHE = `${CACHE_PREFIX}:pages`;
 const API_CACHE = `${CACHE_PREFIX}:api`;
@@ -42,25 +42,9 @@ const APP_SHELL_URLS = [
 
 const TMDB_IMAGE_HOSTS = new Set(["image.tmdb.org"]);
 const CACHEABLE_API_PATHS = new Set([
-  "/api/auth/me",
-  "/api/home/bootstrap",
-  "/api/library",
   "/api/tmdb/popular-movies",
-  "/api/tmdb/details",
-  "/api/tmdb/tv/season",
-  "/api/user/preferences",
-  "/api/user/watch-progress",
-  "/api/user/continue-watching",
-  "/api/user/my-list",
 ]);
-const NETWORK_FIRST_API_PATHS = new Set([
-  "/api/auth/me",
-  "/api/library",
-  "/api/user/preferences",
-  "/api/user/watch-progress",
-  "/api/user/continue-watching",
-  "/api/user/my-list",
-]);
+const NETWORK_FIRST_API_PATHS = new Set([]);
 const LOCAL_IMAGE_EXTENSIONS = /\.(?:avif|gif|jpe?g|png|svg|webp)$/i;
 
 self.addEventListener("install", (event) => {
@@ -315,6 +299,9 @@ async function maybeCacheResponse(
   if (!isCacheableResponse(response, { cacheOpaque })) {
     return;
   }
+  if (responseCacheControlDisallowsStorage(response)) {
+    return;
+  }
   if (
     skipWarmingHomeBootstrap &&
     new URL(request.url).pathname === "/api/home/bootstrap" &&
@@ -331,6 +318,13 @@ async function maybeCacheResponse(
 
 function isCacheableResponse(response, { cacheOpaque = false } = {}) {
   return Boolean(response && (response.ok || (cacheOpaque && response.type === "opaque")));
+}
+
+function responseCacheControlDisallowsStorage(response) {
+  const cacheControl = String(response?.headers?.get("Cache-Control") || "")
+    .trim()
+    .toLowerCase();
+  return /(?:^|,)\s*(?:no-store|private)\b/.test(cacheControl);
 }
 
 async function isWarmingHomeBootstrapResponse(response) {
