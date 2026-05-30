@@ -281,8 +281,8 @@ struct ExternalEmbedHlsPlaybackSource {
 }
 
 const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
-    // Keep VidFast as the default iframe handoff; the unpinned resolver
-    // tries reliable native HLS providers before falling back to it.
+    // Keep VidFast in the provider catalog for compatibility, but only native
+    // HLS providers are exposed as selectable external sources.
     ExternalEmbedProvider {
         id: "vidfast",
         label: "VidFast",
@@ -945,6 +945,7 @@ impl ResolverService {
         if !skip_external_embed
             && let Some(provider) =
                 external_embed_source_for_source_hash(&metadata, &filters.source_hash)
+            && is_external_embed_hls_capable_source(provider)
         {
             let mut external_guard = self.acquire_external_resolve_permit().await?;
             if let Some(payload) = build_external_embed_resolved_playback_payload(
@@ -958,38 +959,24 @@ impl ResolverService {
                 external_guard.mark_completed();
                 return Ok(payload);
             }
-            return Err(ApiError::bad_gateway(
-                "Selected external HLS source is unavailable.",
-            ));
         }
         if !skip_external_embed
             && should_prefer_default_external_embed(&filters, resolver_provider)
             && let Some(provider) = default_external_embed_source(&metadata)
         {
-            let mut external_guard = match self.acquire_external_resolve_permit().await {
-                Ok(guard) => guard,
-                Err(_) => {
-                    if let Some(payload) =
-                        build_external_embed_iframe_only_payload(&metadata, provider, &preferences)
-                    {
-                        return Ok(payload);
-                    }
-                    return Err(ApiError::bad_gateway(
-                        "External iframe source is unavailable.",
-                    ));
+            if let Ok(mut external_guard) = self.acquire_external_resolve_permit().await {
+                if let Some(payload) = build_external_embed_resolved_playback_payload(
+                    &metadata,
+                    provider,
+                    &preferences,
+                    true,
+                )
+                .await
+                {
+                    external_guard.mark_completed();
+                    return Ok(payload);
                 }
             };
-            if let Some(payload) = build_external_embed_resolved_playback_payload(
-                &metadata,
-                provider,
-                &preferences,
-                true,
-            )
-            .await
-            {
-                external_guard.mark_completed();
-                return Ok(payload);
-            }
         }
         let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
@@ -1300,6 +1287,7 @@ impl ResolverService {
         if !skip_external_embed
             && let Some(provider) =
                 external_embed_source_for_source_hash(&metadata, &filters.source_hash)
+            && is_external_embed_hls_capable_source(provider)
         {
             let mut external_guard = self.acquire_external_resolve_permit().await?;
             if let Some(payload) = build_external_embed_resolved_playback_payload(
@@ -1313,38 +1301,24 @@ impl ResolverService {
                 external_guard.mark_completed();
                 return Ok(payload);
             }
-            return Err(ApiError::bad_gateway(
-                "Selected external HLS source is unavailable.",
-            ));
         }
         if !skip_external_embed
             && should_prefer_default_external_embed(&filters, resolver_provider)
             && let Some(provider) = default_external_embed_source(&metadata)
         {
-            let mut external_guard = match self.acquire_external_resolve_permit().await {
-                Ok(guard) => guard,
-                Err(_) => {
-                    if let Some(payload) =
-                        build_external_embed_iframe_only_payload(&metadata, provider, &preferences)
-                    {
-                        return Ok(payload);
-                    }
-                    return Err(ApiError::bad_gateway(
-                        "External iframe source is unavailable.",
-                    ));
+            if let Ok(mut external_guard) = self.acquire_external_resolve_permit().await {
+                if let Some(payload) = build_external_embed_resolved_playback_payload(
+                    &metadata,
+                    provider,
+                    &preferences,
+                    true,
+                )
+                .await
+                {
+                    external_guard.mark_completed();
+                    return Ok(payload);
                 }
             };
-            if let Some(payload) = build_external_embed_resolved_playback_payload(
-                &metadata,
-                provider,
-                &preferences,
-                true,
-            )
-            .await
-            {
-                external_guard.mark_completed();
-                return Ok(payload);
-            }
         }
         let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
@@ -4624,6 +4598,7 @@ fn combine_external_embed_source_summaries(
 fn build_external_embed_source_summaries(metadata: &ResolveMetadata) -> Vec<SourceSummary> {
     external_embed_sources()
         .into_iter()
+        .filter(|source| is_external_embed_hls_capable_source(*source))
         .filter_map(|source| {
             let source_hash = external_embed_source_hash(source, metadata);
             if source_hash.is_empty() || external_embed_url(source, metadata).is_none() {
@@ -4638,7 +4613,7 @@ fn build_external_embed_source_summaries(metadata: &ResolveMetadata) -> Vec<Sour
                 primary: display_name,
                 filename,
                 qualityLabel: external_embed_source_quality_label(source).to_owned(),
-                container: "iframe".to_owned(),
+                container: "hls".to_owned(),
                 seeders: 0,
                 size: String::new(),
                 releaseGroup: String::new(),
@@ -4664,6 +4639,7 @@ fn external_embed_source_for_source_hash(
 fn default_external_embed_source(metadata: &ResolveMetadata) -> Option<ExternalEmbedSource> {
     external_embed_sources()
         .into_iter()
+        .filter(|source| is_external_embed_hls_capable_source(*source))
         .find(|source| external_embed_url(*source, metadata).is_some())
 }
 
@@ -4705,27 +4681,13 @@ fn should_prefer_default_external_embed(
         )
 }
 
-fn build_external_embed_iframe_only_payload(
-    metadata: &ResolveMetadata,
-    source: ExternalEmbedSource,
-    preferences: &ResolvePreferences,
-) -> Option<Value> {
-    let embed_url = external_embed_playback_url(source, metadata, preferences)?;
-    Some(build_external_embed_iframe_resolved_payload(
-        metadata,
-        source,
-        preferences,
-        embed_url,
-    ))
-}
-
 async fn build_external_embed_resolved_playback_payload(
     metadata: &ResolveMetadata,
     source: ExternalEmbedSource,
     preferences: &ResolvePreferences,
     allow_native_fallback: bool,
 ) -> Option<Value> {
-    let selected_embed_url = external_embed_playback_url(source, metadata, preferences)?;
+    let _ = external_embed_playback_url(source, metadata, preferences)?;
     let candidates = external_embed_hls_candidate_sources(source, metadata, allow_native_fallback);
     let hls_deadline_ms = now_ms() + external_embed_hls_total_timeout_ms() as i64;
 
@@ -4761,12 +4723,7 @@ async fn build_external_embed_resolved_playback_payload(
         ));
     }
 
-    Some(build_external_embed_iframe_resolved_payload(
-        metadata,
-        source,
-        preferences,
-        selected_embed_url,
-    ))
+    None
 }
 
 fn external_embed_hls_candidate_sources(
@@ -4785,32 +4742,6 @@ fn external_embed_hls_candidate_sources(
         candidates.push(source);
     }
     candidates
-}
-
-fn build_external_embed_iframe_resolved_payload(
-    metadata: &ResolveMetadata,
-    source: ExternalEmbedSource,
-    preferences: &ResolvePreferences,
-    embed_url: String,
-) -> Value {
-    let playable_url = build_live_iframe_playback_source(&embed_url);
-    build_external_embed_resolved_payload_with_playable_url(
-        metadata,
-        source,
-        preferences,
-        playable_url,
-        embed_url,
-    )
-}
-
-#[cfg(test)]
-fn build_external_embed_resolved_payload(
-    metadata: &ResolveMetadata,
-    source: ExternalEmbedSource,
-    preferences: &ResolvePreferences,
-) -> Value {
-    let embed_url = external_embed_playback_url(source, metadata, preferences).unwrap_or_default();
-    build_external_embed_iframe_resolved_payload(metadata, source, preferences, embed_url)
 }
 
 fn build_external_embed_resolved_payload_with_playable_url(
@@ -4858,37 +4789,12 @@ fn build_external_embed_resolved_payload_with_playable_url(
 }
 
 fn external_embed_fallback_playback_urls(
-    metadata: &ResolveMetadata,
-    selected: ExternalEmbedSource,
-    preferences: &ResolvePreferences,
-    limit: usize,
+    _metadata: &ResolveMetadata,
+    _selected: ExternalEmbedSource,
+    _preferences: &ResolvePreferences,
+    _limit: usize,
 ) -> Vec<String> {
-    let selected_hash = external_embed_source_hash(selected, metadata);
-    external_embed_iframe_fallback_sources(selected)
-        .into_iter()
-        .filter(|candidate| external_embed_source_hash(*candidate, metadata) != selected_hash)
-        .filter_map(|candidate| external_embed_playback_url(candidate, metadata, preferences))
-        .map(|url| build_live_iframe_playback_source(&url))
-        .filter(|url| !url.trim().is_empty())
-        .take(limit)
-        .collect()
-}
-
-fn external_embed_iframe_fallback_sources(
-    selected: ExternalEmbedSource,
-) -> Vec<ExternalEmbedSource> {
-    if selected.provider.id == "vidfast" {
-        return Vec::new();
-    }
-
-    if matches!(selected.provider.id, "videasy" | "vidlink") {
-        return external_embed_sources()
-            .into_iter()
-            .filter(|source| source.provider.id == "vidfast")
-            .collect();
-    }
-
-    external_embed_sources()
+    Vec::new()
 }
 
 fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> Option<String> {
@@ -4999,7 +4905,7 @@ fn external_embed_source_quality_label(source: ExternalEmbedSource) -> &'static 
     source
         .server
         .map(|server| server.quality_label)
-        .unwrap_or("Fast iframe")
+        .unwrap_or("HLS")
 }
 
 fn external_embed_source_filename(source: ExternalEmbedSource) -> String {
@@ -6820,12 +6726,10 @@ mod tests {
     use crate::error::ApiError;
 
     use super::{
-        DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, PlaybackSession,
-        RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters, ResolveMetadata, ResolvePreferences,
-        ResolvedSource, ResolverExternalGuard, ResolverMetrics, ResolverProvider,
-        SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
-        build_external_embed_resolved_payload, build_external_embed_resolved_playback_payload,
-        build_external_embed_source_summaries, build_live_iframe_playback_source,
+        DiscoveryBehaviorHints, DiscoveryStream, PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR,
+        ResolveFilters, ResolveMetadata, ResolvePreferences, ResolvedSource, ResolverExternalGuard,
+        ResolverMetrics, ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters,
+        SourceHealthStats, build_external_embed_source_summaries,
         build_live_iframe_playback_source_with_proxy, build_movie_resolve_lock_key,
         build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
         build_torrentio_stream_cache_key, build_torznab_request_url,
@@ -6833,9 +6737,9 @@ mod tests {
         compute_source_health_score, compute_torrentio_cache_deadlines,
         default_external_embed_source, does_filename_likely_match_movie,
         embed_iframe_proxy_enabled_from_value, external_embed_fallback_playback_urls,
-        external_embed_hls_candidate_sources, external_embed_source_for_source_hash,
-        external_embed_source_hash, external_embed_sources, external_embed_url,
-        extract_info_hash_from_magnet, is_persistent_source_resolve_error,
+        external_embed_hls_candidate_sources, external_embed_playback_url,
+        external_embed_source_for_source_hash, external_embed_source_hash, external_embed_sources,
+        external_embed_url, extract_info_hash_from_magnet, is_persistent_source_resolve_error,
         is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
         normalize_allowed_formats, normalize_resolved_source_for_software_decode,
         normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
@@ -6847,7 +6751,7 @@ mod tests {
         should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
         should_prefer_software_decode_source, should_skip_playback_session_reuse,
         should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
-        stringify_json, user_facing_real_debrid_error,
+        user_facing_real_debrid_error,
     };
 
     #[test]
@@ -6860,17 +6764,17 @@ mod tests {
     }
 
     #[test]
-    fn external_embed_sources_use_stable_hashes_and_iframe_urls() {
+    fn external_embed_sources_use_stable_hashes_and_hls_urls() {
         let metadata = sample_movie_metadata();
         let sources = build_external_embed_source_summaries(&metadata);
 
-        // VidFast stays first as the iframe handoff after native HLS fallbacks.
-        assert_eq!(sources.len(), EXTERNAL_EMBED_PROVIDERS.len());
-        assert_eq!(sources[0].primary, "VidFast");
+        // VidEasy stays first as the first native HLS candidate.
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].primary, "VidEasy");
         assert_eq!(sources[0].provider, "LivNet");
-        assert_eq!(sources[0].filename, "VidFast embed");
-        assert_eq!(sources[0].qualityLabel, "Fast iframe");
-        assert_eq!(sources[0].container, "iframe");
+        assert_eq!(sources[0].filename, "VidEasy embed");
+        assert_eq!(sources[0].qualityLabel, "HLS");
+        assert_eq!(sources[0].container, "hls");
         assert_eq!(
             normalize_source_hash(&sources[0].sourceHash),
             sources[0].sourceHash
@@ -6878,10 +6782,10 @@ mod tests {
 
         let source = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
             .expect("matching external provider");
-        assert_eq!(source.provider.id, "vidfast");
+        assert_eq!(source.provider.id, "videasy");
         assert_eq!(
             external_embed_url(source, &metadata).unwrap(),
-            sample_vidfast_movie_embed_url()
+            "https://player.videasy.net/movie/1368166?color=ffd700"
         );
         assert_eq!(
             external_embed_source_hash(source, &metadata),
@@ -6913,13 +6817,7 @@ mod tests {
             .expect("videasy fallback source");
         assert_eq!(
             external_embed_fallback_playback_urls(&metadata, videasy_source, &preferences, 4),
-            vec![build_live_iframe_playback_source(
-                sample_vidfast_movie_embed_url()
-            )]
-        );
-        assert_eq!(
-            external_embed_url(source, &tv_metadata).unwrap(),
-            sample_vidfast_tv_embed_url()
+            Vec::<String>::new()
         );
         assert_eq!(
             external_embed_url(videasy_source, &tv_metadata).unwrap(),
@@ -6932,10 +6830,10 @@ mod tests {
     }
 
     #[test]
-    fn default_external_embed_keeps_vidfast_as_iframe_fallback() {
+    fn default_external_embed_prefers_hls_sources() {
         let metadata = sample_movie_metadata();
         let source = default_external_embed_source(&metadata).expect("default embed source");
-        assert_eq!(source.provider.id, "vidfast");
+        assert_eq!(source.provider.id, "videasy");
 
         let filters = ResolveFilters {
             source_hash: String::new(),
@@ -6952,42 +6850,11 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn selected_vidfast_external_embed_uses_iframe_handoff() {
-        let metadata = sample_movie_metadata();
-        let source = default_external_embed_source(&metadata).expect("default embed source");
-        let preferences = ResolvePreferences {
-            audio_lang: "auto".to_owned(),
-            subtitle_lang: "off".to_owned(),
-            quality: "auto".to_owned(),
-        };
-
-        let payload =
-            build_external_embed_resolved_playback_payload(&metadata, source, &preferences, false)
-                .await
-                .expect("iframe payload");
-
-        assert_eq!(source.provider.id, "vidfast");
-        assert_eq!(stringify_json(payload.get("filename")), "VidFast embed");
-        assert_eq!(
-            stringify_json(payload.get("sourceInput")),
-            sample_vidfast_movie_embed_url()
-        );
-        assert_eq!(
-            stringify_json(payload.get("playableUrl")),
-            build_live_iframe_playback_source(sample_vidfast_movie_embed_url())
-        );
-        assert_eq!(
-            stringify_json(payload.get("resolverProvider")),
-            "external-embed"
-        );
-    }
-
     #[test]
     fn default_external_embed_native_fallback_can_try_hls_sources() {
         let metadata = sample_movie_metadata();
         let source = default_external_embed_source(&metadata).expect("default embed source");
-        assert_eq!(source.provider.id, "vidfast");
+        assert_eq!(source.provider.id, "videasy");
 
         let candidates = external_embed_hls_candidate_sources(source, &metadata, true);
         let provider_ids = candidates
@@ -7058,41 +6925,6 @@ mod tests {
     }
 
     #[test]
-    fn external_embed_resolved_payload_uses_live_iframe_handoff() {
-        let metadata = sample_movie_metadata();
-        let source = external_embed_sources()
-            .into_iter()
-            .find(|source| source.provider.id == "videasy")
-            .expect("videasy source");
-        let preferences = ResolvePreferences {
-            audio_lang: "auto".to_owned(),
-            subtitle_lang: "off".to_owned(),
-            quality: "auto".to_owned(),
-        };
-        let payload = build_external_embed_resolved_payload(&metadata, source, &preferences);
-
-        assert_eq!(
-            stringify_json(payload.get("resolverProvider")),
-            "external-embed"
-        );
-        assert_eq!(
-            stringify_json(payload.get("sourceInput")),
-            "https://player.videasy.net/movie/1368166?color=ffd700"
-        );
-        assert_eq!(
-            stringify_json(payload.pointer("/metadata/resolverProvider")),
-            "external-embed"
-        );
-        assert!(stringify_json(payload.get("playableUrl")).starts_with("live-iframe:"));
-        assert_eq!(
-            build_live_iframe_playback_source(
-                "https://player.videasy.net/movie/1368166?color=ffd700"
-            ),
-            stringify_json(payload.get("playableUrl"))
-        );
-    }
-
-    #[test]
     fn vidfast_playback_url_carries_subtitle_preference() {
         let metadata = sample_movie_metadata();
         let source = external_embed_sources()
@@ -7104,16 +6936,11 @@ mod tests {
             subtitle_lang: "en".to_owned(),
             quality: "auto".to_owned(),
         };
-        let payload = build_external_embed_resolved_payload(&metadata, source, &preferences);
 
-        assert_eq!(
-            stringify_json(payload.get("sourceInput")),
-            sample_vidfast_movie_embed_url_with_subtitle()
-        );
-        assert_eq!(
-            build_live_iframe_playback_source(sample_vidfast_movie_embed_url_with_subtitle()),
-            stringify_json(payload.get("playableUrl"))
-        );
+        let source_url = external_embed_playback_url(source, &metadata, &preferences)
+            .expect("vidfast playback url");
+
+        assert_eq!(source_url, sample_vidfast_movie_embed_url_with_subtitle());
         assert_eq!(
             external_embed_url(source, &metadata).unwrap(),
             sample_vidfast_movie_embed_url()
@@ -7132,12 +6959,10 @@ mod tests {
             subtitle_lang: String::new(),
             quality: "auto".to_owned(),
         };
-        let payload = build_external_embed_resolved_payload(&metadata, source, &preferences);
+        let source_url = external_embed_playback_url(source, &metadata, &preferences)
+            .expect("vidfast playback url");
 
-        assert_eq!(
-            stringify_json(payload.get("sourceInput")),
-            sample_vidfast_movie_embed_url_with_subtitle()
-        );
+        assert_eq!(source_url, sample_vidfast_movie_embed_url_with_subtitle());
     }
 
     #[test]
@@ -7605,10 +7430,6 @@ mod tests {
 
     fn sample_vidfast_movie_embed_url_with_subtitle() -> &'static str {
         "https://vidfast.pro/movie/1368166?autoPlay=true&title=false&poster=false&hideServer=true&hideServerControls=true&fullscreenButton=false&chromecast=false&sub=en"
-    }
-
-    fn sample_vidfast_tv_embed_url() -> &'static str {
-        "https://vidfast.pro/tv/76331/1/1?autoplay=true&title=false&poster=false&hideServer=true&hideServerControls=true&fullscreenButton=false&chromecast=false"
     }
 
     fn sample_tv_metadata() -> ResolveMetadata {
