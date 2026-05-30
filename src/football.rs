@@ -862,7 +862,7 @@ async fn streamed_stream_resolve_response(
 
     for (candidate_index, source_url) in candidates.iter().enumerate() {
         match resolve_verified_streamed_live_stream(state, source_url, candidate_index).await {
-            Ok(resolved) => {
+            Ok(resolved) if resolved.playback_type == "hls" => {
                 let playback_url_text = resolved.playback_url.to_string();
                 return Ok(json_response(json!({
                     "source": resolved.source_url.as_str(),
@@ -874,6 +874,13 @@ async fn streamed_stream_resolve_response(
                     "resolvedFromFallback": resolved.candidate_index > 0,
                     "attemptedStreams": resolved.attempted_streams
                 })));
+            }
+            Ok(resolved) => {
+                errors.push(format!(
+                    "{}: unsupported playback type {}",
+                    source_url,
+                    resolved.playback_type
+                ));
             }
             Err(error) => {
                 let detail = error.message().unwrap_or("unknown error");
@@ -902,7 +909,7 @@ async fn matchstream_stream_resolve_response(
 
     for (candidate_index, source_url) in candidates.iter().enumerate() {
         match resolve_verified_matchstream_live_stream(state, source_url, candidate_index).await {
-            Ok(resolved) => {
+            Ok(resolved) if resolved.playback_type == "hls" => {
                 let playback_url_text = resolved.playback_url.to_string();
                 return Ok(json_response(json!({
                     "source": resolved.source_url.as_str(),
@@ -914,6 +921,13 @@ async fn matchstream_stream_resolve_response(
                     "resolvedFromFallback": resolved.candidate_index > 0,
                     "attemptedStreams": resolved.attempted_streams
                 })));
+            }
+            Ok(resolved) => {
+                errors.push(format!(
+                    "{}: unsupported playback type {}",
+                    source_url,
+                    resolved.playback_type
+                ));
             }
             Err(error) => {
                 let detail = error.message().unwrap_or("unknown error");
@@ -961,14 +975,8 @@ async fn resolve_verified_streamed_live_stream(
                 attempted_streams: candidate_index + 1,
             });
         }
-        return Ok(ResolvedLiveStream {
-            source_url: source_url.clone(),
-            player_page_url: embed_url.clone(),
-            playback_url: embed_url,
-            playback_type: "iframe",
-            candidate_index,
-            attempted_streams: candidate_index + 1,
-        });
+
+        errors.push("Streamed embed could not produce an HLS playlist.".to_owned());
     }
 
     let latest_error = errors

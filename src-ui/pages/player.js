@@ -5419,6 +5419,12 @@ async function resolveLivePlaybackSource(source) {
   const playbackType = String(payload?.playbackType || "")
     .trim()
     .toLowerCase();
+  if (playbackType && playbackType !== "hls") {
+    throw new Error("Live stream playback is not available as HLS.");
+  }
+  if (!isHlsPlaybackSource(playbackUrl)) {
+    throw new Error("Could not resolve this live stream to HLS.");
+  }
   const resolvedSource = normalizePlaybackSourceValue(payload?.source || normalizedSource);
   if (resolvedSource && resolvedSource !== normalizedSource) {
     const resolvedOption = liveStreamOptions.find(
@@ -5429,13 +5435,6 @@ async function resolveLivePlaybackSource(source) {
       setExplicitPlaybackSourceState(resolvedOption.source);
       syncLiveStreamControls();
     }
-  }
-  if (playbackType === "iframe") {
-    const iframeSource = buildLiveIframePlaybackSource(payload?.embedUrl || playbackUrl);
-    if (!iframeSource) {
-      throw new Error("Could not resolve this live stream.");
-    }
-    return iframeSource;
   }
   if (!playbackUrl) {
     throw new Error("Could not resolve this live stream.");
