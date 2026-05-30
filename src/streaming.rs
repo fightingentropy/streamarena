@@ -217,6 +217,12 @@ impl StreamingService {
     pub async fn prune(&self) {
         self.prune_idle_hls_jobs().await;
         let _ = self.prune_hls_cache_files().await;
+        // Drop per-key lock entries no caller is holding so these tables don't
+        // grow unbounded across distinct sources/segments.
+        self.hls_job_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
+        self.hls_segment_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
     }
 
     pub fn stats(&self) -> StreamingStats {

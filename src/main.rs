@@ -107,6 +107,7 @@ async fn main() -> AppResult<()> {
     let sweep_db = db.clone();
     let sweep_uploads = upload.clone();
     let sweep_streaming = streaming.clone();
+    let sweep_local_torrent = local_torrent.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
@@ -114,6 +115,7 @@ async fn main() -> AppResult<()> {
             sweep_db.sweep().await;
             sweep_uploads.sweep_sessions().await;
             sweep_streaming.prune().await;
+            sweep_local_torrent.prune_idle_locks();
         }
     });
 
