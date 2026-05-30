@@ -297,13 +297,13 @@ a:focus-visible {
   line-height: 1.25;
 }
 
-.quality-form,
+.settings-form,
 .settings-section-block {
   display: grid;
   gap: 18px;
 }
 
-.quality-form {
+.settings-form {
   margin: 0;
 }
 
@@ -312,7 +312,7 @@ a:focus-visible {
 }
 
 .settings-section-block + .settings-section-block,
-.quality-form + .settings-section-block {
+.settings-form + .settings-section-block {
   margin-top: 36px;
 }
 
@@ -367,16 +367,6 @@ a:focus-visible {
   inset: 4px;
   border: 2px solid currentColor;
   border-radius: 5px;
-}
-
-.settings-row-icon--quality::after {
-  left: 11px;
-  top: 10px;
-  width: 0;
-  height: 0;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
-  border-left: 8px solid currentColor;
 }
 
 .settings-row-icon--audio::before {
@@ -462,50 +452,15 @@ a:focus-visible {
   min-width: 0;
 }
 
-.settings-segmented-control {
-  display: inline-grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(76px, auto);
-  gap: 6px;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
-
-.quality-option,
 .avatar-style-option {
   position: relative;
   cursor: pointer;
 }
 
-.quality-option {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 5px;
-  color: #4c4c4c;
-  font-size: 0.88rem;
-  font-weight: 700;
-  transition:
-    background-color 120ms ease,
-    color 120ms ease,
-    box-shadow 120ms ease;
-}
-
-.quality-option input,
 .avatar-style-option input {
   position: absolute;
   opacity: 0;
   pointer-events: none;
-}
-
-.quality-option:has(input:checked) {
-  background: var(--panel);
-  color: #050505;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
 .settings-field-label,
@@ -902,11 +857,6 @@ a:focus-visible {
     grid-row: 1;
   }
 
-  .settings-segmented-control {
-    grid-auto-flow: row;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
   .subtitle-color-controls,
   .avatar-settings-panel {
     width: 100%;
@@ -945,7 +895,6 @@ a:focus-visible {
     grid-column: 1 / -1;
   }
 
-  .settings-segmented-control,
   .avatar-style-options {
     grid-template-columns: 1fr;
   }

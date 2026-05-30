@@ -6,7 +6,6 @@ import { createSignal } from "solid-js";
 async function migrateLocalStorageToServer() {
   const preferences = {};
   const PREF_KEYS = [
-    "netflix-stream-quality-pref",
     "netflix-default-audio-lang",
     "netflix-subtitle-color-pref",
     "netflix-profile-avatar-style",

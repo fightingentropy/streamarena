@@ -939,7 +939,6 @@ async function runStrategy(browser, baseUrl, strategy, sourceInput, options, pro
     try {
       localStorage.clear();
       localStorage.setItem("netflix-remux-video-mode", remuxVideoMode);
-      localStorage.setItem("netflix-stream-quality-pref", "1080p");
     } catch {
       // Ignore storage issues in restrictive browser contexts.
     }

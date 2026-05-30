@@ -3,19 +3,10 @@
 // ---------------------------------------------------------------------------
 
 // --- Preference key constants ---
-export const STREAM_QUALITY_PREF_KEY = "netflix-stream-quality-pref";
 export const PROFILE_AVATAR_STYLE_PREF_KEY = "netflix-profile-avatar-style";
 export const PROFILE_AVATAR_MODE_PREF_KEY = "netflix-profile-avatar-mode";
 export const PROFILE_AVATAR_IMAGE_PREF_KEY = "netflix-profile-avatar-image";
 export const LIBRARY_EDIT_MODE_PREF_KEY = "netflix-library-edit-mode";
-
-// --- Stream quality ---
-export const supportedStreamQualityPreferences = new Set([
-  "auto",
-  "2160p",
-  "1080p",
-  "720p",
-]);
 
 // --- Avatar styles ---
 export const supportedAvatarStyles = new Set([

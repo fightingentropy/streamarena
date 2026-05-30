@@ -47,6 +47,7 @@ const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
 export const SERVER_HYDRATED_EVENT = "netflix:server-hydrated";
 const DEPRECATED_BROWSER_PREF_KEYS = new Set([
   "netflix-hero-trailer-muted-v2",
+  "netflix-stream-quality-pref",
   "netflix-source-filter-allowed-formats",
   "netflix-source-filter-results-limit",
   "netflix-source-filter-min-seeders",

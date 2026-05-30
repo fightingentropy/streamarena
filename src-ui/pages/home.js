@@ -1,12 +1,10 @@
 import html from "solid-js/html";
 import { createSignal, onMount, onCleanup } from "solid-js";
 import {
-  STREAM_QUALITY_PREF_KEY,
   PROFILE_AVATAR_STYLE_PREF_KEY,
   PROFILE_AVATAR_MODE_PREF_KEY,
   PROFILE_AVATAR_IMAGE_PREF_KEY,
   LIBRARY_EDIT_MODE_PREF_KEY,
-  supportedStreamQualityPreferences,
   supportedAvatarStyles,
   avatarStyleClassNames,
   normalizeAvatarStyle,
@@ -19,10 +17,7 @@ import {
   TMDB_IMAGE_BASE,
 } from "../shared.js";
 import {
-  DEFAULT_STREAM_QUALITY_PREFERENCE,
   supportedAudioLangs,
-  normalizeStreamQualityPreference,
-  getStoredStreamQualityPreference,
   getStoredAudioLangForTmdbMovie,
 } from "../lib/preferences.js";
 import { hydrateFromServer, SERVER_HYDRATED_EVENT } from "../lib/auth.js";
@@ -1597,12 +1592,8 @@ export default function HomePage() {
 
     if (!playbackSrc && tmdbId && normalizedMediaType === "movie") {
       const preferredAudioLang = getStoredAudioLangForTmdbMovie(tmdbId);
-      const preferredQuality = getStoredStreamQualityPreference();
       if (preferredAudioLang !== "auto") {
         params.set("audioLang", preferredAudioLang);
-      }
-      if (preferredQuality !== DEFAULT_STREAM_QUALITY_PREFERENCE) {
-        params.set("quality", preferredQuality);
       }
     }
 

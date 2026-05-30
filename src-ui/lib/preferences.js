@@ -3,11 +3,6 @@
 // These functions are used across settings, player, and home pages.
 // ---------------------------------------------------------------------------
 
-import {
-  STREAM_QUALITY_PREF_KEY,
-  supportedStreamQualityPreferences,
-} from "../shared.js";
-
 // --- Constants ---
 
 export const DEFAULT_STREAM_QUALITY_PREFERENCE = "1080p";
@@ -48,19 +43,6 @@ export const supportedDefaultAudioLanguages = new Set([
 ]);
 
 // --- Normalization functions ---
-
-export function normalizeStreamQualityPreference(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (!normalized) return DEFAULT_STREAM_QUALITY_PREFERENCE;
-  if (normalized === "4k" || normalized === "uhd") return "2160p";
-  if (normalized === "2160") return "2160p";
-  if (normalized === "1080") return "1080p";
-  if (normalized === "720") return "720p";
-  if (supportedStreamQualityPreferences.has(normalized)) return normalized;
-  return DEFAULT_STREAM_QUALITY_PREFERENCE;
-}
 
 export function normalizeDefaultAudioLanguage(value) {
   const normalized = String(value || "")
@@ -126,16 +108,6 @@ export function normalizeSubtitleColor(value) {
 }
 
 // --- localStorage getters ---
-
-export function getStoredStreamQualityPreference() {
-  try {
-    return normalizeStreamQualityPreference(
-      localStorage.getItem(STREAM_QUALITY_PREF_KEY),
-    );
-  } catch {
-    return DEFAULT_STREAM_QUALITY_PREFERENCE;
-  }
-}
 
 export function getStoredAudioLangForTmdbMovie(tmdbId) {
   const normalizedTmdbId = String(tmdbId || "").trim();
