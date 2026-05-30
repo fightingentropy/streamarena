@@ -61,6 +61,9 @@ struct UploadSession {
     expected_bytes: Option<u64>,
     received_bytes: u64,
     created_at: i64,
+    /// Serializes concurrent chunk appends for a single session so the
+    /// read-append-update of `received_bytes` cannot interleave (TOCTOU).
+    chunk_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[allow(non_snake_case)]
@@ -200,6 +203,7 @@ impl UploadService {
                 expected_bytes,
                 received_bytes: 0,
                 created_at: now_ms(),
+                chunk_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
         Ok(json!({
@@ -213,10 +217,20 @@ impl UploadService {
         if session_id.trim().is_empty() {
             return Err(ApiError::bad_request("Missing sessionId."));
         }
-        let (temp_path, previous_received) = self
+        let (temp_path, chunk_lock) = self
             .sessions
             .get(session_id)
-            .map(|entry| (entry.temp_path.clone(), entry.received_bytes))
+            .map(|entry| (entry.temp_path.clone(), entry.chunk_lock.clone()))
+            .ok_or_else(|| ApiError::not_found("Upload session not found."))?;
+        // Serialize appends for this session: the file append and the
+        // received_bytes update must be atomic with respect to other chunks.
+        let _chunk_guard = chunk_lock.lock().await;
+        // Re-read the running total under the lock; an earlier concurrent chunk
+        // may have advanced it after we cloned the temp path.
+        let previous_received = self
+            .sessions
+            .get(session_id)
+            .map(|entry| entry.received_bytes)
             .ok_or_else(|| ApiError::not_found("Upload session not found."))?;
         self.ensure_upload_directories().await?;
         let written_bytes =
@@ -568,12 +582,29 @@ impl UploadService {
             )));
         }
 
+        let max_download_bytes = self.config.max_upload_bytes as u64;
+        if let Some(content_length) = response.content_length()
+            && content_length > max_download_bytes
+        {
+            let _ = remove_file_if_present(&temp_path).await;
+            let _ = remove_file_if_present(&output_path).await;
+            return Err(total_upload_limit_error(self.config.max_upload_bytes));
+        }
+
         let mut temp_file = fs::File::create(&temp_path)
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
+        let mut downloaded_bytes: u64 = 0;
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+            downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+            if downloaded_bytes > max_download_bytes {
+                drop(temp_file);
+                let _ = remove_file_if_present(&temp_path).await;
+                let _ = remove_file_if_present(&output_path).await;
+                return Err(total_upload_limit_error(self.config.max_upload_bytes));
+            }
             temp_file
                 .write_all(&chunk)
                 .await
@@ -1682,6 +1713,7 @@ fn build_gallery_download_job_key(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use axum::body::{Body, Bytes};
     use futures_util::stream;
@@ -1770,6 +1802,7 @@ mod tests {
                 expected_bytes: None,
                 received_bytes: 0,
                 created_at: now_ms(),
+                chunk_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
 
@@ -1820,6 +1853,7 @@ mod tests {
                 expected_bytes: None,
                 received_bytes: 4,
                 created_at: now_ms(),
+                chunk_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
 
@@ -1900,6 +1934,7 @@ mod tests {
                 expected_bytes: None,
                 received_bytes: 4,
                 created_at: now_ms(),
+                chunk_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
 
@@ -1949,6 +1984,7 @@ mod tests {
                 expected_bytes: Some(5),
                 received_bytes: 4,
                 created_at: now_ms(),
+                chunk_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
 
@@ -2013,6 +2049,7 @@ mod tests {
             playback_sessions_enabled: false,
             opensubtitles_api_key: String::new(),
             opensubtitles_user_agent: String::new(),
+            session_cookie_secure: true,
         };
         tokio::fs::create_dir_all(&assets_dir)
             .await

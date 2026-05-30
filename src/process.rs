@@ -243,7 +243,8 @@ async fn run_process_capture_output(
         .args(iter)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
 
     let output = timeout(Duration::from_millis(timeout_ms.max(1_000)), child.output())
         .await
@@ -260,6 +261,46 @@ async fn run_process_capture_output(
     }
 
     Ok(output.stdout)
+}
+
+/// Run a process, streaming its stdout straight to `output_path` instead of
+/// buffering it in memory. `kill_on_drop` guarantees the child is reaped if the
+/// timeout fires. Used for HLS on-demand segment rendering so a single segment
+/// is never held fully in RAM.
+pub async fn run_process_to_file(
+    command: &[String],
+    output_path: &std::path::Path,
+    timeout_ms: u64,
+) -> Result<(), String> {
+    let mut iter = command.iter();
+    let Some(program) = iter.next() else {
+        return Err("Missing executable.".to_owned());
+    };
+    let file = std::fs::File::create(output_path).map_err(|error| error.to_string())?;
+    let mut child = Command::new(program);
+    child
+        .args(iter)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(file))
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let child = child.spawn().map_err(|error| error.to_string())?;
+    let output = timeout(
+        Duration::from_millis(timeout_ms.max(1_000)),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| "Request timed out.".to_owned())?
+    .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if stderr.is_empty() {
+            format!("Process exited with code {:?}", output.status.code())
+        } else {
+            stderr
+        });
+    }
+    Ok(())
 }
 
 fn can_use_hwaccel_mode(snapshot: &FfmpegSnapshot, mode: &str) -> bool {

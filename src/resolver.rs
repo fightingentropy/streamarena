@@ -27,7 +27,7 @@ use crate::media::{
     merge_preferred_subtitle_tracks,
 };
 use crate::persistence::{Db, PersistPlaybackSessionInput, PlaybackSession, SourceHealthStats};
-use crate::routes::{
+use crate::utils::{
     normalize_preferred_audio_lang, normalize_preferred_stream_quality,
     normalize_subtitle_preference,
 };
@@ -79,6 +79,13 @@ const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_RESO
 const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS: u64 = 12_000;
 const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS";
 
+/// Upper bound on a single discovery (Torrentio/Torznab) response body. These
+/// come from semi-trusted indexers; this guards against a misconfigured or
+/// hostile endpoint forcing a huge allocation.
+const MAX_DISCOVERY_RESPONSE_BYTES: u64 = 24 * 1024 * 1024;
+
+static TEXT_NORMALIZE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[^a-z0-9]+").expect("valid text normalize regex"));
 static SEED_COUNT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"👤\s*([0-9.,]+)").expect("valid seed regex"));
 static STREAM_SIZE_RE: LazyLock<Regex> =
@@ -2915,6 +2922,14 @@ impl ResolverService {
                         break;
                     }
 
+                    if let Some(len) = response.content_length()
+                        && len > MAX_DISCOVERY_RESPONSE_BYTES
+                    {
+                        last_error = Some(ApiError::bad_gateway(
+                            "Torrentio response exceeded the maximum allowed size.",
+                        ));
+                        break;
+                    }
                     let payload = response
                         .json::<Value>()
                         .await
@@ -3071,6 +3086,13 @@ impl ResolverService {
         match response {
             Ok(response) => {
                 let status = response.status();
+                if let Some(len) = response.content_length()
+                    && len > MAX_DISCOVERY_RESPONSE_BYTES
+                {
+                    return Err(ApiError::bad_gateway(
+                        "Torznab response exceeded the maximum allowed size.",
+                    ));
+                }
                 let body = response
                     .text()
                     .await
@@ -5279,8 +5301,7 @@ fn tokenize_title_for_match(title: &str) -> Vec<String> {
 }
 
 fn normalize_text_for_match(value: &str) -> String {
-    Regex::new(r"[^a-z0-9]+")
-        .expect("valid text normalize regex")
+    TEXT_NORMALIZE_RE
         .replace_all(&value.to_lowercase(), " ")
         .trim()
         .to_owned()

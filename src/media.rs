@@ -2120,6 +2120,7 @@ mod tests {
             playback_sessions_enabled: false,
             opensubtitles_api_key: String::new(),
             opensubtitles_user_agent: String::new(),
+            session_cookie_secure: true,
         };
         assert!(is_local_app_playback_url(
             &config,

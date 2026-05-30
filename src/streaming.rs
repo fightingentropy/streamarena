@@ -23,7 +23,7 @@ use crate::error::{ApiError, AppResult};
 use crate::media::{MediaProbe, MediaService};
 use crate::process::{
     RuntimeServices, normalize_audio_sync_ms, resolve_effective_remux_hwaccel_mode,
-    run_process_capture_bytes,
+    run_process_to_file,
 };
 use crate::utils::{hash_stable_string, now_ms};
 
@@ -217,6 +217,12 @@ impl StreamingService {
     pub async fn prune(&self) {
         self.prune_idle_hls_jobs().await;
         let _ = self.prune_hls_cache_files().await;
+        // Drop per-key lock entries no caller is holding so these tables don't
+        // grow unbounded across distinct sources/segments.
+        self.hls_job_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
+        self.hls_segment_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
     }
 
     pub fn stats(&self) -> StreamingStats {
@@ -951,7 +957,8 @@ impl StreamingService {
             .args(args.iter().skip(1))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         let mut child = command
             .spawn()
             .map_err(|error| ApiError::internal(error.to_string()))?;
@@ -1171,44 +1178,55 @@ impl StreamingService {
             self.config.hls_hwaccel_mode.clone()
         };
         let primary_encode_config = build_hls_video_encode_config(&preferred_mode);
-        let segment_bytes = match run_process_capture_bytes(
+        let partial_path = segment_path.with_extension("ts.partial");
+        let render_result = run_process_to_file(
             &build_hls_on_demand_segment_args(
                 source_input,
                 safe_segment_index,
                 safe_audio_stream_index,
                 &primary_encode_config,
             ),
+            &partial_path,
             20_000,
         )
-        .await
-        {
-            Ok(bytes) => bytes,
+        .await;
+        let render_result = match render_result {
+            Ok(()) => Ok(()),
             Err(error) if primary_encode_config.mode != "none" => {
                 eprintln!(
                     "[transcode] HLS hardware acceleration ({}) failed, falling back to software encode: {}",
                     primary_encode_config.mode, error
                 );
-                run_process_capture_bytes(
+                run_process_to_file(
                     &build_hls_on_demand_segment_args(
                         source_input,
                         safe_segment_index,
                         safe_audio_stream_index,
                         &build_hls_video_encode_config("none"),
                     ),
+                    &partial_path,
                     20_000,
                 )
                 .await
-                .map_err(ApiError::bad_gateway)?
             }
-            Err(error) => return Err(ApiError::bad_gateway(error)),
+            Err(error) => Err(error),
         };
+        if let Err(error) = render_result {
+            let _ = fs::remove_file(&partial_path).await;
+            return Err(ApiError::bad_gateway(error));
+        }
 
-        if segment_bytes.is_empty() {
+        let segment_len = fs::metadata(&partial_path)
+            .await
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        if segment_len == 0 {
+            let _ = fs::remove_file(&partial_path).await;
             return Err(ApiError::bad_gateway(format!(
                 "Unable to create HLS segment {safe_segment_index}."
             )));
         }
-        fs::write(&segment_path, segment_bytes)
+        fs::rename(&partial_path, &segment_path)
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
         render_guard.mark_completed();

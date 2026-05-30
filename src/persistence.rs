@@ -9,11 +9,11 @@ use tokio::task;
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
-use crate::routes::{
+use crate::utils::now_ms;
+use crate::utils::{
     normalize_preferred_audio_lang, normalize_preferred_stream_quality,
     normalize_session_health_state, normalize_subtitle_preference,
 };
-use crate::utils::now_ms;
 
 const TITLE_PREFERENCES_STALE_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 const PLAYBACK_SESSION_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
@@ -2338,17 +2338,61 @@ fn sweep_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
-fn take_connection(pool: &Pool, path: &PathBuf) -> Result<Connection, rusqlite::Error> {
-    let mut connections = pool.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(conn) = connections.pop() {
-        Ok(conn)
-    } else {
-        drop(connections);
-        open_connection(path)
+/// RAII guard that returns its connection to the pool when dropped.
+///
+/// This guarantees the connection is returned even when a query, transaction,
+/// or commit fails early via `?`, preventing the pool from leaking slots under
+/// error load. `Deref` keeps existing call sites (`connection.prepare(...)`,
+/// `trim_table(&connection, ...)`) working unchanged.
+struct PooledConnection<'a> {
+    pool: &'a Pool,
+    conn: Option<Connection>,
+}
+
+impl std::ops::Deref for PooledConnection<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.conn
+            .as_ref()
+            .expect("pooled connection used after release")
     }
 }
 
-fn return_connection(pool: &Pool, conn: Connection) {
+impl Drop for PooledConnection<'_> {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            push_connection(self.pool, conn);
+        }
+    }
+}
+
+fn take_connection<'a>(
+    pool: &'a Pool,
+    path: &PathBuf,
+) -> Result<PooledConnection<'a>, rusqlite::Error> {
+    let conn = {
+        let mut connections = pool.lock().unwrap_or_else(|e| e.into_inner());
+        connections.pop()
+    };
+    let conn = match conn {
+        Some(conn) => conn,
+        None => open_connection(path)?,
+    };
+    Ok(PooledConnection {
+        pool,
+        conn: Some(conn),
+    })
+}
+
+/// Explicitly release a pooled connection. Dropping the guard does the same
+/// thing; this is kept so existing call sites compile and to make the
+/// "return as early as possible" intent clear at the end of a unit of work.
+fn return_connection(_pool: &Pool, _conn: PooledConnection<'_>) {
+    // Dropping `_conn` runs `PooledConnection::drop`, returning it to the pool.
+}
+
+fn push_connection(pool: &Pool, conn: Connection) {
     let mut connections = pool.lock().unwrap_or_else(|e| e.into_inner());
     if connections.len() < 4 {
         connections.push(conn);
@@ -3601,6 +3645,7 @@ mod tests {
             playback_sessions_enabled: true,
             opensubtitles_api_key: String::new(),
             opensubtitles_user_agent: String::new(),
+            session_cookie_secure: true,
         };
         Db::initialize(&config).await.expect("init db")
     }
