@@ -2760,11 +2760,11 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
-        <img src="${posterUrl}" alt="${safeTitle}" loading="lazy" />
+        <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
         <div class="progress"><span style="width: ${progressPercent}%"></span></div>
       </div>
       <div class="card-hover">
-        <img class="card-hover-image" src="${heroUrl}" alt="${safeTitle} preview" loading="lazy" />
+        <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" />
         <div class="card-hover-body">
           <div class="card-hover-controls">
             <div class="card-hover-actions">
@@ -2868,14 +2868,14 @@ export default function HomePage() {
       <div class="card-base">
         <div class="card-rail-art">
           ${top10BadgeMarkup}
-          <img src="${posterUrl}" alt="${safeTitle}" loading="lazy" decoding="async" />
+          <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />
           <div class="card-rail-shade" aria-hidden="true"></div>
           <span class="card-rail-title" aria-hidden="true">${displayTitle}</span>
         </div>
         ${recentBadgeMarkup}
       </div>
       <div class="card-hover">
-        <img class="card-hover-image" src="${heroUrl}" alt="${safeTitle} preview" loading="lazy" decoding="async" />
+        <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" decoding="async" />
         <div class="card-hover-body">
           <div class="card-hover-controls">
             <div class="card-hover-actions">
@@ -2977,11 +2977,11 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
-        <img src="${posterUrl}" alt="${safeTitle}" loading="lazy" />
+        <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
         <div class="progress"><span style="width: 90%"></span></div>
       </div>
       <div class="card-hover">
-        <img class="card-hover-image" src="${heroUrl}" alt="${safeTitle} preview" loading="lazy" />
+        <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" />
         <div class="card-hover-body">
           <div class="card-hover-controls">
             <div class="card-hover-actions">
@@ -3125,11 +3125,11 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
-        <img src="${posterUrl}" alt="${safeTitle}" loading="lazy" />
+        <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
         <div class="progress"><span style="width: 94%"></span></div>
       </div>
       <div class="card-hover">
-        <img class="card-hover-image" src="${heroUrl}" alt="${safeTitle} preview" loading="lazy" />
+        <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" />
         <div class="card-hover-body">
           <div class="card-hover-controls">
             <div class="card-hover-actions">

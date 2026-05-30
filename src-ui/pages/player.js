@@ -154,6 +154,7 @@ let availableAudioTracks = [];
 let availableSubtitleTracks = [];
 let availablePlaybackSources = [];
 let isFetchingPlaybackSources = false;
+let playbackSourcesRequestToken = 0;
 let resolverFailedSourceHashes = new Set();
 let subtitleTrackElement = null;
 let customSubtitleCues = [];
@@ -7677,6 +7678,7 @@ async function fetchTmdbSourceOptionsViaBackend() {
   }
 
   isFetchingPlaybackSources = true;
+  const requestToken = ++playbackSourcesRequestToken;
   renderSourceOptionsWhenStable();
   try {
     const payload = await requestJson(
@@ -7684,6 +7686,9 @@ async function fetchTmdbSourceOptionsViaBackend() {
       {},
       45000,
     );
+    if (requestToken !== playbackSourcesRequestToken) {
+      return;
+    }
     const options = Array.isArray(payload?.sources) ? payload.sources : [];
     availablePlaybackSources = sortSourcesBySeeders(
       options
@@ -7713,6 +7718,9 @@ async function fetchTmdbSourceOptionsViaBackend() {
     isFetchingPlaybackSources = false;
     renderSourceOptionsWhenStable();
   } catch {
+    if (requestToken !== playbackSourcesRequestToken) {
+      return;
+    }
     availablePlaybackSources = [];
     isFetchingPlaybackSources = false;
     renderSourceOptionsWhenStable();
@@ -9704,6 +9712,8 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     if (liveStreamPopoverCloseTimeout) clearTimeout(liveStreamPopoverCloseTimeout);
     if (episodesPopoverCloseTimeout) clearTimeout(episodesPopoverCloseTimeout);
     if (audioPopoverCloseTimeout) clearTimeout(audioPopoverCloseTimeout);
+    if (sourcePopoverCloseTimeout) clearTimeout(sourcePopoverCloseTimeout);
+    if (autoPlayCountdownInterval) clearInterval(autoPlayCountdownInterval);
     if (seekLoadingTimeout) clearTimeout(seekLoadingTimeout);
   });
 

@@ -7,25 +7,22 @@ async function loadPageComponent(loadPage) {
 }
 
 export async function mountAuthenticatedPage(loadPage, options = {}) {
-  const authPromise = fetch("/api/auth/me")
-    .then(async (response) => {
-      if (!response.ok) {
-        return null;
-      }
-      const user = await response.json();
-      window.__currentUser = user;
-      return user;
-    })
+  // Download the page module and check auth in parallel for speed, but do not
+  // mount protected UI (or run its data fetches) until auth is confirmed.
+  const componentPromise = loadPageComponent(loadPage);
+  const user = await fetch("/api/auth/me")
+    .then(async (response) => (response.ok ? await response.json() : null))
     .catch(() => null);
 
-  mountPage(await loadPageComponent(loadPage), options);
-
-  void hydrateFromServer();
-
-  const user = await authPromise;
   if (!user) {
     window.location.href = "/login.html";
+    return;
   }
+  window.__currentUser = user;
+
+  mountPage(await componentPromise, options);
+
+  void hydrateFromServer();
 }
 
 export async function mountPublicPage(loadPage, options = {}) {
