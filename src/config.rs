@@ -42,6 +42,7 @@ pub struct Config {
     pub playback_sessions_enabled: bool,
     pub opensubtitles_api_key: String,
     pub opensubtitles_user_agent: String,
+    pub session_cookie_secure: bool,
 }
 
 impl Config {
@@ -173,6 +174,9 @@ impl Config {
                 .unwrap_or_else(|_| "netflix-rust-backend v1.0.0".to_owned())
                 .trim()
                 .to_owned(),
+            session_cookie_secure: normalize_bool_flag(
+                env::var("SESSION_COOKIE_SECURE").unwrap_or_else(|_| "1".to_owned()),
+            ),
         }
     }
 }

@@ -11,6 +11,7 @@ mod media;
 mod persistence;
 mod playback_optimize;
 mod process;
+mod rate_limit;
 mod resolver;
 mod routes;
 mod static_files;
@@ -99,6 +100,8 @@ async fn main() -> AppResult<()> {
         media.clone(),
         http_client.clone(),
     );
+    let auth_rate_limiter =
+        std::sync::Arc::new(crate::rate_limit::RateLimiter::new(12, 15 * 60 * 1000));
     let started_at_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
@@ -108,6 +111,7 @@ async fn main() -> AppResult<()> {
     let sweep_uploads = upload.clone();
     let sweep_streaming = streaming.clone();
     let sweep_local_torrent = local_torrent.clone();
+    let sweep_auth_rate_limiter = auth_rate_limiter.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
@@ -116,6 +120,7 @@ async fn main() -> AppResult<()> {
             sweep_uploads.sweep_sessions().await;
             sweep_streaming.prune().await;
             sweep_local_torrent.prune_idle_locks();
+            sweep_auth_rate_limiter.prune();
         }
     });
 
@@ -132,6 +137,7 @@ async fn main() -> AppResult<()> {
         runtime,
         sports_schedule_cache: SportsScheduleCache::new(),
         home_bootstrap_cache: crate::home_bootstrap::HomeBootstrapCache::new(),
+        auth_rate_limiter,
         started_at_ms,
     };
 

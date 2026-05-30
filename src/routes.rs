@@ -68,6 +68,7 @@ pub struct AppState {
     pub runtime: RuntimeServices,
     pub sports_schedule_cache: SportsScheduleCache,
     pub home_bootstrap_cache: home_bootstrap::HomeBootstrapCache,
+    pub auth_rate_limiter: std::sync::Arc<crate::rate_limit::RateLimiter>,
     pub started_at_ms: i64,
 }
 
@@ -1617,14 +1618,16 @@ fn absolute_request_url_with_authority(
 
 const SESSION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
 
-fn set_session_cookie(token: &str) -> String {
+fn set_session_cookie(token: &str, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
     format!(
-        "session={token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={SESSION_MAX_AGE_SECONDS}"
+        "session={token}; HttpOnly{secure_attr}; SameSite=Lax; Path=/; Max-Age={SESSION_MAX_AGE_SECONDS}"
     )
 }
 
-fn clear_session_cookie() -> String {
-    "session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0".to_owned()
+fn clear_session_cookie(secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!("session=; HttpOnly{secure_attr}; SameSite=Lax; Path=/; Max-Age=0")
 }
 
 async fn auth_signup_handler(
@@ -1667,6 +1670,12 @@ async fn auth_signup_handler(
         return Err(ApiError::bad_request("Password must be 6-256 characters."));
     }
 
+    if !state.auth_rate_limiter.check_and_record("signup:global") {
+        return Err(ApiError::too_many_requests(
+            "Too many sign-up attempts right now. Please wait and try again.",
+        ));
+    }
+
     // Check if username already taken
     if state
         .db
@@ -1701,7 +1710,7 @@ async fn auth_signup_handler(
     }));
     response.headers_mut().insert(
         axum::http::header::SET_COOKIE,
-        set_session_cookie(&token)
+        set_session_cookie(&token, state.config.session_cookie_secure)
             .parse()
             .map_err(|_| ApiError::internal("Failed to build session cookie."))?,
     );
@@ -1739,6 +1748,15 @@ async fn auth_login_handler(
         return Err(ApiError::bad_request("Username and password are required."));
     }
 
+    if !state
+        .auth_rate_limiter
+        .check_and_record(&format!("login:{}", username.to_lowercase()))
+    {
+        return Err(ApiError::too_many_requests(
+            "Too many login attempts. Please wait and try again.",
+        ));
+    }
+
     let (user_id, db_username, password_hash, display_name) = state
         .db
         .get_user_by_username(username.clone())
@@ -1766,7 +1784,7 @@ async fn auth_login_handler(
     }));
     response.headers_mut().insert(
         axum::http::header::SET_COOKIE,
-        set_session_cookie(&token)
+        set_session_cookie(&token, state.config.session_cookie_secure)
             .parse()
             .map_err(|_| ApiError::internal("Failed to build session cookie."))?,
     );
@@ -1789,7 +1807,7 @@ async fn auth_logout_handler(
     let mut response = json_response(json!({ "ok": true }));
     response.headers_mut().insert(
         axum::http::header::SET_COOKIE,
-        clear_session_cookie()
+        clear_session_cookie(state.config.session_cookie_secure)
             .parse()
             .map_err(|_| ApiError::internal("Failed to build session cookie."))?,
     );

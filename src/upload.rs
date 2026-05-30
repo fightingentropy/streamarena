@@ -2049,6 +2049,7 @@ mod tests {
             playback_sessions_enabled: false,
             opensubtitles_api_key: String::new(),
             opensubtitles_user_agent: String::new(),
+            session_cookie_secure: true,
         };
         tokio::fs::create_dir_all(&assets_dir)
             .await
