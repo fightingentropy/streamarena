@@ -5150,7 +5150,8 @@ fn is_supported_external_embed_hls_url(url: &Url) -> bool {
     is_m3u8
         && matches!(
             host.as_str(),
-            "easy.speedsterwave.app" | "storm.vodvidl.site"
+            "easy.speedsterwave.app" | "easy.nightspeedster.app" | "storm.vodvidl.site"
+                | "typhoontigertribe.net"
         )
 }
 
