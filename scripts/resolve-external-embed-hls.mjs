@@ -69,7 +69,9 @@ function isAllowedRequestUrl(value) {
       host.endsWith(".videasy.net") ||
       host === "vidlink.pro" ||
       host === "storm.vodvidl.site" ||
-      host === "easy.speedsterwave.app"
+      host === "easy.speedsterwave.app" ||
+      host === "easy.nightspeedster.app" ||
+      host === "typhoontigertribe.net"
     );
   } catch {
     return false;
@@ -81,7 +83,9 @@ function isStreamPlaylistUrl(value) {
     const url = new URL(value);
     return (
       (url.hostname.toLowerCase() === "easy.speedsterwave.app" ||
-        url.hostname.toLowerCase() === "storm.vodvidl.site") &&
+        url.hostname.toLowerCase() === "easy.nightspeedster.app" ||
+        url.hostname.toLowerCase() === "storm.vodvidl.site" ||
+        url.hostname.toLowerCase() === "typhoontigertribe.net") &&
       url.pathname.toLowerCase().endsWith(".m3u8")
     );
   } catch {
