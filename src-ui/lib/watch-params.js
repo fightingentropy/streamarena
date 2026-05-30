@@ -10,6 +10,15 @@ export function slugifyTitle(title) {
     .replace(/^-|-$/g, "");
 }
 
+export function buildWatchUrl(params) {
+  const searchParams =
+    params instanceof URLSearchParams
+      ? new URLSearchParams(params)
+      : new URLSearchParams(params || "");
+  const query = searchParams.toString();
+  return query ? `/watch?${query}` : "/watch";
+}
+
 export function buildWatchParamsStorageKey(slug, { tmdbId = "", seriesId = "" } = {}) {
   const base = `${LOCAL_PREFIX}${slug}`;
   const seriesKey = String(seriesId || "").trim().toLowerCase();

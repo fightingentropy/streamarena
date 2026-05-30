@@ -301,6 +301,17 @@ const pages = [
     expectHlsMaster: true,
   },
   {
+    path: `/watch?tmdbId=${hlsManagedTmdbId}&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1`,
+    selector: ".player-shell",
+    expectHlsMaster: true,
+    expectReproducibleWatchUrl: {
+      tmdbId: hlsManagedTmdbId,
+      mediaType: "tv",
+      seasonNumber: "1",
+      episodeNumber: "1",
+    },
+  },
+  {
     path: "/player.html?tmdbId=auto-fallback-tv&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1",
     selector: ".player-shell",
     expectAutomaticSourceFallback: true,
@@ -744,6 +755,35 @@ async function runSmoke() {
         if (finalLabel !== "Fullscreen") {
           throw new Error(
             `${pageSpec.path}\nMobile fullscreen toggle did not exit fullscreen.\n${finalLabel}`,
+          );
+        }
+      }
+
+      if (pageSpec.expectReproducibleWatchUrl) {
+        const watchUrlState = await page.evaluate(() => {
+          const url = new URL(window.location.href);
+          return {
+            pathname: url.pathname,
+            tmdbId: url.searchParams.get("tmdbId") || "",
+            mediaType: url.searchParams.get("mediaType") || "",
+            seasonNumber: url.searchParams.get("seasonNumber") || "",
+            episodeNumber: url.searchParams.get("episodeNumber") || "",
+            sourceHash: url.searchParams.get("sourceHash") || "",
+          };
+        });
+        for (const [key, value] of Object.entries(pageSpec.expectReproducibleWatchUrl)) {
+          if (watchUrlState[key] !== value) {
+            throw new Error(
+              `${pageSpec.path}\nWatch URL should keep reproducible params.\n${JSON.stringify({
+                expected: pageSpec.expectReproducibleWatchUrl,
+                actual: watchUrlState,
+              })}`,
+            );
+          }
+        }
+        if (watchUrlState.pathname !== "/watch") {
+          throw new Error(
+            `${pageSpec.path}\nPlayer should canonicalize to /watch with query params.\n${JSON.stringify(watchUrlState)}`,
           );
         }
       }

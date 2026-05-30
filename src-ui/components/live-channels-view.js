@@ -3,6 +3,7 @@ import html from "solid-js/html";
 import { LIVE_CHANNELS } from "../lib/live-channels.js";
 import {
   addCurrentReturnToParam,
+  buildWatchUrl,
   saveWatchParams,
   slugifyTitle,
 } from "../lib/watch-params.js";
@@ -95,7 +96,7 @@ function buildPlayerUrl(channel) {
 
   const slug = slugifyTitle(title);
   saveWatchParams(slug, params.toString());
-  return `/watch/${slug}`;
+  return buildWatchUrl(params);
 }
 
 function openLiveChannel(channel) {

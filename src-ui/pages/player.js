@@ -57,6 +57,7 @@ import {
   toggleFullscreenMode as togglePlayerFullscreenMode,
 } from "../player/fullscreen.js";
 import {
+  buildWatchUrl,
   findSeriesEntryBySlug,
   loadWatchParams,
   normalizeInternalReturnToPath,
@@ -275,7 +276,7 @@ const hlsPlaybackController = createHlsPlaybackController({
   isBrowserOffline: () => isBrowserOffline(),
 });
 
-// ─── Clean URL support: /watch/<slug> or /watch/<slug>/<episodeIndex> ───
+// ─── Watch URL support: reproducible /watch?... plus legacy /watch/<slug> ───
 function slugify(text) {
   return slugifyTitle(text);
 }
@@ -1710,7 +1711,11 @@ if (resumeTime > 1) {
 }
 
 function stripAudioSyncFromPageUrl() {
-  // No-op: clean URLs don't carry query params.
+  if (!params.has("audioSyncMs")) {
+    return;
+  }
+  params.delete("audioSyncMs");
+  replaceReproducibleWatchUrl();
 }
 
 function isResolvingSource() {
@@ -4754,7 +4759,7 @@ function navigateToSeriesEpisode(nextIndex) {
   }
 
   const _seriesSlug = slugify(activeSeries?.title || title);
-  const _episodePath = _seriesSlug ? `/watch/${_seriesSlug}/${safeIndex}` : window.location.pathname;
+  const _episodePath = buildWatchUrl(nextParams);
   if (_seriesSlug) {
     saveWatchParams(_seriesSlug, nextParams.toString(), {
       seriesId: activeSeries?.id || requestedSeriesId,
@@ -7727,31 +7732,114 @@ async function fetchTmdbSourceOptionsViaBackend() {
   }
 }
 
+function buildReproduciblePlaybackParams() {
+  const nextParams = new URLSearchParams(params);
+  const normalizedTitle = String(title || params.get("title") || "Title").trim();
+  if (normalizedTitle) {
+    nextParams.set("title", normalizedTitle);
+  }
+  const normalizedEpisode = String(episode || params.get("episode") || "").trim();
+  if (normalizedEpisode) {
+    nextParams.set("episode", normalizedEpisode);
+  } else {
+    nextParams.delete("episode");
+  }
+
+  if (src) {
+    nextParams.set("src", src);
+  } else {
+    nextParams.delete("src");
+  }
+  if (tmdbId) {
+    nextParams.set("tmdbId", tmdbId);
+  } else {
+    nextParams.delete("tmdbId");
+  }
+  if (mediaType === "movie" || mediaType === "tv") {
+    nextParams.set("mediaType", mediaType);
+  } else {
+    nextParams.delete("mediaType");
+  }
+  if (year) {
+    nextParams.set("year", year);
+  } else {
+    nextParams.delete("year");
+  }
+
+  if (mediaType === "tv" || isEpisodeListPlayback()) {
+    nextParams.set("seasonNumber", String(Math.max(1, Math.floor(Number(seasonNumber) || 1))));
+    nextParams.set("episodeNumber", String(Math.max(1, Math.floor(Number(episodeNumber) || 1))));
+    if (Number.isFinite(Number(seriesEpisodeIndex)) && seriesEpisodeIndex >= 0) {
+      nextParams.set("episodeIndex", String(Math.floor(Number(seriesEpisodeIndex))));
+    }
+    const resolvedSeriesId = String(activeSeries?.id || requestedSeriesId || "").trim();
+    if (resolvedSeriesId) {
+      nextParams.set("seriesId", resolvedSeriesId);
+    }
+  } else {
+    nextParams.delete("seasonNumber");
+    nextParams.delete("episodeNumber");
+    nextParams.delete("episodeIndex");
+    nextParams.delete("seriesId");
+  }
+
+  const normalizedSourceHash = normalizeSourceHash(selectedSourceHash);
+  if (sourceSelectionPinned && normalizedSourceHash) {
+    nextParams.set("sourceHash", normalizedSourceHash);
+  } else {
+    nextParams.delete("sourceHash");
+  }
+  nextParams.delete("sessionKey");
+  nextParams.delete("audioSyncMs");
+
+  if (preferredAudioLang && preferredAudioLang !== "auto") {
+    nextParams.set("audioLang", preferredAudioLang);
+  } else {
+    nextParams.delete("audioLang");
+  }
+  if (preferredQuality && preferredQuality !== DEFAULT_STREAM_QUALITY_PREFERENCE) {
+    nextParams.set("quality", preferredQuality);
+  } else {
+    nextParams.delete("quality");
+  }
+  if (preferredContainer === "mp4" || preferredContainer === "mkv") {
+    nextParams.set("preferredContainer", preferredContainer);
+  } else {
+    nextParams.delete("preferredContainer");
+  }
+
+  return nextParams;
+}
+
+function replaceReproducibleWatchUrl() {
+  try {
+    const nextParams = buildReproduciblePlaybackParams();
+    for (const key of Array.from(params.keys())) {
+      params.delete(key);
+    }
+    for (const [key, value] of nextParams.entries()) {
+      params.set(key, value);
+    }
+    window.history.replaceState(null, "", buildWatchUrl(nextParams));
+  } catch {
+    // Cosmetic only; playback should keep going if history updates are blocked.
+  }
+}
+
 function persistAudioLangInUrl() {
-  // No-op: clean URLs don't carry query params.
+  replaceReproducibleWatchUrl();
 }
 
 function persistQualityInUrl() {
-  // No-op: clean URLs don't carry query params.
+  replaceReproducibleWatchUrl();
 }
 
 function persistSourceHashInUrl() {
-  // No-op: clean URLs don't carry query params.
+  replaceReproducibleWatchUrl();
 }
 
 function cleanUrlIfNeeded() {
-  try {
-    const shouldUseEpisodePath = isEpisodeListPlayback();
-    const cleanSlug = shouldUseEpisodePath
-      ? slugify(activeSeries?.title || title)
-      : slugify(title);
-    if (cleanSlug) {
-      const cleanPath = shouldUseEpisodePath
-        ? `/watch/${cleanSlug}/${seriesEpisodeIndex}`
-        : `/watch/${cleanSlug}`;
-      window.history.replaceState(null, "", cleanPath);
-    }
-  } catch { /* cosmetic — don't break playback */ }
+  replaceReproducibleWatchUrl();
 }
 
 function findLocalMoviePlaybackEntry(libraryPayload) {

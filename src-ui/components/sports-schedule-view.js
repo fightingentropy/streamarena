@@ -2,6 +2,7 @@ import html from "solid-js/html";
 import { createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import {
   addCurrentReturnToParam,
+  buildWatchUrl,
   saveWatchParams,
   slugifyTitle,
 } from "../lib/watch-params.js";
@@ -253,7 +254,7 @@ function buildSportsPlayerUrl(match, config) {
   });
   addCurrentReturnToParam(params);
   saveWatchParams(slug, params.toString());
-  return `/watch/${slug}`;
+  return buildWatchUrl(params);
 }
 
 function openSportsPlayer(match, config) {

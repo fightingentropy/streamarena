@@ -148,7 +148,7 @@ External movie/TV embed stack:
 Playback flow for local titles:
 
 1. Home reads local library entries from `assets/library.json`.
-2. A local movie or episode opens `/watch/<slug>` with a saved query containing `src`, title metadata, artwork, and optional audio/subtitle params.
+2. A local movie or episode opens `/watch?...` with reproducible query params containing `src` or TMDB identity, title metadata, artwork, and optional audio/subtitle params.
 3. The player treats explicit `src` URLs as local/direct playback, probes tracks, prefers the configured audio language when possible, and falls back to remux/HLS for browser-incompatible codecs.
 
 Live and sports flow:
@@ -295,10 +295,10 @@ Operational features:
 - Public sign-in/sign-up page.
 - Migrates old localStorage data to server user tables after successful auth.
 
-`/watch/<slug>` and `/player.html`
+`/watch?...` and `/player.html`
 
 - Custom player.
-- Accepts direct `src`, TMDB movie/TV params, live params, saved watch params, and source/session pins.
+- Accepts direct `src`, TMDB movie/TV params, live params, saved legacy watch params, and source pins.
 
 `/settings.html`
 

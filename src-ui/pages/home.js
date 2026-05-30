@@ -29,6 +29,7 @@ import { hydrateFromServer, SERVER_HYDRATED_EVENT } from "../lib/auth.js";
 import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
 import {
   addCurrentReturnToParam,
+  buildWatchUrl,
   saveWatchParams,
   slugifyTitle,
 } from "../lib/watch-params.js";
@@ -1625,13 +1626,13 @@ export default function HomePage() {
     }
 
     const _slug = slugifyTitle(title || "Title");
-    const _epIdx = isSeriesLaunch && hasEpisodeIndex ? `/${Math.floor(parsedEpisodeIndex)}` : "";
     addCurrentReturnToParam(params);
+    const playerUrl = buildWatchUrl(params);
     saveWatchParams(_slug, params.toString(), {
       tmdbId: params.get("tmdbId") || "",
       seriesId: params.get("seriesId") || "",
     });
-    window.location.href = `/watch/${_slug}${_epIdx}`;
+    window.location.href = playerUrl;
   }
 
   function getHeroDestination() {
