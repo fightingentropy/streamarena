@@ -959,6 +959,12 @@ impl ResolverService {
                 external_guard.mark_completed();
                 return Ok(payload);
             }
+
+            if !filters.source_hash.is_empty() {
+                return Err(ApiError::internal(
+                    "Selected external embed source could not be resolved.",
+                ));
+            }
         }
         if !skip_external_embed
             && should_prefer_default_external_embed(&filters, resolver_provider)
@@ -1300,6 +1306,12 @@ impl ResolverService {
             {
                 external_guard.mark_completed();
                 return Ok(payload);
+            }
+
+            if !filters.source_hash.is_empty() {
+                return Err(ApiError::internal(
+                    "Selected external embed source could not be resolved.",
+                ));
             }
         }
         if !skip_external_embed
