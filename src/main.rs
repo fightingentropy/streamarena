@@ -32,7 +32,7 @@ use tracing::info;
 
 use crate::config::Config;
 use crate::error::AppResult;
-use crate::football::SportsScheduleCache;
+use crate::football::{SportsProviderHealth, SportsScheduleCache, SportsStreamResolveCache};
 use crate::local_torrent::LocalTorrentService;
 use crate::media::MediaService;
 use crate::persistence::Db;
@@ -102,6 +102,8 @@ async fn main() -> AppResult<()> {
     );
     let auth_rate_limiter =
         std::sync::Arc::new(crate::rate_limit::RateLimiter::new(12, 15 * 60 * 1000));
+    let sports_stream_rate_limiter =
+        std::sync::Arc::new(crate::rate_limit::RateLimiter::new(30, 60 * 1000));
     let started_at_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
@@ -112,6 +114,12 @@ async fn main() -> AppResult<()> {
     let sweep_streaming = streaming.clone();
     let sweep_local_torrent = local_torrent.clone();
     let sweep_auth_rate_limiter = auth_rate_limiter.clone();
+    let sweep_sports_stream_rate_limiter = sports_stream_rate_limiter.clone();
+    let sweep_sports_stream_resolve_cache = SportsStreamResolveCache::new(
+        config.sports_resolver_max_concurrent,
+        config.sports_resolver_queue_timeout_ms,
+    );
+    let sports_stream_resolve_cache = sweep_sports_stream_resolve_cache.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
@@ -121,6 +129,8 @@ async fn main() -> AppResult<()> {
             sweep_streaming.prune().await;
             sweep_local_torrent.prune_idle_locks();
             sweep_auth_rate_limiter.prune();
+            sweep_sports_stream_rate_limiter.prune();
+            sweep_sports_stream_resolve_cache.prune();
         }
     });
 
@@ -136,8 +146,11 @@ async fn main() -> AppResult<()> {
         upload,
         runtime,
         sports_schedule_cache: SportsScheduleCache::new(),
+        sports_stream_resolve_cache,
+        sports_provider_health: SportsProviderHealth::new(),
         home_bootstrap_cache: crate::home_bootstrap::HomeBootstrapCache::new(),
         auth_rate_limiter,
+        sports_stream_rate_limiter,
         started_at_ms,
     };
 

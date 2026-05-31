@@ -5400,8 +5400,14 @@ async function resolveLivePlaybackSource(source) {
   if (!normalizedSource) {
     throw new Error("Missing live stream source.");
   }
+  if (parseLiveIframePlaybackSource(normalizedSource)) {
+    return normalizedSource;
+  }
   if (!shouldResolveLiveEmbedSource) {
     return getLivePlaybackSource(normalizedSource, isLivePlayback);
+  }
+  if (isHlsPlaybackSource(normalizedSource)) {
+    return getLivePlaybackSource(normalizedSource, true);
   }
 
   const query = new URLSearchParams({ url: normalizedSource });
@@ -5420,8 +5426,18 @@ async function resolveLivePlaybackSource(source) {
   const playbackType = String(payload?.playbackType || "")
     .trim()
     .toLowerCase();
+  if (playbackType === "iframe" || playbackType === "embed") {
+    const embedUrl = normalizePlaybackSourceValue(
+      payload?.embedUrl || payload?.playerPage || payload?.streamUrl || payload?.playbackUrl || "",
+    );
+    const iframeSource = buildLiveIframePlaybackSource(embedUrl);
+    if (!iframeSource) {
+      throw new Error("Could not resolve this live stream to an iframe.");
+    }
+    return iframeSource;
+  }
   if (playbackType && playbackType !== "hls") {
-    throw new Error("Live stream playback is not available as HLS.");
+    throw new Error("Live stream playback type is not supported.");
   }
   if (!isHlsPlaybackSource(playbackUrl)) {
     throw new Error("Could not resolve this live stream to HLS.");

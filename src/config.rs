@@ -30,6 +30,8 @@ pub struct Config {
     pub remux_process_timeout_seconds: u64,
     pub resolver_max_concurrent: usize,
     pub resolver_queue_timeout_ms: u64,
+    pub sports_resolver_max_concurrent: usize,
+    pub sports_resolver_queue_timeout_ms: u64,
     pub local_torrent_max_bytes: u64,
     pub local_torrent_metadata_timeout_ms: u64,
     pub local_torrent_ready_timeout_ms: u64,
@@ -77,6 +79,10 @@ impl Config {
         let resolver_max_concurrent = parse_usize_env("RESOLVER_MAX_CONCURRENT", 2, 1, 16);
         let resolver_queue_timeout_ms =
             parse_u64_env("RESOLVER_QUEUE_TIMEOUT_MS", 3_000, 100, 120_000);
+        let sports_resolver_max_concurrent =
+            parse_usize_env("SPORTS_RESOLVER_MAX_CONCURRENT", 2, 1, 8);
+        let sports_resolver_queue_timeout_ms =
+            parse_u64_env("SPORTS_RESOLVER_QUEUE_TIMEOUT_MS", 3_000, 100, 60_000);
         let local_torrent_max_bytes = parse_u64_env(
             "LOCAL_TORRENT_MAX_BYTES",
             80 * 1024 * 1024 * 1024,
@@ -146,6 +152,8 @@ impl Config {
             remux_process_timeout_seconds,
             resolver_max_concurrent,
             resolver_queue_timeout_ms,
+            sports_resolver_max_concurrent,
+            sports_resolver_queue_timeout_ms,
             local_torrent_max_bytes,
             local_torrent_metadata_timeout_ms,
             local_torrent_ready_timeout_ms,
