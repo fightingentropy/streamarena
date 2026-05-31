@@ -1,5 +1,5 @@
 // Bump CACHE_PREFIX when shell assets change so clients pick up updates.
-const CACHE_PREFIX = "netflix-pwa-v20";
+const CACHE_PREFIX = "netflix-pwa-v21";
 const SHELL_CACHE = `${CACHE_PREFIX}:shell`;
 const PAGE_CACHE = `${CACHE_PREFIX}:pages`;
 const API_CACHE = `${CACHE_PREFIX}:api`;
@@ -21,10 +21,8 @@ const RUNTIME_CACHE_MAX_ENTRIES = 90;
 const WARM_CACHE_LIMIT = 100;
 
 const APP_SHELL_URLS = [
-  "/",
   "/login.html",
   "/settings.html",
-  "/upload.html",
   "/live.html",
   "/sports.html",
   "/player.html",
@@ -229,8 +227,11 @@ async function precacheUrls(cache, urls) {
   await Promise.allSettled(
     urls.map(async (url) => {
       const response = await fetch(url, { cache: "reload" });
-      if (isCacheableResponse(response)) {
-        await cache.put(url, response);
+      if (
+        isCacheableResponse(response) &&
+        !responseCacheControlDisallowsStorage(response)
+      ) {
+        await cache.put(url, response.clone());
       }
     }),
   );

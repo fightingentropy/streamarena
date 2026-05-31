@@ -35,7 +35,7 @@ Important paths:
 
 - `src/` - Rust services, routes, static serving, auth, resolver, media processing, uploads, live/sports, persistence.
 - `src-ui/entries/` - page entrypoints loaded by each HTML shell.
-- `src-ui/pages/` - Solid page components for home, login, player, settings, upload, live, and sports.
+- `src-ui/pages/` - Solid page components for home, login, player, settings, live, and sports.
 - `src-ui/player/` - player-specific helpers for sources, HLS, subtitles, episodes, fullscreen, resume, and live stream menus.
 - `assets/library.json` - local catalog. It currently contains empty `movies` and `series` arrays in this checkout.
 - `public/` - PWA manifest, service worker, and offline page copied by Vite into `dist/`.
@@ -180,7 +180,7 @@ Home and browsing:
 - Details modal with metadata, cast, playback launch, and My List actions.
 - Continue watching entries enriched from local library and server state.
 - My List stored locally and synced to `/api/user/my-list`.
-- Library editor mode via `netflix-library-edit-mode`, with edit/delete support for local movies and series entries and an upload handoff for new episodes.
+- Library editor mode via `netflix-library-edit-mode`, with edit/delete support for local movies and series entries.
 - `/live` can be opened as a full page or as an in-home live view.
 - `/sports` is linked from navigation.
 
@@ -223,11 +223,11 @@ Subtitles and tracks:
 - Subtitle language and local subtitle stream preferences.
 - Subtitle color preference in Settings.
 
-Uploads and library management:
+Programmatic uploads and library management:
 
-- Drag/drop or file-picker upload UI.
+- The browser upload page has been removed; uploads are API-only.
 - `.mp4` and `.mkv` inputs.
-- Movie or episode metadata forms.
+- Movie or episode metadata payloads.
 - Filename metadata inference through `/api/upload/infer`.
 - Chunked upload sessions:
   - `POST /api/upload/session/start`
@@ -304,10 +304,6 @@ Operational features:
 `/settings.html`
 
 - Authenticated preferences page.
-
-`/upload.html`
-
-- Authenticated upload and metadata workflow.
 
 `/live` and `/live.html`
 

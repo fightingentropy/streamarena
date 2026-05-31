@@ -551,7 +551,7 @@ impl MediaService {
                 if is_local_stream_url(&url) {
                     return Ok(url.to_string());
                 }
-                let local_path = to_local_path(&self.config.root_dir, url.path())
+                let local_path = resolve_local_media_path(&self.config, url.path())
                     .ok_or_else(|| ApiError::bad_request("Invalid local playback path."))?;
                 return Ok(local_path.to_string_lossy().to_string());
             }
@@ -562,7 +562,11 @@ impl MediaService {
         }
 
         if input.starts_with('/') && is_path_inside_root_dir(&self.config.root_dir, input) {
-            return Ok(input.to_owned());
+            let local_path = PathBuf::from(input);
+            if is_allowed_local_media_file(&self.config, &local_path) {
+                return Ok(local_path.to_string_lossy().to_string());
+            }
+            return Err(ApiError::bad_request("Invalid local playback path."));
         }
 
         let normalized_path = if input.starts_with('/') {
@@ -570,7 +574,7 @@ impl MediaService {
         } else {
             format!("/{input}")
         };
-        let file_path = to_local_path(&self.config.root_dir, &normalized_path)
+        let file_path = resolve_local_media_path(&self.config, &normalized_path)
             .ok_or_else(|| ApiError::bad_request("Invalid local playback path."))?;
         Ok(file_path.to_string_lossy().to_string())
     }
@@ -1251,6 +1255,26 @@ fn is_path_inside_root_dir(root_dir: &Path, value: &str) -> bool {
     candidate == root_dir || candidate.starts_with(root_dir)
 }
 
+fn resolve_local_media_path(config: &Config, pathname: &str) -> Option<PathBuf> {
+    let local_path = to_local_path(&config.root_dir, pathname)?;
+    is_allowed_local_media_file(config, &local_path).then_some(local_path)
+}
+
+fn is_allowed_local_media_file(config: &Config, path: &Path) -> bool {
+    let Ok(candidate) = path.canonicalize() else {
+        return false;
+    };
+    let allowed_roots = [
+        config.assets_dir.join("videos"),
+        config.local_torrent_cache_dir.clone(),
+    ];
+    allowed_roots.iter().any(|root| {
+        root.canonicalize()
+            .map(|allowed| candidate == allowed || candidate.starts_with(allowed))
+            .unwrap_or(false)
+    })
+}
+
 fn to_local_path(root_dir: &Path, pathname: &str) -> Option<PathBuf> {
     let mut requested = if pathname == "/" {
         "/index.html".to_owned()
@@ -1877,6 +1901,7 @@ fn json_number(value: &Value) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use url::Url;
@@ -1889,7 +1914,57 @@ mod tests {
         is_local_cache_stream_url, is_local_torrent_stream_input, is_local_torrent_stream_url,
         is_path_inside_root_dir, local_cache_stream_file_path, merge_preferred_subtitle_tracks,
         normalize_external_subtitle_download_url, normalize_subtitle_text_to_vtt,
+        resolve_local_media_path,
     };
+
+    fn test_config(root_dir: PathBuf) -> crate::config::Config {
+        let assets_dir = root_dir.join("assets");
+        let cache_dir = root_dir.join("cache");
+        crate::config::Config {
+            root_dir,
+            frontend_dir: std::env::temp_dir(),
+            assets_dir: assets_dir.clone(),
+            cache_dir: cache_dir.clone(),
+            hls_cache_dir: cache_dir.join("hls"),
+            local_torrent_cache_dir: cache_dir.join("local-torrents"),
+            upload_temp_dir: cache_dir.join("uploads"),
+            local_library_path: assets_dir.join("library.json"),
+            persistent_cache_db_path: cache_dir.join("cache.sqlite"),
+            host: "127.0.0.1".to_owned(),
+            port: 5173,
+            max_upload_bytes: 1,
+            tmdb_api_key: String::new(),
+            real_debrid_token: String::new(),
+            torrentio_base_url: String::new(),
+            torznab_api_url: String::new(),
+            torznab_api_key: String::new(),
+            torznab_movie_categories: vec!["2000".to_owned(), "2040".to_owned(), "2045".to_owned()],
+            torznab_tv_categories: vec!["5000".to_owned(), "5040".to_owned(), "5045".to_owned()],
+            torznab_limit: 50,
+            torznab_timeout_ms: 15_000,
+            remux_video_mode: "auto".to_owned(),
+            remux_max_concurrent: 2,
+            remux_queue_timeout_ms: 2_000,
+            remux_process_timeout_seconds: 4 * 60 * 60,
+            resolver_max_concurrent: 2,
+            resolver_queue_timeout_ms: 3_000,
+            sports_resolver_max_concurrent: 2,
+            sports_resolver_queue_timeout_ms: 3_000,
+            local_torrent_max_bytes: 80 * 1024 * 1024 * 1024,
+            local_torrent_metadata_timeout_ms: 45_000,
+            local_torrent_ready_timeout_ms: 90_000,
+            hls_max_transcode_jobs: 1,
+            hls_max_segment_renders: 2,
+            hls_segment_queue_timeout_ms: 2_000,
+            hls_hwaccel_mode: "none".to_owned(),
+            remux_hwaccel_mode: "none".to_owned(),
+            auto_audio_sync_enabled: false,
+            playback_sessions_enabled: false,
+            opensubtitles_api_key: String::new(),
+            opensubtitles_user_agent: String::new(),
+            session_cookie_secure: true,
+        }
+    }
 
     #[test]
     fn keeps_only_allowed_external_subtitle_hosts() {
@@ -2118,6 +2193,29 @@ mod tests {
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn local_media_paths_are_limited_to_media_roots() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("netflix-media-allowed-{unique}"));
+        let videos_dir = root.join("assets").join("videos");
+        fs::create_dir_all(&videos_dir).expect("videos dir");
+        fs::write(videos_dir.join("movie.mp4"), b"movie").expect("movie file");
+        fs::write(root.join("Cargo.toml"), b"secret").expect("non-media file");
+        let config = test_config(root.clone());
+
+        assert_eq!(
+            resolve_local_media_path(&config, "/assets/videos/movie.mp4"),
+            Some(videos_dir.join("movie.mp4"))
+        );
+        assert!(resolve_local_media_path(&config, "/Cargo.toml").is_none());
+        assert!(resolve_local_media_path(&config, "/assets/videos/../Cargo.toml").is_none());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -7,7 +7,6 @@ const pages = {
   login: resolve(__dirname, "login.html"),
   player: resolve(__dirname, "player.html"),
   settings: resolve(__dirname, "settings.html"),
-  upload: resolve(__dirname, "upload.html"),
   live: resolve(__dirname, "live.html"),
   sports: resolve(__dirname, "sports.html"),
 };

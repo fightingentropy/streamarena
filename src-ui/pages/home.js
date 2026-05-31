@@ -410,8 +410,7 @@ function normalizeLibraryEditCategory(itemType, value) {
   if (normalizedItemType === "series") {
     if (
       normalizedCategory === "title" ||
-      normalizedCategory === "episodes" ||
-      normalizedCategory === "upload"
+      normalizedCategory === "episodes"
     ) {
       return normalizedCategory;
     }
@@ -549,7 +548,6 @@ function renderLibraryEditSeriesFieldsHtml(item = {}, activeCat = "title") {
     <div class="library-edit-categories" role="tablist" aria-label="Series editor categories">
       <button type="button" class="library-edit-category-btn ${activeCategory === "title" ? "is-active" : ""}" data-library-edit-category="title" aria-pressed="${activeCategory === "title" ? "true" : "false"}">Series</button>
       <button type="button" class="library-edit-category-btn ${activeCategory === "episodes" ? "is-active" : ""}" data-library-edit-category="episodes" aria-pressed="${activeCategory === "episodes" ? "true" : "false"}">Episodes</button>
-      <button type="button" class="library-edit-category-btn ${activeCategory === "upload" ? "is-active" : ""}" data-library-edit-category="upload" aria-pressed="${activeCategory === "upload" ? "true" : "false"}">Upload ${itemLabel}</button>
     </div>
   `;
   if (activeCategory === "title") {
@@ -593,19 +591,18 @@ function renderLibraryEditSeriesFieldsHtml(item = {}, activeCat = "title") {
         </section>
       </section>`;
   }
-  const nextEpisodeNumber =
-    episodes.reduce((maxValue, episode) => {
-      const value = Number(episode?.episodeNumber || 0);
-      return Number.isFinite(value) && value > maxValue ? value : maxValue;
-    }, 0) + 1;
   return `${categoryTabs}
-    <section class="library-edit-category-panel is-active" data-library-edit-panel="upload">
-      <div class="library-edit-upload-panel">
-        <h4>Upload New ${itemLabel}</h4>
-        <p>This view is upload-only. Existing ${itemLabel.toLowerCase()} editors are hidden for clarity.</p>
-        <p>Next default ${itemLabel.toLowerCase()}: ${nextEpisodeNumber}</p>
-        <button type="button" class="library-edit-btn library-edit-btn--primary" data-action="open-upload-episode">Open Upload Flow</button>
+    <section class="library-edit-category-panel is-active" data-library-edit-panel="episodes">
+      <div class="library-edit-panel-header">
+        <p>Edit existing ${itemLabel.toLowerCase()} metadata here.</p>
       </div>
+      <section class="library-edit-episodes">
+      ${episodes
+        .map((episode, index) =>
+          renderLibraryEditSeriesEpisodeHtml(episode, index, contentKind),
+        )
+        .join("")}
+      </section>
     </section>`;
 }
 
@@ -1713,23 +1710,17 @@ export default function HomePage() {
       setLibraryEditModalMetaText(`${contentLabel} \u2022 ${episodeCount} episode${episodeCount === 1 ? "" : "s"}`);
     }
 
-    const isUploadOnlyView =
-      itemType === "series" && activeLibraryEditCategory === "upload";
-    setLibraryAddEpisodeVisible(itemType === "series" && !isUploadOnlyView);
+    setLibraryAddEpisodeVisible(itemType === "series");
     if (itemType === "series") {
       const contentKind = normalizeLibrarySeriesContentKind(item?.contentKind || "");
       setLibraryAddEpisodeBtnText(
-        contentKind === "course" ? "Upload Lesson" : "Upload Episode",
+        contentKind === "course" ? "Add Lesson" : "Add Episode",
       );
     } else {
       setLibraryAddEpisodeBtnText("Add Episode");
     }
-    setLibrarySaveBtnVisible(
-      !(itemType === "series" && activeLibraryEditCategory === "upload"),
-    );
-    setLibraryDeleteBtnVisible(
-      !(itemType === "series" && activeLibraryEditCategory === "upload"),
-    );
+    setLibrarySaveBtnVisible(true);
+    setLibraryDeleteBtnVisible(true);
 
     libraryEditFieldsRef.innerHTML =
       itemType === "movie"
@@ -1737,8 +1728,8 @@ export default function HomePage() {
         : renderLibraryEditSeriesFieldsHtml(item, activeLibraryEditCategory);
   }
 
-  // ---- Library edit episode upload flow ----
-  function openEpisodeUploadFlowForActiveSeries() {
+  // ---- Library edit episode rows ----
+  function addEpisodeToActiveSeries() {
     if (!activeLibraryEditContext || activeLibraryEditContext.itemType !== "series") {
       return;
     }
@@ -1771,17 +1762,27 @@ export default function HomePage() {
     const seasonNumber = Number.isFinite(seasonFallback)
       ? Math.max(1, Math.floor(seasonFallback))
       : 1;
-    const params = new URLSearchParams({
-      mode: "add-episode",
-      contentType: contentKind === "course" ? "course" : "episode",
-      seriesId,
-      seriesTitle,
+    const nextEpisode = {
+      title: `${episodeLabel} ${nextEpisodeNumber}`,
+      src: "",
+      contentKind,
+      seasonNumber,
+      episodeNumber: nextEpisodeNumber,
       thumb: inheritedThumb,
-      seasonNumber: String(seasonNumber),
-      episodeNumber: String(nextEpisodeNumber),
-      episodeTitle: `${episodeLabel} ${nextEpisodeNumber}`,
-    });
-    window.location.href = `/settings?${params.toString()}`;
+      description: "",
+      uploadedAt: Date.now(),
+    };
+    activeLibraryEditContext.library.series[activeLibraryEditContext.itemIndex] = {
+      ...seriesItem,
+      id: seriesId || seriesItem.id,
+      title: seriesTitle || seriesItem.title,
+      episodes: [...episodes, nextEpisode],
+    };
+    activeLibraryEditCategory = "episodes";
+    renderLibraryEditModalFields();
+    setLibraryEditModalStatus(
+      `${episodeLabel} ${nextEpisodeNumber} added. Fill in the source path, then Save Changes.`,
+    );
   }
 
   // ---- Library edit collect ----
@@ -4587,11 +4588,7 @@ export default function HomePage() {
         activeLibraryEditCategory = nextCategory;
         renderLibraryEditModalFields();
         if (activeLibraryEditContext.itemType === "series") {
-          if (nextCategory === "upload") {
-            setLibraryEditModalStatus(
-              "Upload mode: editor fields are hidden. Use Open Upload Flow.",
-            );
-          } else if (nextCategory === "episodes") {
+          if (nextCategory === "episodes") {
             setLibraryEditModalStatus(
               "Episode mode: edit lessons here, then Save Changes.",
             );
@@ -4602,11 +4599,6 @@ export default function HomePage() {
           }
         }
       }
-      return;
-    }
-    const uploadButton = target?.closest?.('[data-action="open-upload-episode"]');
-    if (uploadButton instanceof HTMLButtonElement) {
-      openEpisodeUploadFlowForActiveSeries();
       return;
     }
     const button = target?.closest?.('[data-action="delete-episode"]');
@@ -4636,7 +4628,7 @@ export default function HomePage() {
   }
 
   function handleLibraryAddEpisode() {
-    openEpisodeUploadFlowForActiveSeries();
+    addEpisodeToActiveSeries();
   }
 
   async function handleLibrarySave() {

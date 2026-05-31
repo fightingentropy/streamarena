@@ -260,14 +260,12 @@ function apiPayload(url, method) {
   if (path === "/api/hls/master.m3u8") {
     return "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.000,\n/api/hls/segment.ts?index=0\n#EXT-X-ENDLIST\n";
   }
-  if (path === "/api/upload/infer" && method !== "GET") return {};
   return {};
 }
 
 const pages = [
   { path: "/login.html", selector: ".login-page" },
   { path: "/settings.html", selector: ".settings-content" },
-  { path: "/upload.html", selector: ".upload-page" },
   { path: "/live.html", selector: ".live-page" },
   { path: "/sports", selector: ".sports-page", expectSportsTabs: true },
   { path: "/index.html", selector: ".home-page" },

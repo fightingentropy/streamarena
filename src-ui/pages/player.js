@@ -107,6 +107,8 @@ const LIVE_EDGE_REJOIN_TOLERANCE_SECONDS = 2.5;
 const LIVE_EMBED_FALLBACK_SOURCE_LIMIT = 5;
 const LIVE_IFRAME_SOURCE_PREFIX = "live-iframe:";
 const LIVE_IFRAME_ALLOW_POLICY = "autoplay; fullscreen; picture-in-picture; encrypted-media";
+const LIVE_IFRAME_SANDBOX_POLICY =
+  "allow-scripts allow-same-origin allow-presentation allow-forms";
 const LIVE_IFRAME_SUBTITLE_STREAM_INDEX_BASE = 9_000_000;
 const LIVE_IFRAME_SUBTITLE_LANGS = ["en", "fr", "es", "de", "it", "pt", "ja", "ko", "zh"];
 const LIVE_VISUAL_HEALTH_GRACE_MS = 12000;
@@ -3623,7 +3625,7 @@ function hardenLiveEmbedFrame() {
     return;
   }
   liveEmbedFrame.setAttribute("allow", LIVE_IFRAME_ALLOW_POLICY);
-  liveEmbedFrame.removeAttribute("sandbox");
+  liveEmbedFrame.setAttribute("sandbox", LIVE_IFRAME_SANDBOX_POLICY);
   liveEmbedFrame.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
 }
 
@@ -10536,6 +10538,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
         class="live-embed-frame"
         title="Live stream player"
         allow=${LIVE_IFRAME_ALLOW_POLICY}
+        sandbox=${LIVE_IFRAME_SANDBOX_POLICY}
         allowfullscreen
         referrerpolicy="strict-origin-when-cross-origin"
         onError=${handleLiveIframePlaybackError}

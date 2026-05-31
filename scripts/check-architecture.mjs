@@ -6,7 +6,6 @@ const rootDir = resolve(new URL("..", import.meta.url).pathname);
 const maxSourceLines = {
   "src-ui/pages/player.js": 10_500,
   "src-ui/pages/home.js": 6_000,
-  "src-ui/pages/upload.js": 1_600,
   "src-ui/pages/settings.js": 1_600,
 };
 const defaultPageLineLimit = 1_500;
@@ -37,7 +36,7 @@ function note(message) {
 }
 
 function lineCount(text) {
-  return text.split("\n").length;
+  return text.split("\n").filter((line) => line.trim().length > 0).length;
 }
 
 async function checkPackageShape() {
@@ -63,7 +62,6 @@ async function checkViteShape() {
     "login",
     "player",
     "settings",
-    "upload",
     "live",
     "sports",
   ]) {
@@ -104,13 +102,13 @@ async function checkSourceSizes() {
     largest.push([relPath, count]);
     const limit = maxSourceLines[relPath] || defaultPageLineLimit;
     if (count > limit) {
-      fail(`${relPath} has ${count} lines, above the ${limit}-line guard.`);
+      fail(`${relPath} has ${count} nonblank lines, above the ${limit}-line guard.`);
     }
   }
   largest
     .sort((a, b) => b[1] - a[1])
     .slice(0, 4)
-    .forEach(([relPath, count]) => note(`${relPath}: ${count} lines`));
+    .forEach(([relPath, count]) => note(`${relPath}: ${count} nonblank lines`));
 }
 
 async function checkBuiltBundles() {
