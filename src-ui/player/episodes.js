@@ -9,53 +9,7 @@
 
 export const DEFAULT_EPISODE_THUMBNAIL = "assets/images/thumbnail.jpg";
 
-const JEFFREY_EPSTEIN_EPISODE_1_SOURCE =
-  "assets/videos/jeffrey-epstein-filthy-rich-s01e01-2160p-hevc.mp4";
-
 export const STATIC_SERIES_LIBRARY = {
-  "jeffrey-epstein-filthy-rich": {
-    id: "jeffrey-epstein-filthy-rich",
-    title: "Jeffrey Epstein: Filthy Rich",
-    tmdbId: "103506",
-    year: "2020",
-    preferredContainer: "mp4",
-    requiresLocalEpisodeSources: true,
-    episodes: [
-      {
-        title: "Hunting Grounds",
-        description:
-          'Survivors recount how Epstein abused, manipulated and silenced them as he ran a so-called molestation "pyramid scheme" out of his Palm Beach mansion.',
-        thumb: "assets/images/jeffrey-epstein-s01e01-thumb.jpg",
-        src: JEFFREY_EPSTEIN_EPISODE_1_SOURCE,
-        seasonNumber: 1,
-        episodeNumber: 1,
-      },
-      {
-        title: "Follow the Money",
-        description:
-          "The survivors and journalists retrace how Epstein built influence, money and legal insulation for years.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 2,
-      },
-      {
-        title: "The Island",
-        description:
-          "Victims and insiders detail what happened at Epstein's private island and who enabled access.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 3,
-      },
-      {
-        title: "Finding Their Voice",
-        description:
-          "Women who were silenced for years step forward publicly and push for accountability.",
-        thumb: "assets/images/thumbnail.jpg",
-        seasonNumber: 1,
-        episodeNumber: 4,
-      },
-    ],
-  },
   "breaking-bad": {
     id: "breaking-bad",
     title: "Breaking Bad",

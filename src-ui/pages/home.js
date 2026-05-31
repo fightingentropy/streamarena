@@ -61,9 +61,6 @@ const FEATURED_HERO_STORAGE_KEY = "netflix-featured-hero-v2";
 const FEATURED_HERO_CANDIDATE_LIMIT = 10;
 const BLOCKED_FEATURED_HERO_TITLE_KEYS = new Set(["your heart will be broken"]);
 const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
-const JEFFREY_EPSTEIN_SERIES_ID = "jeffrey-epstein-filthy-rich";
-const JEFFREY_EPSTEIN_EPISODE_1_SOURCE =
-  "assets/videos/jeffrey-epstein-filthy-rich-s01e01-2160p-hevc.mp4";
 const POPULAR_TITLES_LIMIT = 14;
 const BROWSE_RAIL_LIMIT = 14;
 const TOP_TEN_RAIL_LIMIT = 10;
@@ -1420,17 +1417,17 @@ export default function HomePage() {
   const [detailsModalVisible, setDetailsModalVisible] = createSignal(false);
   const [detailsModalOpen, setDetailsModalOpen] = createSignal(false);
   const [detailsData, setDetailsData] = createSignal({
-    thumb: "assets/images/jeffrey-epstein-s01e01-thumb.jpg",
-    title: "JEFFREY EPSTEIN: FILTHY RICH",
-    year: "2023",
-    runtime: "2h 40m",
-    maturity: "18",
+    thumb: DEFAULT_LOCAL_THUMBNAIL,
+    title: "POPULAR MOVIES",
+    year: "",
+    runtime: "Movie",
+    maturity: "13+",
     quality: "HD",
-    audio: "Spatial Audio",
-    description: "Survivors and investigators detail how Jeffrey Epstein built a system of abuse and influence for years.",
-    cast: "Survivors, Journalists, Investigators",
-    genres: "Documentary, True Crime, Investigative",
-    vibe: "Investigative, Dark, Emotional",
+    audio: "",
+    description: "Pick a title to see details.",
+    cast: "",
+    genres: "",
+    vibe: "",
   });
   const [detailsMoreVisible, setDetailsMoreVisible] = createSignal(false);
   const [detailsMyListActive, setDetailsMyListActive] = createSignal(false);
@@ -1610,10 +1607,6 @@ export default function HomePage() {
       normalizedSource.includes("/assets/videos/");
     if (playbackSrc && isUploadedLocalMedia && !params.has("audioLang")) {
       params.set("audioLang", "en");
-    }
-
-    if (!playbackSrc && !tmdbId && !normalizedSeriesId) {
-      params.set("src", JEFFREY_EPSTEIN_EPISODE_1_SOURCE);
     }
 
     const _slug = slugifyTitle(title || "Title");
@@ -2067,7 +2060,7 @@ export default function HomePage() {
   // ---- Details modal ----
   function populateDetailsModal(details) {
     setDetailsData({
-      thumb: details.thumb || "assets/images/jeffrey-epstein-s01e01-thumb.jpg",
+      thumb: details.thumb || DEFAULT_LOCAL_THUMBNAIL,
       title: (details.title || "").toUpperCase(),
       year: details.year || "2023",
       runtime: details.runtime || "2h 40m",

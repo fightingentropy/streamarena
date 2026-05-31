@@ -109,6 +109,16 @@ const LIVE_IFRAME_SOURCE_PREFIX = "live-iframe:";
 const LIVE_IFRAME_ALLOW_POLICY = "autoplay; fullscreen; picture-in-picture; encrypted-media";
 const LIVE_IFRAME_SUBTITLE_STREAM_INDEX_BASE = 9_000_000;
 const LIVE_IFRAME_SUBTITLE_LANGS = ["en", "fr", "es", "de", "it", "pt", "ja", "ko", "zh"];
+const LIVE_VISUAL_HEALTH_GRACE_MS = 12000;
+const LIVE_VISUAL_HEALTH_INTERVAL_MS = 2000;
+const LIVE_VISUAL_HEALTH_SAMPLE_WIDTH = 32;
+const LIVE_VISUAL_HEALTH_SAMPLE_HEIGHT = 18;
+const LIVE_VISUAL_HEALTH_MAX_BLANK_SAMPLES = 4;
+const LIVE_VISUAL_HEALTH_MAX_AVG_LUMA = 8;
+const LIVE_VISUAL_HEALTH_MIN_BRIGHT_PIXEL_RATIO = 0.012;
+const LIVE_STARTUP_HEALTH_TIMEOUT_MS = 12000;
+const LIVE_FAILED_STREAM_CACHE_TTL_MS = 5 * 60 * 1000;
+const LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-failed-streams:";
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
@@ -200,6 +210,15 @@ let lastPlaybackSourceSetAt = 0;
 let lastPlaybackSeekAt = 0;
 let liveIframePlaybackBaseSeconds = 0;
 let liveIframePlaybackStartedAtMs = 0;
+let liveVisualHealthInterval = null;
+let liveVisualHealthCanvas = null;
+let liveVisualBlankSampleCount = 0;
+let liveStartupHealthTimeout = null;
+let liveStartupWatchArmed = false;
+let liveAutoFallbackInFlight = false;
+let liveAutoFallbackAttemptedStreamIds = new Set();
+let liveFailedStreamCacheKey = "";
+let liveFailedStreamStatuses = new Map();
 
 const _cleanups = [];
 function trackListener(target, event, handler, options) {
@@ -328,8 +347,6 @@ const benchmarkModeEnabled = new Set(["1", "true", "yes", "on"]).has(
     .trim()
     .toLowerCase(),
 );
-const DEFAULT_TRAILER_SOURCE =
-  "assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4";
 // DEFAULT_EPISODE_THUMBNAIL, STATIC_SERIES_LIBRARY — imported from ./src-ui/player/episodes.js
 
 // normalizeSeriesContentKind, cloneSeriesEpisode, mergeSeriesLibraries,
@@ -499,7 +516,7 @@ const fallbackEpisodeNumber = Number(
 );
 let rawTitle = isSeriesPlayback
   ? String(activeSeries.title || "")
-  : params.get("title") || "Jeffrey Epstein: Filthy Rich";
+  : params.get("title") || "Untitled";
 let rawEpisode = isSeriesPlayback
   ? getSeriesEpisodeLabel(
       seriesEpisodeIndex,
@@ -1086,7 +1103,9 @@ let sourceIdentity = isSeriesPlayback
   : src ||
     (isTmdbResolvedPlayback
       ? `tmdb:${mediaType}:${tmdbId}${isTmdbTvPlayback ? `:s${seasonNumber}:e${episodeNumber}` : ""}`
-      : DEFAULT_TRAILER_SOURCE);
+      : `watch:${slugify(title) || "untitled"}`);
+prepareLiveFailureCacheForCurrentEvent();
+selectFirstFreshLiveStreamIfNeeded();
 let resumeStorageKey = `netflix-resume:${sourceIdentity}`;
 const speedStorageKey = "netflix-playback-speed";
 let resumeTime = 0;
@@ -1860,6 +1879,21 @@ function normalizeResolverFailureMessage(
   const normalized = message.toLowerCase();
 
   if (
+    normalized.includes("pipelinestatus::") ||
+    normalized.includes("ffmpegdemuxer") ||
+    normalized.includes("demuxer_error") ||
+    normalized.includes("open context failed") ||
+    normalized.includes("error opening input") ||
+    normalized.includes("no such file or directory") ||
+    normalized.includes("media_err_src_not_supported")
+  ) {
+    if (isExplicitLocalUploadSource || /^\/?assets\//i.test(src)) {
+      return "This local video file could not be opened. It may be missing from the library or unsupported.";
+    }
+    return "This video could not be opened. Try another source.";
+  }
+
+  if (
     preferredResolverProvider !== "real-debrid" &&
     (normalized.includes("resolving stream timed out") ||
       normalized.includes("request timed out") ||
@@ -1884,6 +1918,8 @@ function clearPendingVideoSource() {
     return;
   }
   try {
+    clearLiveVisualHealthWatch({ resetSamples: true });
+    clearLiveStartupHealthWatch({ resetRequest: true });
     video.pause();
     video.removeAttribute("src");
     video.load();
@@ -3637,6 +3673,8 @@ function setLiveIframePlaybackSource(embedUrl, encodedSource, { startSeconds = n
   activeAudioSyncMs = 0;
   activeTrackSourceInput = "";
   knownDurationSeconds = 0;
+  clearLiveVisualHealthWatch({ resetSamples: true });
+  clearLiveStartupHealthWatch({ resetRequest: true });
   if (video.src) {
     video.pause();
     video.removeAttribute("src");
@@ -3688,6 +3726,8 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
   resetAudioDecodeWatchState();
 
   clearStreamStallRecovery();
+  clearLiveVisualHealthWatch({ resetSamples: true });
+  clearLiveStartupHealthWatch({ resetRequest: true });
   clearSubtitleTrack();
   hlsPlaybackController.destroy();
 
@@ -3749,6 +3789,16 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
         // Let queued embed fallbacks run before escalating to torrent resolution.
         demoteCurrentExternalEmbedSourceForRecovery(fallbackMessage);
       }
+      if (isLivePlayback && liveStreamOptions.length > 1) {
+        void attemptAutomaticLiveStreamFallback(
+          "Live stream failed. Trying another source...",
+        ).then((recovered) => {
+          if (!recovered) {
+            showResolverError(fallbackMessage, "Live stream failed.");
+          }
+        });
+        return;
+      }
       void handlePlaybackErrorRecovery(fallbackMessage).then((recovered) => {
         if (!recovered && isTmdbResolvedPlayback) {
           reportCurrentTmdbPlaybackFailure(fallbackMessage);
@@ -3763,12 +3813,16 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
       preferredAudioSyncMs,
       handleHlsPlaybackFailure,
     });
+    startLiveVisualHealthWatch();
+    armLiveStartupHealthWatch();
     return;
   }
 
   video.setAttribute("src", absoluteSource);
   video.load();
   scheduleStreamStallRecovery();
+  startLiveVisualHealthWatch();
+  armLiveStartupHealthWatch();
 }
 
 function getActiveSubtitleVttUrl() {
@@ -5349,8 +5403,246 @@ function renderLiveStreamOptions() {
     liveStreamOptionsContainer,
     liveStreamOptions,
     selectedLiveStreamId,
+    {
+      getStatus: getLiveStreamOptionStatus,
+    },
   );
   syncLiveStreamControls();
+}
+
+function getLiveFailureCacheStorageKey() {
+  if (!isLivePlayback) {
+    return "";
+  }
+  const eventLabel = [
+    sourceIdentity,
+    title,
+    episode,
+    liveEmbedResolver,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(":");
+  const eventSlug = slugify(eventLabel) || "stream";
+  return `${LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX}${eventSlug}`;
+}
+
+function getLiveStreamFailureEntry(streamOption, now = Date.now()) {
+  const streamId = String(streamOption?.id || "").trim();
+  if (!streamId) {
+    return null;
+  }
+  const entry = liveFailedStreamStatuses.get(streamId) || null;
+  if (!entry || Number(entry.expiresAt || 0) <= now) {
+    return null;
+  }
+  const optionSource = normalizePlaybackSourceValue(streamOption?.source);
+  if (entry.source && optionSource && entry.source !== optionSource) {
+    return null;
+  }
+  return entry;
+}
+
+function isLiveStreamRecentlyFailed(streamOption, now = Date.now()) {
+  return Boolean(getLiveStreamFailureEntry(streamOption, now));
+}
+
+function getLiveStreamOptionStatus(streamOption) {
+  const entry = getLiveStreamFailureEntry(streamOption);
+  if (!entry) {
+    return null;
+  }
+  return {
+    state: "skipped",
+    label: "Skipped",
+    detail: "Recently failed. Select it manually to retry.",
+  };
+}
+
+function pruneLiveFailureCache(now = Date.now()) {
+  let changed = false;
+  const validSourcesById = new Map(
+    liveStreamOptions.map((option) => [
+      option.id,
+      normalizePlaybackSourceValue(option.source),
+    ]),
+  );
+  liveFailedStreamStatuses.forEach((entry, streamId) => {
+    const validSource = validSourcesById.get(streamId);
+    if (
+      !entry ||
+      Number(entry.expiresAt || 0) <= now ||
+      (validSource && entry.source && entry.source !== validSource)
+    ) {
+      liveFailedStreamStatuses.delete(streamId);
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function persistLiveFailureCache() {
+  const cacheKey = liveFailedStreamCacheKey || getLiveFailureCacheStorageKey();
+  if (!cacheKey) {
+    return;
+  }
+  try {
+    pruneLiveFailureCache();
+    const entries = Array.from(liveFailedStreamStatuses.entries()).map(
+      ([streamId, entry]) => ({
+        streamId,
+        source: entry.source,
+        expiresAt: entry.expiresAt,
+        reason: entry.reason || "",
+      }),
+    );
+    if (!entries.length) {
+      localStorage.removeItem(cacheKey);
+      return;
+    }
+    localStorage.setItem(cacheKey, JSON.stringify(entries));
+  } catch {
+    // Skipped-source caching is a convenience only.
+  }
+}
+
+function loadLiveFailureCacheForCurrentEvent() {
+  const cacheKey = getLiveFailureCacheStorageKey();
+  if (!cacheKey || cacheKey === liveFailedStreamCacheKey) {
+    pruneLiveFailureCache();
+    return;
+  }
+
+  liveFailedStreamCacheKey = cacheKey;
+  liveFailedStreamStatuses = new Map();
+
+  try {
+    const parsed = JSON.parse(localStorage.getItem(cacheKey) || "[]");
+    const entries = Array.isArray(parsed) ? parsed : [];
+    const now = Date.now();
+    entries.forEach((entry) => {
+      const streamId = String(entry?.streamId || "").trim();
+      const expiresAt = Number(entry?.expiresAt || 0);
+      if (!streamId || expiresAt <= now) {
+        return;
+      }
+      liveFailedStreamStatuses.set(streamId, {
+        source: normalizePlaybackSourceValue(entry?.source),
+        expiresAt,
+        reason: String(entry?.reason || "").trim(),
+      });
+    });
+    if (pruneLiveFailureCache(now)) {
+      persistLiveFailureCache();
+    }
+  } catch {
+    liveFailedStreamStatuses = new Map();
+  }
+}
+
+function rememberLiveStreamFailure(streamOption, reason = "") {
+  const streamId = String(streamOption?.id || "").trim();
+  const source = normalizePlaybackSourceValue(streamOption?.source);
+  if (!streamId || !source) {
+    return;
+  }
+  if (!liveFailedStreamCacheKey) {
+    loadLiveFailureCacheForCurrentEvent();
+  }
+  liveFailedStreamStatuses.set(streamId, {
+    source,
+    expiresAt: Date.now() + LIVE_FAILED_STREAM_CACHE_TTL_MS,
+    reason: String(reason || "").trim(),
+  });
+  persistLiveFailureCache();
+  renderLiveStreamOptions();
+}
+
+function clearLiveStreamFailure(streamOption) {
+  const streamId = String(streamOption?.id || "").trim();
+  if (!streamId) {
+    return;
+  }
+  if (liveFailedStreamStatuses.delete(streamId)) {
+    persistLiveFailureCache();
+    renderLiveStreamOptions();
+  }
+}
+
+function prepareLiveFailureCacheForCurrentEvent() {
+  if (!isLivePlayback) {
+    liveFailedStreamCacheKey = "";
+    liveFailedStreamStatuses = new Map();
+    return;
+  }
+  loadLiveFailureCacheForCurrentEvent();
+  pruneLiveFailureCache();
+}
+
+function selectFirstFreshLiveStreamIfNeeded() {
+  if (!isLivePlayback || liveStreamOptions.length <= 1) {
+    return false;
+  }
+  const selectedOption = getSelectedLiveStreamOption();
+  if (!selectedOption || !isLiveStreamRecentlyFailed(selectedOption)) {
+    return false;
+  }
+  const nextOption =
+    getOrderedLiveFallbackOptions({ includeCachedFailures: false })[0] || null;
+  if (!nextOption) {
+    return false;
+  }
+  selectedLiveStreamId = nextOption.id;
+  setExplicitPlaybackSourceState(nextOption.source);
+  persistLiveStreamSelectionInUrl();
+  return true;
+}
+
+function persistLiveStreamSelectionInUrl() {
+  if (!isLivePlayback) {
+    return;
+  }
+
+  try {
+    if (src) {
+      params.set("src", src);
+    }
+    params.set("live", "1");
+    if (selectedLiveStreamId) {
+      params.set("liveStreamId", selectedLiveStreamId);
+    }
+    if (liveStreamOptions.length > 0) {
+      params.set("liveStreams", JSON.stringify(liveStreamOptions));
+    }
+    if (shouldResolveLiveEmbedSource) {
+      params.set("liveEmbed", "1");
+    } else {
+      params.delete("liveEmbed");
+    }
+    if (liveEmbedResolver) {
+      params.set("liveResolver", liveEmbedResolver);
+    }
+    replaceReproducibleWatchUrl();
+  } catch {
+    // URL syncing is diagnostic/bookmarking only; playback should continue.
+  }
+}
+
+function resetLiveStreamPlaybackState() {
+  expectedDurationSeconds = 0;
+  resumeTime = 0;
+  lastPersistedResumeTime = 0;
+  lastPersistedResumeAt = 0;
+  availableAudioTracks = [];
+  availableSubtitleTracks = [];
+  selectedAudioStreamIndex = -1;
+  selectedSubtitleStreamIndex = -1;
+  activeTrackSourceInput = "";
+  clearSubtitleTrack();
+  clearLiveVisualHealthWatch({ resetSamples: true });
+  clearLiveStartupHealthWatch({ resetRequest: true });
+  hideAllSubtitleTracks();
+  rebuildTrackOptionButtons();
 }
 
 function getLiveEmbedFallbackSources(source) {
@@ -5451,6 +5743,7 @@ async function resolveLivePlaybackSource(source) {
       selectedLiveStreamId = resolvedOption.id;
       setExplicitPlaybackSourceState(resolvedOption.source);
       syncLiveStreamControls();
+      persistLiveStreamSelectionInUrl();
     }
   }
   if (!playbackUrl) {
@@ -5459,6 +5752,374 @@ async function resolveLivePlaybackSource(source) {
   return getLivePlaybackSource(playbackUrl, true, {
     referer: payload?.playerPage || resolvedSource || normalizedSource,
   });
+}
+
+function clearLiveVisualHealthWatch({ resetSamples = false } = {}) {
+  if (liveVisualHealthInterval !== null) {
+    window.clearInterval(liveVisualHealthInterval);
+    liveVisualHealthInterval = null;
+  }
+  if (resetSamples) {
+    liveVisualBlankSampleCount = 0;
+  }
+}
+
+function clearLiveStartupHealthWatch({ resetRequest = false } = {}) {
+  if (liveStartupHealthTimeout !== null) {
+    window.clearTimeout(liveStartupHealthTimeout);
+    liveStartupHealthTimeout = null;
+  }
+  if (resetRequest) {
+    liveStartupWatchArmed = false;
+  }
+}
+
+function shouldWatchLiveStartupHealth() {
+  return Boolean(
+    isLivePlayback &&
+      !liveAutoFallbackInFlight &&
+      liveStreamOptions.length > 1 &&
+      !isLiveIframePlaybackActive() &&
+      hasRecoverablePlaybackSource(),
+  );
+}
+
+function hasLivePlaybackStarted() {
+  return Boolean(
+    video.readyState >= 2 ||
+      video.videoWidth > 0 ||
+      video.videoHeight > 0 ||
+      getEffectiveCurrentTime() > 0.25,
+  );
+}
+
+function checkLiveStartupHealth(expectedSource, expectedStreamId) {
+  liveStartupHealthTimeout = null;
+
+  if (
+    !liveStartupWatchArmed ||
+    !shouldWatchLiveStartupHealth() ||
+    document.visibilityState === "hidden"
+  ) {
+    return;
+  }
+
+  const currentSource =
+    lastRequestedAbsolutePlaybackSource ||
+    lastRequestedPlaybackSource ||
+    video.currentSrc ||
+    video.getAttribute("src") ||
+    "";
+  if (expectedSource && currentSource && currentSource !== expectedSource) {
+    return;
+  }
+  if (
+    expectedStreamId &&
+    selectedLiveStreamId &&
+    selectedLiveStreamId !== expectedStreamId
+  ) {
+    return;
+  }
+
+  if (hasLivePlaybackStarted()) {
+    clearLiveStartupHealthWatch({ resetRequest: true });
+    return;
+  }
+
+  const elapsedSinceSourceSet = performance.now() - lastPlaybackSourceSetAt;
+  if (elapsedSinceSourceSet < LIVE_STARTUP_HEALTH_TIMEOUT_MS) {
+    scheduleLiveStartupHealthWatch();
+    return;
+  }
+
+  void attemptAutomaticLiveStreamFallback(
+    "Live stream did not start. Trying another source...",
+  );
+}
+
+function scheduleLiveStartupHealthWatch() {
+  if (!liveStartupWatchArmed || !shouldWatchLiveStartupHealth()) {
+    return;
+  }
+
+  clearLiveStartupHealthWatch();
+  const elapsedSinceSourceSet = performance.now() - lastPlaybackSourceSetAt;
+  const delayMs = Math.max(
+    0,
+    LIVE_STARTUP_HEALTH_TIMEOUT_MS - elapsedSinceSourceSet,
+  );
+  const expectedSource =
+    lastRequestedAbsolutePlaybackSource ||
+    lastRequestedPlaybackSource ||
+    video.currentSrc ||
+    video.getAttribute("src") ||
+    "";
+  const expectedStreamId = selectedLiveStreamId;
+  liveStartupHealthTimeout = window.setTimeout(
+    () => checkLiveStartupHealth(expectedSource, expectedStreamId),
+    delayMs,
+  );
+}
+
+function armLiveStartupHealthWatch() {
+  if (!shouldWatchLiveStartupHealth()) {
+    return;
+  }
+  liveStartupWatchArmed = true;
+  scheduleLiveStartupHealthWatch();
+}
+
+function isPlaybackBlockedByPolicy(error) {
+  return String(error?.name || "").toLowerCase() === "notallowederror";
+}
+
+function resetLiveAutoFallbackAttempts() {
+  liveAutoFallbackAttemptedStreamIds = new Set();
+}
+
+function getLiveVisualHealthCanvasContext() {
+  if (!liveVisualHealthCanvas) {
+    liveVisualHealthCanvas = document.createElement("canvas");
+    liveVisualHealthCanvas.width = LIVE_VISUAL_HEALTH_SAMPLE_WIDTH;
+    liveVisualHealthCanvas.height = LIVE_VISUAL_HEALTH_SAMPLE_HEIGHT;
+  }
+  return liveVisualHealthCanvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+}
+
+function sampleLiveVideoBlankness() {
+  if (
+    !video ||
+    video.videoWidth <= 0 ||
+    video.videoHeight <= 0 ||
+    isLiveIframePlaybackActive()
+  ) {
+    return null;
+  }
+
+  const context = getLiveVisualHealthCanvasContext();
+  if (!context) {
+    return null;
+  }
+
+  try {
+    context.drawImage(
+      video,
+      0,
+      0,
+      LIVE_VISUAL_HEALTH_SAMPLE_WIDTH,
+      LIVE_VISUAL_HEALTH_SAMPLE_HEIGHT,
+    );
+    const { data } = context.getImageData(
+      0,
+      0,
+      LIVE_VISUAL_HEALTH_SAMPLE_WIDTH,
+      LIVE_VISUAL_HEALTH_SAMPLE_HEIGHT,
+    );
+    const pixels = data.length / 4;
+    if (pixels <= 0) {
+      return null;
+    }
+
+    let totalLuma = 0;
+    let brightPixels = 0;
+    for (let offset = 0; offset < data.length; offset += 4) {
+      const luma =
+        data[offset] * 0.2126 +
+        data[offset + 1] * 0.7152 +
+        data[offset + 2] * 0.0722;
+      totalLuma += luma;
+      if (luma > LIVE_VISUAL_HEALTH_MAX_AVG_LUMA * 2) {
+        brightPixels += 1;
+      }
+    }
+
+    const avgLuma = totalLuma / pixels;
+    const brightPixelRatio = brightPixels / pixels;
+    return {
+      avgLuma,
+      brightPixelRatio,
+      isBlank:
+        avgLuma <= LIVE_VISUAL_HEALTH_MAX_AVG_LUMA &&
+        brightPixelRatio <= LIVE_VISUAL_HEALTH_MIN_BRIGHT_PIXEL_RATIO,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getOrderedLiveFallbackOptions({ includeCachedFailures = false } = {}) {
+  if (liveStreamOptions.length <= 1) {
+    return [];
+  }
+
+  const selectedIndex = liveStreamOptions.findIndex(
+    (option) => option.id === selectedLiveStreamId,
+  );
+  const startIndex = selectedIndex >= 0 ? selectedIndex + 1 : 0;
+  return [
+    ...liveStreamOptions.slice(startIndex),
+    ...liveStreamOptions.slice(0, Math.max(0, startIndex)),
+  ].filter(
+    (option) =>
+      option?.source &&
+      option.id !== selectedLiveStreamId &&
+      !liveAutoFallbackAttemptedStreamIds.has(option.id) &&
+      (includeCachedFailures || !isLiveStreamRecentlyFailed(option)),
+  );
+}
+
+async function switchToLiveStreamOption(
+  nextStream,
+  {
+    autoFallback = false,
+    reasonMessage = "Loading live stream...",
+    wasPaused = video?.paused,
+  } = {},
+) {
+  const previousStreamId = selectedLiveStreamId;
+  const previousSource = src;
+
+  selectedLiveStreamId = nextStream.id;
+  setExplicitPlaybackSourceState(nextStream.source);
+  persistLiveStreamSelectionInUrl();
+  resetLiveStreamPlaybackState();
+  syncLiveStreamControls();
+  showResolver(reasonMessage, { showStatus: autoFallback });
+
+  try {
+    const playbackSource = await resolveLivePlaybackSource(nextStream.source);
+    setVideoSource(playbackSource);
+    persistLiveStreamSelectionInUrl();
+    hideResolver();
+    if (!wasPaused) {
+      await tryPlay();
+    }
+    syncPlayState();
+    syncDurationText();
+    closeLiveStreamPopover();
+    return true;
+  } catch (error) {
+    selectedLiveStreamId = previousStreamId;
+    setExplicitPlaybackSourceState(previousSource);
+    persistLiveStreamSelectionInUrl();
+    syncLiveStreamControls();
+    syncPlayState();
+    syncDurationText();
+    if (autoFallback) {
+      throw error;
+    }
+    showResolverError(error, "Unable to load this live stream.");
+    closeLiveStreamPopover();
+    return false;
+  }
+}
+
+async function attemptAutomaticLiveStreamFallback(
+  message = "Live stream looks blank. Trying another source...",
+) {
+  if (
+    !isLivePlayback ||
+    liveAutoFallbackInFlight ||
+    liveStreamOptions.length <= 1
+  ) {
+    return false;
+  }
+
+  const currentStream = getSelectedLiveStreamOption();
+  if (currentStream?.id) {
+    liveAutoFallbackAttemptedStreamIds.add(currentStream.id);
+    rememberLiveStreamFailure(currentStream, message);
+  }
+
+  liveAutoFallbackInFlight = true;
+  clearLiveVisualHealthWatch({ resetSamples: true });
+  clearLiveStartupHealthWatch({ resetRequest: true });
+  let recovered = false;
+  try {
+    let nextStream = getOrderedLiveFallbackOptions()[0] || null;
+    while (nextStream) {
+      try {
+        showResolver(message, { showStatus: true });
+        await switchToLiveStreamOption(nextStream, {
+          autoFallback: true,
+          reasonMessage: message,
+          wasPaused: false,
+        });
+        recovered = true;
+        return true;
+      } catch {
+        liveAutoFallbackAttemptedStreamIds.add(nextStream.id);
+        rememberLiveStreamFailure(nextStream, message);
+        nextStream = getOrderedLiveFallbackOptions()[0] || null;
+      }
+    }
+  } finally {
+    liveAutoFallbackInFlight = false;
+    if (recovered) {
+      startLiveVisualHealthWatch();
+      armLiveStartupHealthWatch();
+    }
+  }
+
+  showResolverError(
+    "No alternate live streams worked for this event.",
+    "No alternate live streams worked for this event.",
+    { showRetry: true },
+  );
+  return false;
+}
+
+function checkLiveVisualHealth() {
+  if (
+    !isLivePlayback ||
+    liveAutoFallbackInFlight ||
+    liveStreamOptions.length <= 1 ||
+    document.visibilityState === "hidden" ||
+    isLiveIframePlaybackActive() ||
+    video.paused ||
+    !hasActiveSource() ||
+    performance.now() - lastPlaybackSourceSetAt < LIVE_VISUAL_HEALTH_GRACE_MS
+  ) {
+    liveVisualBlankSampleCount = 0;
+    return;
+  }
+
+  const sample = sampleLiveVideoBlankness();
+  if (!sample) {
+    return;
+  }
+
+  if (!sample.isBlank) {
+    liveVisualBlankSampleCount = 0;
+    return;
+  }
+
+  liveVisualBlankSampleCount += 1;
+  if (liveVisualBlankSampleCount < LIVE_VISUAL_HEALTH_MAX_BLANK_SAMPLES) {
+    return;
+  }
+
+  liveVisualBlankSampleCount = 0;
+  void attemptAutomaticLiveStreamFallback();
+}
+
+function startLiveVisualHealthWatch() {
+  if (
+    !isLivePlayback ||
+    isLiveIframePlaybackActive() ||
+    liveStreamOptions.length <= 1
+  ) {
+    return;
+  }
+  if (liveVisualHealthInterval !== null) {
+    return;
+  }
+  liveVisualHealthInterval = window.setInterval(
+    checkLiveVisualHealth,
+    LIVE_VISUAL_HEALTH_INTERVAL_MS,
+  );
 }
 
 function openLiveStreamPopover() {
@@ -5564,36 +6225,12 @@ async function switchLiveStream(streamId) {
     return;
   }
 
-  const wasPaused = video.paused;
-  selectedLiveStreamId = nextStream.id;
-  setExplicitPlaybackSourceState(nextStream.source);
-  expectedDurationSeconds = 0;
-  resumeTime = 0;
-  lastPersistedResumeTime = 0;
-  lastPersistedResumeAt = 0;
-  availableAudioTracks = [];
-  availableSubtitleTracks = [];
-  selectedAudioStreamIndex = -1;
-  selectedSubtitleStreamIndex = -1;
-  activeTrackSourceInput = "";
-  clearSubtitleTrack();
-  hideAllSubtitleTracks();
-  rebuildTrackOptionButtons();
-  syncLiveStreamControls();
-  showResolver("Loading live stream...");
-  try {
-    const playbackSource = await resolveLivePlaybackSource(nextStream.source);
-    setVideoSource(playbackSource);
-    hideResolver();
-    if (!wasPaused) {
-      await tryPlay();
-    }
-  } catch (error) {
-    showResolverError(error, "Unable to load this live stream.");
-  }
-  syncPlayState();
-  syncDurationText();
-  closeLiveStreamPopover();
+  resetLiveAutoFallbackAttempts();
+  clearLiveStreamFailure(nextStream);
+  await switchToLiveStreamOption(nextStream, {
+    reasonMessage: "Loading live stream...",
+    wasPaused: video.paused,
+  });
 }
 
 function syncAudioState() {
@@ -5962,7 +6599,7 @@ function clearStreamStallRecovery() {
 function scheduleStreamStallRecovery(
   message = "Playback stalled. Retrying from here...",
 ) {
-  if (!isTmdbResolvedPlayback || video.paused) {
+  if ((!isTmdbResolvedPlayback && !isLivePlayback) || video.paused) {
     return;
   }
 
@@ -5970,12 +6607,19 @@ function scheduleStreamStallRecovery(
   clearStreamStallRecovery();
 
   streamStallRecoveryTimeout = window.setTimeout(() => {
-    if (!isTmdbResolvedPlayback || video.paused) {
+    if ((!isTmdbResolvedPlayback && !isLivePlayback) || video.paused) {
       return;
     }
 
     const nowTime = getEffectiveCurrentTime();
     if (nowTime > checkpointTime + 0.8 || video.readyState >= 3) {
+      return;
+    }
+
+    if (isLivePlayback) {
+      void attemptAutomaticLiveStreamFallback(
+        "Live stream stalled. Trying another source...",
+      );
       return;
     }
 
@@ -6471,6 +7115,7 @@ async function tryPlay() {
     ) {
       setVideoSource(restoreSource, { resetInitialResume: false });
     }
+    armLiveStartupHealthWatch();
     syncPlayState();
     return;
   }
@@ -6487,9 +7132,13 @@ async function tryPlay() {
     return;
   }
 
+  armLiveStartupHealthWatch();
   try {
     await video.play();
   } catch (error) {
+    if (isLivePlayback && isPlaybackBlockedByPolicy(error)) {
+      clearLiveStartupHealthWatch({ resetRequest: true });
+    }
     syncPlayState();
   }
 }
@@ -8049,7 +8698,7 @@ async function initPlaybackSource() {
     : normalizedRawSourceParam;
   rawTitle = isSeriesPlayback
     ? String(activeSeries?.title || "")
-    : params.get("title") || "Jeffrey Epstein: Filthy Rich";
+    : params.get("title") || "Untitled";
   rawEpisode = isSeriesPlayback
     ? getSeriesEpisodeLabel(
         seriesEpisodeIndex,
@@ -8110,7 +8759,9 @@ async function initPlaybackSource() {
     : src ||
       (isTmdbResolvedPlayback
         ? `tmdb:${mediaType}:${tmdbId}${isTmdbTvPlayback ? `:s${seasonNumber}:e${episodeNumber}` : ""}`
-        : DEFAULT_TRAILER_SOURCE);
+        : `watch:${slugify(title) || "untitled"}`);
+  prepareLiveFailureCacheForCurrentEvent();
+  selectFirstFreshLiveStreamIfNeeded();
   resumeStorageKey = `netflix-resume:${sourceIdentity}`;
   applyRememberedTmdbSourcePin();
 
@@ -8192,6 +8843,7 @@ async function initPlaybackSource() {
     hideResolver();
     if (isLivePlayback) {
       syncDurationText();
+      resetLiveAutoFallbackAttempts();
       availableAudioTracks = [];
       availableSubtitleTracks = [];
       selectedAudioStreamIndex = -1;
@@ -8201,10 +8853,26 @@ async function initPlaybackSource() {
       hideAllSubtitleTracks();
       rebuildTrackOptionButtons();
       showResolver("Loading live stream...");
-      const playbackSource = await resolveLivePlaybackSource(src);
-      setVideoSource(playbackSource);
-      hideResolver();
-      await tryPlay();
+      try {
+        const playbackSource = await resolveLivePlaybackSource(src);
+        setVideoSource(playbackSource);
+        hideResolver();
+        await tryPlay();
+      } catch (error) {
+        if (liveStreamOptions.length > 1) {
+          const recovered = await attemptAutomaticLiveStreamFallback(
+            "Live stream failed. Trying another source...",
+          );
+          if (recovered) {
+            cleanUrlIfNeeded();
+            return;
+          }
+        } else {
+          showResolverError(error, "Unable to resolve this stream.");
+        }
+        cleanUrlIfNeeded();
+        return;
+      }
       cleanUrlIfNeeded();
       return;
     }
@@ -8324,6 +8992,8 @@ async function initPlaybackSource() {
   hideSeekLoadingIndicator();
   clearControlsHideTimer();
   clearStreamStallRecovery();
+  clearLiveVisualHealthWatch({ resetSamples: true });
+  clearLiveStartupHealthWatch({ resetRequest: true });
   clearPlaybackRecovery();
   persistResumeTime(true);
 }
@@ -8334,6 +9004,7 @@ async function initPlaybackSource() {
       return;
     }
     resumeLiveIframeProgressClock();
+    startLiveVisualHealthWatch();
   }
 
   function animateSeekTurn(control, direction) {
@@ -9421,7 +10092,9 @@ trackListener(video, "canplay", () => {
   applyPendingRecoverySeek();
   clearPlaybackRecovery();
   clearStreamStallRecovery();
+  clearLiveStartupHealthWatch({ resetRequest: true });
   hideSeekLoadingIndicator();
+  startLiveVisualHealthWatch();
   if (!applyInitialResumeIfReady()) {
     scheduleInitialResumeRetry();
   }
@@ -9429,7 +10102,9 @@ trackListener(video, "canplay", () => {
 trackListener(video, "playing", () => {
   clearPlaybackRecovery();
   clearStreamStallRecovery();
+  clearLiveStartupHealthWatch({ resetRequest: true });
   hideSeekLoadingIndicator();
+  startLiveVisualHealthWatch();
   if (!applyInitialResumeIfReady()) {
     scheduleInitialResumeRetry();
   }
@@ -9438,6 +10113,7 @@ trackListener(video, "timeupdate", () => {
   if (getEffectiveCurrentTime() > 0.5) {
     clearPlaybackRecovery();
     clearStreamStallRecovery();
+    clearLiveStartupHealthWatch({ resetRequest: true });
   }
   if (!applyInitialResumeIfReady()) {
     scheduleInitialResumeRetry();
@@ -9482,9 +10158,15 @@ trackListener(video, "pause", () => {
 });
 trackListener(video, "pause", () => {
   clearStreamStallRecovery();
+  clearLiveVisualHealthWatch({ resetSamples: true });
+  if (!liveStartupWatchArmed || hasLivePlaybackStarted()) {
+    clearLiveStartupHealthWatch({ resetRequest: true });
+  }
   persistResumeTime(true);
 });
 trackListener(video, "ended", () => {
+  clearLiveVisualHealthWatch({ resetSamples: true });
+  clearLiveStartupHealthWatch({ resetRequest: true });
   clearControlsHideTimer();
   showControls();
 
@@ -9532,6 +10214,8 @@ trackListener(video, "canplay", () => {
   }
 });
 trackListener(video, "error", () => {
+  clearLiveVisualHealthWatch({ resetSamples: true });
+  clearLiveStartupHealthWatch({ resetRequest: true });
   if (isLiveIframePlaybackActive()) {
     return;
   }
@@ -9541,6 +10225,17 @@ trackListener(video, "error", () => {
   const mediaError = video.error;
   const message =
     mediaError?.message || "Resolved stream could not be played. Try again.";
+
+  if (isLivePlayback && liveStreamOptions.length > 1) {
+    void attemptAutomaticLiveStreamFallback(
+      "Live stream failed. Trying another source...",
+    ).then((recovered) => {
+      if (!recovered) {
+        showResolverError(message, "Live stream failed.");
+      }
+    });
+    return;
+  }
 
   void handlePlaybackErrorRecovery(message).then((recovered) => {
     if (!recovered && isTmdbResolvedPlayback) {
@@ -9722,6 +10417,8 @@ trackListener(window, "beforeunload", () => {
   hideSeekLoadingIndicator();
   clearControlsHideTimer();
   clearStreamStallRecovery();
+  clearLiveVisualHealthWatch({ resetSamples: true });
+  clearLiveStartupHealthWatch({ resetRequest: true });
   clearPlaybackRecovery();
   persistResumeTime(true);
 });
@@ -9730,6 +10427,8 @@ trackListener(window, "pagehide", () => {
   hideSeekLoadingIndicator();
   clearControlsHideTimer();
   clearStreamStallRecovery();
+  clearLiveVisualHealthWatch({ resetSamples: true });
+  clearLiveStartupHealthWatch({ resetRequest: true });
   clearPlaybackRecovery();
   persistResumeTime(true);
 });
@@ -9801,6 +10500,8 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     clearControlsHideTimer();
     clearSingleClickPlaybackToggle();
     clearStreamStallRecovery();
+    clearLiveVisualHealthWatch({ resetSamples: true });
+    clearLiveStartupHealthWatch({ resetRequest: true });
     clearPlaybackRecovery();
     clearAudioDecodeWatch();
     stopLocalCacheUpgradeWatch();

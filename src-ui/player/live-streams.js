@@ -218,6 +218,7 @@ export function renderLiveStreamOptions(
   liveStreamOptionsContainer,
   liveStreamOptions,
   selectedLiveStreamId,
+  { getStatus = () => null } = {},
 ) {
   if (!(liveStreamOptionsContainer instanceof HTMLElement)) {
     return;
@@ -225,25 +226,46 @@ export function renderLiveStreamOptions(
 
   liveStreamOptionsContainer.innerHTML = "";
   liveStreamOptions.forEach((option) => {
+    const status = getStatus(option) || null;
     const button = document.createElement("button");
     button.className = "audio-option live-stream-option";
     button.type = "button";
     button.setAttribute("role", "option");
     button.dataset.streamId = option.id;
+    if (status?.state) {
+      button.classList.add(`is-${status.state}`);
+      button.dataset.streamStatus = status.state;
+    }
     button.setAttribute(
       "aria-selected",
       option.id === selectedLiveStreamId ? "true" : "false",
     );
+    if (status?.label) {
+      button.setAttribute(
+        "aria-label",
+        `${option.label}${option.quality ? ` ${option.quality}` : ""} ${status.label}`,
+      );
+      if (status.detail) {
+        button.setAttribute("title", status.detail);
+      }
+    }
 
     const name = document.createElement("span");
     name.className = "live-stream-option-name";
     name.textContent = option.label;
     button.appendChild(name);
 
+    const metaParts = [];
     if (option.quality) {
+      metaParts.push(option.quality);
+    }
+    if (status?.label) {
+      metaParts.push(status.label);
+    }
+    if (metaParts.length > 0) {
       const meta = document.createElement("span");
       meta.className = "live-stream-option-meta";
-      meta.textContent = option.quality;
+      meta.textContent = metaParts.join(" / ");
       button.appendChild(meta);
     }
 

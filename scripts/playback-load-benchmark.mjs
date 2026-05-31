@@ -18,7 +18,6 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_PAUSE_MS = 150;
 const DEFAULT_SOURCE_CANDIDATES = [
   "assets/videos/Pride.Prejudice.2005.2160p.4K.WEB.x265.10bit.AAC5.1-[YTS.MX].mp4",
-  "assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4",
 ];
 
 function parseArgs(argv) {
@@ -129,7 +128,9 @@ function resolveDefaultSource() {
       return candidate;
     }
   }
-  return "assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4";
+  throw new Error(
+    "No default benchmark source was found. Pass --source assets/videos/<file>.",
+  );
 }
 
 function toPosixPath(value) {

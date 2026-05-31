@@ -22,7 +22,6 @@ const DEFAULT_OBJECTIVE = "balanced";
 const DEFAULT_VIEWPORT = { width: 1600, height: 900 };
 const DEFAULT_SOURCE_CANDIDATES = [
   "assets/videos/Pride.Prejudice.2005.2160p.4K.WEB.x265.10bit.AAC5.1-[YTS.MX].mp4",
-  "assets/videos/jeffrey-epstein-filthy-rich-official-trailer-netflix.mp4",
 ];
 
 function parseArgs(argv) {
