@@ -132,6 +132,11 @@ function sportsSourceLabel(source) {
   );
 }
 
+function normalizeProviderId(value) {
+  const provider = String(value || "").trim().toLowerCase();
+  return provider === "streamed" || provider === "matchstream" ? provider : "";
+}
+
 function getLocalTimeZone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "Local";
 }
@@ -180,18 +185,26 @@ function formatClock(timestamp) {
   }).format(new Date(timestamp));
 }
 
-function normalizeMatches(payload, sportName) {
+function normalizeMatches(payload, sportName, sourceHint = "") {
   const matches = Array.isArray(payload?.matches) ? payload.matches : [];
+  const payloadProvider =
+    normalizeProviderId(payload?.sourceProvider) || normalizeProviderId(sourceHint);
   return matches
     .filter((match) => Number.isFinite(Number(match?.startTimestamp)))
     .map((match) => {
       const startTimestamp = Number(match.startTimestamp);
       const endsAtTimestamp = Number(match.endsAtTimestamp || 0);
+      const matchProvider =
+        normalizeProviderId(match?.provider) || payloadProvider || normalizeProviderId(sourceHint);
       return {
         id: String(match.id || `${match.title}-${startTimestamp}`),
         title: String(match.title || `${sportName} match`).trim(),
         league: String(match.league || sportName).trim(),
         sport: String(match.sport || sportName).trim(),
+        team1: String(match.team1 || "").trim(),
+        team2: String(match.team2 || "").trim(),
+        provider: matchProvider,
+        providers: matchProvider ? [matchProvider] : [],
         sourceMatchDate: String(match.sourceMatchDate || "").trim(),
         startTimestamp,
         endsAtTimestamp,
@@ -200,9 +213,14 @@ function normalizeMatches(payload, sportName) {
         streams: Array.isArray(match.streams)
           ? match.streams
               .map((stream, index) => ({
-                id: String(stream?.id || `stream-${index + 1}`).trim(),
+                id: normalizeStreamId(stream, index, matchProvider),
                 label: String(stream?.label || `Stream ${index + 1}`).trim(),
                 source: String(stream?.source || "").trim(),
+                provider:
+                  normalizeProviderId(stream?.provider) ||
+                  matchProvider ||
+                  normalizeProviderId(sourceHint),
+                playbackType: String(stream?.playbackType || "").trim().toLowerCase(),
                 quality: String(stream?.quality || "").trim(),
               }))
               .filter((stream) => stream.source)
@@ -210,6 +228,55 @@ function normalizeMatches(payload, sportName) {
       };
     })
     .sort((a, b) => a.startTimestamp - b.startTimestamp);
+}
+
+function normalizeStreamId(stream, index, provider) {
+  const raw = String(stream?.id || `stream-${index + 1}`).trim();
+  const normalizedProvider = normalizeProviderId(stream?.provider) || provider;
+  if (!normalizedProvider || raw.toLowerCase().startsWith(`${normalizedProvider}-`)) {
+    return raw;
+  }
+  return `${normalizedProvider}-${raw}`;
+}
+
+function sportsMatchMergeKey(match) {
+  const titleKey = slugifyTitle(
+    match.title || [match.team1, match.team2].filter(Boolean).join(" vs "),
+  );
+  return `${match.sport.toLowerCase()}:${matchDateKey(match)}:${titleKey}`;
+}
+
+function mergeSportsMatches(providerMatches) {
+  const merged = new Map();
+  providerMatches.flat().forEach((match) => {
+    const key = sportsMatchMergeKey(match);
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, {
+        ...match,
+        providers: Array.from(new Set(match.providers || [])).filter(Boolean),
+        streams: [...match.streams],
+      });
+      return;
+    }
+
+    const providers = new Set([...(existing.providers || []), ...(match.providers || [])]);
+    const seenSources = new Set(existing.streams.map((stream) => stream.source));
+    const streams = [...existing.streams];
+    match.streams.forEach((stream) => {
+      if (!stream.source || seenSources.has(stream.source)) return;
+      seenSources.add(stream.source);
+      streams.push(stream);
+    });
+    existing.providers = Array.from(providers).filter(Boolean);
+    existing.streams = streams;
+    existing.linkCount = streams.length;
+    existing.channelCount = Math.max(existing.channelCount || 0, match.channelCount || 0);
+    existing.endsAtTimestamp = Math.max(existing.endsAtTimestamp, match.endsAtTimestamp);
+    existing.startTimestamp = Math.min(existing.startTimestamp, match.startTimestamp);
+    existing.provider = existing.providers.length > 1 ? "auto" : existing.providers[0] || "";
+  });
+  return Array.from(merged.values()).sort((a, b) => a.startTimestamp - b.startTimestamp);
 }
 
 function isLive(match, now) {
@@ -368,21 +435,44 @@ export default function SportsScheduleView(options = {}) {
     setStatus("loading");
     setErrorText("");
     try {
-      const response = await fetch(buildSportsApiUrl(activeConfig.apiUrl, activeSource), {
-        cache: "no-store",
-      });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(
-          payload?.error ||
-            `${sportsSourceLabel(activeSource)} ${activeConfig.sportName} schedule failed (${response.status})`,
+      let nextMatches = [];
+      let nextActualSource = activeSource;
+      let nextFetchedAt = Date.now();
+
+      if (activeSource === "auto") {
+        const sourceResults = await Promise.allSettled(
+          ["streamed", "matchstream"].map(async (source) => {
+            const payload = await fetchSportsSchedule(activeConfig, source);
+            return {
+              source,
+              payload,
+              matches: normalizeMatches(payload, activeConfig.sportName, source),
+            };
+          }),
         );
+        const fulfilled = sourceResults
+          .filter((result) => result.status === "fulfilled")
+          .map((result) => result.value);
+        if (!fulfilled.length) {
+          const rejected = sourceResults.find((result) => result.status === "rejected");
+          throw rejected?.reason || new Error(`${activeConfig.sportName} schedule failed.`);
+        }
+        nextMatches = mergeSportsMatches(fulfilled.map((result) => result.matches));
+        nextActualSource = fulfilled.length > 1 ? "auto" : fulfilled[0].source;
+        nextFetchedAt = Math.max(
+          ...fulfilled.map((result) => Number(result.payload?.fetchedAt || Date.now())),
+        );
+      } else {
+        const payload = await fetchSportsSchedule(activeConfig, activeSource);
+        nextMatches = normalizeMatches(payload, activeConfig.sportName, activeSource);
+        nextActualSource = normalizeSportsSource(payload?.sourceProvider || activeSource);
+        nextFetchedAt = Number(payload?.fetchedAt || Date.now());
       }
-      const nextMatches = normalizeMatches(payload, activeConfig.sportName);
+
       if (requestId !== loadSequence) return;
       setMatches(nextMatches);
-      setActualSource(normalizeSportsSource(payload?.sourceProvider || activeSource));
-      setFetchedAt(Number(payload?.fetchedAt || Date.now()));
+      setActualSource(nextActualSource);
+      setFetchedAt(nextFetchedAt);
 
       const nextDates = Array.from(
         new Set(nextMatches.map((match) => matchDateKey(match))),
@@ -401,6 +491,20 @@ export default function SportsScheduleView(options = {}) {
       setActualSource("");
       setStatus("error");
     }
+  }
+
+  async function fetchSportsSchedule(activeConfig, source) {
+    const response = await fetch(buildSportsApiUrl(activeConfig.apiUrl, source), {
+      cache: "no-store",
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(
+        payload?.error ||
+          `${sportsSourceLabel(source)} ${activeConfig.sportName} schedule failed (${response.status})`,
+      );
+    }
+    return payload;
   }
 
   function switchSport(sport) {

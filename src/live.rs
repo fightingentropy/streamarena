@@ -24,6 +24,7 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "msvdn.net",
     "siliconweb.com",
     "strmd.top",
+    "zohanayaan.com",
     "easy.speedsterwave.app",
     "easy.nightspeedster.app",
     "storm.vodvidl.site",
@@ -499,6 +500,10 @@ mod tests {
             "https://lb12.strmd.top/secure/token/rtmp/stream/id/1/playlist.m3u8"
                 .parse()
                 .expect("streamed sports url");
+        let matchstream_sports: url::Url =
+            "https://cdn6.zohanayaan.com:1686/hls/do6.m3u8?md5=abc&expires=1780252412"
+                .parse()
+                .expect("matchstream sports url");
         let videasy_hls: url::Url = "https://easy.speedsterwave.app/example/index.m3u8"
             .parse()
             .expect("videasy hls url");
@@ -528,6 +533,7 @@ mod tests {
         assert!(is_allowed_live_hls_url(&twitch_variant));
         assert!(is_allowed_live_hls_url(&twitch_segment));
         assert!(is_allowed_live_hls_url(&streamed_sports));
+        assert!(is_allowed_live_hls_url(&matchstream_sports));
         assert!(is_allowed_live_hls_url(&videasy_hls));
         assert!(is_allowed_live_hls_url(&videasy_new_hls));
         assert!(is_allowed_live_hls_url(&vidlink_hls));

@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::{HeaderValue, Response};
+use axum::http::{HeaderMap, HeaderValue, Response};
 use dashmap::DashMap;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use url::Url;
 
@@ -46,13 +46,21 @@ const STREAMED_EMBED_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-streamed-hls.m
 const STREAMED_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-streamed-hls.mjs";
 const STREAMED_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
 const STREAMED_EMBED_REFERER: &str = "https://embedsports.top/";
+const MATCHSTREAM_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-matchstream-hls.mjs";
+const MATCHSTREAM_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-matchstream-hls.mjs";
+const MATCHSTREAM_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
 const MATCHSTREAM_WEBMASTER_URL: &str = "https://matchstream.do/webmaster";
 const MATCHSTREAM_VIEWER_URL: &str = "https://matchstream.do/viewer";
 const MATCHSTREAM_DEFAULT_DURATION_MINUTES: i64 = 180;
 const SPORTS_HTTP_PROXY_ENV: &str = "SPORTS_HTTP_PROXY";
 const SPORTS_HTTP_CLIENT_TIMEOUT_SECONDS: u64 = 30;
-const MAX_LIVE_STREAM_CANDIDATES: usize = 6;
-const SPORTS_SCHEDULE_CACHE_TTL_MS: i64 = 6 * 60 * 60 * 1000;
+const MAX_LIVE_STREAM_CANDIDATES: usize = 12;
+const SPORTS_STREAM_RESOLVE_CACHE_TTL_MS: i64 = 60 * 1000;
+const SPORTS_STREAM_RESOLVE_CACHE_MAX_ENTRIES: usize = 512;
+const SPORTS_SCHEDULE_LIVE_CACHE_TTL_MS: i64 = 60 * 1000;
+const SPORTS_SCHEDULE_NEAR_LIVE_CACHE_TTL_MS: i64 = 3 * 60 * 1000;
+const SPORTS_SCHEDULE_EMPTY_CACHE_TTL_MS: i64 = 5 * 60 * 1000;
+const SPORTS_SCHEDULE_FUTURE_CACHE_TTL_MS: i64 = 30 * 60 * 1000;
 const SPORTS_SCHEDULE_STALE_IF_ERROR_MS: i64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Default, Deserialize)]
@@ -120,6 +128,16 @@ struct StreamedHlsResolverOutput {
 }
 
 #[derive(Debug, Deserialize)]
+struct MatchstreamHlsResolverOutput {
+    #[serde(rename = "playbackUrl")]
+    playback_url: String,
+    #[serde(default, rename = "playerPage")]
+    player_page: String,
+    #[serde(default)]
+    referer: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SportsScheduleQuery {
     #[serde(default)]
     source: Option<String>,
@@ -139,6 +157,7 @@ enum SportsScheduleSource {
     Matchstream,
 }
 
+#[derive(Clone)]
 struct ResolvedLiveStream {
     source_url: Url,
     player_page_url: Url,
@@ -216,6 +235,8 @@ pub struct SportsScheduleCache {
 struct CachedSportsSchedule {
     payload: Value,
     fetched_at_ms: i64,
+    fresh_until_ms: i64,
+    stale_until_ms: i64,
 }
 
 impl SportsScheduleCache {
@@ -226,25 +247,27 @@ impl SportsScheduleCache {
     fn fresh(&self, key: &'static str, now: i64) -> Option<Value> {
         self.entries.get(key).and_then(|entry| {
             let cached = entry.value();
-            (cache_age_ms(cached.fetched_at_ms, now) <= SPORTS_SCHEDULE_CACHE_TTL_MS)
-                .then(|| cached.payload.clone())
+            (now <= cached.fresh_until_ms).then(|| cached.payload.clone())
         })
     }
 
     fn stale(&self, key: &'static str, now: i64) -> Option<Value> {
         self.entries.get(key).and_then(|entry| {
             let cached = entry.value();
-            (cache_age_ms(cached.fetched_at_ms, now) <= SPORTS_SCHEDULE_STALE_IF_ERROR_MS)
-                .then(|| cached.payload.clone())
+            (now <= cached.stale_until_ms).then(|| cached.payload.clone())
         })
     }
 
     fn insert(&self, key: &'static str, payload: Value, fetched_at_ms: i64) {
+        let fresh_until_ms =
+            fetched_at_ms.saturating_add(sports_schedule_fresh_ttl_ms(&payload, fetched_at_ms));
         self.entries.insert(
             key,
             CachedSportsSchedule {
                 payload,
                 fetched_at_ms,
+                fresh_until_ms,
+                stale_until_ms: fetched_at_ms.saturating_add(SPORTS_SCHEDULE_STALE_IF_ERROR_MS),
             },
         );
     }
@@ -255,13 +278,264 @@ impl SportsScheduleCache {
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
+
+    pub fn debug_payload(&self) -> Value {
+        let now = now_ms();
+        let mut entries = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let cached = entry.value();
+                json!({
+                    "key": *entry.key(),
+                    "fetchedAt": cached.fetched_at_ms,
+                    "freshForMs": cached.fresh_until_ms.saturating_sub(now),
+                    "staleForMs": cached.stale_until_ms.saturating_sub(now),
+                    "matchCount": cached.payload.get("matches").and_then(Value::as_array).map(Vec::len).unwrap_or_default(),
+                    "sourceProvider": cached.payload.get("sourceProvider").and_then(Value::as_str).unwrap_or_default()
+                })
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| {
+            left["key"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(right["key"].as_str().unwrap_or_default())
+        });
+        json!({
+            "entries": entries,
+            "staleIfErrorMs": SPORTS_SCHEDULE_STALE_IF_ERROR_MS
+        })
+    }
 }
 
-fn cache_age_ms(fetched_at_ms: i64, now: i64) -> i64 {
-    if now <= fetched_at_ms {
-        0
+#[derive(Clone)]
+pub struct SportsStreamResolveCache {
+    entries: Arc<DashMap<String, CachedResolvedLiveStream>>,
+    locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    permits: Arc<Semaphore>,
+    max_concurrent: usize,
+    queue_timeout_ms: u64,
+}
+
+#[derive(Clone)]
+struct CachedResolvedLiveStream {
+    resolved: ResolvedLiveStream,
+    cached_at_ms: i64,
+    expires_at_ms: i64,
+}
+
+impl SportsStreamResolveCache {
+    pub fn new(max_concurrent: usize, queue_timeout_ms: u64) -> Self {
+        let max_concurrent = max_concurrent.max(1);
+        Self {
+            entries: Arc::new(DashMap::new()),
+            locks: Arc::new(DashMap::new()),
+            permits: Arc::new(Semaphore::new(max_concurrent)),
+            max_concurrent,
+            queue_timeout_ms: queue_timeout_ms.max(100),
+        }
+    }
+
+    fn fresh(&self, key: &str, now: i64) -> Option<ResolvedLiveStream> {
+        self.entries.get(key).and_then(|entry| {
+            let cached = entry.value();
+            (now <= cached.expires_at_ms).then(|| cached.resolved.clone())
+        })
+    }
+
+    fn insert(&self, key: String, resolved: ResolvedLiveStream, cached_at_ms: i64) {
+        self.entries.insert(
+            key,
+            CachedResolvedLiveStream {
+                resolved,
+                cached_at_ms,
+                expires_at_ms: cached_at_ms.saturating_add(SPORTS_STREAM_RESOLVE_CACHE_TTL_MS),
+            },
+        );
+        self.trim();
+    }
+
+    fn lock_for(&self, key: &str) -> Arc<Mutex<()>> {
+        self.locks
+            .entry(key.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    async fn acquire_permit(&self) -> AppResult<OwnedSemaphorePermit> {
+        match timeout(
+            Duration::from_millis(self.queue_timeout_ms),
+            self.permits.clone().acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_)) => Err(ApiError::internal("Sports resolver limiter is closed.")),
+            Err(_) => Err(ApiError::too_many_requests(
+                "Sports stream resolver is busy. Try again shortly.",
+            )),
+        }
+    }
+
+    fn trim(&self) {
+        if self.entries.len() <= SPORTS_STREAM_RESOLVE_CACHE_MAX_ENTRIES {
+            return;
+        }
+        let mut entries = self
+            .entries
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().cached_at_ms))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(_, cached_at_ms)| *cached_at_ms);
+        let overflow = entries
+            .len()
+            .saturating_sub(SPORTS_STREAM_RESOLVE_CACHE_MAX_ENTRIES);
+        for (key, _) in entries.into_iter().take(overflow) {
+            self.entries.remove(&key);
+        }
+    }
+
+    pub fn prune(&self) {
+        let now = now_ms();
+        self.entries.retain(|_, cached| now <= cached.expires_at_ms);
+        self.locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+
+    pub fn stats(&self) -> Value {
+        let now = now_ms();
+        json!({
+            "entries": self.entries.len(),
+            "ttlMs": SPORTS_STREAM_RESOLVE_CACHE_TTL_MS,
+            "maxEntries": SPORTS_STREAM_RESOLVE_CACHE_MAX_ENTRIES,
+            "maxConcurrent": self.max_concurrent,
+            "availablePermits": self.permits.available_permits(),
+            "queueTimeoutMs": self.queue_timeout_ms,
+            "freshEntries": self.entries.iter().filter(|entry| now <= entry.value().expires_at_ms).count()
+        })
+    }
+}
+
+impl Default for SportsStreamResolveCache {
+    fn default() -> Self {
+        Self::new(2, 3_000)
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct SportsProviderHealth {
+    entries: Arc<DashMap<String, ProviderHealthEntry>>,
+}
+
+#[derive(Clone, Default)]
+struct ProviderHealthEntry {
+    successes: u64,
+    failures: u64,
+    consecutive_failures: u64,
+    last_success_at_ms: i64,
+    last_failure_at_ms: i64,
+    last_latency_ms: i64,
+    last_error: String,
+}
+
+impl SportsProviderHealth {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn record_success(&self, provider: &'static str, operation: &'static str, started_at_ms: i64) {
+        let latency_ms = now_ms().saturating_sub(started_at_ms);
+        let key = sports_provider_health_key(provider, operation);
+        let mut entry = self.entries.entry(key).or_default();
+        entry.successes = entry.successes.saturating_add(1);
+        entry.consecutive_failures = 0;
+        entry.last_success_at_ms = now_ms();
+        entry.last_latency_ms = latency_ms;
+        entry.last_error.clear();
+    }
+
+    fn record_failure(
+        &self,
+        provider: &'static str,
+        operation: &'static str,
+        started_at_ms: i64,
+        error: &str,
+    ) {
+        let latency_ms = now_ms().saturating_sub(started_at_ms);
+        let key = sports_provider_health_key(provider, operation);
+        let mut entry = self.entries.entry(key).or_default();
+        entry.failures = entry.failures.saturating_add(1);
+        entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+        entry.last_failure_at_ms = now_ms();
+        entry.last_latency_ms = latency_ms;
+        entry.last_error = error.chars().take(240).collect();
+    }
+
+    pub fn summary(&self, include_errors: bool) -> Value {
+        let mut entries = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let value = entry.value();
+                let mut payload = json!({
+                    "key": entry.key().as_str(),
+                    "successes": value.successes,
+                    "failures": value.failures,
+                    "consecutiveFailures": value.consecutive_failures,
+                    "lastSuccessAt": value.last_success_at_ms,
+                    "lastFailureAt": value.last_failure_at_ms,
+                    "lastLatencyMs": value.last_latency_ms
+                });
+                if include_errors {
+                    payload["lastError"] = json!(value.last_error);
+                }
+                payload
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| {
+            left["key"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(right["key"].as_str().unwrap_or_default())
+        });
+        json!({ "providers": entries })
+    }
+}
+
+fn sports_provider_health_key(provider: &'static str, operation: &'static str) -> String {
+    format!("{provider}:{operation}")
+}
+
+fn sports_schedule_fresh_ttl_ms(payload: &Value, now: i64) -> i64 {
+    let Some(matches) = payload.get("matches").and_then(Value::as_array) else {
+        return SPORTS_SCHEDULE_EMPTY_CACHE_TTL_MS;
+    };
+    if matches.is_empty() {
+        return SPORTS_SCHEDULE_EMPTY_CACHE_TTL_MS;
+    }
+
+    let mut starts_soon = false;
+    for match_item in matches {
+        let start = match_item
+            .get("startTimestamp")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let end = match_item
+            .get("endsAtTimestamp")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        if start <= now && now < end {
+            return SPORTS_SCHEDULE_LIVE_CACHE_TTL_MS;
+        }
+        if start > now && start.saturating_sub(now) <= 2 * 60 * 60 * 1000 {
+            starts_soon = true;
+        }
+    }
+
+    if starts_soon {
+        SPORTS_SCHEDULE_NEAR_LIVE_CACHE_TTL_MS
     } else {
-        now - fetched_at_ms
+        SPORTS_SCHEDULE_FUTURE_CACHE_TTL_MS
     }
 }
 
@@ -538,14 +812,26 @@ async fn streamed_sport_matches_response(
         return Ok(schedule_response(payload, "hit"));
     }
 
+    let started_at_ms = now_ms();
     match fetch_streamed_sport_matches_payload(state, streamed_category, sport_name).await {
         Ok((payload, fetched_at_ms)) => {
+            state.sports_provider_health.record_success(
+                STREAMED_SOURCE_ID,
+                "schedule",
+                started_at_ms,
+            );
             state
                 .sports_schedule_cache
                 .insert(cache_key, payload.clone(), fetched_at_ms);
             Ok(schedule_response(payload, "miss"))
         }
         Err(error) => {
+            state.sports_provider_health.record_failure(
+                STREAMED_SOURCE_ID,
+                "schedule",
+                started_at_ms,
+                api_error_message(&error),
+            );
             if let Some(payload) = state.sports_schedule_cache.stale(cache_key, now_ms()) {
                 return Ok(schedule_response(payload, "stale"));
             }
@@ -661,14 +947,26 @@ async fn matchstream_sport_matches_response(
         return Ok(schedule_response(payload, "hit"));
     }
 
+    let started_at_ms = now_ms();
     match fetch_matchstream_sport_matches_payload(state, sport_name).await {
         Ok((payload, fetched_at_ms)) => {
+            state.sports_provider_health.record_success(
+                MATCHSTREAM_SOURCE_ID,
+                "schedule",
+                started_at_ms,
+            );
             state
                 .sports_schedule_cache
                 .insert(cache_key, payload.clone(), fetched_at_ms);
             Ok(schedule_response(payload, "miss"))
         }
         Err(error) => {
+            state.sports_provider_health.record_failure(
+                MATCHSTREAM_SOURCE_ID,
+                "schedule",
+                started_at_ms,
+                api_error_message(&error),
+            );
             if let Some(payload) = state.sports_schedule_cache.stale(cache_key, now_ms()) {
                 return Ok(schedule_response(payload, "stale"));
             }
@@ -819,38 +1117,96 @@ fn schedule_response(payload: Value, cache_status: &'static str) -> Response<Bod
 
 pub async fn football_stream_resolve_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<ResolveFootballStreamQuery>,
 ) -> AppResult<Response<Body>> {
+    check_sports_stream_rate_limit(&state, &headers, &query)?;
     streamed_stream_resolve_response(&state, query).await
 }
 
 pub async fn basketball_stream_resolve_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<ResolveFootballStreamQuery>,
 ) -> AppResult<Response<Body>> {
+    check_sports_stream_rate_limit(&state, &headers, &query)?;
     streamed_stream_resolve_response(&state, query).await
 }
 
 pub async fn streamed_sports_stream_resolve_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<ResolveFootballStreamQuery>,
 ) -> AppResult<Response<Body>> {
+    check_sports_stream_rate_limit(&state, &headers, &query)?;
     sports_stream_resolve_response(&state, query).await
+}
+
+fn check_sports_stream_rate_limit(
+    state: &AppState,
+    headers: &HeaderMap,
+    query: &ResolveFootballStreamQuery,
+) -> AppResult<()> {
+    let session_key = crate::auth::extract_session_token(headers)
+        .map(|token| token.chars().take(16).collect::<String>())
+        .unwrap_or_else(|| "anonymous".to_owned());
+    let provider_key = Url::parse(query.url.trim())
+        .ok()
+        .and_then(|url| sports_stream_provider_id(&url))
+        .unwrap_or("unknown");
+    let key = format!("{session_key}:{provider_key}");
+    if state.sports_stream_rate_limiter.check_and_record(&key) {
+        Ok(())
+    } else {
+        Err(ApiError::too_many_requests(
+            "Too many sports stream attempts. Try again shortly.",
+        ))
+    }
 }
 
 async fn sports_stream_resolve_response(
     state: &AppState,
     query: ResolveFootballStreamQuery,
 ) -> AppResult<Response<Body>> {
-    let source_url = Url::parse(query.url.trim())
-        .map_err(|_| ApiError::bad_request("Invalid live stream URL."))?;
-    if is_streamed_stream_api_url(&source_url) {
-        return streamed_stream_resolve_response(state, query).await;
+    let candidates =
+        sports_live_stream_source_candidates(&query.url, query.fallback_urls.as_deref())?;
+    let mut errors = Vec::new();
+
+    for (candidate_index, source_url) in candidates.iter().enumerate() {
+        let provider = sports_stream_provider_id(source_url).unwrap_or("unknown");
+        let resolved_result = if is_streamed_stream_api_url(source_url) {
+            resolve_cached_streamed_live_stream(state, source_url, candidate_index).await
+        } else if is_supported_matchstream_stream_url(source_url) {
+            resolve_cached_matchstream_live_stream(state, source_url, candidate_index).await
+        } else {
+            Err(ApiError::bad_request("Unsupported sports live stream URL."))
+        };
+
+        match resolved_result {
+            Ok(resolved) if resolved.playback_type == "hls" => {
+                return Ok(resolved_live_stream_response(resolved, provider, false));
+            }
+            Ok(resolved) => {
+                errors.push(format!(
+                    "{}: unsupported playback type {}",
+                    source_url, resolved.playback_type
+                ));
+            }
+            Err(error) => {
+                let detail = error.message().unwrap_or("unknown error");
+                errors.push(format!("{}: {detail}", source_url.as_str()));
+            }
+        }
     }
-    if is_supported_matchstream_stream_url(&source_url) {
-        return matchstream_stream_resolve_response(state, query).await;
-    }
-    Err(ApiError::bad_request("Unsupported sports live stream URL."))
+
+    let checked = candidates.len();
+    let latest_error = errors
+        .last()
+        .map(|error| format!(" Last error: {error}"))
+        .unwrap_or_default();
+    Err(ApiError::bad_gateway(format!(
+        "No working sports live stream found after checking {checked} source(s).{latest_error}"
+    )))
 }
 
 async fn streamed_stream_resolve_response(
@@ -861,19 +1217,13 @@ async fn streamed_stream_resolve_response(
     let mut errors = Vec::new();
 
     for (candidate_index, source_url) in candidates.iter().enumerate() {
-        match resolve_verified_streamed_live_stream(state, source_url, candidate_index).await {
+        match resolve_cached_streamed_live_stream(state, source_url, candidate_index).await {
             Ok(resolved) if resolved.playback_type == "hls" => {
-                let playback_url_text = resolved.playback_url.to_string();
-                return Ok(json_response(json!({
-                    "source": resolved.source_url.as_str(),
-                    "playerPage": resolved.player_page_url.as_str(),
-                    "playbackType": resolved.playback_type,
-                    "playbackUrl": playback_url_text,
-                    "streamUrl": "",
-                    "embedUrl": playback_url_text.as_str(),
-                    "resolvedFromFallback": resolved.candidate_index > 0,
-                    "attemptedStreams": resolved.attempted_streams
-                })));
+                return Ok(resolved_live_stream_response(
+                    resolved,
+                    STREAMED_SOURCE_ID,
+                    false,
+                ));
             }
             Ok(resolved) => {
                 errors.push(format!(
@@ -898,53 +1248,144 @@ async fn streamed_stream_resolve_response(
     )))
 }
 
-async fn matchstream_stream_resolve_response(
-    state: &AppState,
-    query: ResolveFootballStreamQuery,
-) -> AppResult<Response<Body>> {
-    let candidates =
-        matchstream_live_stream_source_candidates(&query.url, query.fallback_urls.as_deref())?;
-    let mut errors = Vec::new();
-
-    for (candidate_index, source_url) in candidates.iter().enumerate() {
-        match resolve_verified_matchstream_live_stream(state, source_url, candidate_index).await {
-            Ok(resolved) if resolved.playback_type == "hls" => {
-                let playback_url_text = resolved.playback_url.to_string();
-                return Ok(json_response(json!({
-                    "source": resolved.source_url.as_str(),
-                    "playerPage": resolved.player_page_url.as_str(),
-                    "playbackType": resolved.playback_type,
-                    "playbackUrl": playback_url_text,
-                    "streamUrl": "",
-                    "embedUrl": playback_url_text.as_str(),
-                    "resolvedFromFallback": resolved.candidate_index > 0,
-                    "attemptedStreams": resolved.attempted_streams
-                })));
-            }
-            Ok(resolved) => {
-                errors.push(format!(
-                    "{}: unsupported playback type {}",
-                    source_url, resolved.playback_type
-                ));
-            }
-            Err(error) => {
-                let detail = error.message().unwrap_or("unknown error");
-                errors.push(format!("{}: {detail}", source_url.as_str()));
-            }
-        }
-    }
-
-    let checked = candidates.len();
-    let latest_error = errors
-        .last()
-        .map(|error| format!(" Last error: {error}"))
-        .unwrap_or_default();
-    Err(ApiError::bad_gateway(format!(
-        "No working MatchStream live stream found after checking {checked} source(s).{latest_error}"
-    )))
+fn resolved_live_stream_response(
+    resolved: ResolvedLiveStream,
+    provider: &'static str,
+    _cache_hit: bool,
+) -> Response<Body> {
+    let playback_url_text = resolved.playback_url.to_string();
+    json_response(json!({
+        "source": resolved.source_url.as_str(),
+        "provider": provider,
+        "playerPage": resolved.player_page_url.as_str(),
+        "playbackType": resolved.playback_type,
+        "playbackUrl": playback_url_text,
+        "streamUrl": "",
+        "embedUrl": playback_url_text.as_str(),
+        "resolvedFromFallback": resolved.candidate_index > 0,
+        "attemptedStreams": resolved.attempted_streams
+    }))
 }
 
-async fn resolve_verified_streamed_live_stream(
+async fn resolve_cached_streamed_live_stream(
+    state: &AppState,
+    source_url: &Url,
+    candidate_index: usize,
+) -> AppResult<ResolvedLiveStream> {
+    let cache_key = sports_stream_resolve_cache_key(STREAMED_SOURCE_ID, source_url);
+    if let Some(mut resolved) = state
+        .sports_stream_resolve_cache
+        .fresh(&cache_key, now_ms())
+    {
+        resolved.candidate_index = candidate_index;
+        resolved.attempted_streams = candidate_index + 1;
+        return Ok(resolved);
+    }
+
+    let lock = state.sports_stream_resolve_cache.lock_for(&cache_key);
+    let _guard = lock.lock().await;
+    if let Some(mut resolved) = state
+        .sports_stream_resolve_cache
+        .fresh(&cache_key, now_ms())
+    {
+        resolved.candidate_index = candidate_index;
+        resolved.attempted_streams = candidate_index + 1;
+        return Ok(resolved);
+    }
+
+    let started_at_ms = now_ms();
+    let _permit = state.sports_stream_resolve_cache.acquire_permit().await?;
+    match resolve_verified_streamed_live_stream_uncached(state, source_url, candidate_index).await {
+        Ok(resolved) => {
+            state.sports_provider_health.record_success(
+                STREAMED_SOURCE_ID,
+                "stream",
+                started_at_ms,
+            );
+            state
+                .sports_stream_resolve_cache
+                .insert(cache_key, resolved.clone(), now_ms());
+            Ok(resolved)
+        }
+        Err(error) => {
+            state.sports_provider_health.record_failure(
+                STREAMED_SOURCE_ID,
+                "stream",
+                started_at_ms,
+                api_error_message(&error),
+            );
+            Err(error)
+        }
+    }
+}
+
+async fn resolve_cached_matchstream_live_stream(
+    state: &AppState,
+    source_url: &Url,
+    candidate_index: usize,
+) -> AppResult<ResolvedLiveStream> {
+    let cache_key = sports_stream_resolve_cache_key(MATCHSTREAM_SOURCE_ID, source_url);
+    if let Some(mut resolved) = state
+        .sports_stream_resolve_cache
+        .fresh(&cache_key, now_ms())
+    {
+        resolved.candidate_index = candidate_index;
+        resolved.attempted_streams = candidate_index + 1;
+        return Ok(resolved);
+    }
+
+    let lock = state.sports_stream_resolve_cache.lock_for(&cache_key);
+    let _guard = lock.lock().await;
+    if let Some(mut resolved) = state
+        .sports_stream_resolve_cache
+        .fresh(&cache_key, now_ms())
+    {
+        resolved.candidate_index = candidate_index;
+        resolved.attempted_streams = candidate_index + 1;
+        return Ok(resolved);
+    }
+
+    let started_at_ms = now_ms();
+    let _permit = state.sports_stream_resolve_cache.acquire_permit().await?;
+    match resolve_verified_matchstream_live_stream_uncached(state, source_url, candidate_index)
+        .await
+    {
+        Ok(resolved) => {
+            state.sports_provider_health.record_success(
+                MATCHSTREAM_SOURCE_ID,
+                "stream",
+                started_at_ms,
+            );
+            state
+                .sports_stream_resolve_cache
+                .insert(cache_key, resolved.clone(), now_ms());
+            Ok(resolved)
+        }
+        Err(error) => {
+            state.sports_provider_health.record_failure(
+                MATCHSTREAM_SOURCE_ID,
+                "stream",
+                started_at_ms,
+                api_error_message(&error),
+            );
+            Err(error)
+        }
+    }
+}
+
+fn sports_stream_resolve_cache_key(provider: &'static str, source_url: &Url) -> String {
+    format!("{provider}:{}", normalize_url_cache_key(source_url))
+}
+
+fn normalize_url_cache_key(url: &Url) -> String {
+    let mut normalized = url.clone();
+    if let Some(host) = normalized.host_str().map(|host| host.to_ascii_lowercase()) {
+        let _ = normalized.set_host(Some(&host));
+    }
+    normalized.to_string()
+}
+
+async fn resolve_verified_streamed_live_stream_uncached(
     state: &AppState,
     source_url: &Url,
     candidate_index: usize,
@@ -986,45 +1427,28 @@ async fn resolve_verified_streamed_live_stream(
     )))
 }
 
-async fn resolve_verified_matchstream_live_stream(
-    state: &AppState,
+async fn resolve_verified_matchstream_live_stream_uncached(
+    _state: &AppState,
     source_url: &Url,
     candidate_index: usize,
 ) -> AppResult<ResolvedLiveStream> {
-    let response = sports_http_client(state)?
-        .get(source_url.clone())
-        .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
-        .header(reqwest::header::REFERER, MATCHSTREAM_WEBMASTER_URL)
-        .send()
-        .await
-        .map_err(|error| {
-            if error.is_timeout() {
-                ApiError::gateway_timeout("Timed out fetching MatchStream player.")
-            } else {
-                ApiError::bad_gateway(format!("Failed to fetch MatchStream player: {error}"))
-            }
-        })?;
-
-    if !response.status().is_success() {
-        return Err(ApiError::bad_gateway(format!(
-            "MatchStream player returned HTTP {}.",
-            response.status()
-        )));
-    }
-
-    let final_url = response.url().clone();
-    if !is_supported_matchstream_stream_url(&final_url) {
-        return Err(ApiError::bad_gateway(
-            "MatchStream player redirected to an unsupported host.",
+    if !is_supported_matchstream_stream_url(source_url) {
+        return Err(ApiError::bad_request(
+            "Unsupported MatchStream live stream URL.",
         ));
     }
-    let player_page_url =
-        Url::parse(MATCHSTREAM_WEBMASTER_URL).unwrap_or_else(|_| final_url.clone());
+    let Some((playback_url, player_page_url)) = resolve_matchstream_hls_url(source_url).await
+    else {
+        return Err(ApiError::bad_gateway(
+            "MatchStream player could not produce an HLS playlist.",
+        ));
+    };
+
     Ok(ResolvedLiveStream {
         source_url: source_url.clone(),
         player_page_url,
-        playback_url: final_url,
-        playback_type: "iframe",
+        playback_url,
+        playback_type: "hls",
         candidate_index,
         attempted_streams: candidate_index + 1,
     })
@@ -1066,6 +1490,54 @@ async fn resolve_streamed_embed_hls_url(embed_url: &Url) -> Option<Url> {
     is_supported_streamed_hls_url(&playback_url).then_some(playback_url)
 }
 
+async fn resolve_matchstream_hls_url(source_url: &Url) -> Option<(Url, Url)> {
+    let script_path = matchstream_hls_resolver_script_path();
+    if matches!(
+        script_path.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "off" | "disabled"
+    ) {
+        return None;
+    }
+
+    let mut command = Command::new("node");
+    command
+        .arg(script_path)
+        .arg(source_url.as_str())
+        .env(
+            "MATCHSTREAM_HLS_RESOLVE_TIMEOUT_MS",
+            (MATCHSTREAM_HLS_RESOLVE_TIMEOUT_SECONDS * 1000).to_string(),
+        )
+        .kill_on_drop(true);
+
+    let output = timeout(
+        Duration::from_secs(MATCHSTREAM_HLS_RESOLVE_TIMEOUT_SECONDS + 4),
+        command.output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let resolver_output =
+        serde_json::from_slice::<MatchstreamHlsResolverOutput>(&output.stdout).ok()?;
+    let playback_url = Url::parse(resolver_output.playback_url.trim()).ok()?;
+    if !is_supported_matchstream_hls_url(&playback_url) {
+        return None;
+    }
+    let player_page_text = if resolver_output.player_page.trim().is_empty() {
+        resolver_output.referer.trim()
+    } else {
+        resolver_output.player_page.trim()
+    };
+    let player_page_url = Url::parse(player_page_text)
+        .ok()
+        .filter(is_supported_matchstream_player_url)
+        .unwrap_or_else(|| source_url.clone());
+    Some((playback_url, player_page_url))
+}
+
 fn streamed_embed_hls_resolver_script_path() -> String {
     if let Some(value) = std::env::var("STREAMED_HLS_RESOLVER_SCRIPT")
         .ok()
@@ -1080,6 +1552,54 @@ fn streamed_embed_hls_resolver_script_path() -> String {
     }
 
     STREAMED_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT.to_owned()
+}
+
+fn matchstream_hls_resolver_script_path() -> String {
+    if let Some(value) = std::env::var("MATCHSTREAM_HLS_RESOLVER_SCRIPT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+
+    if Path::new(MATCHSTREAM_HLS_RESOLVER_SCRIPT).is_file() {
+        return MATCHSTREAM_HLS_RESOLVER_SCRIPT.to_owned();
+    }
+
+    MATCHSTREAM_HLS_RESOLVER_RUNTIME_SCRIPT.to_owned()
+}
+
+fn sports_live_stream_source_candidates(
+    primary_url: &str,
+    fallback_urls: Option<&str>,
+) -> AppResult<Vec<Url>> {
+    let mut primary = Url::parse(primary_url.trim())
+        .map_err(|_| ApiError::bad_request("Invalid live stream URL."))?;
+    normalize_matchstream_channel_url_path(&mut primary);
+    if !is_supported_sports_stream_url(&primary) {
+        return Err(ApiError::bad_request("Unsupported sports live stream URL."));
+    }
+
+    let mut candidates = Vec::with_capacity(MAX_LIVE_STREAM_CANDIDATES);
+    let mut seen = BTreeSet::new();
+    push_unique_stream_candidate(&mut candidates, &mut seen, primary);
+
+    for fallback_url in parse_fallback_stream_urls(fallback_urls)? {
+        if candidates.len() >= MAX_LIVE_STREAM_CANDIDATES {
+            break;
+        }
+        let Ok(mut parsed) = Url::parse(fallback_url.trim()) else {
+            continue;
+        };
+        normalize_matchstream_channel_url_path(&mut parsed);
+        if !is_supported_sports_stream_url(&parsed) {
+            continue;
+        }
+        push_unique_stream_candidate(&mut candidates, &mut seen, parsed);
+    }
+
+    Ok(candidates)
 }
 
 fn live_stream_source_candidates(
@@ -1113,15 +1633,14 @@ fn live_stream_source_candidates(
     Ok(candidates)
 }
 
+#[cfg(test)]
 fn matchstream_live_stream_source_candidates(
     primary_url: &str,
     fallback_urls: Option<&str>,
 ) -> AppResult<Vec<Url>> {
     let mut primary = Url::parse(primary_url.trim())
         .map_err(|_| ApiError::bad_request("Invalid live stream URL."))?;
-    if primary.path().trim_start_matches('/') == "ch" {
-        primary.set_path("/ch");
-    }
+    normalize_matchstream_channel_url_path(&mut primary);
     if !is_supported_matchstream_stream_url(&primary) {
         return Err(ApiError::bad_request(
             "Unsupported MatchStream live stream URL.",
@@ -1138,9 +1657,7 @@ fn matchstream_live_stream_source_candidates(
         let Ok(mut parsed) = Url::parse(fallback_url.trim()) else {
             continue;
         };
-        if parsed.path().trim_start_matches('/') == "ch" {
-            parsed.set_path("/ch");
-        }
+        normalize_matchstream_channel_url_path(&mut parsed);
         if !is_supported_matchstream_stream_url(&parsed) {
             continue;
         }
@@ -1148,6 +1665,12 @@ fn matchstream_live_stream_source_candidates(
     }
 
     Ok(candidates)
+}
+
+fn normalize_matchstream_channel_url_path(url: &mut Url) {
+    if url.path().trim_start_matches('/') == "ch" {
+        url.set_path("/ch");
+    }
 }
 
 fn parse_fallback_stream_urls(value: Option<&str>) -> AppResult<Vec<String>> {
@@ -1235,6 +1758,20 @@ fn is_supported_streamed_hls_url(url: &Url) -> bool {
         && url.path().to_ascii_lowercase().ends_with(".m3u8")
 }
 
+fn is_supported_sports_stream_url(url: &Url) -> bool {
+    is_streamed_stream_api_url(url) || is_supported_matchstream_stream_url(url)
+}
+
+fn sports_stream_provider_id(url: &Url) -> Option<&'static str> {
+    if is_streamed_stream_api_url(url) {
+        return Some(STREAMED_SOURCE_ID);
+    }
+    if is_supported_matchstream_stream_url(url) {
+        return Some(MATCHSTREAM_SOURCE_ID);
+    }
+    None
+}
+
 fn is_supported_matchstream_stream_url(url: &Url) -> bool {
     if url.scheme() != "https" && url.scheme() != "http" {
         return false;
@@ -1242,7 +1779,7 @@ fn is_supported_matchstream_stream_url(url: &Url) -> bool {
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     let supported_host = matches!(
         host.as_str(),
-        "glisco.link" | "evfancy.link" | "strongst.link"
+        "glisco.link" | "evfancy.link" | "strongst.link" | "l2l2.link"
     );
     if !supported_host || url.path().trim_start_matches('/') != "ch" {
         return false;
@@ -1251,11 +1788,38 @@ fn is_supported_matchstream_stream_url(url: &Url) -> bool {
         .any(|(key, value)| key == "id" && !value.trim().is_empty())
 }
 
+fn is_supported_matchstream_player_url(url: &Url) -> bool {
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return false;
+    }
+    if is_supported_matchstream_stream_url(url) {
+        return true;
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    match host.as_str() {
+        "brightcoremind.com" | "www.brightcoremind.com" => {
+            matches!(url.path(), "/embedb.php" | "/embedw.php")
+        }
+        "helpless.click" | "www.helpless.click" => url.path().starts_with("/e/"),
+        _ => false,
+    }
+}
+
+fn is_supported_matchstream_hls_url(url: &Url) -> bool {
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let supported_host = host == "zohanayaan.com"
+        || host.ends_with(".zohanayaan.com")
+        || host == "28585519.net"
+        || host.ends_with(".28585519.net");
+    supported_host && url.path().to_ascii_lowercase().ends_with(".m3u8")
+}
+
 fn normalize_matchstream_link(link: &str) -> Option<String> {
     let mut url = Url::parse(link.trim()).ok()?;
-    if url.path().trim_start_matches('/') == "ch" {
-        url.set_path("/ch");
-    }
+    normalize_matchstream_channel_url_path(&mut url);
     is_supported_matchstream_stream_url(&url).then(|| url.to_string())
 }
 
@@ -1346,6 +1910,8 @@ fn normalize_streamed_sport_match(
                 "id": format!("streamed-{source_name}-{index}"),
                 "label": format!("Streamed {display_source}"),
                 "source": source_url,
+                "provider": STREAMED_SOURCE_ID,
+                "playbackType": "hls",
                 "quality": "HD"
             }))
         })
@@ -1455,6 +2021,8 @@ fn normalize_matchstream_sport_match(
                 "id": format!("matchstream-{channel_index}-{link_index}"),
                 "label": link_label,
                 "source": source_url,
+                "provider": MATCHSTREAM_SOURCE_ID,
+                "playbackType": "hls",
                 "quality": language
             }));
         }
@@ -1518,14 +2086,18 @@ fn title_case_ascii(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MATCHSTREAM_WEBMASTER_URL, MAX_LIVE_STREAM_CANDIDATES, MatchstreamChannel,
-        MatchstreamMatch, SPORTS_SCHEDULE_CACHE_TTL_MS, SPORTS_SCHEDULE_STALE_IF_ERROR_MS,
-        STREAMED_FOOTBALL_MATCHES_URL, SportsScheduleCache, SportsScheduleSource, StreamedMatch,
-        StreamedSource, StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
+        MATCHSTREAM_WEBMASTER_URL, MatchstreamChannel, MatchstreamMatch,
+        SPORTS_SCHEDULE_FUTURE_CACHE_TTL_MS, SPORTS_SCHEDULE_STALE_IF_ERROR_MS,
+        SPORTS_STREAM_RESOLVE_CACHE_TTL_MS, STREAMED_FOOTBALL_MATCHES_URL, SportsScheduleCache,
+        SportsScheduleSource, SportsStreamResolveCache, StreamedMatch, StreamedSource,
+        StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
         build_streamed_football_matches_payload, extract_matchstream_matches,
+        is_supported_matchstream_hls_url, is_supported_matchstream_player_url,
         is_supported_matchstream_stream_url, is_supported_streamed_hls_url,
         live_stream_source_candidates, matchstream_live_stream_source_candidates,
         normalize_matchstream_link, parse_fallback_stream_urls,
+        sports_live_stream_source_candidates, sports_schedule_fresh_ttl_ms,
+        sports_stream_resolve_cache_key,
     };
     use crate::utils::now_ms;
     use serde_json::json;
@@ -1586,7 +2158,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(candidates.len(), MAX_LIVE_STREAM_CANDIDATES);
+        assert_eq!(candidates.len(), 6);
         assert_eq!(
             candidates[0].as_str(),
             "https://streamed.pk/api/stream/admin/a"
@@ -1631,11 +2203,13 @@ mod tests {
     fn accepts_matchstream_channel_hosts_only() {
         let glisco = url::Url::parse("https://glisco.link/ch?id=4").unwrap();
         let evfancy = url::Url::parse("https://evfancy.link//ch?id=4").unwrap();
+        let l2l2 = url::Url::parse("https://l2l2.link/ch?id=4").unwrap();
         let missing_id = url::Url::parse("https://strongst.link/ch").unwrap();
         let other = url::Url::parse("https://example.test/ch?id=4").unwrap();
 
         assert!(is_supported_matchstream_stream_url(&glisco));
         assert!(is_supported_matchstream_stream_url(&evfancy));
+        assert!(is_supported_matchstream_stream_url(&l2l2));
         assert!(!is_supported_matchstream_stream_url(&missing_id));
         assert!(!is_supported_matchstream_stream_url(&other));
         assert_eq!(
@@ -1645,11 +2219,31 @@ mod tests {
     }
 
     #[test]
+    fn accepts_matchstream_hls_and_player_hosts_only() {
+        let brightcore =
+            url::Url::parse("https://brightcoremind.com/embedb.php?player=desktop&live=do6")
+                .unwrap();
+        let helpless = url::Url::parse("https://helpless.click/e/sugutdh5wpwe").unwrap();
+        let zohanayaan =
+            url::Url::parse("https://cdn6.zohanayaan.com:1686/hls/do6.m3u8?token=1").unwrap();
+        let xst = url::Url::parse("https://media.example.28585519.net/hls/live.m3u8").unwrap();
+        let segment = url::Url::parse("https://cdn6.zohanayaan.com:1686/hls/do6.ts").unwrap();
+        let other = url::Url::parse("https://example.test/live.m3u8").unwrap();
+
+        assert!(is_supported_matchstream_player_url(&brightcore));
+        assert!(is_supported_matchstream_player_url(&helpless));
+        assert!(is_supported_matchstream_hls_url(&zohanayaan));
+        assert!(is_supported_matchstream_hls_url(&xst));
+        assert!(!is_supported_matchstream_hls_url(&segment));
+        assert!(!is_supported_matchstream_hls_url(&other));
+    }
+
+    #[test]
     fn builds_unique_matchstream_live_stream_candidates() {
         let candidates = matchstream_live_stream_source_candidates(
             "https://glisco.link/ch?id=4",
             Some(
-                "https://evfancy.link//ch?id=4,https://streamed.pk/api/stream/admin/a,https://strongst.link/ch?id=4",
+                "https://evfancy.link//ch?id=4,https://streamed.pk/api/stream/admin/a,https://strongst.link/ch?id=4,https://l2l2.link/ch?id=4",
             ),
         )
         .unwrap();
@@ -1663,6 +2257,30 @@ mod tests {
                 "https://glisco.link/ch?id=4",
                 "https://evfancy.link/ch?id=4",
                 "https://strongst.link/ch?id=4",
+                "https://l2l2.link/ch?id=4",
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_mixed_sports_live_stream_candidates() {
+        let candidates = sports_live_stream_source_candidates(
+            "https://streamed.pk/api/stream/admin/a",
+            Some(
+                r#"["https://evfancy.link//ch?id=4","https://streamed.pk/api/stream/echo/a","https://example.test/live"]"#,
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|url| url.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "https://streamed.pk/api/stream/admin/a",
+                "https://evfancy.link/ch?id=4",
+                "https://streamed.pk/api/stream/echo/a",
             ]
         );
     }
@@ -1756,17 +2374,27 @@ mod tests {
     #[test]
     fn sports_schedule_cache_reuses_fresh_entries_and_expires_later() {
         let cache = SportsScheduleCache::new();
-        cache.insert("football", json!({ "sport": "Football" }), 1_000);
+        cache.insert(
+            "football",
+            json!({
+                "sport": "Football",
+                "matches": [{
+                    "startTimestamp": 8_000_000,
+                    "endsAtTimestamp": 8_700_000
+                }]
+            }),
+            1_000,
+        );
 
         assert_eq!(
             cache
-                .fresh("football", 1_000 + SPORTS_SCHEDULE_CACHE_TTL_MS)
+                .fresh("football", 1_000 + SPORTS_SCHEDULE_FUTURE_CACHE_TTL_MS)
                 .unwrap()["sport"],
             "Football"
         );
         assert!(
             cache
-                .fresh("football", 1_000 + SPORTS_SCHEDULE_CACHE_TTL_MS + 1)
+                .fresh("football", 1_000 + SPORTS_SCHEDULE_FUTURE_CACHE_TTL_MS + 1)
                 .is_none()
         );
         assert_eq!(
@@ -1780,5 +2408,54 @@ mod tests {
                 .stale("football", 1_000 + SPORTS_SCHEDULE_STALE_IF_ERROR_MS + 1)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn sports_schedule_ttl_is_shorter_for_live_and_empty_payloads() {
+        let now = now_ms();
+        assert_eq!(
+            sports_schedule_fresh_ttl_ms(
+                &json!({ "matches": [{ "startTimestamp": now - 1_000, "endsAtTimestamp": now + 1_000 }] }),
+                now,
+            ),
+            super::SPORTS_SCHEDULE_LIVE_CACHE_TTL_MS
+        );
+        assert_eq!(
+            sports_schedule_fresh_ttl_ms(&json!({ "matches": [] }), now),
+            super::SPORTS_SCHEDULE_EMPTY_CACHE_TTL_MS
+        );
+    }
+
+    #[test]
+    fn sports_stream_resolve_cache_keys_include_provider_and_expire() {
+        let cache = SportsStreamResolveCache::new(1, 100);
+        let source_url = url::Url::parse("https://evfancy.link/ch?id=4").unwrap();
+        let streamed_key = sports_stream_resolve_cache_key("streamed", &source_url);
+        let matchstream_key = sports_stream_resolve_cache_key("matchstream", &source_url);
+        let resolved = super::ResolvedLiveStream {
+            source_url: source_url.clone(),
+            player_page_url: source_url.clone(),
+            playback_url: url::Url::parse("https://cdn6.zohanayaan.com/hls/do4.m3u8").unwrap(),
+            playback_type: "hls",
+            candidate_index: 0,
+            attempted_streams: 1,
+        };
+
+        assert_ne!(streamed_key, matchstream_key);
+        cache.insert(matchstream_key.clone(), resolved, 1_000);
+        assert!(
+            cache
+                .fresh(&matchstream_key, 1_000 + SPORTS_STREAM_RESOLVE_CACHE_TTL_MS)
+                .is_some()
+        );
+        assert!(
+            cache
+                .fresh(
+                    &matchstream_key,
+                    1_000 + SPORTS_STREAM_RESOLVE_CACHE_TTL_MS + 1
+                )
+                .is_none()
+        );
+        assert!(cache.fresh(&streamed_key, 1_000).is_none());
     }
 }

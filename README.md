@@ -157,8 +157,8 @@ Live and sports flow:
 1. `/live` renders static live channels from `src-ui/lib/live-channels.js`.
 2. HLS live channel playlists and segments are proxied through `/api/live/hls.m3u8` and `/api/live/hls-resource` with an allowlist in `src/live.rs`.
 3. Twitch-backed live sources resolve through `/api/twitch/stream`.
-4. `/sports` fetches schedules for football, basketball, tennis, hockey, baseball, American football, and cricket through `src/football.rs`; the default Auto source tries Streamed first and falls back to MatchStream if Streamed is unreachable.
-5. Live sports streams resolve through `/api/sports/stream`; the server attempts a Playwright-based HLS extraction with `scripts/resolve-streamed-hls.mjs` and can fall back to iframe playback.
+4. `/sports` fetches schedules for football, basketball, tennis, hockey, baseball, American football, and cricket through `src/football.rs`; the default Auto source merges Streamed and MatchStream schedules so both providers show up in the live stream picker.
+5. Live sports streams resolve through protected `/api/sports/stream`; the server uses short-lived HLS resolution caching, bounded Playwright concurrency, `scripts/resolve-streamed-hls.mjs` for Streamed, and `scripts/resolve-matchstream-hls.mjs` for MatchStream.
 
 ## Features
 
@@ -276,10 +276,11 @@ PWA/offline behavior:
 
 Operational features:
 
-- `/api/health` reports uptime, streaming counters, resolver counters, and ffmpeg/ffprobe capabilities.
+- `/api/health` reports uptime, streaming counters, resolver counters, sports resolver health, and ffmpeg/ffprobe capabilities.
 - `/api/config` reports configured integrations, resolver providers, upload limit, remux/HLS limits, and effective hardware acceleration.
 - `/api/debug/cache` reports persistent and in-memory cache counts.
 - `/api/debug/cache?clear=1` clears persistent resolver/TMDB/session/media caches and HLS cache data.
+- `/api/debug/sports` reports sports schedule cache, stream resolver cache, and provider health details.
 - Runtime sweeps stale DB/cache/upload/streaming state every minute.
 
 ## Pages
@@ -334,9 +335,6 @@ Public API routes:
 - `GET /api/baseball/matches`
 - `GET /api/american-football/matches`
 - `GET /api/cricket/matches`
-- `GET /api/football/stream`
-- `GET /api/basketball/stream`
-- `GET /api/sports/stream`
 - `GET /api/twitch/stream`
 - `GET /api/live/hls.m3u8`
 - `GET /api/live/hls-resource`
@@ -346,6 +344,10 @@ Protected API routes:
 
 - `GET|PUT /api/library`
 - `GET|POST /api/debug/cache`
+- `GET /api/debug/sports`
+- `GET /api/football/stream`
+- `GET /api/basketball/stream`
+- `GET /api/sports/stream`
 - `GET|POST|DELETE /api/title/preferences`
 - `POST /api/session/progress`
 - `GET /api/tmdb/popular-movies`
@@ -438,8 +440,12 @@ Embed/live resolver helpers:
 - `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - per-provider timeout budget for VidEasy/VidLink native HLS extraction; default 10000.
 - `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS` - total native HLS extraction budget before falling back to the iframe path; default 12000.
 - `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs` when present, otherwise `bin/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
+- `MATCHSTREAM_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-matchstream-hls.mjs` when present, otherwise `bin/resolve-matchstream-hls.mjs`; set to `0`/`off` to disable.
+- `SPORTS_RESOLVER_MAX_CONCURRENT` - max concurrent sports Playwright HLS resolver jobs; default 2.
+- `SPORTS_RESOLVER_QUEUE_TIMEOUT_MS` - max time a sports stream resolve waits for resolver capacity; default 3000.
 - `EXTERNAL_EMBED_BROWSER_PROXY` - optional Playwright proxy override for external embeds.
 - `STREAMED_EMBED_BROWSER_PROXY` - optional Playwright proxy override for Streamed sports embeds.
+- `MATCHSTREAM_BROWSER_PROXY` - optional Playwright proxy override for MatchStream sports embeds.
 
 Supported movie/TV embed hosts:
 
@@ -575,6 +581,7 @@ Internal resolver helpers:
 
 - `scripts/resolve-external-embed-hls.mjs` - Playwright helper for VidEasy/VidLink movie/TV native HLS extraction.
 - `scripts/resolve-streamed-hls.mjs` - Playwright helper for Streamed sports HLS extraction; mini deploy copies it to `bin/resolve-streamed-hls.mjs`.
+- `scripts/resolve-matchstream-hls.mjs` - Playwright helper for MatchStream sports HLS extraction; mini deploy copies it to `bin/resolve-matchstream-hls.mjs`.
 
 ## Mac Mini Infrastructure
 
@@ -613,9 +620,10 @@ Sports proxy/WARP:
 - Existing full-backend proxy env may also point at the same listener: `OUTBOUND_HTTP_PROXY=http://127.0.0.1:40000`.
 - Streamed may fail directly from the ISP path; the expected healthy path is through WARP's local proxy.
 - `scripts/check-mini.sh` validates WARP status, WARP proxy mode, the `SPORTS_HTTP_PROXY` value, and a real proxied `https://streamed.pk/api/matches/football` request.
-- `scripts/deploy-mini.sh` deploys both resolver helpers:
+- `scripts/deploy-mini.sh` deploys resolver helpers:
   - `bin/resolve-external-embed-hls.mjs` for movie/TV native HLS.
   - `bin/resolve-streamed-hls.mjs` for Streamed sports native HLS.
+  - `bin/resolve-matchstream-hls.mjs` for MatchStream sports native HLS.
 
 Useful sports proxy checks:
 

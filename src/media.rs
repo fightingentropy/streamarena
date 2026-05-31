@@ -2150,6 +2150,8 @@ mod tests {
             remux_process_timeout_seconds: 4 * 60 * 60,
             resolver_max_concurrent: 2,
             resolver_queue_timeout_ms: 3_000,
+            sports_resolver_max_concurrent: 2,
+            sports_resolver_queue_timeout_ms: 3_000,
             local_torrent_max_bytes: 80 * 1024 * 1024 * 1024,
             local_torrent_metadata_timeout_ms: 45_000,
             local_torrent_ready_timeout_ms: 90_000,

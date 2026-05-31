@@ -18,9 +18,10 @@ use crate::config::Config;
 use crate::embed_proxy::embed_frame_handler;
 use crate::error::{ApiError, AppResult, json_response};
 use crate::football::{
-    SportsScheduleCache, american_football_matches_handler, baseball_matches_handler,
-    basketball_matches_handler, basketball_stream_resolve_handler, cricket_matches_handler,
-    football_matches_handler, football_stream_resolve_handler, hockey_matches_handler,
+    SportsProviderHealth, SportsScheduleCache, SportsStreamResolveCache,
+    american_football_matches_handler, baseball_matches_handler, basketball_matches_handler,
+    basketball_stream_resolve_handler, cricket_matches_handler, football_matches_handler,
+    football_stream_resolve_handler, hockey_matches_handler,
     streamed_sports_stream_resolve_handler, tennis_matches_handler,
 };
 use crate::home_bootstrap;
@@ -65,8 +66,11 @@ pub struct AppState {
     pub upload: UploadService,
     pub runtime: RuntimeServices,
     pub sports_schedule_cache: SportsScheduleCache,
+    pub sports_stream_resolve_cache: SportsStreamResolveCache,
+    pub sports_provider_health: SportsProviderHealth,
     pub home_bootstrap_cache: home_bootstrap::HomeBootstrapCache,
     pub auth_rate_limiter: std::sync::Arc<crate::rate_limit::RateLimiter>,
+    pub sports_stream_rate_limiter: std::sync::Arc<crate::rate_limit::RateLimiter>,
     pub started_at_ms: i64,
 }
 
@@ -86,12 +90,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/health", any(health_handler))
         .route("/api/config", any(config_handler))
         .route("/api/football/matches", get(football_matches_handler))
-        .route("/api/football/stream", get(football_stream_resolve_handler))
         .route("/api/basketball/matches", get(basketball_matches_handler))
-        .route(
-            "/api/basketball/stream",
-            get(basketball_stream_resolve_handler),
-        )
         .route("/api/tennis/matches", get(tennis_matches_handler))
         .route("/api/hockey/matches", get(hockey_matches_handler))
         .route("/api/baseball/matches", get(baseball_matches_handler))
@@ -100,10 +99,6 @@ pub fn build_router(state: AppState) -> Router {
             get(american_football_matches_handler),
         )
         .route("/api/cricket/matches", get(cricket_matches_handler))
-        .route(
-            "/api/sports/stream",
-            get(streamed_sports_stream_resolve_handler),
-        )
         .route("/api/twitch/stream", get(twitch_stream_resolve_handler))
         .route("/api/live/hls.m3u8", any(live_hls_handler))
         .route("/api/live/hls-resource", any(live_hls_resource_handler))
@@ -121,6 +116,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/hls/master.m3u8", any(hls_master_handler))
         .route("/api/hls/segment.ts", any(hls_segment_handler))
         .route("/api/debug/cache", any(debug_cache))
+        .route("/api/debug/sports", any(debug_sports))
+        .route("/api/football/stream", get(football_stream_resolve_handler))
+        .route(
+            "/api/basketball/stream",
+            get(basketball_stream_resolve_handler),
+        )
+        .route(
+            "/api/sports/stream",
+            get(streamed_sports_stream_resolve_handler),
+        )
         .route("/api/title/preferences", any(title_preferences_handler))
         .route("/api/session/progress", any(session_progress_handler))
         .route("/api/tmdb/popular-movies", any(tmdb_popular_movies_handler))
@@ -222,6 +227,23 @@ pub async fn debug_cache(
     Ok(json_response(payload))
 }
 
+pub async fn debug_sports(
+    State(state): State<AppState>,
+    method: Method,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed."));
+    }
+    Ok(json_response(json!({
+        "scheduleCache": state.sports_schedule_cache.debug_payload(),
+        "streamResolveCache": state.sports_stream_resolve_cache.stats(),
+        "providerHealth": state.sports_provider_health.summary(true),
+        "proxyConfigured": std::env::var("SPORTS_HTTP_PROXY").ok().is_some_and(|value| !value.trim().is_empty()),
+        "streamedResolverConfigured": std::env::var("STREAMED_HLS_RESOLVER_SCRIPT").ok().map(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "disabled")).unwrap_or(true),
+        "matchstreamResolverConfigured": std::env::var("MATCHSTREAM_HLS_RESOLVER_SCRIPT").ok().map(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "disabled")).unwrap_or(true)
+    })))
+}
+
 pub async fn config_handler(
     State(state): State<AppState>,
     method: Method,
@@ -277,6 +299,10 @@ pub async fn health_handler(
         "uptimeSeconds": ((now_ms() - state.started_at_ms) / 1000).max(0),
         "streaming": state.streaming.stats(),
         "resolver": state.resolver.stats(),
+        "sports": {
+            "streamResolveCache": state.sports_stream_resolve_cache.stats(),
+            "providerHealth": state.sports_provider_health.summary(false)
+        },
         "ffmpeg": ffmpeg
     })))
 }

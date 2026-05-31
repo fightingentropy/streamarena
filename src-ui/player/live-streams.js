@@ -38,6 +38,9 @@ function normalizeLiveStreamOption(option = {}, index = 0) {
     id,
     label: label || `Stream ${index + 1}`,
     source,
+    provider: String(option?.provider || "").trim().toLowerCase(),
+    playbackType: String(option?.playbackType || "").trim().toLowerCase(),
+    playerPage: normalizePlaybackSourceValue(option?.playerPage || option?.referer || ""),
     quality: String(option?.quality || option?.meta || "").trim(),
   };
 }
@@ -66,12 +69,17 @@ function readLiveStreamOptionsFromParams(
   }
 
   const seenSources = new Set();
+  const seenIds = new Set();
   const uniqueOptions = parsedOptions.filter((option) => {
     const key = option.source;
     if (!key || seenSources.has(key)) {
       return false;
     }
     seenSources.add(key);
+    if (seenIds.has(option.id)) {
+      option.id = `${option.id}-${seenIds.size + 1}`;
+    }
+    seenIds.add(option.id);
     return true;
   });
   const normalizedFallback = includeFallbackSource
