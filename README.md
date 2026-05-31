@@ -107,7 +107,8 @@ Startup flow:
 3. Services are wired into `AppState`: TMDB, media probing/subtitles, local torrent/cache, resolver, streaming/remux/HLS, uploads, runtime ffmpeg capabilities, sports schedule cache, and home bootstrap cache.
 4. A background task runs every 60 seconds to sweep stale SQLite/cache data, upload sessions, and streaming jobs.
 5. `HomeBootstrapCache` starts warming TMDB/home data as soon as the server boots.
-6. Axum serves public API routes, protected API routes behind auth middleware, and static frontend files.
+6. Recent watched/listed TV series warm their TMDB details, season catalogs, external IDs, and current/next episode metadata into the persistent SQLite cache shortly after startup.
+7. Axum serves public API routes, protected API routes behind auth middleware, and static frontend files.
 
 Static file flow:
 
@@ -495,7 +496,7 @@ SQLite stores:
 - Watch progress.
 - Continue watching entries.
 - My List entries.
-- TMDB response cache.
+- TMDB response cache. General metadata defaults to a short TTL, while watched TV series details/seasons/episode metadata are kept for 30 days and refreshed in the background.
 - Resolved stream cache.
 - Movie quick-start cache.
 - Playback sessions.
