@@ -74,6 +74,25 @@ pub struct AppState {
     pub started_at_ms: i64,
 }
 
+const JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
+
+async fn parse_json_body(request: Request<Body>) -> AppResult<Value> {
+    let bytes = to_bytes(request.into_body(), JSON_BODY_LIMIT_BYTES)
+        .await
+        .map_err(|error| {
+            let message = error.to_string().to_lowercase();
+            if message.contains("length limit") || message.contains("body larger") {
+                ApiError::payload_too_large(format!(
+                    "JSON body exceeded the {} MiB limit.",
+                    JSON_BODY_LIMIT_BYTES / (1024 * 1024)
+                ))
+            } else {
+                ApiError::bad_request("Invalid JSON body.")
+            }
+        })?;
+    serde_json::from_slice::<Value>(&bytes).map_err(|_| ApiError::bad_request("Invalid JSON body."))
+}
+
 async fn api_auth_middleware(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -331,11 +350,7 @@ pub async fn library_put_handler(
     State(state): State<AppState>,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
-    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-        .await
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let payload = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = parse_json_body(request).await?;
     let updated = write_local_library(&state.config.local_library_path, payload).await?;
     Ok(json_response(json!({
         "ok": true,
@@ -372,11 +387,7 @@ pub async fn title_preferences_handler(
             })))
         }
         Method::POST => {
-            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-                .await
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-            let payload = serde_json::from_slice::<Value>(&bytes)
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = parse_json_body(request).await?;
             let tmdb_id = payload
                 .get("tmdbId")
                 .and_then(Value::as_str)
@@ -470,11 +481,7 @@ pub async fn session_progress_handler(
             "session": null
         })));
     }
-    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-        .await
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let payload = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = parse_json_body(request).await?;
     let tmdb_id = payload
         .get("tmdbId")
         .and_then(Value::as_str)
@@ -869,11 +876,7 @@ pub async fn upload_infer_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-        .await
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let payload = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = parse_json_body(request).await?;
     let file_name = normalize_whitespace(
         payload
             .get("fileName")
@@ -914,11 +917,7 @@ pub async fn upload_session_start_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-        .await
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let payload = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = parse_json_body(request).await?;
     Ok(json_response(state.upload.start_session(payload).await?))
 }
 
@@ -953,11 +952,7 @@ pub async fn upload_session_finish_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-        .await
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let payload = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = parse_json_body(request).await?;
     Ok(json_response(state.upload.finish_session(payload).await?))
 }
 
@@ -971,11 +966,7 @@ pub async fn gallery_save_stream_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-        .await
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let payload = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = parse_json_body(request).await?;
     Ok(json_response(state.upload.queue_gallery_save(payload)?))
 }
 
@@ -1663,11 +1654,7 @@ async fn auth_signup_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-        .await
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let payload = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = parse_json_body(request).await?;
     let email = payload
         .get("email")
         .or_else(|| payload.get("username"))
@@ -1751,11 +1738,7 @@ async fn auth_login_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-        .await
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let payload = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = parse_json_body(request).await?;
     let email = payload
         .get("email")
         .or_else(|| payload.get("username"))
@@ -1898,11 +1881,7 @@ async fn user_preferences_handler(
             Ok(json_response(Value::Object(obj)))
         }
         Method::PUT => {
-            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-                .await
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-            let payload = serde_json::from_slice::<Value>(&bytes)
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = parse_json_body(request).await?;
             let entries: Vec<(String, String)> = match payload.as_object() {
                 Some(obj) => obj
                     .iter()
@@ -1950,11 +1929,7 @@ async fn user_watch_progress_handler(
             Ok(json_response(json!({ "entries": entries })))
         }
         Method::PUT => {
-            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-                .await
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-            let payload = serde_json::from_slice::<Value>(&bytes)
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = parse_json_body(request).await?;
             let source_identity = payload
                 .get("sourceIdentity")
                 .and_then(Value::as_str)
@@ -1974,11 +1949,7 @@ async fn user_watch_progress_handler(
             Ok(json_response(json!({ "ok": true })))
         }
         Method::DELETE => {
-            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-                .await
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-            let payload = serde_json::from_slice::<Value>(&bytes)
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = parse_json_body(request).await?;
             let source_identity = payload
                 .get("sourceIdentity")
                 .and_then(Value::as_str)
@@ -2026,11 +1997,7 @@ async fn user_continue_watching_handler(
             Ok(json_response(json!({ "entries": entries })))
         }
         Method::PUT => {
-            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-                .await
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-            let payload = serde_json::from_slice::<Value>(&bytes)
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = parse_json_body(request).await?;
             let source_identity = payload
                 .get("sourceIdentity")
                 .and_then(Value::as_str)
@@ -2045,11 +2012,7 @@ async fn user_continue_watching_handler(
             Ok(json_response(json!({ "ok": true })))
         }
         Method::DELETE => {
-            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-                .await
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-            let payload = serde_json::from_slice::<Value>(&bytes)
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = parse_json_body(request).await?;
             let source_identity = payload
                 .get("sourceIdentity")
                 .and_then(Value::as_str)
@@ -2105,11 +2068,7 @@ async fn user_my_list_handler(
             Ok(json_response(json!({ "entries": entries })))
         }
         Method::PUT => {
-            let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-                .await
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-            let payload = serde_json::from_slice::<Value>(&bytes)
-                .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+            let payload = parse_json_body(request).await?;
             let entries = payload
                 .get("entries")
                 .and_then(Value::as_array)
@@ -2200,11 +2159,7 @@ async fn user_sync_handler(
         ));
     }
     let user = auth::require_auth(&state.db, &headers).await?;
-    let bytes = to_bytes(request.into_body(), state.config.max_upload_bytes)
-        .await
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
-    let payload = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| ApiError::bad_request("Invalid JSON body."))?;
+    let payload = parse_json_body(request).await?;
 
     // Preferences
     if let Some(prefs) = payload.get("preferences").and_then(Value::as_object) {
