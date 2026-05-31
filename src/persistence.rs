@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -86,6 +87,14 @@ pub struct PersistPlaybackSessionInput {
     pub playable_url: String,
     pub fallback_urls: Vec<String>,
     pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TmdbTvWarmupCandidate {
+    pub tmdb_id: String,
+    pub season_number: i64,
+    pub episode_number: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -950,6 +959,33 @@ impl Db {
         Ok(())
     }
 
+    pub async fn extend_tmdb_cache_expiration(
+        &self,
+        cache_key: String,
+        expires_at: i64,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "
+                UPDATE tmdb_response_cache
+                SET expires_at = ?, updated_at = ?
+                WHERE cache_key = ?
+                  AND expires_at < ?
+                ",
+                params![expires_at, now_ms(), cache_key, expires_at],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
     pub async fn get_resolved_stream_cache(
         &self,
         cache_key: String,
@@ -1648,6 +1684,122 @@ impl Db {
             }
             return_connection(&pool, connection);
             Ok::<Vec<Value>, rusqlite::Error>(entries)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn get_recent_tmdb_tv_warmup_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<TmdbTvWarmupCandidate>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        let normalized_limit = limit.clamp(1, 50) as i64;
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let mut candidates = BTreeMap::<String, TmdbTvWarmupCandidate>::new();
+
+            {
+                let mut stmt = connection.prepare(
+                    "
+                    SELECT tmdb_id, source_identity, episode_index, updated_at
+                    FROM user_continue_watching
+                    WHERE lower(media_type) = 'tv'
+                      AND trim(tmdb_id) <> ''
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    ",
+                )?;
+                let rows = stmt
+                    .query_map([normalized_limit], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                for (tmdb_id, source_identity, episode_index, updated_at) in rows {
+                    let normalized_tmdb_id = tmdb_id.trim().to_owned();
+                    if !is_numeric_tmdb_id(&normalized_tmdb_id) {
+                        continue;
+                    }
+                    let (season_number, episode_number) =
+                        continue_watching_target_episode(&source_identity, episode_index, None);
+                    upsert_warmup_candidate(
+                        &mut candidates,
+                        TmdbTvWarmupCandidate {
+                            tmdb_id: normalized_tmdb_id,
+                            season_number,
+                            episode_number,
+                            updated_at,
+                        },
+                    );
+                }
+            }
+
+            {
+                let mut stmt = connection.prepare(
+                    "
+                    SELECT details_json, added_at
+                    FROM user_my_list
+                    ORDER BY added_at DESC
+                    LIMIT ?
+                    ",
+                )?;
+                let rows = stmt
+                    .query_map([normalized_limit], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                for (details_json, added_at) in rows {
+                    let details =
+                        serde_json::from_str::<Value>(&details_json).unwrap_or_else(|_| json!({}));
+                    let media_type = details
+                        .get("mediaType")
+                        .or_else(|| details.get("media_type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_ascii_lowercase();
+                    if media_type != "tv" {
+                        continue;
+                    }
+                    let tmdb_id = details
+                        .get("tmdbId")
+                        .or_else(|| details.get("id"))
+                        .and_then(|value| {
+                            value
+                                .as_str()
+                                .map(ToOwned::to_owned)
+                                .or_else(|| value.as_i64().map(|number| number.to_string()))
+                        })
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned();
+                    if !is_numeric_tmdb_id(&tmdb_id) {
+                        continue;
+                    }
+                    upsert_warmup_candidate(
+                        &mut candidates,
+                        TmdbTvWarmupCandidate {
+                            tmdb_id,
+                            season_number: 1,
+                            episode_number: 1,
+                            updated_at: added_at,
+                        },
+                    );
+                }
+            }
+
+            let mut candidates = candidates.into_values().collect::<Vec<_>>();
+            candidates.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+            candidates.truncate(normalized_limit as usize);
+            return_connection(&pool, connection);
+            Ok::<Vec<TmdbTvWarmupCandidate>, rusqlite::Error>(candidates)
         })
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
@@ -2495,6 +2647,23 @@ fn normalize_playback_session_fallback_urls(values: Vec<String>) -> Vec<String> 
     unique
 }
 
+fn is_numeric_tmdb_id(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty() && trimmed.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn upsert_warmup_candidate(
+    candidates: &mut BTreeMap<String, TmdbTvWarmupCandidate>,
+    candidate: TmdbTvWarmupCandidate,
+) {
+    match candidates.get(&candidate.tmdb_id) {
+        Some(existing) if existing.updated_at >= candidate.updated_at => {}
+        _ => {
+            candidates.insert(candidate.tmdb_id.clone(), candidate);
+        }
+    }
+}
+
 fn continue_watching_target_episode(
     source_identity: &str,
     episode_index: i64,
@@ -2882,13 +3051,14 @@ pub fn build_cache_debug_payload(
     json!({
       "uptimeSeconds": ((now_ms() - started_at_ms) / 1000).max(0),
       "caches": {
-        "tmdbResponse": {
-          "size": in_memory_tmdb_size,
-          "ttlDefaultMs": 21600000,
-          "ttlPopularMs": 1800000,
-          "ttlGenreMs": 86400000,
-          "maxEntries": 1200
-        },
+          "tmdbResponse": {
+            "size": in_memory_tmdb_size,
+            "ttlDefaultMs": 21600000,
+            "ttlPopularMs": 1800000,
+            "ttlGenreMs": 86400000,
+            "ttlTvMetadataMs": 2592000000_i64,
+            "maxEntries": 1200
+          },
         "movieQuickStart": {
           "size": 0,
           "ttlMs": 3600000,

@@ -142,6 +142,7 @@ async fn main() -> AppResult<()> {
     };
 
     state.home_bootstrap_cache.spawn_refresh(state.clone());
+    state.tmdb.spawn_recent_tv_metadata_warmup();
 
     let app = build_router(state)
         .layer(DefaultBodyLimit::max(config.max_upload_bytes))
