@@ -41,7 +41,7 @@ pub async fn embed_frame_handler(
     let response = request
         .send()
         .await
-        .map_err(|error| ApiError::bad_gateway(format!("Embed proxy fetch failed: {error}")))?;
+        .map_err(|_| ApiError::bad_gateway("Embed proxy fetch failed."))?;
     if !response.status().is_success() {
         return Err(ApiError::bad_gateway(format!(
             "Embed provider returned HTTP {}.",
@@ -59,7 +59,7 @@ pub async fn embed_frame_handler(
     let html = response
         .text()
         .await
-        .map_err(|error| ApiError::bad_gateway(format!("Embed proxy read failed: {error}")))?;
+        .map_err(|_| ApiError::bad_gateway("Embed proxy read failed."))?;
     let prepared = prepare_embed_html(&html, &final_url);
 
     Response::builder()

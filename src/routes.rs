@@ -118,10 +118,6 @@ pub fn build_router(state: AppState) -> Router {
             get(american_football_matches_handler),
         )
         .route("/api/cricket/matches", get(cricket_matches_handler))
-        .route("/api/twitch/stream", get(twitch_stream_resolve_handler))
-        .route("/api/live/hls.m3u8", any(live_hls_handler))
-        .route("/api/live/hls-resource", any(live_hls_resource_handler))
-        .route("/api/embed/frame", any(embed_frame_handler))
         .route("/api/auth/signup", any(auth_signup_handler))
         .route("/api/auth/login", any(auth_login_handler))
         .route("/api/auth/logout", any(auth_logout_handler))
@@ -136,6 +132,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/hls/segment.ts", any(hls_segment_handler))
         .route("/api/debug/cache", any(debug_cache))
         .route("/api/debug/sports", any(debug_sports))
+        .route("/api/twitch/stream", get(twitch_stream_resolve_handler))
+        .route("/api/live/hls.m3u8", any(live_hls_handler))
+        .route("/api/live/hls-resource", any(live_hls_resource_handler))
+        .route("/api/embed/frame", any(embed_frame_handler))
         .route("/api/football/stream", get(football_stream_resolve_handler))
         .route(
             "/api/basketball/stream",
@@ -361,13 +361,21 @@ pub async fn library_put_handler(
 pub async fn title_preferences_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     uri: Uri,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
+    let user = auth::require_auth(&state.db, &headers).await?;
     match method {
         Method::GET => {
             let params = query_pairs(uri.query().unwrap_or_default());
             let tmdb_id = params.get("tmdbId").cloned().unwrap_or_default();
+            let media_type = normalize_media_type_param(
+                params
+                    .get("mediaType")
+                    .map(String::as_str)
+                    .unwrap_or("movie"),
+            );
             if !is_numeric_id(&tmdb_id) {
                 return Err(ApiError::bad_request(
                     "Missing or invalid tmdbId query parameter.",
@@ -375,7 +383,7 @@ pub async fn title_preferences_handler(
             }
             let preference = state
                 .db
-                .get_title_preference(tmdb_id.clone())
+                .get_title_preference(user.id, media_type.clone(), tmdb_id.clone())
                 .await?
                 .unwrap_or(TitlePreference {
                     audioLang: "auto".to_owned(),
@@ -383,6 +391,7 @@ pub async fn title_preferences_handler(
                 });
             Ok(json_response(json!({
                 "tmdbId": tmdb_id,
+                "mediaType": media_type,
                 "preference": preference
             })))
         }
@@ -394,12 +403,20 @@ pub async fn title_preferences_handler(
                 .unwrap_or_default()
                 .trim()
                 .to_owned();
+            let media_type = normalize_media_type_param(
+                payload
+                    .get("mediaType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("movie"),
+            );
             if !is_numeric_id(&tmdb_id) {
                 return Err(ApiError::bad_request("Missing or invalid tmdbId."));
             }
             state
                 .db
                 .persist_title_preference(
+                    user.id,
+                    media_type.clone(),
                     tmdb_id.clone(),
                     payload
                         .get("audioLang")
@@ -419,7 +436,7 @@ pub async fn title_preferences_handler(
                 .await?;
             let preference = state
                 .db
-                .get_title_preference(tmdb_id.clone())
+                .get_title_preference(user.id, media_type.clone(), tmdb_id.clone())
                 .await?
                 .unwrap_or(TitlePreference {
                     audioLang: "auto".to_owned(),
@@ -428,18 +445,28 @@ pub async fn title_preferences_handler(
             Ok(json_response(json!({
                 "ok": true,
                 "tmdbId": tmdb_id,
+                "mediaType": media_type,
                 "preference": preference
             })))
         }
         Method::DELETE => {
             let params = query_pairs(uri.query().unwrap_or_default());
             let tmdb_id = params.get("tmdbId").cloned().unwrap_or_default();
+            let media_type = normalize_media_type_param(
+                params
+                    .get("mediaType")
+                    .map(String::as_str)
+                    .unwrap_or("movie"),
+            );
             if !is_numeric_id(&tmdb_id) {
                 return Err(ApiError::bad_request(
                     "Missing or invalid tmdbId query parameter.",
                 ));
             }
-            state.db.delete_title_preference(tmdb_id.clone()).await?;
+            state
+                .db
+                .delete_title_preference(user.id, media_type.clone(), tmdb_id.clone())
+                .await?;
             state
                 .db
                 .delete_playback_sessions_for_tmdb(tmdb_id.clone())
@@ -451,6 +478,7 @@ pub async fn title_preferences_handler(
             Ok(json_response(json!({
                 "ok": true,
                 "tmdbId": tmdb_id,
+                "mediaType": media_type,
                 "cleared": {
                     "titlePreferences": true,
                     "playbackSessions": true,
@@ -467,6 +495,7 @@ pub async fn title_preferences_handler(
 pub async fn session_progress_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
@@ -481,6 +510,7 @@ pub async fn session_progress_handler(
             "session": null
         })));
     }
+    let user = auth::require_auth(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let tmdb_id = payload
         .get("tmdbId")
@@ -491,6 +521,12 @@ pub async fn session_progress_handler(
     if !is_numeric_id(&tmdb_id) {
         return Err(ApiError::bad_request("Missing or invalid tmdbId."));
     }
+    let media_type = normalize_media_type_param(
+        payload
+            .get("mediaType")
+            .and_then(Value::as_str)
+            .unwrap_or("movie"),
+    );
 
     let preferred_audio_lang = normalize_preferred_audio_lang(
         payload
@@ -524,9 +560,14 @@ pub async fn session_progress_handler(
     }
     if existing.is_none() && requested_session_key.is_empty() {
         if preferred_audio_lang == "auto" {
-            let effective_audio_lang =
-                resolve_effective_preferred_audio_lang(&state, &tmdb_id, &preferred_audio_lang)
-                    .await?;
+            let effective_audio_lang = resolve_effective_preferred_audio_lang(
+                &state,
+                user.id,
+                &media_type,
+                &tmdb_id,
+                &preferred_audio_lang,
+            )
+            .await?;
             session_key =
                 build_playback_session_key(&tmdb_id, &effective_audio_lang, &preferred_quality);
             existing = state.db.get_playback_session(session_key.clone()).await?;
@@ -1063,6 +1104,7 @@ pub async fn resolve_sources_handler(
 pub async fn resolve_movie_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     uri: Uri,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
@@ -1079,9 +1121,11 @@ pub async fn resolve_movie_handler(
         let normalized = value.trim();
         normalized == "1" || normalized.eq_ignore_ascii_case("true")
     });
+    let user = auth::require_auth(&state.db, &headers).await?;
     let payload = state
         .resolver
         .resolve_movie(
+            user.id,
             &tmdb_id,
             params.get("title").map(String::as_str).unwrap_or_default(),
             params.get("year").map(String::as_str).unwrap_or_default(),
@@ -1134,6 +1178,7 @@ pub async fn resolve_movie_handler(
 pub async fn resolve_local_upgrade_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     uri: Uri,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
@@ -1146,9 +1191,11 @@ pub async fn resolve_local_upgrade_handler(
             "Missing or invalid tmdbId query parameter.",
         ));
     }
+    let user = auth::require_auth(&state.db, &headers).await?;
     let payload = state
         .resolver
         .check_local_cache_upgrade(
+            user.id,
             &tmdb_id,
             params
                 .get("audioLang")
@@ -1186,6 +1233,7 @@ pub async fn resolve_local_upgrade_handler(
 pub async fn resolve_tv_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     uri: Uri,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
@@ -1202,9 +1250,11 @@ pub async fn resolve_tv_handler(
         let normalized = value.trim();
         normalized == "1" || normalized.eq_ignore_ascii_case("true")
     });
+    let user = auth::require_auth(&state.db, &headers).await?;
     let payload = state
         .resolver
         .resolve_tv(
+            user.id,
             &tmdb_id,
             params.get("title").map(String::as_str).unwrap_or_default(),
             params.get("year").map(String::as_str).unwrap_or_default(),
@@ -2278,6 +2328,14 @@ fn is_numeric_id(value: &str) -> bool {
     !value.trim().is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
 }
 
+fn normalize_media_type_param(value: &str) -> String {
+    if value.trim().eq_ignore_ascii_case("tv") {
+        "tv".to_owned()
+    } else {
+        "movie".to_owned()
+    }
+}
+
 fn build_playback_session_key(tmdb_id: &str, audio_lang: &str, quality: &str) -> String {
     format!(
         "{}:{}:{}",
@@ -2304,6 +2362,8 @@ fn build_playback_session_payload(session: crate::persistence::PlaybackSession) 
 
 async fn resolve_effective_preferred_audio_lang(
     state: &AppState,
+    user_id: i64,
+    media_type: &str,
     tmdb_id: &str,
     preferred_audio_lang: &str,
 ) -> AppResult<String> {
@@ -2311,7 +2371,14 @@ async fn resolve_effective_preferred_audio_lang(
     if normalized != "auto" {
         return Ok(normalized);
     }
-    let preference = state.db.get_title_preference(tmdb_id.to_owned()).await?;
+    let preference = state
+        .db
+        .get_title_preference(
+            user_id,
+            normalize_media_type_param(media_type),
+            tmdb_id.to_owned(),
+        )
+        .await?;
     let preferred = preference
         .map(|value| normalize_preferred_audio_lang(&value.audioLang))
         .unwrap_or_else(|| "auto".to_owned());

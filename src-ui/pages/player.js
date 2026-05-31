@@ -3227,11 +3227,11 @@ async function persistTrackPreferencesOnServer({
   audioLang = null,
   subtitleLang = null,
 } = {}) {
-  if (!isTmdbMoviePlayback || !tmdbId) {
+  if (!isTmdbResolvedPlayback || !tmdbId) {
     return;
   }
 
-  const payload = { tmdbId };
+  const payload = { tmdbId, mediaType: isTmdbTvPlayback ? "tv" : "movie" };
   if (audioLang !== null && audioLang !== undefined) {
     payload.audioLang = String(audioLang || "");
   }
@@ -3889,6 +3889,7 @@ function reportCurrentTmdbPlaybackFailure(
   }
   const payload = {
     tmdbId,
+    mediaType: isTmdbTvPlayback ? "tv" : "movie",
     sessionKey: currentTmdbPlaybackSessionKey,
     audioLang: preferredAudioLang || "auto",
     quality: preferredQuality || DEFAULT_STREAM_QUALITY_PREFERENCE,

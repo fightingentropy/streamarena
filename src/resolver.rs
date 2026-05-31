@@ -770,6 +770,7 @@ impl ResolverService {
     #[allow(clippy::too_many_arguments)]
     pub async fn resolve_movie(
         &self,
+        user_id: i64,
         tmdb_id: &str,
         title_fallback: &str,
         year_fallback: &str,
@@ -816,6 +817,7 @@ impl ResolverService {
         let _active_guard = ResolverActiveGuard::new(self.resolve_metrics.clone());
         self.prune_idle_resolve_locks();
         self.resolve_movie_inner(
+            user_id,
             tmdb_id,
             title_fallback,
             year_fallback,
@@ -836,6 +838,7 @@ impl ResolverService {
 
     pub async fn check_local_cache_upgrade(
         &self,
+        user_id: i64,
         tmdb_id: &str,
         preferred_audio_lang: &str,
         preferred_quality: &str,
@@ -854,9 +857,18 @@ impl ResolverService {
             return Ok(json!({ "ready": false }));
         }
 
-        let stored_preference = self.db.get_title_preference(tmdb_id.to_owned()).await?;
+        let stored_preference = self
+            .db
+            .get_title_preference(
+                user_id,
+                normalize_resolve_media_type(media_type),
+                tmdb_id.to_owned(),
+            )
+            .await?;
         let effective_audio_lang = self
             .resolve_effective_preferred_audio_lang(
+                user_id,
+                media_type,
                 tmdb_id,
                 stored_preference
                     .as_ref()
@@ -896,6 +908,7 @@ impl ResolverService {
     #[allow(clippy::too_many_arguments)]
     async fn resolve_movie_inner(
         &self,
+        user_id: i64,
         tmdb_id: &str,
         title_fallback: &str,
         year_fallback: &str,
@@ -913,10 +926,12 @@ impl ResolverService {
     ) -> AppResult<Value> {
         let stored_preference = self
             .db
-            .get_title_preference(tmdb_id.trim().to_owned())
+            .get_title_preference(user_id, "movie".to_owned(), tmdb_id.trim().to_owned())
             .await?;
         let effective_audio_lang = self
             .resolve_effective_preferred_audio_lang(
+                user_id,
+                "movie",
                 tmdb_id,
                 stored_preference
                     .as_ref()
@@ -1135,6 +1150,7 @@ impl ResolverService {
     #[allow(clippy::too_many_arguments)]
     pub async fn resolve_tv(
         &self,
+        user_id: i64,
         tmdb_id: &str,
         title_fallback: &str,
         year_fallback: &str,
@@ -1191,6 +1207,7 @@ impl ResolverService {
         let _active_guard = ResolverActiveGuard::new(self.resolve_metrics.clone());
         self.prune_idle_resolve_locks();
         self.resolve_tv_inner(
+            user_id,
             tmdb_id,
             title_fallback,
             year_fallback,
@@ -1217,6 +1234,7 @@ impl ResolverService {
     #[allow(clippy::too_many_arguments)]
     async fn resolve_tv_inner(
         &self,
+        user_id: i64,
         tmdb_id: &str,
         title_fallback: &str,
         year_fallback: &str,
@@ -1239,11 +1257,13 @@ impl ResolverService {
     ) -> AppResult<Value> {
         let stored_preference = self
             .db
-            .get_title_preference(tmdb_id.trim().to_owned())
+            .get_title_preference(user_id, "tv".to_owned(), tmdb_id.trim().to_owned())
             .await?;
         let preferences = ResolvePreferences {
             audio_lang: self
                 .resolve_effective_preferred_audio_lang(
+                    user_id,
+                    "tv",
                     tmdb_id,
                     stored_preference
                         .as_ref()
@@ -2430,7 +2450,7 @@ impl ResolverService {
         let body = response
             .text()
             .await
-            .map_err(|error| ApiError::internal(error.to_string()))?;
+            .map_err(|_| ApiError::bad_gateway("Real-Debrid response could not be read."))?;
         let payload = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| {
             json!({
                 "message": body
@@ -2467,6 +2487,8 @@ impl ResolverService {
 
     async fn resolve_effective_preferred_audio_lang(
         &self,
+        user_id: i64,
+        media_type: &str,
         tmdb_id: &str,
         stored_preferred_audio_lang: &str,
         preferred_audio_lang: &str,
@@ -2481,7 +2503,11 @@ impl ResolverService {
         }
         let preference = self
             .db
-            .get_title_preference(tmdb_id.trim().to_owned())
+            .get_title_preference(
+                user_id,
+                normalize_resolve_media_type(media_type),
+                tmdb_id.trim().to_owned(),
+            )
             .await?;
         Ok(preference
             .map(|value| normalize_preferred_audio_lang(&value.audioLang))
@@ -2933,7 +2959,7 @@ impl ResolverService {
                     let payload = response
                         .json::<Value>()
                         .await
-                        .map_err(|error| ApiError::internal(error.to_string()))?;
+                        .map_err(|_| ApiError::bad_gateway("Invalid Torrentio response."))?;
                     let (expires_at, next_validation_at) =
                         compute_torrentio_cache_deadlines(&payload);
                     self.db
@@ -3096,7 +3122,7 @@ impl ResolverService {
                 let body = response
                     .text()
                     .await
-                    .map_err(|error| ApiError::internal(error.to_string()))?;
+                    .map_err(|_| ApiError::bad_gateway("Torznab response could not be read."))?;
                 if !status.is_success() {
                     if let Some((payload, expires_at, _)) = cached
                         && expires_at > now_ms()
@@ -4594,6 +4620,14 @@ fn normalize_source_hash(value: &str) -> String {
     }
 }
 
+fn normalize_resolve_media_type(value: &str) -> String {
+    if value.trim().eq_ignore_ascii_case("tv") {
+        "tv".to_owned()
+    } else {
+        "movie".to_owned()
+    }
+}
+
 pub(crate) fn normalize_resolver_provider(value: &str) -> ResolverProvider {
     match value.trim().to_lowercase().as_str() {
         "real-debrid" | "real_debrid" | "realdebrid" | "debrid" | "rd" => {
@@ -5546,7 +5580,7 @@ fn parse_torznab_xml(xml: &str) -> AppResult<Vec<DiscoveryStream>> {
         return Ok(Vec::new());
     }
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
+    reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut current_item = None::<TorznabItem>;
     let mut current_element = String::new();
@@ -5582,9 +5616,25 @@ fn parse_torznab_xml(xml: &str) -> AppResult<Vec<DiscoveryStream>> {
             }
             Ok(Event::Text(text)) => {
                 if let Some(item) = current_item.as_mut()
-                    && let Ok(value) = text.unescape()
+                    && let Ok(decoded) = text.xml10_content()
                 {
+                    let value = quick_xml::escape::unescape(&decoded)
+                        .map(|value| value.into_owned())
+                        .unwrap_or_else(|_| decoded.into_owned());
                     apply_torznab_element_text(item, &current_element, &value);
+                }
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                if let Some(item) = current_item.as_mut() {
+                    let value = match &*reference {
+                        b"amp" => "&",
+                        b"lt" => "<",
+                        b"gt" => ">",
+                        b"apos" => "'",
+                        b"quot" => "\"",
+                        _ => "",
+                    };
+                    apply_torznab_element_text(item, &current_element, value);
                 }
             }
             Ok(Event::CData(text)) => {
@@ -5626,7 +5676,7 @@ fn collect_xml_attributes(event: &quick_xml::events::BytesStart<'_>) -> HashMap<
     for attr in event.attributes().with_checks(false).flatten() {
         let key = String::from_utf8_lossy(attr.key.as_ref()).to_lowercase();
         let value = attr
-            .unescape_value()
+            .normalized_value(quick_xml::XmlVersion::Implicit1_0)
             .map(|value| value.into_owned())
             .unwrap_or_default();
         output.insert(key, value);
@@ -5671,10 +5721,10 @@ fn apply_torznab_element_text(item: &mut TorznabItem, element: &str, value: &str
         return;
     }
     match element {
-        "title" => item.title = normalized,
-        "link" => item.link = normalized,
+        "title" => item.title.push_str(&normalized),
+        "link" => item.link.push_str(&normalized),
         "size" => item.size_bytes = parse_i64(&normalized),
-        "jackettindexer" | "prowlarrindexer" | "indexer" => item.indexer = normalized,
+        "jackettindexer" | "prowlarrindexer" | "indexer" => item.indexer.push_str(&normalized),
         _ => {}
     }
 }
@@ -5800,9 +5850,9 @@ fn format_size_bytes(bytes: i64) -> String {
 
 fn map_reqwest_error(error: reqwest::Error, timeout_message: &str) -> ApiError {
     if error.is_timeout() {
-        ApiError::internal(timeout_message)
+        ApiError::gateway_timeout(timeout_message)
     } else {
-        ApiError::internal(error.to_string())
+        ApiError::bad_gateway("Upstream resolver request failed.")
     }
 }
 

@@ -246,11 +246,17 @@ async function clearServerTitleMemory(tmdbId, mediaType = "movie") {
   const normalizedMediaType = String(mediaType || "")
     .trim()
     .toLowerCase();
-  if (normalizedMediaType === "tv" || !/^\d+$/.test(normalizedTmdbId)) {
+  if (
+    (normalizedMediaType !== "movie" && normalizedMediaType !== "tv") ||
+    !/^\d+$/.test(normalizedTmdbId)
+  ) {
     return;
   }
   try {
-    const query = new URLSearchParams({ tmdbId: normalizedTmdbId });
+    const query = new URLSearchParams({
+      tmdbId: normalizedTmdbId,
+      mediaType: normalizedMediaType,
+    });
     await fetch(`/api/title/preferences?${query.toString()}`, {
       method: "DELETE",
     });

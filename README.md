@@ -23,8 +23,8 @@ The app serves local library titles, resolves remote movie and TV sources, plays
 
 The repository is a single full-stack app:
 
-- Backend: Rust 2024, Axum, Tokio, SQLite via `rusqlite`.
-- Frontend: SolidJS with Vite in multi-page app mode.
+- Backend: Rust 2024, Axum 0.8, Tokio, Reqwest 0.13, and SQLite via `rusqlite` 0.40.
+- Frontend: SolidJS with Vite 8 in multi-page app mode.
 - Player: custom HTML5 video UI with direct playback, remux, HLS, subtitles, live streams, and source switching.
 - Discovery: TMDB metadata, selected external embed fallbacks, Torrentio source discovery, optional Torznab fallback, Real-Debrid unrestricted links, and local torrent streaming/cache.
 - Local library: `assets/library.json` plus uploaded/managed videos under `assets/videos`.
@@ -142,7 +142,7 @@ External movie/TV embed stack:
 - VidLink embeds are built from `https://vidlink.pro/movie/...` or `/tv/...`; the extracted HLS playlist host is `storm.vodvidl.site`.
 - VidFast is kept as the iframe handoff only. Its URL is built with chromeless parameters to hide title, poster, server, Chromecast, and fullscreen chrome from the embedded player.
 - Native external HLS is resolved by `scripts/resolve-external-embed-hls.mjs` through Playwright in development. The mini deploy copies this helper to `bin/resolve-external-embed-hls.mjs` and keeps Playwright under `~/.local/share/netflix-node` outside the app runtime tree. The backend only accepts VidEasy/VidLink embed URLs and only accepts `.m3u8` outputs on the two known HLS hosts above.
-- Native external HLS playback is proxied through `/api/live/hls.m3u8` and `/api/live/hls-resource` so playlist child URLs, segment URLs, and required referers stay under backend control.
+- Native external HLS playback is proxied through protected `/api/live/hls.m3u8` and `/api/live/hls-resource` so playlist child URLs, segment URLs, and required referers stay under backend control.
 - `EMBED_IFRAME_PROXY=1` can proxy the iframe HTML through `/api/embed/frame`; by default iframe URLs are direct.
 - Older/failed providers such as VidKing, 2Embed, VidSrc, VidNest, AutoEmbed, SuperEmbed, Embed.su, MoviesAPI, and VidFast-native extraction are intentionally not part of the current stack.
 
@@ -155,8 +155,8 @@ Playback flow for local titles:
 Live and sports flow:
 
 1. `/live` renders static live channels from `src-ui/lib/live-channels.js`.
-2. HLS live channel playlists and segments are proxied through `/api/live/hls.m3u8` and `/api/live/hls-resource` with an allowlist in `src/live.rs`.
-3. Twitch-backed live sources resolve through `/api/twitch/stream`.
+2. HLS live channel playlists and segments are proxied through protected `/api/live/hls.m3u8` and `/api/live/hls-resource` with an allowlist in `src/live.rs`.
+3. Twitch-backed live sources resolve through protected `/api/twitch/stream`.
 4. `/sports` fetches schedules for football, basketball, tennis, hockey, baseball, American football, and cricket through `src/football.rs`; the default Auto source merges Streamed and MatchStream schedules so both providers show up in the live stream picker.
 5. Live sports streams resolve through protected `/api/sports/stream`; the server uses short-lived HLS resolution caching, bounded Playwright concurrency, `scripts/resolve-streamed-hls.mjs` for Streamed, and `scripts/resolve-matchstream-hls.mjs` for MatchStream.
 
@@ -331,16 +331,16 @@ Public API routes:
 - `GET /api/baseball/matches`
 - `GET /api/american-football/matches`
 - `GET /api/cricket/matches`
-- `GET /api/twitch/stream`
-- `GET /api/live/hls.m3u8`
-- `GET /api/live/hls-resource`
-- `GET /api/embed/frame`
 
 Protected API routes:
 
 - `GET|PUT /api/library`
 - `GET|POST /api/debug/cache`
 - `GET /api/debug/sports`
+- `GET /api/twitch/stream`
+- `GET /api/live/hls.m3u8`
+- `GET /api/live/hls-resource`
+- `GET /api/embed/frame`
 - `GET /api/football/stream`
 - `GET /api/basketball/stream`
 - `GET /api/sports/stream`
@@ -394,6 +394,13 @@ Common resolver query params:
 - `sourceAudioProfile`
 - `resolverProvider=fastest|local-torrent|real-debrid`
 - `skipExternalEmbed=1`
+
+Title preference params:
+
+- `tmdbId`
+- `mediaType=movie|tv`
+- `audioLang`
+- `subtitleLang`
 
 TV-specific resolver params:
 
@@ -504,7 +511,7 @@ SQLite stores:
 - Playback sessions.
 - Source health stats.
 - Media probe cache.
-- Title track preferences.
+- Per-user, movie/TV-scoped title track preferences. Older unscoped preference rows are migrated into a neutral legacy scope instead of being assigned to a real user.
 
 Browser localStorage keys currently used:
 
@@ -805,6 +812,11 @@ Stale service worker:
 
 Current cleanup state:
 
+- Ignored local artifacts such as `.DS_Store`, `tmp/`, `dist/`, and `target/` are disposable and can be regenerated. `cache/resolver-cache.sqlite*` is local app state, so do not delete it unless you intentionally want to reset local auth/user/cache data.
+- Vite is updated to 8.x. Direct Rust dependency baselines are current for this app: Reqwest 0.13, Quick XML 0.40, Rusqlite 0.40, and Getrandom 0.4. Cargo may still report transitive crates held behind latest by upstream constraints.
+- Live HLS, live HLS resources, Twitch stream resolving, and iframe proxy routes are protected API routes.
+- Upstream resolver/request errors are sanitized so TMDB, Torznab, Real-Debrid, live/embed, and Twitch failures do not echo secret-bearing URLs or tokens.
+- Title track preferences are scoped by user and media type, with a migration for the old `tmdb_id`-only table.
 - Hero-preview generation has been removed from package scripts, deployment, agent installation, and mini checks.
 - `assets/hero-previews.json` and `scripts/refresh-hero-previews.py` are deleted in this worktree.
 - The old one-off Interstellar mini helper scripts have been removed.

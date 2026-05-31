@@ -57,7 +57,7 @@ pub async fn live_hls_handler(
     let response = request
         .send()
         .await
-        .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+        .map_err(|_| ApiError::bad_gateway("Live HLS playlist request failed."))?;
     if !response.status().is_success() {
         return Err(ApiError::bad_gateway(format!(
             "Live HLS playlist request failed with status {}.",
@@ -73,7 +73,7 @@ pub async fn live_hls_handler(
     let playlist = response
         .text()
         .await
-        .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+        .map_err(|_| ApiError::bad_gateway("Live HLS playlist response could not be read."))?;
     let rewritten =
         rewrite_live_hls_playlist(&final_url, &playlist, live_request.referer.as_deref());
 
@@ -107,7 +107,7 @@ pub async fn live_hls_resource_handler(
     let response = request
         .send()
         .await
-        .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+        .map_err(|_| ApiError::bad_gateway("Live HLS resource request failed."))?;
     if !response.status().is_success() {
         return Err(ApiError::bad_gateway(format!(
             "Live HLS resource request failed with status {}.",
@@ -129,7 +129,7 @@ pub async fn live_hls_resource_handler(
     let bytes = response
         .bytes()
         .await
-        .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+        .map_err(|_| ApiError::bad_gateway("Live HLS resource response could not be read."))?;
 
     Response::builder()
         .status(200)

@@ -212,20 +212,23 @@ impl Db {
 
     pub async fn get_title_preference(
         &self,
+        user_id: i64,
+        media_type: String,
         tmdb_id: String,
     ) -> AppResult<Option<TitlePreference>> {
         let path = self.path.clone();
         let pool = self.pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
+            let media_type = normalize_title_preference_media_type(&media_type);
             let row = connection
                 .query_row(
                     "
                     SELECT preferred_audio_lang, preferred_subtitle_lang, updated_at
                     FROM title_track_preferences
-                    WHERE tmdb_id = ?
+                    WHERE user_id = ? AND media_type = ? AND tmdb_id = ?
                     ",
-                    [tmdb_id.as_str()],
+                    params![user_id, media_type, tmdb_id],
                     |row| {
                         Ok((
                             row.get::<_, String>(0)?,
@@ -242,8 +245,13 @@ impl Db {
             };
             if updated_at == 0 || updated_at + TITLE_PREFERENCES_STALE_MS <= now_ms() {
                 connection.execute(
-                    "DELETE FROM title_track_preferences WHERE tmdb_id = ?",
-                    [tmdb_id.as_str()],
+                    "DELETE FROM title_track_preferences
+                     WHERE user_id = ? AND media_type = ? AND tmdb_id = ?",
+                    params![
+                        user_id,
+                        normalize_title_preference_media_type(&media_type),
+                        tmdb_id
+                    ],
                 )?;
                 return_connection(&pool, connection);
                 return Ok(None);
@@ -263,6 +271,8 @@ impl Db {
 
     pub async fn persist_title_preference(
         &self,
+        user_id: i64,
+        media_type: String,
         tmdb_id: String,
         audio_lang: String,
         subtitle_lang: String,
@@ -271,19 +281,22 @@ impl Db {
         let pool = self.pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
+            let media_type = normalize_title_preference_media_type(&media_type);
             let normalized_audio = normalize_preferred_audio_lang(&audio_lang);
             let normalized_subtitle = normalize_subtitle_preference(&subtitle_lang);
             let tx = connection.unchecked_transaction()?;
             tx.execute(
                 "
                 INSERT INTO title_track_preferences (
+                  user_id,
+                  media_type,
                   tmdb_id,
                   preferred_audio_lang,
                   preferred_subtitle_lang,
                   updated_at
                 )
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(tmdb_id) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, media_type, tmdb_id) DO UPDATE SET
                   preferred_audio_lang = CASE
                     WHEN excluded.preferred_audio_lang != '' THEN excluded.preferred_audio_lang
                     ELSE title_track_preferences.preferred_audio_lang
@@ -295,6 +308,8 @@ impl Db {
                   updated_at = excluded.updated_at
                 ",
                 params![
+                    user_id,
+                    media_type,
                     tmdb_id,
                     if normalized_audio == "auto" {
                         String::new()
@@ -321,14 +336,21 @@ impl Db {
         Ok(())
     }
 
-    pub async fn delete_title_preference(&self, tmdb_id: String) -> AppResult<()> {
+    pub async fn delete_title_preference(
+        &self,
+        user_id: i64,
+        media_type: String,
+        tmdb_id: String,
+    ) -> AppResult<()> {
         let path = self.path.clone();
         let pool = self.pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
+            let media_type = normalize_title_preference_media_type(&media_type);
             connection.execute(
-                "DELETE FROM title_track_preferences WHERE tmdb_id = ?",
-                [tmdb_id.as_str()],
+                "DELETE FROM title_track_preferences
+                 WHERE user_id = ? AND media_type = ? AND tmdb_id = ?",
+                params![user_id, media_type, tmdb_id],
             )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
@@ -2308,10 +2330,13 @@ fn init_schema(path: PathBuf) -> Result<(), rusqlite::Error> {
         );
         CREATE INDEX IF NOT EXISTS idx_media_probe_updated ON media_probe_cache(updated_at);
         CREATE TABLE IF NOT EXISTS title_track_preferences (
-          tmdb_id TEXT PRIMARY KEY,
+          user_id INTEGER NOT NULL,
+          media_type TEXT NOT NULL DEFAULT 'movie',
+          tmdb_id TEXT NOT NULL,
           preferred_audio_lang TEXT NOT NULL DEFAULT '',
           preferred_subtitle_lang TEXT NOT NULL DEFAULT '',
-          updated_at INTEGER NOT NULL
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, media_type, tmdb_id)
         );
         CREATE INDEX IF NOT EXISTS idx_title_track_preferences_updated ON title_track_preferences(updated_at);
         CREATE TABLE IF NOT EXISTS users (
@@ -2403,7 +2428,56 @@ fn init_schema(path: PathBuf) -> Result<(), rusqlite::Error> {
         "filename",
         "filename TEXT NOT NULL DEFAULT ''",
     )?;
+    migrate_title_preferences_schema(&connection)?;
     Ok(())
+}
+
+fn migrate_title_preferences_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let columns = table_column_names(connection, "title_track_preferences")?;
+    let has_user_id = columns
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case("user_id"));
+    let has_media_type = columns
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case("media_type"));
+    if has_user_id && has_media_type {
+        return Ok(());
+    }
+
+    connection.execute_batch(
+        "
+        DROP TABLE IF EXISTS title_track_preferences_legacy;
+        ALTER TABLE title_track_preferences RENAME TO title_track_preferences_legacy;
+        CREATE TABLE title_track_preferences (
+          user_id INTEGER NOT NULL,
+          media_type TEXT NOT NULL DEFAULT 'movie',
+          tmdb_id TEXT NOT NULL,
+          preferred_audio_lang TEXT NOT NULL DEFAULT '',
+          preferred_subtitle_lang TEXT NOT NULL DEFAULT '',
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, media_type, tmdb_id)
+        );
+        INSERT OR IGNORE INTO title_track_preferences (
+          user_id,
+          media_type,
+          tmdb_id,
+          preferred_audio_lang,
+          preferred_subtitle_lang,
+          updated_at
+        )
+        SELECT
+          0,
+          'movie',
+          tmdb_id,
+          preferred_audio_lang,
+          preferred_subtitle_lang,
+          updated_at
+        FROM title_track_preferences_legacy
+        WHERE trim(tmdb_id) <> '';
+        DROP TABLE title_track_preferences_legacy;
+        CREATE INDEX IF NOT EXISTS idx_title_track_preferences_updated ON title_track_preferences(updated_at);
+        ",
+    )
 }
 
 fn ensure_text_column(
@@ -2412,10 +2486,7 @@ fn ensure_text_column(
     column_name: &str,
     column_definition: &str,
 ) -> Result<(), rusqlite::Error> {
-    let mut stmt = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
-    let existing_columns = stmt
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let existing_columns = table_column_names(connection, table_name)?;
     if existing_columns
         .iter()
         .any(|existing| existing.eq_ignore_ascii_case(column_name))
@@ -2427,6 +2498,15 @@ fn ensure_text_column(
         [],
     )?;
     Ok(())
+}
+
+fn table_column_names(
+    connection: &Connection,
+    table_name: &str,
+) -> Result<Vec<String>, rusqlite::Error> {
+    let mut stmt = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    stmt.query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()
 }
 
 fn sweep_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
@@ -3039,6 +3119,14 @@ fn parse_tv_episode_from_session_key(value: &str) -> Option<(i64, i64)> {
     Some((season, episode))
 }
 
+fn normalize_title_preference_media_type(value: &str) -> String {
+    if value.trim().eq_ignore_ascii_case("tv") {
+        "tv".to_owned()
+    } else {
+        "movie".to_owned()
+    }
+}
+
 pub fn build_cache_debug_payload(
     started_at_ms: i64,
     in_memory_tmdb_size: usize,
@@ -3168,6 +3256,174 @@ mod tests {
             parse_movie_resolve_key_quality("tv:123:s1:e2:en:720p"),
             "720p"
         );
+    }
+
+    #[tokio::test]
+    async fn title_preferences_are_scoped_by_user_and_media_type() {
+        let path = unique_temp_db_path("title-preference-scope");
+        let db = setup_test_playback_session_db(&path).await;
+
+        db.persist_title_preference(
+            1,
+            "movie".to_owned(),
+            "123".to_owned(),
+            "en".to_owned(),
+            "off".to_owned(),
+        )
+        .await
+        .expect("persist user one movie preference");
+        db.persist_title_preference(
+            2,
+            "movie".to_owned(),
+            "123".to_owned(),
+            "fr".to_owned(),
+            String::new(),
+        )
+        .await
+        .expect("persist user two movie preference");
+        db.persist_title_preference(
+            1,
+            "tv".to_owned(),
+            "123".to_owned(),
+            "de".to_owned(),
+            "es".to_owned(),
+        )
+        .await
+        .expect("persist user one tv preference");
+
+        let user_one_movie = db
+            .get_title_preference(1, "movie".to_owned(), "123".to_owned())
+            .await
+            .expect("load user one movie preference")
+            .expect("user one movie preference exists");
+        assert_eq!(user_one_movie.audioLang, "en");
+        assert_eq!(user_one_movie.subtitleLang, "off");
+
+        let user_two_movie = db
+            .get_title_preference(2, "movie".to_owned(), "123".to_owned())
+            .await
+            .expect("load user two movie preference")
+            .expect("user two movie preference exists");
+        assert_eq!(user_two_movie.audioLang, "fr");
+        assert_eq!(user_two_movie.subtitleLang, "");
+
+        let user_one_tv = db
+            .get_title_preference(1, "tv".to_owned(), "123".to_owned())
+            .await
+            .expect("load user one tv preference")
+            .expect("user one tv preference exists");
+        assert_eq!(user_one_tv.audioLang, "de");
+        assert_eq!(user_one_tv.subtitleLang, "es");
+
+        assert!(
+            db.get_title_preference(2, "tv".to_owned(), "123".to_owned())
+                .await
+                .expect("load missing user two tv preference")
+                .is_none()
+        );
+
+        db.delete_title_preference(1, "movie".to_owned(), "123".to_owned())
+            .await
+            .expect("delete user one movie preference");
+        assert!(
+            db.get_title_preference(1, "movie".to_owned(), "123".to_owned())
+                .await
+                .expect("load deleted user one movie preference")
+                .is_none()
+        );
+        assert!(
+            db.get_title_preference(2, "movie".to_owned(), "123".to_owned())
+                .await
+                .expect("load user two movie preference after delete")
+                .is_some()
+        );
+        assert!(
+            db.get_title_preference(1, "tv".to_owned(), "123".to_owned())
+                .await
+                .expect("load user one tv preference after delete")
+                .is_some()
+        );
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn migrates_legacy_title_preferences_without_assigning_them_to_users() {
+        let path = unique_temp_db_path("title-preference-migration");
+        let setup_path = path.clone();
+        super::task::spawn_blocking(move || {
+            let connection = open_connection(&setup_path)?;
+            connection.execute_batch(
+                "
+                CREATE TABLE title_track_preferences (
+                  tmdb_id TEXT PRIMARY KEY,
+                  preferred_audio_lang TEXT NOT NULL DEFAULT '',
+                  preferred_subtitle_lang TEXT NOT NULL DEFAULT '',
+                  updated_at INTEGER NOT NULL
+                );
+                CREATE INDEX idx_title_track_preferences_updated
+                  ON title_track_preferences(updated_at);
+                ",
+            )?;
+            connection.execute(
+                "
+                INSERT INTO title_track_preferences (
+                  tmdb_id,
+                  preferred_audio_lang,
+                  preferred_subtitle_lang,
+                  updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ",
+                params!["456", "en", "off", super::now_ms()],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("join legacy schema setup")
+        .expect("create legacy title preference table");
+
+        let db = setup_test_playback_session_db(&path).await;
+        let migrated = db
+            .get_title_preference(0, "movie".to_owned(), "456".to_owned())
+            .await
+            .expect("load migrated legacy preference")
+            .expect("legacy preference migrated to neutral scope");
+        assert_eq!(migrated.audioLang, "en");
+        assert_eq!(migrated.subtitleLang, "off");
+
+        let user_id = db
+            .create_user(
+                "title-pref-migration".to_owned(),
+                "hash".to_owned(),
+                "Title Pref Migration".to_owned(),
+            )
+            .await
+            .expect("create user");
+        assert!(
+            db.get_title_preference(user_id, "movie".to_owned(), "456".to_owned())
+                .await
+                .expect("load user scoped preference")
+                .is_none()
+        );
+
+        db.persist_title_preference(
+            user_id,
+            "movie".to_owned(),
+            "456".to_owned(),
+            "fr".to_owned(),
+            String::new(),
+        )
+        .await
+        .expect("persist user scoped preference");
+        let user_preference = db
+            .get_title_preference(user_id, "movie".to_owned(), "456".to_owned())
+            .await
+            .expect("load persisted user preference")
+            .expect("user preference exists");
+        assert_eq!(user_preference.audioLang, "fr");
+
+        let _ = tokio::fs::remove_file(&path).await;
     }
 
     #[tokio::test]

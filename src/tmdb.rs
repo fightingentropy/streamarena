@@ -96,7 +96,7 @@ impl TmdbService {
         let raw_text = response
             .text()
             .await
-            .map_err(|error| ApiError::internal(error.to_string()))?;
+            .map_err(|_| ApiError::bad_gateway("TMDB response could not be read."))?;
         if status == reqwest::StatusCode::NO_CONTENT {
             return Ok(Value::Null);
         }
@@ -399,7 +399,7 @@ fn map_reqwest_error(error: reqwest::Error, timeout_message: &str) -> ApiError {
     if error.is_timeout() {
         ApiError::gateway_timeout(timeout_message)
     } else {
-        ApiError::bad_gateway(error.to_string())
+        ApiError::bad_gateway("TMDB request failed.")
     }
 }
 

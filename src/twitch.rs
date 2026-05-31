@@ -91,9 +91,7 @@ async fn fetch_twitch_playback_access_token(
         .json(&payload)
         .send()
         .await
-        .map_err(|error| {
-            ApiError::bad_gateway(format!("Failed to resolve Twitch stream: {error}"))
-        })?;
+        .map_err(|_| ApiError::bad_gateway("Failed to resolve Twitch stream."))?;
 
     if !response.status().is_success() {
         return Err(ApiError::bad_gateway(format!(
@@ -105,9 +103,7 @@ async fn fetch_twitch_playback_access_token(
     let payload = response
         .json::<TwitchGraphQlResponse>()
         .await
-        .map_err(|error| {
-            ApiError::bad_gateway(format!("Invalid Twitch resolver response: {error}"))
-        })?;
+        .map_err(|_| ApiError::bad_gateway("Invalid Twitch resolver response."))?;
     if payload.errors.is_some() {
         return Err(ApiError::bad_gateway(
             "Twitch stream resolver returned an error.",
