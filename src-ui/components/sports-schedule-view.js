@@ -301,6 +301,21 @@ function sportsIcon(sportName) {
   `;
 }
 
+function getSportsPlayerEpisodeLabel(match) {
+  const league = String(match?.league || "").trim();
+  const provider = normalizeProviderId(match?.provider);
+  const sourceNames = new Set([
+    "auto",
+    "streamed",
+    "matchstream",
+    provider,
+    ...((Array.isArray(match?.providers) ? match.providers : [])
+      .map(normalizeProviderId)
+      .filter(Boolean)),
+  ]);
+  return sourceNames.has(league.toLowerCase()) ? "" : league;
+}
+
 function buildSportsPlayerUrl(match, config) {
   const streams = Array.isArray(match.streams) ? match.streams : [];
   const defaultStream = streams[0] || null;
@@ -309,9 +324,9 @@ function buildSportsPlayerUrl(match, config) {
   }
 
   const slug = slugifyTitle(match.title || match.id || config.slugFallback);
+  const episodeLabel = getSportsPlayerEpisodeLabel(match);
   const params = new URLSearchParams({
     title: match.title || config.sportName,
-    episode: match.league || "Live",
     src: defaultStream.source,
     live: "1",
     liveEmbed: "1",
@@ -319,6 +334,9 @@ function buildSportsPlayerUrl(match, config) {
     liveStreamId: defaultStream.id || "stream-1",
     liveStreams: JSON.stringify(streams),
   });
+  if (episodeLabel) {
+    params.set("episode", episodeLabel);
+  }
   addCurrentReturnToParam(params);
   saveWatchParams(slug, params.toString());
   return buildWatchUrl(params);

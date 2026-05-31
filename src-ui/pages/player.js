@@ -384,6 +384,17 @@ function normalizeLiveEmbedResolver(value) {
   return "sports";
 }
 
+function normalizeLiveEpisodeLabel(value) {
+  const label = String(value || "").trim();
+  if (!isLivePlayback) {
+    return label;
+  }
+  const normalized = label.toLowerCase();
+  return normalized === "streamed" || normalized === "matchstream" || normalized === "auto"
+    ? ""
+    : label;
+}
+
 function refreshLiveStreamStateFromParams(queryParams = params) {
   const nextState = deriveLiveStreamStateFromParams(
     queryParams,
@@ -526,7 +537,7 @@ let rawEpisode = isSeriesPlayback
       activeSeries,
       Number(activeSeriesEpisode?.episodeNumber || seriesEpisodeIndex + 1),
     )
-  : params.get("episode") || "";
+  : normalizeLiveEpisodeLabel(params.get("episode") || "");
 let title = rawTitle;
 let episode = rawEpisode;
 let tmdbId = String(
@@ -8708,7 +8719,7 @@ async function initPlaybackSource() {
         activeSeries,
         Number(activeSeriesEpisode?.episodeNumber || seriesEpisodeIndex + 1),
       )
-    : params.get("episode") || "";
+    : normalizeLiveEpisodeLabel(params.get("episode") || "");
   title = rawTitle;
   episode = rawEpisode;
   tmdbId = String(activeSeries?.tmdbId || params.get("tmdbId") || "").trim();
