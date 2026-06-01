@@ -141,6 +141,22 @@ function queueOfflineArtworkCache(urls) {
   }, OFFLINE_ARTWORK_WARM_DELAY_MS);
 }
 
+function deleteCachedArtworkUrls(urls) {
+  if (!("serviceWorker" in navigator) || !Array.isArray(urls)) {
+    return;
+  }
+  const urlsToDelete = urls.map(toCacheableArtworkUrl).filter(Boolean);
+  if (!urlsToDelete.length) {
+    return;
+  }
+  navigator.serviceWorker.ready
+    .then((registration) => {
+      const worker = registration.active || navigator.serviceWorker.controller;
+      worker?.postMessage({ type: "DELETE_CACHED_URLS", urls: urlsToDelete });
+    })
+    .catch(() => {});
+}
+
 function queueOfflineArtworkFromElement(root) {
   if (!(root instanceof Element)) {
     return;
@@ -210,6 +226,12 @@ function setArtworkImageFallback(image) {
     ? "assets/images/thumbnail-top10-h.jpg"
     : DEFAULT_LOCAL_THUMBNAIL;
   const fallbackUrl = new URL(fallbackPath, window.location.href).href;
+  const failedUrl = toCacheableArtworkUrl(
+    image.currentSrc || image.src || image.getAttribute("src") || "",
+  );
+  if (failedUrl && failedUrl !== fallbackUrl) {
+    deleteCachedArtworkUrls([failedUrl]);
+  }
   if (image.src !== fallbackUrl) {
     image.src = fallbackPath;
   }

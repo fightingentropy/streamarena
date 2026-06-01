@@ -9830,43 +9830,303 @@ trackListener(video, "ratechange", () => {
 
 // --- Seek preview thumbnail on hover ---
 const seekPreviewCtx = seekPreviewCanvas.getContext("2d", { willReadFrequently: false });
-const SEEK_PREVIEW_SEEK_THROTTLE_MS = 240;
-const SEEK_PREVIEW_SEEK_STEP_SECONDS = 5;
+const SEEK_PREVIEW_WIDTH = 160;
+const SEEK_PREVIEW_HEIGHT = 90;
+const SEEK_PREVIEW_SEEK_THROTTLE_MS = 220;
+const SEEK_PREVIEW_RENDERED_TARGET_EPSILON_SECONDS = 0.08;
 let seekPreviewVideo = null;
-let seekPreviewPending = null;
+let seekPreviewHlsController = null;
+let seekPreviewHlsConstructorPromise = null;
+let seekPreviewSource = "";
 let seekPreviewReady = false;
+let seekPreviewPendingTarget = null;
+let seekPreviewLoadingTarget = null;
+let seekPreviewRenderedTarget = null;
 let seekPreviewLastSeekAt = Number.NEGATIVE_INFINITY;
+let seekPreviewThrottleTimer = null;
+let seekPreviewSourceRequestId = 0;
+
+function clearSeekPreviewCanvas() {
+  seekPreviewCtx.clearRect(0, 0, SEEK_PREVIEW_WIDTH, SEEK_PREVIEW_HEIGHT);
+  seekPreviewCtx.fillStyle = "#000";
+  seekPreviewCtx.fillRect(0, 0, SEEK_PREVIEW_WIDTH, SEEK_PREVIEW_HEIGHT);
+}
+
+function drawSeekPreviewFrame() {
+  if (!seekPreviewVideo || seekPreviewVideo.readyState < 2) {
+    return false;
+  }
+  try {
+    seekPreviewCtx.drawImage(
+      seekPreviewVideo,
+      0,
+      0,
+      SEEK_PREVIEW_WIDTH,
+      SEEK_PREVIEW_HEIGHT,
+    );
+    seekPreviewRenderedTarget = Number(seekPreviewVideo.currentTime) || 0;
+    seekPreviewLoadingTarget = null;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function handleSeekPreviewFrameReady() {
+  if (seekPreviewLoadingTarget === null) {
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    drawSeekPreviewFrame();
+  });
+}
+
+function handleSeekPreviewMetadataReady() {
+  markSeekPreviewReady();
+  const target = seekPreviewLoadingTarget ?? seekPreviewPendingTarget;
+  if (target !== null) {
+    scheduleSeekPreviewFrame(target, { force: true });
+  }
+}
 
 function getOrCreatePreviewVideo() {
   if (seekPreviewVideo) return seekPreviewVideo;
   seekPreviewVideo = document.createElement("video");
-  seekPreviewVideo.preload = "metadata";
+  seekPreviewVideo.preload = "auto";
   seekPreviewVideo.muted = true;
   seekPreviewVideo.playsInline = true;
   seekPreviewVideo.crossOrigin = video.crossOrigin || "anonymous";
-  seekPreviewVideo.addEventListener("seeked", () => {
-    seekPreviewCtx.drawImage(seekPreviewVideo, 0, 0, 160, 90);
-  });
+  seekPreviewVideo.setAttribute("aria-hidden", "true");
+  seekPreviewVideo.tabIndex = -1;
+  seekPreviewVideo.style.cssText =
+    "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;";
+  seekPreviewVideo.addEventListener("seeked", handleSeekPreviewFrameReady);
+  seekPreviewVideo.addEventListener("loadedmetadata", handleSeekPreviewMetadataReady);
+  seekPreviewVideo.addEventListener("loadeddata", handleSeekPreviewFrameReady);
+  seekPreviewVideo.addEventListener("canplay", handleSeekPreviewFrameReady);
+  document.body.appendChild(seekPreviewVideo);
   return seekPreviewVideo;
 }
 
+function loadSeekPreviewHlsConstructor() {
+  if (!seekPreviewHlsConstructorPromise) {
+    seekPreviewHlsConstructorPromise = import("hls.js").then(
+      (module) => module.default || module.Hls || module,
+    );
+  }
+  return seekPreviewHlsConstructorPromise;
+}
+
+function destroySeekPreviewHlsController() {
+  if (!seekPreviewHlsController) {
+    return;
+  }
+  try {
+    seekPreviewHlsController.destroy();
+  } catch {
+    // Ignore preview teardown failures.
+  }
+  seekPreviewHlsController = null;
+}
+
 function closeSeekPreviewVideo() {
-  if (!seekPreviewVideo) return;
-  seekPreviewVideo.pause();
-  seekPreviewVideo.removeAttribute("src");
-  seekPreviewVideo.load();
-  seekPreviewPending = null;
+  destroySeekPreviewHlsController();
+  if (seekPreviewThrottleTimer) {
+    window.clearTimeout(seekPreviewThrottleTimer);
+    seekPreviewThrottleTimer = null;
+  }
+  if (seekPreviewVideo) {
+    seekPreviewVideo.pause();
+    seekPreviewVideo.removeAttribute("src");
+    seekPreviewVideo.load();
+    seekPreviewVideo.remove();
+    seekPreviewVideo = null;
+  }
+  seekPreviewSource = "";
+  seekPreviewPendingTarget = null;
+  seekPreviewLoadingTarget = null;
+  seekPreviewRenderedTarget = null;
   seekPreviewReady = false;
   seekPreviewLastSeekAt = Number.NEGATIVE_INFINITY;
+  seekPreviewSourceRequestId += 1;
+  clearSeekPreviewCanvas();
+}
+
+function getSeekPreviewPlaybackSource() {
+  if (parseLiveIframePlaybackSource(lastRequestedPlaybackSource)) {
+    return "";
+  }
+  const requestedSource =
+    String(lastRequestedAbsolutePlaybackSource || "").trim() ||
+    (() => {
+      try {
+        return lastRequestedPlaybackSource
+          ? new URL(lastRequestedPlaybackSource, window.location.origin).toString()
+          : "";
+      } catch {
+        return "";
+      }
+    })();
+  if (requestedSource && isHlsPlaybackSource(requestedSource)) {
+    return requestedSource;
+  }
+  const currentSource = String(video.currentSrc || video.getAttribute("src") || "").trim();
+  if (currentSource && !currentSource.startsWith("blob:")) {
+    return currentSource;
+  }
+  return requestedSource;
+}
+
+function markSeekPreviewReady() {
+  if (!seekPreviewSource) {
+    return;
+  }
+  seekPreviewReady = true;
+  if (seekPreviewPendingTarget !== null) {
+    scheduleSeekPreviewFrame(seekPreviewPendingTarget, { force: true });
+  }
 }
 
 function syncPreviewVideoSource() {
   const pv = getOrCreatePreviewVideo();
-  const mainSrc = video.currentSrc || video.src || "";
-  if (!mainSrc || pv.src === mainSrc) return;
-  pv.src = mainSrc;
+  const nextSource = getSeekPreviewPlaybackSource();
+  if (!nextSource) {
+    closeSeekPreviewVideo();
+    return false;
+  }
+  if (seekPreviewSource === nextSource) {
+    return seekPreviewReady;
+  }
+
+  destroySeekPreviewHlsController();
+  seekPreviewSourceRequestId += 1;
+  const requestId = seekPreviewSourceRequestId;
+  seekPreviewSource = nextSource;
   seekPreviewReady = false;
-  pv.addEventListener("loadeddata", () => { seekPreviewReady = true; }, { once: true });
+  seekPreviewPendingTarget = null;
+  seekPreviewLoadingTarget = null;
+  seekPreviewRenderedTarget = null;
+  clearSeekPreviewCanvas();
+  pv.pause();
+  pv.removeAttribute("src");
+  pv.load();
+
+  if (isHlsPlaybackSource(nextSource) && shouldUseHlsJsForSource(nextSource)) {
+    void loadSeekPreviewHlsConstructor()
+      .then((HlsConstructor) => {
+        if (
+          requestId !== seekPreviewSourceRequestId ||
+          seekPreviewSource !== nextSource
+        ) {
+          return;
+        }
+        if (!HlsConstructor?.isSupported?.()) {
+          return;
+        }
+        const hls = new HlsConstructor({
+          autoStartLoad: true,
+          startPosition: -1,
+          maxBufferLength: 8,
+          maxMaxBufferLength: 12,
+          backBufferLength: 0,
+        });
+        seekPreviewHlsController = hls;
+        hls.on(HlsConstructor.Events.MEDIA_ATTACHED, () => {
+          if (seekPreviewHlsController === hls) {
+            hls.loadSource(nextSource);
+          }
+        });
+        hls.on(HlsConstructor.Events.MANIFEST_PARSED, () => {
+          if (seekPreviewHlsController === hls) {
+            markSeekPreviewReady();
+          }
+        });
+        hls.on(HlsConstructor.Events.ERROR, (_event, data = {}) => {
+          if (seekPreviewHlsController !== hls || !data?.fatal) {
+            return;
+          }
+          seekPreviewReady = false;
+          seekPreviewLoadingTarget = null;
+          clearSeekPreviewCanvas();
+        });
+        hls.attachMedia(pv);
+      })
+      .catch(() => {});
+    return false;
+  }
+
+  pv.addEventListener("loadedmetadata", markSeekPreviewReady, { once: true });
+  pv.src = nextSource;
+  pv.load();
+  return false;
+}
+
+function normalizeSeekPreviewTarget(timeAtCursor, duration) {
+  const rawTarget = Number(timeAtCursor) || 0;
+  return isLivePlayback
+    ? clampLiveSeekTargetSeconds(rawTarget)
+    : Math.max(0, Math.min(duration, rawTarget));
+}
+
+function requestSeekPreviewFrame(target) {
+  if (!seekPreviewVideo || !seekPreviewReady) {
+    seekPreviewPendingTarget = target;
+    return;
+  }
+  const videoDuration = Number(seekPreviewVideo.duration);
+  const clampedTarget =
+    Number.isFinite(videoDuration) && videoDuration > 0
+      ? Math.max(0, Math.min(videoDuration, target))
+      : Math.max(0, target);
+  if (
+    seekPreviewRenderedTarget !== null &&
+    Math.abs(seekPreviewRenderedTarget - clampedTarget) <
+      SEEK_PREVIEW_RENDERED_TARGET_EPSILON_SECONDS
+  ) {
+    return;
+  }
+  seekPreviewPendingTarget = null;
+  seekPreviewLoadingTarget = clampedTarget;
+  clearSeekPreviewCanvas();
+  try {
+    if (Math.abs(Number(seekPreviewVideo.currentTime || 0) - clampedTarget) < 0.25) {
+      drawSeekPreviewFrame();
+      return;
+    }
+    seekPreviewVideo.currentTime = clampedTarget;
+    if (seekPreviewHlsController?.startLoad) {
+      seekPreviewHlsController.startLoad(clampedTarget);
+    }
+  } catch {
+    seekPreviewPendingTarget = clampedTarget;
+  }
+}
+
+function scheduleSeekPreviewFrame(target, { force = false } = {}) {
+  if (!seekPreviewReady) {
+    seekPreviewPendingTarget = target;
+    return;
+  }
+  const now = performance.now();
+  const remainingDelay = force
+    ? 0
+    : Math.max(0, SEEK_PREVIEW_SEEK_THROTTLE_MS - (now - seekPreviewLastSeekAt));
+  seekPreviewPendingTarget = target;
+  if (remainingDelay > 0) {
+    if (!seekPreviewThrottleTimer) {
+      seekPreviewThrottleTimer = window.setTimeout(() => {
+        seekPreviewThrottleTimer = null;
+        const queuedTarget = seekPreviewPendingTarget;
+        if (queuedTarget !== null) {
+          seekPreviewLastSeekAt = performance.now();
+          requestSeekPreviewFrame(queuedTarget);
+        }
+      }, remainingDelay);
+    }
+    return;
+  }
+  seekPreviewLastSeekAt = now;
+  requestSeekPreviewFrame(target);
 }
 
 function updateSeekPreview(e) {
@@ -9899,28 +10159,8 @@ function updateSeekPreview(e) {
   seekPreview.style.left = `${left}px`;
   seekPreview.hidden = false;
 
-  // Draw thumbnail from main video if same source, or preview video
   syncPreviewVideoSource();
-  if (seekPreviewReady && seekPreviewVideo) {
-    const roundedTarget =
-      Math.round(timeAtCursor / SEEK_PREVIEW_SEEK_STEP_SECONDS) *
-      SEEK_PREVIEW_SEEK_STEP_SECONDS;
-    const target = isLivePlayback
-      ? clampLiveSeekTargetSeconds(roundedTarget)
-      : Math.max(0, Math.min(duration, roundedTarget));
-    const now = performance.now();
-    if (
-      seekPreviewPending !== target &&
-      now - seekPreviewLastSeekAt >= SEEK_PREVIEW_SEEK_THROTTLE_MS
-    ) {
-      seekPreviewPending = target;
-      seekPreviewLastSeekAt = now;
-      seekPreviewVideo.currentTime = target;
-    }
-  } else {
-    // Fallback: draw from main video at approximate position
-    seekPreviewCtx.drawImage(video, 0, 0, 160, 90);
-  }
+  scheduleSeekPreviewFrame(normalizeSeekPreviewTarget(timeAtCursor, duration));
 }
 
 trackListener(seekBar, "pointermove", (event) => {
@@ -10520,6 +10760,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     clearAudioDecodeWatch();
     stopLocalCacheUpgradeWatch();
     clearSeekLoadingTimeout();
+    closeSeekPreviewVideo();
     hlsPlaybackController.destroy();
     stopSubtitleRafLoop();
     if (speedPopoverCloseTimeout) clearTimeout(speedPopoverCloseTimeout);

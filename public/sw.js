@@ -73,6 +73,8 @@ self.addEventListener("message", (event) => {
   const data = event.data && typeof event.data === "object" ? event.data : {};
   if (data.type === "CACHE_URLS" && Array.isArray(data.urls)) {
     event.waitUntil(warmUrls(data.urls));
+  } else if (data.type === "DELETE_CACHED_URLS" && Array.isArray(data.urls)) {
+    event.waitUntil(deleteCachedUrls(data.urls));
   }
 });
 
@@ -89,7 +91,7 @@ self.addEventListener("fetch", (event) => {
 
   if (isTmdbArtworkRequest(request, url)) {
     event.respondWith(
-      staleWhileRevalidate(request, {
+      cacheFirstWithFallback(request, {
         cacheName: ARTWORK_CACHE,
         cacheOpaque: true,
         fallbackUrl: ARTWORK_FALLBACK_URL,
@@ -143,7 +145,7 @@ self.addEventListener("fetch", (event) => {
 
   if (isLocalArtworkRequest(request, url)) {
     event.respondWith(
-      staleWhileRevalidate(request, {
+      cacheFirstWithFallback(request, {
         cacheName: ARTWORK_CACHE,
         fallbackUrl: ARTWORK_FALLBACK_URL,
         maxEntries: ARTWORK_CACHE_MAX_ENTRIES,
@@ -186,6 +188,32 @@ async function cacheFirst(request, { cacheName }) {
   const response = await fetch(request);
   await maybeCacheResponse(cacheName, request, response);
   return response;
+}
+
+async function cacheFirstWithFallback(
+  request,
+  {
+    cacheName,
+    cacheOpaque = false,
+    fallbackUrl = "",
+    maxEntries = 0,
+  },
+) {
+  const cached = await caches.match(request);
+  if (cached) {
+    return cached;
+  }
+
+  try {
+    const response = await fetch(request);
+    await maybeCacheResponse(cacheName, request, response, {
+      cacheOpaque,
+      maxEntries,
+    });
+    return response;
+  } catch {
+    return fallbackResponse(fallbackUrl);
+  }
 }
 
 async function staleWhileRevalidate(
@@ -411,6 +439,26 @@ async function warmUrls(urls) {
   await Promise.allSettled(normalizedUrls.map((url) => warmUrl(url)));
 }
 
+async function deleteCachedUrls(urls) {
+  const normalizedUrls = Array.from(
+    new Set(
+      urls
+        .map((url) => normalizeWarmUrl(url))
+        .filter(Boolean),
+    ),
+  );
+  if (!normalizedUrls.length) {
+    return;
+  }
+  const cache = await caches.open(ARTWORK_CACHE);
+  await Promise.allSettled(
+    normalizedUrls.map((url) => {
+      const request = buildArtworkRequest(url);
+      return cache.delete(request);
+    }),
+  );
+}
+
 function normalizeWarmUrl(value) {
   try {
     const url = new URL(String(value || ""), self.location.origin);
@@ -430,11 +478,9 @@ function normalizeWarmUrl(value) {
 }
 
 async function warmUrl(rawUrl) {
-  const url = new URL(rawUrl);
+  const request = buildArtworkRequest(rawUrl);
+  const url = new URL(request.url);
   const isTmdb = TMDB_IMAGE_HOSTS.has(url.hostname);
-  const request = isTmdb
-    ? new Request(url.href, { mode: "no-cors" })
-    : new Request(url.href, { credentials: "same-origin" });
   const cache = await caches.open(ARTWORK_CACHE);
   const cached = await cache.match(request);
   if (cached) {
@@ -445,4 +491,11 @@ async function warmUrl(rawUrl) {
     cacheOpaque: isTmdb,
     maxEntries: ARTWORK_CACHE_MAX_ENTRIES,
   });
+}
+
+function buildArtworkRequest(rawUrl) {
+  const url = new URL(rawUrl);
+  return TMDB_IMAGE_HOSTS.has(url.hostname)
+    ? new Request(url.href, { mode: "no-cors" })
+    : new Request(url.href, { credentials: "same-origin" });
 }
