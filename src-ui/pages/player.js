@@ -107,10 +107,6 @@ const LIVE_EDGE_REJOIN_TOLERANCE_SECONDS = 2.5;
 const LIVE_EMBED_FALLBACK_SOURCE_LIMIT = 5;
 const LIVE_IFRAME_SOURCE_PREFIX = "live-iframe:";
 const LIVE_IFRAME_ALLOW_POLICY = "autoplay; fullscreen; picture-in-picture; encrypted-media";
-const LIVE_IFRAME_SANDBOX_POLICY =
-  "allow-scripts allow-same-origin allow-presentation allow-forms";
-const LIVE_IFRAME_SUBTITLE_STREAM_INDEX_BASE = 9_000_000;
-const LIVE_IFRAME_SUBTITLE_LANGS = ["en", "fr", "es", "de", "it", "pt", "ja", "ko", "zh"];
 const LIVE_VISUAL_HEALTH_GRACE_MS = 12000;
 const LIVE_VISUAL_HEALTH_INTERVAL_MS = 2000;
 const LIVE_VISUAL_HEALTH_SAMPLE_WIDTH = 32;
@@ -294,6 +290,7 @@ const hlsPlaybackController = createHlsPlaybackController({
   scheduleStreamStallRecovery: () => scheduleStreamStallRecovery(),
   schedulePlaybackRecovery: (...args) => schedulePlaybackRecovery(...args),
   isBrowserOffline: () => isBrowserOffline(),
+  shouldFailFastForHlsNetworkErrors: () => isCurrentTmdbExternalEmbedSource(),
 });
 
 // ─── Watch URL support: reproducible /watch?... plus legacy /watch/<slug> ───
@@ -1181,11 +1178,12 @@ function isRememberedIframeOnlyExternalEmbed(remembered) {
   const sourceText = `${remembered.sourceInput || ""} ${remembered.filename || ""}`
     .trim()
     .toLowerCase();
-  return (
-    !sourceText ||
-    sourceText.includes("vidfast.pro") ||
-    sourceText.includes("vidfast") ||
-    sourceText.includes("iframe")
+  if (!sourceText || sourceText.includes("iframe") || sourceText.includes("live-iframe:")) {
+    return true;
+  }
+  return !(
+    sourceText.includes("player.videasy.net") ||
+    sourceText.includes("vidlink.pro")
   );
 }
 
@@ -2010,97 +2008,6 @@ function getLanguageDisplayLabel(langCode) {
     return subtitleLanguageNames[normalized];
   }
   return normalized.toUpperCase();
-}
-
-function normalizeLiveIframeSubtitlePreference(value) {
-  const normalized = normalizeSubtitlePreference(value);
-  if (normalized === "off") {
-    return "off";
-  }
-  if (!normalized || normalized === "un" || normalized === "und") {
-    return "en";
-  }
-  return /^[a-z]{2}$/.test(normalized) ? normalized : "en";
-}
-
-function isVidfastEmbedUrl(value) {
-  try {
-    const url = new URL(String(value || "").trim());
-    const hostname = url.hostname.toLowerCase();
-    return (
-      hostname === "vidfast.me" ||
-      hostname.endsWith(".vidfast.me") ||
-      hostname === "vidfast.pro" ||
-      hostname.endsWith(".vidfast.pro")
-    );
-  } catch {
-    return false;
-  }
-}
-
-function withLiveIframeSubtitlePreference(embedUrl, subtitleLang) {
-  const normalizedEmbedUrl = String(embedUrl || "").trim();
-  if (!isVidfastEmbedUrl(normalizedEmbedUrl)) {
-    return normalizedEmbedUrl;
-  }
-  try {
-    const url = new URL(normalizedEmbedUrl);
-    const normalizedLang = normalizeLiveIframeSubtitlePreference(subtitleLang);
-    if (normalizedLang === "off") {
-      url.searchParams.delete("sub");
-    } else {
-      url.searchParams.set("sub", normalizedLang);
-    }
-    return url.toString();
-  } catch {
-    return normalizedEmbedUrl;
-  }
-}
-
-function isLiveIframeSubtitlePreferenceTrack(track) {
-  return Boolean(track?.isLiveIframePreference);
-}
-
-function buildLiveIframeSubtitlePreferenceTracks() {
-  return LIVE_IFRAME_SUBTITLE_LANGS.map((lang, index) => ({
-    streamIndex: LIVE_IFRAME_SUBTITLE_STREAM_INDEX_BASE + index,
-    language: lang,
-    title: "Embed subtitle preference",
-    codec: "iframe",
-    isDefault: lang === normalizeLiveIframeSubtitlePreference(preferredSubtitleLang),
-    isTextBased: true,
-    isExternal: true,
-    isLiveIframePreference: true,
-    label: `${getLanguageDisplayLabel(lang)} (Embed)`,
-    vttUrl: "",
-  }));
-}
-
-function ensureLiveIframeSubtitlePreferenceTracks(embedUrl) {
-  if (!isVidfastEmbedUrl(embedUrl)) {
-    return;
-  }
-
-  const existingTracks = availableSubtitleTracks.filter(
-    (track) => !isLiveIframeSubtitlePreferenceTrack(track),
-  );
-  const iframeTracks = buildLiveIframeSubtitlePreferenceTracks();
-  availableSubtitleTracks = [...existingTracks, ...iframeTracks];
-
-  const normalizedLang = normalizeLiveIframeSubtitlePreference(preferredSubtitleLang);
-  if (normalizedLang === "off") {
-    selectedSubtitleStreamIndex = -1;
-    preferredSubtitleLang = "off";
-    return;
-  }
-
-  preferredSubtitleLang = normalizedLang;
-  const preferredTrack = iframeTracks.find(
-    (track) => track.language === normalizedLang,
-  );
-  if (preferredTrack && selectedSubtitleStreamIndex < 0) {
-    selectedSubtitleStreamIndex = Number(preferredTrack.streamIndex);
-  }
 }
 
 function isGenericSubtitleLabel(value) {
@@ -3103,11 +3010,6 @@ function syncSubtitleTrackVisibility() {
   const selectedTrack = getSubtitleTrackByStreamIndex(
     selectedSubtitleStreamIndex,
   );
-  if (isLiveIframeSubtitlePreferenceTrack(selectedTrack)) {
-    hideAllSubtitleTracks();
-    setCustomSubtitleText("");
-    return;
-  }
   if (
     selectedTrack &&
     (!shouldUseNativeEmbeddedSubtitleTrack(selectedTrack) ||
@@ -3141,9 +3043,6 @@ function isLikelyForcedSubtitleTrack(track) {
 }
 
 function isPlayableSubtitleTrack(track) {
-  if (isLiveIframeSubtitlePreferenceTrack(track)) {
-    return true;
-  }
   return Boolean(
     track && track.isTextBased && String(track.vttUrl || "").trim(),
   );
@@ -3265,9 +3164,6 @@ function applySubtitleTrackByStreamIndex(streamIndex) {
     : -1;
   if (safeStreamIndex < 0) {
     selectedSubtitleStreamIndex = -1;
-    if (preferredSubtitleLang === "off" && isLiveIframePlaybackActive()) {
-      applyLiveIframeSubtitlePreference("off");
-    }
     return;
   }
 
@@ -3278,11 +3174,6 @@ function applySubtitleTrackByStreamIndex(streamIndex) {
   }
 
   selectedSubtitleStreamIndex = safeStreamIndex;
-  if (isLiveIframeSubtitlePreferenceTrack(selectedTrack)) {
-    applyLiveIframeSubtitlePreference(selectedTrack.language);
-    syncSubtitleTrackVisibility();
-    return;
-  }
   if (
     shouldUseNativeEmbeddedSubtitleTrack(selectedTrack) &&
     hasLoadedNativeSubtitleTrack(selectedTrack)
@@ -3636,33 +3527,8 @@ function hardenLiveEmbedFrame() {
     return;
   }
   liveEmbedFrame.setAttribute("allow", LIVE_IFRAME_ALLOW_POLICY);
-  liveEmbedFrame.setAttribute("sandbox", LIVE_IFRAME_SANDBOX_POLICY);
+  liveEmbedFrame.removeAttribute("sandbox");
   liveEmbedFrame.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
-}
-
-function applyLiveIframeSubtitlePreference(subtitleLang) {
-  if (!isLiveIframePlaybackActive()) {
-    return false;
-  }
-  const currentEmbedUrl =
-    parseLiveIframePlaybackSource(lastRequestedPlaybackSource) ||
-    String(liveEmbedFrame?.src || "").trim();
-  if (!currentEmbedUrl || !isVidfastEmbedUrl(currentEmbedUrl)) {
-    return false;
-  }
-  const nextEmbedUrl = withLiveIframeSubtitlePreference(
-    currentEmbedUrl,
-    subtitleLang,
-  );
-  if (!nextEmbedUrl || nextEmbedUrl === currentEmbedUrl) {
-    return false;
-  }
-  const nextPlaybackSource = buildLiveIframePlaybackSource(nextEmbedUrl);
-  if (!nextPlaybackSource) {
-    return false;
-  }
-  setLiveIframePlaybackSource(nextEmbedUrl, nextPlaybackSource);
-  return true;
 }
 
 function setLiveIframePlaybackSource(embedUrl, encodedSource, { startSeconds = null } = {}) {
@@ -4123,12 +3989,6 @@ async function resolveTmdbSourcesAndPlay({
     resolved?.preferences?.subtitleLang || preferredSubtitleLang || "",
   ).trim();
   preferredSubtitleLang = normalizeSubtitlePreference(preferredSubtitleLang);
-  const resolvedLiveIframeSource = parseLiveIframePlaybackSource(resolved?.playableUrl);
-  ensureLiveIframeSubtitlePreferenceTracks(
-    isVidfastEmbedUrl(resolvedLiveIframeSource)
-      ? resolvedLiveIframeSource
-      : String(resolved?.sourceInput || ""),
-  );
   selectedSourceHash = resolvedSourceHash;
   applyPreferredSourceAudioSync(selectedSourceHash);
   persistSourceHashInUrl();
@@ -10791,7 +10651,6 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
         class="live-embed-frame"
         title="Live stream player"
         allow=${LIVE_IFRAME_ALLOW_POLICY}
-        sandbox=${LIVE_IFRAME_SANDBOX_POLICY}
         allowfullscreen
         referrerpolicy="strict-origin-when-cross-origin"
         onError=${handleLiveIframePlaybackError}

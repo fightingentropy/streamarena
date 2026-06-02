@@ -1,6 +1,5 @@
 mod auth;
 mod config;
-mod embed_proxy;
 mod error;
 mod football;
 mod home_bootstrap;

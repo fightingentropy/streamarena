@@ -27,6 +27,8 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "zohanayaan.com",
     "easy.speedsterwave.app",
     "easy.nightspeedster.app",
+    "yoru.midwesteagle.com",
+    "www.cloudflare-terms-of-service-abuse.com",
     "storm.vodvidl.site",
     "typhoontigertribe.net",
     "ttvnw.net",
@@ -510,6 +512,13 @@ mod tests {
         let videasy_new_hls: url::Url = "https://easy.nightspeedster.app/example/index.m3u8"
             .parse()
             .expect("videasy new hls url");
+        let videasy_yoru_hls: url::Url = "https://yoru.midwesteagle.com/video.m3u8"
+            .parse()
+            .expect("videasy yoru hls url");
+        let videasy_segment_redirect: url::Url =
+            "https://www.cloudflare-terms-of-service-abuse.com/stream.ts"
+                .parse()
+                .expect("videasy redirected segment url");
         let vidlink_hls: url::Url = "https://storm.vodvidl.site/example/index.m3u8"
             .parse()
             .expect("vidlink hls url");
@@ -536,6 +545,8 @@ mod tests {
         assert!(is_allowed_live_hls_url(&matchstream_sports));
         assert!(is_allowed_live_hls_url(&videasy_hls));
         assert!(is_allowed_live_hls_url(&videasy_new_hls));
+        assert!(is_allowed_live_hls_url(&videasy_yoru_hls));
+        assert!(is_allowed_live_hls_url(&videasy_segment_redirect));
         assert!(is_allowed_live_hls_url(&vidlink_hls));
         assert!(is_allowed_live_hls_url(&vidlink_new_hls));
         assert!(!is_allowed_live_hls_url(&disallowed));

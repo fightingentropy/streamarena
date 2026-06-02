@@ -8,6 +8,7 @@ import { chromium, devices } from "playwright";
 const rootDir = resolve(new URL("..", import.meta.url).pathname);
 const port = Number(process.env.FRONTEND_SMOKE_PORT || 4174);
 const baseUrl = `http://127.0.0.1:${port}`;
+const liveIframeEmbedUrl = `${baseUrl}/offline.html`;
 const viteBin = resolve(rootDir, "node_modules/.bin/vite");
 const smokeVideo = "assets/videos/fantozzi-1975-1080p-h264-aac-4k-restored.mp4";
 const hevcSmokeVideo = "assets/videos/project-hail-mary-2026-2160p-hevc.mp4";
@@ -292,6 +293,11 @@ const pages = [
     expectMobileFullscreenToggle: true,
   },
   {
+    path: `/player.html?src=${encodeURIComponent(`live-iframe:${encodeURIComponent(liveIframeEmbedUrl)}`)}&live=1&title=Live%20Iframe`,
+    selector: ".player-shell",
+    expectLiveIframeUnsandboxed: true,
+  },
+  {
     path: `/player.html?tmdbId=${hlsManagedTmdbId}&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1`,
     selector: ".player-shell",
     delayHlsImport: true,
@@ -553,6 +559,38 @@ async function runSmoke() {
               url: page.url(),
               sawSportsBasketballMatches,
             })}`,
+          );
+        }
+      }
+
+      if (pageSpec.expectLiveIframeUnsandboxed) {
+        await page.waitForFunction(
+          (expectedSrc) => {
+            const frame = document.querySelector("#liveEmbedFrame");
+            return Boolean(
+              frame &&
+                !frame.hidden &&
+                frame.getAttribute("src") === expectedSrc,
+            );
+          },
+          liveIframeEmbedUrl,
+          { timeout: 8_000 },
+        );
+        const iframeState = await page.evaluate(() => {
+          const frame = document.querySelector("#liveEmbedFrame");
+          return {
+            sandbox: frame?.getAttribute("sandbox") ?? null,
+            allow: frame?.getAttribute("allow") || "",
+            referrerpolicy: frame?.getAttribute("referrerpolicy") || "",
+          };
+        });
+        if (
+          iframeState.sandbox !== null ||
+          !iframeState.allow.includes("fullscreen") ||
+          iframeState.referrerpolicy !== "strict-origin-when-cross-origin"
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nLive iframe should be unsandboxed while keeping frame policies.\n${JSON.stringify(iframeState)}`,
           );
         }
       }

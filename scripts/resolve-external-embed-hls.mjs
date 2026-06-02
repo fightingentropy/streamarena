@@ -33,10 +33,31 @@ async function loadPlaywright() {
 const { chromium } = await loadPlaywright();
 
 const embedUrl = String(process.argv[2] || "").trim();
-const timeoutMs = Number(process.env.EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS || 10000);
+const timeoutMs = Number(process.env.EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS || 30000);
+const requestedServer = normalizeExternalEmbedServer(process.env.EXTERNAL_EMBED_SERVER || "");
 const rawProxy = String(
   process.env.EXTERNAL_EMBED_BROWSER_PROXY || process.env.OUTBOUND_HTTP_PROXY || "",
 ).trim();
+const videasyFavoriteProviderKey = "videasy-favorite-provider";
+const videasyServerNames = new Set([
+  "NEON",
+  "YORU",
+  "CYPHER",
+  "SAGE",
+  "BREACH",
+  "VYSE",
+  "KILLJOY",
+  "FADE",
+  "OMEN",
+  "RAZE",
+]);
+
+function normalizeExternalEmbedServer(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-z0-9_-]/gi, "")
+    .toUpperCase();
+}
 
 function normalizeProxyServer(value) {
   if (!value) return "";
@@ -71,6 +92,7 @@ function isAllowedRequestUrl(value) {
       host === "storm.vodvidl.site" ||
       host === "easy.speedsterwave.app" ||
       host === "easy.nightspeedster.app" ||
+      host === "yoru.midwesteagle.com" ||
       host === "typhoontigertribe.net"
     );
   } catch {
@@ -84,6 +106,7 @@ function isStreamPlaylistUrl(value) {
     return (
       (url.hostname.toLowerCase() === "easy.speedsterwave.app" ||
         url.hostname.toLowerCase() === "easy.nightspeedster.app" ||
+        url.hostname.toLowerCase() === "yoru.midwesteagle.com" ||
         url.hostname.toLowerCase() === "storm.vodvidl.site" ||
         url.hostname.toLowerCase() === "typhoontigertribe.net") &&
       url.pathname.toLowerCase().endsWith(".m3u8")
@@ -100,6 +123,18 @@ function normalizeReferer(value, fallback) {
     return url.toString();
   } catch {
     return fallback;
+  }
+}
+
+function videasyProviderForEmbedUrl(value) {
+  if (!requestedServer || !videasyServerNames.has(requestedServer)) {
+    return "";
+  }
+  try {
+    const url = new URL(value);
+    return url.hostname.toLowerCase() === "player.videasy.net" ? requestedServer : "";
+  } catch {
+    return "";
   }
 }
 
@@ -193,6 +228,15 @@ async function resolveWithPlaywrightBrowser() {
     userAgent:
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   });
+  const videasyProvider = videasyProviderForEmbedUrl(embedUrl);
+  if (videasyProvider) {
+    await page.addInitScript(
+      ({ key, value }) => {
+        localStorage.setItem(key, value);
+      },
+      { key: videasyFavoriteProviderKey, value: videasyProvider },
+    );
+  }
 
   page.on("popup", async (popup) => {
     await popup.close().catch(() => {});
