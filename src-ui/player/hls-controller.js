@@ -10,6 +10,7 @@ export function createHlsPlaybackController({
   scheduleStreamStallRecovery = () => {},
   schedulePlaybackRecovery = () => {},
   isBrowserOffline = () => false,
+  shouldFailFastForHlsNetworkErrors = () => false,
 } = {}) {
   let activeHlsController = null;
   let hlsConstructorPromise = null;
@@ -105,17 +106,64 @@ export function createHlsPlaybackController({
             return;
           }
 
+          const failFastNetworkErrors = shouldFailFastForHlsNetworkErrors();
+          const createFastFailureLoadPolicy = (
+            maxTimeToFirstByteMs,
+            maxLoadTimeMs,
+          ) => ({
+            default: {
+              maxTimeToFirstByteMs,
+              maxLoadTimeMs,
+              timeoutRetry: {
+                maxNumRetry: 0,
+                retryDelayMs: 0,
+                maxRetryDelayMs: 0,
+              },
+              errorRetry: {
+                maxNumRetry: 0,
+                retryDelayMs: 0,
+                maxRetryDelayMs: 0,
+              },
+            },
+          });
+          const fastFailurePlaylistLoadPolicy = createFastFailureLoadPolicy(
+            20000,
+            45000,
+          );
+          const fastFailureResourceLoadPolicy = createFastFailureLoadPolicy(
+            30000,
+            60000,
+          );
           const hls = new HlsConstructor({
             backBufferLength: 90,
             maxBufferLength: 60,
             autoStartLoad: hlsStartPosition < 0,
             startPosition: hlsStartPosition,
+            ...(failFastNetworkErrors
+              ? {
+                  manifestLoadPolicy: fastFailurePlaylistLoadPolicy,
+                  playlistLoadPolicy: fastFailurePlaylistLoadPolicy,
+                  fragLoadPolicy: fastFailureResourceLoadPolicy,
+                  keyLoadPolicy: fastFailureResourceLoadPolicy,
+                }
+              : {}),
           });
           let hlsRecoveryAttempts = 0;
           activeHlsController = hls;
 
           hls.on(HlsConstructor.Events.ERROR, (_event, data = {}) => {
             if (activeHlsController !== hls || !data?.fatal) {
+              return;
+            }
+            if (
+              data.type === HlsConstructor.ErrorTypes.NETWORK_ERROR &&
+              failFastNetworkErrors
+            ) {
+              handleHlsPlaybackFailure(
+                data.details
+                  ? `HLS playback failed (${data.details}).`
+                  : "HLS playback failed.",
+              );
               return;
             }
             if (

@@ -15,7 +15,6 @@ use axum::http::HeaderMap;
 
 use crate::auth;
 use crate::config::Config;
-use crate::embed_proxy::embed_frame_handler;
 use crate::error::{ApiError, AppResult, json_response};
 use crate::football::{
     SportsProviderHealth, SportsScheduleCache, SportsStreamResolveCache,
@@ -135,7 +134,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/twitch/stream", get(twitch_stream_resolve_handler))
         .route("/api/live/hls.m3u8", any(live_hls_handler))
         .route("/api/live/hls-resource", any(live_hls_resource_handler))
-        .route("/api/embed/frame", any(embed_frame_handler))
         .route("/api/football/stream", get(football_stream_resolve_handler))
         .route(
             "/api/basketball/stream",

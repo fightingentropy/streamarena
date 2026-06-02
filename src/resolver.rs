@@ -71,12 +71,12 @@ const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
     &["ac3", "eac3", "dts", "dca", "truehd", "mlp", "pcm_", "wma"];
 const DEFAULT_ALLOWED_SOURCE_FORMATS: &[&str] = &["mp4", "mkv"];
 const EXTERNAL_EMBED_RESOLVER_PROVIDER: &str = "external-embed";
-const LIVE_IFRAME_SOURCE_PREFIX: &str = "live-iframe:";
 const EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-external-embed-hls.mjs";
 const EXTERNAL_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-external-embed-hls.mjs";
-const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 10;
+const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 30;
 const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS";
-const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS: u64 = 12_000;
+const EXTERNAL_EMBED_SERVER_ENV: &str = "EXTERNAL_EMBED_SERVER";
+const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS: u64 = 45_000;
 const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS";
 
 /// Upper bound on a single discovery (Torrentio/Torznab) response body. These
@@ -288,24 +288,24 @@ struct ExternalEmbedHlsPlaybackSource {
 }
 
 const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
-    // Keep VidFast in the provider catalog for compatibility, but only native
-    // HLS providers are exposed as selectable external sources.
-    ExternalEmbedProvider {
-        id: "vidfast",
-        label: "VidFast",
-        priority: 0,
-    },
     ExternalEmbedProvider {
         id: "videasy",
         label: "VidEasy",
-        priority: 1,
+        priority: 0,
     },
     ExternalEmbedProvider {
         id: "vidlink",
         label: "VidLink",
-        priority: 2,
+        priority: 1,
     },
 ];
+
+const VIDEASY_EXTERNAL_EMBED_SERVERS: &[ExternalEmbedServer] = &[ExternalEmbedServer {
+    id: "YORU",
+    label: "Yoru",
+    quality_label: "4K",
+    priority: 0,
+}];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ResolvedSource {
@@ -4724,8 +4724,11 @@ fn preferred_external_embed_hls_sources(metadata: &ResolveMetadata) -> Vec<Exter
 
 fn external_embed_hls_source_priority(source: ExternalEmbedSource) -> u32 {
     match source.provider.id {
-        "videasy" => 0,
-        "vidlink" => 1,
+        "videasy" => source
+            .server
+            .map(|server| server.priority.max(0) as u32)
+            .unwrap_or(50),
+        "vidlink" => 100,
         _ => 100,
     }
 }
@@ -4770,7 +4773,11 @@ async fn build_external_embed_resolved_playback_payload(
         let hls_timeout_ms = external_embed_hls_resolve_timeout_ms().min(remaining_ms as u64);
         let hls_result = timeout(
             Duration::from_millis(remaining_ms as u64),
-            resolve_external_embed_hls_playback_source(&embed_url, hls_timeout_ms),
+            resolve_external_embed_hls_playback_source(
+                &embed_url,
+                candidate.server,
+                hls_timeout_ms,
+            ),
         )
         .await
         .ok()
@@ -4791,18 +4798,7 @@ async fn build_external_embed_resolved_playback_payload(
         ));
     }
 
-    let iframe_source = external_embed_iframe_fallback_sources(metadata, source, preferences, 1)
-        .into_iter()
-        .next()?;
-    let embed_url = external_embed_playback_url(iframe_source, metadata, preferences)?;
-    let playable_url = build_live_iframe_playback_source(&embed_url);
-    Some(build_external_embed_resolved_payload_with_playable_url(
-        metadata,
-        iframe_source,
-        preferences,
-        playable_url,
-        embed_url,
-    ))
+    None
 }
 
 fn external_embed_hls_candidate_sources(
@@ -4832,7 +4828,7 @@ fn build_external_embed_resolved_payload_with_playable_url(
 ) -> Value {
     let source_hash = external_embed_source_hash(source, metadata);
     let filename = external_embed_source_filename(source);
-    let fallback_urls = external_embed_fallback_playback_urls(metadata, source, preferences, 4);
+    let fallback_urls = Vec::new();
     let resolved = ResolvedSource {
         playable_url: playable_url.clone(),
         fallback_urls: fallback_urls.clone(),
@@ -4867,80 +4863,12 @@ fn build_external_embed_resolved_payload_with_playable_url(
     })
 }
 
-fn external_embed_fallback_playback_urls(
-    metadata: &ResolveMetadata,
-    selected: ExternalEmbedSource,
-    preferences: &ResolvePreferences,
-    limit: usize,
-) -> Vec<String> {
-    external_embed_iframe_fallback_sources(metadata, selected, preferences, limit)
-        .into_iter()
-        .filter_map(|source| {
-            external_embed_playback_url(source, metadata, preferences)
-                .map(|embed_url| build_live_iframe_playback_source(&embed_url))
-        })
-        .collect()
-}
-
-fn external_embed_iframe_fallback_sources(
-    metadata: &ResolveMetadata,
-    selected: ExternalEmbedSource,
-    preferences: &ResolvePreferences,
-    limit: usize,
-) -> Vec<ExternalEmbedSource> {
-    if limit == 0 {
-        return Vec::new();
-    }
-    let mut sources = external_embed_sources()
-        .into_iter()
-        .filter(|source| *source != selected)
-        .filter(|source| !is_external_embed_hls_capable_source(*source))
-        .filter(|source| external_embed_playback_url(*source, metadata, preferences).is_some())
-        .collect::<Vec<_>>();
-    sources.sort_by_key(|source| external_embed_source_priority(*source));
-    sources.truncate(limit);
-    sources
-}
-
 fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> Option<String> {
-    external_embed_url_with_subtitle(source, metadata, None)
-}
-
-fn external_embed_playback_url(
-    source: ExternalEmbedSource,
-    metadata: &ResolveMetadata,
-    preferences: &ResolvePreferences,
-) -> Option<String> {
-    external_embed_url_with_subtitle(
-        source,
-        metadata,
-        vidfast_subtitle_query_value(&preferences.subtitle_lang).as_deref(),
-    )
-}
-
-fn external_embed_url_with_subtitle(
-    source: ExternalEmbedSource,
-    metadata: &ResolveMetadata,
-    vidfast_subtitle_lang: Option<&str>,
-) -> Option<String> {
     let tmdb_id = metadata.tmdb_id.trim();
     if tmdb_id.is_empty() {
         return None;
     }
     match (source.provider.id, metadata.media_type.as_str()) {
-        ("vidfast", "movie") => Some(build_vidfast_embed_url(
-            &format!("https://vidfast.pro/movie/{tmdb_id}"),
-            source.server,
-            vidfast_subtitle_lang,
-        )),
-        ("vidfast", "tv") => Some(build_vidfast_embed_url(
-            &format!(
-                "https://vidfast.pro/tv/{}/{}/{}",
-                tmdb_id, metadata.season_number, metadata.episode_number
-            ),
-            source.server,
-            vidfast_subtitle_lang,
-        )),
         ("videasy", "movie") => Some(format!(
             "https://player.videasy.net/movie/{tmdb_id}?color=ffd700"
         )),
@@ -4955,6 +4883,14 @@ fn external_embed_url_with_subtitle(
         )),
         _ => None,
     }
+}
+
+fn external_embed_playback_url(
+    source: ExternalEmbedSource,
+    metadata: &ResolveMetadata,
+    _preferences: &ResolvePreferences,
+) -> Option<String> {
+    external_embed_url(source, metadata)
 }
 
 fn external_embed_source_hash(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> String {
@@ -4974,21 +4910,36 @@ fn external_embed_source_hash(source: ExternalEmbedSource, metadata: &ResolveMet
 }
 
 fn external_embed_sources() -> Vec<ExternalEmbedSource> {
-    EXTERNAL_EMBED_PROVIDERS
-        .iter()
-        .copied()
-        .map(|provider| ExternalEmbedSource {
+    let mut sources = Vec::new();
+    for provider in EXTERNAL_EMBED_PROVIDERS.iter().copied() {
+        for server in external_embed_servers_for_provider(provider) {
+            sources.push(ExternalEmbedSource {
+                provider,
+                server: Some(*server),
+            });
+        }
+        sources.push(ExternalEmbedSource {
             provider,
             server: None,
-        })
-        .collect()
+        });
+    }
+    sources
+}
+
+fn external_embed_servers_for_provider(
+    provider: ExternalEmbedProvider,
+) -> &'static [ExternalEmbedServer] {
+    match provider.id {
+        "videasy" => VIDEASY_EXTERNAL_EMBED_SERVERS,
+        _ => &[],
+    }
 }
 
 fn external_embed_source_priority(source: ExternalEmbedSource) -> i64 {
     if let Some(server) = source.server {
         return source.provider.priority * 100 + server.priority;
     }
-    source.provider.priority * 100
+    source.provider.priority * 100 + 50
 }
 
 fn external_embed_source_display_name(source: ExternalEmbedSource) -> String {
@@ -5021,64 +4972,6 @@ fn external_embed_source_filename(source: ExternalEmbedSource) -> String {
     }
 }
 
-fn build_vidfast_embed_url(
-    base_url: &str,
-    server: Option<ExternalEmbedServer>,
-    subtitle_lang: Option<&str>,
-) -> String {
-    let autoplay_key = if base_url.contains("/tv/") {
-        "autoplay"
-    } else {
-        "autoPlay"
-    };
-    let mut pairs = vec![
-        (autoplay_key.to_owned(), "true".to_owned()),
-        ("title".to_owned(), "false".to_owned()),
-        ("poster".to_owned(), "false".to_owned()),
-        ("hideServer".to_owned(), "true".to_owned()),
-        ("hideServerControls".to_owned(), "true".to_owned()),
-        ("fullscreenButton".to_owned(), "false".to_owned()),
-        ("chromecast".to_owned(), "false".to_owned()),
-    ];
-    if let Some(server) = server {
-        pairs.push(("server".to_owned(), server.id.to_owned()));
-    }
-    if let Some(lang) = subtitle_lang {
-        let normalized = lang.trim();
-        if !normalized.is_empty() {
-            pairs.push(("sub".to_owned(), normalized.to_owned()));
-        }
-    }
-    let query = pairs
-        .iter()
-        .map(|(key, value)| {
-            format!(
-                "{}={}",
-                url::form_urlencoded::byte_serialize(key.as_bytes()).collect::<String>(),
-                url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("&");
-    format!("{base_url}?{query}")
-}
-
-fn vidfast_subtitle_query_value(preferred_subtitle_lang: &str) -> Option<String> {
-    let normalized = normalize_subtitle_preference(preferred_subtitle_lang);
-    if normalized == "off" {
-        return None;
-    }
-    let lang = if normalized.is_empty() || normalized == "un" {
-        "en".to_owned()
-    } else {
-        normalized
-    };
-    if lang.len() == 2 && lang.chars().all(|ch| ch.is_ascii_alphabetic()) {
-        return Some(lang);
-    }
-    None
-}
-
 fn deterministic_40_hex(value: &str) -> String {
     let a = fnv1a64(value.as_bytes(), 0xcbf2_9ce4_8422_2325);
     let b = fnv1a64(value.as_bytes(), 0x9e37_79b9_7f4a_7c15);
@@ -5094,42 +4987,9 @@ fn fnv1a64(bytes: &[u8], seed: u64) -> u64 {
     })
 }
 
-fn embed_iframe_proxy_enabled() -> bool {
-    embed_iframe_proxy_enabled_from_value(std::env::var("EMBED_IFRAME_PROXY").ok().as_deref())
-}
-
-fn embed_iframe_proxy_enabled_from_value(value: Option<&str>) -> bool {
-    matches!(
-        value.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
-        Some("1" | "true" | "yes" | "on")
-    )
-}
-
-fn is_external_embed_url(value: &str) -> bool {
-    value.starts_with("https://") || value.starts_with("http://")
-}
-
-fn build_live_iframe_playback_source(embed_url: &str) -> String {
-    build_live_iframe_playback_source_with_proxy(embed_url, embed_iframe_proxy_enabled())
-}
-
-fn build_live_iframe_playback_source_with_proxy(embed_url: &str, proxy_enabled: bool) -> String {
-    let trimmed = embed_url.trim();
-    let iframe_target = if proxy_enabled && is_external_embed_url(trimmed) {
-        format!(
-            "/api/embed/frame?url={}",
-            crate::embed_proxy::encode_query_value(trimmed)
-        )
-    } else {
-        trimmed.to_owned()
-    };
-    let encoded =
-        url::form_urlencoded::byte_serialize(iframe_target.as_bytes()).collect::<String>();
-    format!("{LIVE_IFRAME_SOURCE_PREFIX}{encoded}")
-}
-
 async fn resolve_external_embed_hls_playback_source(
     embed_url: &str,
+    server: Option<ExternalEmbedServer>,
     timeout_ms: u64,
 ) -> Option<ExternalEmbedHlsPlaybackSource> {
     let embed_url = Url::parse(embed_url.trim()).ok()?;
@@ -5155,6 +5015,9 @@ async fn resolve_external_embed_hls_playback_source(
             resolve_timeout_ms.to_string(),
         )
         .kill_on_drop(true);
+    if let Some(server) = server {
+        command.env(EXTERNAL_EMBED_SERVER_ENV, server.id);
+    }
 
     let output = timeout(
         Duration::from_millis(resolve_timeout_ms.saturating_add(1_000)),
@@ -5245,6 +5108,7 @@ fn is_supported_external_embed_hls_url(url: &Url) -> bool {
             host.as_str(),
             "easy.speedsterwave.app"
                 | "easy.nightspeedster.app"
+                | "yoru.midwesteagle.com"
                 | "storm.vodvidl.site"
                 | "typhoontigertribe.net"
         )
@@ -6852,17 +6716,15 @@ mod tests {
         DiscoveryBehaviorHints, DiscoveryStream, PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR,
         ResolveFilters, ResolveMetadata, ResolvePreferences, ResolvedSource, ResolverExternalGuard,
         ResolverMetrics, ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters,
-        SourceHealthStats, build_external_embed_source_summaries,
-        build_live_iframe_playback_source_with_proxy, build_movie_resolve_lock_key,
+        SourceHealthStats, build_external_embed_source_summaries, build_movie_resolve_lock_key,
         build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
         build_torrentio_stream_cache_key, build_torznab_request_url,
         build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
         compute_source_health_score, compute_torrentio_cache_deadlines,
         default_external_embed_source, does_filename_likely_match_movie,
-        embed_iframe_proxy_enabled_from_value, external_embed_fallback_playback_urls,
-        external_embed_hls_candidate_sources, external_embed_playback_url,
-        external_embed_source_for_source_hash, external_embed_source_hash, external_embed_sources,
-        external_embed_url, extract_info_hash_from_magnet, is_persistent_source_resolve_error,
+        external_embed_hls_candidate_sources, external_embed_source_for_source_hash,
+        external_embed_source_hash, external_embed_sources, external_embed_url,
+        extract_info_hash_from_magnet, is_persistent_source_resolve_error,
         is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
         normalize_allowed_formats, normalize_resolved_source_for_software_decode,
         normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
@@ -6891,12 +6753,12 @@ mod tests {
         let metadata = sample_movie_metadata();
         let sources = build_external_embed_source_summaries(&metadata);
 
-        // VidEasy stays first as the first native HLS candidate.
-        assert_eq!(sources.len(), 2);
-        assert_eq!(sources[0].primary, "VidEasy");
-        assert_eq!(sources[0].provider, "LivNet");
-        assert_eq!(sources[0].filename, "VidEasy embed");
-        assert_eq!(sources[0].qualityLabel, "HLS");
+        // VidEasy Yoru stays first as the first native HLS candidate.
+        assert_eq!(sources.len(), 3);
+        assert_eq!(sources[0].primary, "Yoru");
+        assert_eq!(sources[0].provider, "VidEasy");
+        assert_eq!(sources[0].filename, "VidEasy Yoru embed");
+        assert_eq!(sources[0].qualityLabel, "4K");
         assert_eq!(sources[0].container, "hls");
         assert_eq!(
             normalize_source_hash(&sources[0].sourceHash),
@@ -6906,6 +6768,7 @@ mod tests {
         let source = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
             .expect("matching external provider");
         assert_eq!(source.provider.id, "videasy");
+        assert_eq!(source.server.map(|server| server.id), Some("YORU"));
         assert_eq!(
             external_embed_url(source, &metadata).unwrap(),
             "https://player.videasy.net/movie/1368166?color=ffd700"
@@ -6915,24 +6778,9 @@ mod tests {
             sources[0].sourceHash
         );
 
-        let preferences = ResolvePreferences {
-            audio_lang: "auto".to_owned(),
-            subtitle_lang: "off".to_owned(),
-            quality: "auto".to_owned(),
-        };
-        let fallback_urls =
-            external_embed_fallback_playback_urls(&metadata, source, &preferences, 4);
-        assert_eq!(
-            fallback_urls,
-            vec![build_live_iframe_playback_source_with_proxy(
-                sample_vidfast_movie_embed_url(),
-                false
-            )]
-        );
-
         let vidlink_source = external_embed_sources()
             .into_iter()
-            .find(|source| source.provider.id == "vidlink")
+            .find(|source| source.provider.id == "vidlink" && source.server.is_none())
             .expect("vidlink fallback source");
         assert_eq!(
             external_embed_url(vidlink_source, &metadata).unwrap(),
@@ -6942,12 +6790,8 @@ mod tests {
         let tv_metadata = sample_tv_metadata();
         let videasy_source = external_embed_sources()
             .into_iter()
-            .find(|source| source.provider.id == "videasy")
+            .find(|source| source.provider.id == "videasy" && source.server.is_none())
             .expect("videasy fallback source");
-        assert_eq!(
-            external_embed_fallback_playback_urls(&metadata, videasy_source, &preferences, 4).len(),
-            1
-        );
         assert_eq!(
             external_embed_url(videasy_source, &tv_metadata).unwrap(),
             "https://player.videasy.net/tv/76331/1/1?nextEpisode=true&autoplayNextEpisode=true&episodeSelector=false&overlay=true&color=ffd700"
@@ -6963,6 +6807,7 @@ mod tests {
         let metadata = sample_movie_metadata();
         let source = default_external_embed_source(&metadata).expect("default embed source");
         assert_eq!(source.provider.id, "videasy");
+        assert_eq!(source.server.map(|server| server.id), Some("YORU"));
 
         let filters = ResolveFilters {
             source_hash: String::new(),
@@ -6984,42 +6829,26 @@ mod tests {
         let metadata = sample_movie_metadata();
         let source = default_external_embed_source(&metadata).expect("default embed source");
         assert_eq!(source.provider.id, "videasy");
+        assert_eq!(source.server.map(|server| server.id), Some("YORU"));
 
         let candidates = external_embed_hls_candidate_sources(source, &metadata, true);
-        let provider_ids = candidates
+        let source_ids = candidates
             .iter()
-            .map(|candidate| candidate.provider.id)
+            .map(|candidate| {
+                (
+                    candidate.provider.id,
+                    candidate
+                        .server
+                        .map(|server| server.id)
+                        .unwrap_or("default"),
+                )
+            })
             .collect::<Vec<_>>();
 
-        assert_eq!(provider_ids.first(), Some(&"videasy"));
-        assert_eq!(provider_ids.get(1), Some(&"vidlink"));
-        assert_eq!(provider_ids.len(), 2);
-    }
-
-    #[test]
-    fn iframe_proxy_requires_explicit_embed_proxy_flag() {
-        assert!(!embed_iframe_proxy_enabled_from_value(None));
-        assert!(!embed_iframe_proxy_enabled_from_value(Some("")));
-        assert!(!embed_iframe_proxy_enabled_from_value(Some("false")));
-        assert!(!embed_iframe_proxy_enabled_from_value(Some("0")));
-        assert!(!embed_iframe_proxy_enabled_from_value(Some("auto")));
-        assert!(embed_iframe_proxy_enabled_from_value(Some("true")));
-        assert!(embed_iframe_proxy_enabled_from_value(Some("on")));
-    }
-
-    #[test]
-    fn iframe_playback_source_is_direct_unless_proxy_is_explicitly_enabled() {
-        let embed_url = "https://vidfast.pro/movie/1318447";
-
-        assert_eq!(
-            build_live_iframe_playback_source_with_proxy(embed_url, false),
-            "live-iframe:https%3A%2F%2Fvidfast.pro%2Fmovie%2F1318447"
-        );
-
-        assert_eq!(
-            build_live_iframe_playback_source_with_proxy(embed_url, true),
-            "live-iframe:%2Fapi%2Fembed%2Fframe%3Furl%3Dhttps%253A%252F%252Fvidfast.pro%252Fmovie%252F1318447"
-        );
+        assert_eq!(source_ids.first(), Some(&("videasy", "YORU")));
+        assert_eq!(source_ids.get(1), Some(&("videasy", "default")));
+        assert_eq!(source_ids.get(2), Some(&("vidlink", "default")));
+        assert_eq!(source_ids.len(), 3);
     }
 
     #[test]
@@ -7036,6 +6865,9 @@ mod tests {
         let hls: url::Url = "https://easy.speedsterwave.app/example/index.m3u8"
             .parse()
             .expect("hls url");
+        let yoru_hls: url::Url = "https://yoru.midwesteagle.com/video.m3u8"
+            .parse()
+            .expect("yoru hls url");
         let vidlink_hls: url::Url = "https://storm.vodvidl.site/example/index.m3u8"
             .parse()
             .expect("vidlink hls url");
@@ -7049,49 +6881,9 @@ mod tests {
             &unsupported_embed
         ));
         assert!(is_supported_external_embed_hls_url(&hls));
+        assert!(is_supported_external_embed_hls_url(&yoru_hls));
         assert!(is_supported_external_embed_hls_url(&vidlink_hls));
         assert!(!is_supported_external_embed_hls_url(&unsupported_hls));
-    }
-
-    #[test]
-    fn vidfast_playback_url_carries_subtitle_preference() {
-        let metadata = sample_movie_metadata();
-        let source = external_embed_sources()
-            .into_iter()
-            .find(|source| source.provider.id == "vidfast")
-            .expect("vidfast source");
-        let preferences = ResolvePreferences {
-            audio_lang: "auto".to_owned(),
-            subtitle_lang: "en".to_owned(),
-            quality: "auto".to_owned(),
-        };
-
-        let source_url = external_embed_playback_url(source, &metadata, &preferences)
-            .expect("vidfast playback url");
-
-        assert_eq!(source_url, sample_vidfast_movie_embed_url_with_subtitle());
-        assert_eq!(
-            external_embed_url(source, &metadata).unwrap(),
-            sample_vidfast_movie_embed_url()
-        );
-    }
-
-    #[test]
-    fn vidfast_playback_url_defaults_empty_subtitle_preference_to_english() {
-        let metadata = sample_movie_metadata();
-        let source = external_embed_sources()
-            .into_iter()
-            .find(|source| source.provider.id == "vidfast")
-            .expect("vidfast source");
-        let preferences = ResolvePreferences {
-            audio_lang: "auto".to_owned(),
-            subtitle_lang: String::new(),
-            quality: "auto".to_owned(),
-        };
-        let source_url = external_embed_playback_url(source, &metadata, &preferences)
-            .expect("vidfast playback url");
-
-        assert_eq!(source_url, sample_vidfast_movie_embed_url_with_subtitle());
     }
 
     #[test]
@@ -7551,14 +7343,6 @@ mod tests {
             episode_title: String::new(),
             media_type: "movie".to_owned(),
         }
-    }
-
-    fn sample_vidfast_movie_embed_url() -> &'static str {
-        "https://vidfast.pro/movie/1368166?autoPlay=true&title=false&poster=false&hideServer=true&hideServerControls=true&fullscreenButton=false&chromecast=false"
-    }
-
-    fn sample_vidfast_movie_embed_url_with_subtitle() -> &'static str {
-        "https://vidfast.pro/movie/1368166?autoPlay=true&title=false&poster=false&hideServer=true&hideServerControls=true&fullscreenButton=false&chromecast=false&sub=en"
     }
 
     fn sample_tv_metadata() -> ResolveMetadata {
