@@ -8,6 +8,7 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, Response};
 use dashmap::DashMap;
+use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use tokio::process::Command;
@@ -55,6 +56,8 @@ const MATCHSTREAM_DEFAULT_DURATION_MINUTES: i64 = 180;
 const SPORTS_HTTP_PROXY_ENV: &str = "SPORTS_HTTP_PROXY";
 const SPORTS_HTTP_CLIENT_TIMEOUT_SECONDS: u64 = 30;
 const MAX_LIVE_STREAM_CANDIDATES: usize = 12;
+const STREAMED_SOURCE_PREFLIGHT_MAX_CONCURRENT: usize = 8;
+const STREAMED_SOURCE_PREFLIGHT_TIMEOUT_SECONDS: u64 = 6;
 const SPORTS_STREAM_RESOLVE_CACHE_TTL_MS: i64 = 60 * 1000;
 const SPORTS_STREAM_RESOLVE_CACHE_MAX_ENTRIES: usize = 512;
 const SPORTS_SCHEDULE_LIVE_CACHE_TTL_MS: i64 = 60 * 1000;
@@ -871,7 +874,7 @@ async fn fetch_streamed_sport_matches_payload(
         )));
     }
 
-    let source_matches = response
+    let mut source_matches = response
         .json::<Vec<StreamedMatch>>()
         .await
         .map_err(|error| {
@@ -879,6 +882,7 @@ async fn fetch_streamed_sport_matches_payload(
                 "Failed to parse Streamed {sport_name} schedule: {error}"
             ))
         })?;
+    filter_empty_live_streamed_sources(state, &mut source_matches, now_ms()).await?;
     Ok(build_streamed_sport_matches_payload(
         source_matches,
         &source_url,
@@ -930,6 +934,108 @@ fn build_streamed_sport_matches_payload(
         }),
         fetched_at_ms,
     )
+}
+
+async fn filter_empty_live_streamed_sources(
+    state: &AppState,
+    source_matches: &mut [StreamedMatch],
+    now: i64,
+) -> AppResult<()> {
+    let probes = source_matches
+        .iter()
+        .enumerate()
+        .filter(|(_, match_item)| streamed_match_is_live(match_item, now))
+        .flat_map(|(match_index, match_item)| {
+            match_item
+                .sources
+                .iter()
+                .enumerate()
+                .filter_map(move |(source_index, source)| {
+                    streamed_source_stream_api_url(source)
+                        .map(|source_url| (match_index, source_index, source_url))
+                })
+        })
+        .collect::<Vec<_>>();
+    if probes.is_empty() {
+        return Ok(());
+    }
+
+    let client = sports_http_client(state)?;
+    let empty_sources = stream::iter(probes)
+        .map(|(match_index, source_index, source_url)| {
+            let client = client.clone();
+            async move {
+                match fetch_streamed_source_has_embeds(&client, &source_url).await {
+                    Some(false) => Some((match_index, source_index)),
+                    _ => None,
+                }
+            }
+        })
+        .buffer_unordered(STREAMED_SOURCE_PREFLIGHT_MAX_CONCURRENT)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+    remove_streamed_sources_by_index(source_matches, &empty_sources);
+    Ok(())
+}
+
+async fn fetch_streamed_source_has_embeds(
+    client: &reqwest::Client,
+    source_url: &str,
+) -> Option<bool> {
+    let response = client
+        .get(source_url)
+        .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
+        .header(reqwest::header::REFERER, STREAMED_REFERER)
+        .send();
+    let response_result = timeout(
+        Duration::from_secs(STREAMED_SOURCE_PREFLIGHT_TIMEOUT_SECONDS),
+        response,
+    )
+    .await
+    .ok()?;
+    let response = response_result.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let streams = response.json::<Vec<StreamedEmbedStream>>().await.ok()?;
+    Some(!streams.is_empty())
+}
+
+fn remove_streamed_sources_by_index(
+    source_matches: &mut [StreamedMatch],
+    empty_sources: &[(usize, usize)],
+) {
+    let mut empty_by_match = vec![BTreeSet::new(); source_matches.len()];
+    for &(match_index, source_index) in empty_sources {
+        if let Some(indexes) = empty_by_match.get_mut(match_index) {
+            indexes.insert(source_index);
+        }
+    }
+
+    for (match_index, indexes) in empty_by_match.into_iter().enumerate() {
+        if indexes.is_empty() {
+            continue;
+        }
+        let mut source_index = 0usize;
+        source_matches[match_index].sources.retain(|_| {
+            let keep = !indexes.contains(&source_index);
+            source_index += 1;
+            keep
+        });
+    }
+}
+
+fn streamed_match_is_live(match_item: &StreamedMatch, now: i64) -> bool {
+    match_item.date <= now
+        && match_item
+            .date
+            .saturating_add(STREAMED_DEFAULT_DURATION_MINUTES.saturating_mul(60_000))
+            > now
 }
 
 async fn matchstream_sport_matches_response(
@@ -1900,11 +2006,7 @@ fn normalize_streamed_sport_match(
         .enumerate()
         .filter_map(|(index, source)| {
             let source_name = source.source.trim();
-            let source_id = source.id.trim();
-            if source_name.is_empty() || source_id.is_empty() {
-                return None;
-            }
-            let source_url = format!("https://streamed.pk/api/stream/{source_name}/{source_id}");
+            let source_url = streamed_source_stream_api_url(source)?;
             let display_source = title_case_ascii(source_name);
             Some(json!({
                 "id": format!("streamed-{source_name}-{index}"),
@@ -1921,9 +2023,7 @@ fn normalize_streamed_sport_match(
         .iter()
         .filter_map(|source| {
             let source_name = source.source.trim();
-            if source_name.is_empty() {
-                return None;
-            }
+            let _ = streamed_source_stream_api_url(source)?;
             Some(json!({
                 "name": format!("Streamed {}", title_case_ascii(source_name)),
                 "language": "HD",
@@ -1957,6 +2057,17 @@ fn normalize_streamed_sport_match(
         "languages": ["HD"],
         "provider": "streamed"
     })
+}
+
+fn streamed_source_stream_api_url(source: &StreamedSource) -> Option<String> {
+    let source_name = source.source.trim();
+    let source_id = source.id.trim();
+    if source_name.is_empty() || source_id.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "https://streamed.pk/api/stream/{source_name}/{source_id}"
+    ))
 }
 
 fn normalize_matchstream_sport_match(
@@ -2095,12 +2206,31 @@ mod tests {
         is_supported_matchstream_hls_url, is_supported_matchstream_player_url,
         is_supported_matchstream_stream_url, is_supported_streamed_hls_url,
         live_stream_source_candidates, matchstream_live_stream_source_candidates,
-        normalize_matchstream_link, parse_fallback_stream_urls,
+        normalize_matchstream_link, parse_fallback_stream_urls, remove_streamed_sources_by_index,
         sports_live_stream_source_candidates, sports_schedule_fresh_ttl_ms,
-        sports_stream_resolve_cache_key,
+        sports_stream_resolve_cache_key, streamed_match_is_live, streamed_source_stream_api_url,
     };
     use crate::utils::now_ms;
     use serde_json::json;
+
+    fn sample_streamed_match(sources: Vec<StreamedSource>) -> StreamedMatch {
+        StreamedMatch {
+            id: "morocco-vs-madagascar-football-1545264".to_owned(),
+            title: "Morocco vs Madagascar".to_owned(),
+            category: "football".to_owned(),
+            date: now_ms().saturating_sub(60_000),
+            popular: false,
+            teams: StreamedTeams {
+                home: Some(StreamedTeam {
+                    name: "Morocco".to_owned(),
+                }),
+                away: Some(StreamedTeam {
+                    name: "Madagascar".to_owned(),
+                }),
+            },
+            sources,
+        }
+    }
 
     #[test]
     fn sports_schedule_source_defaults_to_auto() {
@@ -2197,6 +2327,66 @@ mod tests {
         assert!(is_supported_streamed_hls_url(&streamed_hls));
         assert!(!is_supported_streamed_hls_url(&streamed_segment));
         assert!(!is_supported_streamed_hls_url(&other_hls));
+    }
+
+    #[test]
+    fn removes_empty_streamed_sources_before_building_schedule_payload() {
+        let mut source_matches = vec![sample_streamed_match(vec![
+            StreamedSource {
+                source: "echo".to_owned(),
+                id: "morocco-vs-madagascar-football-1545264".to_owned(),
+            },
+            StreamedSource {
+                source: "admin".to_owned(),
+                id: "ppv-morocco-vs-madagascar".to_owned(),
+            },
+        ])];
+
+        remove_streamed_sources_by_index(&mut source_matches, &[(0, 0)]);
+        let (payload, _) = build_streamed_football_matches_payload(source_matches);
+
+        assert_eq!(payload["matches"][0]["linkCount"], 1);
+        assert_eq!(
+            payload["matches"][0]["streams"][0]["source"],
+            "https://streamed.pk/api/stream/admin/ppv-morocco-vs-madagascar"
+        );
+        assert_eq!(
+            payload["matches"][0]["channels"][0]["name"],
+            "Streamed Admin"
+        );
+    }
+
+    #[test]
+    fn omits_streamed_match_when_all_live_sources_are_empty() {
+        let mut source_matches = vec![sample_streamed_match(vec![StreamedSource {
+            source: "echo".to_owned(),
+            id: "morocco-vs-madagascar-football-1545264".to_owned(),
+        }])];
+
+        remove_streamed_sources_by_index(&mut source_matches, &[(0, 0)]);
+        let (payload, _) = build_streamed_football_matches_payload(source_matches);
+
+        assert_eq!(payload["matches"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn recognizes_streamed_live_window_and_source_urls() {
+        let now = now_ms();
+        let live_match = sample_streamed_match(vec![StreamedSource {
+            source: "echo".to_owned(),
+            id: "morocco-vs-madagascar-football-1545264".to_owned(),
+        }]);
+        let future_match = StreamedMatch {
+            date: now.saturating_add(60_000),
+            ..sample_streamed_match(Vec::new())
+        };
+
+        assert!(streamed_match_is_live(&live_match, now));
+        assert!(!streamed_match_is_live(&future_match, now));
+        assert_eq!(
+            streamed_source_stream_api_url(&live_match.sources[0]).as_deref(),
+            Some("https://streamed.pk/api/stream/echo/morocco-vs-madagascar-football-1545264")
+        );
     }
 
     #[test]
