@@ -11,6 +11,7 @@ import {
 import SportsScheduleView from "../components/sports-schedule-view.js";
 import { signOut } from "../lib/auth.js";
 import { liveNavClass, sportsNavClass } from "../lib/browse-nav.js";
+import { bindTopNavScrollState } from "../lib/top-nav-scroll.js";
 
 export default function SportsPage() {
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
@@ -18,6 +19,7 @@ export default function SportsPage() {
   const [avatarCustomStyle, setAvatarCustomStyle] = createSignal("");
   const displayName = window.__currentUser?.displayName || "Account";
   let accountMenuEl;
+  let cleanupTopNavScrollState = () => {};
 
   function applyAvatarStyle(style, mode, imageData) {
     const normalizedStyle = normalizeAvatarStyle(style);
@@ -63,6 +65,7 @@ export default function SportsPage() {
   }
 
   onMount(() => {
+    cleanupTopNavScrollState = bindTopNavScrollState();
     applyAvatarStyle(
       getStoredAvatarStylePreference(),
       getStoredAvatarModePreference(),
@@ -73,6 +76,7 @@ export default function SportsPage() {
   });
 
   onCleanup(() => {
+    cleanupTopNavScrollState();
     document.removeEventListener("click", handleDocumentClick);
     document.removeEventListener("keydown", handleDocumentKeydown);
   });

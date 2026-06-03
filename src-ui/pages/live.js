@@ -11,6 +11,7 @@ import {
 import LiveChannelsView from "../components/live-channels-view.js";
 import { signOut } from "../lib/auth.js";
 import { liveNavClass, sportsNavClass } from "../lib/browse-nav.js";
+import { bindTopNavScrollState } from "../lib/top-nav-scroll.js";
 
 export default function LivePage() {
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
@@ -18,6 +19,7 @@ export default function LivePage() {
   const [avatarCustomStyle, setAvatarCustomStyle] = createSignal("");
   const displayName = window.__currentUser?.displayName || "Account";
   let accountMenuEl;
+  let cleanupTopNavScrollState = () => {};
 
   function applyAvatarStyle(style, mode, imageData) {
     const normalizedStyle = normalizeAvatarStyle(style);
@@ -63,6 +65,7 @@ export default function LivePage() {
   }
 
   onMount(() => {
+    cleanupTopNavScrollState = bindTopNavScrollState();
     applyAvatarStyle(
       getStoredAvatarStylePreference(),
       getStoredAvatarModePreference(),
@@ -73,6 +76,7 @@ export default function LivePage() {
   });
 
   onCleanup(() => {
+    cleanupTopNavScrollState();
     document.removeEventListener("click", handleDocumentClick);
     document.removeEventListener("keydown", handleDocumentKeydown);
   });

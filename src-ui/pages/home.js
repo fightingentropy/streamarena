@@ -22,6 +22,7 @@ import {
 } from "../lib/preferences.js";
 import { hydrateFromServer, SERVER_HYDRATED_EVENT } from "../lib/auth.js";
 import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
+import { bindTopNavScrollState } from "../lib/top-nav-scroll.js";
 import {
   addCurrentReturnToParam,
   buildWatchUrl,
@@ -4711,6 +4712,7 @@ export default function HomePage() {
   onMount(() => {
     clearStaleHeroPreviewMutedPreference();
     const cleanupHorizontalRailScrollers = bindHorizontalRailScrollers();
+    const cleanupTopNavScrollState = bindTopNavScrollState();
     applyLibraryEditModeClass();
     renderMyListRow();
     if (pageRootRef) {
@@ -4913,6 +4915,7 @@ export default function HomePage() {
 
     onCleanup(() => {
       cleanupHorizontalRailScrollers();
+      cleanupTopNavScrollState();
       stopHeroCarouselTimer();
       stopHeroPreview();
       heroVisibilityObserver?.disconnect();
