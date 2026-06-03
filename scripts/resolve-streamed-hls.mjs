@@ -99,6 +99,18 @@ if (!isSupportedEmbedUrl(embedUrl)) {
 
 let browser;
 let resolvedUrl = "";
+let rejectedPlaylist = "";
+let rejectedPlaylistStatus = 0;
+
+function rememberResolvedPlaylist(value, status) {
+  if (resolvedUrl || !isStreamPlaylistUrl(value)) return;
+  if (status >= 200 && status < 300) {
+    resolvedUrl = value;
+    return;
+  }
+  rejectedPlaylist = value;
+  rejectedPlaylistStatus = status;
+}
 
 try {
   const proxyServer = normalizeProxyServer(rawProxy);
@@ -115,8 +127,7 @@ try {
   await page.route("**/*", async (route) => {
     const requestUrl = route.request().url();
     if (isStreamPlaylistUrl(requestUrl)) {
-      resolvedUrl = requestUrl;
-      await route.abort("blockedbyclient");
+      await route.continue();
       return;
     }
     if (isAllowedRequestUrl(requestUrl)) {
@@ -126,18 +137,9 @@ try {
     await route.abort("blockedbyclient");
   });
 
-  page.on("request", (request) => {
-    const requestUrl = request.url();
-    if (!resolvedUrl && isStreamPlaylistUrl(requestUrl)) {
-      resolvedUrl = requestUrl;
-    }
-  });
-
   page.on("response", (response) => {
     const responseUrl = response.url();
-    if (!resolvedUrl && response.status() < 400 && isStreamPlaylistUrl(responseUrl)) {
-      resolvedUrl = responseUrl;
-    }
+    rememberResolvedPlaylist(responseUrl, response.status());
   });
 
   await page.goto(embedUrl, {
@@ -160,7 +162,11 @@ try {
   }
 
   if (!resolvedUrl) {
-    console.error("Timed out waiting for Streamed HLS playlist.");
+    const rejectedDetail =
+      rejectedPlaylist && rejectedPlaylistStatus
+        ? ` Last playlist response was HTTP ${rejectedPlaylistStatus}: ${rejectedPlaylist}`
+        : "";
+    console.error(`Timed out waiting for a working Streamed HLS playlist.${rejectedDetail}`);
     process.exit(1);
   }
 

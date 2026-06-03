@@ -69,6 +69,7 @@ export default function PlayerPage() {
   let video, goBack, seekBar, seekPreview, seekPreviewCanvas, seekPreviewTime;
   let durationText, togglePlay, rewind10, forward10, volumeControl, volumeSlider;
   let toggleMutePlayer, toggleFullscreen, toggleSpeed, speedControl;
+  let toggleHlsQuality, hlsQualityControl, hlsQualityMenu, hlsQualityOptionsContainer;
   let toggleLiveStream, liveStreamControl, liveStreamMenu, liveStreamOptionsContainer;
   let toggleSource, sourceControl, sourceMenu;
   let nextEpisode, toggleEpisodes, episodesControl, episodesList, episodesPopoverTitle;
@@ -117,9 +118,11 @@ const LIVE_VISUAL_HEALTH_MIN_BRIGHT_PIXEL_RATIO = 0.012;
 const LIVE_STARTUP_HEALTH_TIMEOUT_MS = 12000;
 const LIVE_FAILED_STREAM_CACHE_TTL_MS = 5 * 60 * 1000;
 const LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-failed-streams:";
+const HLS_QUALITY_PREFERENCE_STORAGE_KEY = "netflix-hls-quality-pref";
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
+let hlsQualityPopoverCloseTimeout = null;
 let liveStreamPopoverCloseTimeout = null;
 let sourcePopoverCloseTimeout = null;
 let sourceTogglePointerDownAt = 0;
@@ -193,6 +196,9 @@ const reportedPlaybackFailureKeys = new Set();
 let liveStreamOptions = [];
 let selectedLiveStreamId = "";
 let isLivePlayback = false;
+let hlsQualityLevels = [];
+let selectedHlsQualityLevel = -1;
+let activeHlsQualityLevel = -1;
 let liveEdgePinned = true;
 let shouldResolveLiveEmbedSource = false;
 let liveEmbedResolver = "sports";
@@ -291,6 +297,8 @@ const hlsPlaybackController = createHlsPlaybackController({
   schedulePlaybackRecovery: (...args) => schedulePlaybackRecovery(...args),
   isBrowserOffline: () => isBrowserOffline(),
   shouldFailFastForHlsNetworkErrors: () => isCurrentTmdbExternalEmbedSource(),
+  getPreferredQualityLevel: (levels) => pickPreferredHlsQualityLevel(levels),
+  onQualityLevelsChanged: (state) => handleHlsQualityLevelsChanged(state),
 });
 
 // ─── Watch URL support: reproducible /watch?... plus legacy /watch/<slug> ───
@@ -1082,6 +1090,7 @@ if (isTmdbMoviePlayback && hasAudioLangParam) {
   persistAudioLangPreference(preferredAudioLang);
 }
 let preferredQuality = normalizePreferredQuality(qualityParam);
+let hlsQualityPreference = readStoredHlsQualityPreference();
 applyMobileLightTmdbDefaults();
 let preferredSourceMinSeeders = DEFAULT_SOURCE_MIN_SEEDERS;
 let preferredSourceResultsLimit = DEFAULT_SOURCE_RESULTS_LIMIT;
@@ -4929,6 +4938,7 @@ function openEpisodesPopover({ sticky = false, auto = false } = {}) {
 
   closeLiveStreamPopover(false);
   closeSourcePopover(false);
+  closeHlsQualityPopover(false);
   closeSpeedPopover(false);
   closeAudioPopover();
   window.clearTimeout(episodesPopoverCloseTimeout);
@@ -5247,6 +5257,245 @@ function syncSpeedState() {
     const isSelected = optionRate === video.playbackRate;
     option.setAttribute("aria-selected", isSelected ? "true" : "false");
   });
+}
+
+function normalizeHlsQualityPreference(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (!normalized || normalized === "auto") {
+    return "auto";
+  }
+  const match = normalized.match(/^(\d{3,4})p?$/);
+  if (!match) {
+    return "auto";
+  }
+  const height = Number(match[1]);
+  return Number.isFinite(height) && height > 0 ? `${Math.floor(height)}p` : "auto";
+}
+
+function readStoredHlsQualityPreference() {
+  try {
+    return normalizeHlsQualityPreference(
+      localStorage.getItem(HLS_QUALITY_PREFERENCE_STORAGE_KEY),
+    );
+  } catch {
+    return "auto";
+  }
+}
+
+function persistHlsQualityPreference(value) {
+  const normalized = normalizeHlsQualityPreference(value);
+  hlsQualityPreference = normalized;
+  try {
+    localStorage.setItem(HLS_QUALITY_PREFERENCE_STORAGE_KEY, normalized);
+  } catch {
+    // Ignore storage access issues.
+  }
+}
+
+function getHlsQualityPreferenceHeight(value = hlsQualityPreference) {
+  const match = normalizeHlsQualityPreference(value).match(/^(\d{3,4})p$/);
+  if (!match) {
+    return 0;
+  }
+  const height = Number(match[1]);
+  return Number.isFinite(height) && height > 0 ? Math.floor(height) : 0;
+}
+
+function formatHlsQualityLabel(level) {
+  const height = Number(level?.height || 0);
+  if (Number.isFinite(height) && height > 0) {
+    return `${Math.floor(height)}p`;
+  }
+  const name = String(level?.name || "").trim();
+  if (name) {
+    return name;
+  }
+  const width = Number(level?.width || 0);
+  if (Number.isFinite(width) && width > 0) {
+    return `${Math.floor(width)}w`;
+  }
+  return `Level ${Number(level?.index || 0) + 1}`;
+}
+
+function formatHlsQualityMeta(level) {
+  const bitrate = Number(level?.bitrate || 0);
+  if (!Number.isFinite(bitrate) || bitrate <= 0) {
+    return "";
+  }
+  if (bitrate >= 1_000_000) {
+    return `${(bitrate / 1_000_000).toFixed(bitrate >= 10_000_000 ? 0 : 1)} Mbps`;
+  }
+  return `${Math.round(bitrate / 1000)} Kbps`;
+}
+
+function getHlsQualityPreferenceForLevel(level) {
+  const height = Number(level?.height || 0);
+  if (Number.isFinite(height) && height > 0) {
+    return `${Math.floor(height)}p`;
+  }
+  return "auto";
+}
+
+function getSortedHlsQualityLevels(levels = hlsQualityLevels) {
+  return [...levels].sort((left, right) => {
+    const leftHeight = Number(left?.height || 0);
+    const rightHeight = Number(right?.height || 0);
+    if (leftHeight !== rightHeight) {
+      return rightHeight - leftHeight;
+    }
+    const leftBitrate = Number(left?.bitrate || 0);
+    const rightBitrate = Number(right?.bitrate || 0);
+    if (leftBitrate !== rightBitrate) {
+      return rightBitrate - leftBitrate;
+    }
+    return Number(left?.index || 0) - Number(right?.index || 0);
+  });
+}
+
+function pickPreferredHlsQualityLevel(levels = []) {
+  const targetHeight = getHlsQualityPreferenceHeight();
+  if (!targetHeight || !Array.isArray(levels) || !levels.length) {
+    return -1;
+  }
+  const matches = levels
+    .filter((level) => Number(level?.height || 0) === targetHeight)
+    .sort((left, right) => Number(right?.bitrate || 0) - Number(left?.bitrate || 0));
+  return Number(matches[0]?.index ?? -1);
+}
+
+function getHlsQualityLevelByIndex(levelIndex) {
+  const normalized = Number(levelIndex);
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return null;
+  }
+  return hlsQualityLevels.find((level) => Number(level?.index) === Math.floor(normalized)) || null;
+}
+
+function getCurrentHlsQualityLabel() {
+  const selectedLevel = getHlsQualityLevelByIndex(selectedHlsQualityLevel);
+  if (selectedLevel) {
+    return formatHlsQualityLabel(selectedLevel);
+  }
+  const activeLevel = getHlsQualityLevelByIndex(activeHlsQualityLevel);
+  return activeLevel ? `Auto (${formatHlsQualityLabel(activeLevel)})` : "Auto";
+}
+
+function shouldShowHlsQualityControl() {
+  return Boolean(hlsQualityLevels.length > 1 && !isLiveIframePlaybackActive());
+}
+
+function appendHlsQualityOptionContent(button, primary, secondary = "") {
+  const name = document.createElement("span");
+  name.className = "hls-quality-option-name";
+  name.textContent = primary;
+  button.appendChild(name);
+
+  if (secondary) {
+    const meta = document.createElement("span");
+    meta.className = "hls-quality-option-meta";
+    meta.textContent = secondary;
+    button.appendChild(meta);
+  }
+}
+
+function syncHlsQualityControls() {
+  const shouldShow = shouldShowHlsQualityControl();
+  if (hlsQualityControl) {
+    hlsQualityControl.hidden = !shouldShow;
+    if (!shouldShow) {
+      closeHlsQualityPopover(false, { force: true });
+    }
+  }
+
+  const currentLabel = getCurrentHlsQualityLabel();
+  const accessibleLabel = `Quality (${currentLabel})`;
+  toggleHlsQuality?.setAttribute("aria-label", accessibleLabel);
+  toggleHlsQuality?.setAttribute("title", accessibleLabel);
+  hlsQualityMenu?.setAttribute("aria-label", accessibleLabel);
+
+  if (hlsQualityOptionsContainer) {
+    Array.from(
+      hlsQualityOptionsContainer.querySelectorAll(".hls-quality-option"),
+    ).forEach((option) => {
+      const rawLevel = option.dataset.levelIndex || "auto";
+      const isAuto = rawLevel === "auto";
+      const isSelected = isAuto
+        ? selectedHlsQualityLevel < 0
+        : Number(rawLevel) === selectedHlsQualityLevel;
+      option.setAttribute("aria-selected", isSelected ? "true" : "false");
+    });
+  }
+}
+
+function renderHlsQualityOptions() {
+  if (!(hlsQualityOptionsContainer instanceof HTMLElement)) {
+    return;
+  }
+
+  hlsQualityOptionsContainer.innerHTML = "";
+  const activeLevel = getHlsQualityLevelByIndex(activeHlsQualityLevel);
+  const autoButton = document.createElement("button");
+  autoButton.className = "audio-option hls-quality-option";
+  autoButton.type = "button";
+  autoButton.setAttribute("role", "option");
+  autoButton.dataset.levelIndex = "auto";
+  appendHlsQualityOptionContent(
+    autoButton,
+    "Auto",
+    activeLevel ? `Currently ${formatHlsQualityLabel(activeLevel)}` : "Adaptive",
+  );
+  hlsQualityOptionsContainer.appendChild(autoButton);
+
+  getSortedHlsQualityLevels().forEach((level) => {
+    const button = document.createElement("button");
+    button.className = "audio-option hls-quality-option";
+    button.type = "button";
+    button.setAttribute("role", "option");
+    button.dataset.levelIndex = String(level.index);
+    button.dataset.qualityPreference = getHlsQualityPreferenceForLevel(level);
+    appendHlsQualityOptionContent(
+      button,
+      formatHlsQualityLabel(level),
+      formatHlsQualityMeta(level),
+    );
+    hlsQualityOptionsContainer.appendChild(button);
+  });
+
+  syncHlsQualityControls();
+}
+
+function handleHlsQualityLevelsChanged({
+  levels = [],
+  selectedLevel = -1,
+  activeLevel = -1,
+} = {}) {
+  hlsQualityLevels = Array.isArray(levels) ? levels : [];
+  selectedHlsQualityLevel = Number.isFinite(Number(selectedLevel))
+    ? Math.floor(Number(selectedLevel))
+    : -1;
+  activeHlsQualityLevel = Number.isFinite(Number(activeLevel))
+    ? Math.floor(Number(activeLevel))
+    : -1;
+  renderHlsQualityOptions();
+  syncHlsQualityControls();
+}
+
+function selectHlsQualityLevel(levelIndex) {
+  const normalizedLevelIndex =
+    levelIndex === "auto" ? -1 : Number(levelIndex);
+  const nextLevel =
+    Number.isFinite(normalizedLevelIndex) && normalizedLevelIndex >= 0
+      ? Math.floor(normalizedLevelIndex)
+      : -1;
+  const level = getHlsQualityLevelByIndex(nextLevel);
+  persistHlsQualityPreference(level ? getHlsQualityPreferenceForLevel(level) : "auto");
+  if (hlsPlaybackController.setQualityLevel(nextLevel)) {
+    selectedHlsQualityLevel = nextLevel;
+  }
+  renderHlsQualityOptions();
+  syncHlsQualityControls();
 }
 
 function getSelectedLiveStreamOption() {
@@ -6003,6 +6252,7 @@ function openLiveStreamPopover() {
 
   closeEpisodesPopover(false);
   closeSourcePopover(false);
+  closeHlsQualityPopover(false);
   closeAudioPopover();
   closeSpeedPopover(false);
   window.clearTimeout(liveStreamPopoverCloseTimeout);
@@ -6042,6 +6292,7 @@ function openSourcePopover() {
 
   closeLiveStreamPopover(false);
   closeEpisodesPopover(false);
+  closeHlsQualityPopover(false);
   closeAudioPopover();
   closeSpeedPopover(false);
   window.clearTimeout(sourcePopoverCloseTimeout);
@@ -6373,6 +6624,7 @@ function openSpeedPopover({ auto = false } = {}) {
   closeLiveStreamPopover(false);
   closeSourcePopover(false);
   closeEpisodesPopover(false);
+  closeHlsQualityPopover(false);
   window.clearTimeout(speedPopoverCloseTimeout);
   speedControl.classList.add("is-open");
   toggleSpeed.setAttribute("aria-expanded", "true");
@@ -6406,6 +6658,51 @@ function closeSpeedPopover(withDelay = true) {
   speedPopoverCloseTimeout = window.setTimeout(close, 140);
 }
 
+function openHlsQualityPopover({ auto = false } = {}) {
+  if (!hlsQualityControl || !shouldShowHlsQualityControl() || isResolvingSource()) {
+    return;
+  }
+
+  closeLiveStreamPopover(false);
+  closeSourcePopover(false);
+  closeEpisodesPopover(false);
+  closeAudioPopover();
+  closeSpeedPopover(false);
+  window.clearTimeout(hlsQualityPopoverCloseTimeout);
+  renderHlsQualityOptions();
+  showControls();
+  clearControlsHideTimer();
+  hlsQualityControl.classList.add("is-open");
+  toggleHlsQuality?.setAttribute("aria-expanded", "true");
+  if (auto) {
+    markPopoverAutoOpened(hlsQualityControl);
+  }
+}
+
+function closeHlsQualityPopover(withDelay = false, { force = false } = {}) {
+  if (!hlsQualityControl) {
+    return;
+  }
+
+  window.clearTimeout(hlsQualityPopoverCloseTimeout);
+
+  const close = () => {
+    if (!force && hlsQualityControl.matches(":hover, :focus-within")) {
+      return;
+    }
+    hlsQualityControl.classList.remove("is-open");
+    clearPopoverAutoOpen(hlsQualityControl);
+    toggleHlsQuality?.setAttribute("aria-expanded", "false");
+  };
+
+  if (!withDelay) {
+    close();
+    return;
+  }
+
+  hlsQualityPopoverCloseTimeout = window.setTimeout(close, 140);
+}
+
 function openAudioPopover({ auto = false } = {}) {
   if (!audioControl || !shouldShowAudioSubtitleControl()) {
     return;
@@ -6426,6 +6723,7 @@ function openAudioPopover({ auto = false } = {}) {
   closeLiveStreamPopover(false);
   closeSourcePopover(false);
   closeEpisodesPopover(false);
+  closeHlsQualityPopover(false);
   window.clearTimeout(audioPopoverCloseTimeout);
   if (isTmdbResolvedPlayback && !availablePlaybackSources.length) {
     void fetchTmdbSourceOptionsViaBackend();
@@ -9080,6 +9378,24 @@ trackListener(toggleSpeed, "click", (event) => {
   }
 });
 
+if (toggleHlsQuality) {
+  trackListener(toggleHlsQuality, "click", (event) => {
+    event.preventDefault();
+    if (!hlsQualityControl || !shouldShowHlsQualityControl() || isResolvingSource()) {
+      return;
+    }
+
+    const shouldOpen =
+      !hlsQualityControl.classList.contains("is-open") ||
+      consumeRecentPopoverAutoOpen(hlsQualityControl);
+    if (shouldOpen) {
+      openHlsQualityPopover();
+    } else {
+      closeHlsQualityPopover(false, { force: true });
+    }
+  });
+}
+
 if (toggleEpisodes) {
   trackListener(toggleEpisodes, "click", (event) => {
     event.preventDefault();
@@ -9165,6 +9481,38 @@ if (speedControl) {
     openSpeedPopover({ auto: true }),
   );
   trackListener(speedControl, "focusout", () => closeSpeedPopover(true));
+}
+
+if (hlsQualityControl) {
+  trackListener(hlsQualityControl, "mouseenter", () => {
+    if (isResolvingSource()) {
+      return;
+    }
+    openHlsQualityPopover({ auto: true });
+  });
+  trackListener(hlsQualityControl, "mouseleave", () =>
+    closeHlsQualityPopover(true),
+  );
+  trackListener(hlsQualityControl, "focusin", () => {
+    if (isResolvingSource()) {
+      return;
+    }
+    openHlsQualityPopover({ auto: true });
+  });
+  trackListener(hlsQualityControl, "focusout", (event) => {
+    if (!(event.target instanceof Node)) {
+      closeHlsQualityPopover(true);
+      return;
+    }
+
+    if (
+      event.relatedTarget instanceof Node &&
+      hlsQualityControl.contains(event.relatedTarget)
+    ) {
+      return;
+    }
+    closeHlsQualityPopover(true);
+  });
 }
 
 if (episodesControl) {
@@ -9624,6 +9972,22 @@ if (liveStreamOptionsContainer) {
   });
 }
 
+if (hlsQualityOptionsContainer) {
+  trackListener(hlsQualityOptionsContainer, "click", (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+    const option = event.target.closest(".hls-quality-option");
+    if (!(option instanceof HTMLButtonElement)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    selectHlsQualityLevel(option.dataset.levelIndex || "auto");
+    closeHlsQualityPopover(false, { force: true });
+  });
+}
+
 trackListener(document, "pointerdown", (event) => {
   if (!speedControl) {
     return;
@@ -9658,6 +10022,18 @@ trackListener(document, "pointerdown", (event) => {
   }
 
   closeLiveStreamPopover();
+});
+
+trackListener(document, "pointerdown", (event) => {
+  if (!hlsQualityControl) {
+    return;
+  }
+
+  if (hlsQualityControl.contains(event.target)) {
+    return;
+  }
+
+  closeHlsQualityPopover(false, { force: true });
 });
 
 trackListener(document, "pointerdown", (event) => {
@@ -10491,6 +10867,11 @@ async function handleKeydown(event) {
       return;
     }
 
+    if (hlsQualityControl?.classList.contains("is-open")) {
+      closeHlsQualityPopover(false, { force: true });
+      return;
+    }
+
     if (audioControl?.classList.contains("is-open")) {
       closeAudioPopover();
       return;
@@ -10558,6 +10939,8 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     syncSpeedState();
     renderLiveStreamOptions();
     syncLiveStreamControls();
+    renderHlsQualityOptions();
+    syncHlsQualityControls();
     syncSourcePanelVisibility();
     rebuildTrackOptionButtons();
     syncAudioState();
@@ -10624,6 +11007,7 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     hlsPlaybackController.destroy();
     stopSubtitleRafLoop();
     if (speedPopoverCloseTimeout) clearTimeout(speedPopoverCloseTimeout);
+    if (hlsQualityPopoverCloseTimeout) clearTimeout(hlsQualityPopoverCloseTimeout);
     if (liveStreamPopoverCloseTimeout) clearTimeout(liveStreamPopoverCloseTimeout);
     if (episodesPopoverCloseTimeout) clearTimeout(episodesPopoverCloseTimeout);
     if (audioPopoverCloseTimeout) clearTimeout(audioPopoverCloseTimeout);
@@ -11065,6 +11449,44 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
                         </section>
                       </section>
                     </div>
+                  </div>
+                </div>
+                <div
+                  id="hlsQualityControl"
+                  ref=${el => hlsQualityControl = el}
+                  class="speed-menu-wrap hls-quality-menu-wrap"
+                  hidden
+                >
+                  <button
+                    id="toggleHlsQuality"
+                    ref=${el => toggleHlsQuality = el}
+                    class="control-btn hls-quality-btn"
+                    type="button"
+                    aria-label="Quality"
+                    aria-haspopup="listbox"
+                    aria-controls="hlsQualityMenu"
+                    aria-expanded="false"
+                  >
+                    <svg class="hls-quality-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4 6.5h16v11H4z"></path>
+                      <path d="M8 15v-3"></path>
+                      <path d="M12 15V9"></path>
+                      <path d="M16 15v-5"></path>
+                    </svg>
+                  </button>
+                  <div
+                    id="hlsQualityMenu"
+                    ref=${el => hlsQualityMenu = el}
+                    class="speed-popover hls-quality-popover"
+                    role="listbox"
+                    aria-label="Quality"
+                  >
+                    <p class="speed-popover-title hls-quality-popover-title">Quality</p>
+                    <div
+                      id="hlsQualityOptions"
+                      ref=${el => hlsQualityOptionsContainer = el}
+                      class="audio-options hls-quality-options"
+                    ></div>
                   </div>
                 </div>
                 <div id="speedControl" ref=${el => speedControl = el} class="speed-menu-wrap">

@@ -130,6 +130,8 @@ if (!isSupportedChannelUrl(sourceUrl)) {
 let browser;
 let resolvedUrl = "";
 let playerPageUrl = "";
+let rejectedPlaylist = "";
+let rejectedPlaylistStatus = 0;
 
 function rememberPlayerPage(value) {
   if (value && isSupportedPlayerUrl(value)) {
@@ -137,11 +139,15 @@ function rememberPlayerPage(value) {
   }
 }
 
-function rememberPlaylist(value, frameUrl = "") {
-  if (!resolvedUrl && isStreamPlaylistUrl(value)) {
+function rememberResolvedPlaylist(value, status, frameUrl = "") {
+  if (resolvedUrl || !isStreamPlaylistUrl(value)) return;
+  if (status >= 200 && status < 300) {
     resolvedUrl = value;
     rememberPlayerPage(frameUrl);
+    return;
   }
+  rejectedPlaylist = value;
+  rejectedPlaylistStatus = status;
 }
 
 try {
@@ -161,8 +167,8 @@ try {
     const request = route.request();
     const requestUrl = request.url();
     if (isStreamPlaylistUrl(requestUrl)) {
-      rememberPlaylist(requestUrl, request.frame()?.url() || "");
-      await route.abort("blockedbyclient");
+      rememberPlayerPage(request.frame()?.url() || "");
+      await route.continue();
       return;
     }
     if (isAllowedRequestUrl(requestUrl)) {
@@ -174,14 +180,12 @@ try {
 
   page.on("framenavigated", (frame) => rememberPlayerPage(frame.url()));
 
-  page.on("request", (request) => {
-    rememberPlaylist(request.url(), request.frame()?.url() || "");
-  });
-
   page.on("response", (response) => {
-    if (response.status() < 400) {
-      rememberPlaylist(response.url(), response.request().frame()?.url() || "");
-    }
+    rememberResolvedPlaylist(
+      response.url(),
+      response.status(),
+      response.request().frame()?.url() || "",
+    );
   });
 
   await page.goto(sourceUrl, {
@@ -212,7 +216,11 @@ try {
   }
 
   if (!resolvedUrl) {
-    console.error("Timed out waiting for MatchStream HLS playlist.");
+    const rejectedDetail =
+      rejectedPlaylist && rejectedPlaylistStatus
+        ? ` Last playlist response was HTTP ${rejectedPlaylistStatus}: ${rejectedPlaylist}`
+        : "";
+    console.error(`Timed out waiting for a working MatchStream HLS playlist.${rejectedDetail}`);
     process.exit(1);
   }
 

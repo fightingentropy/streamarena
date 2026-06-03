@@ -11,10 +11,59 @@ export function createHlsPlaybackController({
   schedulePlaybackRecovery = () => {},
   isBrowserOffline = () => false,
   shouldFailFastForHlsNetworkErrors = () => false,
+  getPreferredQualityLevel = () => -1,
+  onQualityLevelsChanged = () => {},
 } = {}) {
   let activeHlsController = null;
   let hlsConstructorPromise = null;
   let pendingHlsJsPlaybackSource = "";
+  let qualityLevels = [];
+  let selectedQualityLevel = -1;
+  let activeQualityLevel = -1;
+
+  function normalizeQualityLevel(level = {}, index = 0) {
+    const attrs = level.attrs || {};
+    const width = Number(level.width || attrs.RESOLUTION?.width || 0);
+    const height = Number(level.height || attrs.RESOLUTION?.height || 0);
+    const bitrate = Number(
+      level.bitrate ||
+        level.maxBitrate ||
+        attrs.BANDWIDTH ||
+        attrs["AVERAGE-BANDWIDTH"] ||
+        0,
+    );
+    return {
+      index,
+      width: Number.isFinite(width) && width > 0 ? width : 0,
+      height: Number.isFinite(height) && height > 0 ? height : 0,
+      bitrate: Number.isFinite(bitrate) && bitrate > 0 ? bitrate : 0,
+      name: String(level.name || attrs.NAME || "").trim(),
+    };
+  }
+
+  function normalizeRequestedQualityLevel(levelIndex, levels = qualityLevels) {
+    const normalized = Number(levelIndex);
+    if (!Number.isFinite(normalized) || normalized < 0) {
+      return -1;
+    }
+    const requested = Math.floor(normalized);
+    return levels.some((level) => level.index === requested) ? requested : -1;
+  }
+
+  function publishQualityLevels() {
+    onQualityLevelsChanged({
+      levels: qualityLevels,
+      selectedLevel: selectedQualityLevel,
+      activeLevel: activeQualityLevel,
+    });
+  }
+
+  function resetQualityLevels() {
+    qualityLevels = [];
+    selectedQualityLevel = -1;
+    activeQualityLevel = -1;
+    publishQualityLevels();
+  }
 
   function loadHlsConstructor() {
     if (!hlsConstructorPromise) {
@@ -28,6 +77,7 @@ export function createHlsPlaybackController({
   function destroy() {
     pendingHlsJsPlaybackSource = "";
     if (!activeHlsController) {
+      resetQualityLevels();
       return;
     }
     try {
@@ -36,6 +86,7 @@ export function createHlsPlaybackController({
       // Ignore teardown failures while switching streams.
     }
     activeHlsController = null;
+    resetQualityLevels();
   }
 
   function isActive() {
@@ -44,6 +95,17 @@ export function createHlsPlaybackController({
 
   function isPendingSource(source) {
     return pendingHlsJsPlaybackSource === source;
+  }
+
+  function setQualityLevel(levelIndex) {
+    if (!activeHlsController || !qualityLevels.length) {
+      return false;
+    }
+    const normalized = normalizeRequestedQualityLevel(levelIndex);
+    selectedQualityLevel = normalized;
+    activeHlsController.currentLevel = normalized;
+    publishQualityLevels();
+    return true;
   }
 
   function play({
@@ -62,6 +124,7 @@ export function createHlsPlaybackController({
       hlsMeta?.input && requestedStartSeconds > 0 ? requestedStartSeconds : -1;
 
     if (hasNativeHlsPlaybackSupport()) {
+      resetQualityLevels();
       video.setAttribute("src", absoluteSource);
       video.load();
 
@@ -150,6 +213,9 @@ export function createHlsPlaybackController({
           });
           let hlsRecoveryAttempts = 0;
           activeHlsController = hls;
+          qualityLevels = [];
+          selectedQualityLevel = -1;
+          activeQualityLevel = -1;
 
           hls.on(HlsConstructor.Events.ERROR, (_event, data = {}) => {
             if (activeHlsController !== hls || !data?.fatal) {
@@ -202,11 +268,31 @@ export function createHlsPlaybackController({
           });
           hls.on(HlsConstructor.Events.MANIFEST_PARSED, () => {
             if (activeHlsController === hls) {
+              qualityLevels = Array.isArray(hls.levels)
+                ? hls.levels.map(normalizeQualityLevel)
+                : [];
+              selectedQualityLevel = normalizeRequestedQualityLevel(
+                getPreferredQualityLevel(qualityLevels),
+                qualityLevels,
+              );
+              hls.currentLevel = selectedQualityLevel;
+              publishQualityLevels();
               if (hlsStartPosition >= 0) {
                 hls.startLoad(hlsStartPosition);
               }
               void tryPlay();
             }
+          });
+          hls.on(HlsConstructor.Events.LEVEL_SWITCHED, (_event, data = {}) => {
+            if (activeHlsController !== hls) {
+              return;
+            }
+            const nextActiveLevel = Number(data.level);
+            activeQualityLevel =
+              Number.isFinite(nextActiveLevel) && nextActiveLevel >= 0
+                ? Math.floor(nextActiveLevel)
+                : -1;
+            publishQualityLevels();
           });
           hls.attachMedia(video);
         })
@@ -222,6 +308,7 @@ export function createHlsPlaybackController({
     }
 
     if (hlsMeta?.input) {
+      resetQualityLevels();
       const resumeAt =
         hlsStartPosition >= 0
           ? hlsStartPosition
@@ -244,6 +331,7 @@ export function createHlsPlaybackController({
     }
 
     handleHlsPlaybackFailure("This browser cannot play the HLS stream.");
+    resetQualityLevels();
     return true;
   }
 
@@ -251,6 +339,7 @@ export function createHlsPlaybackController({
     destroy,
     isActive,
     isPendingSource,
+    setQualityLevel,
     play,
   };
 }
