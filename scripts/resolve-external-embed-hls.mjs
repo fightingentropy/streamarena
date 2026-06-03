@@ -46,9 +46,6 @@ const videasyServerNames = new Set([
   "SAGE",
   "BREACH",
   "VYSE",
-  "KILLJOY",
-  "FADE",
-  "OMEN",
   "RAZE",
 ]);
 
@@ -92,6 +89,7 @@ function isAllowedRequestUrl(value) {
       host === "storm.vodvidl.site" ||
       host === "easy.speedsterwave.app" ||
       host === "easy.nightspeedster.app" ||
+      host === "hello.mousedoor.com" ||
       host === "yoru.midwesteagle.com" ||
       host === "typhoontigertribe.net"
     );
@@ -104,16 +102,43 @@ function isStreamPlaylistUrl(value) {
   try {
     const url = new URL(value);
     return (
-      (url.hostname.toLowerCase() === "easy.speedsterwave.app" ||
-        url.hostname.toLowerCase() === "easy.nightspeedster.app" ||
-        url.hostname.toLowerCase() === "yoru.midwesteagle.com" ||
-        url.hostname.toLowerCase() === "storm.vodvidl.site" ||
-        url.hostname.toLowerCase() === "typhoontigertribe.net") &&
+      url.protocol === "https:" &&
+      isPublicHlsHostname(url.hostname) &&
       url.pathname.toLowerCase().endsWith(".m3u8")
     );
   } catch {
     return false;
   }
+}
+
+function isPublicHlsHostname(value) {
+  const host = String(value || "").trim().replace(/\.$/, "").toLowerCase();
+  if (
+    !host ||
+    host.includes(":") ||
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal") ||
+    isIpv4Hostname(host)
+  ) {
+    return false;
+  }
+  return (
+    host.includes(".") &&
+    !host.startsWith(".") &&
+    !host.endsWith(".") &&
+    !host.includes("..") &&
+    /^[a-z0-9.-]+$/.test(host)
+  );
+}
+
+function isIpv4Hostname(host) {
+  const parts = host.split(".");
+  return (
+    parts.length === 4 &&
+    parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255)
+  );
 }
 
 function normalizeReferer(value, fallback) {
@@ -279,16 +304,20 @@ async function resolveWithPlaywrightBrowser() {
   playerPageUrl = normalizeReferer(page.url(), embedUrl);
 
   const deadline = Date.now() + timeoutMs;
-  let clicked = false;
+  let activationAttempts = 0;
+  let nextActivationAt = Date.now() + 2500;
   while (!resolvedUrl && Date.now() < deadline) {
     await captureResolvedPlaylistFromPage(page);
     if (resolvedUrl) break;
-    if (!clicked && Date.now() + 2500 < deadline) {
-      await delay(2500);
-      if (!resolvedUrl) {
-        clicked = true;
-        await activateEmbeddedPlayer(page);
-      }
+    const now = Date.now();
+    if (
+      activationAttempts < 5 &&
+      now >= nextActivationAt &&
+      now + 750 < deadline
+    ) {
+      activationAttempts += 1;
+      await activateEmbeddedPlayer(page);
+      nextActivationAt = Date.now() + 3000;
       continue;
     }
     await delay(250);

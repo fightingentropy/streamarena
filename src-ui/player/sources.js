@@ -160,8 +160,9 @@ export function isSourceOptionLikelyContainer(option = {}, container = "") {
 }
 
 /**
- * Determine whether a source is an iframe/embed handoff instead of a torrent
- * file. These are already player-ready, so keep them easy to reach.
+ * Determine whether a source is a player-ready handoff instead of a torrent
+ * file. These are already playable or proxied for the browser, so keep them
+ * easy to reach.
  *
  * @param {object} option
  * @returns {boolean}
@@ -170,7 +171,7 @@ export function isSourceOptionEmbed(option = {}) {
   const container = String(option?.container || "")
     .trim()
     .toLowerCase();
-  return container === "iframe" || container === "embed";
+  return container === "iframe" || container === "embed" || container === "hls";
 }
 
 // -------------------------------------------------------------------------

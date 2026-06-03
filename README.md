@@ -137,10 +137,11 @@ Playback flow for TMDB titles:
 
 External movie/TV embed stack:
 
-- Default order: VidEasy Yoru native HLS -> VidEasy default native HLS -> VidLink native HLS -> Real-Debrid -> local torrent/cache.
-- VidEasy embeds are built from `https://player.videasy.net/movie/...` or `/tv/...`; extracted HLS playlist hosts include `yoru.midwesteagle.com`, `easy.speedsterwave.app`, and `easy.nightspeedster.app`.
+- Default order: VidEasy Yoru native HLS -> VidEasy default native HLS -> VidLink native HLS -> external iframe fallback -> Real-Debrid -> local torrent/cache.
+- Selectable VidEasy server sources include Yoru, Neon, Cypher, Sage, Breach, Vyse, and Raze, with their original/alternate audio hints shown in the player server menu. Only Yoru and the default VidEasy source are part of automatic external fallback.
+- VidEasy embeds are built from `https://player.videasy.net/movie/...` or `/tv/...`; extracted HLS playlists are accepted on public HTTPS hosts discovered by the trusted resolver.
 - VidLink embeds are built from `https://vidlink.pro/movie/...` or `/tv/...`; extracted HLS playlist hosts include `storm.vodvidl.site` and `typhoontigertribe.net`.
-- Native external HLS is resolved by `scripts/resolve-external-embed-hls.mjs` through Playwright in development. The mini deploy copies this helper to `bin/resolve-external-embed-hls.mjs` and keeps Playwright under `~/.local/share/netflix-node` outside the app runtime tree. The backend only accepts VidEasy/VidLink embed URLs and only accepts `.m3u8` outputs on the known HLS hosts above.
+- Native external HLS is resolved by `scripts/resolve-external-embed-hls.mjs` through Playwright in development. The mini deploy copies this helper to `bin/resolve-external-embed-hls.mjs` and keeps Playwright under `~/.local/share/netflix-node` outside the app runtime tree. The backend only accepts VidEasy/VidLink embed URLs, accepts public HTTPS `.m3u8` outputs discovered by that trusted resolver, and signs those proxy URLs before playback.
 - Native external HLS playback is proxied through protected `/api/live/hls.m3u8` and `/api/live/hls-resource` so playlist child URLs, segment URLs, and required referers stay under backend control.
 - Iframe-only movie/TV providers are intentionally excluded so playback stays inside the app's own controls.
 - Older/failed and iframe-only providers such as VidKing, 2Embed, VidSrc, VidNest, AutoEmbed, SuperEmbed, Embed.su, and MoviesAPI are intentionally not part of the current stack.
@@ -438,6 +439,7 @@ Embed/live resolver helpers:
 - `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs` when present, otherwise `bin/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable native external HLS extraction.
 - `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - per-provider timeout budget for VidEasy/VidLink native HLS extraction; default 30000.
 - `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS` - total native HLS extraction budget before falling back to the normal resolver stack; default 45000.
+- `LIVE_HLS_PROXY_SECRET` - optional shared signing secret for dynamic external HLS proxy URLs; generated at startup when omitted. Set this for multi-instance deployments so signed URLs survive instance changes.
 - `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs` when present, otherwise `bin/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
 - `MATCHSTREAM_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-matchstream-hls.mjs` when present, otherwise `bin/resolve-matchstream-hls.mjs`; set to `0`/`off` to disable.
 - `SPORTS_RESOLVER_MAX_CONCURRENT` - max concurrent sports Playwright HLS resolver jobs; default 2.
@@ -449,8 +451,8 @@ Embed/live resolver helpers:
 Supported movie/TV native HLS hosts:
 
 - Native HLS embeds: `player.videasy.net`, `vidlink.pro`.
-- Native HLS playlist outputs: `yoru.midwesteagle.com`, `easy.speedsterwave.app`, `easy.nightspeedster.app`, `storm.vodvidl.site`, `typhoontigertribe.net`.
-- The native resolver does not accept arbitrary embed URLs or arbitrary `.m3u8` hosts.
+- Native HLS playlist outputs: public HTTPS `.m3u8` URLs discovered from the trusted VidEasy/VidLink resolver. Localhost, IP-literal, and internal-style hosts are rejected.
+- The protected live HLS proxy does not accept arbitrary user-supplied `.m3u8` hosts; dynamic external hosts require resolver-signed proxy URLs.
 
 Remux/HLS:
 
@@ -761,6 +763,7 @@ Movie/TV external embed fails:
 - Install Playwright Chromium with `scripts/deploy-mini.sh` or, for local development, `bun run bench:playback:install`.
 - Check `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT`, `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS`, and `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS`.
 - Confirm the host is one of the supported native providers: VidEasy or VidLink.
+- If running multiple backend instances, set a shared `LIVE_HLS_PROXY_SECRET` so resolver-signed HLS URLs verify on every instance.
 - If a provider needs a VPN/proxy, set `EXTERNAL_EMBED_BROWSER_PROXY`; if server outbound requests also need the proxy, set `OUTBOUND_HTTP_PROXY`.
 
 Live sports stream fails:
@@ -816,5 +819,5 @@ Current cleanup state:
 - The old one-off Interstellar mini helper scripts have been removed.
 - `scripts/install-mini-agents.sh` removes any stale hero-preview LaunchAgent, helper, manifest, deployed script, and cached preview folder from the Mac mini.
 - `scripts/check-mini.sh` now validates only the current maintenance agents: log rotation, disk monitor, and watchdog.
-- External movie/TV fallback cleanup is complete: only VidEasy native HLS, VidEasy Yoru native HLS, and VidLink native HLS remain in the active provider stack.
+- External movie/TV fallback cleanup is complete: VidEasy/VidLink native HLS remains the active provider stack; VidEasy's named server sources are selectable, and external iframe is kept as a last-resort player handoff when native HLS extraction fails.
 - Dead external providers and experiment knobs from the earlier investigation have been removed from resolver/provider lists, proxy allowlists, tests, and `.env.example`.

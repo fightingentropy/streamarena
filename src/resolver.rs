@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -265,6 +266,7 @@ struct ExternalEmbedServer {
     id: &'static str,
     label: &'static str,
     quality_label: &'static str,
+    detail_label: &'static str,
     priority: i64,
 }
 
@@ -300,12 +302,57 @@ const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
     },
 ];
 
-const VIDEASY_EXTERNAL_EMBED_SERVERS: &[ExternalEmbedServer] = &[ExternalEmbedServer {
-    id: "YORU",
-    label: "Yoru",
-    quality_label: "4K",
-    priority: 0,
-}];
+const VIDEASY_EXTERNAL_EMBED_SERVERS: &[ExternalEmbedServer] = &[
+    ExternalEmbedServer {
+        id: "YORU",
+        label: "Yoru",
+        quality_label: "4K",
+        detail_label: "Movies only, may have 4K",
+        priority: 0,
+    },
+    ExternalEmbedServer {
+        id: "NEON",
+        label: "Neon",
+        quality_label: "HLS",
+        detail_label: "Original audio",
+        priority: 10,
+    },
+    ExternalEmbedServer {
+        id: "CYPHER",
+        label: "Cypher",
+        quality_label: "HLS",
+        detail_label: "Original audio",
+        priority: 11,
+    },
+    ExternalEmbedServer {
+        id: "SAGE",
+        label: "Sage",
+        quality_label: "HLS",
+        detail_label: "Original audio",
+        priority: 12,
+    },
+    ExternalEmbedServer {
+        id: "BREACH",
+        label: "Breach",
+        quality_label: "HLS",
+        detail_label: "Original audio",
+        priority: 13,
+    },
+    ExternalEmbedServer {
+        id: "VYSE",
+        label: "Vyse",
+        quality_label: "HLS",
+        detail_label: "Original audio",
+        priority: 14,
+    },
+    ExternalEmbedServer {
+        id: "RAZE",
+        label: "Raze",
+        quality_label: "HLS",
+        detail_label: "Portuguese audio",
+        priority: 15,
+    },
+];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ResolvedSource {
@@ -975,6 +1022,7 @@ impl ResolverService {
                 provider,
                 &preferences,
                 false,
+                &self.config.live_hls_proxy_secret,
             )
             .await
             {
@@ -998,6 +1046,7 @@ impl ResolverService {
                     provider,
                     &preferences,
                     true,
+                    &self.config.live_hls_proxy_secret,
                 )
                 .await
                 {
@@ -1328,6 +1377,7 @@ impl ResolverService {
                 provider,
                 &preferences,
                 false,
+                &self.config.live_hls_proxy_secret,
             )
             .await
             {
@@ -1351,6 +1401,7 @@ impl ResolverService {
                     provider,
                     &preferences,
                     true,
+                    &self.config.live_hls_proxy_secret,
                 )
                 .await
                 {
@@ -4684,7 +4735,7 @@ fn build_external_embed_source_summaries(metadata: &ResolveMetadata) -> Vec<Sour
                 container: "hls".to_owned(),
                 seeders: 0,
                 size: String::new(),
-                releaseGroup: String::new(),
+                releaseGroup: external_embed_source_detail_label(source).to_owned(),
                 score: 1_000_000 - external_embed_source_priority(source),
             })
         })
@@ -4734,7 +4785,14 @@ fn external_embed_hls_source_priority(source: ExternalEmbedSource) -> u32 {
 }
 
 fn is_default_external_embed_hls_fallback_source(source: ExternalEmbedSource) -> bool {
-    matches!(source.provider.id, "videasy" | "vidlink")
+    match source.provider.id {
+        "videasy" => source
+            .server
+            .map(|server| server.id == "YORU")
+            .unwrap_or(true),
+        "vidlink" => source.server.is_none(),
+        _ => false,
+    }
 }
 
 fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) -> bool {
@@ -4757,6 +4815,7 @@ async fn build_external_embed_resolved_playback_payload(
     source: ExternalEmbedSource,
     preferences: &ResolvePreferences,
     allow_native_fallback: bool,
+    live_hls_proxy_secret: &str,
 ) -> Option<Value> {
     let _ = external_embed_playback_url(source, metadata, preferences)?;
     let candidates = external_embed_hls_candidate_sources(source, metadata, allow_native_fallback);
@@ -4785,9 +4844,10 @@ async fn build_external_embed_resolved_playback_payload(
         let Some(hls_source) = hls_result else {
             continue;
         };
-        let playable_url = crate::live::build_live_hls_playback_source(
+        let playable_url = crate::live::build_trusted_external_embed_hls_playback_source(
             hls_source.playback_url.as_str(),
             hls_source.referer.as_deref(),
+            live_hls_proxy_secret,
         );
         return Some(build_external_embed_resolved_payload_with_playable_url(
             metadata,
@@ -4798,7 +4858,13 @@ async fn build_external_embed_resolved_playback_payload(
         ));
     }
 
-    None
+    let embed_url = external_embed_playback_url(source, metadata, preferences)?;
+    Some(build_external_embed_resolved_payload_with_iframe(
+        metadata,
+        source,
+        preferences,
+        embed_url,
+    ))
 }
 
 fn external_embed_hls_candidate_sources(
@@ -4861,6 +4927,43 @@ fn build_external_embed_resolved_payload_with_playable_url(
         },
         "metadata": response_metadata
     })
+}
+
+fn build_external_embed_resolved_payload_with_iframe(
+    metadata: &ResolveMetadata,
+    source: ExternalEmbedSource,
+    preferences: &ResolvePreferences,
+    embed_url: String,
+) -> Value {
+    let iframe_source = build_live_iframe_playback_source(&embed_url);
+    let filename = format!("{} iframe", external_embed_source_filename(source));
+    build_external_embed_resolved_payload_with_playable_url(
+        metadata,
+        source,
+        preferences,
+        iframe_source,
+        embed_url,
+    )
+    .as_object()
+    .map(|payload| {
+        let mut payload = payload.clone();
+        payload.insert("filename".to_owned(), json!(filename));
+        if let Some(metadata) = payload
+            .get_mut("metadata")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            metadata.insert("subtitleTargetName".to_owned(), json!(filename));
+            metadata.insert("subtitleTargetFilename".to_owned(), json!(filename));
+        }
+        Value::Object(payload)
+    })
+    .unwrap_or_else(|| json!({}))
+}
+
+fn build_live_iframe_playback_source(embed_url: &str) -> String {
+    let encoded: String =
+        url::form_urlencoded::byte_serialize(embed_url.trim().as_bytes()).collect();
+    format!("live-iframe:{encoded}")
 }
 
 fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> Option<String> {
@@ -4962,6 +5065,13 @@ fn external_embed_source_quality_label(source: ExternalEmbedSource) -> &'static 
         .server
         .map(|server| server.quality_label)
         .unwrap_or("HLS")
+}
+
+fn external_embed_source_detail_label(source: ExternalEmbedSource) -> &'static str {
+    source
+        .server
+        .map(|server| server.detail_label)
+        .unwrap_or("")
 }
 
 fn external_embed_source_filename(source: ExternalEmbedSource) -> String {
@@ -5103,15 +5213,28 @@ fn is_supported_external_embed_hls_url(url: &Url) -> bool {
         return false;
     };
     let is_m3u8 = url.path().to_ascii_lowercase().ends_with(".m3u8");
-    is_m3u8
-        && matches!(
-            host.as_str(),
-            "easy.speedsterwave.app"
-                | "easy.nightspeedster.app"
-                | "yoru.midwesteagle.com"
-                | "storm.vodvidl.site"
-                | "typhoontigertribe.net"
-        )
+    is_m3u8 && is_public_external_embed_hls_hostname(&host)
+}
+
+fn is_public_external_embed_hls_hostname(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty()
+        || host.contains(':')
+        || host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host.parse::<Ipv4Addr>().is_ok()
+    {
+        return false;
+    }
+    host.contains('.')
+        && !host.starts_with('.')
+        && !host.ends_with('.')
+        && !host.contains("..")
+        && host
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-'))
 }
 
 fn normalize_external_embed_hls_referer(value: &str) -> Option<String> {
@@ -6716,19 +6839,21 @@ mod tests {
         DiscoveryBehaviorHints, DiscoveryStream, PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR,
         ResolveFilters, ResolveMetadata, ResolvePreferences, ResolvedSource, ResolverExternalGuard,
         ResolverMetrics, ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters,
-        SourceHealthStats, build_external_embed_source_summaries, build_movie_resolve_lock_key,
-        build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
-        build_torrentio_stream_cache_key, build_torznab_request_url,
+        SourceHealthStats, build_external_embed_resolved_payload_with_iframe,
+        build_external_embed_source_summaries, build_live_iframe_playback_source,
+        build_movie_resolve_lock_key, build_playback_session_key_for_metadata,
+        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_torznab_request_url,
         build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
         compute_source_health_score, compute_torrentio_cache_deadlines,
         default_external_embed_source, does_filename_likely_match_movie,
         external_embed_hls_candidate_sources, external_embed_source_for_source_hash,
         external_embed_source_hash, external_embed_sources, external_embed_url,
         extract_info_hash_from_magnet, is_persistent_source_resolve_error,
-        is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
-        normalize_allowed_formats, normalize_resolved_source_for_software_decode,
-        normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
-        now_ms, parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
+        is_public_external_embed_hls_hostname, is_supported_external_embed_hls_embed_url,
+        is_supported_external_embed_hls_url, normalize_allowed_formats,
+        normalize_resolved_source_for_software_decode, normalize_resolver_provider,
+        normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
+        parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
         parse_torznab_xml, playback_session_matches_preferred_container,
         playback_session_matches_preferred_quality, playback_session_matches_source_hash,
         ready_info_has_selected_file_id, select_fastest_race_candidates,
@@ -6753,13 +6878,15 @@ mod tests {
         let metadata = sample_movie_metadata();
         let sources = build_external_embed_source_summaries(&metadata);
 
-        // VidEasy Yoru stays first as the first native HLS candidate.
-        assert_eq!(sources.len(), 3);
+        // VidEasy servers are selectable, with Yoru first as the preferred 4K
+        // native HLS candidate.
+        assert_eq!(sources.len(), 9);
         assert_eq!(sources[0].primary, "Yoru");
         assert_eq!(sources[0].provider, "VidEasy");
         assert_eq!(sources[0].filename, "VidEasy Yoru embed");
         assert_eq!(sources[0].qualityLabel, "4K");
         assert_eq!(sources[0].container, "hls");
+        assert_eq!(sources[0].releaseGroup, "Movies only, may have 4K");
         assert_eq!(
             normalize_source_hash(&sources[0].sourceHash),
             sources[0].sourceHash
@@ -6777,6 +6904,15 @@ mod tests {
             external_embed_source_hash(source, &metadata),
             sources[0].sourceHash
         );
+        assert_eq!(sources[1].primary, "Neon");
+        assert_eq!(sources[1].provider, "VidEasy");
+        assert_eq!(sources[1].filename, "VidEasy Neon embed");
+        assert_eq!(sources[1].qualityLabel, "HLS");
+        assert_eq!(sources[1].releaseGroup, "Original audio");
+        let neon_source = external_embed_source_for_source_hash(&metadata, &sources[1].sourceHash)
+            .expect("matching neon external provider");
+        assert_eq!(neon_source.provider.id, "videasy");
+        assert_eq!(neon_source.server.map(|server| server.id), Some("NEON"));
 
         let vidlink_source = external_embed_sources()
             .into_iter()
@@ -6849,10 +6985,59 @@ mod tests {
         assert_eq!(source_ids.get(1), Some(&("videasy", "default")));
         assert_eq!(source_ids.get(2), Some(&("vidlink", "default")));
         assert_eq!(source_ids.len(), 3);
+
+        let neon_source = external_embed_sources()
+            .into_iter()
+            .find(|source| {
+                source.provider.id == "videasy"
+                    && source
+                        .server
+                        .map(|server| server.id == "NEON")
+                        .unwrap_or(false)
+            })
+            .expect("neon source");
+        let pinned_candidates = external_embed_hls_candidate_sources(neon_source, &metadata, false);
+        assert_eq!(pinned_candidates, vec![neon_source]);
     }
 
     #[test]
-    fn external_embed_hls_resolver_accepts_known_hosts_only() {
+    fn external_embed_iframe_fallback_builds_player_source() {
+        let metadata = sample_tv_metadata();
+        let source = default_external_embed_source(&metadata).expect("default embed source");
+        let embed_url = external_embed_url(source, &metadata).expect("embed url");
+        let preferences = ResolvePreferences {
+            audio_lang: "en".to_owned(),
+            subtitle_lang: String::new(),
+            quality: "auto".to_owned(),
+        };
+
+        let payload = build_external_embed_resolved_payload_with_iframe(
+            &metadata,
+            source,
+            &preferences,
+            embed_url.clone(),
+        );
+
+        assert_eq!(payload["resolverProvider"], "external-embed");
+        assert_eq!(payload["sourceInput"], embed_url);
+        assert_eq!(
+            payload["playableUrl"],
+            build_live_iframe_playback_source(payload["sourceInput"].as_str().unwrap())
+        );
+        assert!(
+            payload["filename"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with(" iframe")
+        );
+        assert_eq!(
+            payload["metadata"]["subtitleTargetFilename"],
+            payload["filename"]
+        );
+    }
+
+    #[test]
+    fn external_embed_hls_resolver_accepts_public_playlist_hosts() {
         let videasy_embed: url::Url = "https://player.videasy.net/movie/1368166?color=ffd700"
             .parse()
             .expect("videasy embed");
@@ -6868,12 +7053,24 @@ mod tests {
         let yoru_hls: url::Url = "https://yoru.midwesteagle.com/video.m3u8"
             .parse()
             .expect("yoru hls url");
+        let mousedoor_hls: url::Url = "https://hello.mousedoor.com/example/index.m3u8"
+            .parse()
+            .expect("mousedoor hls url");
         let vidlink_hls: url::Url = "https://storm.vodvidl.site/example/index.m3u8"
             .parse()
             .expect("vidlink hls url");
-        let unsupported_hls: url::Url = "https://example.com/example/index.m3u8"
+        let rotated_hls: url::Url = "https://new-videasy-cdn.example.com/example/index.m3u8"
             .parse()
-            .expect("unsupported hls url");
+            .expect("rotated hls url");
+        let unsupported_local_hls: url::Url = "https://localhost/example/index.m3u8"
+            .parse()
+            .expect("unsupported local hls url");
+        let unsupported_ip_hls: url::Url = "https://127.0.0.1/example/index.m3u8"
+            .parse()
+            .expect("unsupported ip hls url");
+        let unsupported_non_hls: url::Url = "https://cdn.example.com/example/video.mp4"
+            .parse()
+            .expect("unsupported non-hls url");
 
         assert!(is_supported_external_embed_hls_embed_url(&videasy_embed));
         assert!(is_supported_external_embed_hls_embed_url(&vidlink_embed));
@@ -6882,8 +7079,28 @@ mod tests {
         ));
         assert!(is_supported_external_embed_hls_url(&hls));
         assert!(is_supported_external_embed_hls_url(&yoru_hls));
+        assert!(is_supported_external_embed_hls_url(&mousedoor_hls));
         assert!(is_supported_external_embed_hls_url(&vidlink_hls));
-        assert!(!is_supported_external_embed_hls_url(&unsupported_hls));
+        assert!(is_supported_external_embed_hls_url(&rotated_hls));
+        assert!(!is_supported_external_embed_hls_url(&unsupported_local_hls));
+        assert!(!is_supported_external_embed_hls_url(&unsupported_ip_hls));
+        assert!(!is_supported_external_embed_hls_url(&unsupported_non_hls));
+    }
+
+    #[test]
+    fn external_embed_public_hls_hostname_rejects_local_or_malformed_hosts() {
+        assert!(is_public_external_embed_hls_hostname("media.example.com"));
+        assert!(is_public_external_embed_hls_hostname("cdn-1.example.net"));
+        assert!(!is_public_external_embed_hls_hostname("localhost"));
+        assert!(!is_public_external_embed_hls_hostname("media.local"));
+        assert!(!is_public_external_embed_hls_hostname(
+            "internal.service.internal"
+        ));
+        assert!(!is_public_external_embed_hls_hostname("127.0.0.1"));
+        assert!(!is_public_external_embed_hls_hostname("example..com"));
+        assert!(!is_public_external_embed_hls_hostname(
+            "bad_host.example.com"
+        ));
     }
 
     #[test]

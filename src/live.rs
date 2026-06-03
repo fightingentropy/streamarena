@@ -1,8 +1,13 @@
 use std::collections::BTreeMap;
+use std::net::Ipv4Addr;
 
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Method, Response, Uri};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use url::Url;
 use url::form_urlencoded::byte_serialize;
 
@@ -11,6 +16,9 @@ use crate::process::to_absolute_playback_url;
 use crate::routes::AppState;
 
 const LIVE_HLS_EDGE_SEGMENT_COUNT: usize = 8;
+const LIVE_HLS_EXTERNAL_EMBED_PARAM: &str = "externalEmbed";
+const LIVE_HLS_SIGNATURE_PARAM: &str = "sig";
+const LIVE_HLS_SIGNATURE_CONTEXT: &[u8] = b"netflix-live-hls-v1";
 const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "liveproduseast.akamaized.net",
     "liveproduseast.global.ssl.fastly.net",
@@ -27,6 +35,7 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "zohanayaan.com",
     "easy.speedsterwave.app",
     "easy.nightspeedster.app",
+    "hello.mousedoor.com",
     "yoru.midwesteagle.com",
     "www.cloudflare-terms-of-service-abuse.com",
     "storm.vodvidl.site",
@@ -34,9 +43,18 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "ttvnw.net",
 ];
 
+type HmacSha256 = Hmac<Sha256>;
+
 struct LiveHlsRequest {
     source_url: Url,
     referer: Option<String>,
+    trusted_external_embed: bool,
+}
+
+#[derive(Clone, Copy)]
+enum LiveHlsRequestKind {
+    Playlist,
+    Resource,
 }
 
 pub async fn live_hls_handler(
@@ -47,7 +65,7 @@ pub async fn live_hls_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    let live_request = live_hls_request_input(&state, &uri)?;
+    let live_request = live_hls_request_input(&state, &uri, LiveHlsRequestKind::Playlist)?;
 
     let mut request = state
         .http_client
@@ -67,7 +85,10 @@ pub async fn live_hls_handler(
         )));
     }
     let final_url = response.url().clone();
-    if !is_allowed_live_hls_url(&final_url) {
+    if !is_allowed_live_hls_url(&final_url)
+        && !(live_request.trusted_external_embed
+            && is_public_external_embed_hls_proxy_url(&final_url, LiveHlsRequestKind::Playlist))
+    {
         return Err(ApiError::bad_gateway(
             "Live HLS playlist redirected to an unsupported host.",
         ));
@@ -76,8 +97,15 @@ pub async fn live_hls_handler(
         .text()
         .await
         .map_err(|_| ApiError::bad_gateway("Live HLS playlist response could not be read."))?;
-    let rewritten =
-        rewrite_live_hls_playlist(&final_url, &playlist, live_request.referer.as_deref());
+    let trusted_secret = live_request
+        .trusted_external_embed
+        .then_some(state.config.live_hls_proxy_secret.as_str());
+    let rewritten = rewrite_live_hls_playlist(
+        &final_url,
+        &playlist,
+        live_request.referer.as_deref(),
+        trusted_secret,
+    );
 
     Response::builder()
         .status(200)
@@ -98,7 +126,7 @@ pub async fn live_hls_resource_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    let live_request = live_hls_request_input(&state, &uri)?;
+    let live_request = live_hls_request_input(&state, &uri, LiveHlsRequestKind::Resource)?;
     let mut request = state
         .http_client
         .get(live_request.source_url.clone())
@@ -117,7 +145,10 @@ pub async fn live_hls_resource_handler(
         )));
     }
     let final_url = response.url().clone();
-    if !is_allowed_live_hls_url(&final_url) {
+    if !is_allowed_live_hls_url(&final_url)
+        && !(live_request.trusted_external_embed
+            && is_public_external_embed_hls_proxy_url(&final_url, LiveHlsRequestKind::Resource))
+    {
         return Err(ApiError::bad_gateway(
             "Live HLS resource redirected to an unsupported host.",
         ));
@@ -155,7 +186,11 @@ fn absolute_request_url(state: &AppState, uri: &Uri) -> AppResult<Url> {
     .map_err(|error| ApiError::internal(error.to_string()))
 }
 
-fn live_hls_request_input(state: &AppState, uri: &Uri) -> AppResult<LiveHlsRequest> {
+fn live_hls_request_input(
+    state: &AppState,
+    uri: &Uri,
+    kind: LiveHlsRequestKind,
+) -> AppResult<LiveHlsRequest> {
     let params = query_pairs(uri.query().unwrap_or_default());
     let request_url = absolute_request_url(state, uri)?;
     let input = to_absolute_playback_url(
@@ -167,15 +202,23 @@ fn live_hls_request_input(state: &AppState, uri: &Uri) -> AppResult<LiveHlsReque
     }
     let source_url =
         Url::parse(&input).map_err(|_| ApiError::bad_request("Invalid live HLS URL."))?;
-    if !is_allowed_live_hls_url(&source_url) {
-        return Err(ApiError::bad_request("Unsupported live HLS URL."));
-    }
     let referer = params
         .get("referer")
         .and_then(|value| normalize_hls_referer(value));
+    let trusted_external_embed = is_trusted_external_embed_hls_request(
+        &source_url,
+        kind,
+        referer.as_deref(),
+        &params,
+        &state.config.live_hls_proxy_secret,
+    );
+    if !is_allowed_live_hls_url(&source_url) && !trusted_external_embed {
+        return Err(ApiError::bad_request("Unsupported live HLS URL."));
+    }
     Ok(LiveHlsRequest {
         source_url,
         referer,
+        trusted_external_embed,
     })
 }
 
@@ -202,23 +245,66 @@ fn encode_query_value(value: &str) -> String {
     byte_serialize(value.as_bytes()).collect::<String>()
 }
 
-pub fn build_live_hls_playback_source(input: &str, referer: Option<&str>) -> String {
-    live_hls_proxy_playlist_url(input, referer)
+pub fn build_trusted_external_embed_hls_playback_source(
+    input: &str,
+    referer: Option<&str>,
+    live_hls_proxy_secret: &str,
+) -> String {
+    live_hls_proxy_playlist_url_with_trust(input, referer, Some(live_hls_proxy_secret))
 }
 
-fn live_hls_proxy_playlist_url(input: &str, referer: Option<&str>) -> String {
-    live_hls_proxy_url("/api/live/hls.m3u8", input, referer)
+fn live_hls_proxy_playlist_url_with_trust(
+    input: &str,
+    referer: Option<&str>,
+    trusted_external_embed_secret: Option<&str>,
+) -> String {
+    live_hls_proxy_url(
+        "/api/live/hls.m3u8",
+        input,
+        referer,
+        trusted_external_embed_secret,
+    )
 }
 
-fn live_hls_proxy_resource_url(input: &str, referer: Option<&str>) -> String {
-    live_hls_proxy_url("/api/live/hls-resource", input, referer)
+fn live_hls_proxy_resource_url_with_trust(
+    input: &str,
+    referer: Option<&str>,
+    trusted_external_embed_secret: Option<&str>,
+) -> String {
+    live_hls_proxy_url(
+        "/api/live/hls-resource",
+        input,
+        referer,
+        trusted_external_embed_secret,
+    )
 }
 
-fn live_hls_proxy_url(path: &str, input: &str, referer: Option<&str>) -> String {
-    let mut url = format!("{path}?input={}", encode_query_value(input));
-    if let Some(referer) = referer.and_then(normalize_hls_referer) {
+fn live_hls_proxy_url(
+    path: &str,
+    input: &str,
+    referer: Option<&str>,
+    trusted_external_embed_secret: Option<&str>,
+) -> String {
+    let input = trusted_external_embed_secret
+        .map(|_| normalize_live_hls_signature_input(input))
+        .unwrap_or_else(|| input.to_owned());
+    let normalized_referer = referer.and_then(normalize_hls_referer);
+    let mut url = format!("{path}?input={}", encode_query_value(&input));
+    if let Some(referer) = normalized_referer.as_deref() {
         url.push_str("&referer=");
         url.push_str(&encode_query_value(&referer));
+    }
+    if let Some(secret) = trusted_external_embed_secret
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let signature = sign_live_hls_proxy_url(&input, normalized_referer.as_deref(), secret);
+        url.push_str("&");
+        url.push_str(LIVE_HLS_EXTERNAL_EMBED_PARAM);
+        url.push_str("=1&");
+        url.push_str(LIVE_HLS_SIGNATURE_PARAM);
+        url.push_str("=");
+        url.push_str(&encode_query_value(&signature));
     }
     url
 }
@@ -252,7 +338,118 @@ fn host_matches_allowed_live_hls_host(host: &str, allowed: &str) -> bool {
             .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
-fn rewrite_live_hls_playlist(base_url: &Url, playlist: &str, referer: Option<&str>) -> String {
+fn is_trusted_external_embed_hls_request(
+    source_url: &Url,
+    kind: LiveHlsRequestKind,
+    referer: Option<&str>,
+    params: &BTreeMap<String, String>,
+    live_hls_proxy_secret: &str,
+) -> bool {
+    if params
+        .get(LIVE_HLS_EXTERNAL_EMBED_PARAM)
+        .map(String::as_str)
+        != Some("1")
+    {
+        return false;
+    }
+    let Some(signature) = params.get(LIVE_HLS_SIGNATURE_PARAM) else {
+        return false;
+    };
+    if live_hls_proxy_secret.trim().is_empty()
+        || !is_public_external_embed_hls_proxy_url(source_url, kind)
+    {
+        return false;
+    }
+    verify_live_hls_proxy_url_signature(
+        source_url.as_str(),
+        referer,
+        signature,
+        live_hls_proxy_secret,
+    )
+}
+
+fn is_public_external_embed_hls_proxy_url(url: &Url, kind: LiveHlsRequestKind) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    if matches!(kind, LiveHlsRequestKind::Playlist)
+        && !url.path().to_ascii_lowercase().ends_with(".m3u8")
+    {
+        return false;
+    }
+    let Some(host) = url.host_str().map(|value| value.to_ascii_lowercase()) else {
+        return false;
+    };
+    is_public_hls_proxy_hostname(&host)
+}
+
+fn is_public_hls_proxy_hostname(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty()
+        || host.contains(':')
+        || host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host.parse::<Ipv4Addr>().is_ok()
+    {
+        return false;
+    }
+    host.contains('.')
+        && !host.starts_with('.')
+        && !host.ends_with('.')
+        && !host.contains("..")
+        && host
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-'))
+}
+
+fn sign_live_hls_proxy_url(
+    input: &str,
+    referer: Option<&str>,
+    live_hls_proxy_secret: &str,
+) -> String {
+    let mut mac = HmacSha256::new_from_slice(live_hls_proxy_secret.as_bytes())
+        .expect("HMAC accepts any key size");
+    mac.update(LIVE_HLS_SIGNATURE_CONTEXT);
+    mac.update(b"\0");
+    mac.update(input.as_bytes());
+    mac.update(b"\0");
+    mac.update(referer.unwrap_or_default().as_bytes());
+    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
+fn verify_live_hls_proxy_url_signature(
+    input: &str,
+    referer: Option<&str>,
+    signature: &str,
+    live_hls_proxy_secret: &str,
+) -> bool {
+    let Ok(signature_bytes) = URL_SAFE_NO_PAD.decode(signature.trim()) else {
+        return false;
+    };
+    let mut mac = HmacSha256::new_from_slice(live_hls_proxy_secret.as_bytes())
+        .expect("HMAC accepts any key size");
+    mac.update(LIVE_HLS_SIGNATURE_CONTEXT);
+    mac.update(b"\0");
+    mac.update(input.as_bytes());
+    mac.update(b"\0");
+    mac.update(referer.unwrap_or_default().as_bytes());
+    mac.verify_slice(&signature_bytes).is_ok()
+}
+
+fn normalize_live_hls_signature_input(input: &str) -> String {
+    Url::parse(input.trim())
+        .map(|url| url.to_string())
+        .unwrap_or_else(|_| input.trim().to_owned())
+}
+
+fn rewrite_live_hls_playlist(
+    base_url: &Url,
+    playlist: &str,
+    referer: Option<&str>,
+    trusted_external_embed_secret: Option<&str>,
+) -> String {
     let lines: Vec<&str> = playlist.lines().collect();
     let is_master_playlist = lines
         .iter()
@@ -262,10 +459,20 @@ fn rewrite_live_hls_playlist(base_url: &Url, playlist: &str, referer: Option<&st
         .any(|line| line.trim_start().starts_with("#EXTINF"));
 
     if is_master_playlist {
-        return rewrite_live_hls_master_playlist(base_url, &lines, referer);
+        return rewrite_live_hls_master_playlist(
+            base_url,
+            &lines,
+            referer,
+            trusted_external_embed_secret,
+        );
     }
     if is_media_playlist {
-        return rewrite_live_hls_media_playlist(base_url, &lines, referer);
+        return rewrite_live_hls_media_playlist(
+            base_url,
+            &lines,
+            referer,
+            trusted_external_embed_secret,
+        );
     }
     playlist.to_owned()
 }
@@ -274,6 +481,7 @@ fn rewrite_live_hls_master_playlist(
     base_url: &Url,
     lines: &[&str],
     referer: Option<&str>,
+    trusted_external_embed_secret: Option<&str>,
 ) -> String {
     let mut rewritten = Vec::with_capacity(lines.len());
     for raw_line in lines {
@@ -284,24 +492,37 @@ fn rewrite_live_hls_master_playlist(
         }
 
         if line.starts_with('#') {
-            let proxy_url_builder = if line.starts_with("#EXT-X-MEDIA:")
-                || line.starts_with("#EXT-X-I-FRAME-STREAM-INF:")
-            {
-                live_hls_proxy_playlist_url
-            } else {
-                live_hls_proxy_resource_url
-            };
             rewritten.push(rewrite_hls_uri_attribute(
                 base_url,
                 line,
                 referer,
-                proxy_url_builder,
+                |input, referer| {
+                    if line.starts_with("#EXT-X-MEDIA:")
+                        || line.starts_with("#EXT-X-I-FRAME-STREAM-INF:")
+                    {
+                        live_hls_proxy_playlist_url_with_trust(
+                            input,
+                            referer,
+                            trusted_external_embed_secret,
+                        )
+                    } else {
+                        live_hls_proxy_resource_url_with_trust(
+                            input,
+                            referer,
+                            trusted_external_embed_secret,
+                        )
+                    }
+                },
             ));
             continue;
         }
 
         if let Some(absolute_uri) = resolve_hls_uri(base_url, line) {
-            rewritten.push(live_hls_proxy_playlist_url(&absolute_uri, referer));
+            rewritten.push(live_hls_proxy_playlist_url_with_trust(
+                &absolute_uri,
+                referer,
+                trusted_external_embed_secret,
+            ));
         } else {
             rewritten.push(line.to_owned());
         }
@@ -313,6 +534,7 @@ fn rewrite_live_hls_media_playlist(
     base_url: &Url,
     lines: &[&str],
     referer: Option<&str>,
+    trusted_external_embed_secret: Option<&str>,
 ) -> String {
     let is_vod_playlist = lines.iter().any(|line| {
         let line = line.trim();
@@ -320,7 +542,12 @@ fn rewrite_live_hls_media_playlist(
             || line.eq_ignore_ascii_case("#EXT-X-PLAYLIST-TYPE:VOD")
     });
     if is_vod_playlist {
-        return rewrite_vod_hls_media_playlist(base_url, lines, referer);
+        return rewrite_vod_hls_media_playlist(
+            base_url,
+            lines,
+            referer,
+            trusted_external_embed_secret,
+        );
     }
 
     let mut header = Vec::new();
@@ -356,14 +583,26 @@ fn rewrite_live_hls_media_playlist(
                     base_url,
                     line,
                     referer,
-                    live_hls_proxy_resource_url,
+                    |input, referer| {
+                        live_hls_proxy_resource_url_with_trust(
+                            input,
+                            referer,
+                            trusted_external_embed_secret,
+                        )
+                    },
                 ));
             } else {
                 pending_block.push(rewrite_hls_uri_attribute(
                     base_url,
                     line,
                     referer,
-                    live_hls_proxy_resource_url,
+                    |input, referer| {
+                        live_hls_proxy_resource_url_with_trust(
+                            input,
+                            referer,
+                            trusted_external_embed_secret,
+                        )
+                    },
                 ));
             }
             continue;
@@ -371,7 +610,13 @@ fn rewrite_live_hls_media_playlist(
 
         saw_segment = true;
         let segment_uri = resolve_hls_uri(base_url, line)
-            .map(|absolute_uri| live_hls_proxy_resource_url(&absolute_uri, referer))
+            .map(|absolute_uri| {
+                live_hls_proxy_resource_url_with_trust(
+                    &absolute_uri,
+                    referer,
+                    trusted_external_embed_secret,
+                )
+            })
             .unwrap_or_else(|| line.to_owned());
         pending_block.push(segment_uri);
         segment_blocks.push(std::mem::take(&mut pending_block));
@@ -400,7 +645,12 @@ fn rewrite_live_hls_media_playlist(
     rewritten.join("\n")
 }
 
-fn rewrite_vod_hls_media_playlist(base_url: &Url, lines: &[&str], referer: Option<&str>) -> String {
+fn rewrite_vod_hls_media_playlist(
+    base_url: &Url,
+    lines: &[&str],
+    referer: Option<&str>,
+    trusted_external_embed_secret: Option<&str>,
+) -> String {
     let mut rewritten = Vec::with_capacity(lines.len());
     for raw_line in lines {
         let line = raw_line.trim_end();
@@ -414,25 +664,40 @@ fn rewrite_vod_hls_media_playlist(base_url: &Url, lines: &[&str], referer: Optio
                 base_url,
                 line,
                 referer,
-                live_hls_proxy_resource_url,
+                |input, referer| {
+                    live_hls_proxy_resource_url_with_trust(
+                        input,
+                        referer,
+                        trusted_external_embed_secret,
+                    )
+                },
             ));
             continue;
         }
 
         let segment_uri = resolve_hls_uri(base_url, line)
-            .map(|absolute_uri| live_hls_proxy_resource_url(&absolute_uri, referer))
+            .map(|absolute_uri| {
+                live_hls_proxy_resource_url_with_trust(
+                    &absolute_uri,
+                    referer,
+                    trusted_external_embed_secret,
+                )
+            })
             .unwrap_or_else(|| line.to_owned());
         rewritten.push(segment_uri);
     }
     rewritten.join("\n")
 }
 
-fn rewrite_hls_uri_attribute(
+fn rewrite_hls_uri_attribute<F>(
     base_url: &Url,
     line: &str,
     referer: Option<&str>,
-    proxy_url_builder: fn(&str, Option<&str>) -> String,
-) -> String {
+    proxy_url_builder: F,
+) -> String
+where
+    F: Fn(&str, Option<&str>) -> String,
+{
     let Some(uri_start) = line.find("URI=\"") else {
         return line.to_owned();
     };
@@ -457,7 +722,10 @@ fn rewrite_hls_uri_attribute(
 #[cfg(test)]
 mod tests {
     use super::{
-        host_matches_allowed_live_hls_host, is_allowed_live_hls_url, rewrite_live_hls_playlist,
+        LiveHlsRequestKind, build_trusted_external_embed_hls_playback_source,
+        host_matches_allowed_live_hls_host, is_allowed_live_hls_url,
+        is_public_external_embed_hls_proxy_url, is_trusted_external_embed_hls_request,
+        normalize_hls_referer, query_pairs, rewrite_live_hls_playlist,
     };
 
     #[test]
@@ -512,6 +780,9 @@ mod tests {
         let videasy_new_hls: url::Url = "https://easy.nightspeedster.app/example/index.m3u8"
             .parse()
             .expect("videasy new hls url");
+        let videasy_mousedoor_hls: url::Url = "https://hello.mousedoor.com/example/index.m3u8"
+            .parse()
+            .expect("videasy mousedoor hls url");
         let videasy_yoru_hls: url::Url = "https://yoru.midwesteagle.com/video.m3u8"
             .parse()
             .expect("videasy yoru hls url");
@@ -545,6 +816,7 @@ mod tests {
         assert!(is_allowed_live_hls_url(&matchstream_sports));
         assert!(is_allowed_live_hls_url(&videasy_hls));
         assert!(is_allowed_live_hls_url(&videasy_new_hls));
+        assert!(is_allowed_live_hls_url(&videasy_mousedoor_hls));
         assert!(is_allowed_live_hls_url(&videasy_yoru_hls));
         assert!(is_allowed_live_hls_url(&videasy_segment_redirect));
         assert!(is_allowed_live_hls_url(&vidlink_hls));
@@ -574,12 +846,91 @@ mod tests {
     }
 
     #[test]
+    fn trusted_external_embed_hls_signature_allows_public_rotated_hosts() {
+        let secret = "test-live-hls-proxy-secret-with-enough-length";
+        let referer = Some("https://player.videasy.net/tv/273240/1/4?color=ffd700");
+        let playback_url = build_trusted_external_embed_hls_playback_source(
+            "https://rotated-videasy-cdn.example.com/title/index.m3u8",
+            referer,
+            secret,
+        );
+        let uri: axum::http::Uri = playback_url.parse().expect("signed playback uri");
+        let params = query_pairs(uri.query().unwrap_or_default());
+        let source_url: url::Url = params
+            .get("input")
+            .expect("input param")
+            .parse()
+            .expect("source url");
+        let normalized_referer = params
+            .get("referer")
+            .and_then(|value| normalize_hls_referer(value));
+
+        assert!(!is_allowed_live_hls_url(&source_url));
+        assert!(is_trusted_external_embed_hls_request(
+            &source_url,
+            LiveHlsRequestKind::Playlist,
+            normalized_referer.as_deref(),
+            &params,
+            secret,
+        ));
+        assert!(!is_trusted_external_embed_hls_request(
+            &source_url,
+            LiveHlsRequestKind::Playlist,
+            normalized_referer.as_deref(),
+            &params,
+            "wrong-secret-with-enough-length",
+        ));
+    }
+
+    #[test]
+    fn trusted_external_embed_hls_rejects_local_or_non_playlist_urls() {
+        let secret = "test-live-hls-proxy-secret-with-enough-length";
+        let local_url: url::Url = "https://localhost/title/index.m3u8"
+            .parse()
+            .expect("local hls url");
+        let non_playlist_url: url::Url = "https://rotated-videasy-cdn.example.com/title/video.mp4"
+            .parse()
+            .expect("non-playlist url");
+
+        assert!(!is_public_external_embed_hls_proxy_url(
+            &local_url,
+            LiveHlsRequestKind::Playlist
+        ));
+        assert!(!is_public_external_embed_hls_proxy_url(
+            &non_playlist_url,
+            LiveHlsRequestKind::Playlist
+        ));
+        assert!(is_public_external_embed_hls_proxy_url(
+            &non_playlist_url,
+            LiveHlsRequestKind::Resource
+        ));
+
+        let playback_url = build_trusted_external_embed_hls_playback_source(
+            local_url.as_str(),
+            Some("https://player.videasy.net/movie/1"),
+            secret,
+        );
+        let uri: axum::http::Uri = playback_url.parse().expect("signed playback uri");
+        let params = query_pairs(uri.query().unwrap_or_default());
+        assert!(!is_trusted_external_embed_hls_request(
+            &local_url,
+            LiveHlsRequestKind::Playlist,
+            params
+                .get("referer")
+                .and_then(|value| normalize_hls_referer(value))
+                .as_deref(),
+            &params,
+            secret,
+        ));
+    }
+
+    #[test]
     fn rewrites_master_playlist_entries_through_live_proxy() {
         let base: url::Url = "https://www.bloomberg.com/media-manifest/master.m3u8"
             .parse()
             .expect("base url");
         let playlist = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nchild/main.m3u8\n";
-        let rewritten = rewrite_live_hls_playlist(&base, playlist, None);
+        let rewritten = rewrite_live_hls_playlist(&base, playlist, None, None);
 
         assert!(rewritten.contains("/api/live/hls.m3u8?input="));
         assert!(rewritten.contains("child%2Fmain.m3u8"));
@@ -591,7 +942,7 @@ mod tests {
             .parse()
             .expect("base url");
         let playlist = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio1\",URI=\"08_1080-30.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1\n07_1080-30.m3u8\n";
-        let rewritten = rewrite_live_hls_playlist(&base, playlist, None);
+        let rewritten = rewrite_live_hls_playlist(&base, playlist, None, None);
 
         assert!(rewritten.contains("/api/live/hls.m3u8?input="));
         assert!(rewritten.contains("08_1080-30.m3u8"));
@@ -605,8 +956,12 @@ mod tests {
             .parse()
             .expect("base url");
         let playlist = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:4\n#EXTINF:4.0,\nseg-1.ts\n";
-        let rewritten =
-            rewrite_live_hls_playlist(&base, playlist, Some("https://helpless.click/e/player"));
+        let rewritten = rewrite_live_hls_playlist(
+            &base,
+            playlist,
+            Some("https://helpless.click/e/player"),
+            None,
+        );
 
         assert!(rewritten.contains("/api/live/hls-resource?input="));
         assert!(rewritten.contains("seg-1.ts"));
@@ -619,8 +974,12 @@ mod tests {
             .parse()
             .expect("base url");
         let playlist = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:4.0,\nseg-1.ts\n#EXTINF:4.0,\nseg-2.ts\n#EXTINF:4.0,\nseg-3.ts\n#EXTINF:4.0,\nseg-4.ts\n#EXTINF:4.0,\nseg-5.ts\n#EXTINF:4.0,\nseg-6.ts\n#EXTINF:4.0,\nseg-7.ts\n#EXTINF:4.0,\nseg-8.ts\n#EXTINF:4.0,\nseg-9.ts\n#EXT-X-ENDLIST\n";
-        let rewritten =
-            rewrite_live_hls_playlist(&base, playlist, Some("https://player.videasy.net/movie/1"));
+        let rewritten = rewrite_live_hls_playlist(
+            &base,
+            playlist,
+            Some("https://player.videasy.net/movie/1"),
+            None,
+        );
 
         assert!(rewritten.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
         assert!(rewritten.contains("#EXT-X-MEDIA-SEQUENCE:1"));

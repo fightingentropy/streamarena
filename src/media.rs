@@ -1963,6 +1963,7 @@ mod tests {
             opensubtitles_api_key: String::new(),
             opensubtitles_user_agent: String::new(),
             session_cookie_secure: true,
+            live_hls_proxy_secret: "test-live-hls-proxy-secret-with-enough-length".to_owned(),
         }
     }
 
@@ -2263,6 +2264,7 @@ mod tests {
             opensubtitles_api_key: String::new(),
             opensubtitles_user_agent: String::new(),
             session_cookie_secure: true,
+            live_hls_proxy_secret: "test-live-hls-proxy-secret-with-enough-length".to_owned(),
         };
         assert!(is_local_app_playback_url(
             &config,

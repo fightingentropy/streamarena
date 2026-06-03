@@ -1,6 +1,9 @@
 use std::env;
 use std::path::PathBuf;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub root_dir: PathBuf,
@@ -45,6 +48,7 @@ pub struct Config {
     pub opensubtitles_api_key: String,
     pub opensubtitles_user_agent: String,
     pub session_cookie_secure: bool,
+    pub live_hls_proxy_secret: String,
 }
 
 impl Config {
@@ -185,8 +189,19 @@ impl Config {
             session_cookie_secure: normalize_bool_flag(
                 env::var("SESSION_COOKIE_SECURE").unwrap_or_else(|_| "1".to_owned()),
             ),
+            live_hls_proxy_secret: env::var("LIVE_HLS_PROXY_SECRET")
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| value.len() >= 32)
+                .unwrap_or_else(generate_live_hls_proxy_secret),
         }
     }
+}
+
+fn generate_live_hls_proxy_secret() -> String {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).expect("OS CSPRNG unavailable - cannot sign live HLS URLs");
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 fn parse_usize_env(name: &str, fallback: usize, min: usize, max: usize) -> usize {
