@@ -5011,7 +5011,7 @@ fn combine_external_embed_source_summaries(
 }
 
 fn build_external_embed_source_summaries(metadata: &ResolveMetadata) -> Vec<SourceSummary> {
-    external_embed_sources()
+    let mut sources = external_embed_sources()
         .into_iter()
         .filter(|source| is_external_embed_hls_capable_source(*source))
         .filter_map(|source| {
@@ -5032,10 +5032,17 @@ fn build_external_embed_source_summaries(metadata: &ResolveMetadata) -> Vec<Sour
                 seeders: 0,
                 size: String::new(),
                 releaseGroup: external_embed_source_detail_label(source).to_owned(),
-                score: 1_000_000 - external_embed_source_priority(source),
+                score: 1_000_000 - external_embed_source_priority(source, metadata),
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    sources.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.primary.cmp(&right.primary))
+    });
+    sources
 }
 
 fn external_embed_source_for_source_hash(
@@ -5052,10 +5059,13 @@ fn external_embed_source_for_source_hash(
 }
 
 fn default_external_embed_source(metadata: &ResolveMetadata) -> Option<ExternalEmbedSource> {
-    external_embed_sources()
+    let mut sources = external_embed_sources()
         .into_iter()
         .filter(|source| is_external_embed_hls_capable_source(*source))
-        .find(|source| external_embed_url(*source, metadata).is_some())
+        .filter(|source| external_embed_url(*source, metadata).is_some())
+        .collect::<Vec<_>>();
+    sources.sort_by_key(|source| external_embed_source_priority(*source, metadata));
+    sources.into_iter().next()
 }
 
 fn preferred_external_embed_hls_sources(metadata: &ResolveMetadata) -> Vec<ExternalEmbedSource> {
@@ -5065,18 +5075,33 @@ fn preferred_external_embed_hls_sources(metadata: &ResolveMetadata) -> Vec<Exter
         .filter(|source| is_external_embed_hls_capable_source(*source))
         .filter(|source| external_embed_url(*source, metadata).is_some())
         .collect::<Vec<_>>();
-    sources.sort_by_key(|source| external_embed_hls_source_priority(*source));
+    sources.sort_by_key(|source| external_embed_hls_source_priority(*source, metadata));
     sources
 }
 
-fn external_embed_hls_source_priority(source: ExternalEmbedSource) -> u32 {
-    match source.provider.id {
-        "videasy" => source
-            .server
-            .map(|server| server.priority.max(0) as u32)
-            .unwrap_or(50),
-        "vidlink" => 100,
-        _ => 100,
+fn external_embed_hls_source_priority(
+    source: ExternalEmbedSource,
+    metadata: &ResolveMetadata,
+) -> u32 {
+    if metadata.media_type == "tv" {
+        match source.provider.id {
+            "vidlink" => 0,
+            "videasy" if source.server.is_none() => 50,
+            "videasy" => source
+                .server
+                .map(|server| 100 + server.priority.max(0) as u32)
+                .unwrap_or(150),
+            _ => 150,
+        }
+    } else {
+        match source.provider.id {
+            "videasy" => source
+                .server
+                .map(|server| server.priority.max(0) as u32)
+                .unwrap_or(50),
+            "vidlink" => 100,
+            _ => 100,
+        }
     }
 }
 
@@ -5291,7 +5316,19 @@ fn external_embed_servers_for_provider(
     }
 }
 
-fn external_embed_source_priority(source: ExternalEmbedSource) -> i64 {
+fn external_embed_source_priority(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> i64 {
+    if metadata.media_type == "tv" && source.provider.id == "vidlink" {
+        return 0;
+    }
+    if metadata.media_type == "tv" && source.provider.id == "videasy" && source.server.is_none() {
+        return 25;
+    }
+    if metadata.media_type == "tv" && source.provider.id == "videasy" {
+        return source
+            .server
+            .map(|server| 100 + server.priority)
+            .unwrap_or(150);
+    }
     if let Some(server) = source.server {
         return source.provider.priority * 100 + server.priority;
     }
@@ -7254,6 +7291,13 @@ mod tests {
             external_embed_url(vidlink_source, &tv_metadata).unwrap(),
             "https://vidlink.pro/tv/76331/1/1"
         );
+
+        let tv_sources = build_external_embed_source_summaries(&tv_metadata);
+        assert_eq!(tv_sources.len(), 9);
+        assert_eq!(tv_sources[0].primary, "VidLink");
+        assert_eq!(tv_sources[0].provider, "LivNet");
+        assert_eq!(tv_sources[1].primary, "VidEasy");
+        assert_eq!(tv_sources[2].primary, "Yoru");
     }
 
     #[test]
@@ -7262,6 +7306,12 @@ mod tests {
         let source = default_external_embed_source(&metadata).expect("default embed source");
         assert_eq!(source.provider.id, "videasy");
         assert_eq!(source.server.map(|server| server.id), Some("YORU"));
+
+        let tv_metadata = sample_tv_metadata();
+        let tv_source =
+            default_external_embed_source(&tv_metadata).expect("default tv embed source");
+        assert_eq!(tv_source.provider.id, "vidlink");
+        assert_eq!(tv_source.server.map(|server| server.id), None);
 
         let filters = ResolveFilters {
             source_hash: String::new(),
@@ -7303,6 +7353,28 @@ mod tests {
         assert_eq!(source_ids.get(1), Some(&("videasy", "default")));
         assert_eq!(source_ids.get(2), Some(&("vidlink", "default")));
         assert_eq!(source_ids.len(), 3);
+
+        let tv_metadata = sample_tv_metadata();
+        let tv_source =
+            default_external_embed_source(&tv_metadata).expect("default tv embed source");
+        let tv_candidates = external_embed_hls_candidate_sources(tv_source, &tv_metadata, true);
+        let tv_source_ids = tv_candidates
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.provider.id,
+                    candidate
+                        .server
+                        .map(|server| server.id)
+                        .unwrap_or("default"),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(tv_source_ids.first(), Some(&("vidlink", "default")));
+        assert_eq!(tv_source_ids.get(1), Some(&("videasy", "default")));
+        assert_eq!(tv_source_ids.get(2), Some(&("videasy", "YORU")));
+        assert_eq!(tv_source_ids.len(), 3);
 
         let neon_source = external_embed_sources()
             .into_iter()
