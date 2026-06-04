@@ -1058,9 +1058,26 @@ impl ResolverService {
         let metadata = self
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
-        if !skip_external_embed
-            && let Some(provider) =
-                external_embed_source_for_source_hash(&metadata, &filters.source_hash)
+        let pinned_external_source =
+            external_embed_source_for_source_hash(&metadata, &filters.source_hash);
+        let external_embed_only = real_debrid.is_none();
+        let effective_skip_external_embed = skip_external_embed && !external_embed_only;
+        let default_external_filters = if external_embed_only {
+            ResolveFilters {
+                source_hash: String::new(),
+                preferred_container: filters.preferred_container.clone(),
+                source_filters: filters.source_filters.clone(),
+            }
+        } else {
+            filters.clone()
+        };
+        let default_external_resolver_provider = if external_embed_only {
+            ResolverProvider::Fastest
+        } else {
+            resolver_provider
+        };
+        if !effective_skip_external_embed
+            && let Some(provider) = pinned_external_source
             && is_external_embed_hls_capable_source(provider)
         {
             let mut external_guard = self.acquire_external_resolve_permit().await?;
@@ -1077,14 +1094,15 @@ impl ResolverService {
                 return Ok(payload);
             }
 
-            if !filters.source_hash.is_empty() {
-                return Err(ApiError::internal(
-                    "Selected external embed source could not be resolved.",
-                ));
+            if !filters.source_hash.is_empty() && !external_embed_only {
+                return Err(selected_external_embed_hls_unavailable_error());
             }
         }
-        if !skip_external_embed
-            && should_prefer_default_external_embed(&filters, resolver_provider)
+        if !effective_skip_external_embed
+            && should_prefer_default_external_embed(
+                &default_external_filters,
+                default_external_resolver_provider,
+            )
             && let Some(provider) = default_external_embed_source(&metadata)
         {
             if let Ok(mut external_guard) = self.acquire_external_resolve_permit().await {
@@ -1103,7 +1121,7 @@ impl ResolverService {
             };
         }
         if real_debrid.is_none() {
-            return Err(real_debrid_api_key_required_error());
+            return Err(external_embed_hls_unavailable_error());
         }
         if resolver_provider == ResolverProvider::LocalTorrent && !local_torrent_enabled {
             return Err(local_torrent_required_error());
@@ -1437,9 +1455,26 @@ impl ResolverService {
                 episode_number,
             )
             .await?;
-        if !skip_external_embed
-            && let Some(provider) =
-                external_embed_source_for_source_hash(&metadata, &filters.source_hash)
+        let pinned_external_source =
+            external_embed_source_for_source_hash(&metadata, &filters.source_hash);
+        let external_embed_only = real_debrid.is_none();
+        let effective_skip_external_embed = skip_external_embed && !external_embed_only;
+        let default_external_filters = if external_embed_only {
+            ResolveFilters {
+                source_hash: String::new(),
+                preferred_container: filters.preferred_container.clone(),
+                source_filters: filters.source_filters.clone(),
+            }
+        } else {
+            filters.clone()
+        };
+        let default_external_resolver_provider = if external_embed_only {
+            ResolverProvider::Fastest
+        } else {
+            resolver_provider
+        };
+        if !effective_skip_external_embed
+            && let Some(provider) = pinned_external_source
             && is_external_embed_hls_capable_source(provider)
         {
             let mut external_guard = self.acquire_external_resolve_permit().await?;
@@ -1456,14 +1491,15 @@ impl ResolverService {
                 return Ok(payload);
             }
 
-            if !filters.source_hash.is_empty() {
-                return Err(ApiError::internal(
-                    "Selected external embed source could not be resolved.",
-                ));
+            if !filters.source_hash.is_empty() && !external_embed_only {
+                return Err(selected_external_embed_hls_unavailable_error());
             }
         }
-        if !skip_external_embed
-            && should_prefer_default_external_embed(&filters, resolver_provider)
+        if !effective_skip_external_embed
+            && should_prefer_default_external_embed(
+                &default_external_filters,
+                default_external_resolver_provider,
+            )
             && let Some(provider) = default_external_embed_source(&metadata)
         {
             if let Ok(mut external_guard) = self.acquire_external_resolve_permit().await {
@@ -1482,7 +1518,7 @@ impl ResolverService {
             };
         }
         if real_debrid.is_none() {
-            return Err(real_debrid_api_key_required_error());
+            return Err(external_embed_hls_unavailable_error());
         }
         if resolver_provider == ResolverProvider::LocalTorrent && !local_torrent_enabled {
             return Err(local_torrent_required_error());
@@ -6083,6 +6119,16 @@ fn user_facing_real_debrid_error(message: &str) -> String {
 
 fn real_debrid_api_key_required_error() -> ApiError {
     ApiError::failed_dependency("Add a Real-Debrid API key in Settings to use torrent sources.")
+}
+
+fn external_embed_hls_unavailable_error() -> ApiError {
+    ApiError::failed_dependency(
+        "External HLS sources are unavailable right now. Try another server.",
+    )
+}
+
+fn selected_external_embed_hls_unavailable_error() -> ApiError {
+    ApiError::failed_dependency("Selected external HLS source is unavailable. Try another server.")
 }
 
 fn local_torrent_required_error() -> ApiError {

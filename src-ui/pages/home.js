@@ -2512,8 +2512,8 @@ export default function HomePage() {
     requestAnimationFrame(() => positionCardHover(card));
   }
 
-  function hideCardHover(card) {
-    if (!(card instanceof HTMLElement) || card.matches(":focus-within")) {
+  function hideCardHover(card, { force = false } = {}) {
+    if (!(card instanceof HTMLElement) || (!force && card.matches(":focus-within"))) {
       return;
     }
     card.classList.remove("is-hovering");
@@ -4815,15 +4815,9 @@ export default function HomePage() {
         .forEach((card) => positionCardHover(card));
     };
 
-    const dismissCardHoversOnScroll = (event) => {
-      if (
-        event.target instanceof Element &&
-        event.target.closest(".cards.popular-cards")
-      ) {
-        return;
-      }
+    const dismissCardHoversOnScroll = () => {
       document.querySelectorAll(".card.is-hovering").forEach((card) => {
-        hideCardHover(card);
+        hideCardHover(card, { force: true });
       });
     };
 

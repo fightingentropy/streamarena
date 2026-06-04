@@ -144,6 +144,10 @@ let tmdbSourceQueue = [];
 let tmdbSourceAttemptIndex = 0;
 let tmdbSkipExternalEmbed = false;
 let tmdbResolveRetries = 0;
+let userRealDebridSettingsLoaded = false;
+let userRealDebridConfigured = false;
+let userLocalTorrentEnabled = false;
+let userRealDebridSettingsPromise = null;
 let knownDurationSeconds = 0;
 let expectedDurationSeconds = 0;
 const maxTmdbResolveRetries = 2;
@@ -1180,6 +1184,75 @@ function normalizeRememberedResolverProvider(value) {
   return "";
 }
 
+function isTorrentResolverProvider(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "real-debrid" || normalized === "local-torrent";
+}
+
+function isTorrentResolverProviderEnabledForPlayback(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (!isTorrentResolverProvider(normalized)) {
+    return true;
+  }
+  if (!userRealDebridSettingsLoaded || !userRealDebridConfigured) {
+    return false;
+  }
+  return normalized !== "local-torrent" || userLocalTorrentEnabled;
+}
+
+async function loadUserRealDebridPlaybackSettings() {
+  if (!isTmdbResolvedPlayback) {
+    return;
+  }
+  if (userRealDebridSettingsPromise) {
+    await userRealDebridSettingsPromise;
+    return;
+  }
+  userRealDebridSettingsPromise = fetch("/api/user/real-debrid", {
+    cache: "no-store",
+  })
+    .then(async (response) => (response.ok ? response.json() : {}))
+    .then((payload) => {
+      userRealDebridConfigured = Boolean(payload?.configured);
+      userLocalTorrentEnabled = Boolean(payload?.localTorrentEnabled);
+    })
+    .catch(() => {
+      userRealDebridConfigured = false;
+      userLocalTorrentEnabled = false;
+    })
+    .finally(() => {
+      userRealDebridSettingsLoaded = true;
+    });
+  await userRealDebridSettingsPromise;
+}
+
+function clearDisabledTorrentPlaybackState() {
+  if (!isTmdbResolvedPlayback) {
+    return false;
+  }
+  const provider = String(
+    currentTmdbResolverProvider || preferredResolverProvider || "",
+  )
+    .trim()
+    .toLowerCase();
+  if (!isTorrentResolverProvider(provider)) {
+    return false;
+  }
+  if (isTorrentResolverProviderEnabledForPlayback(provider)) {
+    return false;
+  }
+  clearRememberedTmdbSourcePinForFreshResolve();
+  return true;
+}
+
+function shouldAllowTorrentResolveFallback() {
+  return Boolean(userRealDebridSettingsLoaded && userRealDebridConfigured);
+}
+
 function isRememberedIframeOnlyExternalEmbed(remembered) {
   if (remembered?.resolverProvider !== "external-embed") {
     return false;
@@ -1209,12 +1282,15 @@ function shouldIgnoreRememberedTmdbSourcePinForIframeFirst(remembered) {
   if (isRememberedIframeOnlyExternalEmbed(remembered)) {
     return true;
   }
+  if (isTorrentResolverProvider(remembered.resolverProvider)) {
+    return !isTorrentResolverProviderEnabledForPlayback(remembered.resolverProvider);
+  }
   if (remembered.resolverProvider === "external-embed") {
     return false;
   }
   if (
-    preferredResolverProvider === "real-debrid" ||
-    preferredResolverProvider === "local-torrent"
+    isTorrentResolverProvider(preferredResolverProvider) &&
+    isTorrentResolverProviderEnabledForPlayback(preferredResolverProvider)
   ) {
     return false;
   }
@@ -1320,10 +1396,11 @@ function applyRememberedTmdbSourcePin({ force = false } = {}) {
     currentTmdbResolverProvider = remembered.resolverProvider;
     currentTmdbResolvedFilename = remembered.filename;
     activeTrackSourceInput = remembered.sourceInput;
-    if (
-      remembered.resolverProvider === "real-debrid" ||
-      remembered.resolverProvider === "local-torrent"
-    ) {
+    if (isTorrentResolverProvider(remembered.resolverProvider)) {
+      if (!isTorrentResolverProviderEnabledForPlayback(remembered.resolverProvider)) {
+        clearRememberedTmdbSourcePinForFreshResolve();
+        return false;
+      }
       preferredResolverProvider = remembered.resolverProvider;
       tmdbSkipExternalEmbed = true;
     } else if (remembered.resolverProvider === "external-embed") {
@@ -1340,10 +1417,11 @@ function applyRememberedTmdbSourcePin({ force = false } = {}) {
       currentTmdbResolverProvider = currentTmdbResolverProvider || remembered.resolverProvider;
       currentTmdbResolvedFilename = currentTmdbResolvedFilename || remembered.filename;
       activeTrackSourceInput = activeTrackSourceInput || remembered.sourceInput;
-      if (
-        remembered.resolverProvider === "real-debrid" ||
-        remembered.resolverProvider === "local-torrent"
-      ) {
+      if (isTorrentResolverProvider(remembered.resolverProvider)) {
+        if (!isTorrentResolverProviderEnabledForPlayback(remembered.resolverProvider)) {
+          clearRememberedTmdbSourcePinForFreshResolve();
+          return false;
+        }
         preferredResolverProvider = remembered.resolverProvider;
         tmdbSkipExternalEmbed = true;
       }
@@ -1355,6 +1433,7 @@ function applyRememberedTmdbSourcePin({ force = false } = {}) {
 }
 
 applyRememberedTmdbSourcePin();
+clearDisabledTorrentPlaybackState();
 
 try {
   const storedResume = Number(localStorage.getItem(resumeStorageKey));
@@ -3935,6 +4014,13 @@ async function resolveTmdbSourcesAndPlay({
 } = {}) {
   stopLocalCacheUpgradeWatch();
   hasUpgradedToLocalCache = false;
+  if (isTmdbResolvedPlayback) {
+    await loadUserRealDebridPlaybackSettings();
+    const clearedDisabledTorrentState = clearDisabledTorrentPlaybackState();
+    if (clearedDisabledTorrentState || !shouldAllowTorrentResolveFallback()) {
+      skipExternalEmbed = false;
+    }
+  }
   if (!skipExternalEmbed) {
     tmdbSkipExternalEmbed = false;
   }
@@ -7976,6 +8062,7 @@ function isTransientResolveError(error) {
     message.includes("real-debrid request timed out") ||
     message.includes("torrentio request failed") ||
     message.includes("selected external hls source is unavailable") ||
+    message.includes("external hls sources are unavailable") ||
     message.includes("failed to fetch")
   );
 }
@@ -7990,6 +8077,7 @@ function isSourceFallbackResolveError(error) {
   return (
     message.includes("real-debrid blocked this source") ||
     message.includes("selected external hls source is unavailable") ||
+    message.includes("external hls sources are unavailable") ||
     message.includes("all stream candidates failed")
   );
 }
@@ -8288,7 +8376,8 @@ async function resolveTmdbMovieViaBackend(
     lastError = error;
     if (allowSourceFallback && pinnedSourceHash) {
       const skipEmbedFallback =
-        skipExternalEmbed || isSourceFallbackResolveError(error);
+        shouldAllowTorrentResolveFallback() &&
+        (skipExternalEmbed || isSourceFallbackResolveError(error));
       try {
         return await requestResolveJson(
           `/api/resolve/movie?${buildQuery({
@@ -8312,7 +8401,7 @@ async function resolveTmdbMovieViaBackend(
         quality: shouldPreferMobileLightTmdbSources()
           ? preferredQuality
           : DEFAULT_STREAM_QUALITY_PREFERENCE,
-        skipExternalEmbed: true,
+        skipExternalEmbed: shouldAllowTorrentResolveFallback(),
       }).toString()}`,
     );
   }
@@ -8398,7 +8487,8 @@ async function resolveTmdbTvEpisodeViaBackend(
     const fallbackAttempts = [];
     const seen = new Set([`${preferredContainer}::${pinnedSourceHash}`]);
     const skipEmbedFallback =
-      skipExternalEmbed || isSourceFallbackResolveError(error);
+      shouldAllowTorrentResolveFallback() &&
+      (skipExternalEmbed || isSourceFallbackResolveError(error));
 
     const pushFallback = (
       containerPreference,
@@ -8453,7 +8543,7 @@ async function resolveTmdbTvEpisodeViaBackend(
           quality: shouldPreferMobileLightTmdbSources()
             ? preferredQuality
             : DEFAULT_STREAM_QUALITY_PREFERENCE,
-          skipExternalEmbed: true,
+          skipExternalEmbed: shouldAllowTorrentResolveFallback(),
         }).toString()}`,
       );
     }
@@ -8469,6 +8559,8 @@ async function fetchTmdbSourceOptionsViaBackend() {
     renderSourceOptionsWhenStable();
     return;
   }
+  await loadUserRealDebridPlaybackSettings();
+  clearDisabledTorrentPlaybackState();
   const query = new URLSearchParams({
     tmdbId,
     mediaType: isTmdbTvPlayback ? "tv" : "movie",
@@ -8927,7 +9019,11 @@ async function initPlaybackSource() {
   prepareLiveFailureCacheForCurrentEvent();
   selectFirstFreshLiveStreamIfNeeded();
   resumeStorageKey = `netflix-resume:${sourceIdentity}`;
+  if (isTmdbResolvedPlayback) {
+    await loadUserRealDebridPlaybackSettings();
+  }
   applyRememberedTmdbSourcePin();
+  clearDisabledTorrentPlaybackState();
 
   // Re-read resume time with the (possibly updated) storage key.
   try {
@@ -8948,6 +9044,7 @@ async function initPlaybackSource() {
         if (entry) {
           rememberServerContinueWatchingEntry(entry);
           applyRememberedTmdbSourcePin({ force: true });
+          clearDisabledTorrentPlaybackState();
           if (
             !(resumeTime > 1) &&
             Number.isFinite(entry.resumeSeconds) &&
