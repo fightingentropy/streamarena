@@ -129,14 +129,14 @@ Playback flow for TMDB titles:
 1. The player reads URL params such as `tmdbId`, `mediaType`, `title`, `year`, `seasonNumber`, `episodeNumber`, `audioLang`, `quality`, `subtitleLang`, `sourceHash`, and `sessionKey`.
 2. It applies stored quality/audio/subtitle preferences and remembered continue-watching source state.
 3. It calls `/api/resolve/movie` or `/api/resolve/tv`.
-4. For default unpinned TMDB playback, the resolver tries the native external HLS stack first: VidEasy Yoru, VidEasy default, then VidLink.
+4. For default unpinned TMDB playback, the resolver tries VidLink native HLS first, then falls back to VidEasy native HLS sources.
 5. The player probes tracks when needed through `/api/media/tracks`, selects audio/subtitle streams, and chooses direct, HLS, remux, local torrent, or local cache playback.
 6. If the external HLS path fails in the browser, the player retries with `skipExternalEmbed=1`; Torrentio/Torznab torrent sources are only considered when the current user has saved a Real-Debrid API token in Settings, and local torrent/cache playback stays off unless the user also enables Local torrent cache in Settings.
 7. Playback progress is stored locally for responsiveness and synced to `/api/user/watch-progress`, `/api/user/continue-watching`, and `/api/session/progress` when enabled.
 
 External movie/TV embed stack:
 
-- Default order: VidEasy Yoru native HLS -> VidEasy default native HLS -> VidLink native HLS. Torrent sources require a Real-Debrid API token in Settings; local torrent/cache additionally requires the Local torrent cache setting.
+- Default order: VidLink native HLS -> VidEasy default native HLS -> VidEasy Yoru native HLS. Torrent sources require a Real-Debrid API token in Settings; local torrent/cache additionally requires the Local torrent cache setting.
 - Selectable VidEasy server sources include Yoru, Neon, Cypher, Sage, Breach, Vyse, and Raze, with their original/alternate audio hints shown in the player server menu. Selected movie/TV external sources must resolve to native HLS; the resolver does not hand off to the provider iframe.
 - VidEasy embeds are built from `https://player.videasy.net/movie/...` or `/tv/...`; extracted HLS playlists are accepted on public HTTPS hosts discovered by the trusted resolver.
 - VidLink embeds are built from `https://vidlink.pro/movie/...` or `/tv/...`; extracted HLS playlist hosts include `storm.vodvidl.site` and `typhoontigertribe.net`.

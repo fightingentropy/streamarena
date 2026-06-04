@@ -5081,27 +5081,16 @@ fn preferred_external_embed_hls_sources(metadata: &ResolveMetadata) -> Vec<Exter
 
 fn external_embed_hls_source_priority(
     source: ExternalEmbedSource,
-    metadata: &ResolveMetadata,
+    _metadata: &ResolveMetadata,
 ) -> u32 {
-    if metadata.media_type == "tv" {
-        match source.provider.id {
-            "vidlink" => 0,
-            "videasy" if source.server.is_none() => 50,
-            "videasy" => source
-                .server
-                .map(|server| 100 + server.priority.max(0) as u32)
-                .unwrap_or(150),
-            _ => 150,
-        }
-    } else {
-        match source.provider.id {
-            "videasy" => source
-                .server
-                .map(|server| server.priority.max(0) as u32)
-                .unwrap_or(50),
-            "vidlink" => 100,
-            _ => 100,
-        }
+    match source.provider.id {
+        "vidlink" => 0,
+        "videasy" if source.server.is_none() => 50,
+        "videasy" => source
+            .server
+            .map(|server| 100 + server.priority.max(0) as u32)
+            .unwrap_or(150),
+        _ => 150,
     }
 }
 
@@ -5316,14 +5305,14 @@ fn external_embed_servers_for_provider(
     }
 }
 
-fn external_embed_source_priority(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> i64 {
-    if metadata.media_type == "tv" && source.provider.id == "vidlink" {
+fn external_embed_source_priority(source: ExternalEmbedSource, _metadata: &ResolveMetadata) -> i64 {
+    if source.provider.id == "vidlink" {
         return 0;
     }
-    if metadata.media_type == "tv" && source.provider.id == "videasy" && source.server.is_none() {
+    if source.provider.id == "videasy" && source.server.is_none() {
         return 25;
     }
-    if metadata.media_type == "tv" && source.provider.id == "videasy" {
+    if source.provider.id == "videasy" {
         return source
             .server
             .map(|server| 100 + server.priority)
@@ -7233,15 +7222,15 @@ mod tests {
         let metadata = sample_movie_metadata();
         let sources = build_external_embed_source_summaries(&metadata);
 
-        // VidEasy servers are selectable, with Yoru first as the preferred 4K
-        // native HLS candidate.
+        // VidLink is the default native HLS source, with VidEasy variants
+        // still available behind it.
         assert_eq!(sources.len(), 9);
-        assert_eq!(sources[0].primary, "Yoru");
-        assert_eq!(sources[0].provider, "VidEasy");
-        assert_eq!(sources[0].filename, "VidEasy Yoru embed");
-        assert_eq!(sources[0].qualityLabel, "4K");
+        assert_eq!(sources[0].primary, "VidLink");
+        assert_eq!(sources[0].provider, "LivNet");
+        assert_eq!(sources[0].filename, "VidLink embed");
+        assert_eq!(sources[0].qualityLabel, "HLS");
         assert_eq!(sources[0].container, "hls");
-        assert_eq!(sources[0].releaseGroup, "Movies only, may have 4K");
+        assert_eq!(sources[0].releaseGroup, "");
         assert_eq!(
             normalize_source_hash(&sources[0].sourceHash),
             sources[0].sourceHash
@@ -7249,22 +7238,30 @@ mod tests {
 
         let source = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
             .expect("matching external provider");
-        assert_eq!(source.provider.id, "videasy");
-        assert_eq!(source.server.map(|server| server.id), Some("YORU"));
+        assert_eq!(source.provider.id, "vidlink");
+        assert_eq!(source.server.map(|server| server.id), None);
         assert_eq!(
             external_embed_url(source, &metadata).unwrap(),
-            "https://player.videasy.net/movie/1368166?color=ffd700"
+            "https://vidlink.pro/movie/1368166"
         );
         assert_eq!(
             external_embed_source_hash(source, &metadata),
             sources[0].sourceHash
         );
-        assert_eq!(sources[1].primary, "Neon");
-        assert_eq!(sources[1].provider, "VidEasy");
-        assert_eq!(sources[1].filename, "VidEasy Neon embed");
-        assert_eq!(sources[1].qualityLabel, "HLS");
-        assert_eq!(sources[1].releaseGroup, "Original audio");
-        let neon_source = external_embed_source_for_source_hash(&metadata, &sources[1].sourceHash)
+        assert_eq!(sources[1].primary, "VidEasy");
+        assert_eq!(sources[1].provider, "LivNet");
+        assert_eq!(sources[1].filename, "VidEasy embed");
+        assert_eq!(sources[2].primary, "Yoru");
+        assert_eq!(sources[2].provider, "VidEasy");
+        assert_eq!(sources[2].filename, "VidEasy Yoru embed");
+        assert_eq!(sources[2].qualityLabel, "4K");
+        assert_eq!(sources[2].releaseGroup, "Movies only, may have 4K");
+        assert_eq!(sources[3].primary, "Neon");
+        assert_eq!(sources[3].provider, "VidEasy");
+        assert_eq!(sources[3].filename, "VidEasy Neon embed");
+        assert_eq!(sources[3].qualityLabel, "HLS");
+        assert_eq!(sources[3].releaseGroup, "Original audio");
+        let neon_source = external_embed_source_for_source_hash(&metadata, &sources[3].sourceHash)
             .expect("matching neon external provider");
         assert_eq!(neon_source.provider.id, "videasy");
         assert_eq!(neon_source.server.map(|server| server.id), Some("NEON"));
@@ -7304,8 +7301,8 @@ mod tests {
     fn default_external_embed_prefers_hls_sources() {
         let metadata = sample_movie_metadata();
         let source = default_external_embed_source(&metadata).expect("default embed source");
-        assert_eq!(source.provider.id, "videasy");
-        assert_eq!(source.server.map(|server| server.id), Some("YORU"));
+        assert_eq!(source.provider.id, "vidlink");
+        assert_eq!(source.server.map(|server| server.id), None);
 
         let tv_metadata = sample_tv_metadata();
         let tv_source =
@@ -7332,8 +7329,8 @@ mod tests {
     fn default_external_embed_native_fallback_can_try_hls_sources() {
         let metadata = sample_movie_metadata();
         let source = default_external_embed_source(&metadata).expect("default embed source");
-        assert_eq!(source.provider.id, "videasy");
-        assert_eq!(source.server.map(|server| server.id), Some("YORU"));
+        assert_eq!(source.provider.id, "vidlink");
+        assert_eq!(source.server.map(|server| server.id), None);
 
         let candidates = external_embed_hls_candidate_sources(source, &metadata, true);
         let source_ids = candidates
@@ -7349,9 +7346,9 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(source_ids.first(), Some(&("videasy", "YORU")));
+        assert_eq!(source_ids.first(), Some(&("vidlink", "default")));
         assert_eq!(source_ids.get(1), Some(&("videasy", "default")));
-        assert_eq!(source_ids.get(2), Some(&("vidlink", "default")));
+        assert_eq!(source_ids.get(2), Some(&("videasy", "YORU")));
         assert_eq!(source_ids.len(), 3);
 
         let tv_metadata = sample_tv_metadata();
