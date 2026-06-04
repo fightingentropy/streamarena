@@ -19,7 +19,6 @@ pub struct Config {
     pub port: u16,
     pub max_upload_bytes: usize,
     pub tmdb_api_key: String,
-    pub real_debrid_token: String,
     pub torrentio_base_url: String,
     pub torznab_api_url: String,
     pub torznab_api_key: String,
@@ -118,10 +117,6 @@ impl Config {
             port,
             max_upload_bytes,
             tmdb_api_key: env::var("TMDB_API_KEY")
-                .unwrap_or_default()
-                .trim()
-                .to_owned(),
-            real_debrid_token: env::var("REAL_DEBRID_TOKEN")
                 .unwrap_or_default()
                 .trim()
                 .to_owned(),

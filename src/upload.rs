@@ -2023,7 +2023,6 @@ mod tests {
             port: 0,
             max_upload_bytes: UPLOAD_SESSION_CHUNK_MAX_BYTES * 4,
             tmdb_api_key: String::new(),
-            real_debrid_token: String::new(),
             torrentio_base_url: String::new(),
             torznab_api_url: String::new(),
             torznab_api_key: String::new(),

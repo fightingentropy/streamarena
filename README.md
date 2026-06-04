@@ -26,7 +26,7 @@ The repository is a single full-stack app:
 - Backend: Rust 2024, Axum 0.8, Tokio, Reqwest 0.13, and SQLite via `rusqlite` 0.40.
 - Frontend: SolidJS with Vite 8 in multi-page app mode.
 - Player: custom HTML5 video UI with direct playback, remux, HLS, subtitles, live streams, and source switching.
-- Discovery: TMDB metadata, selected external embed fallbacks, Torrentio source discovery, optional Torznab fallback, Real-Debrid unrestricted links, and local torrent streaming/cache.
+- Discovery: TMDB metadata, selected external embed fallbacks, and user-enabled Torrentio/Torznab plus Real-Debrid torrent resolution.
 - Local library: `assets/library.json` plus uploaded/managed videos under `assets/videos`.
 - Persistence: SQLite cache and user data in `cache/resolver-cache.sqlite`.
 - Production target: a Mac mini runtime tree served locally on `127.0.0.1:5173` and exposed through Caddy.
@@ -63,10 +63,9 @@ Fill `.env` with at least:
 
 ```bash
 TMDB_API_KEY=...
-REAL_DEBRID_TOKEN=...
 ```
 
-OpenSubtitles and Torznab are optional but improve subtitles and fallback source discovery.
+OpenSubtitles and Torznab are optional. Real-Debrid API tokens are saved per user in Settings.
 
 Run the full app:
 
@@ -132,13 +131,13 @@ Playback flow for TMDB titles:
 3. It calls `/api/resolve/movie` or `/api/resolve/tv`.
 4. For default unpinned TMDB playback, the resolver tries the native external HLS stack first: VidEasy Yoru, VidEasy default, then VidLink.
 5. The player probes tracks when needed through `/api/media/tracks`, selects audio/subtitle streams, and chooses direct, HLS, remux, local torrent, or local cache playback.
-6. If the external HLS path fails in the browser, the player retries with `skipExternalEmbed=1`; the resolver then uses persisted sessions, Torrentio, optional Torznab, Real-Debrid, local torrent/cache, and source health.
+6. If the external HLS path fails in the browser, the player retries with `skipExternalEmbed=1`; Torrentio/Torznab torrent sources are only considered when the current user has saved a Real-Debrid API token in Settings, and local torrent/cache playback stays off unless the user also enables Local torrent cache in Settings.
 7. Playback progress is stored locally for responsiveness and synced to `/api/user/watch-progress`, `/api/user/continue-watching`, and `/api/session/progress` when enabled.
 
 External movie/TV embed stack:
 
-- Default order: VidEasy Yoru native HLS -> VidEasy default native HLS -> VidLink native HLS -> external iframe fallback -> Real-Debrid -> local torrent/cache.
-- Selectable VidEasy server sources include Yoru, Neon, Cypher, Sage, Breach, Vyse, and Raze, with their original/alternate audio hints shown in the player server menu. Only Yoru and the default VidEasy source are part of automatic external fallback.
+- Default order: VidEasy Yoru native HLS -> VidEasy default native HLS -> VidLink native HLS. Torrent sources require a Real-Debrid API token in Settings; local torrent/cache additionally requires the Local torrent cache setting.
+- Selectable VidEasy server sources include Yoru, Neon, Cypher, Sage, Breach, Vyse, and Raze, with their original/alternate audio hints shown in the player server menu. Selected movie/TV external sources must resolve to native HLS; the resolver does not hand off to the provider iframe.
 - VidEasy embeds are built from `https://player.videasy.net/movie/...` or `/tv/...`; extracted HLS playlists are accepted on public HTTPS hosts discovered by the trusted resolver.
 - VidLink embeds are built from `https://vidlink.pro/movie/...` or `/tv/...`; extracted HLS playlist hosts include `storm.vodvidl.site` and `typhoontigertribe.net`.
 - Native external HLS is resolved by `scripts/resolve-external-embed-hls.mjs` through Playwright in development. The mini deploy copies this helper to `bin/resolve-external-embed-hls.mjs` and keeps Playwright under `~/.local/share/netflix-node` outside the app runtime tree. The backend only accepts VidEasy/VidLink embed URLs, accepts public HTTPS `.m3u8` outputs discovered by that trusted resolver, and signs those proxy URLs before playback.
@@ -204,8 +203,8 @@ Player:
 - Server HLS path through `/api/hls/master.m3u8` and `/api/hls/segment.ts`.
 - Server remux path through `/api/remux`, including start offsets, audio stream selection, subtitle stream burn-in, manual sync, and video mode.
 - Native external HLS from VidEasy/VidLink when those providers resolve cleanly.
-- Local torrent streaming through `/api/local-torrent/stream`.
-- Direct local cache streaming through `/api/local-cache/stream`.
+- User-enabled local torrent streaming through `/api/local-torrent/stream`.
+- User-enabled direct local cache streaming through `/api/local-cache/stream`.
 - Live HLS and explicit live iframe playback.
 - Playback recovery for buffering, server errors, offline state, source failure, and alternate source attempts.
 - Progress and continue-watching sync.
@@ -409,10 +408,14 @@ TV-specific resolver params:
 
 Copy `.env.example` to `.env`.
 
-Required for the full remote-resolve experience:
+Required for TMDB browsing and external embed playback:
 
 - `TMDB_API_KEY` - TMDB v3 API key or v4 read access token.
-- `REAL_DEBRID_TOKEN` - Real-Debrid API token.
+
+Per-user Settings:
+
+- Real-Debrid API token - enables Torrentio/Torznab torrent source discovery and Real-Debrid resolution for that user.
+- Local torrent cache - separately enables local torrent/cache playback for that user, and still requires a saved Real-Debrid API token.
 
 Optional integrations:
 
@@ -438,7 +441,7 @@ Embed/live resolver helpers:
 
 - `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs` when present, otherwise `bin/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable native external HLS extraction.
 - `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - per-provider timeout budget for VidEasy/VidLink native HLS extraction; default 30000.
-- `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS` - total native HLS extraction budget before falling back to the normal resolver stack; default 45000.
+- `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS` - total native HLS extraction budget before falling back to the normal resolver stack; default 45000. Movie/TV external embeds that do not expose native HLS are not returned as iframes.
 - `LIVE_HLS_PROXY_SECRET` - optional shared signing secret for dynamic external HLS proxy URLs; generated at startup when omitted. Set this for multi-instance deployments so signed URLs survive instance changes.
 - `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs` when present, otherwise `bin/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
 - `MATCHSTREAM_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-matchstream-hls.mjs` when present, otherwise `bin/resolve-matchstream-hls.mjs`; set to `0`/`off` to disable.
@@ -478,9 +481,9 @@ Resolver/local cache:
 
 Torznab behavior:
 
-- Torrentio remains the primary discovery source.
+- Torrentio remains the primary torrent discovery source when the current user has a Real-Debrid API token saved.
 - Torznab is a fallback for missing/failed Torrentio results or pinned hashes absent from Torrentio.
-- Torznab is discovery only. Real-Debrid or local torrent/cache still supplies the playable media path.
+- Torznab is discovery only. Real-Debrid or user-enabled local torrent/cache still supplies the playable media path.
 - Prefer filtered Prowlarr/Jackett endpoints over broad `all` endpoints.
 
 ## Data And Persistence
@@ -754,9 +757,9 @@ Home is empty or only shows local titles:
 
 Resolver errors:
 
-- Check `TMDB_API_KEY`, `REAL_DEBRID_TOKEN`, and network access.
+- Check `TMDB_API_KEY`, the user's Real-Debrid token in Settings, and network access.
 - If using Torznab, check `TORZNAB_API_URL`, `TORZNAB_API_KEY`, category IDs, and timeout.
-- If local torrent is selected or auto-used, check local disk budget and `cache/local-torrents`.
+- If local torrent is selected or auto-used, check the Local torrent cache setting, local disk budget, and `cache/local-torrents`.
 
 Movie/TV external embed fails:
 
@@ -819,5 +822,5 @@ Current cleanup state:
 - The old one-off Interstellar mini helper scripts have been removed.
 - `scripts/install-mini-agents.sh` removes any stale hero-preview LaunchAgent, helper, manifest, deployed script, and cached preview folder from the Mac mini.
 - `scripts/check-mini.sh` now validates only the current maintenance agents: log rotation, disk monitor, and watchdog.
-- External movie/TV fallback cleanup is complete: VidEasy/VidLink native HLS remains the active provider stack; VidEasy's named server sources are selectable, and external iframe is kept as a last-resort player handoff when native HLS extraction fails.
+- External movie/TV fallback cleanup is complete: VidEasy/VidLink native HLS remains the active provider stack; VidEasy's named server sources are selectable, and external iframe handoff is not used for movie/TV playback.
 - Dead external providers and experiment knobs from the earlier investigation have been removed from resolver/provider lists, proxy allowlists, tests, and `.env.example`.

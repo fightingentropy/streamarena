@@ -383,6 +383,25 @@ struct ResolveFilters {
     source_filters: SourceFilters,
 }
 
+#[derive(Clone)]
+struct RealDebridRequestContext {
+    api_key: String,
+    cache_scope: String,
+}
+
+impl RealDebridRequestContext {
+    fn for_user(user_id: i64, api_key: &str) -> Option<Self> {
+        let normalized_api_key = api_key.trim();
+        if normalized_api_key.is_empty() {
+            return None;
+        }
+        Some(Self {
+            api_key: normalized_api_key.to_owned(),
+            cache_scope: format!("user:{}", user_id.max(0)),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolverProvider {
     RealDebrid,
@@ -517,6 +536,8 @@ impl ResolverService {
     #[allow(clippy::too_many_arguments)]
     pub async fn list_sources(
         &self,
+        user_id: i64,
+        real_debrid_api_key: &str,
         tmdb_id: &str,
         media_type: &str,
         title_fallback: &str,
@@ -543,6 +564,7 @@ impl ResolverService {
         } else {
             normalize_preferred_container(preferred_container)
         };
+        let real_debrid = RealDebridRequestContext::for_user(user_id, real_debrid_api_key);
         let normalized_source_hash = normalize_source_hash(source_hash);
         let resolver_provider = normalize_resolver_provider(resolver_provider);
         let normalized_limit = limit.trim().parse::<i64>().ok().unwrap_or(10).clamp(1, 20);
@@ -582,6 +604,16 @@ impl ResolverService {
             let has_external_sources = !external_sources.is_empty();
             let pinned_external_source =
                 external_embed_source_for_source_hash(&metadata, &normalized_source_hash).is_some();
+            if real_debrid.is_none() {
+                return Ok(json!({
+                    "mediaType": "tv",
+                    "tmdbId": tmdb_id.trim(),
+                    "resolverProvider": EXTERNAL_EMBED_RESOLVER_PROVIDER,
+                    "seasonNumber": metadata.season_number,
+                    "episodeNumber": metadata.episode_number,
+                    "sources": external_sources
+                }));
+            }
             let mut external_guard = match self.acquire_external_resolve_permit().await {
                 Ok(guard) => guard,
                 Err(_) if has_external_sources => {
@@ -713,6 +745,14 @@ impl ResolverService {
         let has_external_sources = !external_sources.is_empty();
         let pinned_external_source =
             external_embed_source_for_source_hash(&metadata, &normalized_source_hash).is_some();
+        if real_debrid.is_none() {
+            return Ok(json!({
+                "mediaType": "movie",
+                "tmdbId": tmdb_id.trim(),
+                "resolverProvider": EXTERNAL_EMBED_RESOLVER_PROVIDER,
+                "sources": external_sources
+            }));
+        }
         let mut external_guard = match self.acquire_external_resolve_permit().await {
             Ok(guard) => guard,
             Err(_) if has_external_sources => {
@@ -818,6 +858,8 @@ impl ResolverService {
     pub async fn resolve_movie(
         &self,
         user_id: i64,
+        real_debrid_api_key: &str,
+        local_torrent_enabled: bool,
         tmdb_id: &str,
         title_fallback: &str,
         year_fallback: &str,
@@ -837,6 +879,7 @@ impl ResolverService {
             .movie_requests
             .fetch_add(1, Ordering::Relaxed);
         let resolver_provider = normalize_resolver_provider(resolver_provider);
+        let real_debrid = RealDebridRequestContext::for_user(user_id, real_debrid_api_key);
         let lock_key = build_movie_resolve_lock_key(
             tmdb_id,
             preferred_audio_lang,
@@ -865,6 +908,8 @@ impl ResolverService {
         self.prune_idle_resolve_locks();
         self.resolve_movie_inner(
             user_id,
+            real_debrid.as_ref(),
+            local_torrent_enabled,
             tmdb_id,
             title_fallback,
             year_fallback,
@@ -956,6 +1001,8 @@ impl ResolverService {
     async fn resolve_movie_inner(
         &self,
         user_id: i64,
+        real_debrid: Option<&RealDebridRequestContext>,
+        local_torrent_enabled: bool,
         tmdb_id: &str,
         title_fallback: &str,
         year_fallback: &str,
@@ -1055,9 +1102,16 @@ impl ResolverService {
                 }
             };
         }
+        if real_debrid.is_none() {
+            return Err(real_debrid_api_key_required_error());
+        }
+        if resolver_provider == ResolverProvider::LocalTorrent && !local_torrent_enabled {
+            return Err(local_torrent_required_error());
+        }
         let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
             .try_reuse_playback_session(
+                user_id,
                 &metadata,
                 &preferences,
                 &filters,
@@ -1071,6 +1125,7 @@ impl ResolverService {
         if should_allow_latest_playback_session_fallback(&filters)
             && let Some(reused) = self
                 .try_reuse_latest_healthy_playback_session(
+                    user_id,
                     &metadata,
                     &preferences,
                     &filters,
@@ -1123,6 +1178,9 @@ impl ResolverService {
                                 &metadata,
                                 &preferences,
                                 resolver_provider,
+                                real_debrid,
+                                user_id,
+                                local_torrent_enabled,
                             )
                             .await
                         {
@@ -1138,6 +1196,9 @@ impl ResolverService {
                             &metadata,
                             &preferences,
                             resolver_provider,
+                            real_debrid,
+                            user_id,
+                            local_torrent_enabled,
                         )
                         .await
                     {
@@ -1181,6 +1242,9 @@ impl ResolverService {
                         &metadata,
                         &preferences,
                         resolver_provider,
+                        real_debrid,
+                        user_id,
+                        local_torrent_enabled,
                     )
                     .await
                 {
@@ -1200,6 +1264,8 @@ impl ResolverService {
     pub async fn resolve_tv(
         &self,
         user_id: i64,
+        real_debrid_api_key: &str,
+        local_torrent_enabled: bool,
         tmdb_id: &str,
         title_fallback: &str,
         year_fallback: &str,
@@ -1224,6 +1290,7 @@ impl ResolverService {
             .tv_requests
             .fetch_add(1, Ordering::Relaxed);
         let resolver_provider = normalize_resolver_provider(resolver_provider);
+        let real_debrid = RealDebridRequestContext::for_user(user_id, real_debrid_api_key);
         let lock_key = build_tv_resolve_lock_key(
             tmdb_id,
             season_number,
@@ -1257,6 +1324,8 @@ impl ResolverService {
         self.prune_idle_resolve_locks();
         self.resolve_tv_inner(
             user_id,
+            real_debrid.as_ref(),
+            local_torrent_enabled,
             tmdb_id,
             title_fallback,
             year_fallback,
@@ -1284,6 +1353,8 @@ impl ResolverService {
     async fn resolve_tv_inner(
         &self,
         user_id: i64,
+        real_debrid: Option<&RealDebridRequestContext>,
+        local_torrent_enabled: bool,
         tmdb_id: &str,
         title_fallback: &str,
         year_fallback: &str,
@@ -1410,9 +1481,16 @@ impl ResolverService {
                 }
             };
         }
+        if real_debrid.is_none() {
+            return Err(real_debrid_api_key_required_error());
+        }
+        if resolver_provider == ResolverProvider::LocalTorrent && !local_torrent_enabled {
+            return Err(local_torrent_required_error());
+        }
         let cache_reuse_provider = resolver_provider.cache_reuse_provider();
         if let Some(reused) = self
             .try_reuse_playback_session(
+                user_id,
                 &metadata,
                 &preferences,
                 &filters,
@@ -1426,6 +1504,7 @@ impl ResolverService {
         if should_allow_latest_playback_session_fallback(&filters)
             && let Some(reused) = self
                 .try_reuse_latest_healthy_playback_session(
+                    user_id,
                     &metadata,
                     &preferences,
                     &filters,
@@ -1487,6 +1566,9 @@ impl ResolverService {
                                 &metadata,
                                 &preferences,
                                 resolver_provider,
+                                real_debrid,
+                                user_id,
+                                local_torrent_enabled,
                             )
                             .await
                         {
@@ -1502,6 +1584,9 @@ impl ResolverService {
                             &metadata,
                             &preferences,
                             resolver_provider,
+                            real_debrid,
+                            user_id,
+                            local_torrent_enabled,
                         )
                         .await
                     {
@@ -1546,6 +1631,9 @@ impl ResolverService {
                         &metadata,
                         &preferences,
                         resolver_provider,
+                        real_debrid,
+                        user_id,
+                        local_torrent_enabled,
                     )
                     .await
                 {
@@ -1567,10 +1655,20 @@ impl ResolverService {
         metadata: &ResolveMetadata,
         preferences: &ResolvePreferences,
         resolver_provider: ResolverProvider,
+        real_debrid: Option<&RealDebridRequestContext>,
+        user_id: i64,
+        local_torrent_enabled: bool,
     ) -> AppResult<Value> {
         if resolver_provider.is_fastest() {
             return self
-                .resolve_movie_candidates_auto(candidates, metadata, preferences)
+                .resolve_movie_candidates_auto(
+                    candidates,
+                    metadata,
+                    preferences,
+                    real_debrid,
+                    user_id,
+                    local_torrent_enabled,
+                )
                 .await;
         }
         self.resolve_movie_candidates_with_provider(
@@ -1578,6 +1676,9 @@ impl ResolverService {
             metadata,
             preferences,
             resolver_provider,
+            real_debrid,
+            user_id,
+            local_torrent_enabled,
         )
         .await
     }
@@ -1588,6 +1689,9 @@ impl ResolverService {
         metadata: &ResolveMetadata,
         preferences: &ResolvePreferences,
         resolver_provider: ResolverProvider,
+        real_debrid: Option<&RealDebridRequestContext>,
+        user_id: i64,
+        local_torrent_enabled: bool,
     ) -> AppResult<Value> {
         if candidates.is_empty() {
             return Err(ApiError::internal(
@@ -1608,7 +1712,13 @@ impl ResolverService {
             let remaining_ms = (resolve_max_ms - elapsed_ms).max(1) as u64;
             let resolved_result = match timeout(
                 Duration::from_millis(remaining_ms),
-                self.resolve_candidate_stream(candidate, &fallback_name, resolver_provider),
+                self.resolve_candidate_stream(
+                    candidate,
+                    &fallback_name,
+                    resolver_provider,
+                    real_debrid,
+                    local_torrent_enabled,
+                ),
             )
             .await
             {
@@ -1625,6 +1735,7 @@ impl ResolverService {
                             metadata.clone(),
                             preferences.clone(),
                             resolver_provider,
+                            user_id,
                             true,
                         )
                         .await;
@@ -1644,15 +1755,27 @@ impl ResolverService {
         candidates: Vec<&DiscoveryStream>,
         metadata: &ResolveMetadata,
         preferences: &ResolvePreferences,
+        real_debrid: Option<&RealDebridRequestContext>,
+        user_id: i64,
+        local_torrent_enabled: bool,
     ) -> AppResult<Value> {
+        let Some(real_debrid) = real_debrid else {
+            return Err(real_debrid_api_key_required_error());
+        };
         let real_debrid_result = self
             .resolve_movie_candidates_with_provider(
                 candidates.clone(),
                 metadata,
                 preferences,
                 ResolverProvider::RealDebrid,
+                Some(real_debrid),
+                user_id,
+                local_torrent_enabled,
             )
             .await;
+        if !local_torrent_enabled {
+            return real_debrid_result;
+        }
         match real_debrid_result {
             Ok(result) => Ok(result),
             Err(real_debrid_error) => match self
@@ -1661,6 +1784,9 @@ impl ResolverService {
                     metadata,
                     preferences,
                     ResolverProvider::LocalTorrent,
+                    Some(real_debrid),
+                    user_id,
+                    local_torrent_enabled,
                 )
                 .await
             {
@@ -1682,10 +1808,20 @@ impl ResolverService {
         metadata: &ResolveMetadata,
         preferences: &ResolvePreferences,
         resolver_provider: ResolverProvider,
+        real_debrid: Option<&RealDebridRequestContext>,
+        user_id: i64,
+        local_torrent_enabled: bool,
     ) -> AppResult<Value> {
         if resolver_provider.is_fastest() {
             return self
-                .resolve_episode_candidates_auto(candidates, metadata, preferences)
+                .resolve_episode_candidates_auto(
+                    candidates,
+                    metadata,
+                    preferences,
+                    real_debrid,
+                    user_id,
+                    local_torrent_enabled,
+                )
                 .await;
         }
         self.resolve_episode_candidates_with_provider(
@@ -1693,6 +1829,9 @@ impl ResolverService {
             metadata,
             preferences,
             resolver_provider,
+            real_debrid,
+            user_id,
+            local_torrent_enabled,
         )
         .await
     }
@@ -1703,6 +1842,9 @@ impl ResolverService {
         metadata: &ResolveMetadata,
         preferences: &ResolvePreferences,
         resolver_provider: ResolverProvider,
+        real_debrid: Option<&RealDebridRequestContext>,
+        user_id: i64,
+        local_torrent_enabled: bool,
     ) -> AppResult<Value> {
         if candidates.is_empty() {
             return Err(ApiError::internal(
@@ -1734,7 +1876,13 @@ impl ResolverService {
             let remaining_ms = (resolve_max_ms - elapsed_ms).max(1) as u64;
             let resolved_result = match timeout(
                 Duration::from_millis(remaining_ms),
-                self.resolve_candidate_stream(candidate, &fallback_name, resolver_provider),
+                self.resolve_candidate_stream(
+                    candidate,
+                    &fallback_name,
+                    resolver_provider,
+                    real_debrid,
+                    local_torrent_enabled,
+                ),
             )
             .await
             {
@@ -1751,6 +1899,7 @@ impl ResolverService {
                             metadata.clone(),
                             preferences.clone(),
                             resolver_provider,
+                            user_id,
                             true,
                         )
                         .await;
@@ -1770,15 +1919,27 @@ impl ResolverService {
         candidates: Vec<&DiscoveryStream>,
         metadata: &ResolveMetadata,
         preferences: &ResolvePreferences,
+        real_debrid: Option<&RealDebridRequestContext>,
+        user_id: i64,
+        local_torrent_enabled: bool,
     ) -> AppResult<Value> {
+        let Some(real_debrid) = real_debrid else {
+            return Err(real_debrid_api_key_required_error());
+        };
         let real_debrid_result = self
             .resolve_episode_candidates_with_provider(
                 candidates.clone(),
                 metadata,
                 preferences,
                 ResolverProvider::RealDebrid,
+                Some(real_debrid),
+                user_id,
+                local_torrent_enabled,
             )
             .await;
+        if !local_torrent_enabled {
+            return real_debrid_result;
+        }
         match real_debrid_result {
             Ok(result) => Ok(result),
             Err(real_debrid_error) => match self
@@ -1787,6 +1948,9 @@ impl ResolverService {
                     metadata,
                     preferences,
                     ResolverProvider::LocalTorrent,
+                    Some(real_debrid),
+                    user_id,
+                    local_torrent_enabled,
                 )
                 .await
             {
@@ -1808,6 +1972,7 @@ impl ResolverService {
         metadata: ResolveMetadata,
         preferences: ResolvePreferences,
         resolver_provider: ResolverProvider,
+        user_id: i64,
         include_session: bool,
     ) -> AppResult<Value> {
         let source_input = extract_playable_source_input(&resolved.playable_url);
@@ -1899,11 +2064,12 @@ impl ResolverService {
         if include_session {
             payload["session"] =
                 if self.config.playback_sessions_enabled && !metadata.tmdb_id.is_empty() {
-                    let session_key = build_playback_session_key_for_metadata(
+                    let session_key = build_user_scoped_playback_session_key_for_metadata(
                         &metadata,
                         &response_audio_lang,
                         &response_quality,
                         resolver_provider,
+                        user_id,
                     );
                     self.db
                         .persist_playback_session(PersistPlaybackSessionInput {
@@ -1944,16 +2110,22 @@ impl ResolverService {
         stream: &DiscoveryStream,
         fallback_name: &str,
         resolver_provider: ResolverProvider,
+        real_debrid: Option<&RealDebridRequestContext>,
+        local_torrent_enabled: bool,
     ) -> AppResult<ResolvedSource> {
         if resolver_provider.is_real_debrid() {
+            let real_debrid = real_debrid.ok_or_else(real_debrid_api_key_required_error)?;
             return self
-                .resolve_real_debrid_candidate_stream(stream, fallback_name)
+                .resolve_real_debrid_candidate_stream(stream, fallback_name, real_debrid)
                 .await;
         }
         if resolver_provider.is_fastest() {
             return Err(ApiError::internal(
                 "Fastest resolver must race concrete providers.",
             ));
+        }
+        if !local_torrent_enabled {
+            return Err(local_torrent_required_error());
         }
         self.resolve_local_torrent_candidate_stream(stream, fallback_name)
             .await
@@ -2057,27 +2229,39 @@ impl ResolverService {
         &self,
         stream: &DiscoveryStream,
         fallback_name: &str,
+        real_debrid: &RealDebridRequestContext,
     ) -> AppResult<ResolvedSource> {
         let magnet = build_magnet_uri(stream, fallback_name)?;
         let info_hash = get_stream_info_hash(stream);
-        if let Ok(Some(reusable_torrent_id)) =
-            self.find_reusable_rd_torrent_by_hash(&info_hash).await
+        if let Ok(Some(reusable_torrent_id)) = self
+            .find_reusable_rd_torrent_by_hash(real_debrid, &info_hash)
+            .await
         {
             match self
-                .resolve_from_torrent_id(&reusable_torrent_id, &info_hash, stream, fallback_name)
+                .resolve_from_torrent_id(
+                    real_debrid,
+                    &reusable_torrent_id,
+                    &info_hash,
+                    stream,
+                    fallback_name,
+                )
                 .await
             {
                 Ok(resolved) => {
                     let _ = self
-                        .set_cached_rd_torrent_id(&info_hash, &reusable_torrent_id)
+                        .set_cached_rd_torrent_id(real_debrid, &info_hash, &reusable_torrent_id)
                         .await;
                     return Ok(resolved);
                 }
                 Err(error) => {
                     if is_rd_selected_file_mismatch_error(&error) {
-                        let _ = self.safe_delete_torrent(&reusable_torrent_id).await;
+                        let _ = self
+                            .safe_delete_torrent(real_debrid, &reusable_torrent_id)
+                            .await;
                     }
-                    let _ = self.delete_cached_rd_torrent_id(&info_hash).await;
+                    let _ = self
+                        .delete_cached_rd_torrent_id(real_debrid, &info_hash)
+                        .await;
                 }
             }
         }
@@ -2086,6 +2270,7 @@ impl ResolverService {
         for attempt in 0..2 {
             let add_magnet = self
                 .rd_fetch_form(
+                    real_debrid,
                     "/torrents/addMagnet",
                     reqwest::Method::POST,
                     &[("magnet", magnet.as_str())],
@@ -2100,18 +2285,28 @@ impl ResolverService {
             }
 
             let result = self
-                .resolve_from_torrent_id(&torrent_id, &info_hash, stream, fallback_name)
+                .resolve_from_torrent_id(
+                    real_debrid,
+                    &torrent_id,
+                    &info_hash,
+                    stream,
+                    fallback_name,
+                )
                 .await;
             match result {
                 Ok(resolved) => {
-                    let _ = self.set_cached_rd_torrent_id(&info_hash, &torrent_id).await;
+                    let _ = self
+                        .set_cached_rd_torrent_id(real_debrid, &info_hash, &torrent_id)
+                        .await;
                     return Ok(resolved);
                 }
                 Err(error) => {
                     let retry_after_stale_selected_file =
                         attempt == 0 && is_rd_selected_file_mismatch_error(&error);
-                    let _ = self.safe_delete_torrent(&torrent_id).await;
-                    let _ = self.delete_cached_rd_torrent_id(&info_hash).await;
+                    let _ = self.safe_delete_torrent(real_debrid, &torrent_id).await;
+                    let _ = self
+                        .delete_cached_rd_torrent_id(real_debrid, &info_hash)
+                        .await;
                     if retry_after_stale_selected_file {
                         last_error = Some(error);
                         continue;
@@ -2126,6 +2321,7 @@ impl ResolverService {
 
     async fn resolve_from_torrent_id(
         &self,
+        real_debrid: &RealDebridRequestContext,
         torrent_id: &str,
         info_hash: &str,
         stream: &DiscoveryStream,
@@ -2133,6 +2329,7 @@ impl ResolverService {
     ) -> AppResult<ResolvedSource> {
         let info = self
             .rd_fetch_json(
+                real_debrid,
                 &format!("/torrents/info/{torrent_id}"),
                 reqwest::Method::GET,
                 12_000,
@@ -2156,6 +2353,7 @@ impl ResolverService {
             .map(|file| stringify_json(file.get("path")))
             .unwrap_or_default();
         self.rd_fetch_form(
+            real_debrid,
             &format!("/torrents/selectFiles/{torrent_id}"),
             reqwest::Method::POST,
             &[(
@@ -2170,7 +2368,9 @@ impl ResolverService {
         )
         .await?;
 
-        let ready_info = self.wait_for_torrent_to_be_ready(torrent_id).await?;
+        let ready_info = self
+            .wait_for_torrent_to_be_ready(real_debrid, torrent_id)
+            .await?;
         if !ready_info_has_selected_file_id(&ready_info, file_ids[0]) {
             return Err(ApiError::internal(RD_SELECTED_FILE_MISMATCH_ERROR));
         }
@@ -2193,7 +2393,10 @@ impl ResolverService {
         let mut uncertain_candidates = Vec::new();
         let mut last_error = None;
         for download_link in download_links {
-            match self.resolve_playable_url_from_rd_link(&download_link).await {
+            match self
+                .resolve_playable_url_from_rd_link(real_debrid, &download_link)
+                .await
+            {
                 Ok((playable_urls, resolved_filename)) => {
                     if filename.is_empty() {
                         filename = resolved_filename.clone();
@@ -2271,19 +2474,27 @@ impl ResolverService {
         Ok(resolved)
     }
 
-    async fn find_reusable_rd_torrent_by_hash(&self, info_hash: &str) -> AppResult<Option<String>> {
+    async fn find_reusable_rd_torrent_by_hash(
+        &self,
+        real_debrid: &RealDebridRequestContext,
+        info_hash: &str,
+    ) -> AppResult<Option<String>> {
         let normalized_hash = normalize_source_hash(info_hash);
         if normalized_hash.is_empty() {
             return Ok(None);
         }
 
-        if let Some(cached_torrent_id) = self.get_cached_rd_torrent_id(&normalized_hash).await? {
+        if let Some(cached_torrent_id) = self
+            .get_cached_rd_torrent_id(real_debrid, &normalized_hash)
+            .await?
+        {
             return Ok(Some(cached_torrent_id));
         }
 
         for page in 1..=4 {
             let payload = self
                 .rd_fetch_json(
+                    real_debrid,
                     &format!("/torrents?page={page}"),
                     reqwest::Method::GET,
                     10_000,
@@ -2301,7 +2512,7 @@ impl ResolverService {
                 (hash == normalized_hash && !torrent_id.is_empty()).then_some(torrent_id)
             }) {
                 let _ = self
-                    .set_cached_rd_torrent_id(&normalized_hash, &torrent_id)
+                    .set_cached_rd_torrent_id(real_debrid, &normalized_hash, &torrent_id)
                     .await;
                 return Ok(Some(torrent_id));
             }
@@ -2309,8 +2520,12 @@ impl ResolverService {
         Ok(None)
     }
 
-    async fn get_cached_rd_torrent_id(&self, info_hash: &str) -> AppResult<Option<String>> {
-        let cache_key = build_rd_torrent_cache_key(info_hash);
+    async fn get_cached_rd_torrent_id(
+        &self,
+        real_debrid: &RealDebridRequestContext,
+        info_hash: &str,
+    ) -> AppResult<Option<String>> {
+        let cache_key = build_scoped_rd_torrent_cache_key(&real_debrid.cache_scope, info_hash);
         let Some((payload, _)) = self.db.get_movie_quick_start_cache(cache_key).await? else {
             return Ok(None);
         };
@@ -2321,7 +2536,12 @@ impl ResolverService {
         Ok(Some(torrent_id))
     }
 
-    async fn set_cached_rd_torrent_id(&self, info_hash: &str, torrent_id: &str) -> AppResult<()> {
+    async fn set_cached_rd_torrent_id(
+        &self,
+        real_debrid: &RealDebridRequestContext,
+        info_hash: &str,
+        torrent_id: &str,
+    ) -> AppResult<()> {
         let normalized_hash = normalize_source_hash(info_hash);
         let normalized_torrent_id = torrent_id.trim();
         if normalized_hash.is_empty() || normalized_torrent_id.is_empty() {
@@ -2329,7 +2549,7 @@ impl ResolverService {
         }
         self.db
             .set_movie_quick_start_cache(
-                build_rd_torrent_cache_key(&normalized_hash),
+                build_scoped_rd_torrent_cache_key(&real_debrid.cache_scope, &normalized_hash),
                 json!({
                     "infoHash": normalized_hash,
                     "torrentId": normalized_torrent_id
@@ -2339,13 +2559,20 @@ impl ResolverService {
             .await
     }
 
-    async fn delete_cached_rd_torrent_id(&self, info_hash: &str) -> AppResult<()> {
+    async fn delete_cached_rd_torrent_id(
+        &self,
+        real_debrid: &RealDebridRequestContext,
+        info_hash: &str,
+    ) -> AppResult<()> {
         let normalized_hash = normalize_source_hash(info_hash);
         if normalized_hash.is_empty() {
             return Ok(());
         }
         self.db
-            .delete_movie_quick_start_cache(build_rd_torrent_cache_key(&normalized_hash))
+            .delete_movie_quick_start_cache(build_scoped_rd_torrent_cache_key(
+                &real_debrid.cache_scope,
+                &normalized_hash,
+            ))
             .await
     }
 
@@ -2367,12 +2594,17 @@ impl ResolverService {
             .await;
     }
 
-    async fn wait_for_torrent_to_be_ready(&self, torrent_id: &str) -> AppResult<Value> {
+    async fn wait_for_torrent_to_be_ready(
+        &self,
+        real_debrid: &RealDebridRequestContext,
+        torrent_id: &str,
+    ) -> AppResult<Value> {
         let started_at = now_ms();
         let mut last_status = "pending".to_owned();
         while now_ms() - started_at < 18_000 {
             let info = self
                 .rd_fetch_json(
+                    real_debrid,
                     &format!("/torrents/info/{torrent_id}"),
                     reqwest::Method::GET,
                     12_000,
@@ -2404,10 +2636,12 @@ impl ResolverService {
 
     async fn resolve_playable_url_from_rd_link(
         &self,
+        real_debrid: &RealDebridRequestContext,
         rd_link: &str,
     ) -> AppResult<(Vec<String>, String)> {
         let unrestricted = self
             .rd_fetch_form(
+                real_debrid,
                 "/unrestrict/link",
                 reqwest::Method::POST,
                 &[("link", rd_link)],
@@ -2456,39 +2690,42 @@ impl ResolverService {
 
     async fn rd_fetch_json(
         &self,
+        real_debrid: &RealDebridRequestContext,
         path: &str,
         method: reqwest::Method,
         timeout_ms: u64,
     ) -> AppResult<Value> {
-        self.rd_fetch(path, method, None, timeout_ms).await
+        self.rd_fetch(real_debrid, path, method, None, timeout_ms)
+            .await
     }
 
     async fn rd_fetch_form(
         &self,
+        real_debrid: &RealDebridRequestContext,
         path: &str,
         method: reqwest::Method,
         form: &[(&str, &str)],
         timeout_ms: u64,
     ) -> AppResult<Value> {
-        self.rd_fetch(path, method, Some(form), timeout_ms).await
+        self.rd_fetch(real_debrid, path, method, Some(form), timeout_ms)
+            .await
     }
 
     async fn rd_fetch(
         &self,
+        real_debrid: &RealDebridRequestContext,
         path: &str,
         method: reqwest::Method,
         form: Option<&[(&str, &str)]>,
         timeout_ms: u64,
     ) -> AppResult<Value> {
-        if self.config.real_debrid_token.trim().is_empty() {
-            return Err(ApiError::internal(
-                "REAL_DEBRID_TOKEN is not configured on the server.",
-            ));
+        if real_debrid.api_key.trim().is_empty() {
+            return Err(ApiError::internal("Real-Debrid API key is not configured."));
         }
         let mut builder = self
             .client
             .request(method, format!("{REAL_DEBRID_API_BASE}{path}"))
-            .bearer_auth(self.config.real_debrid_token.clone())
+            .bearer_auth(real_debrid.api_key.clone())
             .timeout(Duration::from_millis(timeout_ms));
         if let Some(form) = form {
             builder = builder.form(form);
@@ -2522,12 +2759,17 @@ impl ResolverService {
         Ok(payload)
     }
 
-    async fn safe_delete_torrent(&self, torrent_id: &str) -> AppResult<()> {
+    async fn safe_delete_torrent(
+        &self,
+        real_debrid: &RealDebridRequestContext,
+        torrent_id: &str,
+    ) -> AppResult<()> {
         if torrent_id.trim().is_empty() {
             return Ok(());
         }
         let _ = self
             .rd_fetch_json(
+                real_debrid,
                 &format!("/torrents/delete/{torrent_id}"),
                 reqwest::Method::DELETE,
                 5_000,
@@ -2568,6 +2810,7 @@ impl ResolverService {
 
     async fn try_reuse_playback_session(
         &self,
+        user_id: i64,
         metadata: &ResolveMetadata,
         preferences: &ResolvePreferences,
         filters: &ResolveFilters,
@@ -2583,7 +2826,13 @@ impl ResolverService {
 
         let mut session_keys = Vec::new();
         let requested_session_key = requested_session_key.trim();
-        if !requested_session_key.is_empty() {
+        if !requested_session_key.is_empty()
+            && requested_playback_session_key_allowed(
+                requested_session_key,
+                resolver_provider,
+                user_id,
+            )
+        {
             session_keys.push(requested_session_key.to_owned());
         }
         session_keys.extend(build_playback_session_lookup_keys(
@@ -2591,6 +2840,7 @@ impl ResolverService {
             &preferences.audio_lang,
             &preferences.quality,
             resolver_provider,
+            user_id,
         ));
         session_keys.dedup();
         let mut session = None;
@@ -2687,6 +2937,7 @@ impl ResolverService {
             metadata.clone(),
             preferences.clone(),
             resolver_provider,
+            user_id,
             true,
         )
         .await
@@ -2695,6 +2946,7 @@ impl ResolverService {
 
     async fn try_reuse_latest_healthy_playback_session(
         &self,
+        user_id: i64,
         metadata: &ResolveMetadata,
         preferences: &ResolvePreferences,
         filters: &ResolveFilters,
@@ -2713,6 +2965,13 @@ impl ResolverService {
         }
 
         for session in sessions {
+            if !playback_session_key_allowed_for_user(
+                &session.session_key,
+                resolver_provider,
+                user_id,
+            ) {
+                continue;
+            }
             if session.tmdb_id != metadata.tmdb_id || session.playable_url.trim().is_empty() {
                 continue;
             }
@@ -2795,6 +3054,7 @@ impl ResolverService {
                     metadata.clone(),
                     preferences.clone(),
                     resolver_provider,
+                    user_id,
                     true,
                 )
                 .await
@@ -4858,13 +5118,7 @@ async fn build_external_embed_resolved_playback_payload(
         ));
     }
 
-    let embed_url = external_embed_playback_url(source, metadata, preferences)?;
-    Some(build_external_embed_resolved_payload_with_iframe(
-        metadata,
-        source,
-        preferences,
-        embed_url,
-    ))
+    None
 }
 
 fn external_embed_hls_candidate_sources(
@@ -4927,43 +5181,6 @@ fn build_external_embed_resolved_payload_with_playable_url(
         },
         "metadata": response_metadata
     })
-}
-
-fn build_external_embed_resolved_payload_with_iframe(
-    metadata: &ResolveMetadata,
-    source: ExternalEmbedSource,
-    preferences: &ResolvePreferences,
-    embed_url: String,
-) -> Value {
-    let iframe_source = build_live_iframe_playback_source(&embed_url);
-    let filename = format!("{} iframe", external_embed_source_filename(source));
-    build_external_embed_resolved_payload_with_playable_url(
-        metadata,
-        source,
-        preferences,
-        iframe_source,
-        embed_url,
-    )
-    .as_object()
-    .map(|payload| {
-        let mut payload = payload.clone();
-        payload.insert("filename".to_owned(), json!(filename));
-        if let Some(metadata) = payload
-            .get_mut("metadata")
-            .and_then(serde_json::Value::as_object_mut)
-        {
-            metadata.insert("subtitleTargetName".to_owned(), json!(filename));
-            metadata.insert("subtitleTargetFilename".to_owned(), json!(filename));
-        }
-        Value::Object(payload)
-    })
-    .unwrap_or_else(|| json!({}))
-}
-
-fn build_live_iframe_playback_source(embed_url: &str) -> String {
-    let encoded: String =
-        url::form_urlencoded::byte_serialize(embed_url.trim().as_bytes()).collect();
-    format!("live-iframe:{encoded}")
 }
 
 fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -> Option<String> {
@@ -5498,6 +5715,16 @@ fn build_rd_torrent_cache_key(info_hash: &str) -> String {
     format!("rd-torrent:{}", normalize_source_hash(info_hash))
 }
 
+fn build_scoped_rd_torrent_cache_key(cache_scope: &str, info_hash: &str) -> String {
+    let normalized_hash = normalize_source_hash(info_hash);
+    let normalized_scope = cache_scope.trim();
+    if normalized_scope.is_empty() {
+        build_rd_torrent_cache_key(&normalized_hash)
+    } else {
+        format!("rd-torrent:{normalized_scope}:{normalized_hash}")
+    }
+}
+
 fn parse_torrentio_streams_payload(payload: &Value) -> AppResult<Vec<DiscoveryStream>> {
     let streams = payload
         .get("streams")
@@ -5854,6 +6081,16 @@ fn user_facing_real_debrid_error(message: &str) -> String {
     }
 }
 
+fn real_debrid_api_key_required_error() -> ApiError {
+    ApiError::failed_dependency("Add a Real-Debrid API key in Settings to use torrent sources.")
+}
+
+fn local_torrent_required_error() -> ApiError {
+    ApiError::failed_dependency(
+        "Enable Local torrent cache in Settings to use local torrent sources.",
+    )
+}
+
 fn is_real_debrid_blocked_source_message(message: &str) -> bool {
     message.trim() == "Real-Debrid blocked this source."
 }
@@ -6182,23 +6419,58 @@ fn build_playback_session_key_for_metadata(
     }
 }
 
+fn real_debrid_playback_session_prefix(user_id: i64) -> String {
+    format!("real-debrid:user:{}:", user_id.max(0))
+}
+
+fn build_user_scoped_playback_session_key_for_metadata(
+    metadata: &ResolveMetadata,
+    audio_lang: &str,
+    quality: &str,
+    resolver_provider: ResolverProvider,
+    user_id: i64,
+) -> String {
+    let base =
+        build_playback_session_key_for_metadata(metadata, audio_lang, quality, resolver_provider);
+    if resolver_provider == ResolverProvider::RealDebrid {
+        format!("{}{base}", real_debrid_playback_session_prefix(user_id))
+    } else {
+        base
+    }
+}
+
+fn playback_session_key_allowed_for_user(
+    session_key: &str,
+    resolver_provider: ResolverProvider,
+    user_id: i64,
+) -> bool {
+    resolver_provider != ResolverProvider::RealDebrid
+        || session_key.starts_with(&real_debrid_playback_session_prefix(user_id))
+}
+
+fn requested_playback_session_key_allowed(
+    session_key: &str,
+    resolver_provider: ResolverProvider,
+    user_id: i64,
+) -> bool {
+    !session_key.trim().is_empty()
+        && playback_session_key_allowed_for_user(session_key, resolver_provider, user_id)
+}
+
 fn build_playback_session_lookup_keys(
     metadata: &ResolveMetadata,
     audio_lang: &str,
     quality: &str,
     resolver_provider: ResolverProvider,
+    user_id: i64,
 ) -> Vec<String> {
-    let primary =
-        build_playback_session_key_for_metadata(metadata, audio_lang, quality, resolver_provider);
-    if resolver_provider != ResolverProvider::RealDebrid {
-        return vec![primary];
-    }
-    let legacy = build_playback_session_key(&metadata.tmdb_id, audio_lang, quality);
-    if primary == legacy {
-        vec![primary]
-    } else {
-        vec![primary, legacy]
-    }
+    vec![build_user_scoped_playback_session_key_for_metadata(
+        metadata,
+        audio_lang,
+        quality,
+        resolver_provider,
+        user_id,
+    )]
 }
 
 fn build_playback_session_payload(session: &PlaybackSession) -> Value {
@@ -6839,25 +7111,25 @@ mod tests {
         DiscoveryBehaviorHints, DiscoveryStream, PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR,
         ResolveFilters, ResolveMetadata, ResolvePreferences, ResolvedSource, ResolverExternalGuard,
         ResolverMetrics, ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters,
-        SourceHealthStats, build_external_embed_resolved_payload_with_iframe,
-        build_external_embed_source_summaries, build_live_iframe_playback_source,
-        build_movie_resolve_lock_key, build_playback_session_key_for_metadata,
-        build_rd_torrent_cache_key, build_torrentio_stream_cache_key, build_torznab_request_url,
-        build_torznab_stream_cache_key, build_tv_resolve_lock_key, collect_episode_signatures,
+        SourceHealthStats, build_external_embed_source_summaries, build_movie_resolve_lock_key,
+        build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
+        build_scoped_rd_torrent_cache_key, build_torrentio_stream_cache_key,
+        build_torznab_request_url, build_torznab_stream_cache_key, build_tv_resolve_lock_key,
+        build_user_scoped_playback_session_key_for_metadata, collect_episode_signatures,
         compute_source_health_score, compute_torrentio_cache_deadlines,
         default_external_embed_source, does_filename_likely_match_movie,
         external_embed_hls_candidate_sources, external_embed_source_for_source_hash,
         external_embed_source_hash, external_embed_sources, external_embed_url,
-        extract_info_hash_from_magnet, is_persistent_source_resolve_error,
-        is_public_external_embed_hls_hostname, is_supported_external_embed_hls_embed_url,
-        is_supported_external_embed_hls_url, normalize_allowed_formats,
-        normalize_resolved_source_for_software_decode, normalize_resolver_provider,
-        normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
-        parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
-        parse_torznab_xml, playback_session_matches_preferred_container,
-        playback_session_matches_preferred_quality, playback_session_matches_source_hash,
-        ready_info_has_selected_file_id, select_fastest_race_candidates,
-        select_top_episode_candidates, select_top_movie_candidates,
+        extract_info_hash_from_magnet, is_external_embed_hls_capable_source,
+        is_persistent_source_resolve_error, is_public_external_embed_hls_hostname,
+        is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
+        normalize_allowed_formats, normalize_resolved_source_for_software_decode,
+        normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
+        now_ms, parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
+        parse_torznab_xml, playback_session_key_allowed_for_user,
+        playback_session_matches_preferred_container, playback_session_matches_preferred_quality,
+        playback_session_matches_source_hash, ready_info_has_selected_file_id,
+        select_fastest_race_candidates, select_top_episode_candidates, select_top_movie_candidates,
         should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
         should_prefer_software_decode_source, should_skip_playback_session_reuse,
         should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
@@ -7001,38 +7273,25 @@ mod tests {
     }
 
     #[test]
-    fn external_embed_iframe_fallback_builds_player_source() {
-        let metadata = sample_tv_metadata();
-        let source = default_external_embed_source(&metadata).expect("default embed source");
-        let embed_url = external_embed_url(source, &metadata).expect("embed url");
-        let preferences = ResolvePreferences {
-            audio_lang: "en".to_owned(),
-            subtitle_lang: String::new(),
-            quality: "auto".to_owned(),
-        };
+    fn selected_external_embed_sources_are_native_hls_only() {
+        let metadata = sample_movie_metadata();
+        let neon_source = external_embed_sources()
+            .into_iter()
+            .find(|source| {
+                source.provider.id == "videasy"
+                    && source
+                        .server
+                        .map(|server| server.id == "NEON")
+                        .unwrap_or(false)
+            })
+            .expect("neon source");
 
-        let payload = build_external_embed_resolved_payload_with_iframe(
-            &metadata,
-            source,
-            &preferences,
-            embed_url.clone(),
-        );
-
-        assert_eq!(payload["resolverProvider"], "external-embed");
-        assert_eq!(payload["sourceInput"], embed_url);
-        assert_eq!(
-            payload["playableUrl"],
-            build_live_iframe_playback_source(payload["sourceInput"].as_str().unwrap())
-        );
+        let pinned_candidates = external_embed_hls_candidate_sources(neon_source, &metadata, false);
+        assert_eq!(pinned_candidates, vec![neon_source]);
         assert!(
-            payload["filename"]
-                .as_str()
-                .unwrap_or_default()
-                .ends_with(" iframe")
-        );
-        assert_eq!(
-            payload["metadata"]["subtitleTargetFilename"],
-            payload["filename"]
+            pinned_candidates
+                .iter()
+                .all(|source| is_external_embed_hls_capable_source(*source))
         );
     }
 
@@ -7263,6 +7522,26 @@ mod tests {
             ),
             "1368166:en:1080p"
         );
+        assert_eq!(
+            build_user_scoped_playback_session_key_for_metadata(
+                &sample_movie_metadata(),
+                "EN",
+                "1080",
+                ResolverProvider::RealDebrid,
+                42
+            ),
+            "real-debrid:user:42:1368166:en:1080p"
+        );
+        assert!(playback_session_key_allowed_for_user(
+            "real-debrid:user:42:1368166:en:1080p",
+            ResolverProvider::RealDebrid,
+            42
+        ));
+        assert!(!playback_session_key_allowed_for_user(
+            "1368166:en:1080p",
+            ResolverProvider::RealDebrid,
+            42
+        ));
     }
 
     #[test]
@@ -7467,6 +7746,13 @@ mod tests {
         assert_eq!(
             build_rd_torrent_cache_key("ABCDEF0123456789ABCDEF0123456789ABCDEF01"),
             "rd-torrent:abcdef0123456789abcdef0123456789abcdef01"
+        );
+        assert_eq!(
+            build_scoped_rd_torrent_cache_key(
+                "user:42",
+                "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+            ),
+            "rd-torrent:user:42:abcdef0123456789abcdef0123456789abcdef01"
         );
     }
 

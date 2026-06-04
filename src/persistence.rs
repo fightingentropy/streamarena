@@ -1475,6 +1475,30 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
+    pub async fn get_user_preference(
+        &self,
+        user_id: i64,
+        pref_key: String,
+    ) -> AppResult<Option<String>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let value = {
+                let mut stmt = connection.prepare(
+                    "SELECT pref_value FROM user_preferences WHERE user_id = ? AND pref_key = ?",
+                )?;
+                stmt.query_row(params![user_id, pref_key], |row| row.get::<_, String>(0))
+                    .optional()?
+            };
+            return_connection(&pool, connection);
+            Ok::<Option<String>, rusqlite::Error>(value)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
     pub async fn upsert_user_preferences(
         &self,
         user_id: i64,
@@ -1497,6 +1521,24 @@ impl Db {
                 )?;
             }
             tx.commit()?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn delete_user_preference(&self, user_id: i64, pref_key: String) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "DELETE FROM user_preferences WHERE user_id = ? AND pref_key = ?",
+                params![user_id, pref_key],
+            )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
@@ -4045,7 +4087,6 @@ mod tests {
             port: 0,
             max_upload_bytes: 1,
             tmdb_api_key: String::new(),
-            real_debrid_token: String::new(),
             torrentio_base_url: String::new(),
             torznab_api_url: String::new(),
             torznab_api_key: String::new(),

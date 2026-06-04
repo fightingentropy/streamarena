@@ -1899,6 +1899,13 @@ function normalizeResolverFailureMessage(
   const normalized = message.toLowerCase();
 
   if (
+    normalized.includes("add a real-debrid api key") ||
+    normalized.includes("enable local torrent cache")
+  ) {
+    return message;
+  }
+
+  if (
     normalized.includes("pipelinestatus::") ||
     normalized.includes("ffmpegdemuxer") ||
     normalized.includes("demuxer_error") ||
