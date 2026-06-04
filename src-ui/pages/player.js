@@ -147,6 +147,9 @@ let pendingManualSourceSwitchRestore = null;
 let pendingManualSourceSwitchTimeout = null;
 let tmdbSkipExternalEmbed = false;
 let tmdbResolveRetries = 0;
+let tmdbPlaybackRequestToken = 0;
+let manualSourceSwitchRequestToken = 0;
+let activeManualSourceSwitchRequestToken = 0;
 let userRealDebridSettingsLoaded = false;
 let userRealDebridConfigured = false;
 let userLocalTorrentEnabled = false;
@@ -3888,7 +3891,19 @@ function armManualSourceSwitchRestoreTimeout(restoreState) {
 }
 
 function isManualSourceSwitchPending() {
-  return Boolean(pendingManualSourceSwitchRestore);
+  return Boolean(
+    activeManualSourceSwitchRequestToken || pendingManualSourceSwitchRestore,
+  );
+}
+
+function isManualSourceSwitchRequestActive() {
+  return Boolean(activeManualSourceSwitchRequestToken);
+}
+
+function finishManualSourceSwitchRequest(requestToken) {
+  if (activeManualSourceSwitchRequestToken === requestToken) {
+    activeManualSourceSwitchRequestToken = 0;
+  }
 }
 
 function markManualSourceSwitchPlaybackRequested(sourceHash = "") {
@@ -4184,8 +4199,15 @@ function applyStoredSubtitleSelectionPreference() {
 
 async function applyResolvedTmdbPlayback(
   resolved,
-  { resolvedSourceHash = "", startSeconds = 0 } = {},
+  { resolvedSourceHash = "", startSeconds = 0, playbackRequestToken = 0 } = {},
 ) {
+  if (
+    playbackRequestToken &&
+    playbackRequestToken !== tmdbPlaybackRequestToken
+  ) {
+    return { nativeLaunched: false, resolved, stale: true };
+  }
+
   const normalizedResolvedSourceHash = normalizeSourceHash(
     resolvedSourceHash || resolved?.sourceHash || selectedSourceHash,
   );
@@ -4354,12 +4376,16 @@ async function resolveTmdbSourcesAndPlay({
   allowContainerFallback = true,
   allowSourceFallback = true,
   applyPlayback = true,
+  playbackRequestToken = 0,
   requiredSourceHash = "",
   requestSourceHash = "",
   resolveTimeoutMs = undefined,
   skipExternalEmbed = tmdbSkipExternalEmbed,
   startSeconds = 0,
 } = {}) {
+  const activePlaybackRequestToken = applyPlayback
+    ? playbackRequestToken || ++tmdbPlaybackRequestToken
+    : playbackRequestToken;
   if (applyPlayback) {
     stopLocalCacheUpgradeWatch();
     hasUpgradedToLocalCache = false;
@@ -4413,14 +4439,27 @@ async function resolveTmdbSourcesAndPlay({
   if (!applyPlayback) {
     return { nativeLaunched: false, resolved, resolvedSourceHash };
   }
+  if (activePlaybackRequestToken !== tmdbPlaybackRequestToken) {
+    return {
+      nativeLaunched: false,
+      resolved,
+      resolvedSourceHash,
+      stale: true,
+    };
+  }
   return applyResolvedTmdbPlayback(resolved, {
     resolvedSourceHash,
     startSeconds,
+    playbackRequestToken: activePlaybackRequestToken,
   });
 }
 
 function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
-  if (!isTmdbResolvedPlayback || isRecoveringTmdbStream) {
+  if (
+    !isTmdbResolvedPlayback ||
+    isRecoveringTmdbStream ||
+    isManualSourceSwitchRequestActive()
+  ) {
     return false;
   }
 
@@ -6571,7 +6610,7 @@ function closeLiveStreamPopover(withDelay = false) {
 }
 
 function openSourcePopover() {
-  if (!sourceControl || !shouldShowTmdbSourceControls() || isResolvingSource()) {
+  if (!sourceControl || !shouldShowTmdbSourceControls()) {
     return;
   }
 
@@ -6592,7 +6631,7 @@ function openSourcePopover() {
 }
 
 function toggleSourcePopoverFromControl() {
-  if (!sourceControl || isResolvingSource()) {
+  if (!sourceControl) {
     return;
   }
 
@@ -7871,6 +7910,10 @@ function schedulePlaybackRecovery(
   message = "",
   { delayMs = null, resetAttempts = false } = {},
 ) {
+  if (isManualSourceSwitchRequestActive()) {
+    return true;
+  }
+
   if (!playerShell && !hasRecoverablePlaybackSource() && !isTmdbResolvedPlayback) {
     return false;
   }
@@ -8229,6 +8272,9 @@ function tryAlternatePlaybackSourceNow() {
 async function handlePlaybackErrorRecovery(message) {
   const fallbackMessage =
     String(message || "").trim() || "Resolved stream could not be played.";
+  if (isManualSourceSwitchRequestActive()) {
+    return true;
+  }
   if (pendingManualSourceSwitchRestore) {
     return restoreManualSourceSwitchPlayback(fallbackMessage);
   }
@@ -10035,7 +10081,7 @@ if (audioOptionsContainer) trackListener(audioOptionsContainer, "click", async (
     showResolver("Switching audio language...");
     try {
       const result = await resolveTmdbSourcesAndPlay();
-      if (result?.nativeLaunched) {
+      if (result?.nativeLaunched || result?.stale) {
         return;
       }
       if (resumeFrom > 1) {
@@ -10159,10 +10205,6 @@ if (subtitleOptionsContainer) trackListener(subtitleOptionsContainer, "click", a
 async function handleSourceOptionSelection(nextSourceHash) {
   const normalizedNextSourceHash = normalizeSourceHash(nextSourceHash);
 
-  if (isResolvingSource()) {
-    return;
-  }
-
   if (!normalizedNextSourceHash) {
     syncSourceSelectionState();
     renderSelectedSourceDetails();
@@ -10177,8 +10219,11 @@ async function handleSourceOptionSelection(nextSourceHash) {
     return;
   }
 
+  const sourceSwitchRequestToken = ++manualSourceSwitchRequestToken;
   const previousSourceHash = selectedSourceHash;
   const previousSourceSelectionPinned = sourceSelectionPinned;
+  activeManualSourceSwitchRequestToken = sourceSwitchRequestToken;
+  clearManualSourceSwitchRestore();
 
   if (!isTmdbResolvedPlayback) {
     selectedSourceHash = normalizedNextSourceHash;
@@ -10186,11 +10231,13 @@ async function handleSourceOptionSelection(nextSourceHash) {
     applyPreferredSourceAudioSync(selectedSourceHash);
     persistSourceHashInUrl();
     syncAudioState();
+    finishManualSourceSwitchRequest(sourceSwitchRequestToken);
     return;
   }
 
   const resumeFrom = getEffectiveCurrentTime();
   const wasPaused = video.paused;
+  const playbackRequestToken = ++tmdbPlaybackRequestToken;
   const restoreState = createManualSourceSwitchRestoreState({
     targetSourceHash: normalizedNextSourceHash,
     resumeSeconds: resumeFrom,
@@ -10209,6 +10256,12 @@ async function handleSourceOptionSelection(nextSourceHash) {
       resolveTimeoutMs: MANUAL_SOURCE_SWITCH_TIMEOUT_MS,
       startSeconds: resumeFrom,
     });
+    if (
+      sourceSwitchRequestToken !== manualSourceSwitchRequestToken ||
+      playbackRequestToken !== tmdbPlaybackRequestToken
+    ) {
+      return;
+    }
     if (result?.nativeLaunched) {
       return;
     }
@@ -10218,7 +10271,14 @@ async function handleSourceOptionSelection(nextSourceHash) {
     const applied = await applyResolvedTmdbPlayback(result.resolved, {
       resolvedSourceHash: result.resolvedSourceHash || normalizedNextSourceHash,
       startSeconds: resumeFrom,
+      playbackRequestToken,
     });
+    if (applied?.stale) {
+      if (pendingManualSourceSwitchRestore === restoreState) {
+        clearManualSourceSwitchRestore();
+      }
+      return;
+    }
     if (pendingManualSourceSwitchRestore !== restoreState) {
       return;
     }
@@ -10245,6 +10305,10 @@ async function handleSourceOptionSelection(nextSourceHash) {
       );
       return;
     }
+    if (sourceSwitchRequestToken !== manualSourceSwitchRequestToken) {
+      resolverFailedSourceHashes.add(normalizedNextSourceHash);
+      return;
+    }
     resolverFailedSourceHashes.add(normalizedNextSourceHash);
     selectedSourceHash = previousSourceHash;
     sourceSelectionPinned = previousSourceSelectionPinned;
@@ -10256,6 +10320,8 @@ async function handleSourceOptionSelection(nextSourceHash) {
     hideSeekLoadingIndicator();
     hideResolver();
     console.warn("Unable to switch source.", error);
+  } finally {
+    finishManualSourceSwitchRequest(sourceSwitchRequestToken);
   }
 }
 
