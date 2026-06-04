@@ -2044,7 +2044,7 @@ function showResolverError(
   {
     clearVideoSource = false,
     showRetry = !isTmdbResolvedPlayback && hasRecoverablePlaybackSource(),
-    showAlternate = false,
+    showAlternate = isTmdbResolvedPlayback,
   } = {},
 ) {
   clearPlaybackRecovery({ hideOverlay: false });
