@@ -18,6 +18,34 @@ const hlsManagedTmdbId = "273240";
 const hlsManagedSourceHash = "3b77214a7852eace6248758affc3ed060579a216";
 const hlsManagedSourceInput =
   "https://example.test/Off.Campus.2026.S01E01.720p.HEVC.x265-MeGusta.mkv";
+const liveStreamSwitchStreams = [
+  {
+    id: "sports-main",
+    label: "Streamed main",
+    source: "https://sports.example.test/main",
+    provider: "streamed",
+    playbackType: "hls",
+    quality: "720p",
+  },
+  {
+    id: "sports-alt",
+    label: "MatchStream backup",
+    source: "https://sports.example.test/backup",
+    provider: "matchstream",
+    playbackType: "hls",
+    quality: "1080p",
+  },
+];
+const liveStreamSwitchParams = new URLSearchParams({
+  src: liveStreamSwitchStreams[0].source,
+  title: "Smoke Sports",
+  live: "1",
+  liveEmbed: "1",
+  liveResolver: "sports",
+  liveStreamId: liveStreamSwitchStreams[0].id,
+  liveStreams: JSON.stringify(liveStreamSwitchStreams),
+});
+const liveStreamSwitchPath = `/player.html?${liveStreamSwitchParams.toString()}`;
 
 if (!existsSync(viteBin)) {
   console.error("Missing Vite binary. Run bun install first.");
@@ -256,8 +284,10 @@ function apiPayload(url, method) {
   if (path === "/api/basketball/matches") return { matches: [] };
   if (path === "/api/basketball/stream") return { streams: [] };
   if (path === "/api/sports/stream") return { streams: [] };
-  if (path === "/api/live/hls-resource") return { ok: true };
-  if (path === "/api/live/hls.m3u8") return "#EXTM3U\n";
+  if (path === "/api/live/hls-resource") return "";
+  if (path === "/api/live/hls.m3u8") {
+    return "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.000,\n/api/live/hls-resource?index=0\n#EXT-X-ENDLIST\n";
+  }
   if (path === "/api/hls/master.m3u8") {
     return "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.000,\n/api/hls/segment.ts?index=0\n#EXT-X-ENDLIST\n";
   }
@@ -296,6 +326,12 @@ const pages = [
     path: `/player.html?src=${encodeURIComponent(`live-iframe:${encodeURIComponent(liveIframeEmbedUrl)}`)}&live=1&title=Live%20Iframe`,
     selector: ".player-shell",
     expectLiveIframeUnsandboxed: true,
+  },
+  {
+    path: liveStreamSwitchPath,
+    selector: ".player-shell",
+    expectLiveStreamSwitch: true,
+    stubHlsPlayback: true,
   },
   {
     path: `/player.html?tmdbId=${hlsManagedTmdbId}&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1`,
@@ -346,6 +382,8 @@ async function runSmoke() {
       let sawHlsManagedImportHold = false;
       let automaticFallbackResolveCount = 0;
       let sawAutomaticFallbackResolveHash = "";
+      let liveStreamResolveSources = [];
+      let liveStreamHlsInputs = [];
       let hlsBundleRequested = false;
       let hlsBundleReleased = false;
 
@@ -366,6 +404,56 @@ async function runSmoke() {
           failures.push(`bad response ${response.status()}: ${response.url()}`);
         }
       });
+
+      if (pageSpec.stubHlsPlayback) {
+        await page.route(
+          /.*\/node_modules\/\.vite\/deps\/hls__js\.js(?:\?.*)?$/,
+          async (route) => {
+            await route.fulfill({
+              status: 200,
+              contentType: "text/javascript",
+              body: `
+                export default class Hls {
+                  static Events = {
+                    ERROR: "hlsError",
+                    MEDIA_ATTACHED: "hlsMediaAttached",
+                    MANIFEST_PARSED: "hlsManifestParsed",
+                    LEVEL_SWITCHED: "hlsLevelSwitched"
+                  };
+                  static ErrorTypes = { NETWORK_ERROR: "networkError", MEDIA_ERROR: "mediaError" };
+                  static isSupported() { return true; }
+                  constructor() {
+                    this.handlers = new Map();
+                    this.levels = [{ height: 1080, bitrate: 5000000, name: "1080p" }];
+                    this.currentLevel = -1;
+                  }
+                  on(event, handler) {
+                    const handlers = this.handlers.get(event) || [];
+                    handlers.push(handler);
+                    this.handlers.set(event, handlers);
+                  }
+                  emit(event, data = {}) {
+                    for (const handler of this.handlers.get(event) || []) handler(event, data);
+                  }
+                  attachMedia() {
+                    queueMicrotask(() => this.emit(Hls.Events.MEDIA_ATTACHED));
+                  }
+                  loadSource(source) {
+                    fetch(source).catch(() => {}).finally(() => {
+                      queueMicrotask(() => this.emit(Hls.Events.MANIFEST_PARSED));
+                    });
+                  }
+                  startLoad() {}
+                  recoverMediaError() {}
+                  destroy() {
+                    this.handlers.clear();
+                  }
+                }
+              `,
+            });
+          },
+        );
+      }
 
       if (pageSpec.delayHlsImport) {
         await page.route(/.*(?:hls|hls__js).*\.js(?:\?.*)?$/, async (route) => {
@@ -418,6 +506,22 @@ async function runSmoke() {
         if (pageSpec.expectSportsTabs && url.pathname === "/api/basketball/matches") {
           sawSportsBasketballMatches = true;
         }
+        if (pageSpec.expectLiveStreamSwitch && url.pathname === "/api/sports/stream") {
+          const requestedSource = url.searchParams.get("url") || "";
+          const stream =
+            liveStreamSwitchStreams.find((option) => option.source === requestedSource) ||
+            liveStreamSwitchStreams[0];
+          liveStreamResolveSources.push(requestedSource);
+          await route.fulfill(
+            jsonResponse({
+              playbackType: "hls",
+              playbackUrl: `https://hls.example.test/${stream.id}.m3u8`,
+              playerPage: requestedSource,
+              source: requestedSource,
+            }),
+          );
+          return;
+        }
         if (pageSpec.path === "/login.html" && url.pathname === "/api/auth/me") {
           await route.fulfill(jsonResponse({ error: "Not authenticated." }, 401));
           return;
@@ -430,11 +534,22 @@ async function runSmoke() {
           return;
         }
         const payload = apiPayload(url, request.method());
+        if (pageSpec.expectLiveStreamSwitch && url.pathname === "/api/live/hls.m3u8") {
+          liveStreamHlsInputs.push(url.searchParams.get("input") || "");
+        }
         if (url.pathname === "/api/live/hls.m3u8" || url.pathname === "/api/hls/master.m3u8") {
           await route.fulfill({
             status: 200,
             contentType: "application/vnd.apple.mpegurl",
             body: String(payload),
+          });
+          return;
+        }
+        if (url.pathname === "/api/live/hls-resource") {
+          await route.fulfill({
+            status: 200,
+            contentType: "video/mp2t",
+            body: "",
           });
           return;
         }
@@ -748,6 +863,77 @@ async function runSmoke() {
             `${pageSpec.path}\nSource switch failed.\n${JSON.stringify({
               sawSourceSwitchResolveHash,
               switchState,
+            })}`,
+          );
+        }
+      }
+
+      if (pageSpec.expectLiveStreamSwitch) {
+        const waitForLiveHlsInput = async (streamId) => {
+          const expectedInput = `/${streamId}.m3u8`;
+          for (let attempt = 0; attempt < 80; attempt += 1) {
+            if (liveStreamHlsInputs.some((input) => input.includes(expectedInput))) {
+              return;
+            }
+            await delay(100);
+          }
+          throw new Error(
+            `${pageSpec.path}\nLive stream did not request the expected HLS input.\n${JSON.stringify({
+              expectedInput,
+              liveStreamHlsInputs,
+            })}`,
+          );
+        };
+
+        await page.waitForSelector("#toggleLiveStream", {
+          state: "visible",
+          timeout: 8_000,
+        });
+        await page.waitForFunction(
+          (streamId) => {
+            const selected =
+              document.querySelector(".live-stream-option[aria-selected='true']")
+                ?.dataset.streamId || "";
+            const iframeActive =
+              document.querySelector("#liveEmbedFrame")?.hidden === false;
+            return selected === streamId && !iframeActive;
+          },
+          liveStreamSwitchStreams[0].id,
+          { timeout: 8_000 },
+        );
+        await waitForLiveHlsInput(liveStreamSwitchStreams[0].id);
+        await page.click("#toggleLiveStream");
+        await page.evaluate((streamId) => {
+          document
+            .querySelector(`.live-stream-option[data-stream-id="${streamId}"]`)
+            ?.click();
+        }, liveStreamSwitchStreams[1].id);
+        await page.waitForFunction(
+          (streamId) => {
+            const selected =
+              document.querySelector(".live-stream-option[aria-selected='true']")
+                ?.dataset.streamId || "";
+            const iframeActive =
+              document.querySelector("#liveEmbedFrame")?.hidden === false;
+            const currentStreamId = new URL(window.location.href).searchParams.get(
+              "liveStreamId",
+            );
+            return (
+              selected === streamId &&
+              currentStreamId === streamId &&
+              !iframeActive
+            );
+          },
+          liveStreamSwitchStreams[1].id,
+          { timeout: 8_000 },
+        );
+        await waitForLiveHlsInput(liveStreamSwitchStreams[1].id);
+        if (!liveStreamResolveSources.includes(liveStreamSwitchStreams[1].source)) {
+          throw new Error(
+            `${pageSpec.path}\nLive stream switch did not resolve the selected source.\n${JSON.stringify({
+              expectedSource: liveStreamSwitchStreams[1].source,
+              liveStreamResolveSources,
+              liveStreamHlsInputs,
             })}`,
           );
         }

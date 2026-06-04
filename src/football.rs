@@ -1883,15 +1883,38 @@ fn is_supported_matchstream_stream_url(url: &Url) -> bool {
         return false;
     }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    let supported_host = matches!(
-        host.as_str(),
-        "glisco.link" | "evfancy.link" | "strongst.link" | "l2l2.link"
-    );
-    if !supported_host || url.path().trim_start_matches('/') != "ch" {
+    if !is_matchstream_channel_host(&host) || url.path().trim_start_matches('/') != "ch" {
         return false;
     }
     url.query_pairs()
         .any(|(key, value)| key == "id" && !value.trim().is_empty())
+}
+
+fn is_matchstream_channel_host(host: &str) -> bool {
+    if matches!(
+        host,
+        "glisco.link" | "evfancy.link" | "strongst.link" | "l2l2.link"
+    ) {
+        return true;
+    }
+
+    let parts = host.split('.').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return false;
+    }
+
+    let channel_shard = parts[0];
+    let provider = parts[1];
+    let tld = parts[2];
+    channel_shard.len() > 1
+        && channel_shard.starts_with('s')
+        && channel_shard[1..].chars().all(|ch| ch.is_ascii_digit())
+        && !provider.is_empty()
+        && provider
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+        && (2..=24).contains(&tld.len())
+        && tld.chars().all(|ch| ch.is_ascii_lowercase())
 }
 
 fn is_supported_matchstream_player_url(url: &Url) -> bool {
@@ -2394,17 +2417,37 @@ mod tests {
         let glisco = url::Url::parse("https://glisco.link/ch?id=4").unwrap();
         let evfancy = url::Url::parse("https://evfancy.link//ch?id=4").unwrap();
         let l2l2 = url::Url::parse("https://l2l2.link/ch?id=4").unwrap();
+        let vertex = url::Url::parse("https://s3.vertex.st/ch?id=17").unwrap();
+        let kora = url::Url::parse("https://s3.kora.st/ch?id=17").unwrap();
+        let nexa = url::Url::parse("https://s1.nexa.st/ch?id=17").unwrap();
+        let future_rotation = url::Url::parse("https://s42.any-provider.to/ch?id=91").unwrap();
         let missing_id = url::Url::parse("https://strongst.link/ch").unwrap();
+        let wrong_path = url::Url::parse("https://s3.vertex.st/embed?id=17").unwrap();
+        let wrong_shard = url::Url::parse("https://player.vertex.st/ch?id=17").unwrap();
+        let nested_st = url::Url::parse("https://s3.extra.vertex.st/ch?id=17").unwrap();
+        let numeric_tld = url::Url::parse("https://s3.vertex.x123/ch?id=17").unwrap();
         let other = url::Url::parse("https://example.test/ch?id=4").unwrap();
 
         assert!(is_supported_matchstream_stream_url(&glisco));
         assert!(is_supported_matchstream_stream_url(&evfancy));
         assert!(is_supported_matchstream_stream_url(&l2l2));
+        assert!(is_supported_matchstream_stream_url(&vertex));
+        assert!(is_supported_matchstream_stream_url(&kora));
+        assert!(is_supported_matchstream_stream_url(&nexa));
+        assert!(is_supported_matchstream_stream_url(&future_rotation));
         assert!(!is_supported_matchstream_stream_url(&missing_id));
+        assert!(!is_supported_matchstream_stream_url(&wrong_path));
+        assert!(!is_supported_matchstream_stream_url(&wrong_shard));
+        assert!(!is_supported_matchstream_stream_url(&nested_st));
+        assert!(!is_supported_matchstream_stream_url(&numeric_tld));
         assert!(!is_supported_matchstream_stream_url(&other));
         assert_eq!(
             normalize_matchstream_link("https://evfancy.link//ch?id=4").unwrap(),
             "https://evfancy.link/ch?id=4"
+        );
+        assert_eq!(
+            normalize_matchstream_link("https://s3.vertex.st//ch?id=17").unwrap(),
+            "https://s3.vertex.st/ch?id=17"
         );
     }
 
@@ -2431,9 +2474,9 @@ mod tests {
     #[test]
     fn builds_unique_matchstream_live_stream_candidates() {
         let candidates = matchstream_live_stream_source_candidates(
-            "https://glisco.link/ch?id=4",
+            "https://s3.vertex.st/ch?id=17",
             Some(
-                "https://evfancy.link//ch?id=4,https://streamed.pk/api/stream/admin/a,https://strongst.link/ch?id=4,https://l2l2.link/ch?id=4",
+                "https://s3.kora.st//ch?id=17,https://streamed.pk/api/stream/admin/a,https://strongst.link/ch?id=4,https://s1.nexa.st/ch?id=17",
             ),
         )
         .unwrap();
@@ -2444,10 +2487,10 @@ mod tests {
                 .map(|url| url.as_str())
                 .collect::<Vec<_>>(),
             vec![
-                "https://glisco.link/ch?id=4",
-                "https://evfancy.link/ch?id=4",
+                "https://s3.vertex.st/ch?id=17",
+                "https://s3.kora.st/ch?id=17",
                 "https://strongst.link/ch?id=4",
-                "https://l2l2.link/ch?id=4",
+                "https://s1.nexa.st/ch?id=17",
             ]
         );
     }
@@ -2522,7 +2565,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_matchstream_payload_with_iframe_sources() {
+    fn builds_matchstream_payload_with_hls_sources() {
         let (payload, _) = build_matchstream_football_matches_payload(vec![MatchstreamMatch {
             match_text:
                 "17:00 [England League Two] Notts County vs Salford City [Sky Sports Football GB]"

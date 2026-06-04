@@ -41,9 +41,21 @@ const rawProxy = String(
     "",
 ).trim();
 
-const channelHosts = new Set(["glisco.link", "evfancy.link", "strongst.link", "l2l2.link"]);
+const legacyChannelHosts = new Set(["glisco.link", "evfancy.link", "strongst.link", "l2l2.link"]);
 const brightcoreHosts = new Set(["brightcoremind.com", "www.brightcoremind.com"]);
 const helplessHosts = new Set(["helpless.click", "www.helpless.click"]);
+const bootstrapHosts = new Set([
+  "adexchangerapid.com",
+  "www.adexchangerapid.com",
+  "dohaunting.com",
+  "www.dohaunting.com",
+  "jnbhi.com",
+  "www.jnbhi.com",
+  "lineagest.click",
+  "www.lineagest.click",
+  "mxbrbviqikqaw.com",
+  "www.mxbrbviqikqaw.com",
+]);
 const hlsRootHosts = ["zohanayaan.com", "28585519.net"];
 
 function normalizeProxyServer(value) {
@@ -55,12 +67,18 @@ function hostMatches(host, allowed) {
   return host === allowed || host.endsWith(`.${allowed}`);
 }
 
+function isMatchstreamChannelHost(host) {
+  const normalized = String(host || "").toLowerCase();
+  if (legacyChannelHosts.has(normalized)) return true;
+  return /^s\d+\.[a-z0-9-]+\.[a-z]{2,24}$/i.test(normalized);
+}
+
 function isSupportedChannelUrl(value) {
   try {
     const url = new URL(value);
     return (
       (url.protocol === "https:" || url.protocol === "http:") &&
-      channelHosts.has(url.hostname.toLowerCase()) &&
+      isMatchstreamChannelHost(url.hostname) &&
       url.pathname.replace(/^\/+/, "") === "ch" &&
       Boolean(url.searchParams.get("id")?.trim())
     );
@@ -107,9 +125,10 @@ function isAllowedRequestUrl(value) {
     const url = new URL(value);
     const host = url.hostname.toLowerCase();
     return (
-      channelHosts.has(host) ||
+      isMatchstreamChannelHost(host) ||
       brightcoreHosts.has(host) ||
       helplessHosts.has(host) ||
+      bootstrapHosts.has(host) ||
       host === "cdn.jsdelivr.net" ||
       host.endsWith(".jsdelivr.net") ||
       host === "ajax.googleapis.com" ||
@@ -123,7 +142,7 @@ function isAllowedRequestUrl(value) {
 }
 
 if (!isSupportedChannelUrl(sourceUrl)) {
-  console.error("Usage: resolve-matchstream-hls.mjs https://evfancy.link/ch?id=...");
+  console.error("Usage: resolve-matchstream-hls.mjs https://s3.vertex.st/ch?id=...");
   process.exit(2);
 }
 
@@ -176,6 +195,10 @@ try {
       return;
     }
     await route.abort("blockedbyclient");
+  });
+
+  page.on("popup", (popup) => {
+    popup.close().catch(() => {});
   });
 
   page.on("framenavigated", (frame) => rememberPlayerPage(frame.url()));

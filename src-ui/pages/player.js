@@ -5783,14 +5783,6 @@ function getLiveEmbedFallbackSources(source) {
     .slice(0, LIVE_EMBED_FALLBACK_SOURCE_LIMIT);
 }
 
-function buildLiveIframePlaybackSource(embedUrl) {
-  const normalizedEmbedUrl = normalizePlaybackSourceValue(embedUrl);
-  if (!/^https?:\/\//i.test(normalizedEmbedUrl)) {
-    return "";
-  }
-  return `${LIVE_IFRAME_SOURCE_PREFIX}${encodeURIComponent(normalizedEmbedUrl)}`;
-}
-
 function parseLiveIframePlaybackSource(source) {
   const value = String(source || "").trim();
   if (!value.startsWith(LIVE_IFRAME_SOURCE_PREFIX)) {
@@ -5842,14 +5834,7 @@ async function resolveLivePlaybackSource(source) {
     .trim()
     .toLowerCase();
   if (playbackType === "iframe" || playbackType === "embed") {
-    const embedUrl = normalizePlaybackSourceValue(
-      payload?.embedUrl || payload?.playerPage || payload?.streamUrl || payload?.playbackUrl || "",
-    );
-    const iframeSource = buildLiveIframePlaybackSource(embedUrl);
-    if (!iframeSource) {
-      throw new Error("Could not resolve this live stream to an iframe.");
-    }
-    return iframeSource;
+    throw new Error("Live stream resolver returned an embed instead of HLS.");
   }
   if (playbackType && playbackType !== "hls") {
     throw new Error("Live stream playback type is not supported.");
