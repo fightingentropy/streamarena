@@ -119,6 +119,7 @@ const LIVE_STARTUP_HEALTH_TIMEOUT_MS = 12000;
 const LIVE_FAILED_STREAM_CACHE_TTL_MS = 5 * 60 * 1000;
 const LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-failed-streams:";
 const HLS_QUALITY_PREFERENCE_STORAGE_KEY = "netflix-hls-quality-pref";
+const MANUAL_SOURCE_SWITCH_TIMEOUT_MS = 6000;
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
@@ -142,6 +143,8 @@ let singleClickPlaybackToggleTimeout = null;
 let seekLoadingTimeout = null;
 let tmdbSourceQueue = [];
 let tmdbSourceAttemptIndex = 0;
+let pendingManualSourceSwitchRestore = null;
+let pendingManualSourceSwitchTimeout = null;
 let tmdbSkipExternalEmbed = false;
 let tmdbResolveRetries = 0;
 let userRealDebridSettingsLoaded = false;
@@ -300,7 +303,8 @@ const hlsPlaybackController = createHlsPlaybackController({
   scheduleStreamStallRecovery: () => scheduleStreamStallRecovery(),
   schedulePlaybackRecovery: (...args) => schedulePlaybackRecovery(...args),
   isBrowserOffline: () => isBrowserOffline(),
-  shouldFailFastForHlsNetworkErrors: () => isCurrentTmdbExternalEmbedSource(),
+  shouldFailFastForHlsNetworkErrors: () =>
+    isCurrentTmdbExternalEmbedSource() || isManualSourceSwitchPending(),
   getPreferredQualityLevel: (levels) => pickPreferredHlsQualityLevel(levels),
   onQualityLevelsChanged: (state) => handleHlsQualityLevelsChanged(state),
 });
@@ -3822,6 +3826,179 @@ function setTmdbSourceQueue(primaryUrl, fallbackUrls = []) {
   tmdbSourceAttemptIndex = queue.length > 0 ? 1 : 0;
 }
 
+function getManualSourceSwitchRestoreSource() {
+  return (
+    String(lastRequestedPlaybackSource || "").trim() ||
+    String(lastRequestedAbsolutePlaybackSource || "").trim() ||
+    String(video?.getAttribute?.("src") || "").trim() ||
+    String(video?.currentSrc || "").trim()
+  );
+}
+
+function createManualSourceSwitchRestoreState({
+  targetSourceHash = "",
+  resumeSeconds = 0,
+  wasPaused = true,
+} = {}) {
+  return {
+    targetSourceHash: normalizeSourceHash(targetSourceHash),
+    targetPlaybackSource: "",
+    targetAbsolutePlaybackSource: "",
+    restorePlaybackSource: getManualSourceSwitchRestoreSource(),
+    restoreResumeSeconds: Math.max(0, Number(resumeSeconds) || 0),
+    restoreWasPaused: Boolean(wasPaused),
+    selectedSourceHash,
+    sourceSelectionPinned,
+    currentTmdbPlaybackSessionKey,
+    currentTmdbResolverProvider,
+    currentTmdbResolvedFilename,
+    currentTmdbSelectedFile,
+    activeTrackSourceInput,
+    activeTranscodeInput,
+    transcodeBaseOffsetSeconds,
+    activeAudioStreamIndex,
+    activeAudioSyncMs,
+    selectedAudioStreamIndex,
+    selectedSubtitleStreamIndex,
+    availableAudioTracks: [...availableAudioTracks],
+    availableSubtitleTracks: [...availableSubtitleTracks],
+    resolvedTrackPreferenceAudio,
+    preferredSubtitleLang,
+    tmdbSourceQueue: [...tmdbSourceQueue],
+    tmdbSourceAttemptIndex,
+  };
+}
+
+function clearManualSourceSwitchRestore() {
+  if (pendingManualSourceSwitchTimeout) {
+    window.clearTimeout(pendingManualSourceSwitchTimeout);
+    pendingManualSourceSwitchTimeout = null;
+  }
+  pendingManualSourceSwitchRestore = null;
+}
+
+function armManualSourceSwitchRestoreTimeout(restoreState) {
+  clearManualSourceSwitchRestore();
+  pendingManualSourceSwitchRestore = restoreState;
+  pendingManualSourceSwitchTimeout = window.setTimeout(() => {
+    if (pendingManualSourceSwitchRestore === restoreState) {
+      void restoreManualSourceSwitchPlayback("Source startup timed out.");
+    }
+  }, MANUAL_SOURCE_SWITCH_TIMEOUT_MS);
+}
+
+function isManualSourceSwitchPending() {
+  return Boolean(pendingManualSourceSwitchRestore);
+}
+
+function markManualSourceSwitchPlaybackRequested(sourceHash = "") {
+  const restoreState = pendingManualSourceSwitchRestore;
+  if (!restoreState) {
+    return;
+  }
+  const normalizedSourceHash = normalizeSourceHash(sourceHash);
+  if (
+    normalizedSourceHash &&
+    restoreState.targetSourceHash &&
+    normalizedSourceHash !== restoreState.targetSourceHash
+  ) {
+    return;
+  }
+  restoreState.targetPlaybackSource = String(lastRequestedPlaybackSource || "").trim();
+  restoreState.targetAbsolutePlaybackSource = String(
+    lastRequestedAbsolutePlaybackSource || "",
+  ).trim();
+}
+
+function completeManualSourceSwitchIfActive() {
+  const restoreState = pendingManualSourceSwitchRestore;
+  if (!restoreState) {
+    return false;
+  }
+  if (!restoreState.targetPlaybackSource && !restoreState.targetAbsolutePlaybackSource) {
+    return false;
+  }
+  const activeSource = String(
+    lastRequestedAbsolutePlaybackSource ||
+      video?.currentSrc ||
+      video?.getAttribute?.("src") ||
+      "",
+  ).trim();
+  if (
+    restoreState.targetAbsolutePlaybackSource &&
+    activeSource &&
+    activeSource !== restoreState.targetAbsolutePlaybackSource
+  ) {
+    return false;
+  }
+  clearManualSourceSwitchRestore();
+  return true;
+}
+
+async function restoreManualSourceSwitchPlayback(message = "") {
+  const restoreState = pendingManualSourceSwitchRestore;
+  if (!restoreState) {
+    return false;
+  }
+  clearManualSourceSwitchRestore();
+
+  if (restoreState.targetSourceHash) {
+    resolverFailedSourceHashes.add(restoreState.targetSourceHash);
+  }
+
+  selectedSourceHash = restoreState.selectedSourceHash;
+  sourceSelectionPinned = restoreState.sourceSelectionPinned;
+  currentTmdbPlaybackSessionKey = restoreState.currentTmdbPlaybackSessionKey;
+  currentTmdbResolverProvider = restoreState.currentTmdbResolverProvider;
+  currentTmdbResolvedFilename = restoreState.currentTmdbResolvedFilename;
+  currentTmdbSelectedFile = restoreState.currentTmdbSelectedFile;
+  activeTrackSourceInput = restoreState.activeTrackSourceInput;
+  activeTranscodeInput = restoreState.activeTranscodeInput;
+  transcodeBaseOffsetSeconds = restoreState.transcodeBaseOffsetSeconds;
+  activeAudioStreamIndex = restoreState.activeAudioStreamIndex;
+  activeAudioSyncMs = restoreState.activeAudioSyncMs;
+  selectedAudioStreamIndex = restoreState.selectedAudioStreamIndex;
+  selectedSubtitleStreamIndex = restoreState.selectedSubtitleStreamIndex;
+  availableAudioTracks = [...restoreState.availableAudioTracks];
+  availableSubtitleTracks = [...restoreState.availableSubtitleTracks];
+  resolvedTrackPreferenceAudio = restoreState.resolvedTrackPreferenceAudio;
+  preferredSubtitleLang = restoreState.preferredSubtitleLang;
+  tmdbSourceQueue = [...restoreState.tmdbSourceQueue];
+  tmdbSourceAttemptIndex = restoreState.tmdbSourceAttemptIndex;
+
+  applyPreferredSourceAudioSync(selectedSourceHash);
+  persistSourceHashInUrl();
+  rebuildTrackOptionButtons();
+  syncAudioState();
+  syncSourceSelectionState();
+  renderSelectedSourceDetails();
+  hideSeekLoadingIndicator();
+  hideResolver();
+
+  const restoreSource = String(restoreState.restorePlaybackSource || "").trim();
+  if (restoreSource) {
+    setVideoSource(restoreSource, {
+      startSeconds: restoreState.restoreResumeSeconds,
+      resetInitialResume: false,
+    });
+    applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
+    if (restoreState.restoreWasPaused) {
+      video.pause();
+    } else {
+      await tryPlay();
+    }
+    if (restoreState.restoreResumeSeconds > 1) {
+      seekToAbsoluteTime(restoreState.restoreResumeSeconds);
+    }
+  }
+
+  console.warn(
+    "Source switch failed; restored previous stream.",
+    String(message || "").trim(),
+  );
+  return true;
+}
+
 function reportCurrentTmdbPlaybackFailure(
   message,
   eventType = "playback_error",
@@ -4005,51 +4182,19 @@ function applyStoredSubtitleSelectionPreference() {
   }
 }
 
-async function resolveTmdbSourcesAndPlay({
-  allowContainerFallback = true,
-  allowSourceFallback = true,
-  requiredSourceHash = "",
-  skipExternalEmbed = tmdbSkipExternalEmbed,
-  startSeconds = 0,
-} = {}) {
-  stopLocalCacheUpgradeWatch();
-  hasUpgradedToLocalCache = false;
-  if (isTmdbResolvedPlayback) {
-    await loadUserRealDebridPlaybackSettings();
-    const clearedDisabledTorrentState = clearDisabledTorrentPlaybackState();
-    if (clearedDisabledTorrentState || !shouldAllowTorrentResolveFallback()) {
-      skipExternalEmbed = false;
-    }
-  }
-  if (!skipExternalEmbed) {
-    tmdbSkipExternalEmbed = false;
-  }
-  if (!availablePlaybackSources.length) {
-    void fetchTmdbSourceOptionsViaBackend();
-  }
-
-  const normalizedRequiredSourceHash = normalizeSourceHash(requiredSourceHash);
-  const resolved = isTmdbTvPlayback
-    ? await resolveTmdbTvEpisodeViaBackend(
-        tmdbId,
-        seasonNumber,
-        episodeNumber,
-        {
-          allowContainerFallback,
-          allowSourceFallback,
-          skipExternalEmbed,
-        },
-      )
-    : await resolveTmdbMovieViaBackend(tmdbId, {
-        allowSourceFallback,
-        skipExternalEmbed,
-      });
-  const resolvedSourceHash = normalizeSourceHash(
-    resolved?.sourceHash || selectedSourceHash,
+async function applyResolvedTmdbPlayback(
+  resolved,
+  { resolvedSourceHash = "", startSeconds = 0 } = {},
+) {
+  const normalizedResolvedSourceHash = normalizeSourceHash(
+    resolvedSourceHash || resolved?.sourceHash || selectedSourceHash,
   );
   currentTmdbPlaybackSessionKey = String(resolved?.session?.key || "").trim();
   currentTmdbResolverProvider = String(
-    resolved?.resolverProvider || resolved?.session?.resolverProvider || resolved?.metadata?.resolverProvider || "",
+    resolved?.resolverProvider ||
+      resolved?.session?.resolverProvider ||
+      resolved?.metadata?.resolverProvider ||
+      "",
   ).trim();
   if (currentTmdbResolverProvider !== "external-embed") {
     tmdbSkipExternalEmbed = false;
@@ -4057,14 +4202,6 @@ async function resolveTmdbSourcesAndPlay({
   }
   currentTmdbResolvedFilename = String(resolved?.filename || "").trim();
   currentTmdbSelectedFile = String(resolved?.selectedFile || "").trim();
-  if (
-    normalizedRequiredSourceHash &&
-    resolvedSourceHash !== normalizedRequiredSourceHash
-  ) {
-    throw new Error(
-      "Selected source is unavailable right now. Try another source.",
-    );
-  }
   activeTrackSourceInput = String(resolved?.sourceInput || "").trim();
   availableAudioTracks = Array.isArray(resolved?.tracks?.audioTracks)
     ? resolved.tracks.audioTracks
@@ -4091,7 +4228,7 @@ async function resolveTmdbSourcesAndPlay({
     resolved?.preferences?.subtitleLang || preferredSubtitleLang || "",
   ).trim();
   preferredSubtitleLang = normalizeSubtitlePreference(preferredSubtitleLang);
-  selectedSourceHash = resolvedSourceHash;
+  selectedSourceHash = normalizedResolvedSourceHash;
   applyPreferredSourceAudioSync(selectedSourceHash);
   persistSourceHashInUrl();
   if (resumeTime > 1) {
@@ -4171,6 +4308,7 @@ async function resolveTmdbSourcesAndPlay({
     startSeconds: explicitStartSeconds || getInitialPlaybackStartSeconds(),
     resetInitialResume: explicitStartSeconds <= 0,
   });
+  markManualSourceSwitchPlaybackRequested(normalizedResolvedSourceHash);
   applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
   syncAudioState();
   hideResolver();
@@ -4210,6 +4348,75 @@ async function resolveTmdbSourcesAndPlay({
   await tryPlay();
   startLocalCacheUpgradeWatch(resolved);
   return { nativeLaunched: false, resolved };
+}
+
+async function resolveTmdbSourcesAndPlay({
+  allowContainerFallback = true,
+  allowSourceFallback = true,
+  applyPlayback = true,
+  requiredSourceHash = "",
+  requestSourceHash = "",
+  resolveTimeoutMs = undefined,
+  skipExternalEmbed = tmdbSkipExternalEmbed,
+  startSeconds = 0,
+} = {}) {
+  if (applyPlayback) {
+    stopLocalCacheUpgradeWatch();
+    hasUpgradedToLocalCache = false;
+  }
+  if (isTmdbResolvedPlayback) {
+    await loadUserRealDebridPlaybackSettings();
+    const clearedDisabledTorrentState = clearDisabledTorrentPlaybackState();
+    if (clearedDisabledTorrentState || !shouldAllowTorrentResolveFallback()) {
+      skipExternalEmbed = false;
+    }
+  }
+  if (!skipExternalEmbed) {
+    tmdbSkipExternalEmbed = false;
+  }
+  if (!availablePlaybackSources.length) {
+    void fetchTmdbSourceOptionsViaBackend();
+  }
+
+  const normalizedRequiredSourceHash = normalizeSourceHash(requiredSourceHash);
+  const normalizedRequestSourceHash = normalizeSourceHash(requestSourceHash);
+  const resolved = isTmdbTvPlayback
+    ? await resolveTmdbTvEpisodeViaBackend(
+        tmdbId,
+        seasonNumber,
+        episodeNumber,
+        {
+          allowContainerFallback,
+          allowSourceFallback,
+          requestSourceHash: normalizedRequestSourceHash,
+          resolveTimeoutMs,
+          skipExternalEmbed,
+        },
+      )
+    : await resolveTmdbMovieViaBackend(tmdbId, {
+        allowSourceFallback,
+        requestSourceHash: normalizedRequestSourceHash,
+        resolveTimeoutMs,
+        skipExternalEmbed,
+      });
+  const resolvedSourceHash = normalizeSourceHash(
+    resolved?.sourceHash || normalizedRequestSourceHash || selectedSourceHash,
+  );
+  if (
+    normalizedRequiredSourceHash &&
+    resolvedSourceHash !== normalizedRequiredSourceHash
+  ) {
+    throw new Error(
+      "Selected source is unavailable right now. Try another source.",
+    );
+  }
+  if (!applyPlayback) {
+    return { nativeLaunched: false, resolved, resolvedSourceHash };
+  }
+  return applyResolvedTmdbPlayback(resolved, {
+    resolvedSourceHash,
+    startSeconds,
+  });
 }
 
 function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
@@ -8022,6 +8229,9 @@ function tryAlternatePlaybackSourceNow() {
 async function handlePlaybackErrorRecovery(message) {
   const fallbackMessage =
     String(message || "").trim() || "Resolved stream could not be played.";
+  if (pendingManualSourceSwitchRestore) {
+    return restoreManualSourceSwitchPlayback(fallbackMessage);
+  }
   if (isBrowserOffline()) {
     schedulePlaybackRecovery("offline", "", { resetAttempts: true });
     return true;
@@ -8103,6 +8313,13 @@ async function requestResolveJson(
   }
 
   throw lastError || new Error("Unable to resolve this stream.");
+}
+
+function normalizeRequestTimeoutMs(value) {
+  const timeoutMs = Number(value);
+  return Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? Math.floor(timeoutMs)
+    : undefined;
 }
 
 function buildHttpErrorMessage(response, rawText = "") {
@@ -8315,7 +8532,12 @@ async function resolveExplicitSourceTrackSelection(sourceInput) {
 
 async function resolveTmdbMovieViaBackend(
   tmdbMovieId,
-  { allowSourceFallback = true, skipExternalEmbed = false } = {},
+  {
+    allowSourceFallback = true,
+    requestSourceHash = "",
+    resolveTimeoutMs = undefined,
+    skipExternalEmbed = false,
+  } = {},
 ) {
   const buildQuery = ({
     sourceHash = "",
@@ -8361,8 +8583,10 @@ async function resolveTmdbMovieViaBackend(
     return query;
   };
 
-  const pinnedSourceHash = getPinnedSourceHashForRequests();
-  const pinnedSessionKey = getPinnedSessionKeyForRequests();
+  const requestedSourceHash = normalizeSourceHash(requestSourceHash);
+  const requestTimeoutMs = normalizeRequestTimeoutMs(resolveTimeoutMs);
+  const pinnedSourceHash = requestedSourceHash || getPinnedSourceHashForRequests();
+  const pinnedSessionKey = requestedSourceHash ? "" : getPinnedSessionKeyForRequests();
   let lastError = null;
   try {
     return await requestResolveJson(
@@ -8371,6 +8595,7 @@ async function resolveTmdbMovieViaBackend(
         sessionKey: pinnedSessionKey,
         includeSourceFilters: !pinnedSourceHash,
       }).toString()}`,
+      requestTimeoutMs,
     );
   } catch (error) {
     lastError = error;
@@ -8383,6 +8608,7 @@ async function resolveTmdbMovieViaBackend(
           `/api/resolve/movie?${buildQuery({
             skipExternalEmbed: skipEmbedFallback,
           }).toString()}`,
+          requestTimeoutMs,
         );
       } catch (fallbackError) {
         lastError = fallbackError;
@@ -8403,6 +8629,7 @@ async function resolveTmdbMovieViaBackend(
           : DEFAULT_STREAM_QUALITY_PREFERENCE,
         skipExternalEmbed: shouldAllowTorrentResolveFallback(),
       }).toString()}`,
+      requestTimeoutMs,
     );
   }
 
@@ -8416,6 +8643,8 @@ async function resolveTmdbTvEpisodeViaBackend(
   {
     allowContainerFallback = true,
     allowSourceFallback = true,
+    requestSourceHash = "",
+    resolveTimeoutMs = undefined,
     skipExternalEmbed = false,
   } = {},
 ) {
@@ -8473,14 +8702,17 @@ async function resolveTmdbTvEpisodeViaBackend(
     return query;
   };
 
-  const pinnedSourceHash = getPinnedSourceHashForRequests();
-  const pinnedSessionKey = getPinnedSessionKeyForRequests();
+  const requestedSourceHash = normalizeSourceHash(requestSourceHash);
+  const requestTimeoutMs = normalizeRequestTimeoutMs(resolveTimeoutMs);
+  const pinnedSourceHash = requestedSourceHash || getPinnedSourceHashForRequests();
+  const pinnedSessionKey = requestedSourceHash ? "" : getPinnedSessionKeyForRequests();
   try {
     return await requestResolveJson(
       `/api/resolve/tv?${buildQuery(preferredContainer, pinnedSourceHash, {
         sessionKey: pinnedSessionKey,
         includeSourceFilters: !pinnedSourceHash,
       }).toString()}`,
+      requestTimeoutMs,
     );
   } catch (error) {
     let lastError = error;
@@ -8526,6 +8758,7 @@ async function resolveTmdbTvEpisodeViaBackend(
             includeSourceFilters: !fallbackSource,
             skipExternalEmbed: skipEmbedFallback,
           }).toString()}`,
+          requestTimeoutMs,
         );
       } catch (fallbackError) {
         lastError = fallbackError;
@@ -8545,6 +8778,7 @@ async function resolveTmdbTvEpisodeViaBackend(
             : DEFAULT_STREAM_QUALITY_PREFERENCE,
           skipExternalEmbed: shouldAllowTorrentResolveFallback(),
         }).toString()}`,
+        requestTimeoutMs,
       );
     }
 
@@ -9945,45 +10179,83 @@ async function handleSourceOptionSelection(nextSourceHash) {
 
   const previousSourceHash = selectedSourceHash;
   const previousSourceSelectionPinned = sourceSelectionPinned;
-  selectedSourceHash = normalizedNextSourceHash;
-  sourceSelectionPinned = true;
-  applyPreferredSourceAudioSync(selectedSourceHash);
-  persistSourceHashInUrl();
-  syncAudioState();
 
   if (!isTmdbResolvedPlayback) {
+    selectedSourceHash = normalizedNextSourceHash;
+    sourceSelectionPinned = true;
+    applyPreferredSourceAudioSync(selectedSourceHash);
+    persistSourceHashInUrl();
+    syncAudioState();
     return;
   }
 
   const resumeFrom = getEffectiveCurrentTime();
   const wasPaused = video.paused;
+  const restoreState = createManualSourceSwitchRestoreState({
+    targetSourceHash: normalizedNextSourceHash,
+    resumeSeconds: resumeFrom,
+    wasPaused,
+  });
   tmdbResolveRetries = 0;
   closeAudioPopover(false, { force: true });
   closeSourcePopover(false, { force: true });
-  showResolver("Switching source...");
+  showResolver("Checking source...");
   try {
     const result = await resolveTmdbSourcesAndPlay({
       allowSourceFallback: false,
+      applyPlayback: false,
       requiredSourceHash: normalizedNextSourceHash,
+      requestSourceHash: normalizedNextSourceHash,
+      resolveTimeoutMs: MANUAL_SOURCE_SWITCH_TIMEOUT_MS,
       startSeconds: resumeFrom,
     });
     if (result?.nativeLaunched) {
       return;
     }
+    sourceSelectionPinned = true;
+    armManualSourceSwitchRestoreTimeout(restoreState);
+    showResolver("Switching source...");
+    const applied = await applyResolvedTmdbPlayback(result.resolved, {
+      resolvedSourceHash: result.resolvedSourceHash || normalizedNextSourceHash,
+      startSeconds: resumeFrom,
+    });
+    if (pendingManualSourceSwitchRestore !== restoreState) {
+      return;
+    }
+    if (applied?.nativeLaunched) {
+      clearManualSourceSwitchRestore();
+      return;
+    }
     if (!wasPaused) {
       await tryPlay();
+    }
+    if (pendingManualSourceSwitchRestore !== restoreState) {
+      return;
     }
     if (resumeFrom > 1) {
       seekToAbsoluteTime(resumeFrom);
     }
+    if (video.readyState >= 2 || getEffectiveCurrentTime() > 0.5) {
+      completeManualSourceSwitchIfActive();
+    }
   } catch (error) {
+    if (pendingManualSourceSwitchRestore === restoreState) {
+      await restoreManualSourceSwitchPlayback(
+        error?.message || "Unable to switch source.",
+      );
+      return;
+    }
+    resolverFailedSourceHashes.add(normalizedNextSourceHash);
     selectedSourceHash = previousSourceHash;
     sourceSelectionPinned = previousSourceSelectionPinned;
     applyPreferredSourceAudioSync(selectedSourceHash);
     persistSourceHashInUrl();
     syncAudioState();
-    const fallbackMessage = error?.message || "Unable to switch source.";
-    showResolverError(fallbackMessage);
+    syncSourceSelectionState();
+    renderSelectedSourceDetails();
+    hideSeekLoadingIndicator();
+    hideResolver();
+    console.warn("Unable to switch source.", error);
   }
 }
 
@@ -10668,6 +10940,7 @@ trackListener(video, "seeked", () => {
   }
 });
 trackListener(video, "canplay", () => {
+  completeManualSourceSwitchIfActive();
   applyPendingRecoverySeek();
   clearPlaybackRecovery();
   clearStreamStallRecovery();
@@ -10679,6 +10952,7 @@ trackListener(video, "canplay", () => {
   }
 });
 trackListener(video, "playing", () => {
+  completeManualSourceSwitchIfActive();
   clearPlaybackRecovery();
   clearStreamStallRecovery();
   clearLiveStartupHealthWatch({ resetRequest: true });
@@ -10690,6 +10964,7 @@ trackListener(video, "playing", () => {
 });
 trackListener(video, "timeupdate", () => {
   if (getEffectiveCurrentTime() > 0.5) {
+    completeManualSourceSwitchIfActive();
     clearPlaybackRecovery();
     clearStreamStallRecovery();
     clearLiveStartupHealthWatch({ resetRequest: true });
