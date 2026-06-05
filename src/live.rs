@@ -372,11 +372,7 @@ fn is_public_external_embed_hls_proxy_url(url: &Url, kind: LiveHlsRequestKind) -
     if url.scheme() != "https" {
         return false;
     }
-    if matches!(kind, LiveHlsRequestKind::Playlist)
-        && !url.path().to_ascii_lowercase().ends_with(".m3u8")
-    {
-        return false;
-    }
+    let _ = kind;
     let Some(host) = url.host_str().map(|value| value.to_ascii_lowercase()) else {
         return false;
     };
@@ -526,6 +522,9 @@ fn rewrite_live_hls_master_playlist(
         } else {
             rewritten.push(line.to_owned());
         }
+    }
+    if should_prefer_english_hls_audio(base_url, referer) {
+        rewritten = prefer_english_hls_audio_defaults(rewritten);
     }
     rewritten.join("\n")
 }
@@ -719,6 +718,90 @@ where
     )
 }
 
+fn should_prefer_english_hls_audio(base_url: &Url, referer: Option<&str>) -> bool {
+    hls_url_looks_like_vixsrc(base_url)
+        || referer
+            .and_then(|value| Url::parse(value).ok())
+            .map(|url| hls_url_looks_like_vixsrc(&url))
+            .unwrap_or(false)
+}
+
+fn hls_url_looks_like_vixsrc(url: &Url) -> bool {
+    url.host_str()
+        .map(|host| {
+            let host = host.to_ascii_lowercase();
+            host == "vixsrc.to" || host.ends_with(".vixsrc.to")
+        })
+        .unwrap_or(false)
+}
+
+fn prefer_english_hls_audio_defaults(lines: Vec<String>) -> Vec<String> {
+    let has_english_audio = lines
+        .iter()
+        .any(|line| hls_line_is_audio_media(line) && hls_media_line_looks_english(line));
+    if !has_english_audio {
+        return lines;
+    }
+
+    lines
+        .into_iter()
+        .map(|line| {
+            if !hls_line_is_audio_media(&line) {
+                return line;
+            }
+            let is_english = hls_media_line_looks_english(&line);
+            let line = set_hls_boolean_attribute(&line, "DEFAULT", is_english);
+            set_hls_boolean_attribute(&line, "AUTOSELECT", is_english)
+        })
+        .collect()
+}
+
+fn hls_line_is_audio_media(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.starts_with("#ext-x-media:") && lower.contains("type=audio")
+}
+
+fn hls_media_line_looks_english(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("language=\"eng\"")
+        || lower.contains("language=eng")
+        || lower.contains("language=\"en\"")
+        || lower.contains("language=en")
+        || lower.contains("name=\"english\"")
+        || lower.contains("name=english")
+}
+
+fn set_hls_boolean_attribute(line: &str, attribute: &str, enabled: bool) -> String {
+    let Some(start) = find_hls_attribute_start(line, attribute) else {
+        return format!("{line},{attribute}={}", if enabled { "YES" } else { "NO" });
+    };
+    let value_start = start + attribute.len() + 1;
+    let value_end = line[value_start..]
+        .find(',')
+        .map(|offset| value_start + offset)
+        .unwrap_or(line.len());
+    format!(
+        "{}{}{}",
+        &line[..value_start],
+        if enabled { "YES" } else { "NO" },
+        &line[value_end..]
+    )
+}
+
+fn find_hls_attribute_start(line: &str, attribute: &str) -> Option<usize> {
+    let target = format!("{attribute}=");
+    let upper = line.to_ascii_uppercase();
+    let mut search_start = 0;
+    while let Some(relative_index) = upper[search_start..].find(&target) {
+        let index = search_start + relative_index;
+        if index == 0 || line.as_bytes().get(index.wrapping_sub(1)) == Some(&b',') {
+            return Some(index);
+        }
+        search_start = index + target.len();
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -883,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn trusted_external_embed_hls_rejects_local_or_non_playlist_urls() {
+    fn trusted_external_embed_hls_rejects_local_and_accepts_public_playlist_urls() {
         let secret = "test-live-hls-proxy-secret-with-enough-length";
         let local_url: url::Url = "https://localhost/title/index.m3u8"
             .parse()
@@ -896,7 +979,7 @@ mod tests {
             &local_url,
             LiveHlsRequestKind::Playlist
         ));
-        assert!(!is_public_external_embed_hls_proxy_url(
+        assert!(is_public_external_embed_hls_proxy_url(
             &non_playlist_url,
             LiveHlsRequestKind::Playlist
         ));
@@ -948,6 +1031,23 @@ mod tests {
         assert!(rewritten.contains("08_1080-30.m3u8"));
         assert!(rewritten.contains("07_1080-30.m3u8"));
         assert!(!rewritten.contains("URI=\"08_1080-30.m3u8\""));
+    }
+
+    #[test]
+    fn vixsrc_master_playlist_prefers_english_audio_when_available() {
+        let base: url::Url = "https://vixsrc.to/playlist/123/master.m3u8?token=abc"
+            .parse()
+            .expect("base url");
+        let playlist = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Italian\",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE=\"ita\",URI=\"ita.m3u8\"\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"English\",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE=\"eng\",URI=\"eng.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"audio\"\nmain.m3u8\n";
+        let rewritten = rewrite_live_hls_playlist(
+            &base,
+            playlist,
+            Some("https://vixsrc.to/api/tv/273240/1/1"),
+            None,
+        );
+
+        assert!(rewritten.contains("NAME=\"Italian\",DEFAULT=NO,AUTOSELECT=NO"));
+        assert!(rewritten.contains("NAME=\"English\",DEFAULT=YES,AUTOSELECT=YES"));
     }
 
     #[test]

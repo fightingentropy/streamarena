@@ -6,12 +6,18 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
+use aes::Aes256;
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use dashmap::DashMap;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use regex::Regex;
+use reqwest::header;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::process::Command;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
@@ -74,11 +80,17 @@ const DEFAULT_ALLOWED_SOURCE_FORMATS: &[&str] = &["mp4", "mkv"];
 const EXTERNAL_EMBED_RESOLVER_PROVIDER: &str = "external-embed";
 const EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-external-embed-hls.mjs";
 const EXTERNAL_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-external-embed-hls.mjs";
-const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 30;
+const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 8;
 const EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS";
 const EXTERNAL_EMBED_SERVER_ENV: &str = "EXTERNAL_EMBED_SERVER";
-const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS: u64 = 45_000;
+const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS: u64 = 26_000;
 const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS";
+const EXTERNAL_EMBED_DIRECT_RESOLVE_TIMEOUT_MS: u64 = 4_500;
+const EXTERNAL_EMBED_PROVIDER_HEALTH_KEY_PREFIX: &str = "external-embed-provider:";
+const EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP: i64 = 75;
+const EXTERNAL_EMBED_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36";
+const VIDROCK_AES_PASSPHRASE: &str = "x7k9mPqT2rWvY8zA5bC3nF6hJ2lK4mN9";
+const VIDROCK_PROXY_PREFIX: &str = "https://proxy.vidrock.store/";
 
 /// Upper bound on a single discovery (Torrentio/Torznab) response body. These
 /// come from semi-trusted indexers; this guards against a misconfigured or
@@ -128,6 +140,12 @@ static MULTI_AUDIO_RELEASE_RE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("valid multi audio release regex")
 });
+static VIXSRC_TOKEN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"token["']\s*:\s*["']([^"']+)"#).expect("valid token regex"));
+static VIXSRC_EXPIRES_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"expires["']\s*:\s*["']([^"']+)"#).expect("valid expires regex"));
+static VIXSRC_PLAYLIST_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"url\s*:\s*["']([^"']+)"#).expect("valid playlist regex"));
 
 #[derive(Clone)]
 pub struct ResolverService {
@@ -289,16 +307,74 @@ struct ExternalEmbedHlsPlaybackSource {
     referer: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct IcefyStreamResponse {
+    #[serde(default)]
+    stream: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VidApiStreamResponse {
+    #[serde(default)]
+    status_code: String,
+    #[serde(default)]
+    data: Option<VidApiStreamData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VidApiStreamData {
+    #[serde(default)]
+    stream_urls: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VixSrcApiResponse {
+    #[serde(default)]
+    src: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VidRockStreamInfo {
+    #[serde(default)]
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VidRockCdnSource {
+    #[serde(default)]
+    url: String,
+}
+
 const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
     ExternalEmbedProvider {
         id: "videasy",
         label: "VidEasy",
-        priority: 0,
+        priority: 50,
     },
     ExternalEmbedProvider {
         id: "vidlink",
         label: "VidLink",
-        priority: 1,
+        priority: 0,
+    },
+    ExternalEmbedProvider {
+        id: "icefy",
+        label: "Icefy",
+        priority: 5,
+    },
+    ExternalEmbedProvider {
+        id: "vidrock",
+        label: "VidRock",
+        priority: 8,
+    },
+    ExternalEmbedProvider {
+        id: "vidapi",
+        label: "VidApi",
+        priority: 10,
+    },
+    ExternalEmbedProvider {
+        id: "vixsrc",
+        label: "VixSrc",
+        priority: 14,
     },
 ];
 
@@ -600,7 +676,10 @@ impl ResolverService {
                     episode_number,
                 )
                 .await?;
-            let external_sources = build_external_embed_source_summaries(&metadata);
+            let external_health_scores =
+                self.compute_external_embed_health_scores(&metadata).await?;
+            let external_sources =
+                build_external_embed_source_summaries(&metadata, &external_health_scores);
             let has_external_sources = !external_sources.is_empty();
             let pinned_external_source =
                 external_embed_source_for_source_hash(&metadata, &normalized_source_hash).is_some();
@@ -741,7 +820,9 @@ impl ResolverService {
         let metadata = self
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
-        let external_sources = build_external_embed_source_summaries(&metadata);
+        let external_health_scores = self.compute_external_embed_health_scores(&metadata).await?;
+        let external_sources =
+            build_external_embed_source_summaries(&metadata, &external_health_scores);
         let has_external_sources = !external_sources.is_empty();
         let pinned_external_source =
             external_embed_source_for_source_hash(&metadata, &normalized_source_hash).is_some();
@@ -1058,6 +1139,7 @@ impl ResolverService {
         let metadata = self
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
+        let external_health_scores = self.compute_external_embed_health_scores(&metadata).await?;
         let pinned_external_source =
             external_embed_source_for_source_hash(&metadata, &filters.source_hash);
         let external_embed_only = real_debrid.is_none();
@@ -1082,10 +1164,13 @@ impl ResolverService {
         {
             let mut external_guard = self.acquire_external_resolve_permit().await?;
             if let Some(payload) = build_external_embed_resolved_playback_payload(
+                &self.client,
+                &self.db,
                 &metadata,
                 provider,
                 &preferences,
                 false,
+                &external_health_scores,
                 &self.config.live_hls_proxy_secret,
             )
             .await
@@ -1103,14 +1188,18 @@ impl ResolverService {
                 &default_external_filters,
                 default_external_resolver_provider,
             )
-            && let Some(provider) = default_external_embed_source(&metadata)
+            && let Some(provider) =
+                default_external_embed_source(&metadata, &external_health_scores)
         {
             if let Ok(mut external_guard) = self.acquire_external_resolve_permit().await {
                 if let Some(payload) = build_external_embed_resolved_playback_payload(
+                    &self.client,
+                    &self.db,
                     &metadata,
                     provider,
                     &preferences,
                     true,
+                    &external_health_scores,
                     &self.config.live_hls_proxy_secret,
                 )
                 .await
@@ -1455,6 +1544,7 @@ impl ResolverService {
                 episode_number,
             )
             .await?;
+        let external_health_scores = self.compute_external_embed_health_scores(&metadata).await?;
         let pinned_external_source =
             external_embed_source_for_source_hash(&metadata, &filters.source_hash);
         let external_embed_only = real_debrid.is_none();
@@ -1479,10 +1569,13 @@ impl ResolverService {
         {
             let mut external_guard = self.acquire_external_resolve_permit().await?;
             if let Some(payload) = build_external_embed_resolved_playback_payload(
+                &self.client,
+                &self.db,
                 &metadata,
                 provider,
                 &preferences,
                 false,
+                &external_health_scores,
                 &self.config.live_hls_proxy_secret,
             )
             .await
@@ -1500,14 +1593,18 @@ impl ResolverService {
                 &default_external_filters,
                 default_external_resolver_provider,
             )
-            && let Some(provider) = default_external_embed_source(&metadata)
+            && let Some(provider) =
+                default_external_embed_source(&metadata, &external_health_scores)
         {
             if let Ok(mut external_guard) = self.acquire_external_resolve_permit().await {
                 if let Some(payload) = build_external_embed_resolved_playback_payload(
+                    &self.client,
+                    &self.db,
                     &metadata,
                     provider,
                     &preferences,
                     true,
+                    &external_health_scores,
                     &self.config.live_hls_proxy_secret,
                 )
                 .await
@@ -3602,6 +3699,29 @@ impl ResolverService {
         }
         Ok(scores)
     }
+
+    async fn compute_external_embed_health_scores(
+        &self,
+        metadata: &ResolveMetadata,
+    ) -> AppResult<HashMap<String, i64>> {
+        let mut scores = HashMap::new();
+        for source in external_embed_sources() {
+            let source_hash = external_embed_source_hash(source, metadata);
+            if source_hash.is_empty() {
+                continue;
+            }
+            let mut score = 0;
+            if let Some(stats) = self.db.get_source_health_stats(source_hash.clone()).await? {
+                score += compute_external_embed_rank_health_score(&stats);
+            }
+            let provider_key = external_embed_provider_health_key(source);
+            if let Some(stats) = self.db.get_source_health_stats(provider_key).await? {
+                score += compute_external_embed_rank_health_score(&stats);
+            }
+            scores.insert(source_hash, score);
+        }
+        Ok(scores)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -5010,7 +5130,10 @@ fn combine_external_embed_source_summaries(
     sources
 }
 
-fn build_external_embed_source_summaries(metadata: &ResolveMetadata) -> Vec<SourceSummary> {
+fn build_external_embed_source_summaries(
+    metadata: &ResolveMetadata,
+    health_scores: &HashMap<String, i64>,
+) -> Vec<SourceSummary> {
     let mut sources = external_embed_sources()
         .into_iter()
         .filter(|source| is_external_embed_hls_capable_source(*source))
@@ -5032,7 +5155,8 @@ fn build_external_embed_source_summaries(metadata: &ResolveMetadata) -> Vec<Sour
                 seeders: 0,
                 size: String::new(),
                 releaseGroup: external_embed_source_detail_label(source).to_owned(),
-                score: 1_000_000 - external_embed_source_priority(source, metadata),
+                score: 1_000_000
+                    + external_embed_source_rank_score(source, metadata, health_scores),
             })
         })
         .collect::<Vec<_>>();
@@ -5058,40 +5182,65 @@ fn external_embed_source_for_source_hash(
         .find(|source| external_embed_source_hash(*source, metadata) == normalized_hash)
 }
 
-fn default_external_embed_source(metadata: &ResolveMetadata) -> Option<ExternalEmbedSource> {
+fn default_external_embed_source(
+    metadata: &ResolveMetadata,
+    health_scores: &HashMap<String, i64>,
+) -> Option<ExternalEmbedSource> {
     let mut sources = external_embed_sources()
         .into_iter()
         .filter(|source| is_external_embed_hls_capable_source(*source))
         .filter(|source| external_embed_url(*source, metadata).is_some())
         .collect::<Vec<_>>();
-    sources.sort_by_key(|source| external_embed_source_priority(*source, metadata));
+    sources.sort_by(|left, right| {
+        external_embed_source_rank_score(*right, metadata, health_scores)
+            .cmp(&external_embed_source_rank_score(
+                *left,
+                metadata,
+                health_scores,
+            ))
+            .then_with(|| {
+                external_embed_source_display_name(*left)
+                    .cmp(&external_embed_source_display_name(*right))
+            })
+    });
     sources.into_iter().next()
 }
 
-fn preferred_external_embed_hls_sources(metadata: &ResolveMetadata) -> Vec<ExternalEmbedSource> {
+fn preferred_external_embed_hls_sources(
+    metadata: &ResolveMetadata,
+    health_scores: &HashMap<String, i64>,
+) -> Vec<ExternalEmbedSource> {
     let mut sources = external_embed_sources()
         .into_iter()
         .filter(|source| is_default_external_embed_hls_fallback_source(*source))
         .filter(|source| is_external_embed_hls_capable_source(*source))
         .filter(|source| external_embed_url(*source, metadata).is_some())
         .collect::<Vec<_>>();
-    sources.sort_by_key(|source| external_embed_hls_source_priority(*source, metadata));
+    sources.sort_by(|left, right| {
+        external_embed_source_rank_score(*right, metadata, health_scores)
+            .cmp(&external_embed_source_rank_score(
+                *left,
+                metadata,
+                health_scores,
+            ))
+            .then_with(|| {
+                external_embed_source_display_name(*left)
+                    .cmp(&external_embed_source_display_name(*right))
+            })
+    });
     sources
 }
 
-fn external_embed_hls_source_priority(
+fn external_embed_source_rank_score(
     source: ExternalEmbedSource,
-    _metadata: &ResolveMetadata,
-) -> u32 {
-    match source.provider.id {
-        "vidlink" => 0,
-        "videasy" if source.server.is_none() => 50,
-        "videasy" => source
-            .server
-            .map(|server| 100 + server.priority.max(0) as u32)
-            .unwrap_or(150),
-        _ => 150,
-    }
+    metadata: &ResolveMetadata,
+    health_scores: &HashMap<String, i64>,
+) -> i64 {
+    let source_hash = external_embed_source_hash(source, metadata);
+    external_embed_source_availability_score(source)
+        + external_embed_source_quality_score(source)
+        + health_scores.get(&source_hash).copied().unwrap_or_default()
+        - external_embed_source_priority(source, metadata)
 }
 
 fn is_default_external_embed_hls_fallback_source(source: ExternalEmbedSource) -> bool {
@@ -5101,12 +5250,38 @@ fn is_default_external_embed_hls_fallback_source(source: ExternalEmbedSource) ->
             .map(|server| server.id == "YORU")
             .unwrap_or(true),
         "vidlink" => source.server.is_none(),
+        "icefy" | "vidrock" | "vidapi" | "vixsrc" => source.server.is_none(),
         _ => false,
     }
 }
 
 fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) -> bool {
-    matches!(source.provider.id, "videasy" | "vidlink")
+    matches!(
+        source.provider.id,
+        "videasy" | "vidlink" | "icefy" | "vidrock" | "vidapi" | "vixsrc"
+    )
+}
+
+fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 {
+    match source.provider.id {
+        "vidlink" => 1_250,
+        "icefy" => 1_100,
+        "vidrock" => 1_025,
+        "vidapi" => 950,
+        "vixsrc" => 800,
+        "videasy" if source.server.is_none() => 400,
+        "videasy" => 200,
+        _ => 0,
+    }
+}
+
+fn external_embed_source_quality_score(source: ExternalEmbedSource) -> i64 {
+    match source.provider.id {
+        "videasy" if source.server.map(|server| server.id) == Some("YORU") => 600,
+        "vidlink" | "icefy" | "vidrock" | "vidapi" | "vixsrc" => 400,
+        "videasy" => 350,
+        _ => 0,
+    }
 }
 
 fn should_prefer_default_external_embed(
@@ -5121,30 +5296,42 @@ fn should_prefer_default_external_embed(
 }
 
 async fn build_external_embed_resolved_playback_payload(
+    client: &reqwest::Client,
+    db: &Db,
     metadata: &ResolveMetadata,
     source: ExternalEmbedSource,
     preferences: &ResolvePreferences,
     allow_native_fallback: bool,
+    health_scores: &HashMap<String, i64>,
     live_hls_proxy_secret: &str,
 ) -> Option<Value> {
     let _ = external_embed_playback_url(source, metadata, preferences)?;
-    let candidates = external_embed_hls_candidate_sources(source, metadata, allow_native_fallback);
+    let candidates = external_embed_hls_candidate_sources(
+        source,
+        metadata,
+        allow_native_fallback,
+        health_scores,
+    );
     let hls_deadline_ms = now_ms() + external_embed_hls_total_timeout_ms() as i64;
 
     for candidate in candidates {
         let remaining_ms = hls_deadline_ms - now_ms();
-        if remaining_ms < 5_000 {
+        if remaining_ms < 1_000 {
             break;
         }
         let Some(embed_url) = external_embed_playback_url(candidate, metadata, preferences) else {
             continue;
         };
-        let hls_timeout_ms = external_embed_hls_resolve_timeout_ms().min(remaining_ms as u64);
+        let hls_timeout_ms = external_embed_source_resolve_timeout_ms(candidate)
+            .min(remaining_ms as u64)
+            .max(1_000);
         let hls_result = timeout(
             Duration::from_millis(remaining_ms as u64),
             resolve_external_embed_hls_playback_source(
+                client,
+                candidate,
                 &embed_url,
-                candidate.server,
+                metadata,
                 hls_timeout_ms,
             ),
         )
@@ -5152,8 +5339,17 @@ async fn build_external_embed_resolved_playback_payload(
         .ok()
         .flatten();
         let Some(hls_source) = hls_result else {
+            record_external_embed_health_event(
+                db,
+                candidate,
+                metadata,
+                "playback_error",
+                "Native HLS resolver failed.",
+            )
+            .await;
             continue;
         };
+        record_external_embed_health_event(db, candidate, metadata, "success", "").await;
         let playable_url = crate::live::build_trusted_external_embed_hls_playback_source(
             hls_source.playback_url.as_str(),
             hls_source.referer.as_deref(),
@@ -5175,10 +5371,11 @@ fn external_embed_hls_candidate_sources(
     source: ExternalEmbedSource,
     metadata: &ResolveMetadata,
     allow_native_fallback: bool,
+    health_scores: &HashMap<String, i64>,
 ) -> Vec<ExternalEmbedSource> {
     let mut candidates = Vec::new();
     if allow_native_fallback {
-        for candidate in preferred_external_embed_hls_sources(metadata) {
+        for candidate in preferred_external_embed_hls_sources(metadata, health_scores) {
             if !candidates.contains(&candidate) {
                 candidates.push(candidate);
             }
@@ -5187,6 +5384,44 @@ fn external_embed_hls_candidate_sources(
         candidates.push(source);
     }
     candidates
+}
+
+fn external_embed_source_resolve_timeout_ms(source: ExternalEmbedSource) -> u64 {
+    match source.provider.id {
+        "videasy" | "vidlink" => external_embed_hls_resolve_timeout_ms(),
+        _ => external_embed_hls_resolve_timeout_ms().min(EXTERNAL_EMBED_DIRECT_RESOLVE_TIMEOUT_MS),
+    }
+}
+
+fn external_embed_provider_health_key(source: ExternalEmbedSource) -> String {
+    format!(
+        "{}{}:{}",
+        EXTERNAL_EMBED_PROVIDER_HEALTH_KEY_PREFIX,
+        source.provider.id,
+        source.server.map(|server| server.id).unwrap_or("default")
+    )
+}
+
+async fn record_external_embed_health_event(
+    db: &Db,
+    source: ExternalEmbedSource,
+    metadata: &ResolveMetadata,
+    event_type: &str,
+    last_error: &str,
+) {
+    let source_hash = external_embed_source_hash(source, metadata);
+    if !source_hash.is_empty() {
+        let _ = db
+            .record_source_health_event(source_hash, event_type.to_owned(), last_error.to_owned())
+            .await;
+    }
+    let _ = db
+        .record_source_health_event(
+            external_embed_provider_health_key(source),
+            event_type.to_owned(),
+            last_error.to_owned(),
+        )
+        .await;
 }
 
 fn build_external_embed_resolved_payload_with_playable_url(
@@ -5251,6 +5486,28 @@ fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -
             "https://vidlink.pro/tv/{}/{}/{}",
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
+        ("icefy", "movie") => Some(format!("https://streams.icefy.top/movie/{tmdb_id}")),
+        ("icefy", "tv") => Some(format!(
+            "https://streams.icefy.top/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        ("vidapi", "movie") => Some(format!(
+            "https://streamdata.vaplayer.ru/api.php?tmdb={tmdb_id}&type=movie"
+        )),
+        ("vidapi", "tv") => Some(format!(
+            "https://streamdata.vaplayer.ru/api.php?tmdb={}&type=tv&season={}&episode={}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        ("vixsrc", "movie") => Some(format!("https://vixsrc.to/api/movie/{tmdb_id}")),
+        ("vixsrc", "tv") => Some(format!(
+            "https://vixsrc.to/api/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        ("vidrock", "movie") => Some(format!("https://vidrock.net/movie/{tmdb_id}")),
+        ("vidrock", "tv") => Some(format!(
+            "https://vidrock.net/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
         _ => None,
     }
 }
@@ -5309,6 +5566,12 @@ fn external_embed_source_priority(source: ExternalEmbedSource, _metadata: &Resol
     if source.provider.id == "vidlink" {
         return 0;
     }
+    if matches!(
+        source.provider.id,
+        "icefy" | "vidrock" | "vidapi" | "vixsrc"
+    ) {
+        return source.provider.priority;
+    }
     if source.provider.id == "videasy" && source.server.is_none() {
         return 25;
     }
@@ -5340,6 +5603,12 @@ fn external_embed_source_provider_label(source: ExternalEmbedSource) -> &'static
 }
 
 fn external_embed_source_quality_label(source: ExternalEmbedSource) -> &'static str {
+    if matches!(
+        source.provider.id,
+        "icefy" | "vidrock" | "vidapi" | "vixsrc"
+    ) {
+        return "1080p";
+    }
     source
         .server
         .map(|server| server.quality_label)
@@ -5347,6 +5616,13 @@ fn external_embed_source_quality_label(source: ExternalEmbedSource) -> &'static 
 }
 
 fn external_embed_source_detail_label(source: ExternalEmbedSource) -> &'static str {
+    match source.provider.id {
+        "icefy" => return "Fast native HLS",
+        "vidrock" => return "Native HLS",
+        "vidapi" => return "Multi-source native HLS",
+        "vixsrc" => return "Native HLS, alternate audio",
+        _ => {}
+    }
     source
         .server
         .map(|server| server.detail_label)
@@ -5377,10 +5653,22 @@ fn fnv1a64(bytes: &[u8], seed: u64) -> u64 {
 }
 
 async fn resolve_external_embed_hls_playback_source(
+    client: &reqwest::Client,
+    source: ExternalEmbedSource,
     embed_url: &str,
-    server: Option<ExternalEmbedServer>,
+    metadata: &ResolveMetadata,
     timeout_ms: u64,
 ) -> Option<ExternalEmbedHlsPlaybackSource> {
+    match source.provider.id {
+        "icefy" => return resolve_icefy_hls_playback_source(client, embed_url, timeout_ms).await,
+        "vidapi" => return resolve_vidapi_hls_playback_source(client, embed_url, timeout_ms).await,
+        "vixsrc" => return resolve_vixsrc_hls_playback_source(client, embed_url, timeout_ms).await,
+        "vidrock" => {
+            return resolve_vidrock_hls_playback_source(client, metadata, timeout_ms).await;
+        }
+        _ => {}
+    }
+
     let embed_url = Url::parse(embed_url.trim()).ok()?;
     if !is_supported_external_embed_hls_embed_url(&embed_url) {
         return None;
@@ -5404,7 +5692,7 @@ async fn resolve_external_embed_hls_playback_source(
             resolve_timeout_ms.to_string(),
         )
         .kill_on_drop(true);
-    if let Some(server) = server {
+    if let Some(server) = source.server {
         command.env(EXTERNAL_EMBED_SERVER_ENV, server.id);
     }
 
@@ -5433,6 +5721,301 @@ async fn resolve_external_embed_hls_playback_source(
     })
 }
 
+async fn resolve_icefy_hls_playback_source(
+    client: &reqwest::Client,
+    api_url: &str,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    let referer = "https://streams.icefy.top/";
+    let response =
+        fetch_external_json::<IcefyStreamResponse>(client, api_url, Some(referer), timeout_ms)
+            .await?;
+    validate_external_embed_hls_playlist(client, &response.stream, Some(referer), timeout_ms).await
+}
+
+async fn resolve_vidapi_hls_playback_source(
+    client: &reqwest::Client,
+    api_url: &str,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    let referer = "https://brightpathsignals.com/";
+    let response =
+        fetch_external_json::<VidApiStreamResponse>(client, api_url, Some(referer), timeout_ms)
+            .await?;
+    if response.status_code.trim() != "200" {
+        return None;
+    }
+    for stream_url in response.data?.stream_urls {
+        if let Some(source) =
+            validate_external_embed_hls_playlist(client, &stream_url, Some(referer), timeout_ms)
+                .await
+        {
+            return Some(source);
+        }
+    }
+    None
+}
+
+async fn resolve_vixsrc_hls_playback_source(
+    client: &reqwest::Client,
+    api_url: &str,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    let response = fetch_external_json::<VixSrcApiResponse>(
+        client,
+        api_url,
+        Some("https://vixsrc.to/"),
+        timeout_ms,
+    )
+    .await?;
+    let base_url = Url::parse("https://vixsrc.to").ok()?;
+    let embed_url = base_url.join(response.src.trim()).ok()?;
+    let html = fetch_external_text(
+        client,
+        embed_url.as_str(),
+        Some("https://vixsrc.to/"),
+        timeout_ms,
+    )
+    .await?;
+    let token = VIXSRC_TOKEN_RE
+        .captures(&html)
+        .and_then(|captures| captures.get(1))
+        .map(|value| value.as_str().trim().to_owned())?;
+    let expires = VIXSRC_EXPIRES_RE
+        .captures(&html)
+        .and_then(|captures| captures.get(1))
+        .map(|value| value.as_str().trim().to_owned())?;
+    let expires_seconds = expires.parse::<i64>().ok()?;
+    if expires_seconds <= (now_ms() / 1000) + 60 {
+        return None;
+    }
+    let playlist = VIXSRC_PLAYLIST_RE
+        .captures(&html)
+        .and_then(|captures| captures.get(1))
+        .map(|value| value.as_str().trim().to_owned())?;
+    let mut playlist_url = Url::parse(&playlist)
+        .or_else(|_| embed_url.join(&playlist))
+        .ok()?;
+    {
+        let mut query = playlist_url.query_pairs_mut();
+        query.append_pair("token", &token);
+        query.append_pair("expires", &expires);
+        query.append_pair("h", "1");
+    }
+    validate_external_embed_hls_playlist(client, playlist_url.as_str(), Some(api_url), timeout_ms)
+        .await
+}
+
+async fn resolve_vidrock_hls_playback_source(
+    client: &reqwest::Client,
+    metadata: &ResolveMetadata,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    let item_id = if metadata.media_type == "tv" {
+        format!(
+            "{}_{}_{}",
+            metadata.tmdb_id, metadata.season_number, metadata.episode_number
+        )
+    } else {
+        metadata.tmdb_id.clone()
+    };
+    let encrypted_id = encrypt_vidrock_item_id(&item_id)?;
+    let api_url = format!(
+        "https://vidrock.net/api/{}/{}",
+        metadata.media_type, encrypted_id
+    );
+    let streams = fetch_external_json::<HashMap<String, VidRockStreamInfo>>(
+        client,
+        &api_url,
+        Some("https://vidrock.net/"),
+        timeout_ms,
+    )
+    .await?;
+
+    for stream in streams.values() {
+        let Some(stream_url) = stream
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if stream_url.contains("hls2.vdrk.site") {
+            if let Some(source) =
+                resolve_vidrock_nested_hls_source(client, stream_url, timeout_ms).await
+            {
+                return Some(source);
+            }
+            continue;
+        }
+        if let Some(source) = validate_external_embed_hls_playlist(
+            client,
+            stream_url,
+            Some("https://vidrock.net/"),
+            timeout_ms,
+        )
+        .await
+        {
+            return Some(source);
+        }
+    }
+    None
+}
+
+async fn resolve_vidrock_nested_hls_source(
+    client: &reqwest::Client,
+    source_url: &str,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    let sources = fetch_external_json::<Vec<VidRockCdnSource>>(
+        client,
+        source_url,
+        Some("https://vidrock.net/"),
+        timeout_ms,
+    )
+    .await?;
+    for source in sources {
+        let mut url = source.url.trim().to_owned();
+        if let Some(encoded_path) = url.strip_prefix(VIDROCK_PROXY_PREFIX) {
+            url = percent_decode_lossy(encoded_path.trim_start_matches('/'));
+        }
+        if let Some(source) = validate_external_embed_hls_playlist(
+            client,
+            &url,
+            Some("https://lok-lok.cc/"),
+            timeout_ms,
+        )
+        .await
+        {
+            return Some(source);
+        }
+    }
+    None
+}
+
+async fn fetch_external_json<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+    referer: Option<&str>,
+    timeout_ms: u64,
+) -> Option<T> {
+    let text = fetch_external_text(client, url, referer, timeout_ms).await?;
+    serde_json::from_str(&text).ok()
+}
+
+async fn fetch_external_text(
+    client: &reqwest::Client,
+    url: &str,
+    referer: Option<&str>,
+    timeout_ms: u64,
+) -> Option<String> {
+    let url = Url::parse(url.trim()).ok()?;
+    if url.scheme() != "https" {
+        return None;
+    }
+    let mut request = client
+        .get(url)
+        .header(header::USER_AGENT, EXTERNAL_EMBED_USER_AGENT)
+        .header(header::ACCEPT, "application/json, text/plain, */*")
+        .header(header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+    if let Some(referer) = referer.and_then(normalize_external_embed_hls_referer) {
+        request = request.header(header::REFERER, referer);
+    }
+    let response = timeout(Duration::from_millis(timeout_ms.max(1_000)), request.send())
+        .await
+        .ok()?
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    timeout(
+        Duration::from_millis(timeout_ms.max(1_000)),
+        response.text(),
+    )
+    .await
+    .ok()?
+    .ok()
+}
+
+async fn validate_external_embed_hls_playlist(
+    client: &reqwest::Client,
+    playback_url: &str,
+    referer: Option<&str>,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    let playback_url = Url::parse(playback_url.trim()).ok()?;
+    if !is_supported_external_embed_validated_playlist_url(&playback_url) {
+        return None;
+    }
+    let mut request = client
+        .get(playback_url)
+        .header(header::USER_AGENT, EXTERNAL_EMBED_USER_AGENT)
+        .header(
+            header::ACCEPT,
+            "application/vnd.apple.mpegurl, application/x-mpegURL, */*",
+        )
+        .header(header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+    let referer = referer.and_then(normalize_external_embed_hls_referer);
+    if let Some(referer) = referer.as_deref() {
+        request = request.header(header::REFERER, referer);
+    }
+    let response = timeout(Duration::from_millis(timeout_ms.max(1_000)), request.send())
+        .await
+        .ok()?
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let final_url = response.url().clone();
+    if !is_supported_external_embed_validated_playlist_url(&final_url) {
+        return None;
+    }
+    let playlist = timeout(
+        Duration::from_millis(timeout_ms.max(1_000)),
+        response.text(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !playlist.trim_start().starts_with("#EXTM3U") {
+        return None;
+    }
+    Some(ExternalEmbedHlsPlaybackSource {
+        playback_url: final_url,
+        referer,
+    })
+}
+
+fn encrypt_vidrock_item_id(item_id: &str) -> Option<String> {
+    type Aes256CbcEnc = cbc::Encryptor<Aes256>;
+    let key = VIDROCK_AES_PASSPHRASE.as_bytes();
+    let iv = VIDROCK_AES_PASSPHRASE.get(..16)?.as_bytes();
+    let encrypted = Aes256CbcEnc::new(key.into(), iv.into())
+        .encrypt_padded_vec_mut::<Pkcs7>(item_id.as_bytes());
+    Some(URL_SAFE_NO_PAD.encode(encrypted))
+}
+
+fn percent_decode_lossy(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3])
+            && let Ok(byte) = u8::from_str_radix(hex, 16)
+        {
+            output.push(byte);
+            index += 3;
+            continue;
+        }
+        output.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&output).into_owned()
+}
+
 fn external_embed_hls_resolver_script_path() -> String {
     if let Some(value) = std::env::var("EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT")
         .ok()
@@ -5454,7 +6037,7 @@ fn external_embed_hls_resolve_timeout_seconds() -> u64 {
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .map(|milliseconds| milliseconds.div_ceil(1000))
-        .filter(|seconds| *seconds >= 5 && *seconds <= 120)
+        .filter(|seconds| *seconds >= 1 && *seconds <= 120)
         .unwrap_or(EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS)
 }
 
@@ -5493,6 +6076,16 @@ fn is_supported_external_embed_hls_url(url: &Url) -> bool {
     };
     let is_m3u8 = url.path().to_ascii_lowercase().ends_with(".m3u8");
     is_m3u8 && is_public_external_embed_hls_hostname(&host)
+}
+
+fn is_supported_external_embed_validated_playlist_url(url: &Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = url.host_str().map(|value| value.to_ascii_lowercase()) else {
+        return false;
+    };
+    is_public_external_embed_hls_hostname(&host)
 }
 
 fn is_public_external_embed_hls_hostname(host: &str) -> bool {
@@ -5616,6 +6209,15 @@ fn compute_source_health_score(stats: &SourceHealthStats) -> i64 {
     score -= (stats.ended_early_count * 1000).min(2600);
     score -= (stats.playback_error_count * 900).min(2400);
     score
+}
+
+fn compute_external_embed_rank_health_score(stats: &SourceHealthStats) -> i64 {
+    let score = compute_source_health_score(stats);
+    if score > 0 {
+        score.min(EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP)
+    } else {
+        score
+    }
 }
 
 fn stream_quality_target(value: &str) -> i64 {
@@ -7188,11 +7790,11 @@ mod tests {
         build_scoped_rd_torrent_cache_key, build_torrentio_stream_cache_key,
         build_torznab_request_url, build_torznab_stream_cache_key, build_tv_resolve_lock_key,
         build_user_scoped_playback_session_key_for_metadata, collect_episode_signatures,
-        compute_source_health_score, compute_torrentio_cache_deadlines,
-        default_external_embed_source, does_filename_likely_match_movie,
-        external_embed_hls_candidate_sources, external_embed_source_for_source_hash,
-        external_embed_source_hash, external_embed_sources, external_embed_url,
-        extract_info_hash_from_magnet, is_external_embed_hls_capable_source,
+        compute_external_embed_rank_health_score, compute_source_health_score,
+        compute_torrentio_cache_deadlines, default_external_embed_source,
+        does_filename_likely_match_movie, external_embed_hls_candidate_sources,
+        external_embed_source_for_source_hash, external_embed_source_hash, external_embed_sources,
+        external_embed_url, extract_info_hash_from_magnet, is_external_embed_hls_capable_source,
         is_persistent_source_resolve_error, is_public_external_embed_hls_hostname,
         is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
         normalize_allowed_formats, normalize_resolved_source_for_software_decode,
@@ -7220,11 +7822,12 @@ mod tests {
     #[test]
     fn external_embed_sources_use_stable_hashes_and_hls_urls() {
         let metadata = sample_movie_metadata();
-        let sources = build_external_embed_source_summaries(&metadata);
+        let health_scores = HashMap::new();
+        let sources = build_external_embed_source_summaries(&metadata, &health_scores);
 
-        // VidLink is the default native HLS source, with VidEasy variants
-        // still available behind it.
-        assert_eq!(sources.len(), 9);
+        // VidLink is the neutral default native HLS source, with fast native
+        // API providers and VidEasy variants still available behind it.
+        assert_eq!(sources.len(), 13);
         assert_eq!(sources[0].primary, "VidLink");
         assert_eq!(sources[0].provider, "LivNet");
         assert_eq!(sources[0].filename, "VidLink embed");
@@ -7248,20 +7851,28 @@ mod tests {
             external_embed_source_hash(source, &metadata),
             sources[0].sourceHash
         );
-        assert_eq!(sources[1].primary, "VidEasy");
+        assert_eq!(sources[1].primary, "Icefy");
         assert_eq!(sources[1].provider, "LivNet");
-        assert_eq!(sources[1].filename, "VidEasy embed");
-        assert_eq!(sources[2].primary, "Yoru");
-        assert_eq!(sources[2].provider, "VidEasy");
-        assert_eq!(sources[2].filename, "VidEasy Yoru embed");
-        assert_eq!(sources[2].qualityLabel, "4K");
-        assert_eq!(sources[2].releaseGroup, "Movies only, may have 4K");
-        assert_eq!(sources[3].primary, "Neon");
-        assert_eq!(sources[3].provider, "VidEasy");
-        assert_eq!(sources[3].filename, "VidEasy Neon embed");
-        assert_eq!(sources[3].qualityLabel, "HLS");
-        assert_eq!(sources[3].releaseGroup, "Original audio");
-        let neon_source = external_embed_source_for_source_hash(&metadata, &sources[3].sourceHash)
+        assert_eq!(sources[1].filename, "Icefy embed");
+        assert_eq!(sources[1].qualityLabel, "1080p");
+        assert_eq!(sources[1].releaseGroup, "Fast native HLS");
+        assert_eq!(sources[2].primary, "VidRock");
+        assert_eq!(sources[3].primary, "VidApi");
+        assert_eq!(sources[4].primary, "VixSrc");
+        assert_eq!(sources[5].primary, "VidEasy");
+        assert_eq!(sources[5].provider, "LivNet");
+        assert_eq!(sources[5].filename, "VidEasy embed");
+        assert_eq!(sources[6].primary, "Yoru");
+        assert_eq!(sources[6].provider, "VidEasy");
+        assert_eq!(sources[6].filename, "VidEasy Yoru embed");
+        assert_eq!(sources[6].qualityLabel, "4K");
+        assert_eq!(sources[6].releaseGroup, "Movies only, may have 4K");
+        assert_eq!(sources[7].primary, "Neon");
+        assert_eq!(sources[7].provider, "VidEasy");
+        assert_eq!(sources[7].filename, "VidEasy Neon embed");
+        assert_eq!(sources[7].qualityLabel, "HLS");
+        assert_eq!(sources[7].releaseGroup, "Original audio");
+        let neon_source = external_embed_source_for_source_hash(&metadata, &sources[7].sourceHash)
             .expect("matching neon external provider");
         assert_eq!(neon_source.provider.id, "videasy");
         assert_eq!(neon_source.server.map(|server| server.id), Some("NEON"));
@@ -7289,24 +7900,26 @@ mod tests {
             "https://vidlink.pro/tv/76331/1/1"
         );
 
-        let tv_sources = build_external_embed_source_summaries(&tv_metadata);
-        assert_eq!(tv_sources.len(), 9);
+        let tv_sources = build_external_embed_source_summaries(&tv_metadata, &health_scores);
+        assert_eq!(tv_sources.len(), 13);
         assert_eq!(tv_sources[0].primary, "VidLink");
         assert_eq!(tv_sources[0].provider, "LivNet");
-        assert_eq!(tv_sources[1].primary, "VidEasy");
-        assert_eq!(tv_sources[2].primary, "Yoru");
+        assert_eq!(tv_sources[1].primary, "Icefy");
+        assert_eq!(tv_sources[2].primary, "VidRock");
     }
 
     #[test]
     fn default_external_embed_prefers_hls_sources() {
         let metadata = sample_movie_metadata();
-        let source = default_external_embed_source(&metadata).expect("default embed source");
+        let health_scores = HashMap::new();
+        let source =
+            default_external_embed_source(&metadata, &health_scores).expect("default embed source");
         assert_eq!(source.provider.id, "vidlink");
         assert_eq!(source.server.map(|server| server.id), None);
 
         let tv_metadata = sample_tv_metadata();
-        let tv_source =
-            default_external_embed_source(&tv_metadata).expect("default tv embed source");
+        let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
+            .expect("default tv embed source");
         assert_eq!(tv_source.provider.id, "vidlink");
         assert_eq!(tv_source.server.map(|server| server.id), None);
 
@@ -7328,11 +7941,14 @@ mod tests {
     #[test]
     fn default_external_embed_native_fallback_can_try_hls_sources() {
         let metadata = sample_movie_metadata();
-        let source = default_external_embed_source(&metadata).expect("default embed source");
+        let health_scores = HashMap::new();
+        let source =
+            default_external_embed_source(&metadata, &health_scores).expect("default embed source");
         assert_eq!(source.provider.id, "vidlink");
         assert_eq!(source.server.map(|server| server.id), None);
 
-        let candidates = external_embed_hls_candidate_sources(source, &metadata, true);
+        let candidates =
+            external_embed_hls_candidate_sources(source, &metadata, true, &health_scores);
         let source_ids = candidates
             .iter()
             .map(|candidate| {
@@ -7347,14 +7963,19 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(source_ids.first(), Some(&("vidlink", "default")));
-        assert_eq!(source_ids.get(1), Some(&("videasy", "default")));
-        assert_eq!(source_ids.get(2), Some(&("videasy", "YORU")));
-        assert_eq!(source_ids.len(), 3);
+        assert_eq!(source_ids.get(1), Some(&("icefy", "default")));
+        assert_eq!(source_ids.get(2), Some(&("vidrock", "default")));
+        assert_eq!(source_ids.get(3), Some(&("vidapi", "default")));
+        assert_eq!(source_ids.get(4), Some(&("vixsrc", "default")));
+        assert_eq!(source_ids.get(5), Some(&("videasy", "default")));
+        assert_eq!(source_ids.get(6), Some(&("videasy", "YORU")));
+        assert_eq!(source_ids.len(), 7);
 
         let tv_metadata = sample_tv_metadata();
-        let tv_source =
-            default_external_embed_source(&tv_metadata).expect("default tv embed source");
-        let tv_candidates = external_embed_hls_candidate_sources(tv_source, &tv_metadata, true);
+        let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
+            .expect("default tv embed source");
+        let tv_candidates =
+            external_embed_hls_candidate_sources(tv_source, &tv_metadata, true, &health_scores);
         let tv_source_ids = tv_candidates
             .iter()
             .map(|candidate| {
@@ -7369,9 +7990,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(tv_source_ids.first(), Some(&("vidlink", "default")));
-        assert_eq!(tv_source_ids.get(1), Some(&("videasy", "default")));
-        assert_eq!(tv_source_ids.get(2), Some(&("videasy", "YORU")));
-        assert_eq!(tv_source_ids.len(), 3);
+        assert_eq!(tv_source_ids.get(1), Some(&("icefy", "default")));
+        assert_eq!(tv_source_ids.get(2), Some(&("vidrock", "default")));
+        assert_eq!(tv_source_ids.get(3), Some(&("vidapi", "default")));
+        assert_eq!(tv_source_ids.get(4), Some(&("vixsrc", "default")));
+        assert_eq!(tv_source_ids.get(5), Some(&("videasy", "default")));
+        assert_eq!(tv_source_ids.get(6), Some(&("videasy", "YORU")));
+        assert_eq!(tv_source_ids.len(), 7);
 
         let neon_source = external_embed_sources()
             .into_iter()
@@ -7383,8 +8008,38 @@ mod tests {
                         .unwrap_or(false)
             })
             .expect("neon source");
-        let pinned_candidates = external_embed_hls_candidate_sources(neon_source, &metadata, false);
+        let pinned_candidates =
+            external_embed_hls_candidate_sources(neon_source, &metadata, false, &health_scores);
         assert_eq!(pinned_candidates, vec![neon_source]);
+    }
+
+    #[test]
+    fn external_embed_positive_health_does_not_override_vidlink_baseline() {
+        let metadata = sample_movie_metadata();
+        let mut health_scores = HashMap::new();
+        for source in external_embed_sources() {
+            if source.provider.id == "vidlink" {
+                continue;
+            }
+            health_scores.insert(external_embed_source_hash(source, &metadata), 150);
+        }
+
+        let source =
+            default_external_embed_source(&metadata, &health_scores).expect("default embed source");
+        assert_eq!(source.provider.id, "vidlink");
+        assert_eq!(source.server.map(|server| server.id), None);
+
+        let capped = compute_external_embed_rank_health_score(&SourceHealthStats {
+            success_count: 12,
+            ..SourceHealthStats::default()
+        });
+        assert_eq!(capped, 75);
+
+        let failed = compute_external_embed_rank_health_score(&SourceHealthStats {
+            failure_count: 1,
+            ..SourceHealthStats::default()
+        });
+        assert!(failed < SOURCE_HEALTH_AVOID_SCORE);
     }
 
     #[test]
@@ -7401,7 +8056,9 @@ mod tests {
             })
             .expect("neon source");
 
-        let pinned_candidates = external_embed_hls_candidate_sources(neon_source, &metadata, false);
+        let health_scores = HashMap::new();
+        let pinned_candidates =
+            external_embed_hls_candidate_sources(neon_source, &metadata, false, &health_scores);
         assert_eq!(pinned_candidates, vec![neon_source]);
         assert!(
             pinned_candidates

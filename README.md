@@ -129,18 +129,18 @@ Playback flow for TMDB titles:
 1. The player reads URL params such as `tmdbId`, `mediaType`, `title`, `year`, `seasonNumber`, `episodeNumber`, `audioLang`, `quality`, `subtitleLang`, `sourceHash`, and `sessionKey`.
 2. It applies stored quality/audio/subtitle preferences and remembered continue-watching source state.
 3. It calls `/api/resolve/movie` or `/api/resolve/tv`.
-4. For default unpinned TMDB playback, the resolver tries VidLink native HLS first, then falls back to VidEasy native HLS sources.
+4. For default unpinned TMDB playback, the resolver ranks native HLS providers by quality and learned health, starts with VidLink on a neutral install, then quickly rotates through Icefy, VidRock, VidApi, VixSrc, and VidEasy sources when a provider fails.
 5. The player probes tracks when needed through `/api/media/tracks`, selects audio/subtitle streams, and chooses direct, HLS, remux, local torrent, or local cache playback.
 6. If the external HLS path fails in the browser, the player retries with `skipExternalEmbed=1`; Torrentio/Torznab torrent sources are only considered when the current user has saved a Real-Debrid API token in Settings, and local torrent/cache playback stays off unless the user also enables Local torrent cache in Settings.
 7. Playback progress is stored locally for responsiveness and synced to `/api/user/watch-progress`, `/api/user/continue-watching`, and `/api/session/progress` when enabled.
 
 External movie/TV embed stack:
 
-- Default order: VidLink native HLS -> VidEasy default native HLS -> VidEasy Yoru native HLS. Torrent sources require a Real-Debrid API token in Settings; local torrent/cache additionally requires the Local torrent cache setting.
-- Selectable VidEasy server sources include Yoru, Neon, Cypher, Sage, Breach, Vyse, and Raze, with their original/alternate audio hints shown in the player server menu. Selected movie/TV external sources must resolve to native HLS; the resolver does not hand off to the provider iframe.
+- Default neutral order: VidLink native HLS -> Icefy native HLS -> VidRock native HLS -> VidApi native HLS -> VixSrc native HLS -> VidEasy native HLS. Provider/source health is recorded from resolver and playback success/failure events, so healthier sources move up over time. Torrent sources require a Real-Debrid API token in Settings; local torrent/cache additionally requires the Local torrent cache setting.
+- Selectable sources include VidLink, Icefy, VidRock, VidApi, VixSrc, the VidEasy default source, and VidEasy server sources Yoru, Neon, Cypher, Sage, Breach, Vyse, and Raze, with original/alternate audio hints shown in the player server menu. Selected movie/TV external sources must resolve to native HLS; the resolver does not hand off to the provider iframe.
 - VidEasy embeds are built from `https://player.videasy.net/movie/...` or `/tv/...`; extracted HLS playlists are accepted on public HTTPS hosts discovered by the trusted resolver.
 - VidLink embeds are built from `https://vidlink.pro/movie/...` or `/tv/...`; extracted HLS playlist hosts include `storm.vodvidl.site` and `typhoontigertribe.net`.
-- Native external HLS is resolved by `scripts/resolve-external-embed-hls.mjs` through Playwright in development. The mini deploy copies this helper to `bin/resolve-external-embed-hls.mjs` and keeps Playwright under `~/.local/share/netflix-node` outside the app runtime tree. The backend only accepts VidEasy/VidLink embed URLs, accepts public HTTPS `.m3u8` outputs discovered by that trusted resolver, and signs those proxy URLs before playback.
+- VidEasy and VidLink HLS are resolved by `scripts/resolve-external-embed-hls.mjs` through Playwright in development. The mini deploy copies this helper to `bin/resolve-external-embed-hls.mjs` and keeps Playwright under `~/.local/share/netflix-node` outside the app runtime tree. Icefy, VidRock, VidApi, and VixSrc are resolved by backend API adapters. All native providers must return a public HTTPS playlist that validates as `#EXTM3U`; the backend signs those proxy URLs before playback.
 - Native external HLS playback is proxied through protected `/api/live/hls.m3u8` and `/api/live/hls-resource` so playlist child URLs, segment URLs, and required referers stay under backend control.
 - Iframe-only movie/TV providers are intentionally excluded so playback stays inside the app's own controls.
 - Older/failed and iframe-only providers such as VidKing, 2Embed, VidSrc, VidNest, AutoEmbed, SuperEmbed, Embed.su, and MoviesAPI are intentionally not part of the current stack.
@@ -440,8 +440,8 @@ Server:
 Embed/live resolver helpers:
 
 - `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs` when present, otherwise `bin/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable native external HLS extraction.
-- `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - per-provider timeout budget for VidEasy/VidLink native HLS extraction; default 30000.
-- `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS` - total native HLS extraction budget before falling back to the normal resolver stack; default 45000. Movie/TV external embeds that do not expose native HLS are not returned as iframes.
+- `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - per-provider timeout budget for native HLS resolution; default 8000. Direct API providers are capped lower internally for quick rotation.
+- `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS` - total native HLS extraction budget before falling back to the normal resolver stack; default 26000. Movie/TV external embeds that do not expose native HLS are not returned as iframes.
 - `LIVE_HLS_PROXY_SECRET` - optional shared signing secret for dynamic external HLS proxy URLs; generated at startup when omitted. Set this for multi-instance deployments so signed URLs survive instance changes.
 - `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs` when present, otherwise `bin/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
 - `MATCHSTREAM_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-matchstream-hls.mjs` when present, otherwise `bin/resolve-matchstream-hls.mjs`; set to `0`/`off` to disable.
@@ -453,8 +453,8 @@ Embed/live resolver helpers:
 
 Supported movie/TV native HLS hosts:
 
-- Native HLS embeds: `player.videasy.net`, `vidlink.pro`.
-- Native HLS playlist outputs: public HTTPS `.m3u8` URLs discovered from the trusted VidEasy/VidLink resolver. Localhost, IP-literal, and internal-style hosts are rejected.
+- Native HLS providers: `player.videasy.net`, `vidlink.pro`, `streams.icefy.top`, `vidrock.net`, `streamdata.vaplayer.ru`, and `vixsrc.to`.
+- Native HLS playlist outputs: public HTTPS playlists discovered and validated by the trusted resolver. Localhost, IP-literal, and internal-style hosts are rejected.
 - The protected live HLS proxy does not accept arbitrary user-supplied `.m3u8` hosts; dynamic external hosts require resolver-signed proxy URLs.
 
 Remux/HLS:
@@ -765,7 +765,7 @@ Movie/TV external embed fails:
 
 - Install Playwright Chromium with `scripts/deploy-mini.sh` or, for local development, `bun run bench:playback:install`.
 - Check `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT`, `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS`, and `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS`.
-- Confirm the host is one of the supported native providers: VidEasy or VidLink.
+- Confirm the host is one of the supported native providers: VidLink, Icefy, VidRock, VidApi, VixSrc, or VidEasy.
 - If running multiple backend instances, set a shared `LIVE_HLS_PROXY_SECRET` so resolver-signed HLS URLs verify on every instance.
 - If a provider needs a VPN/proxy, set `EXTERNAL_EMBED_BROWSER_PROXY`; if server outbound requests also need the proxy, set `OUTBOUND_HTTP_PROXY`.
 
@@ -822,5 +822,5 @@ Current cleanup state:
 - The old one-off Interstellar mini helper scripts have been removed.
 - `scripts/install-mini-agents.sh` removes any stale hero-preview LaunchAgent, helper, manifest, deployed script, and cached preview folder from the Mac mini.
 - `scripts/check-mini.sh` now validates only the current maintenance agents: log rotation, disk monitor, and watchdog.
-- External movie/TV fallback cleanup is complete: VidEasy/VidLink native HLS remains the active provider stack; VidEasy's named server sources are selectable, and external iframe handoff is not used for movie/TV playback.
+- External movie/TV fallback cleanup is complete: VidLink, Icefy, VidRock, VidApi, VixSrc, and VidEasy native HLS remain the active provider stack; VidEasy's named server sources are selectable, and external iframe handoff is not used for movie/TV playback.
 - Dead external providers and experiment knobs from the earlier investigation have been removed from resolver/provider lists, proxy allowlists, tests, and `.env.example`.
