@@ -118,6 +118,8 @@ const LIVE_VISUAL_HEALTH_MIN_BRIGHT_PIXEL_RATIO = 0.012;
 const LIVE_STARTUP_HEALTH_TIMEOUT_MS = 12000;
 const LIVE_FAILED_STREAM_CACHE_TTL_MS = 5 * 60 * 1000;
 const LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-failed-streams:";
+const LIVE_WORKING_STREAM_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const LIVE_WORKING_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-working-stream:";
 const HLS_QUALITY_PREFERENCE_STORAGE_KEY = "netflix-hls-quality-pref";
 const MANUAL_SOURCE_SWITCH_TIMEOUT_MS = 6000;
 
@@ -233,6 +235,8 @@ let liveAutoFallbackInFlight = false;
 let liveAutoFallbackAttemptedStreamIds = new Set();
 let liveFailedStreamCacheKey = "";
 let liveFailedStreamStatuses = new Map();
+let liveWorkingStreamCacheKey = "";
+let liveWorkingStreamEntry = null;
 
 const _cleanups = [];
 function trackListener(target, event, handler, options) {
@@ -1135,6 +1139,7 @@ let sourceIdentity = isSeriesPlayback
       ? `tmdb:${mediaType}:${tmdbId}${isTmdbTvPlayback ? `:s${seasonNumber}:e${episodeNumber}` : ""}`
       : `watch:${slugify(title) || "untitled"}`);
 prepareLiveFailureCacheForCurrentEvent();
+selectRememberedWorkingLiveStreamIfNeeded();
 selectFirstFreshLiveStreamIfNeeded();
 let resumeStorageKey = `netflix-resume:${sourceIdentity}`;
 const speedStorageKey = "netflix-playback-speed";
@@ -5872,7 +5877,7 @@ function renderLiveStreamOptions() {
   syncLiveStreamControls();
 }
 
-function getLiveFailureCacheStorageKey() {
+function getLiveStreamCacheEventSlug() {
   if (!isLivePlayback) {
     return "";
   }
@@ -5885,8 +5890,17 @@ function getLiveFailureCacheStorageKey() {
     .map((value) => String(value || "").trim())
     .filter(Boolean)
     .join(":");
-  const eventSlug = slugify(eventLabel) || "stream";
-  return `${LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX}${eventSlug}`;
+  return slugify(eventLabel) || "stream";
+}
+
+function getLiveFailureCacheStorageKey() {
+  const eventSlug = getLiveStreamCacheEventSlug();
+  return eventSlug ? `${LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX}${eventSlug}` : "";
+}
+
+function getLiveWorkingCacheStorageKey() {
+  const eventSlug = getLiveStreamCacheEventSlug();
+  return eventSlug ? `${LIVE_WORKING_STREAM_CACHE_STORAGE_PREFIX}${eventSlug}` : "";
 }
 
 function getLiveStreamFailureEntry(streamOption, now = Date.now()) {
@@ -6011,6 +6025,7 @@ function rememberLiveStreamFailure(streamOption, reason = "") {
   if (!liveFailedStreamCacheKey) {
     loadLiveFailureCacheForCurrentEvent();
   }
+  clearLiveStreamSuccess(streamOption);
   liveFailedStreamStatuses.set(streamId, {
     source,
     expiresAt: Date.now() + LIVE_FAILED_STREAM_CACHE_TTL_MS,
@@ -6031,14 +6046,199 @@ function clearLiveStreamFailure(streamOption) {
   }
 }
 
+function liveStreamEntryMatchesOption(entry, streamOption) {
+  const entryStreamId = String(entry?.streamId || "").trim();
+  const streamId = String(streamOption?.id || "").trim();
+  if (!entryStreamId || !streamId || entryStreamId !== streamId) {
+    return false;
+  }
+  const entrySource = normalizePlaybackSourceValue(entry?.source);
+  const optionSource = normalizePlaybackSourceValue(streamOption?.source);
+  return !entrySource || !optionSource || entrySource === optionSource;
+}
+
+function getRememberedWorkingLiveStreamOption(now = Date.now()) {
+  const entry = liveWorkingStreamEntry || null;
+  if (!entry || Number(entry.expiresAt || 0) <= now) {
+    return null;
+  }
+
+  const entrySource = normalizePlaybackSourceValue(entry.source);
+  return (
+    liveStreamOptions.find((option) => liveStreamEntryMatchesOption(entry, option)) ||
+    liveStreamOptions.find(
+      (option) =>
+        entrySource && normalizePlaybackSourceValue(option?.source) === entrySource,
+    ) ||
+    null
+  );
+}
+
+function pruneLiveWorkingCache(now = Date.now()) {
+  if (!liveWorkingStreamEntry) {
+    return false;
+  }
+  const rememberedOption = getRememberedWorkingLiveStreamOption(now);
+  if (
+    !rememberedOption ||
+    Number(liveWorkingStreamEntry.expiresAt || 0) <= now ||
+    isLiveStreamRecentlyFailed(rememberedOption, now)
+  ) {
+    liveWorkingStreamEntry = null;
+    return true;
+  }
+  return false;
+}
+
+function persistLiveWorkingCache() {
+  const cacheKey = liveWorkingStreamCacheKey || getLiveWorkingCacheStorageKey();
+  if (!cacheKey) {
+    return;
+  }
+  try {
+    pruneLiveWorkingCache();
+    if (!liveWorkingStreamEntry) {
+      localStorage.removeItem(cacheKey);
+      return;
+    }
+    localStorage.setItem(cacheKey, JSON.stringify(liveWorkingStreamEntry));
+  } catch {
+    // Working-stream caching is a convenience only.
+  }
+}
+
+function loadLiveWorkingCacheForCurrentEvent() {
+  const cacheKey = getLiveWorkingCacheStorageKey();
+  if (!cacheKey || cacheKey === liveWorkingStreamCacheKey) {
+    if (pruneLiveWorkingCache()) {
+      persistLiveWorkingCache();
+    }
+    return;
+  }
+
+  liveWorkingStreamCacheKey = cacheKey;
+  liveWorkingStreamEntry = null;
+
+  try {
+    const parsed = JSON.parse(localStorage.getItem(cacheKey) || "null");
+    const streamId = String(parsed?.streamId || "").trim();
+    const source = normalizePlaybackSourceValue(parsed?.source);
+    const expiresAt = Number(parsed?.expiresAt || 0);
+    if (streamId && source && expiresAt > Date.now()) {
+      liveWorkingStreamEntry = {
+        streamId,
+        source,
+        expiresAt,
+        confirmedAt: Number(parsed?.confirmedAt || 0),
+        reason: String(parsed?.reason || "").trim(),
+      };
+    }
+    if (pruneLiveWorkingCache()) {
+      persistLiveWorkingCache();
+    }
+  } catch {
+    liveWorkingStreamEntry = null;
+  }
+}
+
+function clearLiveStreamSuccess(streamOption) {
+  if (
+    !liveWorkingStreamEntry ||
+    !liveStreamEntryMatchesOption(liveWorkingStreamEntry, streamOption)
+  ) {
+    return;
+  }
+  liveWorkingStreamEntry = null;
+  persistLiveWorkingCache();
+}
+
+function rememberLiveStreamSuccess(
+  streamOption = getSelectedLiveStreamOption(),
+  reason = "",
+) {
+  if (!isLivePlayback || liveStreamOptions.length <= 1) {
+    return;
+  }
+  const streamId = String(streamOption?.id || "").trim();
+  const source = normalizePlaybackSourceValue(streamOption?.source);
+  if (!streamId || !source) {
+    return;
+  }
+  if (!liveWorkingStreamCacheKey) {
+    loadLiveWorkingCacheForCurrentEvent();
+  }
+
+  const now = Date.now();
+  const existing = liveWorkingStreamEntry || null;
+  const sameEntry =
+    existing &&
+    String(existing.streamId || "").trim() === streamId &&
+    normalizePlaybackSourceValue(existing.source) === source;
+  const failureRemoved =
+    Boolean(getLiveStreamFailureEntry(streamOption, now)) &&
+    liveFailedStreamStatuses.delete(streamId);
+  if (failureRemoved) {
+    persistLiveFailureCache();
+  }
+
+  if (
+    sameEntry &&
+    Number(existing.expiresAt || 0) >
+      now + LIVE_WORKING_STREAM_CACHE_TTL_MS / 2
+  ) {
+    if (failureRemoved) {
+      renderLiveStreamOptions();
+    }
+    return;
+  }
+
+  liveWorkingStreamEntry = {
+    streamId,
+    source,
+    expiresAt: now + LIVE_WORKING_STREAM_CACHE_TTL_MS,
+    confirmedAt: now,
+    reason: String(reason || "").trim(),
+  };
+  persistLiveWorkingCache();
+  if (failureRemoved) {
+    renderLiveStreamOptions();
+  }
+}
+
 function prepareLiveFailureCacheForCurrentEvent() {
   if (!isLivePlayback) {
     liveFailedStreamCacheKey = "";
     liveFailedStreamStatuses = new Map();
+    liveWorkingStreamCacheKey = "";
+    liveWorkingStreamEntry = null;
     return;
   }
   loadLiveFailureCacheForCurrentEvent();
   pruneLiveFailureCache();
+  loadLiveWorkingCacheForCurrentEvent();
+  pruneLiveWorkingCache();
+}
+
+function selectRememberedWorkingLiveStreamIfNeeded() {
+  if (!isLivePlayback || liveStreamOptions.length <= 1) {
+    return false;
+  }
+  const rememberedOption = getRememberedWorkingLiveStreamOption();
+  if (!rememberedOption || isLiveStreamRecentlyFailed(rememberedOption)) {
+    return false;
+  }
+  const selectedOption = getSelectedLiveStreamOption();
+  if (
+    selectedOption?.id === rememberedOption.id &&
+    normalizePlaybackSourceValue(selectedOption?.source) ===
+      normalizePlaybackSourceValue(rememberedOption.source)
+  ) {
+    return false;
+  }
+  selectedLiveStreamId = rememberedOption.id;
+  setExplicitPlaybackSourceState(rememberedOption.source);
+  persistLiveStreamSelectionInUrl();
+  return true;
 }
 
 function selectFirstFreshLiveStreamIfNeeded() {
@@ -9297,6 +9497,7 @@ async function initPlaybackSource() {
         ? `tmdb:${mediaType}:${tmdbId}${isTmdbTvPlayback ? `:s${seasonNumber}:e${episodeNumber}` : ""}`
         : `watch:${slugify(title) || "untitled"}`);
   prepareLiveFailureCacheForCurrentEvent();
+  selectRememberedWorkingLiveStreamIfNeeded();
   selectFirstFreshLiveStreamIfNeeded();
   resumeStorageKey = `netflix-resume:${sourceIdentity}`;
   if (isTmdbResolvedPlayback) {
@@ -11011,6 +11212,7 @@ trackListener(video, "canplay", () => {
   clearPlaybackRecovery();
   clearStreamStallRecovery();
   clearLiveStartupHealthWatch({ resetRequest: true });
+  rememberLiveStreamSuccess(getSelectedLiveStreamOption(), "canplay");
   hideSeekLoadingIndicator();
   startLiveVisualHealthWatch();
   if (!applyInitialResumeIfReady()) {
@@ -11022,6 +11224,7 @@ trackListener(video, "playing", () => {
   clearPlaybackRecovery();
   clearStreamStallRecovery();
   clearLiveStartupHealthWatch({ resetRequest: true });
+  rememberLiveStreamSuccess(getSelectedLiveStreamOption(), "playing");
   hideSeekLoadingIndicator();
   startLiveVisualHealthWatch();
   if (!applyInitialResumeIfReady()) {
@@ -11034,6 +11237,7 @@ trackListener(video, "timeupdate", () => {
     clearPlaybackRecovery();
     clearStreamStallRecovery();
     clearLiveStartupHealthWatch({ resetRequest: true });
+    rememberLiveStreamSuccess(getSelectedLiveStreamOption(), "timeupdate");
   }
   if (!applyInitialResumeIfReady()) {
     scheduleInitialResumeRetry();
