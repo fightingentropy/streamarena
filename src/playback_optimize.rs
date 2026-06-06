@@ -171,16 +171,16 @@ fn optimized_playback_filename(filename_hint: &str, input_path: &Path) -> String
     let preferred = filename_hint.trim();
     if !preferred.is_empty() {
         let path = Path::new(preferred);
-        if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
-            if !stem.trim().is_empty() {
-                return format!("{}.mp4", stem.trim());
-            }
-        }
-    }
-    if let Some(stem) = input_path.file_stem().and_then(|value| value.to_str()) {
-        if !stem.trim().is_empty() {
+        if let Some(stem) = path.file_stem().and_then(|value| value.to_str())
+            && !stem.trim().is_empty()
+        {
             return format!("{}.mp4", stem.trim());
         }
+    }
+    if let Some(stem) = input_path.file_stem().and_then(|value| value.to_str())
+        && !stem.trim().is_empty()
+    {
+        return format!("{}.mp4", stem.trim());
     }
     "video.mp4".to_owned()
 }

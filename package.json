@@ -1,6 +1,7 @@
 {
   "name": "netflix-app",
   "private": true,
+  "type": "module",
   "version": "1.0.0",
   "scripts": {
     "dev": "./scripts/dev-rust.sh",
@@ -8,7 +9,8 @@
     "dev:vite": "vite",
     "test:rust": "cargo test",
     "lint:frontend": "node ./scripts/check-js-syntax.mjs",
-    "test:frontend": "node ./scripts/frontend-smoke.mjs",
+    "test:frontend:unit": "node ./scripts/auth-local-state-test.mjs",
+    "test:frontend": "bun run test:frontend:unit && node ./scripts/frontend-smoke.mjs",
     "test": "bun run test:rust && bun run test:frontend",
     "check:architecture": "node ./scripts/check-architecture.mjs",
     "check": "bun run lint:frontend && bun run build && bun run check:architecture && bun run test:rust && bun run test:frontend",

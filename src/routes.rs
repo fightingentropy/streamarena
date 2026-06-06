@@ -5,7 +5,7 @@ use axum::RequestExt;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::{Method, Response, Uri};
+use axum::http::{HeaderName, HeaderValue, Method, Response, Uri};
 use axum::middleware::{self, Next};
 use axum::routing::{any, get};
 use serde_json::{Value, json};
@@ -39,7 +39,7 @@ use crate::persistence::{Db, TitlePreference, build_cache_debug_payload};
 use crate::process::{
     RuntimeServices, resolve_effective_remux_hwaccel_mode, to_absolute_playback_url,
 };
-use crate::resolver::ResolverService;
+use crate::resolver::{LocalCacheUpgradeRequest, ResolverService};
 use crate::static_files::serve_static;
 use crate::streaming::StreamingService;
 use crate::tmdb::TmdbService;
@@ -76,6 +76,93 @@ pub struct AppState {
 const JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const REAL_DEBRID_API_KEY_PREF_KEY: &str = "netflix-real-debrid-api-key";
 const LOCAL_TORRENT_ENABLED_PREF_KEY: &str = "netflix-local-torrent-enabled";
+const USER_PREF_MAX_ENTRIES: usize = 200;
+const USER_PREF_KEY_MAX_BYTES: usize = 128;
+const USER_PREF_VALUE_MAX_BYTES: usize = 2_000_000;
+const USER_SYNC_MAX_ENTRIES: usize = 500;
+const USER_IDENTITY_MAX_BYTES: usize = 512;
+const USER_URL_MAX_BYTES: usize = 4_096;
+const USER_SMALL_TEXT_MAX_BYTES: usize = 256;
+const MAX_RESUME_SECONDS: f64 = 31_536_000.0;
+const SECURITY_CONTENT_SECURITY_POLICY: &str = concat!(
+    "default-src 'self'; ",
+    "script-src 'self' 'unsafe-inline' blob:; ",
+    "script-src-attr 'none'; ",
+    "style-src 'self' 'unsafe-inline'; ",
+    "style-src-attr 'unsafe-inline'; ",
+    "img-src 'self' data: blob: https: http:; ",
+    "font-src 'self' data:; ",
+    "media-src 'self' data: blob: https: http:; ",
+    "connect-src 'self' https: http: blob:; ",
+    "frame-src 'self' https: http:; ",
+    "worker-src 'self' blob:; ",
+    "manifest-src 'self'; ",
+    "base-uri 'self'; ",
+    "form-action 'self'; ",
+    "object-src 'none'; ",
+    "frame-ancestors 'self'"
+);
+const SECURITY_STRICT_TRANSPORT_SECURITY: &str = "max-age=31536000; includeSubDomains";
+const SECURITY_PERMISSIONS_POLICY: &str = concat!(
+    "accelerometer=(), ",
+    "ambient-light-sensor=(), ",
+    "autoplay=(self), ",
+    "camera=(), ",
+    "display-capture=(), ",
+    "encrypted-media=(self), ",
+    "fullscreen=(self), ",
+    "geolocation=(), ",
+    "gyroscope=(), ",
+    "magnetometer=(), ",
+    "microphone=(), ",
+    "payment=(), ",
+    "usb=(), ",
+    "xr-spatial-tracking=()"
+);
+
+fn insert_security_header_if_missing(
+    headers: &mut HeaderMap,
+    name: &'static str,
+    value: &'static str,
+) {
+    let header_name = HeaderName::from_static(name);
+    if !headers.contains_key(&header_name) {
+        headers.insert(header_name, HeaderValue::from_static(value));
+    }
+}
+
+fn apply_security_headers(headers: &mut HeaderMap, include_hsts: bool) {
+    insert_security_header_if_missing(
+        headers,
+        "content-security-policy",
+        SECURITY_CONTENT_SECURITY_POLICY,
+    );
+    insert_security_header_if_missing(headers, "x-frame-options", "SAMEORIGIN");
+    insert_security_header_if_missing(headers, "x-content-type-options", "nosniff");
+    insert_security_header_if_missing(
+        headers,
+        "referrer-policy",
+        "strict-origin-when-cross-origin",
+    );
+    insert_security_header_if_missing(headers, "permissions-policy", SECURITY_PERMISSIONS_POLICY);
+    if include_hsts {
+        insert_security_header_if_missing(
+            headers,
+            "strict-transport-security",
+            SECURITY_STRICT_TRANSPORT_SECURITY,
+        );
+    }
+}
+
+async fn security_headers_middleware(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response<Body> {
+    let mut response = next.run(request).await;
+    apply_security_headers(response.headers_mut(), state.config.session_cookie_secure);
+    response
+}
 
 async fn parse_json_body(request: Request<Body>) -> AppResult<Value> {
     let bytes = to_bytes(request.into_body(), JSON_BODY_LIMIT_BYTES)
@@ -109,16 +196,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/health/live", any(health_live_handler))
         .route("/api/health", any(health_handler))
         .route("/api/config", any(config_handler))
-        .route("/api/football/matches", get(football_matches_handler))
-        .route("/api/basketball/matches", get(basketball_matches_handler))
-        .route("/api/tennis/matches", get(tennis_matches_handler))
-        .route("/api/hockey/matches", get(hockey_matches_handler))
-        .route("/api/baseball/matches", get(baseball_matches_handler))
-        .route(
-            "/api/american-football/matches",
-            get(american_football_matches_handler),
-        )
-        .route("/api/cricket/matches", get(cricket_matches_handler))
         .route("/api/auth/signup", any(auth_signup_handler))
         .route("/api/auth/login", any(auth_login_handler))
         .route("/api/auth/logout", any(auth_logout_handler))
@@ -133,6 +210,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/hls/segment.ts", any(hls_segment_handler))
         .route("/api/debug/cache", any(debug_cache))
         .route("/api/debug/sports", any(debug_sports))
+        .route("/api/football/matches", get(football_matches_handler))
+        .route("/api/basketball/matches", get(basketball_matches_handler))
+        .route("/api/tennis/matches", get(tennis_matches_handler))
+        .route("/api/hockey/matches", get(hockey_matches_handler))
+        .route("/api/baseball/matches", get(baseball_matches_handler))
+        .route(
+            "/api/american-football/matches",
+            get(american_football_matches_handler),
+        )
+        .route("/api/cricket/matches", get(cricket_matches_handler))
         .route("/api/twitch/stream", get(twitch_stream_resolve_handler))
         .route("/api/live/hls.m3u8", any(live_hls_handler))
         .route("/api/live/hls-resource", any(live_hls_resource_handler))
@@ -209,7 +296,11 @@ pub fn build_router(state: AppState) -> Router {
         .merge(public_api)
         .merge(protected_api)
         .fallback(any(serve_static))
-        .with_state(state)
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(
+            state,
+            security_headers_middleware,
+        ))
 }
 
 pub async fn debug_cache(
@@ -220,7 +311,13 @@ pub async fn debug_cache(
     if method != Method::GET && method != Method::POST {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    if query_flag_enabled(uri.query().unwrap_or_default(), "clear") {
+    let clear_requested = query_flag_enabled(uri.query().unwrap_or_default(), "clear");
+    if clear_requested && method != Method::POST {
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST to clear caches.",
+        ));
+    }
+    if clear_requested {
         state.db.clear_persistent_caches().await?;
         let _ = tokio::fs::remove_dir_all(&state.config.hls_cache_dir).await;
     }
@@ -1210,38 +1307,38 @@ pub async fn resolve_local_upgrade_handler(
     }
     let payload = state
         .resolver
-        .check_local_cache_upgrade(
-            user.id,
-            &tmdb_id,
-            params
+        .check_local_cache_upgrade(LocalCacheUpgradeRequest {
+            user_id: user.id,
+            tmdb_id: &tmdb_id,
+            preferred_audio_lang: params
                 .get("audioLang")
                 .map(String::as_str)
                 .unwrap_or_default(),
-            params
+            preferred_quality: params
                 .get("quality")
                 .map(String::as_str)
                 .unwrap_or_default(),
-            params
+            source_hash: params
                 .get("sourceHash")
                 .map(String::as_str)
                 .unwrap_or_default(),
-            params
+            selected_file: params
                 .get("selectedFile")
                 .map(String::as_str)
                 .unwrap_or_default(),
-            params
+            media_type: params
                 .get("mediaType")
                 .map(String::as_str)
                 .unwrap_or("movie"),
-            params
+            season_number: params
                 .get("seasonNumber")
                 .and_then(|value| value.parse::<i64>().ok())
                 .unwrap_or(1),
-            params
+            episode_number: params
                 .get("episodeNumber")
                 .and_then(|value| value.parse::<i64>().ok())
                 .unwrap_or(1),
-        )
+        })
         .await?;
     Ok(json_response(payload))
 }
@@ -1719,6 +1816,7 @@ fn absolute_request_url_with_authority(
 // ── Auth / User route handlers ────────────────────────────────────────
 
 const SESSION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
+const SIGNUP_CLOSED_MESSAGE: &str = "Sign-up is closed. Ask the app owner for access.";
 
 fn set_session_cookie(token: &str, secure: bool) -> String {
     let secure_attr = if secure { "; Secure" } else { "" };
@@ -1762,6 +1860,15 @@ async fn auth_signup_handler(
         .unwrap_or_default()
         .trim()
         .to_owned();
+    let invite_code = payload
+        .get("inviteCode")
+        .or_else(|| payload.get("signupInviteCode"))
+        .or_else(|| payload.get("invite_code"))
+        .or_else(|| payload.get("invite"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
 
     if !is_valid_email(&email) {
         return Err(ApiError::bad_request("Enter a valid email address."));
@@ -1781,16 +1888,31 @@ async fn auth_signup_handler(
         ));
     }
 
+    let has_valid_invite_code = !state.config.signup_invite_code.is_empty()
+        && invite_code == state.config.signup_invite_code;
+    let is_open_signup = state.config.open_signup_enabled || has_valid_invite_code;
+    if !is_open_signup && state.db.user_count().await? > 0 {
+        return Err(ApiError::forbidden(SIGNUP_CLOSED_MESSAGE));
+    }
+
     if state.db.get_user_by_email(email.clone()).await?.is_some() {
         return Err(ApiError::bad_request("Email already in use."));
     }
 
     let password_hash = auth::hash_password(&password).map_err(ApiError::internal)?;
 
-    let user_id = state
-        .db
-        .create_user(email.clone(), password_hash, display_name.clone())
-        .await?;
+    let user_id = if is_open_signup {
+        state
+            .db
+            .create_user(email.clone(), password_hash, display_name.clone())
+            .await?
+    } else {
+        state
+            .db
+            .create_first_user(email.clone(), password_hash, display_name.clone())
+            .await?
+            .ok_or_else(|| ApiError::forbidden(SIGNUP_CLOSED_MESSAGE))?
+    };
 
     let token = auth::generate_session_token();
     let expires_at = now_ms() + SESSION_MAX_AGE_SECONDS * 1000;
@@ -1957,6 +2079,187 @@ fn is_secret_user_preference_key(key: &str) -> bool {
         .eq_ignore_ascii_case(REAL_DEBRID_API_KEY_PREF_KEY)
 }
 
+fn bounded_trimmed_string(value: &str, max_bytes: usize) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > max_bytes {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
+fn bounded_string_field(payload: &Value, field: &str, max_bytes: usize) -> Option<String> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .and_then(|value| bounded_trimmed_string(value, max_bytes))
+}
+
+fn require_bounded_string_field(
+    payload: &Value,
+    field: &str,
+    max_bytes: usize,
+) -> AppResult<String> {
+    bounded_string_field(payload, field, max_bytes).ok_or_else(|| {
+        ApiError::bad_request(format!(
+            "Missing or invalid {field}; limit is {max_bytes} bytes."
+        ))
+    })
+}
+
+fn normalize_resume_seconds_value(value: Option<&Value>) -> f64 {
+    let seconds = value.and_then(Value::as_f64).unwrap_or(0.0);
+    if seconds.is_finite() {
+        seconds.clamp(0.0, MAX_RESUME_SECONDS)
+    } else {
+        0.0
+    }
+}
+
+fn normalize_user_updated_at(value: Option<&Value>) -> i64 {
+    let now = now_ms();
+    let candidate = value.and_then(Value::as_i64).unwrap_or(now);
+    if candidate > 0 { candidate } else { now }
+}
+
+fn insert_bounded_string(
+    object: &mut serde_json::Map<String, Value>,
+    source: &Value,
+    field: &str,
+    max_bytes: usize,
+) {
+    if let Some(value) = bounded_string_field(source, field, max_bytes) {
+        object.insert(field.to_owned(), Value::String(value));
+    }
+}
+
+fn insert_bounded_i64(
+    object: &mut serde_json::Map<String, Value>,
+    source: &Value,
+    field: &str,
+    min: i64,
+    max: i64,
+) {
+    if let Some(value) = source
+        .get(field)
+        .and_then(Value::as_i64)
+        .map(|value| value.clamp(min, max))
+    {
+        object.insert(field.to_owned(), Value::Number(value.into()));
+    }
+}
+
+fn user_preference_entries_from_object(
+    prefs: &serde_json::Map<String, Value>,
+) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    for (key, value) in prefs {
+        if entries.len() >= USER_PREF_MAX_ENTRIES || is_secret_user_preference_key(key) {
+            continue;
+        }
+        let Some(key) = bounded_trimmed_string(key, USER_PREF_KEY_MAX_BYTES) else {
+            continue;
+        };
+        let val = match value {
+            Value::String(text) => text.trim().to_owned(),
+            other => other.to_string(),
+        };
+        if val.len() > USER_PREF_VALUE_MAX_BYTES {
+            continue;
+        }
+        entries.push((key, val));
+    }
+    entries
+}
+
+fn sanitize_watch_progress_entry(
+    entry: &Value,
+    fallback_source_identity: Option<&str>,
+) -> Option<Value> {
+    let source_identity = bounded_string_field(entry, "sourceIdentity", USER_IDENTITY_MAX_BYTES)
+        .or_else(|| {
+            fallback_source_identity
+                .and_then(|value| bounded_trimmed_string(value, USER_IDENTITY_MAX_BYTES))
+        })?;
+    Some(json!({
+        "sourceIdentity": source_identity,
+        "resumeSeconds": normalize_resume_seconds_value(entry.get("resumeSeconds").or(Some(entry))),
+        "updatedAt": normalize_user_updated_at(entry.get("updatedAt"))
+    }))
+}
+
+fn sanitize_continue_watching_entry(
+    entry: &Value,
+    fallback_source_identity: Option<&str>,
+) -> Option<Value> {
+    let source_identity = bounded_string_field(entry, "sourceIdentity", USER_IDENTITY_MAX_BYTES)
+        .or_else(|| {
+            fallback_source_identity
+                .and_then(|value| bounded_trimmed_string(value, USER_IDENTITY_MAX_BYTES))
+        })?;
+    let mut object = serde_json::Map::new();
+    object.insert("sourceIdentity".to_owned(), Value::String(source_identity));
+    for field in [
+        "title",
+        "episode",
+        "tmdbId",
+        "mediaType",
+        "seriesId",
+        "year",
+        "sourceHash",
+        "sessionKey",
+        "resolverProvider",
+        "filename",
+    ] {
+        insert_bounded_string(&mut object, entry, field, USER_SMALL_TEXT_MAX_BYTES);
+    }
+    for field in ["src", "thumb", "sourceInput"] {
+        insert_bounded_string(&mut object, entry, field, USER_URL_MAX_BYTES);
+    }
+    insert_bounded_i64(&mut object, entry, "episodeIndex", -1, 1_000_000);
+    object.insert(
+        "resumeSeconds".to_owned(),
+        json!(normalize_resume_seconds_value(
+            entry.get("resumeSeconds").or(Some(entry))
+        )),
+    );
+    Some(Value::Object(object))
+}
+
+fn sanitize_my_list_entry(entry: &Value) -> Option<Value> {
+    let item_identity = bounded_string_field(entry, "itemIdentity", USER_IDENTITY_MAX_BYTES)?;
+    let mut object = serde_json::Map::new();
+    object.insert("itemIdentity".to_owned(), Value::String(item_identity));
+    for field in [
+        "title",
+        "episode",
+        "tmdbId",
+        "mediaType",
+        "seriesId",
+        "year",
+        "libraryType",
+        "libraryId",
+    ] {
+        insert_bounded_string(&mut object, entry, field, USER_SMALL_TEXT_MAX_BYTES);
+    }
+    for field in ["src", "thumb", "librarySrc"] {
+        insert_bounded_string(&mut object, entry, field, USER_URL_MAX_BYTES);
+    }
+    insert_bounded_i64(&mut object, entry, "episodeIndex", -1, 1_000_000);
+    object.insert(
+        "addedAt".to_owned(),
+        Value::Number(normalize_user_updated_at(entry.get("addedAt")).into()),
+    );
+    Some(Value::Object(object))
+}
+
+fn sanitize_my_list_entries(entries: &[Value]) -> Vec<Value> {
+    entries
+        .iter()
+        .take(USER_SYNC_MAX_ENTRIES)
+        .filter_map(sanitize_my_list_entry)
+        .collect()
+}
+
 fn normalize_bool_preference(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
@@ -2047,17 +2350,7 @@ async fn user_preferences_handler(
         Method::PUT => {
             let payload = parse_json_body(request).await?;
             let entries: Vec<(String, String)> = match payload.as_object() {
-                Some(obj) => obj
-                    .iter()
-                    .filter(|(k, _)| !is_secret_user_preference_key(k))
-                    .map(|(k, v)| {
-                        let val = match v {
-                            Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        (k.clone(), val)
-                    })
-                    .collect(),
+                Some(obj) => user_preference_entries_from_object(obj),
                 None => {
                     return Err(ApiError::bad_request("Body must be a JSON object."));
                 }
@@ -2193,18 +2486,9 @@ async fn user_watch_progress_handler(
         }
         Method::PUT => {
             let payload = parse_json_body(request).await?;
-            let source_identity = payload
-                .get("sourceIdentity")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if source_identity.is_empty() {
-                return Err(ApiError::bad_request("Missing sourceIdentity."));
-            }
-            let resume_seconds = payload
-                .get("resumeSeconds")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0);
+            let source_identity =
+                require_bounded_string_field(&payload, "sourceIdentity", USER_IDENTITY_MAX_BYTES)?;
+            let resume_seconds = normalize_resume_seconds_value(payload.get("resumeSeconds"));
             state
                 .db
                 .upsert_user_watch_progress(user.id, source_identity, resume_seconds, now_ms())
@@ -2213,14 +2497,8 @@ async fn user_watch_progress_handler(
         }
         Method::DELETE => {
             let payload = parse_json_body(request).await?;
-            let source_identity = payload
-                .get("sourceIdentity")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if source_identity.is_empty() {
-                return Err(ApiError::bad_request("Missing sourceIdentity."));
-            }
+            let source_identity =
+                require_bounded_string_field(&payload, "sourceIdentity", USER_IDENTITY_MAX_BYTES)?;
             let series_id = payload
                 .get("seriesId")
                 .and_then(Value::as_str)
@@ -2261,13 +2539,11 @@ async fn user_continue_watching_handler(
         }
         Method::PUT => {
             let payload = parse_json_body(request).await?;
-            let source_identity = payload
-                .get("sourceIdentity")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if source_identity.is_empty() {
-                return Err(ApiError::bad_request("Missing sourceIdentity."));
-            }
+            let payload = sanitize_continue_watching_entry(&payload, None).ok_or_else(|| {
+                ApiError::bad_request(format!(
+                    "Missing or invalid sourceIdentity; limit is {USER_IDENTITY_MAX_BYTES} bytes."
+                ))
+            })?;
             state
                 .db
                 .upsert_user_continue_watching(user.id, payload)
@@ -2276,14 +2552,8 @@ async fn user_continue_watching_handler(
         }
         Method::DELETE => {
             let payload = parse_json_body(request).await?;
-            let source_identity = payload
-                .get("sourceIdentity")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if source_identity.is_empty() {
-                return Err(ApiError::bad_request("Missing sourceIdentity."));
-            }
+            let source_identity =
+                require_bounded_string_field(&payload, "sourceIdentity", USER_IDENTITY_MAX_BYTES)?;
             let series_id = payload
                 .get("seriesId")
                 .and_then(Value::as_str)
@@ -2335,8 +2605,13 @@ async fn user_my_list_handler(
             let entries = payload
                 .get("entries")
                 .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+                .ok_or_else(|| ApiError::bad_request("Body must include an entries array."))?;
+            if entries.len() > USER_SYNC_MAX_ENTRIES {
+                return Err(ApiError::bad_request(format!(
+                    "My List can contain at most {USER_SYNC_MAX_ENTRIES} entries."
+                )));
+            }
+            let entries = sanitize_my_list_entries(entries);
             state.db.replace_user_my_list(user.id, entries).await?;
             Ok(json_response(json!({ "ok": true })))
         }
@@ -2348,28 +2623,16 @@ async fn user_my_list_handler(
 
 fn normalize_sync_watch_progress_entries(value: Option<&Value>) -> Vec<Value> {
     match value {
-        Some(Value::Array(entries)) => entries.clone(),
+        Some(Value::Array(entries)) => entries
+            .iter()
+            .take(USER_SYNC_MAX_ENTRIES)
+            .filter_map(|entry| sanitize_watch_progress_entry(entry, None))
+            .collect(),
         Some(Value::Object(entries)) => entries
             .iter()
+            .take(USER_SYNC_MAX_ENTRIES)
             .filter_map(|(source_identity, entry)| {
-                let source_identity = source_identity.trim();
-                if source_identity.is_empty() {
-                    return None;
-                }
-                let resume_seconds = entry
-                    .get("resumeSeconds")
-                    .and_then(Value::as_f64)
-                    .or_else(|| entry.as_f64())
-                    .unwrap_or(0.0);
-                let updated_at = entry
-                    .get("updatedAt")
-                    .and_then(Value::as_i64)
-                    .unwrap_or_else(now_ms);
-                Some(json!({
-                    "sourceIdentity": source_identity,
-                    "resumeSeconds": resume_seconds,
-                    "updatedAt": updated_at
-                }))
+                sanitize_watch_progress_entry(entry, Some(source_identity))
             })
             .collect(),
         _ => Vec::new(),
@@ -2378,32 +2641,16 @@ fn normalize_sync_watch_progress_entries(value: Option<&Value>) -> Vec<Value> {
 
 fn normalize_sync_continue_watching_entries(value: Option<&Value>) -> Vec<Value> {
     match value {
-        Some(Value::Array(entries)) => entries.clone(),
+        Some(Value::Array(entries)) => entries
+            .iter()
+            .take(USER_SYNC_MAX_ENTRIES)
+            .filter_map(|entry| sanitize_continue_watching_entry(entry, None))
+            .collect(),
         Some(Value::Object(entries)) => entries
             .iter()
+            .take(USER_SYNC_MAX_ENTRIES)
             .filter_map(|(source_identity, entry)| {
-                let fallback_source_identity = source_identity.trim();
-                if fallback_source_identity.is_empty() {
-                    return None;
-                }
-                let mut object = entry.as_object().cloned().unwrap_or_default();
-                let existing_source_identity = object
-                    .get("sourceIdentity")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .unwrap_or_default();
-                if existing_source_identity.is_empty() {
-                    object.insert(
-                        "sourceIdentity".to_owned(),
-                        Value::String(fallback_source_identity.to_owned()),
-                    );
-                }
-                if !object.contains_key("resumeSeconds")
-                    && let Some(resume_seconds) = entry.as_f64()
-                {
-                    object.insert("resumeSeconds".to_owned(), json!(resume_seconds));
-                }
-                Some(Value::Object(object))
+                sanitize_continue_watching_entry(entry, Some(source_identity))
             })
             .collect(),
         _ => Vec::new(),
@@ -2426,17 +2673,7 @@ async fn user_sync_handler(
 
     // Preferences
     if let Some(prefs) = payload.get("preferences").and_then(Value::as_object) {
-        let entries: Vec<(String, String)> = prefs
-            .iter()
-            .filter(|(k, _)| !is_secret_user_preference_key(k))
-            .map(|(k, v)| {
-                let val = match v {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                (k.clone(), val)
-            })
-            .collect();
+        let entries = user_preference_entries_from_object(prefs);
         if !entries.is_empty() {
             state.db.upsert_user_preferences(user.id, entries).await?;
         }
@@ -2491,6 +2728,9 @@ async fn user_sync_handler(
     // My list
     if let Some(my_list_arr) = payload.get("myList").and_then(Value::as_array) {
         let mut merged_entries = state.db.get_user_my_list(user.id).await?;
+        if merged_entries.len() > USER_SYNC_MAX_ENTRIES {
+            merged_entries.truncate(USER_SYNC_MAX_ENTRIES);
+        }
         let mut known_identities = BTreeMap::new();
         for entry in &merged_entries {
             let item_identity = entry
@@ -2503,18 +2743,25 @@ async fn user_sync_handler(
                 known_identities.insert(item_identity, true);
             }
         }
-        for entry in my_list_arr {
+        for entry in my_list_arr
+            .iter()
+            .take(USER_SYNC_MAX_ENTRIES)
+            .filter_map(sanitize_my_list_entry)
+        {
             let item_identity = entry
                 .get("itemIdentity")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .trim()
                 .to_owned();
-            if item_identity.is_empty() || known_identities.contains_key(&item_identity) {
+            if item_identity.is_empty()
+                || known_identities.contains_key(&item_identity)
+                || merged_entries.len() >= USER_SYNC_MAX_ENTRIES
+            {
                 continue;
             }
             known_identities.insert(item_identity, true);
-            merged_entries.push(entry.clone());
+            merged_entries.push(entry);
         }
         state
             .db
@@ -3145,12 +3392,13 @@ impl StringExt for String {
 #[cfg(test)]
 mod tests {
     use super::{
-        absolute_request_url_with_authority, build_playback_session_key, find_episode_pattern,
-        is_valid_email, normalize_preferred_audio_lang, normalize_subtitle_preference,
+        USER_IDENTITY_MAX_BYTES, USER_SYNC_MAX_ENTRIES, absolute_request_url_with_authority,
+        apply_security_headers, build_playback_session_key, find_episode_pattern, is_valid_email,
+        normalize_preferred_audio_lang, normalize_subtitle_preference,
         normalize_sync_continue_watching_entries, normalize_sync_watch_progress_entries,
-        query_flag_enabled,
+        query_flag_enabled, sanitize_my_list_entries,
     };
-    use axum::http::header::HOST;
+    use axum::http::header::{CONTENT_TYPE, HOST};
     use axum::http::{HeaderMap, HeaderValue, Uri};
 
     #[test]
@@ -3184,6 +3432,64 @@ mod tests {
         assert!(!query_flag_enabled("notclear=1", "clear"));
         assert!(!query_flag_enabled("clearance=1", "clear"));
         assert!(!query_flag_enabled("clear=0", "clear"));
+    }
+
+    #[test]
+    fn security_headers_include_baseline_browser_hardening() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        apply_security_headers(&mut headers, false);
+
+        let csp = headers
+            .get("content-security-policy")
+            .and_then(|value| value.to_str().ok())
+            .expect("content security policy");
+        assert!(csp.contains("default-src 'self'"));
+        assert!(csp.contains("script-src-attr 'none'"));
+        assert!(csp.contains("object-src 'none'"));
+        assert!(csp.contains("frame-ancestors 'self'"));
+        assert!(csp.contains("media-src 'self' data: blob: https: http:"));
+
+        assert_eq!(
+            headers
+                .get("x-frame-options")
+                .and_then(|value| value.to_str().ok()),
+            Some("SAMEORIGIN")
+        );
+        assert_eq!(
+            headers
+                .get("x-content-type-options")
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            headers
+                .get("referrer-policy")
+                .and_then(|value| value.to_str().ok()),
+            Some("strict-origin-when-cross-origin")
+        );
+        assert!(
+            headers
+                .get("permissions-policy")
+                .and_then(|value| value.to_str().ok())
+                .expect("permissions policy")
+                .contains("camera=()")
+        );
+        assert_eq!(
+            headers
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        assert!(!headers.contains_key("strict-transport-security"));
+
+        apply_security_headers(&mut headers, true);
+        assert_eq!(
+            headers
+                .get("strict-transport-security")
+                .and_then(|value| value.to_str().ok()),
+            Some("max-age=31536000; includeSubDomains")
+        );
     }
 
     #[test]
@@ -3229,6 +3535,75 @@ mod tests {
         assert!(continue_watching.iter().any(|entry| {
             entry["sourceIdentity"] == "movie:2" && entry["resumeSeconds"] == 15.0
         }));
+    }
+
+    #[test]
+    fn user_sync_normalization_drops_oversized_identities() {
+        let oversized_identity = "x".repeat(USER_IDENTITY_MAX_BYTES + 1);
+        let mut watch_progress = serde_json::Map::new();
+        watch_progress.insert(oversized_identity.clone(), serde_json::json!(10.0));
+        watch_progress.insert("movie:ok".to_owned(), serde_json::json!(20.0));
+        let payload = serde_json::json!({
+            "watchProgress": serde_json::Value::Object(watch_progress),
+            "continueWatching": {
+                "movie:ok": { "title": "Movie", "extra": "ignored" }
+            },
+            "myList": [
+                { "itemIdentity": "movie:ok", "title": "Movie", "extra": "ignored" },
+                { "itemIdentity": "x".repeat(USER_IDENTITY_MAX_BYTES + 1), "title": "Bad" }
+            ]
+        });
+
+        let progress = normalize_sync_watch_progress_entries(payload.get("watchProgress"));
+        assert_eq!(progress.len(), 1);
+        assert_eq!(progress[0]["sourceIdentity"], "movie:ok");
+
+        let continue_watching =
+            normalize_sync_continue_watching_entries(payload.get("continueWatching"));
+        assert_eq!(continue_watching.len(), 1);
+        assert!(continue_watching[0].get("extra").is_none());
+
+        let my_list = sanitize_my_list_entries(
+            payload
+                .get("myList")
+                .and_then(serde_json::Value::as_array)
+                .expect("my list array"),
+        );
+        assert_eq!(my_list.len(), 1);
+        assert!(my_list[0].get("extra").is_none());
+    }
+
+    #[test]
+    fn user_sync_normalization_caps_collection_sizes() {
+        let progress_payload = serde_json::Value::Array(
+            (0..(USER_SYNC_MAX_ENTRIES + 20))
+                .map(|index| {
+                    serde_json::json!({
+                        "sourceIdentity": format!("movie:{index}"),
+                        "resumeSeconds": index as f64
+                    })
+                })
+                .collect(),
+        );
+        let my_list_payload = serde_json::Value::Array(
+            (0..(USER_SYNC_MAX_ENTRIES + 20))
+                .map(|index| {
+                    serde_json::json!({
+                        "itemIdentity": format!("movie:{index}"),
+                        "title": format!("Movie {index}")
+                    })
+                })
+                .collect(),
+        );
+
+        assert_eq!(
+            normalize_sync_watch_progress_entries(Some(&progress_payload)).len(),
+            USER_SYNC_MAX_ENTRIES
+        );
+        assert_eq!(
+            sanitize_my_list_entries(my_list_payload.as_array().expect("array")).len(),
+            USER_SYNC_MAX_ENTRIES
+        );
     }
 
     #[test]

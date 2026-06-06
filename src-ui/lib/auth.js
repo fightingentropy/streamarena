@@ -31,19 +31,11 @@ export async function getCurrentUser() {
   return null;
 }
 
-/**
- * Sign out — delete session and redirect to login.
- */
-export async function signOut() {
-  try {
-    await fetch("/api/auth/logout", { method: "POST" });
-  } catch {}
-  window.location.href = "/login.html";
-}
-
 const RESUME_STORAGE_PREFIX = "netflix-resume:";
 const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
 const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
+const APP_LOCAL_STORAGE_PREFIX = "netflix-";
+const WATCH_SESSION_STORAGE_PREFIX = "watch:";
 export const SERVER_HYDRATED_EVENT = "netflix:server-hydrated";
 const DEPRECATED_BROWSER_PREF_KEYS = new Set([
   "netflix-hero-trailer-muted-v2",
@@ -56,6 +48,56 @@ const DEPRECATED_BROWSER_PREF_KEYS = new Set([
   "netflix-resolver-provider",
   "netflix-remux-video-mode",
 ]);
+
+function removeStorageKeys(storage, shouldRemove) {
+  if (!storage || typeof shouldRemove !== "function") {
+    return;
+  }
+  try {
+    const keys = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key && shouldRemove(key)) {
+        keys.push(key);
+      }
+    }
+    keys.forEach((key) => storage.removeItem(key));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function getBrowserStorage(name) {
+  try {
+    return globalThis[name] || null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearUserLocalState() {
+  if (typeof window !== "undefined") {
+    delete window.__currentUser;
+  }
+  removeStorageKeys(getBrowserStorage("localStorage"), (key) =>
+    key.startsWith(APP_LOCAL_STORAGE_PREFIX),
+  );
+  removeStorageKeys(getBrowserStorage("sessionStorage"), (key) =>
+    key.startsWith(WATCH_SESSION_STORAGE_PREFIX) ||
+    key.startsWith(APP_LOCAL_STORAGE_PREFIX),
+  );
+}
+
+/**
+ * Sign out — delete session, clear browser-side user data, and redirect to login.
+ */
+export async function signOut() {
+  try {
+    await fetch("/api/auth/logout", { method: "POST" });
+  } catch {}
+  clearUserLocalState();
+  window.location.href = "/login.html";
+}
 
 function pruneLocalResumeKeys(serverResumeSources) {
   if (!(serverResumeSources instanceof Set)) return;

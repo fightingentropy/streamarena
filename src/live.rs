@@ -85,8 +85,8 @@ pub async fn live_hls_handler(
         )));
     }
     let final_url = response.url().clone();
-    if !is_allowed_live_hls_url(&final_url)
-        && !(live_request.trusted_external_embed
+    if !(is_allowed_live_hls_url(&final_url)
+        || live_request.trusted_external_embed
             && is_public_external_embed_hls_proxy_url(&final_url, LiveHlsRequestKind::Playlist))
     {
         return Err(ApiError::bad_gateway(
@@ -145,8 +145,8 @@ pub async fn live_hls_resource_handler(
         )));
     }
     let final_url = response.url().clone();
-    if !is_allowed_live_hls_url(&final_url)
-        && !(live_request.trusted_external_embed
+    if !(is_allowed_live_hls_url(&final_url)
+        || live_request.trusted_external_embed
             && is_public_external_embed_hls_proxy_url(&final_url, LiveHlsRequestKind::Resource))
     {
         return Err(ApiError::bad_gateway(
@@ -292,18 +292,18 @@ fn live_hls_proxy_url(
     let mut url = format!("{path}?input={}", encode_query_value(&input));
     if let Some(referer) = normalized_referer.as_deref() {
         url.push_str("&referer=");
-        url.push_str(&encode_query_value(&referer));
+        url.push_str(&encode_query_value(referer));
     }
     if let Some(secret) = trusted_external_embed_secret
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         let signature = sign_live_hls_proxy_url(&input, normalized_referer.as_deref(), secret);
-        url.push_str("&");
+        url.push('&');
         url.push_str(LIVE_HLS_EXTERNAL_EMBED_PARAM);
         url.push_str("=1&");
         url.push_str(LIVE_HLS_SIGNATURE_PARAM);
-        url.push_str("=");
+        url.push('=');
         url.push_str(&encode_query_value(&signature));
     }
     url

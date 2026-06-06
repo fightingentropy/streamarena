@@ -1330,6 +1330,51 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
+    pub async fn create_first_user(
+        &self,
+        email: String,
+        password_hash: String,
+        display_name: String,
+    ) -> AppResult<Option<i64>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            let inserted = connection.execute(
+                "INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
+                 SELECT ?, ?, ?, ?, ?
+                 WHERE NOT EXISTS (SELECT 1 FROM users LIMIT 1)",
+                params![email, password_hash, display_name, now, now],
+            )?;
+            let id = if inserted > 0 {
+                Some(connection.last_insert_rowid())
+            } else {
+                None
+            };
+            return_connection(&pool, connection);
+            Ok::<Option<i64>, rusqlite::Error>(id)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn user_count(&self) -> AppResult<i64> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let count = connection
+                .query_row("SELECT COUNT(*) FROM users", [], |row| row.get::<_, i64>(0))?;
+            return_connection(&pool, connection);
+            Ok::<i64, rusqlite::Error>(count)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
     pub async fn get_user_by_email(
         &self,
         email: String,
@@ -1711,14 +1756,16 @@ impl Db {
                     continue_watching_target_episode(&row.source_identity, row.episode_index, None);
                 if let Some(reconciled) = reconcile_continue_watching_source_metadata(
                     &connection,
-                    &row.tmdb_id,
-                    &row.media_type,
-                    season_number,
-                    episode_number,
-                    &row.source_hash,
-                    &row.session_key,
-                    &row.resolver_provider,
-                    &row.source_input,
+                    ContinueWatchingReconcileInput {
+                        tmdb_id: &row.tmdb_id,
+                        media_type: &row.media_type,
+                        season_number,
+                        episode_number,
+                        source_hash: &row.source_hash,
+                        session_key: &row.session_key,
+                        resolver_provider: &row.resolver_provider,
+                        source_input: &row.source_input,
+                    },
                 )? {
                     row.source_hash = reconciled.source_hash;
                     row.session_key = reconciled.session_key;
@@ -1966,14 +2013,16 @@ impl Db {
                 continue_watching_target_episode(&source_identity, episode_index, Some(&entry));
             if let Some(reconciled) = reconcile_continue_watching_source_metadata(
                 &connection,
-                &normalized_tmdb_id,
-                &normalized_media_type,
-                season_number,
-                episode_number,
-                &source_hash,
-                &session_key,
-                &resolver_provider,
-                &source_input,
+                ContinueWatchingReconcileInput {
+                    tmdb_id: &normalized_tmdb_id,
+                    media_type: &normalized_media_type,
+                    season_number,
+                    episode_number,
+                    source_hash: &source_hash,
+                    session_key: &session_key,
+                    resolver_provider: &resolver_provider,
+                    source_input: &source_input,
+                },
             )? {
                 source_hash = reconciled.source_hash;
                 session_key = reconciled.session_key;
@@ -2818,18 +2867,22 @@ fn continue_watching_target_episode(
     (season_number, episode_number)
 }
 
-fn reconcile_continue_watching_source_metadata(
-    connection: &Connection,
-    tmdb_id: &str,
-    media_type: &str,
+struct ContinueWatchingReconcileInput<'a> {
+    tmdb_id: &'a str,
+    media_type: &'a str,
     season_number: i64,
     episode_number: i64,
-    incoming_source_hash: &str,
-    incoming_session_key: &str,
-    incoming_resolver_provider: &str,
-    incoming_source_input: &str,
+    source_hash: &'a str,
+    session_key: &'a str,
+    resolver_provider: &'a str,
+    source_input: &'a str,
+}
+
+fn reconcile_continue_watching_source_metadata(
+    connection: &Connection,
+    input: ContinueWatchingReconcileInput<'_>,
 ) -> Result<Option<ContinueWatchingSourceMetadata>, rusqlite::Error> {
-    let normalized_tmdb_id = tmdb_id.trim();
+    let normalized_tmdb_id = input.tmdb_id.trim();
     if normalized_tmdb_id.is_empty() {
         return Ok(None);
     }
@@ -2837,17 +2890,17 @@ fn reconcile_continue_watching_source_metadata(
     let Some(candidate) = latest_continue_watching_playback_session_metadata(
         connection,
         normalized_tmdb_id,
-        media_type,
-        season_number,
-        episode_number,
+        input.media_type,
+        input.season_number,
+        input.episode_number,
     )?
     else {
         return Ok(None);
     };
 
-    let incoming_source_hash = incoming_source_hash.trim().to_lowercase();
-    let incoming_session_key = incoming_session_key.trim();
-    let incoming_provider = incoming_resolver_provider.trim().to_lowercase();
+    let incoming_source_hash = input.source_hash.trim().to_lowercase();
+    let incoming_session_key = input.session_key.trim();
+    let incoming_provider = input.resolver_provider.trim().to_lowercase();
     if incoming_provider == "external-embed" && candidate.resolver_provider != "external-embed" {
         return Ok(None);
     }
@@ -2882,8 +2935,8 @@ fn reconcile_continue_watching_source_metadata(
 
     let incoming_looks_local = incoming_provider == "local-torrent"
         || incoming_session_key.starts_with("local-torrent:")
-        || incoming_source_input.contains("/api/local-cache/")
-        || incoming_source_input.contains("/api/local-torrent/");
+        || input.source_input.contains("/api/local-cache/")
+        || input.source_input.contains("/api/local-torrent/");
     if incoming_looks_local && candidate.resolver_provider == "real-debrid" {
         return Ok(Some(candidate));
     }
@@ -3086,12 +3139,12 @@ fn extract_continue_watching_source_input(playable_url: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    if let Some((path, query)) = trimmed.split_once('?') {
-        if path.ends_with("/api/remux") || path == "/api/remux" {
-            for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
-                if key == "input" {
-                    return value.into_owned();
-                }
+    if let Some((path, query)) = trimmed.split_once('?')
+        && (path.ends_with("/api/remux") || path == "/api/remux")
+    {
+        for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+            if key == "input" {
+                return value.into_owned();
             }
         }
     }
@@ -3106,10 +3159,10 @@ fn json_number_to_i64(value: Option<&Value>) -> Option<i64> {
     if let Some(number) = value.as_u64() {
         return i64::try_from(number).ok();
     }
-    if let Some(number) = value.as_f64() {
-        if number.is_finite() {
-            return Some(number.floor() as i64);
-        }
+    if let Some(number) = value.as_f64()
+        && number.is_finite()
+    {
+        return Some(number.floor() as i64);
     }
     value.as_str()?.trim().parse::<i64>().ok()
 }
@@ -4115,8 +4168,40 @@ mod tests {
             opensubtitles_api_key: String::new(),
             opensubtitles_user_agent: String::new(),
             session_cookie_secure: true,
+            open_signup_enabled: false,
+            signup_invite_code: String::new(),
             live_hls_proxy_secret: "test-live-hls-proxy-secret-with-enough-length".to_owned(),
         };
         Db::initialize(&config).await.expect("init db")
+    }
+
+    #[tokio::test]
+    async fn create_first_user_only_inserts_when_users_table_is_empty() {
+        let path = unique_temp_db_path("first-user");
+        let db = setup_test_playback_session_db(&path).await;
+
+        let first = db
+            .create_first_user(
+                "first@example.com".to_owned(),
+                "hash-one".to_owned(),
+                "First".to_owned(),
+            )
+            .await
+            .expect("create first user");
+        assert!(first.is_some());
+        assert_eq!(db.user_count().await.expect("count users"), 1);
+
+        let second = db
+            .create_first_user(
+                "second@example.com".to_owned(),
+                "hash-two".to_owned(),
+                "Second".to_owned(),
+            )
+            .await
+            .expect("attempt second first user");
+        assert!(second.is_none());
+        assert_eq!(db.user_count().await.expect("count users"), 1);
+
+        let _ = tokio::fs::remove_file(&path).await;
     }
 }

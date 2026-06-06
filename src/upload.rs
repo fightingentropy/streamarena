@@ -2051,6 +2051,8 @@ mod tests {
             opensubtitles_api_key: String::new(),
             opensubtitles_user_agent: String::new(),
             session_cookie_secure: true,
+            open_signup_enabled: false,
+            signup_invite_code: String::new(),
             live_hls_proxy_secret: "test-live-hls-proxy-secret-with-enough-length".to_owned(),
         };
         tokio::fs::create_dir_all(&assets_dir)
