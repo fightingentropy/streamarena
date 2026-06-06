@@ -86,7 +86,7 @@ const USER_SMALL_TEXT_MAX_BYTES: usize = 256;
 const MAX_RESUME_SECONDS: f64 = 31_536_000.0;
 const SECURITY_CONTENT_SECURITY_POLICY: &str = concat!(
     "default-src 'self'; ",
-    "script-src 'self' 'unsafe-inline' blob:; ",
+    "script-src 'self' blob:; ",
     "script-src-attr 'none'; ",
     "style-src 'self' 'unsafe-inline'; ",
     "style-src-attr 'unsafe-inline'; ",
@@ -3445,7 +3445,8 @@ mod tests {
             .and_then(|value| value.to_str().ok())
             .expect("content security policy");
         assert!(csp.contains("default-src 'self'"));
-        assert!(csp.contains("script-src 'self' 'unsafe-inline' blob:"));
+        assert!(csp.contains("script-src 'self' blob:"));
+        assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
         assert!(!csp.contains("'unsafe-eval'"));
         assert!(csp.contains("script-src-attr 'none'"));
         assert!(csp.contains("object-src 'none'"));

@@ -12,16 +12,6 @@
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" type="image/png" sizes="192x192" href="/assets/icons/netflix-app-icon-192.png" />
         <link rel="apple-touch-icon" sizes="180x180" href="/assets/icons/netflix-app-icon-180.png" />
-        <script>
-            window.__HOME_BOOTSTRAP_PROMISE__ = (() => {
-                const controller = new AbortController();
-                const timeout = window.setTimeout(() => controller.abort(), 2500);
-                return fetch("/api/home/bootstrap", { signal: controller.signal })
-                    .then((response) => (response.ok ? response.json() : null))
-                    .catch(() => null)
-                    .finally(() => window.clearTimeout(timeout));
-            })();
-        </script>
         <script type="module" src="/src-ui/entries/home.js"></script>
     </head>
     <body></body>

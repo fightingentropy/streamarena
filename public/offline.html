@@ -103,14 +103,6 @@
         <button type="button" id="retryButton">Try again</button>
       </div>
     </main>
-    <script>
-      document.getElementById("retryButton")?.addEventListener("click", () => {
-        if (window.history.length > 1) {
-          window.location.reload();
-          return;
-        }
-        window.location.href = "/";
-      });
-    </script>
+    <script src="/offline.js"></script>
   </body>
 </html>

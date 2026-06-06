@@ -87,6 +87,29 @@ function isWarmingHomeBootstrap(payload) {
   return String(payload?._meta?.status || "").trim() === "warming";
 }
 
+function readInjectedHomeBootstrap() {
+  if (window.__HOME_BOOTSTRAP__ && typeof window.__HOME_BOOTSTRAP__ === "object") {
+    return window.__HOME_BOOTSTRAP__;
+  }
+
+  const element = document.getElementById("home-bootstrap");
+  const json = element?.textContent || "";
+  if (!json.trim()) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(json);
+    if (payload && typeof payload === "object") {
+      window.__HOME_BOOTSTRAP__ = payload;
+      return payload;
+    }
+  } catch {
+    // Fall through to the normal bootstrap fetch path.
+  }
+  return null;
+}
+
 function toCacheableArtworkUrl(value) {
   try {
     const raw = String(value || "").trim();
@@ -260,12 +283,9 @@ function attachArtworkImageFallbacks(root) {
 }
 
 async function resolveHomeBootstrap() {
-  if (
-    window.__HOME_BOOTSTRAP__ &&
-    typeof window.__HOME_BOOTSTRAP__ === "object" &&
-    !isWarmingHomeBootstrap(window.__HOME_BOOTSTRAP__)
-  ) {
-    return window.__HOME_BOOTSTRAP__;
+  const injectedBootstrap = readInjectedHomeBootstrap();
+  if (injectedBootstrap && !isWarmingHomeBootstrap(injectedBootstrap)) {
+    return injectedBootstrap;
   }
   if (window.__HOME_BOOTSTRAP_PROMISE__) {
     try {
@@ -4722,8 +4742,9 @@ export default function HomePage() {
     }
     void loadContinueWatching();
     let appliedInjectedBootstrap = false;
-    if (window.__HOME_BOOTSTRAP__ && typeof window.__HOME_BOOTSTRAP__ === "object") {
-      appliedInjectedBootstrap = applyHomeBootstrapPayload(window.__HOME_BOOTSTRAP__);
+    const injectedBootstrap = readInjectedHomeBootstrap();
+    if (injectedBootstrap) {
+      appliedInjectedBootstrap = applyHomeBootstrapPayload(injectedBootstrap);
     }
     if (!appliedInjectedBootstrap) {
       void initializeHomeContent();

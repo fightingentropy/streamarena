@@ -1,5 +1,5 @@
 // Bump CACHE_PREFIX when shell assets change so clients pick up updates.
-const CACHE_PREFIX = "netflix-pwa-v23";
+const CACHE_PREFIX = "netflix-pwa-v24";
 const SHELL_CACHE = `${CACHE_PREFIX}:shell`;
 const PAGE_CACHE = `${CACHE_PREFIX}:pages`;
 const API_CACHE = `${CACHE_PREFIX}:api`;
@@ -27,6 +27,7 @@ const APP_SHELL_URLS = [
   "/sports.html",
   "/player.html",
   OFFLINE_URL,
+  "/offline.js",
   "/manifest.webmanifest",
   ARTWORK_FALLBACK_URL,
   "/assets/images/thumbnail-top10-h.jpg",

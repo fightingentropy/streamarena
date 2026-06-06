@@ -479,18 +479,18 @@ fn merge_genres(movie_genres: &Value, tv_genres: &Value) -> Value {
     Value::Array(genres)
 }
 
-pub fn bootstrap_script_tag(payload: &Value) -> AppResult<String> {
+pub fn bootstrap_data_tag(payload: &Value) -> AppResult<String> {
     let json = serde_json::to_string(payload).map_err(|error| {
         crate::error::ApiError::internal(format!("Failed to serialize home bootstrap: {error}"))
     })?;
     let safe_json = json.replace('<', "\\u003c");
     Ok(format!(
-        "<script id=\"home-bootstrap\">window.__HOME_BOOTSTRAP__={safe_json};</script>"
+        "<script id=\"home-bootstrap\" type=\"application/json\">{safe_json}</script>"
     ))
 }
 
 pub fn inject_bootstrap_into_html(html: &str, payload: &Value) -> AppResult<String> {
-    let script = bootstrap_script_tag(payload)?;
+    let script = bootstrap_data_tag(payload)?;
     if let Some(index) = html.find("</head>") {
         let mut output = String::with_capacity(html.len() + script.len() + 16);
         output.push_str(&html[..index]);
@@ -531,18 +531,18 @@ fn civil_from_unix_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        MOVIE_POPULAR_QUALITY, bootstrap_script_tag, inject_bootstrap_into_html,
+        MOVIE_POPULAR_QUALITY, bootstrap_data_tag, inject_bootstrap_into_html,
         tmdb_list_payload_with_quality, utc_date_from_unix_days,
     };
     use serde_json::json;
 
     #[test]
-    fn escapes_script_breakout_sequences() {
-        let script = bootstrap_script_tag(&json!({ "note": "</script>" })).unwrap();
+    fn escapes_json_data_script_breakout_sequences() {
+        let script = bootstrap_data_tag(&json!({ "note": "</script>" })).unwrap();
         let json_part = script
-            .strip_prefix("<script id=\"home-bootstrap\">window.__HOME_BOOTSTRAP__=")
-            .and_then(|value| value.strip_suffix(";</script>"))
-            .expect("bootstrap script wrapper");
+            .strip_prefix("<script id=\"home-bootstrap\" type=\"application/json\">")
+            .and_then(|value| value.strip_suffix("</script>"))
+            .expect("bootstrap data wrapper");
         assert!(!json_part.contains("</script>"));
         assert!(json_part.contains("\\u003c"));
     }
@@ -552,10 +552,9 @@ mod tests {
         let html = "<html><head><title>Home</title></head><body></body></html>";
         let injected =
             inject_bootstrap_into_html(html, &json!({ "popular": { "results": [] } })).unwrap();
-        assert!(injected.contains("window.__HOME_BOOTSTRAP__="));
+        assert!(injected.contains("id=\"home-bootstrap\" type=\"application/json\""));
         assert!(
-            injected.find("window.__HOME_BOOTSTRAP__=").unwrap()
-                < injected.find("</head>").unwrap()
+            injected.find("id=\"home-bootstrap\"").unwrap() < injected.find("</head>").unwrap()
         );
     }
 
