@@ -120,6 +120,8 @@ const LIVE_FAILED_STREAM_CACHE_TTL_MS = 5 * 60 * 1000;
 const LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-failed-streams:";
 const LIVE_WORKING_STREAM_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const LIVE_WORKING_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-working-stream:";
+const LIVE_SOURCE_PREFERENCE_STORAGE_KEY = "netflix-live-source-preferences";
+const LIVE_SOURCE_PREFERENCE_TTL_MS = 24 * 60 * 60 * 1000;
 const HLS_QUALITY_PREFERENCE_STORAGE_KEY = "netflix-hls-quality-pref";
 const MANUAL_SOURCE_SWITCH_TIMEOUT_MS = 6000;
 
@@ -237,6 +239,7 @@ let liveFailedStreamCacheKey = "";
 let liveFailedStreamStatuses = new Map();
 let liveWorkingStreamCacheKey = "";
 let liveWorkingStreamEntry = null;
+let liveSourcePreferenceEntries = null;
 
 const _cleanups = [];
 function trackListener(target, event, handler, options) {
@@ -6026,6 +6029,7 @@ function rememberLiveStreamFailure(streamOption, reason = "") {
     loadLiveFailureCacheForCurrentEvent();
   }
   clearLiveStreamSuccess(streamOption);
+  recordLiveSourcePreference(streamOption, -2);
   liveFailedStreamStatuses.set(streamId, {
     source,
     expiresAt: Date.now() + LIVE_FAILED_STREAM_CACHE_TTL_MS,
@@ -6044,6 +6048,195 @@ function clearLiveStreamFailure(streamOption) {
     persistLiveFailureCache();
     renderLiveStreamOptions();
   }
+}
+
+function normalizeLiveStreamPreferenceProvider(streamOption = {}) {
+  const explicitProvider = String(streamOption?.provider || "")
+    .trim()
+    .toLowerCase();
+  if (explicitProvider) {
+    return explicitProvider;
+  }
+  try {
+    const host = new URL(
+      normalizePlaybackSourceValue(streamOption?.source),
+      window.location.origin,
+    ).hostname.toLowerCase();
+    if (host.includes("streamed.pk")) {
+      return "streamed";
+    }
+    if (
+      host.includes("matchstream") ||
+      host.endsWith(".st") ||
+      host.endsWith(".to") ||
+      host.endsWith(".link")
+    ) {
+      return "matchstream";
+    }
+  } catch {
+    // Provider inference is best effort.
+  }
+  return "live";
+}
+
+function getLiveStreamSourceHost(streamOption = {}) {
+  try {
+    return new URL(
+      normalizePlaybackSourceValue(streamOption?.source),
+      window.location.origin,
+    ).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function getLiveStreamLabelSlot(streamOption = {}) {
+  const label = String(streamOption?.label || "").trim();
+  const match = /#\s*(\d+)\s*$/i.exec(label);
+  return match ? match[1] : "";
+}
+
+function getLiveSourcePreferenceKeys(streamOption = {}) {
+  const source = normalizePlaybackSourceValue(streamOption?.source);
+  const provider = normalizeLiveStreamPreferenceProvider(streamOption);
+  const host = getLiveStreamSourceHost(streamOption);
+  const slot = getLiveStreamLabelSlot(streamOption);
+  const keys = [];
+  if (source) {
+    keys.push(`source:${source}`);
+  }
+  if (provider && host) {
+    keys.push(`host:${provider}:${host}`);
+  }
+  if (provider && slot) {
+    keys.push(`slot:${provider}:${slot}`);
+  }
+  return keys;
+}
+
+function loadLiveSourcePreferenceEntries() {
+  if (liveSourcePreferenceEntries instanceof Map) {
+    return liveSourcePreferenceEntries;
+  }
+
+  liveSourcePreferenceEntries = new Map();
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(LIVE_SOURCE_PREFERENCE_STORAGE_KEY) || "[]",
+    );
+    const entries = Array.isArray(parsed) ? parsed : [];
+    const now = Date.now();
+    entries.forEach((entry) => {
+      const key = String(entry?.key || "").trim();
+      const expiresAt = Number(entry?.expiresAt || 0);
+      if (!key || expiresAt <= now) {
+        return;
+      }
+      liveSourcePreferenceEntries.set(key, {
+        score: Number(entry?.score || 0),
+        expiresAt,
+        lastSuccessAt: Number(entry?.lastSuccessAt || 0),
+        lastFailureAt: Number(entry?.lastFailureAt || 0),
+      });
+    });
+  } catch {
+    liveSourcePreferenceEntries = new Map();
+  }
+  return liveSourcePreferenceEntries;
+}
+
+function persistLiveSourcePreferenceEntries() {
+  const entries = loadLiveSourcePreferenceEntries();
+  const now = Date.now();
+  try {
+    const payload = Array.from(entries.entries())
+      .filter(([, entry]) => Number(entry?.expiresAt || 0) > now)
+      .map(([key, entry]) => ({
+        key,
+        score: Math.max(-12, Math.min(12, Number(entry?.score || 0))),
+        expiresAt: Number(entry?.expiresAt || 0),
+        lastSuccessAt: Number(entry?.lastSuccessAt || 0),
+        lastFailureAt: Number(entry?.lastFailureAt || 0),
+      }));
+    if (!payload.length) {
+      localStorage.removeItem(LIVE_SOURCE_PREFERENCE_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(
+      LIVE_SOURCE_PREFERENCE_STORAGE_KEY,
+      JSON.stringify(payload),
+    );
+  } catch {
+    // Live-source preference storage is best effort.
+  }
+}
+
+function recordLiveSourcePreference(streamOption, delta) {
+  if (!streamOption?.source) {
+    return;
+  }
+
+  const keys = getLiveSourcePreferenceKeys(streamOption);
+  if (!keys.length) {
+    return;
+  }
+
+  const entries = loadLiveSourcePreferenceEntries();
+  const now = Date.now();
+  const scoreDelta = Number(delta || 0);
+  keys.forEach((key) => {
+    const existing = entries.get(key) || {};
+    const nextScore = Math.max(
+      -12,
+      Math.min(12, Number(existing.score || 0) + scoreDelta),
+    );
+    entries.set(key, {
+      score: nextScore,
+      expiresAt: now + LIVE_SOURCE_PREFERENCE_TTL_MS,
+      lastSuccessAt:
+        scoreDelta > 0 ? now : Number(existing.lastSuccessAt || 0),
+      lastFailureAt:
+        scoreDelta < 0 ? now : Number(existing.lastFailureAt || 0),
+    });
+  });
+  persistLiveSourcePreferenceEntries();
+}
+
+function getLiveSourcePreferenceScore(streamOption) {
+  const entries = loadLiveSourcePreferenceEntries();
+  const now = Date.now();
+  return getLiveSourcePreferenceKeys(streamOption).reduce((score, key) => {
+    const entry = entries.get(key);
+    if (!entry || Number(entry.expiresAt || 0) <= now) {
+      return score;
+    }
+    return score + Number(entry.score || 0);
+  }, 0);
+}
+
+function getPreferredRankedLiveStreamOption() {
+  if (!isLivePlayback || liveStreamOptions.length <= 1) {
+    return null;
+  }
+
+  return liveStreamOptions
+    .map((option, index) => ({
+      option,
+      index,
+      score: getLiveSourcePreferenceScore(option),
+    }))
+    .filter(
+      (entry) =>
+        entry.option?.source &&
+        entry.score > 0 &&
+        !isLiveStreamRecentlyFailed(entry.option),
+    )
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      return left.index - right.index;
+    })[0]?.option || null;
 }
 
 function liveStreamEntryMatchesOption(entry, streamOption) {
@@ -6164,6 +6357,7 @@ function rememberLiveStreamSuccess(
   if (!streamId || !source) {
     return;
   }
+  recordLiveSourcePreference(streamOption, 3);
   if (!liveWorkingStreamCacheKey) {
     loadLiveWorkingCacheForCurrentEvent();
   }
@@ -6223,7 +6417,9 @@ function selectRememberedWorkingLiveStreamIfNeeded() {
   if (!isLivePlayback || liveStreamOptions.length <= 1) {
     return false;
   }
-  const rememberedOption = getRememberedWorkingLiveStreamOption();
+  const rememberedOption =
+    getRememberedWorkingLiveStreamOption() ||
+    getPreferredRankedLiveStreamOption();
   if (!rememberedOption || isLiveStreamRecentlyFailed(rememberedOption)) {
     return false;
   }
