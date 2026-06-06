@@ -2245,6 +2245,10 @@ function getAudioTrackBadgeLabel(track) {
   return languageLabel.slice(0, 2).toUpperCase();
 }
 
+function getUnknownAudioTrackDisplayLabel() {
+  return "Default";
+}
+
 function appendSubtitleOptionContent(button, primaryLabel, secondaryLabel = "") {
   button.textContent = "";
 
@@ -3349,24 +3353,18 @@ function rebuildTrackOptionButtons() {
     button.type = "button";
     button.setAttribute("role", "option");
     button.dataset.optionType = "live-audio";
-    button.textContent = "Default";
+    appendSubtitleOptionContent(button, getUnknownAudioTrackDisplayLabel());
     button.setAttribute("aria-selected", "true");
     audioOptionsContainer.appendChild(button);
   } else {
-    ["auto", "en", "fr", "es", "de"].forEach((lang) => {
-      const button = document.createElement("button");
-      button.className = "audio-option";
-      button.type = "button";
-      button.setAttribute("role", "option");
-      button.dataset.lang = lang;
-      button.dataset.optionType = "audio-lang";
-      button.textContent = getLanguageDisplayLabel(lang);
-      button.setAttribute(
-        "aria-selected",
-        lang === preferredAudioLang ? "true" : "false",
-      );
-      audioOptionsContainer.appendChild(button);
-    });
+    const button = document.createElement("button");
+    button.className = "audio-option";
+    button.type = "button";
+    button.setAttribute("role", "option");
+    button.dataset.optionType = "default-audio";
+    appendSubtitleOptionContent(button, getUnknownAudioTrackDisplayLabel());
+    button.setAttribute("aria-selected", "true");
+    audioOptionsContainer.appendChild(button);
   }
 
   const subtitlesOffButton = document.createElement("button");
@@ -6858,7 +6856,9 @@ function syncAudioState() {
   const selectedAudioTrack = getSelectedEmbeddedAudioTrack();
   const selectedAudioLabel = selectedAudioTrack
     ? getAudioTrackDisplayLabel(selectedAudioTrack)
-    : preferredAudioLang === "auto"
+    : availableAudioTracks.length === 0
+      ? getUnknownAudioTrackDisplayLabel()
+      : preferredAudioLang === "auto"
       ? "Auto"
       : getLanguageDisplayLabel(preferredAudioLang);
   const selectedSubtitleTrack =
@@ -6899,6 +6899,10 @@ function syncAudioState() {
         "aria-selected",
         option.dataset.lang === preferredAudioLang ? "true" : "false",
       );
+      return;
+    }
+    if (option.dataset.optionType === "default-audio") {
+      option.setAttribute("aria-selected", "true");
     }
   });
 

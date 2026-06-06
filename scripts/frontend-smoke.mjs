@@ -15,6 +15,7 @@ const hevcSmokeVideo = "assets/videos/project-hail-mary-2026-2160p-hevc.mp4";
 const sourceSwitchHashA = "a".repeat(40);
 const sourceSwitchHashB = "b".repeat(40);
 const hlsManagedTmdbId = "273240";
+const emptyTracksTmdbId = "empty-tracks-tv";
 const hlsManagedSourceHash = "3b77214a7852eace6248758affc3ed060579a216";
 const hlsManagedSourceInput =
   "https://example.test/Off.Campus.2026.S01E01.720p.HEVC.x265-MeGusta.mkv";
@@ -217,6 +218,30 @@ function apiPayload(url, method) {
   }
   if (path === "/api/resolve/tv") {
     const tmdbId = url.searchParams.get("tmdbId") || "";
+    if (tmdbId === emptyTracksTmdbId) {
+      return {
+        sourceHash: "e".repeat(40),
+        sourceInput: smokeVideo,
+        playableUrl: smokeVideo,
+        fallbackUrls: [],
+        resolverProvider: "external-embed",
+        tracks: {
+          audioTracks: [],
+          subtitleTracks: [],
+        },
+        selectedAudioStreamIndex: -1,
+        selectedSubtitleStreamIndex: -1,
+        preferences: { audioLang: "en", subtitleLang: "" },
+        metadata: {
+          displayTitle: "Empty Tracks",
+          seasonNumber: 1,
+          episodeNumber: 1,
+          episodeTitle: "Pilot",
+          runtimeSeconds: 3600,
+          resolverProvider: "external-embed",
+        },
+      };
+    }
     if (tmdbId === hlsManagedTmdbId) {
       return {
         sourceHash: hlsManagedSourceHash,
@@ -339,6 +364,11 @@ const pages = [
     delayHlsImport: true,
     expectHlsManagedDuringImport: true,
     expectHlsMaster: true,
+  },
+  {
+    path: `/player.html?tmdbId=${emptyTracksTmdbId}&mediaType=tv&title=Empty%20Tracks&seasonNumber=1&episodeNumber=1&audioLang=en`,
+    selector: ".player-shell",
+    expectUnknownAudioFallback: true,
   },
   {
     path: `/watch?tmdbId=${hlsManagedTmdbId}&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1`,
@@ -621,6 +651,47 @@ async function runSmoke() {
       }
 
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+
+      if (pageSpec.expectUnknownAudioFallback) {
+        await page.waitForFunction(
+          () => document.querySelectorAll("#audioOptions .audio-option").length > 0,
+          null,
+          { timeout: 8_000 },
+        );
+        const audioFallbackState = await page.evaluate(() => {
+          document.querySelector("#toggleAudio")?.click();
+          const options = [...document.querySelectorAll("#audioOptions .audio-option")].map(
+            (option) => ({
+              text: option.textContent?.trim() || "",
+              optionType: option.dataset.optionType || "",
+              selected: option.getAttribute("aria-selected") || "",
+            }),
+          );
+          return {
+            title: document.querySelector("#toggleAudio")?.getAttribute("title") || "",
+            menuLabel:
+              document.querySelector("#audioMenu")?.getAttribute("aria-label") || "",
+            options,
+          };
+        });
+        const fakeLanguages = new Set(["Auto", "English", "French", "Spanish", "German"]);
+        const renderedFakeLanguages = audioFallbackState.options
+          .map((option) => option.text)
+          .filter((text) => fakeLanguages.has(text));
+        if (
+          audioFallbackState.options.length !== 1 ||
+          audioFallbackState.options[0]?.text !== "Default" ||
+          audioFallbackState.options[0]?.optionType !== "default-audio" ||
+          audioFallbackState.options[0]?.selected !== "true" ||
+          renderedFakeLanguages.length > 0 ||
+          !audioFallbackState.title.includes("audio: Default") ||
+          !audioFallbackState.menuLabel.includes("Default")
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nUnknown audio tracks should render one honest Default option.\n${JSON.stringify(audioFallbackState)}`,
+          );
+        }
+      }
 
       if (pageSpec.expectServerContinueWatchingTruth) {
         await page.waitForFunction(
