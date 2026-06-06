@@ -39,13 +39,17 @@ export function normalizeAvatarMode(value) {
 
 export function sanitizeAvatarImageData(value) {
   const raw = String(value || "").trim();
-  if (!raw.startsWith("data:image/")) {
-    return "";
-  }
   if (raw.length > 2_000_000) {
     return "";
   }
-  return raw;
+  const match = raw.match(
+    /^data:image\/(png|jpe?g|webp|gif);base64,([A-Za-z0-9+/]+={0,2})$/i,
+  );
+  if (!match) {
+    return "";
+  }
+  const imageType = match[1].toLowerCase() === "jpg" ? "jpeg" : match[1].toLowerCase();
+  return `data:image/${imageType};base64,${match[2]}`;
 }
 
 export function getStoredAvatarStylePreference() {

@@ -160,6 +160,28 @@ pub struct ResolverService {
     external_resolver_permits: Arc<Semaphore>,
 }
 
+pub struct LocalCacheUpgradeRequest<'a> {
+    pub user_id: i64,
+    pub tmdb_id: &'a str,
+    pub preferred_audio_lang: &'a str,
+    pub preferred_quality: &'a str,
+    pub source_hash: &'a str,
+    pub selected_file: &'a str,
+    pub media_type: &'a str,
+    pub season_number: i64,
+    pub episode_number: i64,
+}
+
+struct LocalCacheSessionLookup<'a> {
+    tmdb_id: &'a str,
+    audio_lang: &'a str,
+    quality: &'a str,
+    source_hash: &'a str,
+    media_type: &'a str,
+    season_number: i64,
+    episode_number: i64,
+}
+
 #[derive(Default)]
 struct ResolverMetrics {
     movie_requests: AtomicI64,
@@ -459,6 +481,27 @@ struct ResolveFilters {
     source_filters: SourceFilters,
 }
 
+#[derive(Clone, Copy)]
+struct CandidateResolutionContext<'a> {
+    metadata: &'a ResolveMetadata,
+    preferences: &'a ResolvePreferences,
+    resolver_provider: ResolverProvider,
+    real_debrid: Option<&'a RealDebridRequestContext>,
+    user_id: i64,
+    local_torrent_enabled: bool,
+}
+
+struct ExternalEmbedPlaybackRequest<'a> {
+    client: &'a reqwest::Client,
+    db: &'a Db,
+    metadata: &'a ResolveMetadata,
+    source: ExternalEmbedSource,
+    preferences: &'a ResolvePreferences,
+    allow_native_fallback: bool,
+    health_scores: &'a HashMap<String, i64>,
+    live_hls_proxy_secret: &'a str,
+}
+
 #[derive(Clone)]
 struct RealDebridRequestContext {
     api_key: String,
@@ -592,6 +635,31 @@ impl ResolverService {
                 ))
             }
         }
+    }
+
+    async fn try_build_external_embed_payload(
+        &self,
+        metadata: &ResolveMetadata,
+        source: ExternalEmbedSource,
+        preferences: &ResolvePreferences,
+        allow_native_fallback: bool,
+        health_scores: &HashMap<String, i64>,
+    ) -> Option<Value> {
+        let mut external_guard = self.acquire_external_resolve_permit().await.ok()?;
+        let payload =
+            build_external_embed_resolved_playback_payload(ExternalEmbedPlaybackRequest {
+                client: &self.client,
+                db: &self.db,
+                metadata,
+                source,
+                preferences,
+                allow_native_fallback,
+                health_scores,
+                live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
+            })
+            .await?;
+        external_guard.mark_completed();
+        Some(payload)
     }
 
     fn prune_idle_resolve_locks(&self) {
@@ -1011,21 +1079,13 @@ impl ResolverService {
 
     pub async fn check_local_cache_upgrade(
         &self,
-        user_id: i64,
-        tmdb_id: &str,
-        preferred_audio_lang: &str,
-        preferred_quality: &str,
-        source_hash: &str,
-        selected_file: &str,
-        media_type: &str,
-        season_number: i64,
-        episode_number: i64,
+        request: LocalCacheUpgradeRequest<'_>,
     ) -> AppResult<Value> {
         if !self.config.playback_sessions_enabled {
             return Ok(json!({ "ready": false }));
         }
-        let tmdb_id = tmdb_id.trim();
-        let normalized_hash = normalize_source_hash(source_hash);
+        let tmdb_id = request.tmdb_id.trim();
+        let normalized_hash = normalize_source_hash(request.source_hash);
         if tmdb_id.is_empty() || normalized_hash.is_empty() {
             return Ok(json!({ "ready": false }));
         }
@@ -1033,35 +1093,35 @@ impl ResolverService {
         let stored_preference = self
             .db
             .get_title_preference(
-                user_id,
-                normalize_resolve_media_type(media_type),
+                request.user_id,
+                normalize_resolve_media_type(request.media_type),
                 tmdb_id.to_owned(),
             )
             .await?;
         let effective_audio_lang = self
             .resolve_effective_preferred_audio_lang(
-                user_id,
-                media_type,
+                request.user_id,
+                request.media_type,
                 tmdb_id,
                 stored_preference
                     .as_ref()
                     .map(|value| value.audioLang.as_str())
                     .unwrap_or_default(),
-                preferred_audio_lang,
+                request.preferred_audio_lang,
             )
             .await?;
-        let normalized_quality = normalize_preferred_stream_quality(preferred_quality);
+        let normalized_quality = normalize_preferred_stream_quality(request.preferred_quality);
 
         if let Some(upgrade) = self
-            .find_local_cache_upgrade_from_session(
+            .find_local_cache_upgrade_from_session(LocalCacheSessionLookup {
                 tmdb_id,
-                &effective_audio_lang,
-                &normalized_quality,
-                &normalized_hash,
-                media_type,
-                season_number,
-                episode_number,
-            )
+                audio_lang: &effective_audio_lang,
+                quality: &normalized_quality,
+                source_hash: &normalized_hash,
+                media_type: request.media_type,
+                season_number: request.season_number,
+                episode_number: request.episode_number,
+            })
             .await?
         {
             return Ok(upgrade);
@@ -1069,7 +1129,7 @@ impl ResolverService {
 
         if let Some(resolved) = self
             .local_torrent
-            .try_direct_file_resolved_source(&normalized_hash, selected_file)
+            .try_direct_file_resolved_source(&normalized_hash, request.selected_file)
             .await?
         {
             return Ok(self.build_local_cache_upgrade_payload(resolved));
@@ -1163,17 +1223,18 @@ impl ResolverService {
             && is_external_embed_hls_capable_source(provider)
         {
             let mut external_guard = self.acquire_external_resolve_permit().await?;
-            if let Some(payload) = build_external_embed_resolved_playback_payload(
-                &self.client,
-                &self.db,
-                &metadata,
-                provider,
-                &preferences,
-                false,
-                &external_health_scores,
-                &self.config.live_hls_proxy_secret,
-            )
-            .await
+            if let Some(payload) =
+                build_external_embed_resolved_playback_payload(ExternalEmbedPlaybackRequest {
+                    client: &self.client,
+                    db: &self.db,
+                    metadata: &metadata,
+                    source: provider,
+                    preferences: &preferences,
+                    allow_native_fallback: false,
+                    health_scores: &external_health_scores,
+                    live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
+                })
+                .await
             {
                 external_guard.mark_completed();
                 return Ok(payload);
@@ -1190,24 +1251,17 @@ impl ResolverService {
             )
             && let Some(provider) =
                 default_external_embed_source(&metadata, &external_health_scores)
-        {
-            if let Ok(mut external_guard) = self.acquire_external_resolve_permit().await {
-                if let Some(payload) = build_external_embed_resolved_playback_payload(
-                    &self.client,
-                    &self.db,
+            && let Some(payload) = self
+                .try_build_external_embed_payload(
                     &metadata,
                     provider,
                     &preferences,
                     true,
                     &external_health_scores,
-                    &self.config.live_hls_proxy_secret,
                 )
                 .await
-                {
-                    external_guard.mark_completed();
-                    return Ok(payload);
-                }
-            };
+        {
+            return Ok(payload);
         }
         if real_debrid.is_none() {
             return Err(external_embed_hls_unavailable_error());
@@ -1243,6 +1297,14 @@ impl ResolverService {
             return Ok(reused);
         }
         let mut external_guard = self.acquire_external_resolve_permit().await?;
+        let candidate_context = CandidateResolutionContext {
+            metadata: &metadata,
+            preferences: &preferences,
+            resolver_provider,
+            real_debrid,
+            user_id,
+            local_torrent_enabled,
+        };
         let mut last_error;
         match self.fetch_torrentio_movie_streams(&metadata.imdb_id).await {
             Ok(streams) => {
@@ -1280,15 +1342,7 @@ impl ResolverService {
                             &health_scores,
                         );
                         if let Ok(result) = self
-                            .resolve_movie_candidates(
-                                torznab_candidates,
-                                &metadata,
-                                &preferences,
-                                resolver_provider,
-                                real_debrid,
-                                user_id,
-                                local_torrent_enabled,
-                            )
+                            .resolve_movie_candidates(torznab_candidates, candidate_context)
                             .await
                         {
                             external_guard.mark_completed();
@@ -1298,15 +1352,7 @@ impl ResolverService {
                 }
                 if !candidates.is_empty() {
                     match self
-                        .resolve_movie_candidates(
-                            candidates,
-                            &metadata,
-                            &preferences,
-                            resolver_provider,
-                            real_debrid,
-                            user_id,
-                            local_torrent_enabled,
-                        )
+                        .resolve_movie_candidates(candidates, candidate_context)
                         .await
                     {
                         Ok(result) => {
@@ -1344,15 +1390,7 @@ impl ResolverService {
             );
             if !torznab_candidates.is_empty() {
                 match self
-                    .resolve_movie_candidates(
-                        torznab_candidates,
-                        &metadata,
-                        &preferences,
-                        resolver_provider,
-                        real_debrid,
-                        user_id,
-                        local_torrent_enabled,
-                    )
+                    .resolve_movie_candidates(torznab_candidates, candidate_context)
                     .await
                 {
                     Ok(result) => {
@@ -1568,17 +1606,18 @@ impl ResolverService {
             && is_external_embed_hls_capable_source(provider)
         {
             let mut external_guard = self.acquire_external_resolve_permit().await?;
-            if let Some(payload) = build_external_embed_resolved_playback_payload(
-                &self.client,
-                &self.db,
-                &metadata,
-                provider,
-                &preferences,
-                false,
-                &external_health_scores,
-                &self.config.live_hls_proxy_secret,
-            )
-            .await
+            if let Some(payload) =
+                build_external_embed_resolved_playback_payload(ExternalEmbedPlaybackRequest {
+                    client: &self.client,
+                    db: &self.db,
+                    metadata: &metadata,
+                    source: provider,
+                    preferences: &preferences,
+                    allow_native_fallback: false,
+                    health_scores: &external_health_scores,
+                    live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
+                })
+                .await
             {
                 external_guard.mark_completed();
                 return Ok(payload);
@@ -1595,24 +1634,17 @@ impl ResolverService {
             )
             && let Some(provider) =
                 default_external_embed_source(&metadata, &external_health_scores)
-        {
-            if let Ok(mut external_guard) = self.acquire_external_resolve_permit().await {
-                if let Some(payload) = build_external_embed_resolved_playback_payload(
-                    &self.client,
-                    &self.db,
+            && let Some(payload) = self
+                .try_build_external_embed_payload(
                     &metadata,
                     provider,
                     &preferences,
                     true,
                     &external_health_scores,
-                    &self.config.live_hls_proxy_secret,
                 )
                 .await
-                {
-                    external_guard.mark_completed();
-                    return Ok(payload);
-                }
-            };
+        {
+            return Ok(payload);
         }
         if real_debrid.is_none() {
             return Err(external_embed_hls_unavailable_error());
@@ -1648,6 +1680,14 @@ impl ResolverService {
             return Ok(reused);
         }
         let mut external_guard = self.acquire_external_resolve_permit().await?;
+        let candidate_context = CandidateResolutionContext {
+            metadata: &metadata,
+            preferences: &preferences,
+            resolver_provider,
+            real_debrid,
+            user_id,
+            local_torrent_enabled,
+        };
         let mut last_error;
         match self
             .fetch_torrentio_episode_streams(
@@ -1694,15 +1734,7 @@ impl ResolverService {
                             &health_scores,
                         );
                         if let Ok(result) = self
-                            .resolve_episode_candidates(
-                                torznab_candidates,
-                                &metadata,
-                                &preferences,
-                                resolver_provider,
-                                real_debrid,
-                                user_id,
-                                local_torrent_enabled,
-                            )
+                            .resolve_episode_candidates(torznab_candidates, candidate_context)
                             .await
                         {
                             external_guard.mark_completed();
@@ -1712,15 +1744,7 @@ impl ResolverService {
                 }
                 if !candidates.is_empty() {
                     match self
-                        .resolve_episode_candidates(
-                            candidates,
-                            &metadata,
-                            &preferences,
-                            resolver_provider,
-                            real_debrid,
-                            user_id,
-                            local_torrent_enabled,
-                        )
+                        .resolve_episode_candidates(candidates, candidate_context)
                         .await
                     {
                         Ok(result) => {
@@ -1759,15 +1783,7 @@ impl ResolverService {
             );
             if !torznab_candidates.is_empty() {
                 match self
-                    .resolve_episode_candidates(
-                        torznab_candidates,
-                        &metadata,
-                        &preferences,
-                        resolver_provider,
-                        real_debrid,
-                        user_id,
-                        local_torrent_enabled,
-                    )
+                    .resolve_episode_candidates(torznab_candidates, candidate_context)
                     .await
                 {
                     Ok(result) => {
@@ -1785,46 +1801,28 @@ impl ResolverService {
     async fn resolve_movie_candidates(
         &self,
         candidates: Vec<&DiscoveryStream>,
-        metadata: &ResolveMetadata,
-        preferences: &ResolvePreferences,
-        resolver_provider: ResolverProvider,
-        real_debrid: Option<&RealDebridRequestContext>,
-        user_id: i64,
-        local_torrent_enabled: bool,
+        context: CandidateResolutionContext<'_>,
     ) -> AppResult<Value> {
-        if resolver_provider.is_fastest() {
+        if context.resolver_provider.is_fastest() {
             return self
                 .resolve_movie_candidates_auto(
                     candidates,
-                    metadata,
-                    preferences,
-                    real_debrid,
-                    user_id,
-                    local_torrent_enabled,
+                    context.metadata,
+                    context.preferences,
+                    context.real_debrid,
+                    context.user_id,
+                    context.local_torrent_enabled,
                 )
                 .await;
         }
-        self.resolve_movie_candidates_with_provider(
-            candidates,
-            metadata,
-            preferences,
-            resolver_provider,
-            real_debrid,
-            user_id,
-            local_torrent_enabled,
-        )
-        .await
+        self.resolve_movie_candidates_with_provider(candidates, context)
+            .await
     }
 
     async fn resolve_movie_candidates_with_provider(
         &self,
         candidates: Vec<&DiscoveryStream>,
-        metadata: &ResolveMetadata,
-        preferences: &ResolvePreferences,
-        resolver_provider: ResolverProvider,
-        real_debrid: Option<&RealDebridRequestContext>,
-        user_id: i64,
-        local_torrent_enabled: bool,
+        context: CandidateResolutionContext<'_>,
     ) -> AppResult<Value> {
         if candidates.is_empty() {
             return Err(ApiError::internal(
@@ -1832,7 +1830,7 @@ impl ResolverService {
             ));
         }
         let resolution_started_at = now_ms();
-        let resolve_max_ms = resolver_provider.resolve_max_ms();
+        let resolve_max_ms = context.resolver_provider.resolve_max_ms();
         let mut last_error = None;
         for candidate in candidates {
             let elapsed_ms = now_ms() - resolution_started_at;
@@ -1840,7 +1838,11 @@ impl ResolverService {
                 break;
             }
             let fallback_name = normalize_whitespace(
-                format!("{} {}", metadata.display_title, metadata.display_year).trim(),
+                format!(
+                    "{} {}",
+                    context.metadata.display_title, context.metadata.display_year
+                )
+                .trim(),
             );
             let remaining_ms = (resolve_max_ms - elapsed_ms).max(1) as u64;
             let resolved_result = match timeout(
@@ -1848,16 +1850,16 @@ impl ResolverService {
                 self.resolve_candidate_stream(
                     candidate,
                     &fallback_name,
-                    resolver_provider,
-                    real_debrid,
-                    local_torrent_enabled,
+                    context.resolver_provider,
+                    context.real_debrid,
+                    context.local_torrent_enabled,
                 ),
             )
             .await
             {
-                Ok(result) => {
-                    result.and_then(|resolved| validate_resolved_movie_source(resolved, metadata))
-                }
+                Ok(result) => result.and_then(|resolved| {
+                    validate_resolved_movie_source(resolved, context.metadata)
+                }),
                 Err(_) => Err(ApiError::bad_gateway("Resolving stream timed out.")),
             };
             match resolved_result {
@@ -1865,10 +1867,10 @@ impl ResolverService {
                     return self
                         .build_resolved_response(
                             resolved,
-                            metadata.clone(),
-                            preferences.clone(),
-                            resolver_provider,
-                            user_id,
+                            context.metadata.clone(),
+                            context.preferences.clone(),
+                            context.resolver_provider,
+                            context.user_id,
                             true,
                         )
                         .await;
@@ -1898,12 +1900,14 @@ impl ResolverService {
         let real_debrid_result = self
             .resolve_movie_candidates_with_provider(
                 candidates.clone(),
-                metadata,
-                preferences,
-                ResolverProvider::RealDebrid,
-                Some(real_debrid),
-                user_id,
-                local_torrent_enabled,
+                CandidateResolutionContext {
+                    metadata,
+                    preferences,
+                    resolver_provider: ResolverProvider::RealDebrid,
+                    real_debrid: Some(real_debrid),
+                    user_id,
+                    local_torrent_enabled,
+                },
             )
             .await;
         if !local_torrent_enabled {
@@ -1914,12 +1918,14 @@ impl ResolverService {
             Err(real_debrid_error) => match self
                 .resolve_movie_candidates_with_provider(
                     candidates,
-                    metadata,
-                    preferences,
-                    ResolverProvider::LocalTorrent,
-                    Some(real_debrid),
-                    user_id,
-                    local_torrent_enabled,
+                    CandidateResolutionContext {
+                        metadata,
+                        preferences,
+                        resolver_provider: ResolverProvider::LocalTorrent,
+                        real_debrid: Some(real_debrid),
+                        user_id,
+                        local_torrent_enabled,
+                    },
                 )
                 .await
             {
@@ -1938,46 +1944,28 @@ impl ResolverService {
     async fn resolve_episode_candidates(
         &self,
         candidates: Vec<&DiscoveryStream>,
-        metadata: &ResolveMetadata,
-        preferences: &ResolvePreferences,
-        resolver_provider: ResolverProvider,
-        real_debrid: Option<&RealDebridRequestContext>,
-        user_id: i64,
-        local_torrent_enabled: bool,
+        context: CandidateResolutionContext<'_>,
     ) -> AppResult<Value> {
-        if resolver_provider.is_fastest() {
+        if context.resolver_provider.is_fastest() {
             return self
                 .resolve_episode_candidates_auto(
                     candidates,
-                    metadata,
-                    preferences,
-                    real_debrid,
-                    user_id,
-                    local_torrent_enabled,
+                    context.metadata,
+                    context.preferences,
+                    context.real_debrid,
+                    context.user_id,
+                    context.local_torrent_enabled,
                 )
                 .await;
         }
-        self.resolve_episode_candidates_with_provider(
-            candidates,
-            metadata,
-            preferences,
-            resolver_provider,
-            real_debrid,
-            user_id,
-            local_torrent_enabled,
-        )
-        .await
+        self.resolve_episode_candidates_with_provider(candidates, context)
+            .await
     }
 
     async fn resolve_episode_candidates_with_provider(
         &self,
         candidates: Vec<&DiscoveryStream>,
-        metadata: &ResolveMetadata,
-        preferences: &ResolvePreferences,
-        resolver_provider: ResolverProvider,
-        real_debrid: Option<&RealDebridRequestContext>,
-        user_id: i64,
-        local_torrent_enabled: bool,
+        context: CandidateResolutionContext<'_>,
     ) -> AppResult<Value> {
         if candidates.is_empty() {
             return Err(ApiError::internal(
@@ -1985,25 +1973,27 @@ impl ResolverService {
             ));
         }
         let resolution_started_at = now_ms();
-        let resolve_max_ms = resolver_provider.resolve_max_ms();
+        let resolve_max_ms = context.resolver_provider.resolve_max_ms();
         let mut last_error = None;
         for candidate in candidates {
             let elapsed_ms = now_ms() - resolution_started_at;
             if elapsed_ms >= resolve_max_ms {
                 break;
             }
-            let fallback_name = if metadata.episode_title.is_empty() {
+            let fallback_name = if context.metadata.episode_title.is_empty() {
                 format!(
                     "{} S{:02}E{:02}",
-                    metadata.display_title, metadata.season_number, metadata.episode_number
+                    context.metadata.display_title,
+                    context.metadata.season_number,
+                    context.metadata.episode_number
                 )
             } else {
                 format!(
                     "{} S{:02}E{:02} {}",
-                    metadata.display_title,
-                    metadata.season_number,
-                    metadata.episode_number,
-                    metadata.episode_title
+                    context.metadata.display_title,
+                    context.metadata.season_number,
+                    context.metadata.episode_number,
+                    context.metadata.episode_title
                 )
             };
             let remaining_ms = (resolve_max_ms - elapsed_ms).max(1) as u64;
@@ -2012,16 +2002,16 @@ impl ResolverService {
                 self.resolve_candidate_stream(
                     candidate,
                     &fallback_name,
-                    resolver_provider,
-                    real_debrid,
-                    local_torrent_enabled,
+                    context.resolver_provider,
+                    context.real_debrid,
+                    context.local_torrent_enabled,
                 ),
             )
             .await
             {
-                Ok(result) => {
-                    result.and_then(|resolved| validate_resolved_episode_source(resolved, metadata))
-                }
+                Ok(result) => result.and_then(|resolved| {
+                    validate_resolved_episode_source(resolved, context.metadata)
+                }),
                 Err(_) => Err(ApiError::bad_gateway("Resolving stream timed out.")),
             };
             match resolved_result {
@@ -2029,10 +2019,10 @@ impl ResolverService {
                     return self
                         .build_resolved_response(
                             resolved,
-                            metadata.clone(),
-                            preferences.clone(),
-                            resolver_provider,
-                            user_id,
+                            context.metadata.clone(),
+                            context.preferences.clone(),
+                            context.resolver_provider,
+                            context.user_id,
                             true,
                         )
                         .await;
@@ -2062,12 +2052,14 @@ impl ResolverService {
         let real_debrid_result = self
             .resolve_episode_candidates_with_provider(
                 candidates.clone(),
-                metadata,
-                preferences,
-                ResolverProvider::RealDebrid,
-                Some(real_debrid),
-                user_id,
-                local_torrent_enabled,
+                CandidateResolutionContext {
+                    metadata,
+                    preferences,
+                    resolver_provider: ResolverProvider::RealDebrid,
+                    real_debrid: Some(real_debrid),
+                    user_id,
+                    local_torrent_enabled,
+                },
             )
             .await;
         if !local_torrent_enabled {
@@ -2078,12 +2070,14 @@ impl ResolverService {
             Err(real_debrid_error) => match self
                 .resolve_episode_candidates_with_provider(
                     candidates,
-                    metadata,
-                    preferences,
-                    ResolverProvider::LocalTorrent,
-                    Some(real_debrid),
-                    user_id,
-                    local_torrent_enabled,
+                    CandidateResolutionContext {
+                        metadata,
+                        preferences,
+                        resolver_provider: ResolverProvider::LocalTorrent,
+                        real_debrid: Some(real_debrid),
+                        user_id,
+                        local_torrent_enabled,
+                    },
                 )
                 .await
             {
@@ -2266,47 +2260,41 @@ impl ResolverService {
 
     async fn find_local_cache_upgrade_from_session(
         &self,
-        tmdb_id: &str,
-        audio_lang: &str,
-        quality: &str,
-        source_hash: &str,
-        media_type: &str,
-        season_number: i64,
-        episode_number: i64,
+        lookup: LocalCacheSessionLookup<'_>,
     ) -> AppResult<Option<Value>> {
-        let session_key = if media_type == "tv" {
+        let session_key = if lookup.media_type == "tv" {
             format!(
                 "local-torrent:{}",
                 build_tv_playback_session_key(
-                    tmdb_id,
-                    season_number,
-                    episode_number,
-                    audio_lang,
-                    quality,
+                    lookup.tmdb_id,
+                    lookup.season_number,
+                    lookup.episode_number,
+                    lookup.audio_lang,
+                    lookup.quality,
                 )
             )
         } else {
             format!(
                 "local-torrent:{}",
-                build_playback_session_key(tmdb_id, audio_lang, quality)
+                build_playback_session_key(lookup.tmdb_id, lookup.audio_lang, lookup.quality)
             )
         };
         let Some(session) = self.db.get_playback_session(session_key).await? else {
             return Ok(None);
         };
-        if session.tmdb_id != tmdb_id
+        if session.tmdb_id != lookup.tmdb_id
             || session.health_state == "invalid"
-            || normalize_source_hash(&session.source_hash) != source_hash
+            || normalize_source_hash(&session.source_hash) != lookup.source_hash
             || !is_local_playback_session_url(&session.playable_url)
         {
             return Ok(None);
         }
         if session.playable_url.contains("/api/local-cache/stream")
-            && !self
+            && self
                 .local_torrent
                 .try_direct_file_resolved_source(&session.source_hash, &session.selected_file)
                 .await?
-                .is_some()
+                .is_none()
         {
             return Ok(None);
         }
@@ -5296,21 +5284,14 @@ fn should_prefer_default_external_embed(
 }
 
 async fn build_external_embed_resolved_playback_payload(
-    client: &reqwest::Client,
-    db: &Db,
-    metadata: &ResolveMetadata,
-    source: ExternalEmbedSource,
-    preferences: &ResolvePreferences,
-    allow_native_fallback: bool,
-    health_scores: &HashMap<String, i64>,
-    live_hls_proxy_secret: &str,
+    request: ExternalEmbedPlaybackRequest<'_>,
 ) -> Option<Value> {
-    let _ = external_embed_playback_url(source, metadata, preferences)?;
+    let _ = external_embed_playback_url(request.source, request.metadata, request.preferences)?;
     let candidates = external_embed_hls_candidate_sources(
-        source,
-        metadata,
-        allow_native_fallback,
-        health_scores,
+        request.source,
+        request.metadata,
+        request.allow_native_fallback,
+        request.health_scores,
     );
     let hls_deadline_ms = now_ms() + external_embed_hls_total_timeout_ms() as i64;
 
@@ -5319,7 +5300,9 @@ async fn build_external_embed_resolved_playback_payload(
         if remaining_ms < 1_000 {
             break;
         }
-        let Some(embed_url) = external_embed_playback_url(candidate, metadata, preferences) else {
+        let Some(embed_url) =
+            external_embed_playback_url(candidate, request.metadata, request.preferences)
+        else {
             continue;
         };
         let hls_timeout_ms = external_embed_source_resolve_timeout_ms(candidate)
@@ -5328,10 +5311,10 @@ async fn build_external_embed_resolved_playback_payload(
         let hls_result = timeout(
             Duration::from_millis(remaining_ms as u64),
             resolve_external_embed_hls_playback_source(
-                client,
+                request.client,
                 candidate,
                 &embed_url,
-                metadata,
+                request.metadata,
                 hls_timeout_ms,
             ),
         )
@@ -5340,25 +5323,26 @@ async fn build_external_embed_resolved_playback_payload(
         .flatten();
         let Some(hls_source) = hls_result else {
             record_external_embed_health_event(
-                db,
+                request.db,
                 candidate,
-                metadata,
+                request.metadata,
                 "playback_error",
                 "Native HLS resolver failed.",
             )
             .await;
             continue;
         };
-        record_external_embed_health_event(db, candidate, metadata, "success", "").await;
+        record_external_embed_health_event(request.db, candidate, request.metadata, "success", "")
+            .await;
         let playable_url = crate::live::build_trusted_external_embed_hls_playback_source(
             hls_source.playback_url.as_str(),
             hls_source.referer.as_deref(),
-            live_hls_proxy_secret,
+            request.live_hls_proxy_secret,
         );
         return Some(build_external_embed_resolved_payload_with_playable_url(
-            metadata,
+            request.metadata,
             candidate,
-            preferences,
+            request.preferences,
             playable_url,
             embed_url,
         ));

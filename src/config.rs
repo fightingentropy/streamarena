@@ -47,6 +47,8 @@ pub struct Config {
     pub opensubtitles_api_key: String,
     pub opensubtitles_user_agent: String,
     pub session_cookie_secure: bool,
+    pub open_signup_enabled: bool,
+    pub signup_invite_code: String,
     pub live_hls_proxy_secret: String,
 }
 
@@ -184,6 +186,13 @@ impl Config {
             session_cookie_secure: normalize_bool_flag(
                 env::var("SESSION_COOKIE_SECURE").unwrap_or_else(|_| "1".to_owned()),
             ),
+            open_signup_enabled: normalize_bool_flag(
+                env::var("OPEN_SIGNUP").unwrap_or_else(|_| "0".to_owned()),
+            ),
+            signup_invite_code: env::var("SIGNUP_INVITE_CODE")
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
             live_hls_proxy_secret: env::var("LIVE_HLS_PROXY_SECRET")
                 .ok()
                 .map(|value| value.trim().to_owned())

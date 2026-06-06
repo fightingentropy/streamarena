@@ -20,7 +20,7 @@ import {
   supportedAudioLangs,
   getStoredAudioLangForTmdbMovie,
 } from "../lib/preferences.js";
-import { hydrateFromServer, SERVER_HYDRATED_EVENT } from "../lib/auth.js";
+import { hydrateFromServer, SERVER_HYDRATED_EVENT, signOut } from "../lib/auth.js";
 import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
 import { bindTopNavScrollState } from "../lib/top-nav-scroll.js";
 import {
@@ -2834,6 +2834,7 @@ export default function HomePage() {
       ? genreNames.map(escapeHtml).join(" <span>&bull;</span> ")
       : "Popular <span>&bull;</span> Trending";
     const safeTitle = escapeHtml(title);
+    const safeYear = escapeHtml(year);
     const displayTitle = escapeHtml(
       String(title || "Untitled")
         .replace(/\s+/g, " ")
@@ -2901,7 +2902,7 @@ export default function HomePage() {
           </div>
           <div class="card-hover-meta">
             <span class="meta-age">${maturity}</span>
-            <span>${year}</span>
+            <span>${safeYear}</span>
             <span class="meta-chip">HD</span>
             <span class="meta-spatial">${mediaLabel}</span>
           </div>
@@ -2950,6 +2951,7 @@ export default function HomePage() {
     const posterUrl = normalizeArtworkPath(preferredThumb);
     const heroUrl = tmdbHeroUrl || posterUrl;
     const safeTitle = escapeHtml(title);
+    const safeYear = escapeHtml(year);
     const mediaLabel = looksLikeCourse ? "Course" : "Movie";
     const tagLine = looksLikeCourse
       ? "Uploaded <span>&bull;</span> Course"
@@ -3008,7 +3010,7 @@ export default function HomePage() {
           </div>
           <div class="card-hover-meta">
             <span class="meta-age">${maturity}</span>
-            <span>${year}</span>
+            <span>${safeYear}</span>
             <span class="meta-chip">${qualityLabel}</span>
             <span class="meta-spatial">${mediaLabel}</span>
           </div>
@@ -3081,6 +3083,7 @@ export default function HomePage() {
       ? `${imageBase}/w1280${backdropPath}`
       : posterUrl;
     const safeTitle = escapeHtml(title);
+    const safeYear = escapeHtml(year);
     const maturity = tmdbDetails?.adult ? "18" : "13+";
     const genreNames = (tmdbDetails?.genres || [])
       .map((genre) => String(genre?.name || "").trim())
@@ -3156,7 +3159,7 @@ export default function HomePage() {
           </div>
           <div class="card-hover-meta">
             <span class="meta-age">${maturity}</span>
-            <span>${year}</span>
+            <span>${safeYear}</span>
             <span class="meta-chip">HD</span>
             <span class="meta-spatial">${mediaLabel}</span>
           </div>
@@ -4417,8 +4420,7 @@ export default function HomePage() {
   // ---- Sign out ----
   async function handleSignOut(e) {
     e.preventDefault();
-    try { await fetch("/api/auth/logout", { method: "POST" }); } catch {}
-    window.location.href = "/login.html";
+    await signOut();
   }
 
   // ---- Search event handlers ----
@@ -5005,7 +5007,7 @@ export default function HomePage() {
               <path d="M14.33 12.9 19.71 18.28a1 1 0 0 1-1.42 1.42l-5.38-5.38a8 8 0 1 1 1.42-1.42Zm-6.33 1.1a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"></path>
             </svg>
           </button>
-          <a href="#" class="kids">Kids</a>
+          <span class="kids" aria-hidden="true">Kids</span>
           <button class="icon-btn notification-btn" type="button" aria-label="Notifications">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 22a2.6 2.6 0 0 0 2.45-1.72h-4.9A2.6 2.6 0 0 0 12 22Zm7.1-5.2-1.45-1.84V10a5.68 5.68 0 0 0-4.48-5.56V3a1.17 1.17 0 1 0-2.34 0v1.44A5.68 5.68 0 0 0 6.35 10v4.96L4.9 16.8a1 1 0 0 0 .78 1.62h12.64a1 1 0 0 0 .78-1.62Z"></path>
@@ -5028,13 +5030,10 @@ export default function HomePage() {
                 aria-hidden="true"
               ></div>
             </button>
-            <button
+            <span
               id="accountMenuToggle"
               class="icon-btn account-menu-toggle"
-              aria-label="Account menu"
-              aria-haspopup="menu"
-              aria-expanded=${() => accountMenuOpen() ? "true" : "false"}
-              onClick=${handleAccountMenuToggle}
+              aria-hidden="true"
             >
               <svg viewBox="0 0 12 8" aria-hidden="true">
                 <path
@@ -5046,7 +5045,7 @@ export default function HomePage() {
                   stroke-linejoin="round"
                 ></path>
               </svg>
-            </button>
+            </span>
             <div
               id="accountMenuPanel"
               ref=${(el) => (accountMenuPanelRef = el)}
@@ -5073,13 +5072,13 @@ export default function HomePage() {
                 </span>
                 <span>Help Centre</span>
               </a>
-              <a
+              <button
                 id="signOutBtn"
                 class="account-menu-item account-menu-signout"
-                href="#"
+                type="button"
                 role="menuitem"
                 onClick=${handleSignOut}
-              >Sign out of Netflix</a>
+              >Sign out of Netflix</button>
             </div>
           </div>
         </div>
@@ -5414,42 +5413,42 @@ export default function HomePage() {
       style=${() => activeView() === "home" ? "" : "display:none"}
     >
       <div class="member-footer-social">
-        <a href="#" aria-label="Facebook">
+        <span aria-hidden="true">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M13.6 21v-7.7h2.6l.4-3h-3V8.4c0-.9.3-1.5 1.6-1.5h1.6V4.2c-.8-.1-1.7-.2-2.5-.2-2.5 0-4.2 1.5-4.2 4.3v2.4H7.8v3h2.8V21h3Z"></path>
           </svg>
-        </a>
-        <a href="#" aria-label="Instagram">
+        </span>
+        <span aria-hidden="true">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M7.4 2.8h9.2a4.6 4.6 0 0 1 4.6 4.6v9.2a4.6 4.6 0 0 1-4.6 4.6H7.4a4.6 4.6 0 0 1-4.6-4.6V7.4a4.6 4.6 0 0 1 4.6-4.6Zm0 2A2.6 2.6 0 0 0 4.8 7.4v9.2a2.6 2.6 0 0 0 2.6 2.6h9.2a2.6 2.6 0 0 0 2.6-2.6V7.4a2.6 2.6 0 0 0-2.6-2.6H7.4Zm4.6 3a4.2 4.2 0 1 1 0 8.4 4.2 4.2 0 0 1 0-8.4Zm0 2a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4Zm4.5-2.35a1.05 1.05 0 1 1 0 2.1 1.05 1.05 0 0 1 0-2.1Z"></path>
           </svg>
-        </a>
-        <a href="#" aria-label="Twitter">
+        </span>
+        <span aria-hidden="true">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M18.9 2.8h3.3l-7.3 8.3 8.5 10.1h-6.7l-5.2-6.2-6 6.2H2.2l7.8-8.2L1.8 2.8h6.8l4.7 5.8 5.6-5.8Zm-1.2 16.6h1.8L7.6 4.5H5.7l12 14.9Z"></path>
           </svg>
-        </a>
-        <a href="#" aria-label="YouTube">
+        </span>
+        <span aria-hidden="true">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M21.5 7.1a3 3 0 0 0-2.1-2.1C17.5 4.5 12 4.5 12 4.5s-5.5 0-7.4.5a3 3 0 0 0-2.1 2.1A31 31 0 0 0 2 12a31 31 0 0 0 .5 4.9 3 3 0 0 0 2.1 2.1c1.9.5 7.4.5 7.4.5s5.5 0 7.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 22 12a31 31 0 0 0-.5-4.9ZM10 15.4V8.6l5.8 3.4L10 15.4Z"></path>
           </svg>
-        </a>
+        </span>
       </div>
       <ul class="member-footer-links">
-        <li><a href="#">Audio Description</a></li>
-        <li><a href="#">Help Centre</a></li>
-        <li><a href="#">Gift Cards</a></li>
-        <li><a href="#">Media Centre</a></li>
-        <li><a href="#">Investor Relations</a></li>
-        <li><a href="#">Jobs</a></li>
-        <li><a href="#">Terms of Use</a></li>
-        <li><a href="#">Privacy</a></li>
-        <li><a href="#">Legal Notices</a></li>
-        <li><a href="#">Cookie Preferences</a></li>
-        <li><a href="#">Corporate Information</a></li>
-        <li><a href="#">Contact Us</a></li>
-        <li><a href="#">Speed Test</a></li>
-        <li><a href="#">Only on Netflix</a></li>
+        <li><span>Audio Description</span></li>
+        <li><span>Help Centre</span></li>
+        <li><span>Gift Cards</span></li>
+        <li><span>Media Centre</span></li>
+        <li><span>Investor Relations</span></li>
+        <li><span>Jobs</span></li>
+        <li><span>Terms of Use</span></li>
+        <li><span>Privacy</span></li>
+        <li><span>Legal Notices</span></li>
+        <li><span>Cookie Preferences</span></li>
+        <li><span>Corporate Information</span></li>
+        <li><span>Contact Us</span></li>
+        <li><span>Speed Test</span></li>
+        <li><span>Only on Netflix</span></li>
       </ul>
       <p class="member-footer-copyright">&copy; 1997-2026 Netflix, Inc.</p>
     </footer>

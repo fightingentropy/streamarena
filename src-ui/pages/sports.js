@@ -113,7 +113,7 @@ export default function SportsPage() {
                 <path d="M14.33 12.9 19.71 18.28a1 1 0 0 1-1.42 1.42l-5.38-5.38a8 8 0 1 1 1.42-1.42Zm-6.33 1.1a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"></path>
               </svg>
             </button>
-            <a href="#" class="kids">Kids</a>
+            <span class="kids" aria-hidden="true">Kids</span>
             <button class="icon-btn notification-btn" type="button" aria-label="Notifications">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 22a2.6 2.6 0 0 0 2.45-1.72h-4.9A2.6 2.6 0 0 0 12 22Zm7.1-5.2-1.45-1.84V10a5.68 5.68 0 0 0-4.48-5.56V3a1.17 1.17 0 1 0-2.34 0v1.44A5.68 5.68 0 0 0 6.35 10v4.96L4.9 16.8a1 1 0 0 0 .78 1.62h12.64a1 1 0 0 0 .78-1.62Z"></path>
@@ -134,12 +134,9 @@ export default function SportsPage() {
                   aria-hidden="true"
                 ></div>
               </button>
-              <button
+              <span
                 class="icon-btn account-menu-toggle"
-                aria-label="Account menu"
-                aria-haspopup="menu"
-                aria-expanded=${() => (accountMenuOpen() ? "true" : "false")}
-                onClick=${toggleAccountMenu}
+                aria-hidden="true"
               >
                 <svg viewBox="0 0 12 8" aria-hidden="true">
                   <path
@@ -151,7 +148,7 @@ export default function SportsPage() {
                     stroke-linejoin="round"
                   ></path>
                 </svg>
-              </button>
+              </span>
               <div
                 id="accountMenuPanel"
                 class="account-menu-panel"
@@ -177,12 +174,12 @@ export default function SportsPage() {
                   </span>
                   <span>Help Centre</span>
                 </a>
-                <a
+                <button
                   class="account-menu-item account-menu-signout"
-                  href="#"
+                  type="button"
                   role="menuitem"
                   onClick=${handleSignOut}
-                >Sign out of Netflix</a>
+                >Sign out of Netflix</button>
               </div>
             </div>
           </div>

@@ -375,7 +375,7 @@ fn tv_metadata_warmup_seasons(details: &Value, current_season: i64) -> Vec<i64> 
 }
 
 fn push_unique_season(seasons: &mut Vec<i64>, season_number: i64) {
-    if !seasons.iter().any(|existing| *existing == season_number) {
+    if !seasons.contains(&season_number) {
         seasons.push(season_number);
     }
 }

@@ -23,6 +23,10 @@ impl ApiError {
         Self::new(StatusCode::BAD_REQUEST, message)
     }
 
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, message)
+    }
+
     pub fn method_not_allowed(message: impl Into<String>) -> Self {
         Self::new(StatusCode::METHOD_NOT_ALLOWED, message)
     }

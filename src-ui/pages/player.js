@@ -1,4 +1,3 @@
-import html from "solid-js/html";
 import { onMount, onCleanup } from "solid-js";
 import { parseWebVttCues } from "../player/subtitles.js";
 import {
@@ -8,6 +7,11 @@ import {
   fetchLocalSeriesLibrary,
   getSeriesEpisodeLabel,
 } from "../player/episodes.js";
+import {
+  normalizeRequestTimeoutMs,
+  requestJson,
+  sleep,
+} from "../player/api.js";
 import {
   normalizeSourceHash,
   getSourceDisplayName,
@@ -40,10 +44,12 @@ import {
   syncLiveStreamControls as syncLiveStreamControlsDom,
 } from "../player/live-streams.js";
 import { createHlsPlaybackController } from "../player/hls-controller.js";
+import { createHlsQualityControls } from "../player/hls-quality-controls.js";
 import {
   createPlaybackRouting,
   isHlsPlaybackSource,
 } from "../player/playback-routing.js";
+import { attachSeekInteractions } from "../player/seek-interactions.js";
 import { createPlaybackBenchmarkApi } from "../player/playback-benchmark-api.js";
 import {
   createRemuxRouting,
@@ -55,6 +61,7 @@ import {
   isFullscreenActive,
   toggleFullscreenMode as togglePlayerFullscreenMode,
 } from "../player/fullscreen.js";
+import { renderPlayerShell } from "../player/player-shell-template.js";
 import {
   buildWatchUrl,
   findSeriesEntryBySlug,
@@ -84,6 +91,7 @@ export default function PlayerPage() {
   let resolverRetryButton, resolverAlternateButton;
   let seekLoadingOverlay, playerShell, liveEmbedFrame;
   let speedOptions = [];
+  let closeSeekPreviewVideo = () => {};
 
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const controlsHideDelayMs = 3000;
@@ -122,7 +130,6 @@ const LIVE_WORKING_STREAM_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const LIVE_WORKING_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-working-stream:";
 const LIVE_SOURCE_PREFERENCE_STORAGE_KEY = "netflix-live-source-preferences";
 const LIVE_SOURCE_PREFERENCE_TTL_MS = 24 * 60 * 60 * 1000;
-const HLS_QUALITY_PREFERENCE_STORAGE_KEY = "netflix-hls-quality-pref";
 const MANUAL_SOURCE_SWITCH_TIMEOUT_MS = 6000;
 
 let isDraggingSeek = false;
@@ -210,9 +217,6 @@ const reportedPlaybackFailureKeys = new Set();
 let liveStreamOptions = [];
 let selectedLiveStreamId = "";
 let isLivePlayback = false;
-let hlsQualityLevels = [];
-let selectedHlsQualityLevel = -1;
-let activeHlsQualityLevel = -1;
 let liveEdgePinned = true;
 let shouldResolveLiveEmbedSource = false;
 let liveEmbedResolver = "sports";
@@ -301,6 +305,18 @@ const {
   getPreferredDefaultSourceHash,
 } = playbackRouting;
 
+const hlsQualityControls = createHlsQualityControls({
+  getElements: () => ({
+    control: hlsQualityControl,
+    toggle: toggleHlsQuality,
+    menu: hlsQualityMenu,
+    optionsContainer: hlsQualityOptionsContainer,
+  }),
+  isLiveIframePlaybackActive: () => isLiveIframePlaybackActive(),
+  closePopover: (...args) => closeHlsQualityPopover(...args),
+  setQualityLevel: (levelIndex) => hlsPlaybackController.setQualityLevel(levelIndex),
+});
+
 const hlsPlaybackController = createHlsPlaybackController({
   getVideo: () => video,
   getLastRequestedAbsolutePlaybackSource: () => lastRequestedAbsolutePlaybackSource,
@@ -315,8 +331,9 @@ const hlsPlaybackController = createHlsPlaybackController({
   isBrowserOffline: () => isBrowserOffline(),
   shouldFailFastForHlsNetworkErrors: () =>
     isCurrentTmdbExternalEmbedSource() || isManualSourceSwitchPending(),
-  getPreferredQualityLevel: (levels) => pickPreferredHlsQualityLevel(levels),
-  onQualityLevelsChanged: (state) => handleHlsQualityLevelsChanged(state),
+  getPreferredQualityLevel: (levels) =>
+    hlsQualityControls.pickPreferredQualityLevel(levels),
+  onQualityLevelsChanged: (state) => hlsQualityControls.handleLevelsChanged(state),
 });
 
 // ─── Watch URL support: reproducible /watch?... plus legacy /watch/<slug> ───
@@ -1108,7 +1125,6 @@ if (isTmdbMoviePlayback && hasAudioLangParam) {
   persistAudioLangPreference(preferredAudioLang);
 }
 let preferredQuality = normalizePreferredQuality(qualityParam);
-let hlsQualityPreference = readStoredHlsQualityPreference();
 applyMobileLightTmdbDefaults();
 let preferredSourceMinSeeders = DEFAULT_SOURCE_MIN_SEEDERS;
 let preferredSourceResultsLimit = DEFAULT_SOURCE_RESULTS_LIMIT;
@@ -2105,6 +2121,57 @@ function hasRecoverablePlaybackSource() {
       lastRequestedAbsolutePlaybackSource ||
       lastRequestedPlaybackSource,
   );
+}
+
+function getLocalLibraryPlaybackProbeUrl(value) {
+  const rawValue = String(value || "").trim();
+  if (!rawValue) {
+    return "";
+  }
+  let url;
+  try {
+    url = new URL(rawValue, window.location.origin);
+  } catch {
+    return "";
+  }
+  if (url.origin !== window.location.origin) {
+    return "";
+  }
+  const pathname = url.pathname.toLowerCase();
+  if (
+    pathname.startsWith("/assets/videos/") ||
+    pathname.startsWith("/videos/") ||
+    pathname.startsWith("/media/")
+  ) {
+    return `${url.pathname}${url.search}`;
+  }
+  return "";
+}
+
+async function localLibraryPlaybackSourceExists(value) {
+  const probeUrl = getLocalLibraryPlaybackProbeUrl(value);
+  if (!probeUrl) {
+    return true;
+  }
+  try {
+    const response = await fetch(probeUrl, {
+      method: "HEAD",
+      cache: "no-store",
+    });
+    if (response.ok) {
+      return true;
+    }
+    if (response.status === 405) {
+      const rangeResponse = await fetch(probeUrl, {
+        headers: { Range: "bytes=0-0" },
+        cache: "no-store",
+      });
+      return rangeResponse.ok || rangeResponse.status === 206;
+    }
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 function getLanguageDisplayLabel(langCode) {
@@ -5606,245 +5673,6 @@ function syncSpeedState() {
   });
 }
 
-function normalizeHlsQualityPreference(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (!normalized || normalized === "auto") {
-    return "auto";
-  }
-  const match = normalized.match(/^(\d{3,4})p?$/);
-  if (!match) {
-    return "auto";
-  }
-  const height = Number(match[1]);
-  return Number.isFinite(height) && height > 0 ? `${Math.floor(height)}p` : "auto";
-}
-
-function readStoredHlsQualityPreference() {
-  try {
-    return normalizeHlsQualityPreference(
-      localStorage.getItem(HLS_QUALITY_PREFERENCE_STORAGE_KEY),
-    );
-  } catch {
-    return "auto";
-  }
-}
-
-function persistHlsQualityPreference(value) {
-  const normalized = normalizeHlsQualityPreference(value);
-  hlsQualityPreference = normalized;
-  try {
-    localStorage.setItem(HLS_QUALITY_PREFERENCE_STORAGE_KEY, normalized);
-  } catch {
-    // Ignore storage access issues.
-  }
-}
-
-function getHlsQualityPreferenceHeight(value = hlsQualityPreference) {
-  const match = normalizeHlsQualityPreference(value).match(/^(\d{3,4})p$/);
-  if (!match) {
-    return 0;
-  }
-  const height = Number(match[1]);
-  return Number.isFinite(height) && height > 0 ? Math.floor(height) : 0;
-}
-
-function formatHlsQualityLabel(level) {
-  const height = Number(level?.height || 0);
-  if (Number.isFinite(height) && height > 0) {
-    return `${Math.floor(height)}p`;
-  }
-  const name = String(level?.name || "").trim();
-  if (name) {
-    return name;
-  }
-  const width = Number(level?.width || 0);
-  if (Number.isFinite(width) && width > 0) {
-    return `${Math.floor(width)}w`;
-  }
-  return `Level ${Number(level?.index || 0) + 1}`;
-}
-
-function formatHlsQualityMeta(level) {
-  const bitrate = Number(level?.bitrate || 0);
-  if (!Number.isFinite(bitrate) || bitrate <= 0) {
-    return "";
-  }
-  if (bitrate >= 1_000_000) {
-    return `${(bitrate / 1_000_000).toFixed(bitrate >= 10_000_000 ? 0 : 1)} Mbps`;
-  }
-  return `${Math.round(bitrate / 1000)} Kbps`;
-}
-
-function getHlsQualityPreferenceForLevel(level) {
-  const height = Number(level?.height || 0);
-  if (Number.isFinite(height) && height > 0) {
-    return `${Math.floor(height)}p`;
-  }
-  return "auto";
-}
-
-function getSortedHlsQualityLevels(levels = hlsQualityLevels) {
-  return [...levels].sort((left, right) => {
-    const leftHeight = Number(left?.height || 0);
-    const rightHeight = Number(right?.height || 0);
-    if (leftHeight !== rightHeight) {
-      return rightHeight - leftHeight;
-    }
-    const leftBitrate = Number(left?.bitrate || 0);
-    const rightBitrate = Number(right?.bitrate || 0);
-    if (leftBitrate !== rightBitrate) {
-      return rightBitrate - leftBitrate;
-    }
-    return Number(left?.index || 0) - Number(right?.index || 0);
-  });
-}
-
-function pickPreferredHlsQualityLevel(levels = []) {
-  const targetHeight = getHlsQualityPreferenceHeight();
-  if (!targetHeight || !Array.isArray(levels) || !levels.length) {
-    return -1;
-  }
-  const matches = levels
-    .filter((level) => Number(level?.height || 0) === targetHeight)
-    .sort((left, right) => Number(right?.bitrate || 0) - Number(left?.bitrate || 0));
-  return Number(matches[0]?.index ?? -1);
-}
-
-function getHlsQualityLevelByIndex(levelIndex) {
-  const normalized = Number(levelIndex);
-  if (!Number.isFinite(normalized) || normalized < 0) {
-    return null;
-  }
-  return hlsQualityLevels.find((level) => Number(level?.index) === Math.floor(normalized)) || null;
-}
-
-function getCurrentHlsQualityLabel() {
-  const selectedLevel = getHlsQualityLevelByIndex(selectedHlsQualityLevel);
-  if (selectedLevel) {
-    return formatHlsQualityLabel(selectedLevel);
-  }
-  const activeLevel = getHlsQualityLevelByIndex(activeHlsQualityLevel);
-  return activeLevel ? `Auto (${formatHlsQualityLabel(activeLevel)})` : "Auto";
-}
-
-function shouldShowHlsQualityControl() {
-  return Boolean(hlsQualityLevels.length > 1 && !isLiveIframePlaybackActive());
-}
-
-function appendHlsQualityOptionContent(button, primary, secondary = "") {
-  const name = document.createElement("span");
-  name.className = "hls-quality-option-name";
-  name.textContent = primary;
-  button.appendChild(name);
-
-  if (secondary) {
-    const meta = document.createElement("span");
-    meta.className = "hls-quality-option-meta";
-    meta.textContent = secondary;
-    button.appendChild(meta);
-  }
-}
-
-function syncHlsQualityControls() {
-  const shouldShow = shouldShowHlsQualityControl();
-  if (hlsQualityControl) {
-    hlsQualityControl.hidden = !shouldShow;
-    if (!shouldShow) {
-      closeHlsQualityPopover(false, { force: true });
-    }
-  }
-
-  const currentLabel = getCurrentHlsQualityLabel();
-  const accessibleLabel = `Quality (${currentLabel})`;
-  toggleHlsQuality?.setAttribute("aria-label", accessibleLabel);
-  toggleHlsQuality?.setAttribute("title", accessibleLabel);
-  hlsQualityMenu?.setAttribute("aria-label", accessibleLabel);
-
-  if (hlsQualityOptionsContainer) {
-    Array.from(
-      hlsQualityOptionsContainer.querySelectorAll(".hls-quality-option"),
-    ).forEach((option) => {
-      const rawLevel = option.dataset.levelIndex || "auto";
-      const isAuto = rawLevel === "auto";
-      const isSelected = isAuto
-        ? selectedHlsQualityLevel < 0
-        : Number(rawLevel) === selectedHlsQualityLevel;
-      option.setAttribute("aria-selected", isSelected ? "true" : "false");
-    });
-  }
-}
-
-function renderHlsQualityOptions() {
-  if (!(hlsQualityOptionsContainer instanceof HTMLElement)) {
-    return;
-  }
-
-  hlsQualityOptionsContainer.innerHTML = "";
-  const activeLevel = getHlsQualityLevelByIndex(activeHlsQualityLevel);
-  const autoButton = document.createElement("button");
-  autoButton.className = "audio-option hls-quality-option";
-  autoButton.type = "button";
-  autoButton.setAttribute("role", "option");
-  autoButton.dataset.levelIndex = "auto";
-  appendHlsQualityOptionContent(
-    autoButton,
-    "Auto",
-    activeLevel ? `Currently ${formatHlsQualityLabel(activeLevel)}` : "Adaptive",
-  );
-  hlsQualityOptionsContainer.appendChild(autoButton);
-
-  getSortedHlsQualityLevels().forEach((level) => {
-    const button = document.createElement("button");
-    button.className = "audio-option hls-quality-option";
-    button.type = "button";
-    button.setAttribute("role", "option");
-    button.dataset.levelIndex = String(level.index);
-    button.dataset.qualityPreference = getHlsQualityPreferenceForLevel(level);
-    appendHlsQualityOptionContent(
-      button,
-      formatHlsQualityLabel(level),
-      formatHlsQualityMeta(level),
-    );
-    hlsQualityOptionsContainer.appendChild(button);
-  });
-
-  syncHlsQualityControls();
-}
-
-function handleHlsQualityLevelsChanged({
-  levels = [],
-  selectedLevel = -1,
-  activeLevel = -1,
-} = {}) {
-  hlsQualityLevels = Array.isArray(levels) ? levels : [];
-  selectedHlsQualityLevel = Number.isFinite(Number(selectedLevel))
-    ? Math.floor(Number(selectedLevel))
-    : -1;
-  activeHlsQualityLevel = Number.isFinite(Number(activeLevel))
-    ? Math.floor(Number(activeLevel))
-    : -1;
-  renderHlsQualityOptions();
-  syncHlsQualityControls();
-}
-
-function selectHlsQualityLevel(levelIndex) {
-  const normalizedLevelIndex =
-    levelIndex === "auto" ? -1 : Number(levelIndex);
-  const nextLevel =
-    Number.isFinite(normalizedLevelIndex) && normalizedLevelIndex >= 0
-      ? Math.floor(normalizedLevelIndex)
-      : -1;
-  const level = getHlsQualityLevelByIndex(nextLevel);
-  persistHlsQualityPreference(level ? getHlsQualityPreferenceForLevel(level) : "auto");
-  if (hlsPlaybackController.setQualityLevel(nextLevel)) {
-    selectedHlsQualityLevel = nextLevel;
-  }
-  renderHlsQualityOptions();
-  syncHlsQualityControls();
-}
-
 function getSelectedLiveStreamOption() {
   return getSelectedLiveStreamOptionFromState(
     liveStreamOptions,
@@ -7379,7 +7207,7 @@ function closeSpeedPopover(withDelay = true) {
 }
 
 function openHlsQualityPopover({ auto = false } = {}) {
-  if (!hlsQualityControl || !shouldShowHlsQualityControl() || isResolvingSource()) {
+  if (!hlsQualityControl || !hlsQualityControls.shouldShowControl() || isResolvingSource()) {
     return;
   }
 
@@ -7389,7 +7217,7 @@ function openHlsQualityPopover({ auto = false } = {}) {
   closeAudioPopover();
   closeSpeedPopover(false);
   window.clearTimeout(hlsQualityPopoverCloseTimeout);
-  renderHlsQualityOptions();
+  hlsQualityControls.renderOptions();
   showControls();
   clearControlsHideTimer();
   hlsQualityControl.classList.add("is-open");
@@ -8140,74 +7968,6 @@ function setPendingSeekRatio(ratio) {
   return true;
 }
 
-async function requestJson(url, options = {}, timeoutMs = 20000) {
-  const controller = new AbortController();
-  let timeoutId = null;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = window.setTimeout(() => {
-      controller.abort();
-      reject(new Error("Request timed out."));
-    }, timeoutMs);
-  });
-
-  try {
-    const response = await Promise.race([
-      fetch(url, {
-        ...options,
-        signal: controller.signal,
-      }),
-      timeoutPromise,
-    ]);
-
-    if (response.status === 204) {
-      return null;
-    }
-
-    const rawText = await response.text();
-    let payload = null;
-
-    if (rawText) {
-      try {
-        payload = JSON.parse(rawText);
-      } catch {
-        payload = {
-          message: buildHttpErrorMessage(response, rawText) || rawText,
-        };
-      }
-    }
-
-    if (!response.ok) {
-      const message =
-        payload?.error ||
-        payload?.message ||
-        buildHttpErrorMessage(response, rawText) ||
-        `Request failed (${response.status})`;
-      const error = new Error(message);
-      error.status = response.status;
-      error.statusText = response.statusText;
-      error.url = url;
-      throw error;
-    }
-
-    return payload;
-  } catch (error) {
-    if (error.name === "AbortError" || error.message === "Request timed out.") {
-      throw new Error("Request timed out.");
-    }
-    throw error;
-  } finally {
-    if (timeoutId !== null) {
-      window.clearTimeout(timeoutId);
-    }
-  }
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
-  });
-}
-
 function isBrowserOffline() {
   return typeof navigator !== "undefined" && navigator.onLine === false;
 }
@@ -8755,41 +8515,6 @@ async function requestResolveJson(
   }
 
   throw lastError || new Error("Unable to resolve this stream.");
-}
-
-function normalizeRequestTimeoutMs(value) {
-  const timeoutMs = Number(value);
-  return Number.isFinite(timeoutMs) && timeoutMs > 0
-    ? Math.floor(timeoutMs)
-    : undefined;
-}
-
-function buildHttpErrorMessage(response, rawText = "") {
-  const status = Number(response?.status || 0);
-  const statusText = String(response?.statusText || "").trim();
-  const statusLabel = status
-    ? `Request failed (${status}${statusText ? ` ${statusText}` : ""}).`
-    : "Request failed.";
-  const contentType = String(response?.headers?.get?.("content-type") || "")
-    .trim()
-    .toLowerCase();
-  const text = String(rawText || "");
-  const looksLikeHtml =
-    contentType.includes("text/html") ||
-    /^\s*<!doctype\b/i.test(text) ||
-    /<html[\s>]/i.test(text);
-
-  if (!looksLikeHtml) {
-    return "";
-  }
-
-  const normalized = text.toLowerCase();
-  if (normalized.includes("cloudflare") && normalized.includes("bad gateway")) {
-    return status
-      ? `Cloudflare returned ${status}${statusText ? ` ${statusText}` : " Bad Gateway"}.`
-      : "Cloudflare returned a bad gateway response.";
-  }
-  return statusLabel;
 }
 
 function getGallerySavePlayableCandidates(resolvedPayload = {}) {
@@ -9862,6 +9587,19 @@ async function initPlaybackSource() {
           remuxSubtitleStreamIndex,
         )
       : src;
+    if (nextSource === src && !(await localLibraryPlaybackSourceExists(src))) {
+      showResolverError(
+        "This local video file is missing from the library.",
+        "Unable to load this title.",
+        {
+          clearVideoSource: true,
+          showRetry: false,
+          showAlternate: false,
+        },
+      );
+      cleanUrlIfNeeded();
+      return;
+    }
     setVideoSource(nextSource, { startSeconds: getInitialPlaybackStartSeconds() });
     applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
     await tryPlay();
@@ -9892,6 +9630,18 @@ async function initPlaybackSource() {
       showResolver(
         "Unable to load this title. Open it again from the home screen or check that the video is in your library.",
         { showStatus: true, isError: true },
+      );
+      return;
+    }
+    if (!(await localLibraryPlaybackSourceExists(src))) {
+      showResolverError(
+        "This local video file is missing from the library.",
+        "Unable to load this title.",
+        {
+          clearVideoSource: true,
+          showRetry: false,
+          showAlternate: false,
+        },
       );
       return;
     }
@@ -10147,7 +9897,7 @@ trackListener(toggleSpeed, "click", (event) => {
 if (toggleHlsQuality) {
   trackListener(toggleHlsQuality, "click", (event) => {
     event.preventDefault();
-    if (!hlsQualityControl || !shouldShowHlsQualityControl() || isResolvingSource()) {
+    if (!hlsQualityControl || !hlsQualityControls.shouldShowControl() || isResolvingSource()) {
       return;
     }
 
@@ -10807,7 +10557,7 @@ if (hlsQualityOptionsContainer) {
     }
     event.preventDefault();
     event.stopPropagation();
-    selectHlsQualityLevel(option.dataset.levelIndex || "auto");
+    hlsQualityControls.selectLevel(option.dataset.levelIndex || "auto");
     closeHlsQualityPopover(false, { force: true });
   });
 }
@@ -10888,452 +10638,47 @@ trackListener(video, "ratechange", () => {
   syncSpeedState();
 });
 
-// --- Seek preview thumbnail on hover ---
-const seekPreviewCtx = seekPreviewCanvas.getContext("2d", { willReadFrequently: false });
-const SEEK_PREVIEW_WIDTH = 160;
-const SEEK_PREVIEW_HEIGHT = 90;
-const SEEK_PREVIEW_SEEK_THROTTLE_MS = 220;
-const SEEK_PREVIEW_RENDERED_TARGET_EPSILON_SECONDS = 0.08;
-let seekPreviewVideo = null;
-let seekPreviewHlsController = null;
-let seekPreviewHlsConstructorPromise = null;
-let seekPreviewSource = "";
-let seekPreviewReady = false;
-let seekPreviewPendingTarget = null;
-let seekPreviewLoadingTarget = null;
-let seekPreviewRenderedTarget = null;
-let seekPreviewLastSeekAt = Number.NEGATIVE_INFINITY;
-let seekPreviewThrottleTimer = null;
-let seekPreviewSourceRequestId = 0;
-
-function clearSeekPreviewCanvas() {
-  seekPreviewCtx.clearRect(0, 0, SEEK_PREVIEW_WIDTH, SEEK_PREVIEW_HEIGHT);
-  seekPreviewCtx.fillStyle = "#000";
-  seekPreviewCtx.fillRect(0, 0, SEEK_PREVIEW_WIDTH, SEEK_PREVIEW_HEIGHT);
-}
-
-function drawSeekPreviewFrame() {
-  if (!seekPreviewVideo || seekPreviewVideo.readyState < 2) {
-    return false;
-  }
-  try {
-    seekPreviewCtx.drawImage(
-      seekPreviewVideo,
-      0,
-      0,
-      SEEK_PREVIEW_WIDTH,
-      SEEK_PREVIEW_HEIGHT,
-    );
-    seekPreviewRenderedTarget = Number(seekPreviewVideo.currentTime) || 0;
-    seekPreviewLoadingTarget = null;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function handleSeekPreviewFrameReady() {
-  if (seekPreviewLoadingTarget === null) {
-    return;
-  }
-  window.requestAnimationFrame(() => {
-    drawSeekPreviewFrame();
-  });
-}
-
-function handleSeekPreviewMetadataReady() {
-  markSeekPreviewReady();
-  const target = seekPreviewLoadingTarget ?? seekPreviewPendingTarget;
-  if (target !== null) {
-    scheduleSeekPreviewFrame(target, { force: true });
-  }
-}
-
-function getOrCreatePreviewVideo() {
-  if (seekPreviewVideo) return seekPreviewVideo;
-  seekPreviewVideo = document.createElement("video");
-  seekPreviewVideo.preload = "auto";
-  seekPreviewVideo.muted = true;
-  seekPreviewVideo.playsInline = true;
-  seekPreviewVideo.crossOrigin = video.crossOrigin || "anonymous";
-  seekPreviewVideo.setAttribute("aria-hidden", "true");
-  seekPreviewVideo.tabIndex = -1;
-  seekPreviewVideo.style.cssText =
-    "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;";
-  seekPreviewVideo.addEventListener("seeked", handleSeekPreviewFrameReady);
-  seekPreviewVideo.addEventListener("loadedmetadata", handleSeekPreviewMetadataReady);
-  seekPreviewVideo.addEventListener("loadeddata", handleSeekPreviewFrameReady);
-  seekPreviewVideo.addEventListener("canplay", handleSeekPreviewFrameReady);
-  document.body.appendChild(seekPreviewVideo);
-  return seekPreviewVideo;
-}
-
-function loadSeekPreviewHlsConstructor() {
-  if (!seekPreviewHlsConstructorPromise) {
-    seekPreviewHlsConstructorPromise = import("hls.js").then(
-      (module) => module.default || module.Hls || module,
-    );
-  }
-  return seekPreviewHlsConstructorPromise;
-}
-
-function destroySeekPreviewHlsController() {
-  if (!seekPreviewHlsController) {
-    return;
-  }
-  try {
-    seekPreviewHlsController.destroy();
-  } catch {
-    // Ignore preview teardown failures.
-  }
-  seekPreviewHlsController = null;
-}
-
-function closeSeekPreviewVideo() {
-  destroySeekPreviewHlsController();
-  if (seekPreviewThrottleTimer) {
-    window.clearTimeout(seekPreviewThrottleTimer);
-    seekPreviewThrottleTimer = null;
-  }
-  if (seekPreviewVideo) {
-    seekPreviewVideo.pause();
-    seekPreviewVideo.removeAttribute("src");
-    seekPreviewVideo.load();
-    seekPreviewVideo.remove();
-    seekPreviewVideo = null;
-  }
-  seekPreviewSource = "";
-  seekPreviewPendingTarget = null;
-  seekPreviewLoadingTarget = null;
-  seekPreviewRenderedTarget = null;
-  seekPreviewReady = false;
-  seekPreviewLastSeekAt = Number.NEGATIVE_INFINITY;
-  seekPreviewSourceRequestId += 1;
-  clearSeekPreviewCanvas();
-}
-
-function getSeekPreviewPlaybackSource() {
-  if (parseLiveIframePlaybackSource(lastRequestedPlaybackSource)) {
-    return "";
-  }
-  const requestedSource =
-    String(lastRequestedAbsolutePlaybackSource || "").trim() ||
-    (() => {
-      try {
-        return lastRequestedPlaybackSource
-          ? new URL(lastRequestedPlaybackSource, window.location.origin).toString()
-          : "";
-      } catch {
-        return "";
-      }
-    })();
-  if (requestedSource && isHlsPlaybackSource(requestedSource)) {
-    return requestedSource;
-  }
-  const currentSource = String(video.currentSrc || video.getAttribute("src") || "").trim();
-  if (currentSource && !currentSource.startsWith("blob:")) {
-    return currentSource;
-  }
-  return requestedSource;
-}
-
-function markSeekPreviewReady() {
-  if (!seekPreviewSource) {
-    return;
-  }
-  seekPreviewReady = true;
-  if (seekPreviewPendingTarget !== null) {
-    scheduleSeekPreviewFrame(seekPreviewPendingTarget, { force: true });
-  }
-}
-
-function syncPreviewVideoSource() {
-  const pv = getOrCreatePreviewVideo();
-  const nextSource = getSeekPreviewPlaybackSource();
-  if (!nextSource) {
-    closeSeekPreviewVideo();
-    return false;
-  }
-  if (seekPreviewSource === nextSource) {
-    return seekPreviewReady;
-  }
-
-  destroySeekPreviewHlsController();
-  seekPreviewSourceRequestId += 1;
-  const requestId = seekPreviewSourceRequestId;
-  seekPreviewSource = nextSource;
-  seekPreviewReady = false;
-  seekPreviewPendingTarget = null;
-  seekPreviewLoadingTarget = null;
-  seekPreviewRenderedTarget = null;
-  clearSeekPreviewCanvas();
-  pv.pause();
-  pv.removeAttribute("src");
-  pv.load();
-
-  if (isHlsPlaybackSource(nextSource) && shouldUseHlsJsForSource(nextSource)) {
-    void loadSeekPreviewHlsConstructor()
-      .then((HlsConstructor) => {
-        if (
-          requestId !== seekPreviewSourceRequestId ||
-          seekPreviewSource !== nextSource
-        ) {
-          return;
-        }
-        if (!HlsConstructor?.isSupported?.()) {
-          return;
-        }
-        const hls = new HlsConstructor({
-          autoStartLoad: true,
-          startPosition: -1,
-          maxBufferLength: 8,
-          maxMaxBufferLength: 12,
-          backBufferLength: 0,
-        });
-        seekPreviewHlsController = hls;
-        hls.on(HlsConstructor.Events.MEDIA_ATTACHED, () => {
-          if (seekPreviewHlsController === hls) {
-            hls.loadSource(nextSource);
-          }
-        });
-        hls.on(HlsConstructor.Events.MANIFEST_PARSED, () => {
-          if (seekPreviewHlsController === hls) {
-            markSeekPreviewReady();
-          }
-        });
-        hls.on(HlsConstructor.Events.ERROR, (_event, data = {}) => {
-          if (seekPreviewHlsController !== hls || !data?.fatal) {
-            return;
-          }
-          seekPreviewReady = false;
-          seekPreviewLoadingTarget = null;
-          clearSeekPreviewCanvas();
-        });
-        hls.attachMedia(pv);
-      })
-      .catch(() => {});
-    return false;
-  }
-
-  pv.addEventListener("loadedmetadata", markSeekPreviewReady, { once: true });
-  pv.src = nextSource;
-  pv.load();
-  return false;
-}
-
-function normalizeSeekPreviewTarget(timeAtCursor, duration) {
-  const rawTarget = Number(timeAtCursor) || 0;
-  return isLivePlayback
-    ? clampLiveSeekTargetSeconds(rawTarget)
-    : Math.max(0, Math.min(duration, rawTarget));
-}
-
-function requestSeekPreviewFrame(target) {
-  if (!seekPreviewVideo || !seekPreviewReady) {
-    seekPreviewPendingTarget = target;
-    return;
-  }
-  const videoDuration = Number(seekPreviewVideo.duration);
-  const clampedTarget =
-    Number.isFinite(videoDuration) && videoDuration > 0
-      ? Math.max(0, Math.min(videoDuration, target))
-      : Math.max(0, target);
-  if (
-    seekPreviewRenderedTarget !== null &&
-    Math.abs(seekPreviewRenderedTarget - clampedTarget) <
-      SEEK_PREVIEW_RENDERED_TARGET_EPSILON_SECONDS
-  ) {
-    return;
-  }
-  seekPreviewPendingTarget = null;
-  seekPreviewLoadingTarget = clampedTarget;
-  clearSeekPreviewCanvas();
-  try {
-    if (Math.abs(Number(seekPreviewVideo.currentTime || 0) - clampedTarget) < 0.25) {
-      drawSeekPreviewFrame();
-      return;
-    }
-    seekPreviewVideo.currentTime = clampedTarget;
-    if (seekPreviewHlsController?.startLoad) {
-      seekPreviewHlsController.startLoad(clampedTarget);
-    }
-  } catch {
-    seekPreviewPendingTarget = clampedTarget;
-  }
-}
-
-function scheduleSeekPreviewFrame(target, { force = false } = {}) {
-  if (!seekPreviewReady) {
-    seekPreviewPendingTarget = target;
-    return;
-  }
-  const now = performance.now();
-  const remainingDelay = force
-    ? 0
-    : Math.max(0, SEEK_PREVIEW_SEEK_THROTTLE_MS - (now - seekPreviewLastSeekAt));
-  seekPreviewPendingTarget = target;
-  if (remainingDelay > 0) {
-    if (!seekPreviewThrottleTimer) {
-      seekPreviewThrottleTimer = window.setTimeout(() => {
-        seekPreviewThrottleTimer = null;
-        const queuedTarget = seekPreviewPendingTarget;
-        if (queuedTarget !== null) {
-          seekPreviewLastSeekAt = performance.now();
-          requestSeekPreviewFrame(queuedTarget);
-        }
-      }, remainingDelay);
-    }
-    return;
-  }
-  seekPreviewLastSeekAt = now;
-  requestSeekPreviewFrame(target);
-}
-
-function updateSeekPreview(e) {
-  const rect = seekBar.getBoundingClientRect();
-  const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-  const ratio = x / rect.width;
-  const duration = getSeekScaleDurationSeconds();
-  if (duration <= 0) return;
-
-  const timeAtCursor = getSeekTargetSecondsFromRatio(ratio, duration);
-  if (isLivePlayback) {
-    const liveWindow = getLiveSeekableWindow();
-    const secondsBehindLive = liveWindow
-      ? Math.max(0, liveWindow.end - timeAtCursor)
-      : 0;
-    seekPreviewTime.textContent =
-      ratio >= LIVE_EDGE_PIN_RATIO ||
-      secondsBehindLive <= LIVE_EDGE_REJOIN_TOLERANCE_SECONDS
-        ? "LIVE"
-        : `-${formatTime(secondsBehindLive)}`;
-  } else {
-    seekPreviewTime.textContent = formatTime(timeAtCursor);
-  }
-
-  // Position the preview, clamped so it doesn't go off-screen
-  const previewWidth = 160;
-  const minLeft = previewWidth / 2;
-  const maxLeft = rect.width - previewWidth / 2;
-  const left = Math.max(minLeft, Math.min(x, maxLeft));
-  seekPreview.style.left = `${left}px`;
-  seekPreview.hidden = false;
-
-  syncPreviewVideoSource();
-  scheduleSeekPreviewFrame(normalizeSeekPreviewTarget(timeAtCursor, duration));
-}
-
-trackListener(seekBar, "pointermove", (event) => {
-  updateSeekPreview(event);
-  if (isDraggingSeek) {
-    const pointerRatio = getSeekRatioFromPointerEvent(event);
-    if (pointerRatio !== null) {
-      setPendingSeekRatio(pointerRatio);
-    }
-  }
-});
-trackListener(seekBar, "pointerenter", updateSeekPreview);
-trackListener(seekBar, "pointerleave", () => {
-  seekPreview.hidden = true;
-  closeSeekPreviewVideo();
-});
-
-trackListener(seekBar, "pointerdown", (event) => {
-  isDraggingSeek = true;
-  pendingTranscodeSeekRatio = null;
-  pendingStandardSeekRatio = null;
-  const pointerRatio = getSeekRatioFromPointerEvent(event);
-  if (pointerRatio !== null) {
-    setPendingSeekRatio(pointerRatio);
-  }
-});
-
-function handleSeekPointerUp(event) {
-  if (!isDraggingSeek) {
-    return;
-  }
-  isDraggingSeek = false;
-  const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
-  if (seekScaleDurationSeconds <= 0) {
+const seekInteractions = attachSeekInteractions({
+  clampLiveSeekTargetSeconds,
+  clearPendingSeekRatios: () => {
     pendingTranscodeSeekRatio = null;
     pendingStandardSeekRatio = null;
-    return;
-  }
-
-  if (pendingTranscodeSeekRatio === null && pendingStandardSeekRatio === null) {
-    const pointerRatio = getSeekRatioFromPointerEvent(event);
-    if (pointerRatio !== null) {
-      setPendingSeekRatio(pointerRatio);
-    }
-  }
-
-  if (pendingTranscodeSeekRatio !== null && isTranscodeSourceActive()) {
-    seekToAbsoluteTime(
-      getSeekTargetSecondsFromRatio(
-        pendingTranscodeSeekRatio,
-        seekScaleDurationSeconds,
-      ),
-      { showLoading: true },
-    );
-  } else if (pendingStandardSeekRatio !== null && !isTranscodeSourceActive()) {
-    seekToAbsoluteTime(
-      getSeekTargetSecondsFromRatio(
-        pendingStandardSeekRatio,
-        seekScaleDurationSeconds,
-      ),
-      { showLoading: true },
-    );
-  }
-
-  pendingTranscodeSeekRatio = null;
-  pendingStandardSeekRatio = null;
-}
-
-trackListener(seekBar, "pointerup", handleSeekPointerUp);
-trackListener(seekBar, "pointercancel", handleSeekPointerUp);
-trackListener(document, "pointerup", handleSeekPointerUp);
-
-trackListener(seekBar, "input", () => {
-  const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
-  if (
-    !hasActiveSource() ||
-    isResolvingSource() ||
-    seekScaleDurationSeconds <= 0
-  ) {
-    return;
-  }
-
-  const ratio = Number(seekBar.value) / 1000;
-  syncDurationText(ratio * seekScaleDurationSeconds);
-  if (isTranscodeSourceActive()) {
-    paintSeekProgress(
-      seekBar.value,
-      getBufferedSeekValue(seekScaleDurationSeconds),
-    );
-    if (isDraggingSeek) {
-      pendingTranscodeSeekRatio = ratio;
-      return;
-    }
-    seekToAbsoluteTime(
-      getSeekTargetSecondsFromRatio(ratio, seekScaleDurationSeconds),
-      { showLoading: true },
-    );
-    return;
-  }
-
-  paintSeekProgress(
-    seekBar.value,
-    getBufferedSeekValue(seekScaleDurationSeconds),
-  );
-  if (isDraggingSeek) {
-    pendingStandardSeekRatio = ratio;
-    return;
-  }
-  seekToAbsoluteTime(
-    getSeekTargetSecondsFromRatio(ratio, seekScaleDurationSeconds),
-    { showLoading: true },
-  );
+  },
+  formatTime,
+  getBufferedSeekValue,
+  getLastRequestedAbsolutePlaybackSource: () => lastRequestedAbsolutePlaybackSource,
+  getLastRequestedPlaybackSource: () => lastRequestedPlaybackSource,
+  getLiveSeekableWindow,
+  getPendingStandardSeekRatio: () => pendingStandardSeekRatio,
+  getPendingTranscodeSeekRatio: () => pendingTranscodeSeekRatio,
+  getSeekRatioFromPointerEvent,
+  getSeekScaleDurationSeconds,
+  getSeekTargetSecondsFromRatio,
+  hasActiveSource,
+  isDraggingSeek: () => isDraggingSeek,
+  isHlsPlaybackSource,
+  isLivePlayback: () => isLivePlayback,
+  isResolvingSource,
+  isTranscodeSourceActive,
+  liveEdgePinRatio: LIVE_EDGE_PIN_RATIO,
+  liveEdgeRejoinToleranceSeconds: LIVE_EDGE_REJOIN_TOLERANCE_SECONDS,
+  paintSeekProgress,
+  parseLiveIframePlaybackSource,
+  seekBar,
+  seekPreview,
+  seekPreviewCanvas,
+  seekPreviewTime,
+  seekToAbsoluteTime,
+  setDraggingSeek: (value) => {
+    isDraggingSeek = Boolean(value);
+  },
+  setPendingSeekRatio,
+  shouldUseHlsJsForSource,
+  syncDurationText,
+  trackListener,
+  video,
 });
+closeSeekPreviewVideo = seekInteractions.closeSeekPreviewVideo;
 
 trackListener(video, "loadedmetadata", () => {
   // Reapply saved playback speed (browser resets to 1x on new source)
@@ -11769,8 +11114,8 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
     syncSpeedState();
     renderLiveStreamOptions();
     syncLiveStreamControls();
-    renderHlsQualityOptions();
-    syncHlsQualityControls();
+    hlsQualityControls.renderOptions();
+    hlsQualityControls.syncControls();
     syncSourcePanelVisibility();
     rebuildTrackOptionButtons();
     syncAudioState();
@@ -11847,667 +11192,78 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
   });
 
 
-  return html`<div data-solid-page-root="" style="display: contents">
-    <main class="player-shell" tabindex="0" ref=${el => playerShell = el}>
-      <video
-        id="playerVideo"
-        ref=${el => video = el}
-        class="player-video"
-        playsinline
-        preload="metadata"
-      ></video>
-      <iframe
-        id="liveEmbedFrame"
-        ref=${el => {
-          liveEmbedFrame = el;
-          hardenLiveEmbedFrame();
-        }}
-        class="live-embed-frame"
-        title="Live stream player"
-        allow=${LIVE_IFRAME_ALLOW_POLICY}
-        allowfullscreen
-        referrerpolicy="strict-origin-when-cross-origin"
-        onError=${handleLiveIframePlaybackError}
-        hidden
-      ></iframe>
-
-      <div id="subtitleOverlay" ref=${el => subtitleOverlay = el} class="custom-subtitle-overlay" hidden></div>
-      <div class="player-ui">
-        <header class="top-row">
-          <div class="top-row-left">
-            <button
-              id="goBack"
-              ref=${el => goBack = el}
-              class="icon-btn"
-              type="button"
-              aria-label="Back to browse"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M14.6 4.6 7.2 12l7.4 7.4-1.4 1.4L4.4 12l8.8-8.8Z"></path>
-              </svg>
-            </button>
-          </div>
-        </header>
-
-        <section class="controls-panel">
-          <div class="seek-row">
-            <div class="seek-bar-wrap">
-              <input
-                id="seekBar"
-                ref=${el => seekBar = el}
-                class="seek-bar"
-                type="range"
-                min="0"
-                max="1000"
-                value="0"
-                aria-label="Seek"
-              />
-              <div id="seekPreview" ref=${el => seekPreview = el} class="seek-preview" hidden>
-                <canvas id="seekPreviewCanvas" ref=${el => seekPreviewCanvas = el} class="seek-preview-thumb" width="160" height="90"></canvas>
-                <span id="seekPreviewTime" ref=${el => seekPreviewTime = el} class="seek-preview-time">00:00</span>
-              </div>
-            </div>
-            <span id="durationText" ref=${el => durationText = el} class="duration" aria-label="Time remaining">00:00</span>
-          </div>
-
-          <div class="controls-row">
-            <div class="controls-left">
-              <div class="controls-cluster">
-                <button
-                  id="togglePlay"
-                  ref=${el => togglePlay = el}
-                  class="control-btn control-btn-main"
-                  type="button"
-                  aria-label="Pause"
-                >
-                  <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M5 3.5v17L20 12 5 3.5Z"></path>
-                  </svg>
-                  <img
-                    src="/assets/icons/player-controls/left-pause.svg"
-                    class="control-icon-image icon-pause-asset"
-                    alt=""
-                  />
-                </button>
-                <button
-                  id="rewind10"
-                  ref=${el => rewind10 = el}
-                  class="control-btn"
-                  type="button"
-                  aria-label="Rewind 10 seconds"
-                >
-                  <img
-                    src="/assets/icons/player-controls/left-rewind-10.svg"
-                    class="control-icon-image"
-                    alt=""
-                  />
-                </button>
-                <button
-                  id="forward10"
-                  ref=${el => forward10 = el}
-                  class="control-btn"
-                  type="button"
-                  aria-label="Forward 10 seconds"
-                >
-                  <img
-                    src="/assets/icons/player-controls/left-forward-10.svg"
-                    class="control-icon-image"
-                    alt=""
-                  />
-                </button>
-                <div id="volumeControl" ref=${el => volumeControl = el} class="volume-control">
-                  <div class="volume-slider-popover">
-                    <input
-                      id="volumeSlider"
-                      ref=${el => volumeSlider = el}
-                      class="volume-slider"
-                      type="range"
-                      min="0"
-                      max="100"
-                      value="100"
-                      step="1"
-                      aria-label="Volume"
-                    />
-                  </div>
-                  <button
-                    id="toggleMutePlayer"
-                    ref=${el => toggleMutePlayer = el}
-                    class="control-btn"
-                    type="button"
-                    aria-label="Mute"
-                  >
-                    <img
-                      src="/assets/icons/player-controls/left-volume.svg"
-                      class="control-icon-image icon-volume-on-asset"
-                      alt=""
-                    />
-                    <svg class="icon-volume-off" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M14 5.2v13.6a1 1 0 0 1-1.68.74L7.6 15H5a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2.6l4.72-4.54A1 1 0 0 1 14 5.2Zm6.3 3.1a1 1 0 0 1 0 1.4L18.01 12l2.3 2.3a1 1 0 0 1-1.42 1.4L16.6 13.4l-2.3 2.3a1 1 0 0 1-1.4-1.42l2.3-2.28-2.3-2.3a1 1 0 0 1 1.4-1.4l2.3 2.3 2.29-2.3a1 1 0 0 1 1.41 0Z"></path>
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <p id="episodeLabel" ref=${el => episodeLabel = el} class="episode-label"></p>
-
-            <div class="controls-right">
-              <div class="controls-cluster">
-                <div
-                  id="sourceControl"
-                  ref=${el => sourceControl = el}
-                  class="speed-menu-wrap source-menu-wrap bottom-source-control"
-                  hidden
-                >
-                  <button
-                    id="toggleSource"
-                    ref=${el => toggleSource = el}
-                    class="control-btn source-btn bottom-server-btn"
-                    type="button"
-                    aria-label="Server"
-                    aria-haspopup="listbox"
-                    aria-controls="sourceMenu"
-                    aria-expanded="false"
-                  >
-                    <svg class="bottom-server-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M4 7h12"></path>
-                      <path d="M4 12h9"></path>
-                      <path d="M4 17h12"></path>
-                      <path d="M18 10.5 21.5 12 18 13.5z"></path>
-                    </svg>
-                  </button>
-                  <div
-                    id="sourceMenu"
-                    ref=${el => sourceMenu = el}
-                    class="speed-popover source-popover"
-                    role="listbox"
-                    aria-label="Server"
-                  >
-                    <p class="speed-popover-title source-popover-title">Server</p>
-                    <div
-                      id="sourceOptions"
-                      ref=${el => sourceOptionsContainer = el}
-                      class="audio-options source-options source-popover-options"
-                      aria-label="Playback servers"
-                    ></div>
-                  </div>
-                </div>
-                <button
-                  id="nextEpisode"
-                  ref=${el => nextEpisode = el}
-                  class="control-btn series-control-btn"
-                  type="button"
-                  aria-label="Next episode"
-                  hidden
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M4 5.5v13l11-6.5-11-6.5Zm13 .2h3v12.6h-3z"></path>
-                  </svg>
-                </button>
-                <div
-                  id="episodesControl"
-                  ref=${el => episodesControl = el}
-                  class="speed-menu-wrap episodes-menu-wrap"
-                  hidden
-                >
-                  <button
-                    id="toggleEpisodes"
-                    ref=${el => toggleEpisodes = el}
-                    class="control-btn episodes-btn"
-                    type="button"
-                    aria-label="Episodes"
-                    aria-haspopup="dialog"
-                    aria-controls="episodesMenu"
-                    aria-expanded="false"
-                  >
-                    <img
-                      src="/assets/icons/player-controls/right-episodes.svg"
-                      class="control-icon-image"
-                      alt=""
-                    />
-                  </button>
-                  <div
-                    id="episodesMenu"
-                    class="speed-popover episodes-popover"
-                    role="dialog"
-                    aria-label="Episodes"
-                  >
-                    <div class="episodes-popover-head">
-                      <button
-                        id="episodesBackToSeasons"
-                        ref=${el => episodesBackToSeasons = el}
-                        class="episodes-back-button"
-                        type="button"
-                        aria-label="Show seasons"
-                        hidden
-                      >
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path
-                            d="M15 5 8 12l7 7"
-                            fill="none"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                          ></path>
-                        </svg>
-                      </button>
-                      <div class="episodes-heading">
-                        <p
-                          id="episodesOverline"
-                          ref=${el => episodesOverline = el}
-                          class="episodes-overline"
-                        >
-                          Episodes
-                        </p>
-                        <h2
-                          id="episodesPopoverTitle"
-                          ref=${el => episodesPopoverTitle = el}
-                          class="episodes-popover-title"
-                        >
-                          Episodes
-                        </h2>
-                      </div>
-                    </div>
-                    <div
-                      id="episodesList"
-                      ref=${el => episodesList = el}
-                      class="episodes-list"
-                      role="list"
-                    ></div>
-                  </div>
-                </div>
-                <div
-                  id="liveStreamControl"
-                  ref=${el => liveStreamControl = el}
-                  class="speed-menu-wrap live-stream-menu-wrap"
-                  hidden
-                >
-                  <button
-                    id="toggleLiveStream"
-                    ref=${el => toggleLiveStream = el}
-                    class="control-btn live-stream-btn"
-                    type="button"
-                    aria-label="Live stream"
-                    aria-haspopup="listbox"
-                    aria-controls="liveStreamMenu"
-                    aria-expanded="false"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M4 6.5h16v2H4v-2Zm0 4.5h10v2H4v-2Zm0 4.5h16v2H4v-2Zm13.8-5.4 3.8 2.4-3.8 2.4v-4.8Z"></path>
-                    </svg>
-                  </button>
-                  <div
-                    id="liveStreamMenu"
-                    ref=${el => liveStreamMenu = el}
-                    class="speed-popover live-stream-popover"
-                    role="listbox"
-                    aria-label="Live stream"
-                  >
-                    <p class="speed-popover-title live-stream-popover-title">Live stream</p>
-                    <div
-                      id="liveStreamOptions"
-                      ref=${el => liveStreamOptionsContainer = el}
-                      class="audio-options live-stream-options"
-                    ></div>
-                  </div>
-                </div>
-                <div id="audioControl" ref=${el => audioControl = el} class="speed-menu-wrap audio-menu-wrap">
-                  <button
-                    id="toggleAudio"
-                    ref=${el => toggleAudio = el}
-                    class="control-btn audio-btn"
-                    type="button"
-                    aria-label="Audio and subtitles"
-                    aria-haspopup="listbox"
-                    aria-controls="audioMenu"
-                    aria-expanded="false"
-                  >
-                    <img
-                      src="/assets/icons/player-controls/right-captions.svg"
-                      class="control-icon-image"
-                      alt=""
-                    />
-                    <span
-                      id="audioStatusBadge"
-                      ref=${el => audioStatusBadge = el}
-                      class="control-badge audio-status-badge"
-                      hidden
-                    ></span>
-                  </button>
-                  <div
-                    id="audioMenu"
-                    ref=${el => audioMenu = el}
-                    class="speed-popover audio-popover subtitles-popover"
-                    role="dialog"
-                    aria-label="Audio and subtitles"
-                  >
-                    <div class="audio-popover-grid">
-                      <section
-                        class="audio-popover-column audio-track-column"
-                      >
-                        <h3 class="audio-column-title">Audio</h3>
-                        <div id="audioOptions" ref=${el => audioOptionsContainer = el} class="audio-options">
-                          <button
-                            class="audio-option"
-                            type="button"
-                            role="option"
-                            data-lang="auto"
-                            aria-selected="true"
-                          >
-                            Auto
-                          </button>
-                          <button
-                            class="audio-option"
-                            type="button"
-                            role="option"
-                            data-lang="en"
-                            aria-selected="false"
-                          >
-                            English
-                          </button>
-                          <button
-                            class="audio-option"
-                            type="button"
-                            role="option"
-                            data-lang="fr"
-                            aria-selected="false"
-                          >
-                            French
-                          </button>
-                          <button
-                            class="audio-option"
-                            type="button"
-                            role="option"
-                            data-lang="es"
-                            aria-selected="false"
-                          >
-                            Spanish
-                          </button>
-                          <button
-                            class="audio-option"
-                            type="button"
-                            role="option"
-                            data-lang="de"
-                            aria-selected="false"
-                          >
-                            German
-                          </button>
-                        </div>
-                      </section>
-                      <section
-                        class="audio-popover-column audio-subtitle-column"
-                      >
-                        <div
-                          class="audio-tab-list"
-                          role="tablist"
-                          aria-label="Subtitle menu tabs"
-                        >
-                          <button
-                            id="audioTabSubtitles"
-                            ref=${el => audioTabSubtitles = el}
-                            class="audio-tab is-active"
-                            type="button"
-                            role="tab"
-                            aria-selected="true"
-                            aria-controls="subtitlePanel"
-                          >
-                            Subtitles
-                          </button>
-                        </div>
-                        <section
-                          id="subtitlePanel"
-                          ref=${el => subtitlePanel = el}
-                          class="audio-tab-panel"
-                          role="tabpanel"
-                          aria-labelledby="audioTabSubtitles"
-                        >
-                          <h3 class="audio-column-title">Subtitles</h3>
-                          <div
-                            id="subtitleOptions"
-                            ref=${el => subtitleOptionsContainer = el}
-                            class="audio-options subtitle-options"
-                          >
-                            <button
-                              class="audio-option subtitle-option"
-                              type="button"
-                              role="option"
-                              data-subtitle-lang="off"
-                              aria-selected="true"
-                            >
-                              Off
-                            </button>
-                          </div>
-                        </section>
-                      </section>
-                    </div>
-                  </div>
-                </div>
-                <div
-                  id="hlsQualityControl"
-                  ref=${el => hlsQualityControl = el}
-                  class="speed-menu-wrap hls-quality-menu-wrap"
-                  hidden
-                >
-                  <button
-                    id="toggleHlsQuality"
-                    ref=${el => toggleHlsQuality = el}
-                    class="control-btn hls-quality-btn"
-                    type="button"
-                    aria-label="Quality"
-                    aria-haspopup="listbox"
-                    aria-controls="hlsQualityMenu"
-                    aria-expanded="false"
-                  >
-                    <svg class="hls-quality-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M4 6.5h16v11H4z"></path>
-                      <path d="M8 15v-3"></path>
-                      <path d="M12 15V9"></path>
-                      <path d="M16 15v-5"></path>
-                    </svg>
-                  </button>
-                  <div
-                    id="hlsQualityMenu"
-                    ref=${el => hlsQualityMenu = el}
-                    class="speed-popover hls-quality-popover"
-                    role="listbox"
-                    aria-label="Quality"
-                  >
-                    <p class="speed-popover-title hls-quality-popover-title">Quality</p>
-                    <div
-                      id="hlsQualityOptions"
-                      ref=${el => hlsQualityOptionsContainer = el}
-                      class="audio-options hls-quality-options"
-                    ></div>
-                  </div>
-                </div>
-                <div id="speedControl" ref=${el => speedControl = el} class="speed-menu-wrap">
-                  <button
-                    id="toggleSpeed"
-                    ref=${el => toggleSpeed = el}
-                    class="control-btn speed-btn"
-                    type="button"
-                    aria-label="Playback speed"
-                    aria-haspopup="listbox"
-                    aria-controls="speedMenu"
-                    aria-expanded="false"
-                  >
-                    <img
-                      src="/assets/icons/player-controls/right-playback-speed.svg"
-                      class="control-icon-image"
-                      alt=""
-                    />
-                  </button>
-                  <div
-                    id="speedMenu"
-                    class="speed-popover"
-                    role="listbox"
-                    aria-label="Playback speed"
-                  >
-                    <p class="speed-popover-title">Playback speed</p>
-                    <div class="speed-options">
-                      <button class="speed-option" type="button" role="option" data-rate="0.5" aria-selected="false">
-                        <span class="speed-dot" aria-hidden="true"></span>
-                        <span class="speed-label">0.5x</span>
-                      </button>
-                      <button class="speed-option" type="button" role="option" data-rate="0.75" aria-selected="false">
-                        <span class="speed-dot" aria-hidden="true"></span>
-                        <span class="speed-label">0.75x</span>
-                      </button>
-                      <button class="speed-option" type="button" role="option" data-rate="1" aria-selected="true">
-                        <span class="speed-dot" aria-hidden="true"></span>
-                        <span class="speed-label">1x (Normal)</span>
-                      </button>
-                      <button class="speed-option" type="button" role="option" data-rate="1.25" aria-selected="false">
-                        <span class="speed-dot" aria-hidden="true"></span>
-                        <span class="speed-label">1.25x</span>
-                      </button>
-                      <button class="speed-option" type="button" role="option" data-rate="1.5" aria-selected="false">
-                        <span class="speed-dot" aria-hidden="true"></span>
-                        <span class="speed-label">1.5x</span>
-                      </button>
-                      <button class="speed-option" type="button" role="option" data-rate="2" aria-selected="false">
-                        <span class="speed-dot" aria-hidden="true"></span>
-                        <span class="speed-label">2x</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  id="toggleFullscreen"
-                  ref=${el => toggleFullscreen = el}
-                  class="control-btn"
-                  type="button"
-                  aria-label="Fullscreen"
-                  title="Fullscreen"
-                >
-                  <img
-                    src="/assets/icons/player-controls/right-fullscreen.svg"
-                    class="control-icon-image"
-                    alt=""
-                  />
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-      </div>
-
-      <div id="autoPlayOverlay" ref=${el => autoPlayOverlay = el} class="autoplay-overlay" hidden>
-        <div class="autoplay-card">
-          <div class="autoplay-thumb-wrap">
-            <img
-              ref=${el => autoPlayThumb = el}
-              class="autoplay-thumb"
-              src=${`/${DEFAULT_EPISODE_THUMBNAIL}`}
-              alt="Next episode"
-            />
-            <div class="autoplay-countdown-ring-wrap">
-              <svg class="autoplay-countdown-ring" viewBox="0 0 48 48">
-                <circle class="autoplay-ring-track" cx="24" cy="24" r="20" />
-                <circle
-                  ref=${el => autoPlayProgressRing = el}
-                  class="autoplay-ring-progress"
-                  cx="24" cy="24" r="20"
-                />
-              </svg>
-              <span ref=${el => autoPlayCountdownText = el} class="autoplay-countdown-text"></span>
-            </div>
-          </div>
-          <div class="autoplay-info">
-            <p class="autoplay-up-next">Next Episode</p>
-            <p ref=${el => autoPlayTitle = el} class="autoplay-series-title"></p>
-            <p ref=${el => autoPlayEpLabel = el} class="autoplay-ep-label"></p>
-          </div>
-          <div class="autoplay-actions">
-            <button
-              ref=${el => autoPlayBtn = el}
-              class="autoplay-play-btn"
-              type="button"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M5 3.5v17L20 12 5 3.5Z"></path>
-              </svg>
-              Play Now
-            </button>
-            <button
-              ref=${el => autoPlayCancel = el}
-              class="autoplay-cancel-btn"
-              type="button"
-              aria-label="Cancel auto-play"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z"></path>
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div id="resolverOverlay" ref=${el => resolverOverlay = el} class="resolver-overlay" hidden>
-        <div
-          id="resolverLoader"
-          ref=${el => resolverLoader = el}
-          class="seek-loading-indicator resolver-loader"
-          role="status"
-          aria-live="polite"
-          aria-label="Loading video"
-        >
-          <span class="seek-netflix-spinner" aria-hidden="true"></span>
-        </div>
-        <div class="resolver-card" role="status" aria-live="polite">
-          <h2
-            id="resolverTitle"
-            ref=${el => resolverTitle = el}
-            class="resolver-title"
-            hidden
-          ></h2>
-          <p id="resolverStatus" ref=${el => resolverStatus = el} class="resolver-status" hidden>
-            Unable to resolve this stream.
-          </p>
-          <p
-            id="resolverDetail"
-            ref=${el => resolverDetail = el}
-            class="resolver-detail"
-            hidden
-          ></p>
-          <p
-            id="resolverCountdown"
-            ref=${el => resolverCountdown = el}
-            class="resolver-countdown"
-            hidden
-          ></p>
-          <div class="resolver-actions">
-            <button
-              id="resolverRetryButton"
-              ref=${el => resolverRetryButton = el}
-              class="resolver-action resolver-action-primary"
-              type="button"
-              hidden
-            >
-              Retry now
-            </button>
-            <button
-              id="resolverAlternateButton"
-              ref=${el => resolverAlternateButton = el}
-              class="resolver-action"
-              type="button"
-              hidden
-            >
-              Try another source
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div id="seekLoadingOverlay" ref=${el => seekLoadingOverlay = el} class="seek-loading-overlay" hidden>
-        <div
-          class="seek-loading-indicator"
-          role="status"
-          aria-live="polite"
-          aria-label="Seeking"
-        >
-          <span class="seek-netflix-spinner" aria-hidden="true"></span>
-        </div>
-      </div>
-    </main>
-  </div>`;
+  return renderPlayerShell({
+    defaultEpisodeThumbnail: DEFAULT_EPISODE_THUMBNAIL,
+    handleLiveIframePlaybackError,
+    liveIframeAllowPolicy: LIVE_IFRAME_ALLOW_POLICY,
+    refs: {
+      audioControl: (el) => { audioControl = el; },
+      audioMenu: (el) => { audioMenu = el; },
+      audioOptionsContainer: (el) => { audioOptionsContainer = el; },
+      audioStatusBadge: (el) => { audioStatusBadge = el; },
+      audioTabSubtitles: (el) => { audioTabSubtitles = el; },
+      autoPlayBtn: (el) => { autoPlayBtn = el; },
+      autoPlayCancel: (el) => { autoPlayCancel = el; },
+      autoPlayCountdownText: (el) => { autoPlayCountdownText = el; },
+      autoPlayEpLabel: (el) => { autoPlayEpLabel = el; },
+      autoPlayOverlay: (el) => { autoPlayOverlay = el; },
+      autoPlayProgressRing: (el) => { autoPlayProgressRing = el; },
+      autoPlayThumb: (el) => { autoPlayThumb = el; },
+      autoPlayTitle: (el) => { autoPlayTitle = el; },
+      durationText: (el) => { durationText = el; },
+      episodeLabel: (el) => { episodeLabel = el; },
+      episodesBackToSeasons: (el) => { episodesBackToSeasons = el; },
+      episodesControl: (el) => { episodesControl = el; },
+      episodesList: (el) => { episodesList = el; },
+      episodesOverline: (el) => { episodesOverline = el; },
+      episodesPopoverTitle: (el) => { episodesPopoverTitle = el; },
+      forward10: (el) => { forward10 = el; },
+      goBack: (el) => { goBack = el; },
+      hlsQualityControl: (el) => { hlsQualityControl = el; },
+      hlsQualityMenu: (el) => { hlsQualityMenu = el; },
+      hlsQualityOptionsContainer: (el) => { hlsQualityOptionsContainer = el; },
+      liveEmbedFrame: (el) => {
+        liveEmbedFrame = el;
+        hardenLiveEmbedFrame();
+      },
+      liveStreamControl: (el) => { liveStreamControl = el; },
+      liveStreamMenu: (el) => { liveStreamMenu = el; },
+      liveStreamOptionsContainer: (el) => { liveStreamOptionsContainer = el; },
+      nextEpisode: (el) => { nextEpisode = el; },
+      playerShell: (el) => { playerShell = el; },
+      resolverAlternateButton: (el) => { resolverAlternateButton = el; },
+      resolverCountdown: (el) => { resolverCountdown = el; },
+      resolverDetail: (el) => { resolverDetail = el; },
+      resolverLoader: (el) => { resolverLoader = el; },
+      resolverOverlay: (el) => { resolverOverlay = el; },
+      resolverRetryButton: (el) => { resolverRetryButton = el; },
+      resolverStatus: (el) => { resolverStatus = el; },
+      resolverTitle: (el) => { resolverTitle = el; },
+      rewind10: (el) => { rewind10 = el; },
+      seekBar: (el) => { seekBar = el; },
+      seekLoadingOverlay: (el) => { seekLoadingOverlay = el; },
+      seekPreview: (el) => { seekPreview = el; },
+      seekPreviewCanvas: (el) => { seekPreviewCanvas = el; },
+      seekPreviewTime: (el) => { seekPreviewTime = el; },
+      sourceControl: (el) => { sourceControl = el; },
+      sourceMenu: (el) => { sourceMenu = el; },
+      sourceOptionsContainer: (el) => { sourceOptionsContainer = el; },
+      speedControl: (el) => { speedControl = el; },
+      subtitleOptionsContainer: (el) => { subtitleOptionsContainer = el; },
+      subtitleOverlay: (el) => { subtitleOverlay = el; },
+      subtitlePanel: (el) => { subtitlePanel = el; },
+      toggleAudio: (el) => { toggleAudio = el; },
+      toggleEpisodes: (el) => { toggleEpisodes = el; },
+      toggleFullscreen: (el) => { toggleFullscreen = el; },
+      toggleHlsQuality: (el) => { toggleHlsQuality = el; },
+      toggleLiveStream: (el) => { toggleLiveStream = el; },
+      toggleMutePlayer: (el) => { toggleMutePlayer = el; },
+      togglePlay: (el) => { togglePlay = el; },
+      toggleSource: (el) => { toggleSource = el; },
+      toggleSpeed: (el) => { toggleSpeed = el; },
+      video: (el) => { video = el; },
+      volumeControl: (el) => { volumeControl = el; },
+      volumeSlider: (el) => { volumeSlider = el; },
+    },
+  });
 }
