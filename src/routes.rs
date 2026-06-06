@@ -88,8 +88,8 @@ const SECURITY_CONTENT_SECURITY_POLICY: &str = concat!(
     "default-src 'self'; ",
     "script-src 'self' blob:; ",
     "script-src-attr 'none'; ",
-    "style-src 'self' 'unsafe-inline'; ",
-    "style-src-attr 'unsafe-inline'; ",
+    "style-src 'self'; ",
+    "style-src-attr 'none'; ",
     "img-src 'self' data: blob: https: http:; ",
     "font-src 'self' data:; ",
     "media-src 'self' data: blob: https: http:; ",
@@ -3449,6 +3449,9 @@ mod tests {
         assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
         assert!(!csp.contains("'unsafe-eval'"));
         assert!(csp.contains("script-src-attr 'none'"));
+        assert!(csp.contains("style-src 'self'"));
+        assert!(csp.contains("style-src-attr 'none'"));
+        assert!(!csp.contains("'unsafe-inline'"));
         assert!(csp.contains("object-src 'none'"));
         assert!(csp.contains("frame-ancestors 'self'"));
         assert!(csp.contains("media-src 'self' data: blob: https: http:"));

@@ -41,6 +41,10 @@
   display: none !important;
 }
 
+.solid-page-root {
+  display: contents;
+}
+
 html,
 body {
   margin: 0;
@@ -724,9 +728,11 @@ a:focus-visible {
 
 .avatar-style-preview,
 .avatar-style-swatch {
+  position: relative;
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: var(--radius);
   background: var(--avatar-fill);
+  overflow: hidden;
 }
 
 .avatar-style-preview {
@@ -753,6 +759,16 @@ a:focus-visible {
 .avatar-style-amber { --avatar-fill: #a58d65; }
 
 .avatar-style-custom-thumb,
+.avatar-style-custom-image {
+  background: #1d1d1f;
+}
+
+.avatar-custom-image-media {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 .avatar-style-custom-image {
   background: #f0f0f0;
 }

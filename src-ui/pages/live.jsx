@@ -15,7 +15,7 @@ import { bindTopNavScrollState } from "../lib/top-nav-scroll.js";
 export default function LivePage() {
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
   const [avatarClass, setAvatarClass] = createSignal("avatar avatar-style-blue");
-  const [avatarCustomStyle, setAvatarCustomStyle] = createSignal("");
+  const [avatarImageSrc, setAvatarImageSrc] = createSignal("");
   const displayName = window.__currentUser?.displayName || "Account";
   let accountMenuEl;
   let cleanupTopNavScrollState = () => {};
@@ -27,14 +27,12 @@ export default function LivePage() {
 
     if (normalizedMode === "custom" && safeImage) {
       setAvatarClass("avatar avatar-custom-image");
-      setAvatarCustomStyle(
-        `--avatar-image: url("${safeImage}"); background-image: var(--avatar-image)`,
-      );
+      setAvatarImageSrc(safeImage);
       return;
     }
 
     setAvatarClass(`avatar avatar-style-${normalizedStyle}`);
-    setAvatarCustomStyle("");
+    setAvatarImageSrc("");
   }
 
   function toggleAccountMenu(event) {
@@ -81,7 +79,7 @@ export default function LivePage() {
   });
 
   return <>
-    <div data-solid-page-root="" style="display: contents">
+    <div data-solid-page-root="" class="solid-page-root">
       <div class="page home-page live-page" tabindex="0">
         <header class="top-nav">
           <div class="nav-left">
@@ -129,9 +127,12 @@ export default function LivePage() {
               >
                 <div
                   class={avatarClass()}
-                  style={avatarCustomStyle()}
                   aria-hidden="true"
-                ></div>
+                >
+                  {avatarImageSrc() ? (
+                    <img class="avatar-custom-image-media" src={avatarImageSrc()} alt="" />
+                  ) : null}
+                </div>
               </button>
               <span
                 class="icon-btn account-menu-toggle"
@@ -152,7 +153,7 @@ export default function LivePage() {
                 id="accountMenuPanel"
                 class="account-menu-panel"
                 role="menu"
-                style={(accountMenuOpen() ? "" : "display:none")}
+                hidden={!accountMenuOpen()}
               >
                 <a class="account-menu-item account-menu-link" href="/settings" role="menuitem">
                   <span class="account-menu-icon" aria-hidden="true">
