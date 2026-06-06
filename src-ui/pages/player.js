@@ -61,7 +61,7 @@ import {
   isFullscreenActive,
   toggleFullscreenMode as togglePlayerFullscreenMode,
 } from "../player/fullscreen.js";
-import { renderPlayerShell } from "../player/player-shell-template.js";
+import { renderPlayerShell } from "../player/player-shell-template.jsx";
 import {
   buildWatchUrl,
   findSeriesEntryBySlug,

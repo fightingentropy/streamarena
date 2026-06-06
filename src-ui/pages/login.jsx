@@ -1,4 +1,3 @@
-import html from "solid-js/html";
 import { createSignal } from "solid-js";
 
 // ─── Migrate localStorage data to server ───
@@ -141,17 +140,17 @@ export default function LoginPage() {
     }
   }
 
-  return html`<div data-solid-page-root="" style="display: contents">
+  return <><div data-solid-page-root="" style="display: contents">
     <main class="login-page">
       <div class="login-card">
         <a href="/" class="login-logo">
           <img src="/assets/icons/netflix-n.svg" alt="Netflix" />
         </a>
-        <h1>${() => (isSignUp() ? "Create Account" : "Sign In")}</h1>
-        <form class="login-form" onSubmit=${handleSubmit}>
+        <h1>{(isSignUp() ? "Create Account" : "Sign In")}</h1>
+        <form class="login-form" onSubmit={handleSubmit}>
           <div
             class="login-field"
-            style=${() => (isSignUp() ? "" : "display:none")}
+            style={(isSignUp() ? "" : "display:none")}
           >
             <label for="displayName">Display name</label>
             <input
@@ -159,7 +158,7 @@ export default function LoginPage() {
               name="displayName"
               type="text"
               autocomplete="name"
-              required=${() => isSignUp()}
+              required={isSignUp()}
             />
           </div>
           <div class="login-field">
@@ -174,7 +173,7 @@ export default function LoginPage() {
           </div>
           <div
             class="login-field"
-            style=${() => (isSignUp() ? "" : "display:none")}
+            style={(isSignUp() ? "" : "display:none")}
           >
             <label for="inviteCode">Invite code</label>
             <input
@@ -190,36 +189,35 @@ export default function LoginPage() {
               id="password"
               name="password"
               type="password"
-              autocomplete=${() =>
-                isSignUp() ? "new-password" : "current-password"}
+              autocomplete={isSignUp() ? "new-password" : "current-password"}
               required
             />
           </div>
           <p
             class="login-error"
-            style=${() => (error() ? "" : "display:none")}
+            style={(error() ? "" : "display:none")}
           >
-            ${() => error()}
+            {error()}
           </p>
           <button
             class="login-btn"
             type="submit"
-            disabled=${() => submitting()}
+            disabled={submitting()}
           >
-            ${() => (isSignUp() ? "Create Account" : "Sign In")}
+            {(isSignUp() ? "Create Account" : "Sign In")}
           </button>
         </form>
         <p class="login-toggle">
-          <span>${() => (isSignUp() ? "Already have an account?" : "New here?")}</span>
+          <span>{(isSignUp() ? "Already have an account?" : "New here?")}</span>
           <button
             class="login-toggle-btn"
             type="button"
-            onClick=${toggleMode}
+            onClick={toggleMode}
           >
-            ${() => (isSignUp() ? "Sign in" : "Create account")}
+            {(isSignUp() ? "Sign in" : "Create account")}
           </button>
         </p>
       </div>
     </main>
-  </div>`;
+  </div></>;
 }

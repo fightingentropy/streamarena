@@ -1,39 +1,37 @@
-import html from "solid-js/html";
-
 export function renderPlayerShell({
   defaultEpisodeThumbnail,
   handleLiveIframePlaybackError,
   liveIframeAllowPolicy,
   refs,
 }) {
-  return html`<div data-solid-page-root="" style="display: contents">
-    <main class="player-shell" tabindex="0" ref=${refs.playerShell}>
+  return <><div data-solid-page-root="" style="display: contents">
+    <main class="player-shell" tabindex="0" ref={refs.playerShell}>
       <video
         id="playerVideo"
-        ref=${refs.video}
+        ref={refs.video}
         class="player-video"
         playsinline
         preload="metadata"
       ></video>
       <iframe
         id="liveEmbedFrame"
-        ref=${refs.liveEmbedFrame}
+        ref={refs.liveEmbedFrame}
         class="live-embed-frame"
         title="Live stream player"
-        allow=${liveIframeAllowPolicy}
+        allow={liveIframeAllowPolicy}
         allowfullscreen
         referrerpolicy="strict-origin-when-cross-origin"
-        onError=${handleLiveIframePlaybackError}
+        onError={handleLiveIframePlaybackError}
         hidden
       ></iframe>
 
-      <div id="subtitleOverlay" ref=${refs.subtitleOverlay} class="custom-subtitle-overlay" hidden></div>
+      <div id="subtitleOverlay" ref={refs.subtitleOverlay} class="custom-subtitle-overlay" hidden></div>
       <div class="player-ui">
         <header class="top-row">
           <div class="top-row-left">
             <button
               id="goBack"
-              ref=${refs.goBack}
+              ref={refs.goBack}
               class="icon-btn"
               type="button"
               aria-label="Back to browse"
@@ -50,7 +48,7 @@ export function renderPlayerShell({
             <div class="seek-bar-wrap">
               <input
                 id="seekBar"
-                ref=${refs.seekBar}
+                ref={refs.seekBar}
                 class="seek-bar"
                 type="range"
                 min="0"
@@ -58,12 +56,12 @@ export function renderPlayerShell({
                 value="0"
                 aria-label="Seek"
               />
-              <div id="seekPreview" ref=${refs.seekPreview} class="seek-preview" hidden>
-                <canvas id="seekPreviewCanvas" ref=${refs.seekPreviewCanvas} class="seek-preview-thumb" width="160" height="90"></canvas>
-                <span id="seekPreviewTime" ref=${refs.seekPreviewTime} class="seek-preview-time">00:00</span>
+              <div id="seekPreview" ref={refs.seekPreview} class="seek-preview" hidden>
+                <canvas id="seekPreviewCanvas" ref={refs.seekPreviewCanvas} class="seek-preview-thumb" width="160" height="90"></canvas>
+                <span id="seekPreviewTime" ref={refs.seekPreviewTime} class="seek-preview-time">00:00</span>
               </div>
             </div>
-            <span id="durationText" ref=${refs.durationText} class="duration" aria-label="Time remaining">00:00</span>
+            <span id="durationText" ref={refs.durationText} class="duration" aria-label="Time remaining">00:00</span>
           </div>
 
           <div class="controls-row">
@@ -71,7 +69,7 @@ export function renderPlayerShell({
               <div class="controls-cluster">
                 <button
                   id="togglePlay"
-                  ref=${refs.togglePlay}
+                  ref={refs.togglePlay}
                   class="control-btn control-btn-main"
                   type="button"
                   aria-label="Pause"
@@ -87,7 +85,7 @@ export function renderPlayerShell({
                 </button>
                 <button
                   id="rewind10"
-                  ref=${refs.rewind10}
+                  ref={refs.rewind10}
                   class="control-btn"
                   type="button"
                   aria-label="Rewind 10 seconds"
@@ -100,7 +98,7 @@ export function renderPlayerShell({
                 </button>
                 <button
                   id="forward10"
-                  ref=${refs.forward10}
+                  ref={refs.forward10}
                   class="control-btn"
                   type="button"
                   aria-label="Forward 10 seconds"
@@ -111,11 +109,11 @@ export function renderPlayerShell({
                     alt=""
                   />
                 </button>
-                <div id="volumeControl" ref=${refs.volumeControl} class="volume-control">
+                <div id="volumeControl" ref={refs.volumeControl} class="volume-control">
                   <div class="volume-slider-popover">
                     <input
                       id="volumeSlider"
-                      ref=${refs.volumeSlider}
+                      ref={refs.volumeSlider}
                       class="volume-slider"
                       type="range"
                       min="0"
@@ -127,7 +125,7 @@ export function renderPlayerShell({
                   </div>
                   <button
                     id="toggleMutePlayer"
-                    ref=${refs.toggleMutePlayer}
+                    ref={refs.toggleMutePlayer}
                     class="control-btn"
                     type="button"
                     aria-label="Mute"
@@ -145,19 +143,19 @@ export function renderPlayerShell({
               </div>
             </div>
 
-            <p id="episodeLabel" ref=${refs.episodeLabel} class="episode-label"></p>
+            <p id="episodeLabel" ref={refs.episodeLabel} class="episode-label"></p>
 
             <div class="controls-right">
               <div class="controls-cluster">
                 <div
                   id="sourceControl"
-                  ref=${refs.sourceControl}
+                  ref={refs.sourceControl}
                   class="speed-menu-wrap source-menu-wrap bottom-source-control"
                   hidden
                 >
                   <button
                     id="toggleSource"
-                    ref=${refs.toggleSource}
+                    ref={refs.toggleSource}
                     class="control-btn source-btn bottom-server-btn"
                     type="button"
                     aria-label="Server"
@@ -174,7 +172,7 @@ export function renderPlayerShell({
                   </button>
                   <div
                     id="sourceMenu"
-                    ref=${refs.sourceMenu}
+                    ref={refs.sourceMenu}
                     class="speed-popover source-popover"
                     role="listbox"
                     aria-label="Server"
@@ -182,7 +180,7 @@ export function renderPlayerShell({
                     <p class="speed-popover-title source-popover-title">Server</p>
                     <div
                       id="sourceOptions"
-                      ref=${refs.sourceOptionsContainer}
+                      ref={refs.sourceOptionsContainer}
                       class="audio-options source-options source-popover-options"
                       aria-label="Playback servers"
                     ></div>
@@ -190,7 +188,7 @@ export function renderPlayerShell({
                 </div>
                 <button
                   id="nextEpisode"
-                  ref=${refs.nextEpisode}
+                  ref={refs.nextEpisode}
                   class="control-btn series-control-btn"
                   type="button"
                   aria-label="Next episode"
@@ -202,13 +200,13 @@ export function renderPlayerShell({
                 </button>
                 <div
                   id="episodesControl"
-                  ref=${refs.episodesControl}
+                  ref={refs.episodesControl}
                   class="speed-menu-wrap episodes-menu-wrap"
                   hidden
                 >
                   <button
                     id="toggleEpisodes"
-                    ref=${refs.toggleEpisodes}
+                    ref={refs.toggleEpisodes}
                     class="control-btn episodes-btn"
                     type="button"
                     aria-label="Episodes"
@@ -231,7 +229,7 @@ export function renderPlayerShell({
                     <div class="episodes-popover-head">
                       <button
                         id="episodesBackToSeasons"
-                        ref=${refs.episodesBackToSeasons}
+                        ref={refs.episodesBackToSeasons}
                         class="episodes-back-button"
                         type="button"
                         aria-label="Show seasons"
@@ -249,14 +247,14 @@ export function renderPlayerShell({
                       <div class="episodes-heading">
                         <p
                           id="episodesOverline"
-                          ref=${refs.episodesOverline}
+                          ref={refs.episodesOverline}
                           class="episodes-overline"
                         >
                           Episodes
                         </p>
                         <h2
                           id="episodesPopoverTitle"
-                          ref=${refs.episodesPopoverTitle}
+                          ref={refs.episodesPopoverTitle}
                           class="episodes-popover-title"
                         >
                           Episodes
@@ -265,7 +263,7 @@ export function renderPlayerShell({
                     </div>
                     <div
                       id="episodesList"
-                      ref=${refs.episodesList}
+                      ref={refs.episodesList}
                       class="episodes-list"
                       role="list"
                     ></div>
@@ -273,13 +271,13 @@ export function renderPlayerShell({
                 </div>
                 <div
                   id="liveStreamControl"
-                  ref=${refs.liveStreamControl}
+                  ref={refs.liveStreamControl}
                   class="speed-menu-wrap live-stream-menu-wrap"
                   hidden
                 >
                   <button
                     id="toggleLiveStream"
-                    ref=${refs.toggleLiveStream}
+                    ref={refs.toggleLiveStream}
                     class="control-btn live-stream-btn"
                     type="button"
                     aria-label="Live stream"
@@ -293,7 +291,7 @@ export function renderPlayerShell({
                   </button>
                   <div
                     id="liveStreamMenu"
-                    ref=${refs.liveStreamMenu}
+                    ref={refs.liveStreamMenu}
                     class="speed-popover live-stream-popover"
                     role="listbox"
                     aria-label="Live stream"
@@ -301,15 +299,15 @@ export function renderPlayerShell({
                     <p class="speed-popover-title live-stream-popover-title">Live stream</p>
                     <div
                       id="liveStreamOptions"
-                      ref=${refs.liveStreamOptionsContainer}
+                      ref={refs.liveStreamOptionsContainer}
                       class="audio-options live-stream-options"
                     ></div>
                   </div>
                 </div>
-                <div id="audioControl" ref=${refs.audioControl} class="speed-menu-wrap audio-menu-wrap">
+                <div id="audioControl" ref={refs.audioControl} class="speed-menu-wrap audio-menu-wrap">
                   <button
                     id="toggleAudio"
-                    ref=${refs.toggleAudio}
+                    ref={refs.toggleAudio}
                     class="control-btn audio-btn"
                     type="button"
                     aria-label="Audio and subtitles"
@@ -324,14 +322,14 @@ export function renderPlayerShell({
                     />
                     <span
                       id="audioStatusBadge"
-                      ref=${refs.audioStatusBadge}
+                      ref={refs.audioStatusBadge}
                       class="control-badge audio-status-badge"
                       hidden
                     ></span>
                   </button>
                   <div
                     id="audioMenu"
-                    ref=${refs.audioMenu}
+                    ref={refs.audioMenu}
                     class="speed-popover audio-popover subtitles-popover"
                     role="dialog"
                     aria-label="Audio and subtitles"
@@ -341,7 +339,7 @@ export function renderPlayerShell({
                         class="audio-popover-column audio-track-column"
                       >
                         <h3 class="audio-column-title">Audio</h3>
-                        <div id="audioOptions" ref=${refs.audioOptionsContainer} class="audio-options">
+                        <div id="audioOptions" ref={refs.audioOptionsContainer} class="audio-options">
                           <button
                             class="audio-option"
                             type="button"
@@ -399,7 +397,7 @@ export function renderPlayerShell({
                         >
                           <button
                             id="audioTabSubtitles"
-                            ref=${refs.audioTabSubtitles}
+                            ref={refs.audioTabSubtitles}
                             class="audio-tab is-active"
                             type="button"
                             role="tab"
@@ -411,7 +409,7 @@ export function renderPlayerShell({
                         </div>
                         <section
                           id="subtitlePanel"
-                          ref=${refs.subtitlePanel}
+                          ref={refs.subtitlePanel}
                           class="audio-tab-panel"
                           role="tabpanel"
                           aria-labelledby="audioTabSubtitles"
@@ -419,7 +417,7 @@ export function renderPlayerShell({
                           <h3 class="audio-column-title">Subtitles</h3>
                           <div
                             id="subtitleOptions"
-                            ref=${refs.subtitleOptionsContainer}
+                            ref={refs.subtitleOptionsContainer}
                             class="audio-options subtitle-options"
                           >
                             <button
@@ -439,13 +437,13 @@ export function renderPlayerShell({
                 </div>
                 <div
                   id="hlsQualityControl"
-                  ref=${refs.hlsQualityControl}
+                  ref={refs.hlsQualityControl}
                   class="speed-menu-wrap hls-quality-menu-wrap"
                   hidden
                 >
                   <button
                     id="toggleHlsQuality"
-                    ref=${refs.toggleHlsQuality}
+                    ref={refs.toggleHlsQuality}
                     class="control-btn hls-quality-btn"
                     type="button"
                     aria-label="Quality"
@@ -462,7 +460,7 @@ export function renderPlayerShell({
                   </button>
                   <div
                     id="hlsQualityMenu"
-                    ref=${refs.hlsQualityMenu}
+                    ref={refs.hlsQualityMenu}
                     class="speed-popover hls-quality-popover"
                     role="listbox"
                     aria-label="Quality"
@@ -470,15 +468,15 @@ export function renderPlayerShell({
                     <p class="speed-popover-title hls-quality-popover-title">Quality</p>
                     <div
                       id="hlsQualityOptions"
-                      ref=${refs.hlsQualityOptionsContainer}
+                      ref={refs.hlsQualityOptionsContainer}
                       class="audio-options hls-quality-options"
                     ></div>
                   </div>
                 </div>
-                <div id="speedControl" ref=${refs.speedControl} class="speed-menu-wrap">
+                <div id="speedControl" ref={refs.speedControl} class="speed-menu-wrap">
                   <button
                     id="toggleSpeed"
-                    ref=${refs.toggleSpeed}
+                    ref={refs.toggleSpeed}
                     class="control-btn speed-btn"
                     type="button"
                     aria-label="Playback speed"
@@ -529,7 +527,7 @@ export function renderPlayerShell({
                 </div>
                 <button
                   id="toggleFullscreen"
-                  ref=${refs.toggleFullscreen}
+                  ref={refs.toggleFullscreen}
                   class="control-btn"
                   type="button"
                   aria-label="Fullscreen"
@@ -547,37 +545,37 @@ export function renderPlayerShell({
         </section>
       </div>
 
-      <div id="autoPlayOverlay" ref=${refs.autoPlayOverlay} class="autoplay-overlay" hidden>
+      <div id="autoPlayOverlay" ref={refs.autoPlayOverlay} class="autoplay-overlay" hidden>
         <div class="autoplay-card">
           <div class="autoplay-thumb-wrap">
             <img
-              ref=${refs.autoPlayThumb}
+              ref={refs.autoPlayThumb}
               class="autoplay-thumb"
-              src=${`/${defaultEpisodeThumbnail}`}
+              src={`/${defaultEpisodeThumbnail}`}
               alt="Next episode"
             />
             <div class="autoplay-countdown-ring-wrap">
               <svg class="autoplay-countdown-ring" viewBox="0 0 48 48">
                 <circle class="autoplay-ring-track" cx="24" cy="24" r="20" />
                 <circle
-                  ref=${refs.autoPlayProgressRing}
+                  ref={refs.autoPlayProgressRing}
                   class="autoplay-ring-progress"
                   cx="24"
                   cy="24"
                   r="20"
                 />
               </svg>
-              <span ref=${refs.autoPlayCountdownText} class="autoplay-countdown-text"></span>
+              <span ref={refs.autoPlayCountdownText} class="autoplay-countdown-text"></span>
             </div>
           </div>
           <div class="autoplay-info">
             <p class="autoplay-up-next">Next Episode</p>
-            <p ref=${refs.autoPlayTitle} class="autoplay-series-title"></p>
-            <p ref=${refs.autoPlayEpLabel} class="autoplay-ep-label"></p>
+            <p ref={refs.autoPlayTitle} class="autoplay-series-title"></p>
+            <p ref={refs.autoPlayEpLabel} class="autoplay-ep-label"></p>
           </div>
           <div class="autoplay-actions">
             <button
-              ref=${refs.autoPlayBtn}
+              ref={refs.autoPlayBtn}
               class="autoplay-play-btn"
               type="button"
             >
@@ -587,7 +585,7 @@ export function renderPlayerShell({
               Play Now
             </button>
             <button
-              ref=${refs.autoPlayCancel}
+              ref={refs.autoPlayCancel}
               class="autoplay-cancel-btn"
               type="button"
               aria-label="Cancel auto-play"
@@ -600,10 +598,10 @@ export function renderPlayerShell({
         </div>
       </div>
 
-      <div id="resolverOverlay" ref=${refs.resolverOverlay} class="resolver-overlay" hidden>
+      <div id="resolverOverlay" ref={refs.resolverOverlay} class="resolver-overlay" hidden>
         <div
           id="resolverLoader"
-          ref=${refs.resolverLoader}
+          ref={refs.resolverLoader}
           class="seek-loading-indicator resolver-loader"
           role="status"
           aria-live="polite"
@@ -614,29 +612,29 @@ export function renderPlayerShell({
         <div class="resolver-card" role="status" aria-live="polite">
           <h2
             id="resolverTitle"
-            ref=${refs.resolverTitle}
+            ref={refs.resolverTitle}
             class="resolver-title"
             hidden
           ></h2>
-          <p id="resolverStatus" ref=${refs.resolverStatus} class="resolver-status" hidden>
+          <p id="resolverStatus" ref={refs.resolverStatus} class="resolver-status" hidden>
             Unable to resolve this stream.
           </p>
           <p
             id="resolverDetail"
-            ref=${refs.resolverDetail}
+            ref={refs.resolverDetail}
             class="resolver-detail"
             hidden
           ></p>
           <p
             id="resolverCountdown"
-            ref=${refs.resolverCountdown}
+            ref={refs.resolverCountdown}
             class="resolver-countdown"
             hidden
           ></p>
           <div class="resolver-actions">
             <button
               id="resolverRetryButton"
-              ref=${refs.resolverRetryButton}
+              ref={refs.resolverRetryButton}
               class="resolver-action resolver-action-primary"
               type="button"
               hidden
@@ -645,7 +643,7 @@ export function renderPlayerShell({
             </button>
             <button
               id="resolverAlternateButton"
-              ref=${refs.resolverAlternateButton}
+              ref={refs.resolverAlternateButton}
               class="resolver-action"
               type="button"
               hidden
@@ -656,7 +654,7 @@ export function renderPlayerShell({
         </div>
       </div>
 
-      <div id="seekLoadingOverlay" ref=${refs.seekLoadingOverlay} class="seek-loading-overlay" hidden>
+      <div id="seekLoadingOverlay" ref={refs.seekLoadingOverlay} class="seek-loading-overlay" hidden>
         <div
           class="seek-loading-indicator"
           role="status"
@@ -667,5 +665,5 @@ export function renderPlayerShell({
         </div>
       </div>
     </main>
-  </div>`;
+  </div></>;
 }

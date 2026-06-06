@@ -1,4 +1,3 @@
-import html from "solid-js/html";
 import { createSignal, onCleanup, onMount } from "solid-js";
 import {
   PROFILE_AVATAR_STYLE_PREF_KEY,
@@ -484,11 +483,11 @@ export default function SettingsPage() {
 
   // ── Template ────────────────────────────────────────────────────────────
 
-  return html`<div data-solid-page-root="" style="display: contents">
+  return <><div data-solid-page-root="" style="display: contents">
     <div
-      class=${() => "toast" + (toastVisible() ? " toast--visible" : "")}
+      class={"toast" + (toastVisible() ? " toast--visible" : "")}
       id="settingsToast"
-    >${() => toastMessage()}</div>
+    >{toastMessage()}</div>
 
     <header class="settings-topbar">
       <a class="settings-wordmark-link" href="/" aria-label="Back to browse">
@@ -500,8 +499,8 @@ export default function SettingsPage() {
       </a>
       <a class="settings-profile-control" href="/" aria-label="Back to browse">
         <span
-          class=${() => `${computeAvatarPreviewClass()} settings-topbar-avatar`}
-          style=${computeAvatarPreviewStyle}
+          class={`${computeAvatarPreviewClass()} settings-topbar-avatar`}
+          style={computeAvatarPreviewStyle}
           aria-hidden="true"
         ></span>
         <span class="settings-profile-caret" aria-hidden="true"></span>
@@ -527,7 +526,7 @@ export default function SettingsPage() {
       </aside>
 
       <section class="settings-content" aria-labelledby="settingsPageTitle">
-        <form class="settings-form" onSubmit=${handleFormSubmit}>
+        <form class="settings-form" onSubmit={handleFormSubmit}>
           <div class="settings-page-heading">
             <h1 id="settingsPageTitle">Settings</h1>
             <p>Media preferences</p>
@@ -546,27 +545,27 @@ export default function SettingsPage() {
                 <span class="settings-row-icon settings-row-icon--audio" aria-hidden="true"></span>
                 <div class="settings-row-copy">
                   <h3>Default audio</h3>
-                  <p>${() => getLanguageLabel(defaultAudioLang())}</p>
+                  <p>{getLanguageLabel(defaultAudioLang())}</p>
                 </div>
                 <label class="settings-row-control settings-select-field" for="defaultAudioLanguage">
                   <span class="settings-field-label">Language</span>
                   <select
                     id="defaultAudioLanguage"
                     name="defaultAudioLanguage"
-                    onChange=${handleDefaultAudioLangChange}
+                    onChange={handleDefaultAudioLangChange}
                   >
-                    <option value="en" selected=${() => defaultAudioLang() === "en"}>English</option>
-                    <option value="auto" selected=${() => defaultAudioLang() === "auto"}>Auto</option>
-                    <option value="ja" selected=${() => defaultAudioLang() === "ja"}>Japanese</option>
-                    <option value="ko" selected=${() => defaultAudioLang() === "ko"}>Korean</option>
-                    <option value="zh" selected=${() => defaultAudioLang() === "zh"}>Chinese</option>
-                    <option value="fr" selected=${() => defaultAudioLang() === "fr"}>French</option>
-                    <option value="es" selected=${() => defaultAudioLang() === "es"}>Spanish</option>
-                    <option value="de" selected=${() => defaultAudioLang() === "de"}>German</option>
-                    <option value="it" selected=${() => defaultAudioLang() === "it"}>Italian</option>
-                    <option value="pt" selected=${() => defaultAudioLang() === "pt"}>Portuguese</option>
-                    <option value="nl" selected=${() => defaultAudioLang() === "nl"}>Dutch</option>
-                    <option value="ro" selected=${() => defaultAudioLang() === "ro"}>Romanian</option>
+                    <option value="en" selected={defaultAudioLang() === "en"}>English</option>
+                    <option value="auto" selected={defaultAudioLang() === "auto"}>Auto</option>
+                    <option value="ja" selected={defaultAudioLang() === "ja"}>Japanese</option>
+                    <option value="ko" selected={defaultAudioLang() === "ko"}>Korean</option>
+                    <option value="zh" selected={defaultAudioLang() === "zh"}>Chinese</option>
+                    <option value="fr" selected={defaultAudioLang() === "fr"}>French</option>
+                    <option value="es" selected={defaultAudioLang() === "es"}>Spanish</option>
+                    <option value="de" selected={defaultAudioLang() === "de"}>German</option>
+                    <option value="it" selected={defaultAudioLang() === "it"}>Italian</option>
+                    <option value="pt" selected={defaultAudioLang() === "pt"}>Portuguese</option>
+                    <option value="nl" selected={defaultAudioLang() === "nl"}>Dutch</option>
+                    <option value="ro" selected={defaultAudioLang() === "ro"}>Romanian</option>
                   </select>
                 </label>
                 <span class="settings-row-chevron" aria-hidden="true"></span>
@@ -576,7 +575,7 @@ export default function SettingsPage() {
                 <span class="settings-row-icon settings-row-icon--debrid" aria-hidden="true"></span>
                 <div class="settings-row-copy">
                   <h3>Real-Debrid</h3>
-                  <p>${() => getRealDebridStatusLabel(realDebridConfigured(), realDebridMaskedApiKey())}</p>
+                  <p>{getRealDebridStatusLabel(realDebridConfigured(), realDebridMaskedApiKey())}</p>
                 </div>
                 <div class="settings-row-control real-debrid-controls">
                   <label class="settings-text-field" for="realDebridApiKey">
@@ -587,21 +586,21 @@ export default function SettingsPage() {
                       type="password"
                       autocomplete="off"
                       spellcheck="false"
-                      value=${() => realDebridApiKeyInput()}
-                      placeholder=${() => realDebridConfigured() ? "Leave blank to keep current token" : "Paste token"}
-                      onInput=${handleRealDebridApiKeyInput}
+                      value={realDebridApiKeyInput()}
+                      placeholder={realDebridConfigured() ? "Leave blank to keep current token" : "Paste token"}
+                      onInput={handleRealDebridApiKeyInput}
                     />
                   </label>
                   <button
                     class="real-debrid-clear-btn"
                     type="button"
-                    hidden=${() => !realDebridConfigured()}
-                    onClick=${handleClearRealDebridApiKey}
+                    hidden={!realDebridConfigured()}
+                    onClick={handleClearRealDebridApiKey}
                   >
                     Clear
                   </button>
                   <p class="real-debrid-status" role="status" aria-live="polite">
-                    ${() => realDebridStatus()}
+                    {realDebridStatus()}
                   </p>
                 </div>
                 <span class="settings-row-chevron" aria-hidden="true"></span>
@@ -611,11 +610,11 @@ export default function SettingsPage() {
                 <span class="settings-row-icon settings-row-icon--torrent" aria-hidden="true"></span>
                 <div class="settings-row-copy">
                   <h3>Local torrent cache</h3>
-                  <p>${() => getLocalTorrentStatusLabel(localTorrentEnabled())}</p>
+                  <p>{getLocalTorrentStatusLabel(localTorrentEnabled())}</p>
                 </div>
                 <div class="settings-row-control local-torrent-controls">
                   <label
-                    class=${() => "settings-toggle-control" + (canToggleLocalTorrentCache() ? "" : " is-disabled")}
+                    class={"settings-toggle-control" + (canToggleLocalTorrentCache() ? "" : " is-disabled")}
                     for="localTorrentEnabled"
                   >
                     <input
@@ -623,9 +622,9 @@ export default function SettingsPage() {
                       name="localTorrentEnabled"
                       type="checkbox"
                       role="switch"
-                      checked=${() => localTorrentEnabled()}
-                      disabled=${() => !canToggleLocalTorrentCache()}
-                      onChange=${handleLocalTorrentEnabledChange}
+                      checked={localTorrentEnabled()}
+                      disabled={!canToggleLocalTorrentCache()}
+                      onChange={handleLocalTorrentEnabledChange}
                     />
                     <span class="settings-toggle-track" aria-hidden="true">
                       <span class="settings-toggle-thumb"></span>
@@ -651,7 +650,7 @@ export default function SettingsPage() {
                 <span class="settings-row-icon settings-row-icon--subtitles" aria-hidden="true"></span>
                 <div class="settings-row-copy">
                   <h3>Subtitles</h3>
-                  <p>${() => subtitleColor()}</p>
+                  <p>{subtitleColor()}</p>
                 </div>
                 <div class="settings-row-control subtitle-color-controls">
                   <label class="subtitle-color-picker-label" for="subtitleColorInput">Color</label>
@@ -659,17 +658,17 @@ export default function SettingsPage() {
                     id="subtitleColorInput"
                     name="subtitleColor"
                     type="color"
-                    value=${() => subtitleColor()}
-                    onInput=${handleSubtitleColorInput}
+                    value={subtitleColor()}
+                    onInput={handleSubtitleColorInput}
                   />
                   <button
                     class="subtitle-color-reset-btn"
                     type="button"
-                    onClick=${handleSubtitleColorReset}
+                    onClick={handleSubtitleColorReset}
                   >
                     Reset
                   </button>
-                  <p class="subtitle-color-preview" style=${() => `color: ${subtitleColor()}`}>
+                  <p class="subtitle-color-preview" style={`color: ${subtitleColor()}`}>
                     Sample subtitle text
                   </p>
                 </div>
@@ -680,14 +679,14 @@ export default function SettingsPage() {
                 <span class="settings-row-icon settings-row-icon--avatar" aria-hidden="true"></span>
                 <div class="settings-row-copy">
                   <h3>Avatar</h3>
-                  <p>${() => getAvatarChoiceLabel(avatarChoice())}</p>
+                  <p>{getAvatarChoiceLabel(avatarChoice())}</p>
                 </div>
                 <div class="settings-row-control avatar-settings-panel">
                   <div class="avatar-style-preview-wrap">
                     <div
-                      ref=${(el) => { avatarPreviewRef = el; }}
-                      class=${computeAvatarPreviewClass}
-                      style=${computeAvatarPreviewStyle}
+                      ref={(el) => { avatarPreviewRef = el; }}
+                      class={computeAvatarPreviewClass}
+                      style={computeAvatarPreviewStyle}
                       aria-hidden="true"
                     ></div>
                   </div>
@@ -702,8 +701,8 @@ export default function SettingsPage() {
                         type="radio"
                         name="avatarStyle"
                         value="blue"
-                        checked=${() => avatarChoice() === "blue"}
-                        onChange=${() => handleAvatarChoiceChange("blue")}
+                        checked={avatarChoice() === "blue"}
+                        onChange={() => handleAvatarChoiceChange("blue")}
                       />
                       <span class="avatar-style-swatch avatar-style-blue" aria-hidden="true"></span>
                       <span>Blue</span>
@@ -713,8 +712,8 @@ export default function SettingsPage() {
                         type="radio"
                         name="avatarStyle"
                         value="crimson"
-                        checked=${() => avatarChoice() === "crimson"}
-                        onChange=${() => handleAvatarChoiceChange("crimson")}
+                        checked={avatarChoice() === "crimson"}
+                        onChange={() => handleAvatarChoiceChange("crimson")}
                       />
                       <span class="avatar-style-swatch avatar-style-crimson" aria-hidden="true"></span>
                       <span>Crimson</span>
@@ -724,8 +723,8 @@ export default function SettingsPage() {
                         type="radio"
                         name="avatarStyle"
                         value="emerald"
-                        checked=${() => avatarChoice() === "emerald"}
-                        onChange=${() => handleAvatarChoiceChange("emerald")}
+                        checked={avatarChoice() === "emerald"}
+                        onChange={() => handleAvatarChoiceChange("emerald")}
                       />
                       <span class="avatar-style-swatch avatar-style-emerald" aria-hidden="true"></span>
                       <span>Emerald</span>
@@ -735,8 +734,8 @@ export default function SettingsPage() {
                         type="radio"
                         name="avatarStyle"
                         value="violet"
-                        checked=${() => avatarChoice() === "violet"}
-                        onChange=${() => handleAvatarChoiceChange("violet")}
+                        checked={avatarChoice() === "violet"}
+                        onChange={() => handleAvatarChoiceChange("violet")}
                       />
                       <span class="avatar-style-swatch avatar-style-violet" aria-hidden="true"></span>
                       <span>Violet</span>
@@ -746,8 +745,8 @@ export default function SettingsPage() {
                         type="radio"
                         name="avatarStyle"
                         value="amber"
-                        checked=${() => avatarChoice() === "amber"}
-                        onChange=${() => handleAvatarChoiceChange("amber")}
+                        checked={avatarChoice() === "amber"}
+                        onChange={() => handleAvatarChoiceChange("amber")}
                       />
                       <span class="avatar-style-swatch avatar-style-amber" aria-hidden="true"></span>
                       <span>Amber</span>
@@ -757,13 +756,13 @@ export default function SettingsPage() {
                         type="radio"
                         name="avatarStyle"
                         value="custom"
-                        checked=${() => avatarChoice() === "custom"}
-                        onChange=${() => handleAvatarChoiceChange("custom")}
+                        checked={avatarChoice() === "custom"}
+                        onChange={() => handleAvatarChoiceChange("custom")}
                       />
                       <span
-                        ref=${(el) => { avatarCustomThumbRef = el; }}
-                        class=${computeCustomThumbClass}
-                        style=${computeCustomThumbStyle}
+                        ref={(el) => { avatarCustomThumbRef = el; }}
+                        class={computeCustomThumbClass}
+                        style={computeCustomThumbStyle}
                         aria-hidden="true"
                       ></span>
                       <span>Custom</span>
@@ -776,11 +775,11 @@ export default function SettingsPage() {
                       id="avatarImageInput"
                       type="file"
                       accept="image/*"
-                      ref=${(el) => { avatarImageInputRef = el; }}
-                      onChange=${handleAvatarImageChange}
+                      ref={(el) => { avatarImageInputRef = el; }}
+                      onChange={handleAvatarImageChange}
                     />
                     <span class="avatar-upload-hint">
-                      ${() => avatarUploadHint()}
+                      {avatarUploadHint()}
                     </span>
                   </div>
                 </div>
@@ -802,5 +801,5 @@ export default function SettingsPage() {
         </form>
       </section>
     </main>
-  </div>`;
+  </div></>;
 }
