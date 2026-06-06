@@ -28,6 +28,7 @@ import {
   saveWatchParams,
   slugifyTitle,
 } from "../lib/watch-params.js";
+import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
 import {
   CONTINUE_WATCHING_META_KEY,
   DEFAULT_LOCAL_THUMBNAIL,
@@ -1483,10 +1484,10 @@ export default function HomePage() {
   const [libraryDeleteBtnVisible, setLibraryDeleteBtnVisible] = createSignal(true);
 
   const [searchContextMenuVisible, setSearchContextMenuVisible] = createSignal(false);
-  const [searchContextMenuStyle, setSearchContextMenuStyle] = createSignal("");
+  const [searchExploreVisible, setSearchExploreVisible] = createSignal(false);
 
   const [avatarClassName, setAvatarClassName] = createSignal("avatar avatar-style-blue");
-  const [avatarInlineStyle, setAvatarInlineStyle] = createSignal("");
+  const [avatarImageSrc, setAvatarImageSrc] = createSignal("");
 
   const displayName = window.__currentUser?.displayName || "";
 
@@ -1696,12 +1697,12 @@ export default function HomePage() {
 
     if (normalizedMode === "custom" && safeImage) {
       setAvatarClassName("avatar avatar-custom-image");
-      setAvatarInlineStyle(`--avatar-image: url("${safeImage}"); background-image: var(--avatar-image);`);
+      setAvatarImageSrc(safeImage);
       return;
     }
 
     setAvatarClassName(`avatar avatar-style-${normalizedStyle}`);
-    setAvatarInlineStyle("");
+    setAvatarImageSrc("");
   }
 
   // ---- Sync body modal lock ----
@@ -2366,7 +2367,7 @@ export default function HomePage() {
     card.innerHTML = `
       <div class="card-base">
         <img src="${safeThumb}" alt="${safeTitle}" loading="lazy" />
-        <div class="progress"><span style="width: 100%"></span></div>
+        <progress class="progress" value="100" max="100" aria-hidden="true"></progress>
       </div>
       <div class="card-hover">
         <img class="card-hover-image" src="${safeThumb}" alt="${safeTitle} preview" loading="lazy" />
@@ -2517,8 +2518,10 @@ export default function HomePage() {
     const maxTop = Math.max(gutter, viewportHeight - hoverHeight - gutter);
     const top = Math.max(gutter, Math.min(preferredTop, maxTop));
 
-    hover.style.setProperty("--card-hover-left", `${left}px`);
-    hover.style.setProperty("--card-hover-top", `${top}px`);
+    setRuntimeStyleRule(".card.is-hovering .card-hover", {
+      left: `${left}px`,
+      top: `${top}px`,
+    });
   }
 
   function showCardHover(card) {
@@ -2789,7 +2792,7 @@ export default function HomePage() {
     card.innerHTML = `
       <div class="card-base">
         <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
-        <div class="progress"><span style="width: ${progressPercent}%"></span></div>
+        <progress class="progress" value="${progressPercent}" max="100" aria-hidden="true"></progress>
       </div>
       <div class="card-hover">
         <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" />
@@ -2812,7 +2815,7 @@ export default function HomePage() {
             </button>
           </div>
           <div class="card-hover-progress">
-            <div class="progress"><span style="width: ${progressPercent}%"></span></div>
+            <progress class="progress" value="${progressPercent}" max="100" aria-hidden="true"></progress>
             ${progressTimeLabel ? `<span class="progress-time">${progressTimeLabel}</span>` : ""}
           </div>
           <div class="card-hover-meta">
@@ -3008,7 +3011,7 @@ export default function HomePage() {
     card.innerHTML = `
       <div class="card-base">
         <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
-        <div class="progress"><span style="width: 90%"></span></div>
+        <progress class="progress" value="90" max="100" aria-hidden="true"></progress>
       </div>
       <div class="card-hover">
         <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" />
@@ -3157,7 +3160,7 @@ export default function HomePage() {
     card.innerHTML = `
       <div class="card-base">
         <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
-        <div class="progress"><span style="width: 94%"></span></div>
+        <progress class="progress" value="94" max="100" aria-hidden="true"></progress>
       </div>
       <div class="card-hover">
         <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" />
@@ -3924,7 +3927,10 @@ export default function HomePage() {
       const maxTop = Math.max(margin, window.innerHeight - menuRect.height - margin);
       const left = Math.max(margin, Math.min(event.clientX, maxLeft));
       const top = Math.max(margin, Math.min(event.clientY, maxTop));
-      setSearchContextMenuStyle(`left: ${left}px; top: ${top}px;`);
+      setRuntimeStyleRule("#searchContextMenu", {
+        left: `${left}px`,
+        top: `${top}px`,
+      });
     });
   }
 
@@ -3975,6 +3981,7 @@ export default function HomePage() {
     if (searchExploreLinksRef) {
       searchExploreLinksRef.innerHTML = "";
     }
+    setSearchExploreVisible(false);
   }
 
   function setSearchStatus(message, tone = "") {
@@ -3998,6 +4005,7 @@ export default function HomePage() {
 
     if (!suggestions.length) {
       searchExploreLinksRef.innerHTML = "";
+      setSearchExploreVisible(false);
       return;
     }
 
@@ -4007,6 +4015,7 @@ export default function HomePage() {
           `<a class="search-explore-link" href="#" data-search-query="${escapeHtml(value)}">${escapeHtml(value)}</a>`,
       )
       .join("");
+    setSearchExploreVisible(true);
   }
 
   function renderSearchResults(results, rawQuery, imageBase = TMDB_IMAGE_BASE) {
@@ -4954,7 +4963,7 @@ export default function HomePage() {
   });
 
   // ---- Template ----
-  return <><div data-solid-page-root="" style="display: contents">
+  return <><div data-solid-page-root="" class="solid-page-root">
     <div class="page home-page" tabindex="0" ref={(el) => (pageRootRef = el)}>
       <header class="top-nav">
         <div class="nav-left">
@@ -4976,7 +4985,7 @@ export default function HomePage() {
           <div
             id="navSearchBox"
             class={`nav-search-box${searchBoxOpen() ? " is-open" : ""}`}
-            style={showSearchBox() ? "" : "display:none"}
+            hidden={!showSearchBox()}
           >
             <label class="nav-search-field" for="navSearchInput">
               <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -5046,9 +5055,12 @@ export default function HomePage() {
               <div
                 id="accountAvatar"
                 class={avatarClassName()}
-                style={avatarInlineStyle()}
                 aria-hidden="true"
-              ></div>
+              >
+                {avatarImageSrc() ? (
+                  <img class="avatar-custom-image-media" src={avatarImageSrc()} alt="" />
+                ) : null}
+              </div>
             </button>
             <span
               id="accountMenuToggle"
@@ -5071,7 +5083,7 @@ export default function HomePage() {
               ref={(el) => (accountMenuPanelRef = el)}
               class="account-menu-panel"
               role="menu"
-              style={accountMenuOpen() ? "" : "display:none"}
+              hidden={!accountMenuOpen()}
             >
               <a class="account-menu-item account-menu-link" href="/settings" role="menuitem">
                 <span class="account-menu-icon" aria-hidden="true">
@@ -5107,7 +5119,7 @@ export default function HomePage() {
       <section
         id="searchExperience"
         class="search-experience"
-        style={showSearchExperience() ? "" : "display:none"}
+        hidden={!showSearchExperience()}
       >
         <p
           id="searchStatus"
@@ -5122,10 +5134,7 @@ export default function HomePage() {
         <div
           id="searchExplore"
           class="search-explore"
-          style={(() => {
-            if (!searchExploreLinksRef) return "display:none";
-            return searchExploreLinksRef.innerHTML ? "" : "display:none";
-          })()}
+          hidden={!searchExploreVisible()}
         >
           <span class="search-explore-label">More to explore:</span>
           <div
@@ -5145,7 +5154,7 @@ export default function HomePage() {
       <div
         id="liveTabView"
         class="live-tab-view"
-        style={activeView() === "live" && !showSearchExperience() ? "" : "display:none"}
+        hidden={activeView() !== "live" || showSearchExperience()}
       >
         {(() => {
           const Component = LiveChannelsComponent();
@@ -5157,7 +5166,7 @@ export default function HomePage() {
         class={`featured-hero${featuredHeroReady() ? " is-hero-ready" : ""}${heroPreviewActive() ? " is-preview-active" : ""}${heroPreviewPlaying() ? " is-preview-playing" : ""}`}
         ref={(el) => (heroSectionRef = el)}
         aria-label="Featured title"
-        style={activeView() === "home" ? "" : "display:none"}
+        hidden={activeView() !== "home"}
         onPointerEnter={scheduleHeroPreviewPlayback}
       >
         <img
@@ -5218,7 +5227,7 @@ export default function HomePage() {
             class="hero-carousel-dots"
             role="tablist"
             aria-label="Featured titles"
-            style={featuredHeroCandidates().length <= 1 ? "display:none" : ""}
+            hidden={featuredHeroCandidates().length <= 1}
           >
             {featuredHeroCandidates()
                 .slice(0, FEATURED_HERO_CANDIDATE_LIMIT)
@@ -5257,7 +5266,7 @@ export default function HomePage() {
           </h1>
           <p
             class="hero-tagline"
-            style={(getFeaturedHeroTagline(featuredHero()) ? "" : "display:none")}
+            hidden={!getFeaturedHeroTagline(featuredHero())}
           >
             {getFeaturedHeroTagline(featuredHero())}
           </p>
@@ -5314,7 +5323,7 @@ export default function HomePage() {
       <section
         id="continueRow"
         class="continue-row"
-        style={activeView() === "home" && continueRowVisible() ? "" : "display:none"}
+        hidden={activeView() !== "home" || !continueRowVisible()}
       >
         <h2>Continue watching for <span id="continueWatchingName">{displayName || "you"}</span></h2>
         <div
@@ -5325,7 +5334,7 @@ export default function HomePage() {
         <p
           id="continueEmpty"
           class="continue-empty"
-          style={continueEmptyVisible() ? "" : "display:none"}
+          hidden={!continueEmptyVisible()}
         >
           Start a movie and it will appear here.
         </p>
@@ -5334,7 +5343,7 @@ export default function HomePage() {
       <section
         id="popularRow"
         class="popular-row home-popular-row"
-        style={activeView() === "home" && popularRowVisible() ? "" : "display:none"}
+        hidden={activeView() !== "home" || !popularRowVisible()}
       >
         <div class="popular-row-inner">
           <div class="rail-header">
@@ -5351,7 +5360,7 @@ export default function HomePage() {
       <section
         id="trendingRow"
         class="popular-row home-popular-row"
-        style={activeView() === "home" && trendingRowVisible() ? "" : "display:none"}
+        hidden={activeView() !== "home" || !trendingRowVisible()}
       >
         <div class="popular-row-inner">
           <div class="rail-header">
@@ -5368,7 +5377,7 @@ export default function HomePage() {
       <section
         id="nowPlayingRow"
         class="popular-row home-popular-row"
-        style={activeView() === "home" && nowPlayingRowVisible() ? "" : "display:none"}
+        hidden={activeView() !== "home" || !nowPlayingRowVisible()}
       >
         <div class="popular-row-inner">
           <div class="rail-header">
@@ -5385,7 +5394,7 @@ export default function HomePage() {
       <section
         id="topRatedRow"
         class="popular-row home-popular-row"
-        style={activeView() === "home" && topRatedRowVisible() ? "" : "display:none"}
+        hidden={activeView() !== "home" || !topRatedRowVisible()}
       >
         <div class="popular-row-inner">
           <div class="rail-header">
@@ -5403,7 +5412,7 @@ export default function HomePage() {
     <section
       id="myListRow"
       class="popular-row"
-      style={activeView() === "home" && myListRowVisible() ? "" : "display:none"}
+      hidden={activeView() !== "home" || !myListRowVisible()}
     >
       <div class="popular-row-inner">
         <h2>My List</h2>
@@ -5415,7 +5424,7 @@ export default function HomePage() {
         <p
           id="myListEmpty"
           class="continue-empty"
-          style={myListEmptyVisible() ? "" : "display:none"}
+          hidden={!myListEmptyVisible()}
         >
           Add titles using the plus icon.
         </p>
@@ -5425,7 +5434,7 @@ export default function HomePage() {
     <footer
       class="member-footer home-member-footer"
       aria-label="Netflix footer"
-      style={activeView() === "home" ? "" : "display:none"}
+      hidden={activeView() !== "home"}
     >
       <div class="member-footer-social">
         <span aria-hidden="true">
@@ -5471,7 +5480,7 @@ export default function HomePage() {
     <div
       id="detailsModal"
       class={`details-modal${detailsModalOpen() ? " is-open" : ""}`}
-      style={detailsModalVisible() ? "" : "display:none"}
+      hidden={!detailsModalVisible()}
       onClick={handleDetailsBackdropClick}
     >
       <div class="details-backdrop" data-close-modal></div>
@@ -5583,7 +5592,7 @@ export default function HomePage() {
         <section
           id="detailsMoreSection"
           class="details-more"
-          style={detailsMoreVisible() ? "" : "display:none"}
+          hidden={!detailsMoreVisible()}
         >
           <h4>More Like This</h4>
           <div
@@ -5598,7 +5607,7 @@ export default function HomePage() {
     <div
       id="libraryEditModal"
       class={`library-edit-modal${libraryEditModalOpen() ? " is-open" : ""}`}
-      style={libraryEditModalVisible() ? "" : "display:none"}
+      hidden={!libraryEditModalVisible()}
       onClick={handleLibraryEditBackdropClick}
     >
       <div class="library-edit-backdrop" data-close-library-edit></div>
@@ -5639,7 +5648,7 @@ export default function HomePage() {
             id="libraryAddEpisodeBtn"
             class="library-edit-btn"
             type="button"
-            style={libraryAddEpisodeVisible() ? "" : "display:none"}
+            hidden={!libraryAddEpisodeVisible()}
             onClick={handleLibraryAddEpisode}
           >
             {libraryAddEpisodeBtnText()}
@@ -5648,7 +5657,7 @@ export default function HomePage() {
             id="librarySaveBtn"
             class="library-edit-btn library-edit-btn--primary"
             type="button"
-            style={librarySaveBtnVisible() ? "" : "display:none"}
+            hidden={!librarySaveBtnVisible()}
             onClick={handleLibrarySave}
           >
             Save Changes
@@ -5657,7 +5666,7 @@ export default function HomePage() {
             id="libraryDeleteBtn"
             class="library-edit-btn library-edit-btn--danger"
             type="button"
-            style={libraryDeleteBtnVisible() ? "" : "display:none"}
+            hidden={!libraryDeleteBtnVisible()}
             onClick={handleLibraryDelete}
           >
             Delete Title
@@ -5682,10 +5691,7 @@ export default function HomePage() {
       id="searchContextMenu"
       ref={(el) => (searchContextMenuRef = el)}
       class="search-context-menu"
-      style={(() => {
-        if (!searchContextMenuVisible()) return "display:none";
-        return searchContextMenuStyle();
-      })()}
+      hidden={!searchContextMenuVisible()}
     >
       <button
         id="searchContextSaveButton"

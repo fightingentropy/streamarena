@@ -1,4 +1,4 @@
-import { createSignal, onCleanup, onMount } from "solid-js";
+import { createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import {
   PROFILE_AVATAR_STYLE_PREF_KEY,
   PROFILE_AVATAR_MODE_PREF_KEY,
@@ -18,6 +18,7 @@ import {
   normalizeDefaultAudioLanguage,
   normalizeSubtitleColor,
 } from "../lib/preferences.js";
+import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
 const DEFAULT_AVATAR_STYLE = "blue";
@@ -268,8 +269,11 @@ export default function SettingsPage() {
 
   // Refs for imperative DOM access
   let avatarImageInputRef;
-  let avatarPreviewRef;
-  let avatarCustomThumbRef;
+  createEffect(() => {
+    setRuntimeStyleRule(".subtitle-color-preview", {
+      color: normalizeSubtitleColor(subtitleColor()),
+    });
+  });
 
   // ── Init ────────────────────────────────────────────────────────────────
   clearDeprecatedSourcePreferenceStorage();
@@ -303,13 +307,10 @@ export default function SettingsPage() {
     return `avatar-style-preview avatar-style-${style}`;
   }
 
-  function computeAvatarPreviewStyle() {
-    const choice = avatarChoice();
-    const customImg = sanitizeAvatarImageData(pendingCustomImage());
-    if (choice === "custom" && customImg) {
-      return `--avatar-image: url("${customImg}"); background-image: var(--avatar-image)`;
-    }
-    return "";
+  function computeAvatarPreviewImageSrc() {
+    return avatarChoice() === "custom"
+      ? sanitizeAvatarImageData(pendingCustomImage())
+      : "";
   }
 
   function computeCustomThumbClass() {
@@ -320,12 +321,8 @@ export default function SettingsPage() {
     return "avatar-style-swatch avatar-style-custom-thumb";
   }
 
-  function computeCustomThumbStyle() {
-    const customImg = sanitizeAvatarImageData(pendingCustomImage());
-    if (customImg) {
-      return `--avatar-image: url("${customImg}"); background-image: var(--avatar-image)`;
-    }
-    return "";
+  function computeCustomThumbImageSrc() {
+    return sanitizeAvatarImageData(pendingCustomImage());
   }
 
   // ── Event handlers ──────────────────────────────────────────────────────
@@ -483,7 +480,7 @@ export default function SettingsPage() {
 
   // ── Template ────────────────────────────────────────────────────────────
 
-  return <><div data-solid-page-root="" style="display: contents">
+  return <><div data-solid-page-root="" class="solid-page-root">
     <div
       class={"toast" + (toastVisible() ? " toast--visible" : "")}
       id="settingsToast"
@@ -500,9 +497,12 @@ export default function SettingsPage() {
       <a class="settings-profile-control" href="/" aria-label="Back to browse">
         <span
           class={`${computeAvatarPreviewClass()} settings-topbar-avatar`}
-          style={computeAvatarPreviewStyle}
           aria-hidden="true"
-        ></span>
+        >
+          {computeAvatarPreviewImageSrc() ? (
+            <img class="avatar-custom-image-media" src={computeAvatarPreviewImageSrc()} alt="" />
+          ) : null}
+        </span>
         <span class="settings-profile-caret" aria-hidden="true"></span>
       </a>
     </header>
@@ -668,7 +668,7 @@ export default function SettingsPage() {
                   >
                     Reset
                   </button>
-                  <p class="subtitle-color-preview" style={`color: ${subtitleColor()}`}>
+                  <p class="subtitle-color-preview">
                     Sample subtitle text
                   </p>
                 </div>
@@ -684,11 +684,13 @@ export default function SettingsPage() {
                 <div class="settings-row-control avatar-settings-panel">
                   <div class="avatar-style-preview-wrap">
                     <div
-                      ref={(el) => { avatarPreviewRef = el; }}
                       class={computeAvatarPreviewClass}
-                      style={computeAvatarPreviewStyle}
                       aria-hidden="true"
-                    ></div>
+                    >
+                      {computeAvatarPreviewImageSrc() ? (
+                        <img class="avatar-custom-image-media" src={computeAvatarPreviewImageSrc()} alt="" />
+                      ) : null}
+                    </div>
                   </div>
 
                   <div
@@ -760,11 +762,13 @@ export default function SettingsPage() {
                         onChange={() => handleAvatarChoiceChange("custom")}
                       />
                       <span
-                        ref={(el) => { avatarCustomThumbRef = el; }}
                         class={computeCustomThumbClass}
-                        style={computeCustomThumbStyle}
                         aria-hidden="true"
-                      ></span>
+                      >
+                        {computeCustomThumbImageSrc() ? (
+                          <img class="avatar-custom-image-media" src={computeCustomThumbImageSrc()} alt="" />
+                        ) : null}
+                      </span>
                       <span>Custom</span>
                     </label>
                   </div>

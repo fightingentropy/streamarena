@@ -26,12 +26,10 @@ import {
 } from "../shared.js";
 import {
   supportedAudioLangs,
-  DEFAULT_SUBTITLE_COLOR,
   DEFAULT_STREAM_QUALITY_PREFERENCE,
   DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
   SUBTITLE_COLOR_PREF_KEY,
   normalizeDefaultAudioLanguage,
-  normalizeSubtitleColor,
 } from "../lib/preferences.js";
 import { LIVE_CHANNEL_PLAYBACK_FALLBACKS } from "../lib/live-channels.js";
 import {
@@ -51,6 +49,7 @@ import {
 } from "../player/playback-routing.js";
 import { attachSeekInteractions } from "../player/seek-interactions.js";
 import { createPlaybackBenchmarkApi } from "../player/playback-benchmark-api.js";
+import { applySubtitleCueColor } from "../player/subtitle-style.js";
 import {
   createRemuxRouting,
   normalizeAudioSyncMs,
@@ -61,6 +60,7 @@ import {
   isFullscreenActive,
   toggleFullscreenMode as togglePlayerFullscreenMode,
 } from "../player/fullscreen.js";
+import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
 import { renderPlayerShell } from "../player/player-shell-template.jsx";
 import {
   buildWatchUrl,
@@ -773,58 +773,6 @@ function shouldIncludePreferredQualityInUrl(value) {
     value !== "auto" &&
     value !== DEFAULT_STREAM_QUALITY_PREFERENCE,
   );
-}
-
-function getStoredSubtitleColorPreference() {
-  try {
-    return normalizeSubtitleColor(
-      localStorage.getItem(SUBTITLE_COLOR_PREF_KEY),
-    );
-  } catch {
-    return DEFAULT_SUBTITLE_COLOR;
-  }
-}
-
-function applySubtitleCueColor(
-  colorValue = getStoredSubtitleColorPreference(),
-) {
-  const normalizedColor = normalizeSubtitleColor(colorValue);
-  let styleElement = document.getElementById("subtitleCueColorStyle");
-  if (!(styleElement instanceof HTMLStyleElement)) {
-    styleElement = document.createElement("style");
-    styleElement.id = "subtitleCueColorStyle";
-    document.head.appendChild(styleElement);
-  }
-
-  styleElement.textContent = `
-    #playerVideo::cue {
-      color: ${normalizedColor};
-      background: transparent !important;
-      background-color: transparent !important;
-      box-shadow: none !important;
-      outline: none !important;
-      text-shadow: none !important;
-    }
-    #playerVideo::cue(*) {
-      background: transparent !important;
-      background-color: transparent !important;
-      text-shadow: none !important;
-    }
-    #playerVideo::-webkit-media-text-track-display,
-    #playerVideo::-webkit-media-text-track-container,
-    #playerVideo::-webkit-media-text-track-background,
-    #playerVideo::-webkit-media-text-track-region,
-    #playerVideo::-webkit-media-text-track-display-backdrop,
-    #playerVideo::cue-region {
-      background: transparent !important;
-      background-color: transparent !important;
-    }
-    #playerVideo::-webkit-media-text-track-cue {
-      background: transparent !important;
-      background-color: transparent !important;
-      text-shadow: none !important;
-    }
-  `;
 }
 
 function isRecognizedAudioLang(value) {
@@ -1945,7 +1893,6 @@ function showResolver(
   }
   if (resolverLoader) {
     resolverLoader.hidden = shouldShowStatus;
-    resolverLoader.style.display = shouldShowStatus ? "none" : "";
   }
   hideSeekLoadingIndicator();
   resolverOverlay.hidden = false;
@@ -1970,7 +1917,6 @@ function hideResolver() {
   resolverOverlay.classList.remove("has-actions");
   if (resolverLoader) {
     resolverLoader.hidden = false;
-    resolverLoader.style.display = "";
   }
   if (resolverStatus) {
     resolverStatus.hidden = true;
@@ -2103,7 +2049,6 @@ function showResolverError(
   }
   if (resolverLoader) {
     resolverLoader.hidden = true;
-    resolverLoader.style.display = "none";
   }
   if (resolverStatus) {
     resolverStatus.hidden = false;
@@ -5169,17 +5114,14 @@ function syncEpisodeProgressIndicators() {
     .querySelectorAll(".episode-preview-item[data-episode-index]")
     .forEach((item) => {
       const progress = item.querySelector(".episode-preview-progress");
-      if (!(progress instanceof HTMLElement)) {
+      if (!(progress instanceof HTMLProgressElement)) {
         return;
       }
 
       const ratio = getSeriesEpisodeProgressRatio(
         Number(item.dataset.episodeIndex || 0),
       );
-      progress.style.setProperty(
-        "--episode-progress",
-        `${Math.round(ratio * 1000) / 10}%`,
-      );
+      progress.value = Math.round(ratio * 1000) / 10;
     });
 }
 
@@ -5331,8 +5273,10 @@ function renderSeriesEpisodePreview() {
         : "Unavailable until MP4 source is added.";
     }
 
-    const progress = document.createElement("span");
+    const progress = document.createElement("progress");
     progress.className = "episode-preview-progress";
+    progress.max = 100;
+    progress.value = 0;
     progress.setAttribute("aria-hidden", "true");
 
     if (thumb) {
@@ -5500,7 +5444,7 @@ function showAutoPlayCard() {
     autoPlayCountdownText.textContent = "";
   }
   if (autoPlayProgressRing) {
-    autoPlayProgressRing.style.strokeDashoffset = "0";
+    autoPlayProgressRing.setAttribute("stroke-dashoffset", "0");
   }
 
   autoPlayOverlay.hidden = false;
@@ -5525,8 +5469,8 @@ function startAutoPlayCountdown() {
 
   const circumference = 2 * Math.PI * 20;
   if (autoPlayProgressRing) {
-    autoPlayProgressRing.style.strokeDasharray = `${circumference}`;
-    autoPlayProgressRing.style.strokeDashoffset = "0";
+    autoPlayProgressRing.setAttribute("stroke-dasharray", `${circumference}`);
+    autoPlayProgressRing.setAttribute("stroke-dashoffset", "0");
   }
 
   function tick() {
@@ -5541,7 +5485,7 @@ function startAutoPlayCountdown() {
     }
     if (autoPlayProgressRing) {
       const progress = 1 - autoPlayCountdownSeconds / AUTO_PLAY_COUNTDOWN_DURATION;
-      autoPlayProgressRing.style.strokeDashoffset = String(circumference * progress);
+      autoPlayProgressRing.setAttribute("stroke-dashoffset", String(circumference * progress));
     }
     autoPlayCountdownSeconds--;
   }
@@ -5615,7 +5559,9 @@ function syncVolumeSliderState() {
 
   const volumePercent = Math.round(visibleVolume * 100);
   volumeSlider.value = String(volumePercent);
-  volumeSlider.style.setProperty("--volume-percent", `${volumePercent}%`);
+  setRuntimeStyleRule(".volume-slider", {
+    background: `linear-gradient(to right, #ff1408 0%, #ff1408 ${volumePercent}%, rgba(255, 255, 255, 0.08) ${volumePercent}%, rgba(255, 255, 255, 0.08) 100%)`,
+  });
 }
 
 function syncMuteState() {
@@ -7133,7 +7079,9 @@ function paintSeekProgress(progressValue, bufferedValue = null) {
   );
   const playedPercent = (clamped / max) * 100;
   const bufferedPercent = (bufferedClamped / max) * 100;
-  seekBar.style.background = `linear-gradient(to right, var(--ui-accent) 0%, var(--ui-accent) ${playedPercent}%, var(--ui-buffered) ${playedPercent}%, var(--ui-buffered) ${bufferedPercent}%, var(--ui-line) ${bufferedPercent}%, var(--ui-line) 100%)`;
+  setRuntimeStyleRule(".seek-bar", {
+    background: `linear-gradient(to right, var(--ui-accent) 0%, var(--ui-accent) ${playedPercent}%, var(--ui-buffered) ${playedPercent}%, var(--ui-buffered) ${bufferedPercent}%, var(--ui-line) ${bufferedPercent}%, var(--ui-line) 100%)`,
+  });
 }
 
 function syncDurationText(elapsedSeconds = getEffectiveCurrentTime()) {

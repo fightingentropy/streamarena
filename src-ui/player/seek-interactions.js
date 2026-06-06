@@ -1,3 +1,5 @@
+import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
+
 const SEEK_PREVIEW_WIDTH = 160;
 const SEEK_PREVIEW_HEIGHT = 90;
 const SEEK_PREVIEW_SEEK_THROTTLE_MS = 220;
@@ -105,8 +107,7 @@ export function attachSeekInteractions({
     seekPreviewVideo.crossOrigin = video.crossOrigin || "anonymous";
     seekPreviewVideo.setAttribute("aria-hidden", "true");
     seekPreviewVideo.tabIndex = -1;
-    seekPreviewVideo.style.cssText =
-      "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;";
+    seekPreviewVideo.className = "seek-preview-video-probe";
     seekPreviewVideo.addEventListener("seeked", handleSeekPreviewFrameReady);
     seekPreviewVideo.addEventListener(
       "loadedmetadata",
@@ -374,7 +375,7 @@ export function attachSeekInteractions({
     const minLeft = previewWidth / 2;
     const maxLeft = rect.width - previewWidth / 2;
     const left = Math.max(minLeft, Math.min(x, maxLeft));
-    seekPreview.style.left = `${left}px`;
+    setRuntimeStyleRule("#seekPreview", { left: `${left}px` });
     seekPreview.hidden = false;
 
     syncPreviewVideoSource();

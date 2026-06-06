@@ -23,6 +23,10 @@
     display: none !important;
 }
 
+.solid-page-root {
+    display: contents;
+}
+
 html,
 body {
     margin: 0;
@@ -55,6 +59,16 @@ body {
     height: 100%;
     object-fit: contain;
     background: #000;
+}
+
+.seek-preview-video-probe {
+    position: fixed;
+    left: -9999px;
+    top: -9999px;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
 }
 
 .live-embed-frame {
@@ -383,6 +397,21 @@ body {
         -1px  1px 0 rgba(0, 0, 0, 0.85),
          1px  1px 0 rgba(0, 0, 0, 0.85),
          0 0 6px rgba(0, 0, 0, 0.5);
+}
+
+#playerVideo::cue {
+    color: #ffffff;
+    background: transparent !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
+    outline: none !important;
+    text-shadow: none !important;
+}
+
+#playerVideo::cue(*) {
+    background: transparent !important;
+    background-color: transparent !important;
+    text-shadow: none !important;
 }
 
 .player-shell.controls-hidden .custom-subtitle-overlay {
@@ -820,7 +849,6 @@ body {
 }
 
 .volume-slider {
-    --volume-percent: 100%;
     appearance: none;
     -webkit-appearance: none;
     width: 194px;
@@ -832,8 +860,8 @@ body {
     background: linear-gradient(
         to right,
         #ff1408 0%,
-        #ff1408 var(--volume-percent),
-        rgba(255, 255, 255, 0.08) var(--volume-percent),
+        #ff1408 100%,
+        rgba(255, 255, 255, 0.08) 100%,
         rgba(255, 255, 255, 0.08) 100%
     );
     cursor: ns-resize;
@@ -1284,18 +1312,30 @@ body {
 }
 
 .episode-preview-progress {
+    appearance: none;
+    border: 0;
     grid-area: progress;
     width: min(220px, 18vw);
     height: 3px;
     justify-self: end;
     align-self: center;
     border-radius: 999px;
-    background:
-        linear-gradient(
-            90deg,
-            var(--ui-accent) 0 var(--episode-progress, 0%),
-            rgba(255, 255, 255, 0.24) var(--episode-progress, 0%) 100%
-        );
+    background: rgba(255, 255, 255, 0.24);
+}
+
+.episode-preview-progress::-webkit-progress-bar {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.24);
+}
+
+.episode-preview-progress::-webkit-progress-value {
+    border-radius: 999px;
+    background: var(--ui-accent);
+}
+
+.episode-preview-progress::-moz-progress-bar {
+    border-radius: 999px;
+    background: var(--ui-accent);
 }
 
 .episode-preview-item.is-previewed .episode-preview-progress {

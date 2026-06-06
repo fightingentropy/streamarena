@@ -30,6 +30,10 @@
   display: none !important;
 }
 
+.solid-page-root {
+  display: contents;
+}
+
 html,
 body {
   margin: 0;

@@ -4,7 +4,7 @@ export function renderPlayerShell({
   liveIframeAllowPolicy,
   refs,
 }) {
-  return <><div data-solid-page-root="" style="display: contents">
+  return <><div data-solid-page-root="" class="solid-page-root">
     <main class="player-shell" tabindex="0" ref={refs.playerShell}>
       <video
         id="playerVideo"

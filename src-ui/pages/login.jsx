@@ -140,7 +140,7 @@ export default function LoginPage() {
     }
   }
 
-  return <><div data-solid-page-root="" style="display: contents">
+  return <><div data-solid-page-root="" class="solid-page-root">
     <main class="login-page">
       <div class="login-card">
         <a href="/" class="login-logo">
@@ -150,7 +150,7 @@ export default function LoginPage() {
         <form class="login-form" onSubmit={handleSubmit}>
           <div
             class="login-field"
-            style={(isSignUp() ? "" : "display:none")}
+            hidden={!isSignUp()}
           >
             <label for="displayName">Display name</label>
             <input
@@ -173,7 +173,7 @@ export default function LoginPage() {
           </div>
           <div
             class="login-field"
-            style={(isSignUp() ? "" : "display:none")}
+            hidden={!isSignUp()}
           >
             <label for="inviteCode">Invite code</label>
             <input
@@ -195,7 +195,7 @@ export default function LoginPage() {
           </div>
           <p
             class="login-error"
-            style={(error() ? "" : "display:none")}
+            hidden={!error()}
           >
             {error()}
           </p>
