@@ -1,4 +1,3 @@
-import html from "solid-js/html";
 import { createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import {
   addCurrentReturnToParam,
@@ -275,13 +274,13 @@ function sportsIcon(sportName) {
   const iconPath = isBasketball
     ? "M12 2.4a9.6 9.6 0 1 0 0 19.2 9.6 9.6 0 0 0 0-19.2Zm0 2.1c.9 0 1.75.17 2.54.49a13.7 13.7 0 0 0-1.5 3.28 14.6 14.6 0 0 1-3.77-.9A7.5 7.5 0 0 1 12 4.5Zm-4.28 4.4a16.7 16.7 0 0 0 4.9 1.34 15.7 15.7 0 0 0-.2 3.52 16.1 16.1 0 0 0-6.94 2.62A7.46 7.46 0 0 1 7.72 8.9Zm-.92 9.16a13.9 13.9 0 0 1 5.94-2.25 13.6 13.6 0 0 0 1.77 3.68A7.47 7.47 0 0 1 6.8 18.06Zm9.55.1a11.6 11.6 0 0 1-1.56-2.58 16 16 0 0 1 3.76.66 7.54 7.54 0 0 1-2.2 1.92Zm3.35-3.8a18.3 18.3 0 0 0-5.5-.9 13.2 13.2 0 0 1 .21-3.05 16 16 0 0 0 4.27-.4 7.45 7.45 0 0 1 1.02 4.35Zm-2.36-6.18a13.3 13.3 0 0 1-2.32.2c.33-.83.75-1.62 1.26-2.36.38.28.73.6 1.06.96Z"
     : "M12 2.4a9.6 9.6 0 1 0 0 19.2 9.6 9.6 0 0 0 0-19.2Zm0 4.1 3.1 2.25-1.18 3.65h-3.84L8.9 8.75 12 6.5Zm-5.68 5.35 2.98 2.18-.9 3.24a7 7 0 0 1-3.1-4.92l1.02-.5Zm3.22 6.76.86-3.08h3.2l.86 3.08a7.05 7.05 0 0 1-4.92 0Zm6.06-1.34-.9-3.24 2.98-2.18 1.02.5a7 7 0 0 1-3.1 4.92Z";
-  return html`
+  return <>
     <span class="sports-ball-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24">
-        <path d=${iconPath} />
+        <path d={iconPath} />
       </svg>
     </span>
-  `;
+  </>;
 }
 
 function getSportsPlayerEpisodeLabel(match) {
@@ -339,31 +338,31 @@ function openSportsPlayer(match, config) {
 
 function renderPlayButton(match, now, config) {
   const live = isLive(match, now);
-  const disabledIcon = html`
+  const disabledIcon = <>
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>
-  `;
+  </>;
 
   if (!match.streams.length) {
-    return html`<span class="sports-play-button is-disabled" aria-label="No source page">
-      ${disabledIcon}
-    </span>`;
+    return <><span class="sports-play-button is-disabled" aria-label="No source page">
+      {disabledIcon}
+    </span></>;
   }
   if (!live) {
-    return html`<span class="sports-play-button is-disabled" aria-label="Match is not live" title="Available when live">
-      ${disabledIcon}
-    </span>`;
+    return <><span class="sports-play-button is-disabled" aria-label="Match is not live" title="Available when live">
+      {disabledIcon}
+    </span></>;
   }
-  return html`
+  return <>
     <button
       class="sports-play-button"
       type="button"
-      onClick=${() => openSportsPlayer(match, config)}
-      aria-label=${`Play ${match.title} in Netflix`}
+      onClick={() => openSportsPlayer(match, config)}
+      aria-label={`Play ${match.title} in Netflix`}
       title="Play in Netflix"
     >
-      ${disabledIcon}
+      {disabledIcon}
     </button>
-  `;
+  </>;
 }
 
 function renderMatchRow(match, now, config) {
@@ -371,27 +370,27 @@ function renderMatchRow(match, now, config) {
   const linksLabel = `${match.linkCount} ${match.linkCount === 1 ? "link" : "links"}`;
   const leagueLabel = getMatchDisplayLeague(match);
 
-  return html`
-    <article class=${`sports-match-row${live ? " is-live" : ""}`}>
+  return <>
+    <article class={`sports-match-row${live ? " is-live" : ""}`}>
       <div class="sports-match-main">
-        ${sportsIcon(config.sportName)}
+        {sportsIcon(config.sportName)}
         <div class="sports-match-copy">
-          <h3>${match.title}</h3>
+          <h3>{match.title}</h3>
           <p>
-            <span class="sports-sport">${match.sport}</span>
-            ${leagueLabel
-              ? html`<span aria-hidden="true">•</span><span>${leagueLabel}</span>`
+            <span class="sports-sport">{match.sport}</span>
+            {leagueLabel
+              ? <><span aria-hidden="true">•</span><span>{leagueLabel}</span></>
               : ""}
             <span aria-hidden="true">•</span>
-            <span>${linksLabel}</span>
-            ${live ? html`<span class="sports-live-pill">Live</span>` : ""}
+            <span>{linksLabel}</span>
+            {live ? <><span class="sports-live-pill">Live</span></> : ""}
           </p>
         </div>
       </div>
-      <div class="sports-time-pill">${formatTime(match.startTimestamp)}</div>
-      ${renderPlayButton(match, now, config)}
+      <div class="sports-time-pill">{formatTime(match.startTimestamp)}</div>
+      {renderPlayButton(match, now, config)}
     </article>
-  `;
+  </>;
 }
 
 export default function SportsScheduleView(options = {}) {
@@ -521,29 +520,29 @@ export default function SportsScheduleView(options = {}) {
 
   function renderDateTab(dateKey) {
     const active = selectedDate() === dateKey;
-    return html`
+    return <>
       <button
-        class=${`sports-date-tab${active ? " is-active" : ""}`}
+        class={`sports-date-tab${active ? " is-active" : ""}`}
         type="button"
-        onClick=${() => setSelectedDate(dateKey)}
+        onClick={() => setSelectedDate(dateKey)}
       >
-        <span>${formatTabWeekday(dateKey)}</span>
-        <strong>${formatTabDate(dateKey)}</strong>
+        <span>{formatTabWeekday(dateKey)}</span>
+        <strong>{formatTabDate(dateKey)}</strong>
       </button>
-    `;
+    </>;
   }
 
   function renderGroupedMatches() {
     const activeConfig = config();
     const items = visibleMatches();
     if (!items.length) {
-      return html`
+      return <>
         <div class="sports-empty-state">
-          ${filterMode() === "live"
+          {filterMode() === "live"
             ? `No ${activeConfig.sportName.toLowerCase()} matches are live for this date.`
             : `No upcoming ${activeConfig.sportName.toLowerCase()} matches for this date.`}
         </div>
-      `;
+      </>;
     }
 
     if (groupMode() !== "league") {
@@ -556,12 +555,12 @@ export default function SportsScheduleView(options = {}) {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(match);
     });
-    return Array.from(groups.entries()).map(([league, leagueMatches]) => html`
+    return Array.from(groups.entries()).map(([league, leagueMatches]) => <>
       <section class="sports-league-group">
-        <h3>${league}</h3>
-        ${leagueMatches.map((match) => renderMatchRow(match, now(), activeConfig))}
+        <h3>{league}</h3>
+        {leagueMatches.map((match) => renderMatchRow(match, now(), activeConfig))}
       </section>
-    `);
+    </>);
   }
 
   onMount(() => {
@@ -574,38 +573,38 @@ export default function SportsScheduleView(options = {}) {
     if (intervalId) window.clearInterval(intervalId);
   });
 
-  return html`
+  return <>
     <main class="sports-main">
       <nav class="sports-switcher" aria-label="Sports">
-        ${SPORT_TABS.map((sport) => html`
+        {SPORT_TABS.map((sport) => <>
           <button
             type="button"
-            class=${() => (selectedSport() === sport.id ? "is-active" : "")}
-            aria-pressed=${() => (selectedSport() === sport.id ? "true" : "false")}
-            onClick=${() => switchSport(sport.id)}
-          >${sport.label}</button>
-        `)}
+            class={(selectedSport() === sport.id ? "is-active" : "")}
+            aria-pressed={(selectedSport() === sport.id ? "true" : "false")}
+            onClick={() => switchSport(sport.id)}
+          >{sport.label}</button>
+        </>)}
       </nav>
-      <section class="sports-board" aria-label=${() => `${config().sportName} schedule`}>
+      <section class="sports-board" aria-label={`${config().sportName} schedule`}>
         <div class="sports-date-strip">
           <button
             class="sports-date-arrow"
             type="button"
             aria-label="Previous date"
-            disabled=${() => dates().indexOf(selectedDate()) <= 0}
-            onClick=${() => moveSelectedDate(-1)}
+            disabled={dates().indexOf(selectedDate()) <= 0}
+            onClick={() => moveSelectedDate(-1)}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
           </button>
           <div class="sports-date-tabs">
-            ${() => dates().map(renderDateTab)}
+            {dates().map(renderDateTab)}
           </div>
           <button
             class="sports-date-arrow"
             type="button"
             aria-label="Next date"
-            disabled=${() => dates().indexOf(selectedDate()) >= dates().length - 1}
-            onClick=${() => moveSelectedDate(1)}
+            disabled={dates().indexOf(selectedDate()) >= dates().length - 1}
+            onClick={() => moveSelectedDate(1)}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
           </button>
@@ -614,28 +613,28 @@ export default function SportsScheduleView(options = {}) {
         <div class="sports-toolbar">
           <div class="sports-toolbar-left">
             <h2>Event</h2>
-            <span class="sports-count-pill">All: ${() => selectedStats().all}</span>
-            <span class="sports-count-pill">Live: <strong>${() => selectedStats().live}</strong></span>
+            <span class="sports-count-pill">All: {selectedStats().all}</span>
+            <span class="sports-count-pill">Live: <strong>{selectedStats().live}</strong></span>
             <span class="sports-clock-pill">
-              ${() => `${formatClock(now())} • ${timeZone}`}
+              {`${formatClock(now())} • ${timeZone}`}
             </span>
             <div class="sports-segmented" aria-label="Schedule filter">
               <button
                 type="button"
-                class=${() => (filterMode() === "all" ? "is-active" : "")}
-                onClick=${() => setFilterMode("all")}
+                class={(filterMode() === "all" ? "is-active" : "")}
+                onClick={() => setFilterMode("all")}
               >All</button>
               <button
                 type="button"
-                class=${() => (filterMode() === "live" ? "is-active" : "")}
-                onClick=${() => setFilterMode("live")}
+                class={(filterMode() === "live" ? "is-active" : "")}
+                onClick={() => setFilterMode("live")}
               >Live</button>
             </div>
             <select
               class="sports-group-select"
               aria-label="Group matches"
-              value=${() => groupMode()}
-              onInput=${(event) => setGroupMode(event.currentTarget.value)}
+              value={groupMode()}
+              onInput={(event) => setGroupMode(event.currentTarget.value)}
             >
               <option value="match">By match</option>
               <option value="league">By league</option>
@@ -647,28 +646,27 @@ export default function SportsScheduleView(options = {}) {
           </div>
         </div>
 
-        ${() =>
-          status() === "loading"
-            ? html`<div class="sports-loading-state">Fetching ${config().sportName.toLowerCase()} matches...</div>`
+        {status() === "loading"
+            ? <><div class="sports-loading-state">Fetching {config().sportName.toLowerCase()} matches...</div></>
             : status() === "error"
-              ? html`
+              ? <>
                 <div class="sports-error-state">
-                  <p>${errorText()}</p>
-                  <button type="button" onClick=${loadMatches}>Retry</button>
+                  <p>{errorText()}</p>
+                  <button type="button" onClick={loadMatches}>Retry</button>
                 </div>
-              `
-              : html`<div class="sports-match-list">${renderGroupedMatches()}</div>`}
+              </>
+              : <><div class="sports-match-list">{renderGroupedMatches()}</div></>}
 
         <div class="sports-source-row">
           <span>
-            ${() => {
+            {(() => {
               if (!fetchedAt()) return "";
               return `Updated ${formatTime(fetchedAt())}`;
-            }}
+            })()}
           </span>
-          <button type="button" onClick=${loadMatches}>Refresh</button>
+          <button type="button" onClick={loadMatches}>Refresh</button>
         </div>
       </section>
     </main>
-  `;
+  </>;
 }

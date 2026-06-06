@@ -5,8 +5,8 @@ import { basename, join, resolve } from "node:path";
 const rootDir = resolve(new URL("..", import.meta.url).pathname);
 const maxSourceLines = {
   "src-ui/pages/player.js": 10_500,
-  "src-ui/pages/home.js": 6_000,
-  "src-ui/pages/settings.js": 1_600,
+  "src-ui/pages/home.jsx": 6_000,
+  "src-ui/pages/settings.jsx": 1_600,
 };
 const defaultPageLineLimit = 1_500;
 const maxJsBundleBytes = 700 * 1024;
@@ -37,6 +37,10 @@ function note(message) {
 
 function lineCount(text) {
   return text.split("\n").filter((line) => line.trim().length > 0).length;
+}
+
+function isFrontendSourceModule(name) {
+  return name.endsWith(".js") || name.endsWith(".jsx");
 }
 
 async function checkPackageShape() {
@@ -94,7 +98,7 @@ async function checkEntrypoints() {
 
 async function checkSourceSizes() {
   const pagesDir = join(rootDir, "src-ui/pages");
-  const files = (await readdir(pagesDir)).filter((name) => name.endsWith(".js")).sort();
+  const files = (await readdir(pagesDir)).filter(isFrontendSourceModule).sort();
   const largest = [];
   for (const file of files) {
     const relPath = `src-ui/pages/${file}`;

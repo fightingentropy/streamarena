@@ -1,5 +1,3 @@
-import html from "solid-js/html";
-
 import { LIVE_CHANNELS } from "../lib/live-channels.js";
 import {
   addCurrentReturnToParam,
@@ -104,39 +102,39 @@ function openLiveChannel(channel) {
 }
 
 function renderChannelCard(channel) {
-  return html`
+  return <>
     <button
       class="live-channel-card"
       type="button"
-      onClick=${() => openLiveChannel(channel)}
-      aria-label=${`Play ${channel.title}`}
+      onClick={() => openLiveChannel(channel)}
+      aria-label={`Play ${channel.title}`}
     >
-      <img src=${channel.artwork} alt=${`${channel.title} artwork`} loading="lazy" />
+      <img src={channel.artwork} alt={`${channel.title} artwork`} loading="lazy" />
       <span class="live-channel-play" aria-hidden="true">
         <svg viewBox="0 0 24 24"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
       </span>
       <span class="live-channel-body">
-        <span class="live-channel-title">${channel.title}</span>
+        <span class="live-channel-title">{channel.title}</span>
         <span class="live-channel-meta">
           <span>Live</span>
-          <span>${channel.region}</span>
-          <span>${channel.genre}</span>
-          <span>${channel.quality}</span>
+          <span>{channel.region}</span>
+          <span>{channel.genre}</span>
+          <span>{channel.quality}</span>
         </span>
       </span>
     </button>
-  `;
+  </>;
 }
 
 export default function LiveChannelsView() {
-  return html`
+  return <>
     <main class="live-main">
       <section class="live-channel-section">
         <h2>Live Channels</h2>
         <div class="live-channel-grid">
-          ${LIVE_CHANNELS.map((channel) => renderChannelCard(channel))}
+          {LIVE_CHANNELS.map((channel) => renderChannelCard(channel))}
         </div>
       </section>
     </main>
-  `;
+  </>;
 }

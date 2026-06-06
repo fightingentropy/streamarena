@@ -1,6 +1,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import solid from "vite-plugin-solid";
 import { defineConfig } from "vite";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -28,6 +29,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    solid(),
     {
       name: "clean-url-rewrites",
       configureServer(server) {

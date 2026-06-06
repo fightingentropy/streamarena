@@ -1,4 +1,3 @@
-import html from "solid-js/html";
 import { createSignal, onCleanup, onMount } from "solid-js";
 import {
   normalizeAvatarStyle,
@@ -8,12 +7,12 @@ import {
   getStoredAvatarModePreference,
   getStoredAvatarImagePreference,
 } from "../shared.js";
-import SportsScheduleView from "../components/sports-schedule-view.js";
+import LiveChannelsView from "../components/live-channels-view.jsx";
 import { signOut } from "../lib/auth.js";
 import { liveNavClass, sportsNavClass } from "../lib/browse-nav.js";
 import { bindTopNavScrollState } from "../lib/top-nav-scroll.js";
 
-export default function SportsPage() {
+export default function LivePage() {
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
   const [avatarClass, setAvatarClass] = createSignal("avatar avatar-style-blue");
   const [avatarCustomStyle, setAvatarCustomStyle] = createSignal("");
@@ -81,9 +80,9 @@ export default function SportsPage() {
     document.removeEventListener("keydown", handleDocumentKeydown);
   });
 
-  return html`
+  return <>
     <div data-solid-page-root="" style="display: contents">
-      <div class="page home-page sports-page" tabindex="0">
+      <div class="page home-page live-page" tabindex="0">
         <header class="top-nav">
           <div class="nav-left">
             <a href="/" class="nav-logo" aria-label="Go to homepage">
@@ -95,8 +94,8 @@ export default function SportsPage() {
             </a>
             <nav>
               <a href="/">Home</a>
-              <a href="/live" class=${liveNavClass("")}>Live</a>
-              <a href="/sports" class=${sportsNavClass("sports")}>Sports</a>
+              <a href="/live" class={liveNavClass("live")}>Live</a>
+              <a href="/sports" class={sportsNavClass("")}>Sports</a>
               <a href="/#myListRow" class="optional">My List</a>
             </nav>
           </div>
@@ -105,7 +104,7 @@ export default function SportsPage() {
               class="icon-btn"
               aria-label="Search"
               aria-expanded="false"
-              onClick=${() => {
+              onClick={() => {
                 window.location.href = "/";
               }}
             >
@@ -119,18 +118,18 @@ export default function SportsPage() {
                 <path d="M12 22a2.6 2.6 0 0 0 2.45-1.72h-4.9A2.6 2.6 0 0 0 12 22Zm7.1-5.2-1.45-1.84V10a5.68 5.68 0 0 0-4.48-5.56V3a1.17 1.17 0 1 0-2.34 0v1.44A5.68 5.68 0 0 0 6.35 10v4.96L4.9 16.8a1 1 0 0 0 .78 1.62h12.64a1 1 0 0 0 .78-1.62Z"></path>
               </svg>
             </button>
-            <div class="account-menu" ref=${(el) => { accountMenuEl = el; }}>
+            <div class="account-menu" ref={(el) => { accountMenuEl = el; }}>
               <button
                 class="account-avatar-btn"
                 aria-label="Account menu"
                 aria-haspopup="menu"
                 aria-controls="accountMenuPanel"
-                aria-expanded=${() => (accountMenuOpen() ? "true" : "false")}
-                onClick=${toggleAccountMenu}
+                aria-expanded={(accountMenuOpen() ? "true" : "false")}
+                onClick={toggleAccountMenu}
               >
                 <div
-                  class=${() => avatarClass()}
-                  style=${() => avatarCustomStyle()}
+                  class={avatarClass()}
+                  style={avatarCustomStyle()}
                   aria-hidden="true"
                 ></div>
               </button>
@@ -153,7 +152,7 @@ export default function SportsPage() {
                 id="accountMenuPanel"
                 class="account-menu-panel"
                 role="menu"
-                style=${() => (accountMenuOpen() ? "" : "display:none")}
+                style={(accountMenuOpen() ? "" : "display:none")}
               >
                 <a class="account-menu-item account-menu-link" href="/settings" role="menuitem">
                   <span class="account-menu-icon" aria-hidden="true">
@@ -178,15 +177,15 @@ export default function SportsPage() {
                   class="account-menu-item account-menu-signout"
                   type="button"
                   role="menuitem"
-                  onClick=${handleSignOut}
+                  onClick={handleSignOut}
                 >Sign out of Netflix</button>
               </div>
             </div>
           </div>
         </header>
 
-        <${SportsScheduleView} />
+        <LiveChannelsView />
       </div>
     </div>
-  `;
+  </>;
 }

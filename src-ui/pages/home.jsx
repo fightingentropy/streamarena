@@ -1,4 +1,3 @@
-import html from "solid-js/html";
 import { createSignal, onMount, onCleanup } from "solid-js";
 import {
   PROFILE_AVATAR_STYLE_PREF_KEY,
@@ -4514,7 +4513,7 @@ export default function HomePage() {
     if (!liveViewLoadPromise) {
       liveViewLoadPromise = Promise.all([
         import("../../live.css"),
-        import("../components/live-channels-view.js"),
+        import("../components/live-channels-view.jsx"),
       ])
         .then(([, module]) => {
           if (typeof module.default === "function") {
@@ -4934,8 +4933,8 @@ export default function HomePage() {
   });
 
   // ---- Template ----
-  return html`<div data-solid-page-root="" style="display: contents">
-    <div class="page home-page" tabindex="0" ref=${(el) => (pageRootRef = el)}>
+  return <><div data-solid-page-root="" style="display: contents">
+    <div class="page home-page" tabindex="0" ref={(el) => (pageRootRef = el)}>
       <header class="top-nav">
         <div class="nav-left">
           <a href="/" class="nav-logo" aria-label="Go to homepage">
@@ -4946,17 +4945,17 @@ export default function HomePage() {
             />
           </a>
           <nav>
-            <a href="/" class=${() => activeView() === "home" ? "is-active" : ""} onClick=${handleHomeNavClick}>Home</a>
-            <a href="/live" class=${() => liveNavClass(activeView() === "live" ? "live" : "")} onClick=${handleLiveNavClick}>Live</a>
-            <a href="/sports" class=${sportsNavLinkClass("")}>Sports</a>
-            <a href="#" id="navMyList" class="optional" onClick=${handleMyListNavClick}>My List</a>
+            <a href="/" class={activeView() === "home" ? "is-active" : ""} onClick={handleHomeNavClick}>Home</a>
+            <a href="/live" class={liveNavClass(activeView() === "live" ? "live" : "")} onClick={handleLiveNavClick}>Live</a>
+            <a href="/sports" class={sportsNavLinkClass("")}>Sports</a>
+            <a href="#" id="navMyList" class="optional" onClick={handleMyListNavClick}>My List</a>
           </nav>
         </div>
         <div class="nav-right">
           <div
             id="navSearchBox"
-            class=${() => `nav-search-box${searchBoxOpen() ? " is-open" : ""}`}
-            style=${() => showSearchBox() ? "" : "display:none"}
+            class={`nav-search-box${searchBoxOpen() ? " is-open" : ""}`}
+            style={showSearchBox() ? "" : "display:none"}
           >
             <label class="nav-search-field" for="navSearchInput">
               <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -4964,7 +4963,7 @@ export default function HomePage() {
               </svg>
               <input
                 id="navSearchInput"
-                ref=${(el) => (navSearchInputRef = el)}
+                ref={(el) => (navSearchInputRef = el)}
                 type="search"
                 inputmode="search"
                 autocomplete="off"
@@ -4973,10 +4972,10 @@ export default function HomePage() {
                 spellcheck="false"
                 placeholder="Titles, people, genres"
                 aria-label="Search titles, people, genres"
-                onInput=${handleSearchInput}
-                onFocus=${handleSearchFocus}
-                onSearch=${handleSearchSubmit}
-                onKeydown=${handleSearchKeydown}
+                onInput={handleSearchInput}
+                onFocus={handleSearchFocus}
+                onSearch={handleSearchSubmit}
+                onKeydown={handleSearchKeydown}
               />
             </label>
             <button
@@ -4984,7 +4983,7 @@ export default function HomePage() {
               class="nav-search-close"
               type="button"
               aria-label="Close search"
-              onClick=${handleCloseSearch}
+              onClick={handleCloseSearch}
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path
@@ -5000,8 +4999,8 @@ export default function HomePage() {
             id="openSearchButton"
             class="icon-btn"
             aria-label="Search"
-            aria-expanded=${() => isSearchModeActive() ? "true" : "false"}
-            onClick=${handleOpenSearch}
+            aria-expanded={isSearchModeActive() ? "true" : "false"}
+            onClick={handleOpenSearch}
           >
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <path d="M14.33 12.9 19.71 18.28a1 1 0 0 1-1.42 1.42l-5.38-5.38a8 8 0 1 1 1.42-1.42Zm-6.33 1.1a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"></path>
@@ -5020,13 +5019,13 @@ export default function HomePage() {
               aria-label="Account menu"
               aria-haspopup="menu"
               aria-controls="accountMenuPanel"
-              aria-expanded=${() => accountMenuOpen() ? "true" : "false"}
-              onClick=${handleAccountMenuToggle}
+              aria-expanded={accountMenuOpen() ? "true" : "false"}
+              onClick={handleAccountMenuToggle}
             >
               <div
                 id="accountAvatar"
-                class=${() => avatarClassName()}
-                style=${() => avatarInlineStyle()}
+                class={avatarClassName()}
+                style={avatarInlineStyle()}
                 aria-hidden="true"
               ></div>
             </button>
@@ -5048,10 +5047,10 @@ export default function HomePage() {
             </span>
             <div
               id="accountMenuPanel"
-              ref=${(el) => (accountMenuPanelRef = el)}
+              ref={(el) => (accountMenuPanelRef = el)}
               class="account-menu-panel"
               role="menu"
-              style=${() => accountMenuOpen() ? "" : "display:none"}
+              style={accountMenuOpen() ? "" : "display:none"}
             >
               <a class="account-menu-item account-menu-link" href="/settings" role="menuitem">
                 <span class="account-menu-icon" aria-hidden="true">
@@ -5077,7 +5076,7 @@ export default function HomePage() {
                 class="account-menu-item account-menu-signout"
                 type="button"
                 role="menuitem"
-                onClick=${handleSignOut}
+                onClick={handleSignOut}
               >Sign out of Netflix</button>
             </div>
           </div>
@@ -5087,87 +5086,86 @@ export default function HomePage() {
       <section
         id="searchExperience"
         class="search-experience"
-        style=${() => showSearchExperience() ? "" : "display:none"}
+        style={showSearchExperience() ? "" : "display:none"}
       >
         <p
           id="searchStatus"
-          class=${() => {
+          class={(() => {
             const tone = searchStatusTone();
             let cls = "search-status";
             if (tone === "error") cls += " is-error";
             if (tone === "success") cls += " is-success";
             return cls;
-          }}
-        >${() => searchStatusText()}</p>
+          })()}
+        >{searchStatusText()}</p>
         <div
           id="searchExplore"
           class="search-explore"
-          style=${() => {
+          style={(() => {
             if (!searchExploreLinksRef) return "display:none";
             return searchExploreLinksRef.innerHTML ? "" : "display:none";
-          }}
+          })()}
         >
           <span class="search-explore-label">More to explore:</span>
           <div
             id="searchExploreLinks"
             class="search-explore-links"
-            ref=${(el) => (searchExploreLinksRef = el)}
-            onClick=${handleSearchExploreClick}
+            ref={(el) => (searchExploreLinksRef = el)}
+            onClick={handleSearchExploreClick}
           ></div>
         </div>
         <div
           id="searchResultsGrid"
           class="search-results-grid"
-          ref=${(el) => (searchResultsGridRef = el)}
+          ref={(el) => (searchResultsGridRef = el)}
         ></div>
       </section>
 
       <div
         id="liveTabView"
         class="live-tab-view"
-        style=${() => activeView() === "live" && !showSearchExperience() ? "" : "display:none"}
+        style={activeView() === "live" && !showSearchExperience() ? "" : "display:none"}
       >
-        ${() => {
+        {(() => {
           const Component = LiveChannelsComponent();
           return Component ? Component({}) : null;
-        }}
+        })()}
       </div>
 
       <section
-        class=${() =>
-          `featured-hero${featuredHeroReady() ? " is-hero-ready" : ""}${heroPreviewActive() ? " is-preview-active" : ""}${heroPreviewPlaying() ? " is-preview-playing" : ""}`}
-        ref=${(el) => (heroSectionRef = el)}
+        class={`featured-hero${featuredHeroReady() ? " is-hero-ready" : ""}${heroPreviewActive() ? " is-preview-active" : ""}${heroPreviewPlaying() ? " is-preview-playing" : ""}`}
+        ref={(el) => (heroSectionRef = el)}
         aria-label="Featured title"
-        style=${() => activeView() === "home" ? "" : "display:none"}
-        onPointerEnter=${scheduleHeroPreviewPlayback}
+        style={activeView() === "home" ? "" : "display:none"}
+        onPointerEnter={scheduleHeroPreviewPlayback}
       >
         <img
           class="hero-poster"
-          src=${() => featuredHero().poster}
+          src={featuredHero().poster}
           alt=""
           aria-hidden="true"
           decoding="async"
           fetchpriority="high"
           loading="eager"
-          onError=${handleArtworkImageError}
+          onError={handleArtworkImageError}
         />
         <div class="hero-preview-stage" aria-hidden="true">
           <video
             id="heroPreview"
-            ref=${(el) => (heroPreviewVideoRef = el)}
+            ref={(el) => (heroPreviewVideoRef = el)}
             class="hero-preview-video"
-            title=${() => `${featuredHero().title || "Featured movie"} preview`}
+            title={`${featuredHero().title || "Featured movie"} preview`}
             preload="metadata"
             loop
-            muted=${() => isMuted()}
+            muted={isMuted()}
             playsinline
             disablepictureinpicture
             tabindex="-1"
             aria-hidden="true"
-            onPlay=${() => setHeroPreviewPlaying(true)}
-            onPause=${() => setHeroPreviewPlaying(false)}
-            onEnded=${() => setHeroPreviewPlaying(false)}
-            onError=${() => stopHeroPreview()}
+            onPlay={() => setHeroPreviewPlaying(true)}
+            onPause={() => setHeroPreviewPlaying(false)}
+            onEnded={() => setHeroPreviewPlaying(false)}
+            onError={() => stopHeroPreview()}
           ></video>
         </div>
         <div class="hero-preview-shield" aria-hidden="true"></div>
@@ -5178,11 +5176,11 @@ export default function HomePage() {
           <div class="hero-controls">
             <button
               id="muteToggle"
-              class=${() => `control-btn${isMuted() ? " muted" : ""}`}
+              class={`control-btn${isMuted() ? " muted" : ""}`}
               type="button"
-              aria-label=${() => isMuted() ? "Unmute preview" : "Mute preview"}
-              disabled=${() => !featuredHero().previewSrc}
-              onClick=${handleMuteToggle}
+              aria-label={isMuted() ? "Unmute preview" : "Mute preview"}
+              disabled={!featuredHero().previewSrc}
+              onClick={handleMuteToggle}
             >
               <svg class="icon-on" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M14 5.2v13.6a1 1 0 0 1-1.68.74L7.6 15H5a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2.6l4.72-4.54A1 1 0 0 1 14 5.2Zm3.72 2.18a1 1 0 1 1 1.56-1.24 10.25 10.25 0 0 1 0 11.72 1 1 0 1 1-1.56-1.24 8.25 8.25 0 0 0 0-9.24Zm-2.8 2.26a1 1 0 0 1 1.56-1.24 5.8 5.8 0 0 1 0 7.2 1 1 0 1 1-1.56-1.24 3.8 3.8 0 0 0 0-4.72Z"></path>
@@ -5191,35 +5189,32 @@ export default function HomePage() {
                 <path d="M14 5.2v13.6a1 1 0 0 1-1.68.74L7.6 15H5a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2.6l4.72-4.54A1 1 0 0 1 14 5.2Zm6.3 3.1a1 1 0 0 1 0 1.4L18.01 12l2.3 2.3a1 1 0 0 1-1.42 1.4L16.6 13.4l-2.3 2.3a1 1 0 0 1-1.4-1.42l2.3-2.28-2.3-2.3a1 1 0 0 1 1.4-1.4l2.3 2.3 2.29-2.3a1 1 0 0 1 1.41 0Z"></path>
               </svg>
             </button>
-            <span class="hero-bottom-rating" aria-label=${() => `Rated ${featuredHero().maturity || "13+"}`}>
-              ${() => getFeaturedHeroMaturityLabel(featuredHero())}
+            <span class="hero-bottom-rating" aria-label={`Rated ${featuredHero().maturity || "13+"}`}>
+              {getFeaturedHeroMaturityLabel(featuredHero())}
             </span>
           </div>
           <div
             class="hero-carousel-dots"
             role="tablist"
             aria-label="Featured titles"
-            style=${() => featuredHeroCandidates().length <= 1 ? "display:none" : ""}
+            style={featuredHeroCandidates().length <= 1 ? "display:none" : ""}
           >
-            ${() =>
-              featuredHeroCandidates()
+            {featuredHeroCandidates()
                 .slice(0, FEATURED_HERO_CANDIDATE_LIMIT)
-                .map((candidate, index) => html`
+                .map((candidate, index) => <>
                   <button
                     type="button"
-                    class=${() =>
-                      `hero-carousel-dot${featuredHeroIndex() === index ? " is-active" : ""}`}
-                    aria-label=${`Show ${candidate.title || "featured title"}`}
-                    aria-selected=${() => (featuredHeroIndex() === index ? "true" : "false")}
-                    onClick=${() => handleHeroCarouselDotClick(index)}
+                    class={`hero-carousel-dot${featuredHeroIndex() === index ? " is-active" : ""}`}
+                    aria-label={`Show ${candidate.title || "featured title"}`}
+                    aria-selected={(featuredHeroIndex() === index ? "true" : "false")}
+                    onClick={() => handleHeroCarouselDotClick(index)}
                   ></button>
-                `)}
+                </>)}
           </div>
         </div>
 
         <section
-          class=${() =>
-            `hero-content${featuredHeroReady() ? "" : " is-loading"}`}
+          class={`hero-content${featuredHeroReady() ? "" : " is-loading"}`}
           aria-labelledby="heroTitle"
         >
           <img
@@ -5231,31 +5226,30 @@ export default function HomePage() {
             id="heroTitle"
             class="hero-title-stacked"
             tabindex="0"
-            aria-label=${() => `Open ${featuredHero().title || "featured movie"} player`}
-            onClick=${handleHeroTitleClick}
-            onKeydown=${handleHeroTitleKeydown}
+            aria-label={`Open ${featuredHero().title || "featured movie"} player`}
+            onClick={handleHeroTitleClick}
+            onKeydown={handleHeroTitleKeydown}
           >
-            ${() =>
-              getFeaturedHeroTitleLines(featuredHero()).map(
-                (line) => html`<span>${line}</span>`,
+            {getFeaturedHeroTitleLines(featuredHero()).map(
+                (line) => <><span>{line}</span></>,
               )}
           </h1>
           <p
             class="hero-tagline"
-            style=${() => (getFeaturedHeroTagline(featuredHero()) ? "" : "display:none")}
+            style={(getFeaturedHeroTagline(featuredHero()) ? "" : "display:none")}
           >
-            ${() => getFeaturedHeroTagline(featuredHero())}
+            {getFeaturedHeroTagline(featuredHero())}
           </p>
           <p class="description">
-            ${() => featuredHero().description || "No description available."}
+            {featuredHero().description || "No description available."}
           </p>
           <div class="hero-actions">
             <button
               id="heroPlay"
               class="cta cta-play"
               type="button"
-              disabled=${() => !getHeroDestination()}
-              onClick=${handleHeroPlay}
+              disabled={!getHeroDestination()}
+              onClick={handleHeroPlay}
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M5 3.5v17L20 12 5 3.5Z"></path>
@@ -5266,8 +5260,8 @@ export default function HomePage() {
               id="heroInfo"
               class="cta cta-info"
               type="button"
-              disabled=${() => !getHeroDestination()}
-              onClick=${handleHeroInfo}
+              disabled={!getHeroDestination()}
+              onClick={handleHeroInfo}
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <circle
@@ -5299,18 +5293,18 @@ export default function HomePage() {
       <section
         id="continueRow"
         class="continue-row"
-        style=${() => activeView() === "home" && continueRowVisible() ? "" : "display:none"}
+        style={activeView() === "home" && continueRowVisible() ? "" : "display:none"}
       >
-        <h2>Continue watching for <span id="continueWatchingName">${displayName || "you"}</span></h2>
+        <h2>Continue watching for <span id="continueWatchingName">{displayName || "you"}</span></h2>
         <div
           id="continueCards"
           class="cards popular-cards continue-cards"
-          ref=${(el) => (continueCardsRef = el)}
+          ref={(el) => (continueCardsRef = el)}
         ></div>
         <p
           id="continueEmpty"
           class="continue-empty"
-          style=${() => continueEmptyVisible() ? "" : "display:none"}
+          style={continueEmptyVisible() ? "" : "display:none"}
         >
           Start a movie and it will appear here.
         </p>
@@ -5319,16 +5313,16 @@ export default function HomePage() {
       <section
         id="popularRow"
         class="popular-row home-popular-row"
-        style=${() => activeView() === "home" && popularRowVisible() ? "" : "display:none"}
+        style={activeView() === "home" && popularRowVisible() ? "" : "display:none"}
       >
         <div class="popular-row-inner">
           <div class="rail-header">
-            <h2 id="popularRowTitle">${() => popularRowTitle()}</h2>
+            <h2 id="popularRowTitle">{popularRowTitle()}</h2>
           </div>
           <div
             id="cardsContainer"
             class="cards popular-cards"
-            ref=${(el) => (cardsContainerRef = el)}
+            ref={(el) => (cardsContainerRef = el)}
           ></div>
         </div>
       </section>
@@ -5336,7 +5330,7 @@ export default function HomePage() {
       <section
         id="trendingRow"
         class="popular-row home-popular-row"
-        style=${() => activeView() === "home" && trendingRowVisible() ? "" : "display:none"}
+        style={activeView() === "home" && trendingRowVisible() ? "" : "display:none"}
       >
         <div class="popular-row-inner">
           <div class="rail-header">
@@ -5345,7 +5339,7 @@ export default function HomePage() {
           <div
             id="trendingCardsContainer"
             class="cards popular-cards"
-            ref=${(el) => (trendingCardsContainerRef = el)}
+            ref={(el) => (trendingCardsContainerRef = el)}
           ></div>
         </div>
       </section>
@@ -5353,7 +5347,7 @@ export default function HomePage() {
       <section
         id="nowPlayingRow"
         class="popular-row home-popular-row"
-        style=${() => activeView() === "home" && nowPlayingRowVisible() ? "" : "display:none"}
+        style={activeView() === "home" && nowPlayingRowVisible() ? "" : "display:none"}
       >
         <div class="popular-row-inner">
           <div class="rail-header">
@@ -5362,7 +5356,7 @@ export default function HomePage() {
           <div
             id="nowPlayingCardsContainer"
             class="cards popular-cards"
-            ref=${(el) => (nowPlayingCardsContainerRef = el)}
+            ref={(el) => (nowPlayingCardsContainerRef = el)}
           ></div>
         </div>
       </section>
@@ -5370,7 +5364,7 @@ export default function HomePage() {
       <section
         id="topRatedRow"
         class="popular-row home-popular-row"
-        style=${() => activeView() === "home" && topRatedRowVisible() ? "" : "display:none"}
+        style={activeView() === "home" && topRatedRowVisible() ? "" : "display:none"}
       >
         <div class="popular-row-inner">
           <div class="rail-header">
@@ -5379,7 +5373,7 @@ export default function HomePage() {
           <div
             id="topRatedCardsContainer"
             class="cards popular-cards"
-            ref=${(el) => (topRatedCardsContainerRef = el)}
+            ref={(el) => (topRatedCardsContainerRef = el)}
           ></div>
         </div>
       </section>
@@ -5388,19 +5382,19 @@ export default function HomePage() {
     <section
       id="myListRow"
       class="popular-row"
-      style=${() => activeView() === "home" && myListRowVisible() ? "" : "display:none"}
+      style={activeView() === "home" && myListRowVisible() ? "" : "display:none"}
     >
       <div class="popular-row-inner">
         <h2>My List</h2>
         <div
           id="myListCards"
           class="cards popular-cards"
-          ref=${(el) => (myListCardsRef = el)}
+          ref={(el) => (myListCardsRef = el)}
         ></div>
         <p
           id="myListEmpty"
           class="continue-empty"
-          style=${() => myListEmptyVisible() ? "" : "display:none"}
+          style={myListEmptyVisible() ? "" : "display:none"}
         >
           Add titles using the plus icon.
         </p>
@@ -5410,7 +5404,7 @@ export default function HomePage() {
     <footer
       class="member-footer home-member-footer"
       aria-label="Netflix footer"
-      style=${() => activeView() === "home" ? "" : "display:none"}
+      style={activeView() === "home" ? "" : "display:none"}
     >
       <div class="member-footer-social">
         <span aria-hidden="true">
@@ -5455,9 +5449,9 @@ export default function HomePage() {
 
     <div
       id="detailsModal"
-      class=${() => `details-modal${detailsModalOpen() ? " is-open" : ""}`}
-      style=${() => detailsModalVisible() ? "" : "display:none"}
-      onClick=${handleDetailsBackdropClick}
+      class={`details-modal${detailsModalOpen() ? " is-open" : ""}`}
+      style={detailsModalVisible() ? "" : "display:none"}
+      onClick={handleDetailsBackdropClick}
     >
       <div class="details-backdrop" data-close-modal></div>
       <article
@@ -5468,11 +5462,11 @@ export default function HomePage() {
       >
         <button
           id="detailsClose"
-          ref=${(el) => (detailsCloseButtonRef = el)}
+          ref={(el) => (detailsCloseButtonRef = el)}
           class="details-close"
           type="button"
           aria-label="Close details"
-          onClick=${handleDetailsClose}
+          onClick={handleDetailsClose}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path
@@ -5487,18 +5481,18 @@ export default function HomePage() {
           <img
             id="detailsImage"
             class="details-hero-image"
-            src=${() => detailsData().thumb}
-            alt=${() => `${detailsData().title} artwork`}
+            src={detailsData().thumb}
+            alt={`${detailsData().title} artwork`}
           />
           <div class="details-hero-fade" aria-hidden="true"></div>
           <div class="details-hero-content">
-            <h3 id="detailsTitle">${() => detailsData().title}</h3>
+            <h3 id="detailsTitle">{detailsData().title}</h3>
             <div class="details-actions">
               <button
                 id="detailsPlay"
                 class="cta cta-play details-play"
                 type="button"
-                onClick=${handleDetailsPlay}
+                onClick={handleDetailsPlay}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M5 3.5v17L20 12 5 3.5Z"></path>
@@ -5507,15 +5501,15 @@ export default function HomePage() {
               </button>
               <button
                 id="detailsMyList"
-                class=${() => `details-round${detailsMyListActive() ? " is-active" : ""}`}
+                class={`details-round${detailsMyListActive() ? " is-active" : ""}`}
                 type="button"
-                aria-label=${() => detailsMyListActive() ? "Remove from My List" : "Add to My List"}
-                aria-pressed=${() => detailsMyListActive() ? "true" : "false"}
-                onClick=${handleDetailsMyList}
+                aria-label={detailsMyListActive() ? "Remove from My List" : "Add to My List"}
+                aria-pressed={detailsMyListActive() ? "true" : "false"}
+                onClick={handleDetailsMyList}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path
-                    d=${() => detailsMyListActive() ? "M5 12.5 9.2 16.7 19 7" : "M12 5v14M5 12h14"}
+                    d={detailsMyListActive() ? "M5 12.5 9.2 16.7 19 7" : "M12 5v14M5 12h14"}
                     fill="none"
                     stroke-linecap="round"
                     stroke-linejoin="round"
@@ -5538,29 +5532,29 @@ export default function HomePage() {
         <div class="details-body">
           <section class="details-main">
             <div class="details-meta">
-              <span id="detailsYear">${() => detailsData().year}</span>
-              <span id="detailsRuntime">${() => detailsData().runtime}</span>
-              <span id="detailsMaturity" class="details-maturity">${() => detailsData().maturity}</span>
-              <span id="detailsQuality" class="meta-chip">${() => detailsData().quality}</span>
-              <span id="detailsAudio" class="details-audio">${() => detailsData().audio}</span>
+              <span id="detailsYear">{detailsData().year}</span>
+              <span id="detailsRuntime">{detailsData().runtime}</span>
+              <span id="detailsMaturity" class="details-maturity">{detailsData().maturity}</span>
+              <span id="detailsQuality" class="meta-chip">{detailsData().quality}</span>
+              <span id="detailsAudio" class="details-audio">{detailsData().audio}</span>
             </div>
             <p id="detailsDescription" class="details-description">
-              ${() => detailsData().description}
+              {detailsData().description}
             </p>
           </section>
 
           <aside class="details-side">
             <p>
               <span>Cast:</span>
-              <strong id="detailsCast">${() => detailsData().cast}</strong>
+              <strong id="detailsCast">{detailsData().cast}</strong>
             </p>
             <p>
               <span>Genres:</span>
-              <strong id="detailsGenres">${() => detailsData().genres}</strong>
+              <strong id="detailsGenres">{detailsData().genres}</strong>
             </p>
             <p>
               <span>This title is:</span>
-              <strong id="detailsVibe">${() => detailsData().vibe}</strong>
+              <strong id="detailsVibe">{detailsData().vibe}</strong>
             </p>
           </aside>
         </div>
@@ -5568,13 +5562,13 @@ export default function HomePage() {
         <section
           id="detailsMoreSection"
           class="details-more"
-          style=${() => detailsMoreVisible() ? "" : "display:none"}
+          style={detailsMoreVisible() ? "" : "display:none"}
         >
           <h4>More Like This</h4>
           <div
             id="detailsMoreGrid"
             class="details-grid"
-            ref=${(el) => (detailsMoreGridRef = el)}
+            ref={(el) => (detailsMoreGridRef = el)}
           ></div>
         </section>
       </article>
@@ -5582,9 +5576,9 @@ export default function HomePage() {
 
     <div
       id="libraryEditModal"
-      class=${() => `library-edit-modal${libraryEditModalOpen() ? " is-open" : ""}`}
-      style=${() => libraryEditModalVisible() ? "" : "display:none"}
-      onClick=${handleLibraryEditBackdropClick}
+      class={`library-edit-modal${libraryEditModalOpen() ? " is-open" : ""}`}
+      style={libraryEditModalVisible() ? "" : "display:none"}
+      onClick={handleLibraryEditBackdropClick}
     >
       <div class="library-edit-backdrop" data-close-library-edit></div>
       <article
@@ -5598,7 +5592,7 @@ export default function HomePage() {
           class="library-edit-close"
           type="button"
           aria-label="Close editor"
-          onClick=${handleLibraryEditClose}
+          onClick={handleLibraryEditClose}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path
@@ -5610,31 +5604,31 @@ export default function HomePage() {
         </button>
         <header class="library-edit-modal-header">
           <p class="library-edit-kicker">Library Editor</p>
-          <h3 id="libraryEditModalTitle">${() => libraryEditModalTitleText()}</h3>
-          <p id="libraryEditModalMeta" class="library-edit-modal-meta">${() => libraryEditModalMetaText()}</p>
+          <h3 id="libraryEditModalTitle">{libraryEditModalTitleText()}</h3>
+          <p id="libraryEditModalMeta" class="library-edit-modal-meta">{libraryEditModalMetaText()}</p>
         </header>
         <div
           id="libraryEditFields"
           class="library-edit-fields"
-          ref=${(el) => (libraryEditFieldsRef = el)}
-          onClick=${handleLibraryEditFieldsClick}
+          ref={(el) => (libraryEditFieldsRef = el)}
+          onClick={handleLibraryEditFieldsClick}
         ></div>
         <div class="library-edit-modal-actions">
           <button
             id="libraryAddEpisodeBtn"
             class="library-edit-btn"
             type="button"
-            style=${() => libraryAddEpisodeVisible() ? "" : "display:none"}
-            onClick=${handleLibraryAddEpisode}
+            style={libraryAddEpisodeVisible() ? "" : "display:none"}
+            onClick={handleLibraryAddEpisode}
           >
-            ${() => libraryAddEpisodeBtnText()}
+            {libraryAddEpisodeBtnText()}
           </button>
           <button
             id="librarySaveBtn"
             class="library-edit-btn library-edit-btn--primary"
             type="button"
-            style=${() => librarySaveBtnVisible() ? "" : "display:none"}
-            onClick=${handleLibrarySave}
+            style={librarySaveBtnVisible() ? "" : "display:none"}
+            onClick={handleLibrarySave}
           >
             Save Changes
           </button>
@@ -5642,44 +5636,44 @@ export default function HomePage() {
             id="libraryDeleteBtn"
             class="library-edit-btn library-edit-btn--danger"
             type="button"
-            style=${() => libraryDeleteBtnVisible() ? "" : "display:none"}
-            onClick=${handleLibraryDelete}
+            style={libraryDeleteBtnVisible() ? "" : "display:none"}
+            onClick={handleLibraryDelete}
           >
             Delete Title
           </button>
         </div>
         <p
           id="libraryEditModalStatus"
-          class=${() => {
+          class={(() => {
             const tone = libraryEditStatusTone();
             let cls = "library-edit-modal-status";
             if (tone === "success") cls += " status-success";
             if (tone === "error") cls += " status-error";
             return cls;
-          }}
+          })()}
           role="status"
           aria-live="polite"
-        >${() => libraryEditStatusText()}</p>
+        >{libraryEditStatusText()}</p>
       </article>
     </div>
 
     <div
       id="searchContextMenu"
-      ref=${(el) => (searchContextMenuRef = el)}
+      ref={(el) => (searchContextMenuRef = el)}
       class="search-context-menu"
-      style=${() => {
+      style={(() => {
         if (!searchContextMenuVisible()) return "display:none";
         return searchContextMenuStyle();
-      }}
+      })()}
     >
       <button
         id="searchContextSaveButton"
         class="search-context-menu-item"
         type="button"
-        onClick=${handleSearchContextSave}
+        onClick={handleSearchContextSave}
       >
         Save to gallery while streaming
       </button>
     </div>
-  </div>`;
+  </div></>;
 }
