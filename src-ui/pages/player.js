@@ -8310,10 +8310,11 @@ function pickResolverAlternateSourceHash({
 async function resolveTmdbFromResolverAction({
   sourceHash = "",
   isAlternate = false,
+  suppressErrorUi = false,
 } = {}) {
   if (!isTmdbResolvedPlayback) {
     retryPlaybackRecoveryNow();
-    return;
+    return false;
   }
 
   const normalizedSourceHash = normalizeSourceHash(sourceHash);
@@ -8329,13 +8330,16 @@ async function resolveTmdbFromResolverAction({
 
   tmdbResolveRetries = 0;
   const resumeFrom = getEffectiveCurrentTime();
-  showResolver(isAlternate ? "Trying another source..." : "Loading video...");
+  if (!suppressErrorUi) {
+    showResolver(isAlternate ? "Trying another source..." : "Loading video...");
+  }
   try {
     await resolveTmdbSourcesAndPlay({
       allowSourceFallback: !normalizedSourceHash,
       requiredSourceHash: normalizedSourceHash,
       startSeconds: resumeFrom,
     });
+    return true;
   } catch (error) {
     if (normalizedSourceHash) {
       resolverFailedSourceHashes.add(normalizedSourceHash);
@@ -8345,17 +8349,20 @@ async function resolveTmdbFromResolverAction({
       persistSourceHashInUrl();
       syncAudioState();
     }
-    console.error(
-      isAlternate
-        ? "Failed to switch TMDB playback source:"
-        : "Failed to retry TMDB playback:",
-      error,
-    );
-    showResolverError(
-      error,
-      isAlternate ? "Unable to start that source." : "Unable to resolve this stream.",
-      { clearVideoSource: true },
-    );
+    if (!suppressErrorUi) {
+      console.error(
+        isAlternate
+          ? "Failed to switch TMDB playback source:"
+          : "Failed to retry TMDB playback:",
+        error,
+      );
+      showResolverError(
+        error,
+        isAlternate ? "Unable to start that source." : "Unable to resolve this stream.",
+        { clearVideoSource: true },
+      );
+    }
+    throw error;
   }
 }
 
@@ -8405,18 +8412,35 @@ async function attemptAutomaticAlternateTmdbSource(message) {
       await fetchTmdbSourceOptionsViaBackend();
     }
 
-    const nextSourceHash = pickResolverAlternateSourceHash({
-      allowPreviouslyFailedFallback: false,
-    });
-    if (!nextSourceHash) {
-      return false;
+    const maxAlternateAttempts = Math.min(
+      6,
+      Math.max(1, availablePlaybackSources.length),
+    );
+    for (let attempt = 0; attempt < maxAlternateAttempts; attempt += 1) {
+      const nextSourceHash = pickResolverAlternateSourceHash({
+        allowPreviouslyFailedFallback: false,
+      });
+      if (!nextSourceHash) {
+        break;
+      }
+
+      if (attempt === 0) {
+        showResolver("Trying another source...");
+      }
+
+      try {
+        await resolveTmdbFromResolverAction({
+          sourceHash: nextSourceHash,
+          isAlternate: true,
+          suppressErrorUi: true,
+        });
+        return true;
+      } catch {
+        // Keep trying the next ranked alternate source.
+      }
     }
 
-    await resolveTmdbFromResolverAction({
-      sourceHash: nextSourceHash,
-      isAlternate: true,
-    });
-    return true;
+    return false;
   } finally {
     automaticTmdbAlternateRecoveryInFlight = false;
   }

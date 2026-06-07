@@ -1297,7 +1297,7 @@ impl ResolverService {
                 return Ok(payload);
             }
 
-            if !filters.source_hash.is_empty() && !external_embed_only {
+            if !filters.source_hash.is_empty() {
                 return Err(selected_external_embed_hls_unavailable_error());
             }
         }
@@ -1680,7 +1680,7 @@ impl ResolverService {
                 return Ok(payload);
             }
 
-            if !filters.source_hash.is_empty() && !external_embed_only {
+            if !filters.source_hash.is_empty() {
                 return Err(selected_external_embed_hls_unavailable_error());
             }
         }
