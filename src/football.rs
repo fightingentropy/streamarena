@@ -9,6 +9,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, Response};
 use dashmap::DashMap;
 use futures_util::stream::{self, StreamExt};
+use regex::Regex;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use tokio::process::Command;
@@ -1828,7 +1829,7 @@ async fn resolve_streamed_embed_playback_url(embed_url: &Url) -> Option<(Url, Ur
     }
 
     if is_supported_ntvs_embed_url(embed_url) {
-        return resolve_ntvs_hls_url(embed_url).await;
+        return resolve_ntvs_embed_st_hls_url(embed_url).await;
     }
 
     None
@@ -1874,7 +1875,7 @@ async fn resolve_verified_ntvs_live_stream_uncached(
     let mut errors = Vec::new();
     for player_page_url in player_page_urls {
         if let Some((playback_url, resolved_player_page_url)) =
-            resolve_ntvs_hls_url(&player_page_url).await
+            resolve_ntvs_player_hls_url(state, &player_page_url).await
         {
             return Ok(ResolvedLiveStream {
                 source_url: source_url.clone(),
@@ -1984,7 +1985,17 @@ async fn resolve_matchstream_hls_url(source_url: &Url) -> Option<(Url, Url)> {
     Some((playback_url, player_page_url))
 }
 
-async fn resolve_ntvs_hls_url(embed_url: &Url) -> Option<(Url, Url)> {
+async fn resolve_ntvs_player_hls_url(state: &AppState, player_url: &Url) -> Option<(Url, Url)> {
+    if is_supported_ntvs_embed_url(player_url) {
+        return resolve_ntvs_embed_st_hls_url(player_url).await;
+    }
+    if is_supported_ntvs_hesgoaler_player_url(player_url) {
+        return resolve_ntvs_hesgoaler_hls_url(state, player_url).await;
+    }
+    None
+}
+
+async fn resolve_ntvs_embed_st_hls_url(embed_url: &Url) -> Option<(Url, Url)> {
     let script_path = ntvs_embed_hls_resolver_script_path();
     if matches!(
         script_path.trim().to_ascii_lowercase().as_str(),
@@ -2029,6 +2040,73 @@ async fn resolve_ntvs_hls_url(embed_url: &Url) -> Option<(Url, Url)> {
         .filter(is_supported_ntvs_embed_url)
         .unwrap_or_else(|| embed_url.clone());
     Some((playback_url, player_page_url))
+}
+
+async fn resolve_ntvs_hesgoaler_hls_url(state: &AppState, player_url: &Url) -> Option<(Url, Url)> {
+    let html = fetch_ntvs_html(state, player_url, player_url.as_str())
+        .await
+        .ok()?;
+    let (channel, playlist_url) = parse_ntvs_hesgoaler_player_source(&html)?;
+    let token = fetch_ntvs_hesgoaler_token(state, player_url, &channel).await?;
+    let mut playback_url = Url::parse(&playlist_url)
+        .or_else(|_| player_url.join(&playlist_url))
+        .ok()?;
+    {
+        let mut query_pairs = playback_url.query_pairs_mut();
+        query_pairs.clear();
+        query_pairs.append_pair("token", token.as_str());
+    }
+    if !is_supported_ntvs_hls_url(&playback_url) {
+        return None;
+    }
+    Some((playback_url, player_url.clone()))
+}
+
+async fn fetch_ntvs_hesgoaler_token(
+    state: &AppState,
+    player_url: &Url,
+    channel: &str,
+) -> Option<String> {
+    let client = sports_http_client(state).ok()?;
+    let response = client
+        .post(player_url.clone())
+        .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
+        .header(reqwest::header::REFERER, player_url.as_str())
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(&json!({
+            "channel": channel,
+            "current_token": "",
+        }))
+        .send()
+        .await
+        .ok()?;
+
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let body = response.json::<Value>().await.ok()?;
+    body.get("token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
+}
+
+fn parse_ntvs_hesgoaler_player_source(html: &str) -> Option<(String, String)> {
+    let channel_re = Regex::new(r#"(?i)ch\s*:\s*"([^"]+)"|ch\s*:\s*'([^']+)'"#).ok()?;
+    let src_re = Regex::new(r#"(?i)src\s*:\s*"([^"]+)"|src\s*:\s*'([^']+)'"#).ok()?;
+
+    let channel = channel_re
+        .captures(html)
+        .and_then(|captures| captures.get(1).or_else(|| captures.get(2)))
+        .map(|value| value.as_str().trim().to_owned())?;
+    let playlist_url = src_re
+        .captures(html)
+        .and_then(|captures| captures.get(1).or_else(|| captures.get(2)))
+        .map(|value| value.as_str().trim().to_owned())?;
+
+    Some((channel, playlist_url))
 }
 
 fn streamed_embed_hls_resolver_script_path() -> String {
@@ -2311,6 +2389,10 @@ async fn ntvs_player_page_candidates(state: &AppState, source_url: &Url) -> AppR
         return Ok(vec![source_url.clone()]);
     }
 
+    if is_supported_ntvs_hesgoaler_player_url(source_url) {
+        return Ok(vec![source_url.clone()]);
+    }
+
     if is_supported_ntvs_wrapper_embed_url(source_url) {
         return fetch_ntvs_direct_embed_candidates(state, source_url).await;
     }
@@ -2326,6 +2408,10 @@ async fn ntvs_player_page_candidates(state: &AppState, source_url: &Url) -> AppR
 
     for url in extract_ntvs_candidate_urls(&html, source_url) {
         if is_supported_ntvs_embed_url(&url) {
+            push_unique_stream_candidate(&mut candidates, &mut seen, url);
+            continue;
+        }
+        if is_supported_ntvs_hesgoaler_player_url(&url) {
             push_unique_stream_candidate(&mut candidates, &mut seen, url);
             continue;
         }
@@ -2362,6 +2448,13 @@ async fn fetch_ntvs_direct_embed_candidates(
     let mut seen = BTreeSet::new();
     for url in extract_ntvs_candidate_urls(&html, wrapper_url) {
         if is_supported_ntvs_embed_url(&url) {
+            push_unique_stream_candidate(&mut candidates, &mut seen, url);
+            if candidates.len() >= MAX_LIVE_STREAM_CANDIDATES {
+                break;
+            }
+            continue;
+        }
+        if is_supported_ntvs_hesgoaler_player_url(&url) {
             push_unique_stream_candidate(&mut candidates, &mut seen, url);
             if candidates.len() >= MAX_LIVE_STREAM_CANDIDATES {
                 break;
@@ -2405,15 +2498,106 @@ async fn fetch_ntvs_html(state: &AppState, url: &Url, referer: &str) -> AppResul
 }
 
 fn extract_ntvs_candidate_urls(html: &str, base_url: &Url) -> Vec<Url> {
-    ["src", "value"]
+    let mut seen = BTreeSet::new();
+    let mut candidates = Vec::new();
+    for url in ["src", "value", "data-src", "href"]
         .into_iter()
         .flat_map(|attribute| extract_html_attribute_values(html, attribute))
         .filter_map(|value| resolve_html_url(base_url, &value))
-        .filter(|url| is_supported_ntvs_wrapper_embed_url(url) || is_supported_ntvs_embed_url(url))
-        .collect()
+        .filter(|url| {
+            is_supported_ntvs_wrapper_embed_url(url)
+                || is_supported_ntvs_embed_url(url)
+                || is_supported_ntvs_hesgoaler_player_url(url)
+        })
+    {
+        let key = url.as_str().trim_end_matches('/').to_owned();
+        if seen.insert(key) {
+            candidates.push(url);
+        }
+    }
+    for url in extract_ntvs_script_candidate_urls(html, base_url) {
+        let key = url.as_str().trim_end_matches('/').to_owned();
+        if seen.insert(key) {
+            candidates.push(url);
+        }
+    }
+    candidates
+}
+
+fn extract_ntvs_script_candidate_urls(html: &str, base_url: &Url) -> Vec<Url> {
+    let mut candidates = Vec::new();
+    let mut values = Vec::new();
+
+    let script_candidate_patterns = [
+        r#"(?i)/embed\?t=[^"'`\s>]+"#,
+        r#"(?i)/stream\.php\?ch=[^"'`\s>]+"#,
+        r#"(?i)https?://[^"'`\s>]+/embed\.st/embed/[^"'`\s>]+"#,
+        r#"(?i)https?://[^"'`\s>]+/stream\.php\?ch=[^"'`\s>]+"#,
+    ];
+
+    for pattern in script_candidate_patterns {
+        if let Ok(regex) = Regex::new(pattern) {
+            for value in regex.find_iter(html).map(|value| value.as_str()) {
+                values.extend(extract_ntvs_candidate_values_from_text(
+                    &normalize_ntvs_inline_value(value),
+                ));
+            }
+        }
+    }
+
+    for value in values {
+        if let Some(url) = resolve_html_url(base_url, &value) {
+            if is_supported_ntvs_wrapper_embed_url(&url)
+                || is_supported_ntvs_embed_url(&url)
+                || is_supported_ntvs_hesgoaler_player_url(&url)
+            {
+                candidates.push(url);
+            }
+        }
+    }
+    candidates
+}
+
+fn extract_ntvs_candidate_values_from_text(value: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let value = value.trim_matches(|character: char| character.is_whitespace());
+    let value = value
+        .trim_matches(|character: char| matches!(character, '"' | '\'' | '`' | '\\' | '>' | '<'));
+    values.push(value.to_owned());
+    values
+}
+
+fn normalize_ntvs_inline_value(value: &str) -> String {
+    value
+        .replace("\\/", "/")
+        .replace("\\'", "'")
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\")
+        .replace("\\n", "\n")
+        .replace("\\r", "\r")
+        .replace("\\t", "\t")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
 }
 
 fn extract_html_attribute_values(html: &str, attribute: &str) -> Vec<String> {
+    let escaped_attribute = regex::escape(attribute);
+    let pattern = Regex::new(&format!(
+        r#"(?i)(?:^|[^\w-]){}\s*=\s*"([^"]*?)"|(?i)(?:^|[^\w-]){}\s*=\s*'([^']*?)'"#,
+        escaped_attribute, escaped_attribute
+    ))
+    .ok();
+    if let Some(pattern) = pattern {
+        return pattern
+            .captures_iter(html)
+            .filter_map(|captures| captures.get(1).or_else(|| captures.get(2)))
+            .map(|value| decode_basic_html_entities(value.as_str().trim()))
+            .collect();
+    }
+
     let lower_html = html.to_ascii_lowercase();
     let mut values = Vec::new();
     for quote in ['"', '\''] {
@@ -2522,6 +2706,7 @@ fn is_supported_ntvs_stream_url(url: &Url) -> bool {
         || is_supported_ntvs_channel_url(url)
         || is_supported_ntvs_wrapper_embed_url(url)
         || is_supported_ntvs_embed_url(url)
+        || is_supported_ntvs_hesgoaler_player_url(url)
 }
 
 fn is_supported_ntvs_watch_url(url: &Url) -> bool {
@@ -2564,12 +2749,21 @@ fn is_supported_ntvs_embed_url(url: &Url) -> bool {
     matches!(host.as_str(), "embed.st" | "www.embed.st") && url.path().starts_with("/embed/")
 }
 
+fn is_supported_ntvs_hesgoaler_player_url(url: &Url) -> bool {
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    (host == "hesgoaler.com" || host.ends_with(".hesgoaler.com"))
+        && url.path().starts_with("/stream.php")
+}
+
 fn is_supported_ntvs_hls_url(url: &Url) -> bool {
     if url.scheme() != "https" && url.scheme() != "http" {
         return false;
     }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    (host == "strmd.st" || host.ends_with(".strmd.st"))
+    (host == "strmd.st" || host.ends_with(".strmd.st") || host.ends_with(".lovetier.bz"))
         && url.path().to_ascii_lowercase().ends_with(".m3u8")
 }
 
@@ -3051,16 +3245,16 @@ mod tests {
         extract_matchstream_matches, extract_ntvs_candidate_urls,
         extract_streamed_watch_embed_streams, is_streamed_watch_url,
         is_supported_matchstream_hls_url, is_supported_matchstream_player_url,
-        is_supported_matchstream_stream_url, is_supported_ntvs_embed_url,
-        is_supported_ntvs_channel_url, is_supported_ntvs_hls_url,
-        is_supported_ntvs_stream_url, is_supported_ntvs_watch_url,
+        is_supported_matchstream_stream_url, is_supported_ntvs_channel_url,
+        is_supported_ntvs_embed_url, is_supported_ntvs_hesgoaler_player_url,
+        is_supported_ntvs_hls_url, is_supported_ntvs_stream_url, is_supported_ntvs_watch_url,
         is_supported_ntvs_wrapper_embed_url, is_supported_streamed_hls_url,
         is_supported_streamed_stream_url, live_stream_source_candidates,
         matchstream_live_stream_source_candidates, normalize_matchstream_link,
-        ntvs_source_embed_url, parse_fallback_stream_urls, remove_streamed_sources_by_index,
-        sports_live_stream_source_candidates, sports_schedule_fresh_ttl_ms,
-        sports_stream_provider_id, sports_stream_resolve_cache_key, streamed_match_is_live,
-        streamed_source_stream_api_url,
+        ntvs_source_embed_url, parse_fallback_stream_urls, parse_ntvs_hesgoaler_player_source,
+        remove_streamed_sources_by_index, sports_live_stream_source_candidates,
+        sports_schedule_fresh_ttl_ms, sports_stream_provider_id, sports_stream_resolve_cache_key,
+        streamed_match_is_live, streamed_source_stream_api_url,
     };
     use crate::utils::now_ms;
     use serde_json::json;
@@ -3341,17 +3535,18 @@ mod tests {
             url::Url::parse("https://ntvs.cx/watch/kobra/kosovo-vs-andorra-2472554").unwrap();
         let ntv_watch =
             url::Url::parse("https://ntv.cx/watch/kobra/kosovo-vs-andorra-2472554").unwrap();
-        let channel =
-            url::Url::parse("https://ntvs.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
-        let ntv_channel =
-            url::Url::parse("https://ntv.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
+        let channel = url::Url::parse("https://ntvs.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
+        let ntv_channel = url::Url::parse("https://ntv.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
         let wrapper = url::Url::parse("https://ntvs.cx/embed?t=abc123").unwrap();
         let ntv_wrapper = url::Url::parse("https://ntv.cx/embed?t=abc123").unwrap();
+        let hesgoaler = url::Url::parse("https://hesgoaler.com/stream.php?ch=NOVASPORTS1").unwrap();
         let embed =
             url::Url::parse("https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1").unwrap();
         let hls =
             url::Url::parse("https://lb10.strmd.st/secure/token/rtmp/stream/id/1/playlist.m3u8")
                 .unwrap();
+        let hls2 =
+            url::Url::parse("https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8?token=abc").unwrap();
         let segment =
             url::Url::parse("https://lb10.strmd.st/secure/token/rtmp/stream/id/1/segment.ts")
                 .unwrap();
@@ -3364,13 +3559,16 @@ mod tests {
         assert!(is_supported_ntvs_wrapper_embed_url(&wrapper));
         assert!(is_supported_ntvs_wrapper_embed_url(&ntv_wrapper));
         assert!(is_supported_ntvs_embed_url(&embed));
+        assert!(is_supported_ntvs_hesgoaler_player_url(&hesgoaler));
         assert!(is_supported_ntvs_stream_url(&watch));
         assert!(is_supported_ntvs_stream_url(&ntv_watch));
         assert!(is_supported_ntvs_stream_url(&channel));
         assert!(is_supported_ntvs_stream_url(&ntv_channel));
         assert!(is_supported_ntvs_stream_url(&embed));
+        assert!(is_supported_ntvs_stream_url(&hesgoaler));
         assert_eq!(sports_stream_provider_id(&embed), Some(NTVS_SOURCE_ID));
         assert!(is_supported_ntvs_hls_url(&hls));
+        assert!(is_supported_ntvs_hls_url(&hls2));
         assert!(!is_supported_ntvs_hls_url(&segment));
         assert!(!is_supported_ntvs_stream_url(&other));
     }
@@ -3381,6 +3579,7 @@ mod tests {
         let html = r#"
             <option value="/embed?t=abc&amp;server=kobra">Server Kobra</option>
             <iframe src="https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1"></iframe>
+            <iframe src="https://hesgoaler.com/stream.php?ch=NOVASPORTS1"></iframe>
             <iframe src="https://example.test/embed/admin/ppv-kosovo-vs-andorra/1"></iframe>
         "#;
 
@@ -3393,9 +3592,110 @@ mod tests {
             candidates,
             vec![
                 "https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1".to_owned(),
+                "https://hesgoaler.com/stream.php?ch=NOVASPORTS1".to_owned(),
                 "https://ntv.cx/embed?t=abc&server=kobra".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn extracts_ntvs_candidates_from_single_quote_and_href() {
+        let base = url::Url::parse("https://ntv.cx/watch/kobra/kosovo-vs-andorra-2472554").unwrap();
+        let html = r#"
+            <div class="watch">
+                <a href="/embed?t=single">Open embed</a>
+                <iframe data-src='/embed?t=single2' id='streamPlayer'></iframe>
+                <a href='https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1'></a>
+                <iframe
+                    src = 'https://hesgoaler.com/stream.php?ch=NOVASPORTS1'
+                ></iframe>
+            </div>
+        "#;
+
+        let candidates = extract_ntvs_candidate_urls(html, &base)
+            .into_iter()
+            .map(|url| url.to_string())
+            .collect::<Vec<_>>();
+
+        let mut candidates = candidates;
+        candidates.sort();
+        let mut expected = vec![
+            "https://ntv.cx/embed?t=single".to_owned(),
+            "https://ntv.cx/embed?t=single2".to_owned(),
+            "https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1".to_owned(),
+            "https://hesgoaler.com/stream.php?ch=NOVASPORTS1".to_owned(),
+        ];
+        expected.sort();
+        assert_eq!(candidates, expected);
+    }
+
+    #[test]
+    fn parses_ntvs_hesgoaler_player_source_from_html() {
+        let html = r#"
+            <script>
+                const settings = {
+                    api: window.location.pathname + window.location.search,
+                    ch: "NOVASPORTS1",
+                    src: "https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8",
+                    currentToken: ""
+                };
+            </script>
+        "#;
+        assert_eq!(
+            parse_ntvs_hesgoaler_player_source(html),
+            Some((
+                "NOVASPORTS1".to_owned(),
+                "https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn parses_ntvs_hesgoaler_player_source_single_quotes() {
+        let html = r#"
+            <script>
+                const settings = {
+                    api: window.location.pathname + window.location.search,
+                    ch: 'NOVASPORTS1',
+                    src: 'https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8',
+                    currentToken: ""
+                };
+            </script>
+        "#;
+        assert_eq!(
+            parse_ntvs_hesgoaler_player_source(html),
+            Some((
+                "NOVASPORTS1".to_owned(),
+                "https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn extracts_ntvs_candidates_from_script_embed_code() {
+        let base = url::Url::parse("https://ntv.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
+        let html = r#"
+            <script>
+                const streamData = {
+                  embedUrl: "\/embed?t=OFd0cFZIcCtUQ3NleURxSUs1SW9VTHRKb2tpMjlQWXN2Y29SM2E0UDdvOFo5K2I4MWdPWHgvSVZxZDB3YnNjSw~~",
+                  embedCode: "<iframe src=\"/embed?t=single\" width=\"800\" height=\"450\"></iframe>",
+                  streamData: "/stream.php?ch=NOVASPORTS1"
+                };
+            </script>
+        "#;
+
+        let mut candidates = extract_ntvs_candidate_urls(html, &base)
+            .into_iter()
+            .map(|url| url.to_string())
+            .collect::<Vec<_>>();
+
+        candidates.sort();
+        let mut expected = vec![
+            "https://ntv.cx/embed?t=OFd0cFZIcCtUQ3NleURxSUs1SW9VTHRKb2tpMjlQWXN2Y29SM2E0UDdvOFo5K2I4MWdPWHgvSVZxZDB3YnNjSw~~".to_owned(),
+            "https://ntv.cx/embed?t=single".to_owned(),
+        ];
+        expected.sort();
+        assert_eq!(candidates, expected);
     }
 
     #[test]
