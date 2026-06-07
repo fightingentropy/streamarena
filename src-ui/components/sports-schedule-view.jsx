@@ -242,6 +242,48 @@ function sportsMatchMergeKey(match) {
   return `${match.sport.toLowerCase()}:${matchDateKey(match)}:${titleKey}`;
 }
 
+function sportsStreamPreferenceScore(stream = {}) {
+  const source = String(stream?.source || "").trim().toLowerCase();
+  const label = String(stream?.label || "").trim().toLowerCase();
+  const provider = normalizeProviderId(stream?.provider) || "";
+  if (source.includes("/watch/")) {
+    return 0;
+  }
+  if (label.includes("admin") || source.includes("/admin/") || source.includes("/api/stream/admin/")) {
+    return provider === "ntvs" ? 1 : 2;
+  }
+  if (provider === "ntvs") {
+    return 3;
+  }
+  if (provider === "streamed") {
+    if (label.includes("delta") || source.includes("/api/stream/delta/")) {
+      return 6;
+    }
+    return 4;
+  }
+  if (provider === "matchstream") {
+    return 5;
+  }
+  return 7;
+}
+
+function sortSportsStreams(streams = []) {
+  return [...streams]
+    .map((stream, index) => ({ stream, index, score: sportsStreamPreferenceScore(stream) }))
+    .sort((left, right) => {
+      if (left.score !== right.score) {
+        return left.score - right.score;
+      }
+      return left.index - right.index;
+    })
+    .map((entry) => entry.stream);
+}
+
+function pickPreferredSportsStream(streams = []) {
+  const sorted = sortSportsStreams(streams);
+  return sorted[0] || null;
+}
+
 function mergeSportsMatches(providerMatches) {
   const merged = new Map();
   providerMatches.flat().forEach((match) => {
@@ -251,7 +293,7 @@ function mergeSportsMatches(providerMatches) {
       merged.set(key, {
         ...match,
         providers: Array.from(new Set(match.providers || [])).filter(Boolean),
-        streams: [...match.streams],
+        streams: sortSportsStreams(match.streams),
       });
       return;
     }
@@ -265,8 +307,8 @@ function mergeSportsMatches(providerMatches) {
       streams.push(stream);
     });
     existing.providers = Array.from(providers).filter(Boolean);
-    existing.streams = streams;
-    existing.linkCount = streams.length;
+    existing.streams = sortSportsStreams(streams);
+    existing.linkCount = existing.streams.length;
     existing.channelCount = Math.max(existing.channelCount || 0, match.channelCount || 0);
     existing.endsAtTimestamp = Math.max(existing.endsAtTimestamp, match.endsAtTimestamp);
     existing.startTimestamp = Math.min(existing.startTimestamp, match.startTimestamp);
@@ -319,8 +361,8 @@ function getMatchDisplayLeague(match) {
 }
 
 function buildSportsPlayerUrl(match, config) {
-  const streams = Array.isArray(match.streams) ? match.streams : [];
-  const defaultStream = streams[0] || null;
+  const streams = sortSportsStreams(Array.isArray(match.streams) ? match.streams : []);
+  const defaultStream = pickPreferredSportsStream(streams);
   if (!defaultStream?.source) {
     return "";
   }

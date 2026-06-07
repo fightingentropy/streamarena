@@ -3003,22 +3003,33 @@ fn normalize_streamed_sport_match(
     } else {
         title_case_ascii(match_item.category.trim())
     };
-    let streams = match_item
+    let mut indexed_sources = match_item
         .sources
         .iter()
         .enumerate()
         .filter_map(|(index, source)| {
             let source_name = source.source.trim();
             let source_url = streamed_source_stream_api_url(source)?;
+            Some((sports_embed_source_priority(source_name), index, source_name, source_url))
+        })
+        .collect::<Vec<_>>();
+    indexed_sources.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    let streams = indexed_sources
+        .into_iter()
+        .map(|(_, index, source_name, source_url)| {
             let display_source = title_case_ascii(source_name);
-            Some(json!({
+            json!({
                 "id": format!("streamed-{source_name}-{index}"),
                 "label": format!("Streamed {display_source}"),
                 "source": source_url,
                 "provider": STREAMED_SOURCE_ID,
                 "playbackType": "hls",
                 "quality": "HD"
-            }))
+            })
         })
         .collect::<Vec<_>>();
     let channels = match_item
@@ -3192,6 +3203,25 @@ fn ntvs_match_link_count(match_item: &NtvsMatch) -> usize {
         .count()
 }
 
+fn ntvs_watch_page_url(match_id: &str) -> Option<String> {
+    let match_id = match_id.trim();
+    if match_id.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "https://ntv.cx/watch/{NTVS_DEFAULT_SERVER}/{match_id}"
+    ))
+}
+
+fn sports_embed_source_priority(source_name: &str) -> u8 {
+    match source_name.trim().to_ascii_lowercase().as_str() {
+        "admin" => 0,
+        "echo" => 1,
+        "delta" => 2,
+        _ => 3,
+    }
+}
+
 fn normalize_ntvs_sport_match(
     match_item: NtvsMatch,
     default_sport_name: &'static str,
@@ -3221,10 +3251,42 @@ fn normalize_ntvs_sport_match(
     let mut streams = Vec::new();
     let mut channels = Vec::new();
 
-    for (index, source) in match_item.sources.iter().enumerate() {
-        let Some(source_url) = ntvs_source_embed_url(source, 1) else {
-            continue;
-        };
+    if let Some(watch_page_url) = ntvs_watch_page_url(match_item.id.trim()) {
+        streams.push(json!({
+            "id": "ntvs-watch-page",
+            "label": "NTVS Kobra",
+            "source": watch_page_url,
+            "provider": NTVS_SOURCE_ID,
+            "playbackType": "hls",
+            "quality": "HD"
+        }));
+        channels.push(json!({
+            "name": "NTVS Kobra",
+            "language": "HD",
+            "linkCount": 1
+        }));
+    }
+
+    let mut indexed_sources = match_item
+        .sources
+        .iter()
+        .enumerate()
+        .filter_map(|(index, source)| {
+            let source_url = ntvs_source_embed_url(source, 1)?;
+            let source_name = source.source.trim();
+            Some((sports_embed_source_priority(source_name), index, source, source_url))
+        })
+        .collect::<Vec<_>>();
+    indexed_sources.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+
+    for (index, source, source_url) in indexed_sources
+        .into_iter()
+        .map(|(_, index, source, source_url)| (index, source, source_url))
+    {
         let source_name = source.source.trim();
         let display_source = title_case_ascii(source_name);
         streams.push(json!({
@@ -3585,9 +3647,13 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0]["provider"], NTVS_SOURCE_ID);
         assert_eq!(matches[0]["league"], "NTVS");
-        assert_eq!(matches[0]["linkCount"], 2);
+        assert_eq!(matches[0]["linkCount"], 3);
         assert_eq!(
             matches[0]["streams"][0]["source"],
+            "https://ntv.cx/watch/kobra/kosovo-vs-andorra-2472554"
+        );
+        assert_eq!(
+            matches[0]["streams"][1]["source"],
             "https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1"
         );
         assert_eq!(
