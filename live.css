@@ -77,7 +77,8 @@ body.live-route .page {
     display: block;
     width: 100%;
     aspect-ratio: 16 / 9;
-    object-fit: cover;
+    object-fit: contain;
+    background: #0b0b0b;
 }
 
 .live-channel-body {
