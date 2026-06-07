@@ -583,6 +583,7 @@ fn rewrite_live_hls_media_playlist(
                     line,
                     referer,
                     |input, referer| {
+                        let referer = live_hls_resource_referer_for_url(base_url, input, referer);
                         live_hls_proxy_resource_url_with_trust(
                             input,
                             referer,
@@ -596,6 +597,7 @@ fn rewrite_live_hls_media_playlist(
                     line,
                     referer,
                     |input, referer| {
+                        let referer = live_hls_resource_referer_for_url(base_url, input, referer);
                         live_hls_proxy_resource_url_with_trust(
                             input,
                             referer,
@@ -610,6 +612,8 @@ fn rewrite_live_hls_media_playlist(
         saw_segment = true;
         let segment_uri = resolve_hls_uri(base_url, line)
             .map(|absolute_uri| {
+                let referer =
+                    live_hls_resource_referer_for_url(base_url, &absolute_uri, referer);
                 live_hls_proxy_resource_url_with_trust(
                     &absolute_uri,
                     referer,
@@ -664,6 +668,7 @@ fn rewrite_vod_hls_media_playlist(
                 line,
                 referer,
                 |input, referer| {
+                    let referer = live_hls_resource_referer_for_url(base_url, input, referer);
                     live_hls_proxy_resource_url_with_trust(
                         input,
                         referer,
@@ -676,6 +681,8 @@ fn rewrite_vod_hls_media_playlist(
 
         let segment_uri = resolve_hls_uri(base_url, line)
             .map(|absolute_uri| {
+                let referer =
+                    live_hls_resource_referer_for_url(base_url, &absolute_uri, referer);
                 live_hls_proxy_resource_url_with_trust(
                     &absolute_uri,
                     referer,
@@ -686,6 +693,43 @@ fn rewrite_vod_hls_media_playlist(
         rewritten.push(segment_uri);
     }
     rewritten.join("\n")
+}
+
+fn live_hls_resource_referer_for_url<'a>(
+    base_url: &Url,
+    input: &str,
+    referer: Option<&'a str>,
+) -> Option<&'a str> {
+    if should_omit_hls_resource_referer(base_url, input, referer) {
+        None
+    } else {
+        referer
+    }
+}
+
+fn should_omit_hls_resource_referer(
+    base_url: &Url,
+    input: &str,
+    referer: Option<&str>,
+) -> bool {
+    if !referer
+        .and_then(|value| Url::parse(value).ok())
+        .and_then(|url| url.host_str().map(|host| host.eq_ignore_ascii_case("vidlink.pro")))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    let Ok(resource_url) = Url::parse(input) else {
+        return false;
+    };
+    let Some(resource_host) = resource_url.host_str() else {
+        return false;
+    };
+    let Some(base_host) = base_url.host_str() else {
+        return false;
+    };
+    !resource_host.eq_ignore_ascii_case(base_host)
 }
 
 fn rewrite_hls_uri_attribute<F>(
@@ -1066,6 +1110,31 @@ mod tests {
         assert!(rewritten.contains("/api/live/hls-resource?input="));
         assert!(rewritten.contains("seg-1.ts"));
         assert!(rewritten.contains("referer=https%3A%2F%2Fhelpless.click%2Fe%2Fplayer"));
+    }
+
+    #[test]
+    fn omits_vidlink_referer_for_cross_host_media_segments() {
+        let base: url::Url = "https://lunarleopardlife.net/title/media.m3u8"
+            .parse()
+            .expect("base url");
+        let playlist = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-KEY:METHOD=AES-128,URI=\"https://lunarleopardlife.net/title/key.bin\"\n#EXTINF:4.0,\nhttps://astroalpacarain.com/title/seg-1.ts\n#EXT-X-ENDLIST\n";
+        let rewritten = rewrite_live_hls_playlist(
+            &base,
+            playlist,
+            Some("https://vidlink.pro/tv/1396/1/1"),
+            Some("test-live-hls-proxy-secret-with-enough-length"),
+        );
+        let key_line = rewritten
+            .lines()
+            .find(|line| line.contains("key.bin"))
+            .expect("key line");
+        let segment_line = rewritten
+            .lines()
+            .find(|line| line.contains("astroalpacarain.com"))
+            .expect("segment line");
+
+        assert!(key_line.contains("referer=https%3A%2F%2Fvidlink.pro%2Ftv%2F1396%2F1%2F1"));
+        assert!(!segment_line.contains("referer="));
     }
 
     #[test]
