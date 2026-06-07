@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
+use std::path::Path;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::State;
@@ -7,7 +9,10 @@ use axum::http::{Method, Response, Uri};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
+use serde::Deserialize;
 use sha2::Sha256;
+use tokio::process::Command;
+use tokio::time::timeout;
 use url::Url;
 use url::form_urlencoded::byte_serialize;
 
@@ -16,6 +21,10 @@ use crate::process::to_absolute_playback_url;
 use crate::routes::AppState;
 
 const LIVE_HLS_EDGE_SEGMENT_COUNT: usize = 8;
+const LIVE_HLS_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const LIVE_HLS_BROWSER_FETCH_SCRIPT: &str = "scripts/fetch-browser-live-hls.mjs";
+const LIVE_HLS_BROWSER_FETCH_RUNTIME_SCRIPT: &str = "bin/fetch-browser-live-hls.mjs";
+const LIVE_HLS_BROWSER_FETCH_TIMEOUT_SECONDS: u64 = 26;
 const LIVE_HLS_EXTERNAL_EMBED_PARAM: &str = "externalEmbed";
 const LIVE_HLS_SIGNATURE_PARAM: &str = "sig";
 const LIVE_HLS_SIGNATURE_CONTEXT: &[u8] = b"netflix-live-hls-v1";
@@ -53,6 +62,23 @@ struct LiveHlsRequest {
     trusted_external_embed: bool,
 }
 
+struct LiveHlsPlaylistFetch {
+    final_url: Url,
+    body: String,
+}
+
+struct LiveHlsResourceFetch {
+    content_type: String,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrowserLiveHlsFetchOutput {
+    #[serde(rename = "finalUrl")]
+    final_url: String,
+    body: String,
+}
+
 #[derive(Clone, Copy)]
 enum LiveHlsRequestKind {
     Playlist,
@@ -68,42 +94,13 @@ pub async fn live_hls_handler(
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
     let live_request = live_hls_request_input(&state, &uri, LiveHlsRequestKind::Playlist)?;
-
-    let mut request = state
-        .http_client
-        .get(live_request.source_url.clone())
-        .header(reqwest::header::USER_AGENT, "Mozilla/5.0");
-    if let Some(referer) = live_request.referer.as_deref() {
-        request = request.header(reqwest::header::REFERER, referer);
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|_| ApiError::bad_gateway("Live HLS playlist request failed."))?;
-    if !response.status().is_success() {
-        return Err(ApiError::bad_gateway(format!(
-            "Live HLS playlist request failed with status {}.",
-            response.status()
-        )));
-    }
-    let final_url = response.url().clone();
-    if !(is_allowed_live_hls_url(&final_url)
-        || live_request.trusted_external_embed
-            && is_public_external_embed_hls_proxy_url(&final_url, LiveHlsRequestKind::Playlist))
-    {
-        return Err(ApiError::bad_gateway(
-            "Live HLS playlist redirected to an unsupported host.",
-        ));
-    }
-    let playlist = response
-        .text()
-        .await
-        .map_err(|_| ApiError::bad_gateway("Live HLS playlist response could not be read."))?;
+    let fetched = fetch_live_hls_playlist_upstream(&state, &live_request).await?;
+    let playlist = fetched.body;
     let trusted_secret = live_request
         .trusted_external_embed
         .then_some(state.config.live_hls_proxy_secret.as_str());
     let rewritten = rewrite_live_hls_playlist(
-        &final_url,
+        &fetched.final_url,
         &playlist,
         live_request.referer.as_deref(),
         trusted_secret,
@@ -129,42 +126,9 @@ pub async fn live_hls_resource_handler(
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
     let live_request = live_hls_request_input(&state, &uri, LiveHlsRequestKind::Resource)?;
-    let mut request = state
-        .http_client
-        .get(live_request.source_url.clone())
-        .header(reqwest::header::USER_AGENT, "Mozilla/5.0");
-    if let Some(referer) = live_request.referer.as_deref() {
-        request = request.header(reqwest::header::REFERER, referer);
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|_| ApiError::bad_gateway("Live HLS resource request failed."))?;
-    if !response.status().is_success() {
-        return Err(ApiError::bad_gateway(format!(
-            "Live HLS resource request failed with status {}.",
-            response.status()
-        )));
-    }
-    let final_url = response.url().clone();
-    if !(is_allowed_live_hls_url(&final_url)
-        || live_request.trusted_external_embed
-            && is_public_external_embed_hls_proxy_url(&final_url, LiveHlsRequestKind::Resource))
-    {
-        return Err(ApiError::bad_gateway(
-            "Live HLS resource redirected to an unsupported host.",
-        ));
-    }
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("application/octet-stream")
-        .to_owned();
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|_| ApiError::bad_gateway("Live HLS resource response could not be read."))?;
+    let fetched = fetch_live_hls_resource_upstream(&state, &live_request).await?;
+    let content_type = fetched.content_type;
+    let bytes = fetched.bytes;
 
     Response::builder()
         .status(200)
@@ -253,6 +217,280 @@ pub fn build_trusted_external_embed_hls_playback_source(
     live_hls_proxy_secret: &str,
 ) -> String {
     live_hls_proxy_playlist_url_with_trust(input, referer, Some(live_hls_proxy_secret))
+}
+
+pub fn is_browser_bound_live_hls_upstream(url: &Url) -> bool {
+    let Some(host) = url.host_str().map(|value| value.to_ascii_lowercase()) else {
+        return false;
+    };
+    host == "strmd.st"
+        || host.ends_with(".strmd.st")
+        || host == "strmd.top"
+        || host.ends_with(".strmd.top")
+}
+
+pub fn prefers_direct_browser_live_hls_playback(input: &str) -> bool {
+    Url::parse(input.trim())
+        .ok()
+        .as_ref()
+        .is_some_and(is_browser_bound_live_hls_upstream)
+}
+
+pub fn build_sports_live_hls_playback_source(
+    input: &str,
+    referer: Option<&str>,
+    live_hls_proxy_secret: &str,
+) -> String {
+    if prefers_direct_browser_live_hls_playback(input) {
+        return input.trim().to_owned();
+    }
+    build_trusted_external_embed_hls_playback_source(input, referer, live_hls_proxy_secret)
+}
+
+fn browser_bound_live_hls_referer_header(referer: Option<&str>) -> Option<String> {
+    let referer = referer.and_then(normalize_hls_referer)?;
+    let parsed = Url::parse(referer.as_str()).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    if host == "embed.st" || host == "www.embed.st" {
+        return Some(format!("{}/", parsed.origin().ascii_serialization()));
+    }
+    Some(referer)
+}
+
+fn browser_bound_live_hls_page_url(referer: Option<&str>) -> Option<String> {
+    referer.and_then(normalize_hls_referer)
+}
+
+fn live_hls_browser_fetch_script_path() -> String {
+    if let Some(value) = std::env::var("BROWSER_LIVE_HLS_FETCH_SCRIPT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+
+    if Path::new(LIVE_HLS_BROWSER_FETCH_SCRIPT).is_file() {
+        return LIVE_HLS_BROWSER_FETCH_SCRIPT.to_owned();
+    }
+
+    LIVE_HLS_BROWSER_FETCH_RUNTIME_SCRIPT.to_owned()
+}
+
+fn ensure_allowed_live_hls_final_url(
+    final_url: &Url,
+    live_request: &LiveHlsRequest,
+    kind: LiveHlsRequestKind,
+) -> AppResult<()> {
+    if is_allowed_live_hls_url(final_url)
+        || live_request.trusted_external_embed
+            && is_public_external_embed_hls_proxy_url(final_url, kind)
+    {
+        return Ok(());
+    }
+    Err(ApiError::bad_gateway(
+        "Live HLS playlist redirected to an unsupported host.",
+    ))
+}
+
+async fn fetch_live_hls_playlist_upstream(
+    state: &AppState,
+    live_request: &LiveHlsRequest,
+) -> AppResult<LiveHlsPlaylistFetch> {
+    let referer_header = browser_bound_live_hls_referer_header(live_request.referer.as_deref());
+    match fetch_live_hls_playlist_via_http(state, live_request, referer_header.as_deref()).await {
+        Ok(fetched) => return Ok(fetched),
+        Err(error) if should_retry_live_hls_with_browser_fetch(live_request, &error) => {}
+        Err(error) => return Err(error),
+    }
+
+    let fetched = fetch_live_hls_playlist_via_browser(live_request).await?;
+    ensure_allowed_live_hls_final_url(&fetched.final_url, live_request, LiveHlsRequestKind::Playlist)?;
+    Ok(fetched)
+}
+
+async fn fetch_live_hls_resource_upstream(
+    state: &AppState,
+    live_request: &LiveHlsRequest,
+) -> AppResult<LiveHlsResourceFetch> {
+    let referer_header = browser_bound_live_hls_referer_header(live_request.referer.as_deref());
+    match fetch_live_hls_resource_via_http(state, live_request, referer_header.as_deref()).await {
+        Ok(fetched) => return Ok(fetched),
+        Err(error) if should_retry_live_hls_with_browser_fetch(live_request, &error) => {}
+        Err(error) => return Err(error),
+    }
+
+    if !live_request
+        .source_url
+        .path()
+        .to_ascii_lowercase()
+        .ends_with(".m3u8")
+    {
+        return Err(ApiError::bad_gateway(
+            "Live HLS resource request failed in browser-bound mode.",
+        ));
+    }
+
+    let playlist = fetch_live_hls_playlist_via_browser(live_request).await?;
+    ensure_allowed_live_hls_final_url(
+        &playlist.final_url,
+        live_request,
+        LiveHlsRequestKind::Resource,
+    )?;
+    Ok(LiveHlsResourceFetch {
+        content_type: "application/vnd.apple.mpegurl".to_owned(),
+        bytes: playlist.body.into_bytes(),
+    })
+}
+
+fn should_retry_live_hls_with_browser_fetch(
+    live_request: &LiveHlsRequest,
+    error: &ApiError,
+) -> bool {
+    if !is_browser_bound_live_hls_upstream(&live_request.source_url) {
+        return false;
+    }
+    error
+        .message()
+        .is_some_and(|message| message.contains("403"))
+}
+
+async fn fetch_live_hls_playlist_via_http(
+    state: &AppState,
+    live_request: &LiveHlsRequest,
+    referer: Option<&str>,
+) -> AppResult<LiveHlsPlaylistFetch> {
+    let mut request = state
+        .http_client
+        .get(live_request.source_url.clone())
+        .header(reqwest::header::USER_AGENT, LIVE_HLS_BROWSER_USER_AGENT)
+        .header(
+            reqwest::header::ACCEPT,
+            "application/vnd.apple.mpegurl, application/x-mpegURL, */*",
+        )
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+    if let Some(referer) = referer {
+        request = request.header(reqwest::header::REFERER, referer);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|_| ApiError::bad_gateway("Live HLS playlist request failed."))?;
+    if !response.status().is_success() {
+        return Err(ApiError::bad_gateway(format!(
+            "Live HLS playlist request failed with status {}.",
+            response.status()
+        )));
+    }
+    let final_url = response.url().clone();
+    ensure_allowed_live_hls_final_url(&final_url, live_request, LiveHlsRequestKind::Playlist)?;
+    let body = response
+        .text()
+        .await
+        .map_err(|_| ApiError::bad_gateway("Live HLS playlist response could not be read."))?;
+    Ok(LiveHlsPlaylistFetch { final_url, body })
+}
+
+async fn fetch_live_hls_resource_via_http(
+    state: &AppState,
+    live_request: &LiveHlsRequest,
+    referer: Option<&str>,
+) -> AppResult<LiveHlsResourceFetch> {
+    let mut request = state
+        .http_client
+        .get(live_request.source_url.clone())
+        .header(reqwest::header::USER_AGENT, LIVE_HLS_BROWSER_USER_AGENT)
+        .header(reqwest::header::ACCEPT, "*/*")
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+    if let Some(referer) = referer {
+        request = request.header(reqwest::header::REFERER, referer);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|_| ApiError::bad_gateway("Live HLS resource request failed."))?;
+    if !response.status().is_success() {
+        return Err(ApiError::bad_gateway(format!(
+            "Live HLS resource request failed with status {}.",
+            response.status()
+        )));
+    }
+    let final_url = response.url().clone();
+    ensure_allowed_live_hls_final_url(&final_url, live_request, LiveHlsRequestKind::Resource)?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| ApiError::bad_gateway("Live HLS resource response could not be read."))?
+        .to_vec();
+    Ok(LiveHlsResourceFetch { content_type, bytes })
+}
+
+async fn fetch_live_hls_playlist_via_browser(
+    live_request: &LiveHlsRequest,
+) -> AppResult<LiveHlsPlaylistFetch> {
+    let script_path = live_hls_browser_fetch_script_path();
+    if matches!(
+        script_path.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "off" | "disabled"
+    ) {
+        return Err(ApiError::bad_gateway(
+            "Live HLS playlist request requires a browser-bound fetch.",
+        ));
+    }
+
+    let referer_page = browser_bound_live_hls_page_url(live_request.referer.as_deref()).ok_or_else(
+        || ApiError::bad_gateway("Live HLS browser fetch requires a player page referer."),
+    )?;
+
+    let mut command = Command::new("node");
+    command
+        .arg(script_path)
+        .arg(live_request.source_url.as_str())
+        .arg(referer_page.as_str())
+        .env(
+            "BROWSER_LIVE_HLS_FETCH_TIMEOUT_MS",
+            (LIVE_HLS_BROWSER_FETCH_TIMEOUT_SECONDS * 1000).to_string(),
+        )
+        .kill_on_drop(true);
+
+    let output = timeout(
+        Duration::from_secs(LIVE_HLS_BROWSER_FETCH_TIMEOUT_SECONDS + 4),
+        command.output(),
+    )
+    .await
+    .map_err(|_| ApiError::bad_gateway("Live HLS browser fetch timed out."))?
+    .map_err(|_| ApiError::bad_gateway("Live HLS browser fetch failed."))?;
+
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let message = detail.trim();
+        return Err(ApiError::bad_gateway(if message.is_empty() {
+            "Live HLS browser fetch failed.".to_owned()
+        } else {
+            format!("Live HLS browser fetch failed: {message}")
+        }));
+    }
+
+    let payload = serde_json::from_slice::<BrowserLiveHlsFetchOutput>(&output.stdout)
+        .map_err(|_| ApiError::bad_gateway("Live HLS browser fetch returned invalid JSON."))?;
+    let final_url = Url::parse(payload.final_url.trim())
+        .or_else(|_| live_request.source_url.join(payload.final_url.trim()))
+        .map_err(|_| ApiError::bad_gateway("Live HLS browser fetch returned an invalid URL."))?;
+    if !payload.body.trim_start().starts_with("#EXTM3U") {
+        return Err(ApiError::bad_gateway(
+            "Live HLS browser fetch did not return an HLS playlist.",
+        ));
+    }
+    Ok(LiveHlsPlaylistFetch {
+        final_url,
+        body: payload.body,
+    })
 }
 
 fn live_hls_proxy_playlist_url_with_trust(
@@ -848,10 +1086,13 @@ fn find_hls_attribute_start(line: &str, attribute: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        LiveHlsRequestKind, build_trusted_external_embed_hls_playback_source,
-        host_matches_allowed_live_hls_host, is_allowed_live_hls_url,
+        LiveHlsRequestKind, build_sports_live_hls_playback_source,
+        build_trusted_external_embed_hls_playback_source,
+        browser_bound_live_hls_referer_header, host_matches_allowed_live_hls_host,
+        is_allowed_live_hls_url, is_browser_bound_live_hls_upstream,
         is_public_external_embed_hls_proxy_url, is_trusted_external_embed_hls_request,
-        normalize_hls_referer, query_pairs, rewrite_live_hls_playlist,
+        normalize_hls_referer, prefers_direct_browser_live_hls_playback, query_pairs,
+        rewrite_live_hls_playlist,
     };
 
     #[test]
@@ -1165,5 +1406,49 @@ mod tests {
         assert!(rewritten.contains("seg-1.ts"));
         assert!(rewritten.contains("seg-9.ts"));
         assert!(!rewritten.contains("#EXT-X-START:TIME-OFFSET=-18"));
+    }
+
+    #[test]
+    fn browser_bound_live_hls_hosts_prefer_direct_playback() {
+        let strmd: url::Url =
+            "https://lb10.strmd.st/secure/token/rtmp/stream/id/1/playlist.m3u8".parse().unwrap();
+        let strmd_top: url::Url =
+            "https://lb12.strmd.top/secure/token/rtmp/stream/id/1/playlist.m3u8".parse().unwrap();
+        let hesgoaler: url::Url =
+            "https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8?token=abc".parse().unwrap();
+
+        assert!(is_browser_bound_live_hls_upstream(&strmd));
+        assert!(is_browser_bound_live_hls_upstream(&strmd_top));
+        assert!(!is_browser_bound_live_hls_upstream(&hesgoaler));
+        assert!(prefers_direct_browser_live_hls_playback(strmd.as_str()));
+
+        let secret = "test-live-hls-proxy-secret-with-enough-length";
+        let referer = "https://embed.st/embed/admin/ppv-croatia-vs-slovenia/1";
+        assert_eq!(
+            build_sports_live_hls_playback_source(strmd.as_str(), Some(referer), secret),
+            strmd.as_str()
+        );
+        assert!(build_sports_live_hls_playback_source(
+            hesgoaler.as_str(),
+            Some(referer),
+            secret
+        )
+        .starts_with("/api/live/hls.m3u8?"));
+    }
+
+    #[test]
+    fn browser_bound_live_hls_referer_uses_embed_origin() {
+        assert_eq!(
+            browser_bound_live_hls_referer_header(Some(
+                "https://embed.st/embed/admin/ppv-croatia-vs-slovenia/1"
+            )),
+            Some("https://embed.st/".to_owned())
+        );
+        assert_eq!(
+            browser_bound_live_hls_referer_header(Some(
+                "https://hesgoaler.com/stream.php?ch=NOVASPORTS1"
+            )),
+            Some("https://hesgoaler.com/stream.php?ch=NOVASPORTS1".to_owned())
+        );
     }
 }

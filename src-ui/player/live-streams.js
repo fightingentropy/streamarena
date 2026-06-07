@@ -158,9 +158,47 @@ export function isLiveHlsProxyPlaybackSource(source) {
   return normalized.includes("/api/live/hls.m3u8");
 }
 
+export function isBrowserBoundLiveHlsHost(source) {
+  const normalized = normalizePlaybackSourceValue(source);
+  if (!/^https?:\/\//i.test(normalized)) {
+    return false;
+  }
+  try {
+    const host = new URL(normalized).hostname.toLowerCase();
+    return (
+      host === "strmd.st" ||
+      host.endsWith(".strmd.st") ||
+      host === "strmd.top" ||
+      host.endsWith(".strmd.top")
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function normalizeBrowserBoundLiveHlsReferer(referer) {
+  const normalized = normalizePlaybackSourceValue(referer);
+  if (!/^https?:\/\//i.test(normalized)) {
+    return "";
+  }
+  try {
+    const url = new URL(normalized);
+    const host = url.hostname.toLowerCase();
+    if (host === "embed.st" || host === "www.embed.st") {
+      return `${url.origin}/`;
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
 export function getLivePlaybackSource(source, isLivePlayback, options = {}) {
   const normalizedSource = normalizePlaybackSourceValue(source);
   if (isLiveHlsProxyPlaybackSource(normalizedSource)) {
+    return normalizedSource;
+  }
+  if (isLivePlayback && isBrowserBoundLiveHlsHost(normalizedSource)) {
     return normalizedSource;
   }
   const shouldProxy =

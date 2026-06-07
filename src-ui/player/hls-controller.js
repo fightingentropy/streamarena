@@ -13,6 +13,7 @@ export function createHlsPlaybackController({
   shouldFailFastForHlsNetworkErrors = () => false,
   getPreferredQualityLevel = () => -1,
   onQualityLevelsChanged = () => {},
+  getLiveHlsReferer = () => "",
 } = {}) {
   let activeHlsController = null;
   let hlsConstructorPromise = null;
@@ -197,11 +198,19 @@ export function createHlsPlaybackController({
             30000,
             60000,
           );
+          const liveHlsReferer = String(getLiveHlsReferer() || "").trim();
           const hls = new HlsConstructor({
             backBufferLength: 90,
             maxBufferLength: 60,
             autoStartLoad: hlsStartPosition < 0,
             startPosition: hlsStartPosition,
+            ...(liveHlsReferer
+              ? {
+                  xhrSetup: (xhr) => {
+                    xhr.setRequestHeader("Referer", liveHlsReferer);
+                  },
+                }
+              : {}),
             ...(failFastNetworkErrors
               ? {
                   manifestLoadPolicy: fastFailurePlaylistLoadPolicy,

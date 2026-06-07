@@ -1595,7 +1595,7 @@ fn resolved_live_stream_response(
     _cache_hit: bool,
 ) -> Response<Body> {
     let playback_url_text = if resolved.playback_type == "hls" {
-        crate::live::build_trusted_external_embed_hls_playback_source(
+        crate::live::build_sports_live_hls_playback_source(
             resolved.playback_url.as_str(),
             Some(resolved.player_page_url.as_str()),
             state.config.live_hls_proxy_secret.as_str(),

@@ -36,6 +36,7 @@ import {
   deriveLiveStreamStateFromParams,
   getLivePlaybackSource,
   getSelectedLiveStreamOption as getSelectedLiveStreamOptionFromState,
+  normalizeBrowserBoundLiveHlsReferer,
   normalizePlaybackSourceValue,
   renderLiveStreamOptions as renderLiveStreamOptionsDom,
   shouldShowLiveStreamControls as shouldShowLiveStreamControlsForState,
@@ -222,6 +223,7 @@ let shouldResolveLiveEmbedSource = false;
 let liveEmbedResolver = "sports";
 let lastRequestedPlaybackSource = "";
 let lastRequestedAbsolutePlaybackSource = "";
+let activeLiveHlsReferer = "";
 let audioDecodeWatchInterval = null;
 let audioDecodeWatchState = null;
 let audioDecodeRecoveryInFlight = false;
@@ -334,6 +336,7 @@ const hlsPlaybackController = createHlsPlaybackController({
   getPreferredQualityLevel: (levels) =>
     hlsQualityControls.pickPreferredQualityLevel(levels),
   onQualityLevelsChanged: (state) => hlsQualityControls.handleLevelsChanged(state),
+  getLiveHlsReferer: () => activeLiveHlsReferer,
 });
 
 // ─── Watch URL support: reproducible /watch?... plus legacy /watch/<slug> ───
@@ -3746,6 +3749,7 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
   const requestedStartSeconds = normalizeResumeStartSeconds(startSeconds);
   const iframeSource = parseLiveIframePlaybackSource(nextSource);
   if (iframeSource) {
+    activeLiveHlsReferer = "";
     setLiveIframePlaybackSource(iframeSource, nextSource, {
       startSeconds: requestedStartSeconds,
     });
@@ -6435,11 +6439,12 @@ async function resolveLivePlaybackSource(source) {
   if (!playbackUrl) {
     throw new Error("Could not resolve this live stream.");
   }
+  const playerPageReferer = normalizeBrowserBoundLiveHlsReferer(
+    payload?.playerPage || resolvedSource || normalizedSource,
+  );
+  activeLiveHlsReferer = playerPageReferer;
   return getLivePlaybackSource(playbackUrl, true, {
-    referer:
-      playbackUrl.includes("/api/live/hls.m3u8")
-        ? ""
-        : payload?.playerPage || resolvedSource || normalizedSource,
+    referer: playbackUrl.includes("/api/live/hls.m3u8") ? "" : playerPageReferer,
   });
 }
 
