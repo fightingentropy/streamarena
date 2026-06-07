@@ -138,9 +138,9 @@ External movie/TV embed stack:
 
 - Default neutral order: VidLink native HLS -> Icefy native HLS -> VidRock native HLS -> VidApi native HLS -> VixSrc native HLS -> VidEasy native HLS. Provider/source health is recorded from resolver and playback success/failure events, so healthier sources move up over time. Torrent sources require a Real-Debrid API token in Settings; local torrent/cache additionally requires the Local torrent cache setting.
 - Selectable sources include VidLink, Icefy, VidRock, VidApi, VixSrc, the VidEasy default source, and VidEasy server sources Yoru, Neon, Cypher, Sage, Breach, Vyse, and Raze, with original/alternate audio hints shown in the player server menu. Selected movie/TV external sources must resolve to native HLS; the resolver does not hand off to the provider iframe.
-- VidEasy embeds are built from `https://player.videasy.net/movie/...` or `/tv/...`; extracted HLS playlists are accepted on public HTTPS hosts discovered by the trusted resolver.
+- VidEasy embeds are built from `https://player.videasy.to/movie/...` or `/tv/...`; the legacy `player.videasy.net` redirect is still accepted by the resolver. Extracted HLS playlists are accepted on public HTTPS hosts discovered by the trusted resolver.
 - VidLink embeds are built from `https://vidlink.pro/movie/...` or `/tv/...`; extracted HLS playlist hosts include `storm.vodvidl.site` and `typhoontigertribe.net`.
-- VidEasy and VidLink HLS are resolved by `scripts/resolve-external-embed-hls.mjs` through Playwright in development. The mini deploy copies this helper to `bin/resolve-external-embed-hls.mjs` and keeps Playwright under `~/.local/share/netflix-node` outside the app runtime tree. Icefy, VidRock, VidApi, and VixSrc are resolved by backend API adapters. All native providers must return a public HTTPS playlist that validates as `#EXTM3U`; the backend signs those proxy URLs before playback.
+- VidLink HLS resolves through a native Node/WASM token path first, with Playwright kept as a fallback. VidEasy HLS still resolves through Playwright. The mini deploy copies `scripts/resolve-external-embed-hls.mjs` to `bin/resolve-external-embed-hls.mjs` and keeps resolver Node dependencies under `~/.local/share/netflix-node` outside the app runtime tree. Icefy, VidRock, VidApi, and VixSrc are resolved by backend API adapters. All native providers must return a public HTTPS playlist that validates as `#EXTM3U`; the backend signs those proxy URLs before playback.
 - Native external HLS playback is proxied through protected `/api/live/hls.m3u8` and `/api/live/hls-resource` so playlist child URLs, segment URLs, and required referers stay under backend control.
 - Iframe-only movie/TV providers are intentionally excluded so playback stays inside the app's own controls.
 - Older/failed and iframe-only providers such as VidKing, 2Embed, VidSrc, VidNest, AutoEmbed, SuperEmbed, Embed.su, and MoviesAPI are intentionally not part of the current stack.
@@ -443,6 +443,7 @@ Embed/live resolver helpers:
 - `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - per-provider timeout budget for native HLS resolution; default 8000. Direct API providers are capped lower internally for quick rotation.
 - `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS` - total native HLS extraction budget before falling back to the normal resolver stack; default 26000. Movie/TV external embeds that do not expose native HLS are not returned as iframes.
 - `LIVE_HLS_PROXY_SECRET` - optional shared signing secret for dynamic external HLS proxy URLs; generated at startup when omitted. Set this for multi-instance deployments so signed URLs survive instance changes.
+- `VIDLINK_NATIVE_ASSET_CACHE_TTL_MS` - TTL for cached VidLink native token assets fetched by the Node resolver; default 7200000.
 - `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs` when present, otherwise `bin/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
 - `MATCHSTREAM_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-matchstream-hls.mjs` when present, otherwise `bin/resolve-matchstream-hls.mjs`; set to `0`/`off` to disable.
 - `SPORTS_RESOLVER_MAX_CONCURRENT` - max concurrent sports Playwright HLS resolver jobs; default 2.
@@ -453,7 +454,7 @@ Embed/live resolver helpers:
 
 Supported movie/TV native HLS hosts:
 
-- Native HLS providers: `player.videasy.net`, `vidlink.pro`, `streams.icefy.top`, `vidrock.net`, `streamdata.vaplayer.ru`, and `vixsrc.to`.
+- Native HLS providers: `player.videasy.to`, `vidlink.pro`, `streams.icefy.top`, `vidrock.net`, `streamdata.vaplayer.ru`, and `vixsrc.to`.
 - Native HLS playlist outputs: public HTTPS playlists discovered and validated by the trusted resolver. Localhost, IP-literal, and internal-style hosts are rejected.
 - The protected live HLS proxy does not accept arbitrary user-supplied `.m3u8` hosts; dynamic external hosts require resolver-signed proxy URLs.
 
@@ -582,7 +583,7 @@ Mac mini:
 
 Internal resolver helpers:
 
-- `scripts/resolve-external-embed-hls.mjs` - Playwright helper for VidEasy/VidLink movie/TV native HLS extraction.
+- `scripts/resolve-external-embed-hls.mjs` - VidLink native Node/WASM and VidEasy Playwright helper for movie/TV native HLS extraction.
 - `scripts/resolve-streamed-hls.mjs` - Playwright helper for Streamed sports HLS extraction; mini deploy copies it to `bin/resolve-streamed-hls.mjs`.
 - `scripts/resolve-matchstream-hls.mjs` - Playwright helper for MatchStream sports HLS extraction; mini deploy copies it to `bin/resolve-matchstream-hls.mjs`.
 
@@ -610,7 +611,7 @@ Server machine:
   - `dist`
 
 The server deploy is intentionally not a git checkout. It should not contain `.git`, source folders, `node_modules`, `target`, `Cargo.toml`, `package.json`, or `.env`.
-Playwright resolver dependencies live outside this tree at `~/.local/share/netflix-node`.
+Resolver Node dependencies live outside this tree at `~/.local/share/netflix-node`.
 
 Sports proxy/WARP:
 

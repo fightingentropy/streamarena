@@ -89,6 +89,9 @@ bun_bin=$(command -v bun || true)
 playwright_module=$(
   NETFLIX_NODE_DEPS_DIR="$node_deps_dir" node -e 'require.resolve("playwright", { paths: [process.env.NETFLIX_NODE_DEPS_DIR] }); process.stdout.write("yes")' 2>/dev/null || echo no
 )
+libsodium_module=$(
+  NETFLIX_NODE_DEPS_DIR="$node_deps_dir" node -e 'require.resolve("libsodium-wrappers", { paths: [process.env.NETFLIX_NODE_DEPS_DIR] }); process.stdout.write("yes")' 2>/dev/null || echo no
+)
 playwright_chromium=$(
   NETFLIX_NODE_DEPS_DIR="$node_deps_dir" node <<'NODE' 2>/dev/null || echo no
 const fs = require("fs");
@@ -160,6 +163,7 @@ printf 'matchstream_hls_resolver=%s\n' "$matchstream_hls_resolver"
 printf 'node_bin=%s\n' "${node_bin:-missing}"
 printf 'bun_bin=%s\n' "${bun_bin:-missing}"
 printf 'playwright_module=%s\n' "$playwright_module"
+printf 'libsodium_module=%s\n' "$libsodium_module"
 printf 'playwright_chromium=%s\n' "$playwright_chromium"
 printf 'warp_cli=%s\n' "${warp_cli:-missing}"
 printf 'warp_status=%s\n' "${warp_status:-missing}"
@@ -214,6 +218,7 @@ matchstream_hls_resolver=$(value_for matchstream_hls_resolver)
 node_bin=$(value_for node_bin)
 bun_bin=$(value_for bun_bin)
 playwright_module=$(value_for playwright_module)
+libsodium_module=$(value_for libsodium_module)
 playwright_chromium=$(value_for playwright_chromium)
 warp_cli=$(value_for warp_cli)
 warp_status=$(value_for warp_status)
@@ -238,6 +243,7 @@ streamed_proxy_http=$(value_for streamed_proxy_http)
 [[ "$node_bin" != "missing" ]] && pass "Node is available for resolver helpers ($node_bin)" || bad "Node is missing for resolver helpers"
 [[ "$bun_bin" != "missing" ]] && pass "Bun is available for resolver dependency installs ($bun_bin)" || bad "Bun is missing for resolver dependency installs"
 [[ "$playwright_module" == "yes" ]] && pass "Playwright module is installed for resolver helpers" || bad "Playwright module is missing for resolver helpers"
+[[ "$libsodium_module" == "yes" ]] && pass "libsodium-wrappers module is installed for native VidLink resolver" || bad "libsodium-wrappers module is missing for native VidLink resolver"
 [[ "$playwright_chromium" == "yes" ]] && pass "Playwright Chromium is installed for resolver helpers" || bad "Playwright Chromium is missing for resolver helpers"
 [[ "$env_mode" == "600" ]] && pass "server env permissions are 600" || bad "server env permissions are $env_mode"
 [[ "$env_in_app" == "no" ]] && pass "server env is outside deploy tree" || bad "server .env still exists in deploy tree"

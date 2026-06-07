@@ -8,6 +8,7 @@ MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
 REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/netflix}"
 PLAYWRIGHT_VERSION="${PLAYWRIGHT_VERSION:-^1.54.2}"
+LIBSODIUM_WRAPPERS_VERSION="${LIBSODIUM_WRAPPERS_VERSION:-^0.8.4}"
 
 SKIP_BUILD=0
 RESTART=1
@@ -32,6 +33,8 @@ Environment:
   SSH_KEY              Default: ~/.ssh/id_ed25519_codex_m4mini
   REMOTE_APP           Default: /Users/hermes/Developer/netflix
   PLAYWRIGHT_VERSION   Default: ^1.54.2
+  LIBSODIUM_WRAPPERS_VERSION
+                       Default: ^0.8.4
 USAGE
 }
 
@@ -88,7 +91,7 @@ rsync -a -e "$RSYNC_SSH" assets/library.json "$MINI_HOST:$REMOTE_APP/assets/libr
 rsync -a --delete -e "$RSYNC_SSH" assets/images/ "$MINI_HOST:$REMOTE_APP/assets/images/"
 rsync -a --delete -e "$RSYNC_SSH" assets/icons/ "$MINI_HOST:$REMOTE_APP/assets/icons/"
 
-"${SSH_BASE[@]}" "$MINI_HOST" "PLAYWRIGHT_VERSION='$PLAYWRIGHT_VERSION' bash -s" <<'REMOTE'
+"${SSH_BASE[@]}" "$MINI_HOST" "PLAYWRIGHT_VERSION='$PLAYWRIGHT_VERSION' LIBSODIUM_WRAPPERS_VERSION='$LIBSODIUM_WRAPPERS_VERSION' bash -s" <<'REMOTE'
 set -euo pipefail
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
@@ -96,7 +99,7 @@ deps_dir="${NETFLIX_NODE_DEPS_DIR:-$HOME/.local/share/netflix-node}"
 node_bin="${NODE_BIN:-$(command -v node || true)}"
 bun_bin="${BUN_BIN:-$(command -v bun || true)}"
 if [[ -z "$node_bin" || -z "$bun_bin" ]]; then
-  echo "Missing node or bun on remote host; cannot install Playwright resolver deps." >&2
+  echo "Missing node or bun on remote host; cannot install resolver deps." >&2
   exit 1
 fi
 
@@ -112,6 +115,10 @@ fi
 
 if ! NETFLIX_NODE_DEPS_DIR="$deps_dir" "$node_bin" -e 'require.resolve("playwright", { paths: [process.env.NETFLIX_NODE_DEPS_DIR] })' >/dev/null 2>&1; then
   (cd "$deps_dir" && "$bun_bin" add --dev "playwright@$PLAYWRIGHT_VERSION")
+fi
+
+if ! NETFLIX_NODE_DEPS_DIR="$deps_dir" "$node_bin" -e 'require.resolve("libsodium-wrappers", { paths: [process.env.NETFLIX_NODE_DEPS_DIR] })' >/dev/null 2>&1; then
+  (cd "$deps_dir" && "$bun_bin" add "libsodium-wrappers@$LIBSODIUM_WRAPPERS_VERSION")
 fi
 
 if ! NETFLIX_NODE_DEPS_DIR="$deps_dir" "$node_bin" >/dev/null 2>&1 <<'NODE'

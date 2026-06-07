@@ -931,7 +931,7 @@ mod tests {
     #[test]
     fn trusted_external_embed_hls_signature_allows_public_rotated_hosts() {
         let secret = "test-live-hls-proxy-secret-with-enough-length";
-        let referer = Some("https://player.videasy.net/tv/273240/1/4?color=ffd700");
+        let referer = Some("https://player.videasy.to/tv/273240/1/4?color=ffd700");
         let playback_url = build_trusted_external_embed_hls_playback_source(
             "https://rotated-videasy-cdn.example.com/title/index.m3u8",
             referer,
@@ -990,7 +990,7 @@ mod tests {
 
         let playback_url = build_trusted_external_embed_hls_playback_source(
             local_url.as_str(),
-            Some("https://player.videasy.net/movie/1"),
+            Some("https://player.videasy.to/movie/1"),
             secret,
         );
         let uri: axum::http::Uri = playback_url.parse().expect("signed playback uri");
@@ -1077,7 +1077,7 @@ mod tests {
         let rewritten = rewrite_live_hls_playlist(
             &base,
             playlist,
-            Some("https://player.videasy.net/movie/1"),
+            Some("https://player.videasy.to/movie/1"),
             None,
         );
 

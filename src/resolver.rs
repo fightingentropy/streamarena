@@ -5459,10 +5459,10 @@ fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -
     }
     match (source.provider.id, metadata.media_type.as_str()) {
         ("videasy", "movie") => Some(format!(
-            "https://player.videasy.net/movie/{tmdb_id}?color=ffd700"
+            "https://player.videasy.to/movie/{tmdb_id}?color=ffd700"
         )),
         ("videasy", "tv") => Some(format!(
-            "https://player.videasy.net/tv/{}/{}/{}?nextEpisode=true&autoplayNextEpisode=true&episodeSelector=false&overlay=true&color=ffd700",
+            "https://player.videasy.to/tv/{}/{}/{}?nextEpisode=true&autoplayNextEpisode=true&episodeSelector=false&overlay=true&color=ffd700",
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
         ("vidlink", "movie") => Some(format!("https://vidlink.pro/movie/{tmdb_id}")),
@@ -6046,6 +6046,7 @@ fn is_supported_external_embed_hls_embed_url(url: &Url) -> bool {
     };
     match host.as_str() {
         "player.videasy.net" => url.path().starts_with("/movie/") || url.path().starts_with("/tv/"),
+        "player.videasy.to" => url.path().starts_with("/movie/") || url.path().starts_with("/tv/"),
         "vidlink.pro" => url.path().starts_with("/movie/") || url.path().starts_with("/tv/"),
         _ => false,
     }
@@ -7877,7 +7878,7 @@ mod tests {
             .expect("videasy fallback source");
         assert_eq!(
             external_embed_url(videasy_source, &tv_metadata).unwrap(),
-            "https://player.videasy.net/tv/76331/1/1?nextEpisode=true&autoplayNextEpisode=true&episodeSelector=false&overlay=true&color=ffd700"
+            "https://player.videasy.to/tv/76331/1/1?nextEpisode=true&autoplayNextEpisode=true&episodeSelector=false&overlay=true&color=ffd700"
         );
         assert_eq!(
             external_embed_url(vidlink_source, &tv_metadata).unwrap(),
@@ -8053,9 +8054,13 @@ mod tests {
 
     #[test]
     fn external_embed_hls_resolver_accepts_public_playlist_hosts() {
-        let videasy_embed: url::Url = "https://player.videasy.net/movie/1368166?color=ffd700"
+        let videasy_embed: url::Url = "https://player.videasy.to/movie/1368166?color=ffd700"
             .parse()
             .expect("videasy embed");
+        let legacy_videasy_embed: url::Url =
+            "https://player.videasy.net/movie/1368166?color=ffd700"
+                .parse()
+                .expect("legacy videasy embed");
         let vidlink_embed: url::Url = "https://vidlink.pro/movie/1368166"
             .parse()
             .expect("vidlink embed");
@@ -8088,6 +8093,9 @@ mod tests {
             .expect("unsupported non-hls url");
 
         assert!(is_supported_external_embed_hls_embed_url(&videasy_embed));
+        assert!(is_supported_external_embed_hls_embed_url(
+            &legacy_videasy_embed
+        ));
         assert!(is_supported_external_embed_hls_embed_url(&vidlink_embed));
         assert!(!is_supported_external_embed_hls_embed_url(
             &unsupported_embed
