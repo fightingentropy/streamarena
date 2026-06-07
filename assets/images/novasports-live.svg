@@ -1,0 +1,8 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="64" height="64" rx="8" fill="#0f172a"/>
+  <rect x="7" y="7" width="50" height="50" rx="6" fill="#111827"/>
+  <rect x="12" y="14" width="40" height="36" rx="4" fill="#0ea5e9" opacity="0.2"/>
+  <text x="32" y="24" text-anchor="middle" font-family="Arial, sans-serif" font-weight="800" font-size="12" fill="#38bdf8" letter-spacing="0.5">NOVA</text>
+  <rect x="13" y="28" width="38" height="2" rx="1" fill="#38bdf8"/>
+  <text x="32" y="44" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="10" fill="#e2e8f0">SPORTS</text>
+</svg>
