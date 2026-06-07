@@ -241,9 +241,6 @@ pub fn build_sports_live_hls_playback_source(
     referer: Option<&str>,
     live_hls_proxy_secret: &str,
 ) -> String {
-    if prefers_direct_browser_live_hls_playback(input) {
-        return input.trim().to_owned();
-    }
     build_trusted_external_embed_hls_playback_source(input, referer, live_hls_proxy_secret)
 }
 
@@ -1424,10 +1421,8 @@ mod tests {
 
         let secret = "test-live-hls-proxy-secret-with-enough-length";
         let referer = "https://embed.st/embed/admin/ppv-croatia-vs-slovenia/1";
-        assert_eq!(
-            build_sports_live_hls_playback_source(strmd.as_str(), Some(referer), secret),
-            strmd.as_str()
-        );
+        assert!(build_sports_live_hls_playback_source(strmd.as_str(), Some(referer), secret)
+            .starts_with("/api/live/hls.m3u8?"));
         assert!(build_sports_live_hls_playback_source(
             hesgoaler.as_str(),
             Some(referer),

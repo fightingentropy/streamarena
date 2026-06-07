@@ -69,6 +69,7 @@ SSH_BASE=(ssh -i "$SSH_KEY" -o BatchMode=yes)
 RSYNC_SSH="ssh -i $SSH_KEY -o BatchMode=yes"
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
+  export CARGO_TARGET_DIR="$ROOT_DIR/target"
   bun run build
   cargo build --release
 fi
