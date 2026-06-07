@@ -367,6 +367,75 @@ struct VidRockCdnSource {
     url: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct LordflixEncDecResponse {
+    #[serde(default)]
+    status: i64,
+    #[serde(default)]
+    result: Option<LordflixEncDecResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LordflixEncDecResult {
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    sign: String,
+    #[serde(default)]
+    stream: Vec<LordflixStreamEntry>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LordflixStreamEntry {
+    #[serde(default)]
+    r#type: String,
+    #[serde(default)]
+    playlist: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct NoTorrentStreamResponse {
+    #[serde(default)]
+    streams: Vec<NoTorrentStreamEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NoTorrentStreamEntry {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    externalUrl: String,
+    #[serde(default)]
+    behaviorHints: NoTorrentBehaviorHints,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NoTorrentBehaviorHints {
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(default)]
+    proxyHeaders: NoTorrentProxyHeaders,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NoTorrentProxyHeaders {
+    #[serde(default)]
+    request: HashMap<String, String>,
+}
+
+const LORDFLIX_API_BASE: &str = "https://snowhouse.lordflix.club";
+const LORDFLIX_ENC_DEC_API: &str = "https://enc-dec.app/api";
+const LORDFLIX_REFERER: &str = "https://lordflix.org/";
+const LORDFLIX_SERVERS: &[&str] = &[
+    "Berlin", "Marseille", "Phoenix", "Oslo", "Luna", "Sakura", "Rio", "Ativa", "Moscow",
+    "Backrooms",
+];
+const NOTORRENT_API_BASE: &str = "https://addon-osvh.onrender.com";
+
 const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
     ExternalEmbedProvider {
         id: "videasy",
@@ -387,6 +456,16 @@ const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
         id: "vidrock",
         label: "VidRock",
         priority: 8,
+    },
+    ExternalEmbedProvider {
+        id: "notorrent",
+        label: "NoTorrent",
+        priority: 7,
+    },
+    ExternalEmbedProvider {
+        id: "lordflix",
+        label: "LordFlix",
+        priority: 9,
     },
     ExternalEmbedProvider {
         id: "vidapi",
@@ -5238,7 +5317,9 @@ fn is_default_external_embed_hls_fallback_source(source: ExternalEmbedSource) ->
             .map(|server| server.id == "YORU")
             .unwrap_or(true),
         "vidlink" => source.server.is_none(),
-        "icefy" | "vidrock" | "vidapi" | "vixsrc" => source.server.is_none(),
+        "icefy" | "vidrock" | "vidapi" | "vixsrc" | "lordflix" | "notorrent" => {
+            source.server.is_none()
+        }
         _ => false,
     }
 }
@@ -5246,7 +5327,7 @@ fn is_default_external_embed_hls_fallback_source(source: ExternalEmbedSource) ->
 fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) -> bool {
     matches!(
         source.provider.id,
-        "videasy" | "vidlink" | "icefy" | "vidrock" | "vidapi" | "vixsrc"
+        "videasy" | "vidlink" | "icefy" | "vidrock" | "vidapi" | "vixsrc" | "lordflix" | "notorrent"
     )
 }
 
@@ -5255,7 +5336,9 @@ fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 
         "vidlink" => 1_250,
         "icefy" => 1_100,
         "vidrock" => 1_025,
+        "lordflix" => 975,
         "vidapi" => 950,
+        "notorrent" => 900,
         "vixsrc" => 800,
         "videasy" if source.server.is_none() => 400,
         "videasy" => 200,
@@ -5266,7 +5349,7 @@ fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 
 fn external_embed_source_quality_score(source: ExternalEmbedSource) -> i64 {
     match source.provider.id {
         "videasy" if source.server.map(|server| server.id) == Some("YORU") => 600,
-        "vidlink" | "icefy" | "vidrock" | "vidapi" | "vixsrc" => 400,
+        "vidlink" | "icefy" | "vidrock" | "vidapi" | "vixsrc" | "lordflix" | "notorrent" => 400,
         "videasy" => 350,
         _ => 0,
     }
@@ -5492,6 +5575,26 @@ fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -
             "https://vidrock.net/tv/{}/{}/{}",
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
+        ("lordflix", _) => lordflix_source_url(metadata),
+        ("notorrent", "movie") => {
+            let imdb_id = metadata.imdb_id.trim();
+            if imdb_id.is_empty() {
+                None
+            } else {
+                Some(format!("{NOTORRENT_API_BASE}/stream/movie/{imdb_id}.json"))
+            }
+        }
+        ("notorrent", "tv") => {
+            let imdb_id = metadata.imdb_id.trim();
+            if imdb_id.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{NOTORRENT_API_BASE}/stream/series/{imdb_id}:{}:{}.json",
+                    metadata.season_number, metadata.episode_number
+                ))
+            }
+        }
         _ => None,
     }
 }
@@ -5589,7 +5692,7 @@ fn external_embed_source_provider_label(source: ExternalEmbedSource) -> &'static
 fn external_embed_source_quality_label(source: ExternalEmbedSource) -> &'static str {
     if matches!(
         source.provider.id,
-        "icefy" | "vidrock" | "vidapi" | "vixsrc"
+        "icefy" | "vidrock" | "vidapi" | "vixsrc" | "lordflix" | "notorrent"
     ) {
         return "1080p";
     }
@@ -5605,6 +5708,8 @@ fn external_embed_source_detail_label(source: ExternalEmbedSource) -> &'static s
         "vidrock" => return "Native HLS",
         "vidapi" => return "Multi-source native HLS",
         "vixsrc" => return "Native HLS, alternate audio",
+        "lordflix" => return "Multi-server native HLS",
+        "notorrent" => return "Stremio addon HLS",
         _ => {}
     }
     source
@@ -5649,6 +5754,12 @@ async fn resolve_external_embed_hls_playback_source(
         "vixsrc" => return resolve_vixsrc_hls_playback_source(client, embed_url, timeout_ms).await,
         "vidrock" => {
             return resolve_vidrock_hls_playback_source(client, metadata, timeout_ms).await;
+        }
+        "lordflix" => {
+            return resolve_lordflix_hls_playback_source(client, metadata, timeout_ms).await;
+        }
+        "notorrent" => {
+            return resolve_notorrent_hls_playback_source(client, metadata, timeout_ms).await;
         }
         _ => {}
     }
@@ -5876,6 +5987,241 @@ async fn resolve_vidrock_nested_hls_source(
         }
     }
     None
+}
+
+fn lordflix_encode_quote(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
+}
+
+fn lordflix_source_url(metadata: &ResolveMetadata) -> Option<String> {
+    let imdb_id = metadata.imdb_id.trim();
+    let title = metadata.display_title.trim();
+    if imdb_id.is_empty() || title.is_empty() {
+        return None;
+    }
+    let type_param = if metadata.media_type == "tv" {
+        "series"
+    } else {
+        "movie"
+    };
+    let mut url = format!(
+        "{LORDFLIX_API_BASE}/?title={}&type={}&year={}&imdb={}&tmdb={}&server=Berlin",
+        lordflix_encode_quote(title),
+        type_param,
+        metadata.display_year.trim(),
+        imdb_id,
+        metadata.tmdb_id.trim(),
+    );
+    if metadata.media_type == "tv" {
+        url.push_str(&format!(
+            "&season={}&episode={}",
+            metadata.season_number, metadata.episode_number
+        ));
+    }
+    Some(url)
+}
+
+fn build_lordflix_server_url(metadata: &ResolveMetadata, server: &str) -> Option<String> {
+    let imdb_id = metadata.imdb_id.trim();
+    let title = metadata.display_title.trim();
+    if imdb_id.is_empty() || title.is_empty() {
+        return None;
+    }
+    let type_param = if metadata.media_type == "tv" {
+        "series"
+    } else {
+        "movie"
+    };
+    let mut url = format!(
+        "{LORDFLIX_API_BASE}/?title={}&type={}&year={}&imdb={}&tmdb={}&server={server}",
+        lordflix_encode_quote(title),
+        type_param,
+        metadata.display_year.trim(),
+        imdb_id,
+        metadata.tmdb_id.trim(),
+    );
+    if metadata.media_type == "tv" {
+        url.push_str(&format!(
+            "&season={}&episode={}",
+            metadata.season_number, metadata.episode_number
+        ));
+    }
+    Some(url)
+}
+
+async fn resolve_lordflix_hls_playback_source(
+    client: &reqwest::Client,
+    metadata: &ResolveMetadata,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    for server in LORDFLIX_SERVERS {
+        let Some(server_url) = build_lordflix_server_url(metadata, server) else {
+            continue;
+        };
+        if let Some(source) =
+            resolve_lordflix_server_hls_playback_source(client, &server_url, timeout_ms).await
+        {
+            return Some(source);
+        }
+    }
+    None
+}
+
+async fn resolve_lordflix_server_hls_playback_source(
+    client: &reqwest::Client,
+    server_url: &str,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    let enc_url = format!(
+        "{LORDFLIX_ENC_DEC_API}/enc-lordflix?url={}",
+        lordflix_encode_quote(server_url)
+    );
+    let enc_response =
+        fetch_external_json::<LordflixEncDecResponse>(client, &enc_url, None, timeout_ms).await?;
+    if enc_response.status != 200 {
+        return None;
+    }
+    let enc_result = enc_response.result?;
+    let proxy_url = enc_result.url.trim();
+    let signature = enc_result.sign.trim();
+    if proxy_url.is_empty() || signature.is_empty() {
+        return None;
+    }
+
+    let encrypted_payload =
+        fetch_external_text(client, proxy_url, Some(LORDFLIX_REFERER), timeout_ms).await?;
+    if encrypted_payload.trim().is_empty() {
+        return None;
+    }
+
+    let dec_url = format!("{LORDFLIX_ENC_DEC_API}/dec-lordflix");
+    let dec_response = post_external_json::<LordflixEncDecResponse>(
+        client,
+        &dec_url,
+        json!({
+            "text": encrypted_payload,
+            "sign": signature,
+        }),
+        None,
+        timeout_ms,
+    )
+    .await?;
+    if dec_response.status != 200 {
+        return None;
+    }
+    let dec_result = dec_response.result?;
+    if dec_result.error.as_deref().unwrap_or("").trim().len() > 0 {
+        return None;
+    }
+
+    for stream in dec_result.stream {
+        if stream.r#type.trim().eq_ignore_ascii_case("hls") {
+            let playlist = stream.playlist.trim();
+            if !playlist.is_empty() {
+                if let Some(source) = validate_external_embed_hls_playlist(
+                    client,
+                    playlist,
+                    Some(LORDFLIX_REFERER),
+                    timeout_ms,
+                )
+                .await
+                {
+                    return Some(source);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn resolve_notorrent_hls_playback_source(
+    client: &reqwest::Client,
+    metadata: &ResolveMetadata,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    let imdb_id = metadata.imdb_id.trim();
+    if imdb_id.is_empty() {
+        return None;
+    }
+    let api_url = if metadata.media_type == "tv" {
+        format!(
+            "{NOTORRENT_API_BASE}/stream/series/{imdb_id}:{}:{}.json",
+            metadata.season_number, metadata.episode_number
+        )
+    } else {
+        format!("{NOTORRENT_API_BASE}/stream/movie/{imdb_id}.json")
+    };
+    let response = fetch_external_json::<NoTorrentStreamResponse>(
+        client,
+        &api_url,
+        None,
+        timeout_ms,
+    )
+    .await?;
+
+    for stream in response.streams {
+        if !stream.externalUrl.trim().is_empty() {
+            continue;
+        }
+        let stream_url = stream.url.trim();
+        if stream_url.is_empty()
+            || stream_url.contains("github.com")
+            || stream_url.contains("googleusercontent")
+        {
+            continue;
+        }
+        let referer = notorrent_stream_referer(&stream);
+        if let Some(source) =
+            validate_external_embed_hls_playlist(client, stream_url, referer.as_deref(), timeout_ms)
+                .await
+        {
+            return Some(source);
+        }
+    }
+    None
+}
+
+fn notorrent_stream_referer(stream: &NoTorrentStreamEntry) -> Option<String> {
+    let mut headers = stream.behaviorHints.headers.clone();
+    headers.extend(stream.behaviorHints.proxyHeaders.request.clone());
+    headers
+        .get("Referer")
+        .or_else(|| headers.get("referer"))
+        .cloned()
+        .or_else(|| headers.get("Origin").or_else(|| headers.get("origin")).cloned())
+}
+
+async fn post_external_json<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+    body: Value,
+    referer: Option<&str>,
+    timeout_ms: u64,
+) -> Option<T> {
+    let url = Url::parse(url.trim()).ok()?;
+    if url.scheme() != "https" {
+        return None;
+    }
+    let mut request = client
+        .post(url)
+        .header(header::USER_AGENT, EXTERNAL_EMBED_USER_AGENT)
+        .header(header::ACCEPT, "application/json, text/plain, */*")
+        .header(header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(referer) = referer.and_then(normalize_external_embed_hls_referer) {
+        request = request.header(header::REFERER, referer);
+    }
+    let response = timeout(
+        Duration::from_millis(timeout_ms.clamp(1_000, 120_000)),
+        request.json(&body).send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    response.json::<T>().await.ok()
 }
 
 async fn fetch_external_json<T: DeserializeOwned>(
@@ -7812,7 +8158,7 @@ mod tests {
 
         // VidLink is the neutral default native HLS source, with fast native
         // API providers and VidEasy variants still available behind it.
-        assert_eq!(sources.len(), 13);
+        assert_eq!(sources.len(), 15);
         assert_eq!(sources[0].primary, "VidLink");
         assert_eq!(sources[0].provider, "LivNet");
         assert_eq!(sources[0].filename, "VidLink embed");
@@ -7886,7 +8232,7 @@ mod tests {
         );
 
         let tv_sources = build_external_embed_source_summaries(&tv_metadata, &health_scores);
-        assert_eq!(tv_sources.len(), 13);
+        assert_eq!(tv_sources.len(), 15);
         assert_eq!(tv_sources[0].primary, "VidLink");
         assert_eq!(tv_sources[0].provider, "LivNet");
         assert_eq!(tv_sources[1].primary, "Icefy");
@@ -7950,11 +8296,13 @@ mod tests {
         assert_eq!(source_ids.first(), Some(&("vidlink", "default")));
         assert_eq!(source_ids.get(1), Some(&("icefy", "default")));
         assert_eq!(source_ids.get(2), Some(&("vidrock", "default")));
-        assert_eq!(source_ids.get(3), Some(&("vidapi", "default")));
-        assert_eq!(source_ids.get(4), Some(&("vixsrc", "default")));
-        assert_eq!(source_ids.get(5), Some(&("videasy", "default")));
-        assert_eq!(source_ids.get(6), Some(&("videasy", "YORU")));
-        assert_eq!(source_ids.len(), 7);
+        assert_eq!(source_ids.get(3), Some(&("lordflix", "default")));
+        assert_eq!(source_ids.get(4), Some(&("notorrent", "default")));
+        assert_eq!(source_ids.get(5), Some(&("vidapi", "default")));
+        assert_eq!(source_ids.get(6), Some(&("vixsrc", "default")));
+        assert_eq!(source_ids.get(7), Some(&("videasy", "default")));
+        assert_eq!(source_ids.get(8), Some(&("videasy", "YORU")));
+        assert_eq!(source_ids.len(), 9);
 
         let tv_metadata = sample_tv_metadata();
         let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
@@ -7977,11 +8325,13 @@ mod tests {
         assert_eq!(tv_source_ids.first(), Some(&("vidlink", "default")));
         assert_eq!(tv_source_ids.get(1), Some(&("icefy", "default")));
         assert_eq!(tv_source_ids.get(2), Some(&("vidrock", "default")));
-        assert_eq!(tv_source_ids.get(3), Some(&("vidapi", "default")));
-        assert_eq!(tv_source_ids.get(4), Some(&("vixsrc", "default")));
-        assert_eq!(tv_source_ids.get(5), Some(&("videasy", "default")));
-        assert_eq!(tv_source_ids.get(6), Some(&("videasy", "YORU")));
-        assert_eq!(tv_source_ids.len(), 7);
+        assert_eq!(tv_source_ids.get(3), Some(&("lordflix", "default")));
+        assert_eq!(tv_source_ids.get(4), Some(&("notorrent", "default")));
+        assert_eq!(tv_source_ids.get(5), Some(&("vidapi", "default")));
+        assert_eq!(tv_source_ids.get(6), Some(&("vixsrc", "default")));
+        assert_eq!(tv_source_ids.get(7), Some(&("videasy", "default")));
+        assert_eq!(tv_source_ids.get(8), Some(&("videasy", "YORU")));
+        assert_eq!(tv_source_ids.len(), 9);
 
         let neon_source = external_embed_sources()
             .into_iter()
