@@ -391,6 +391,11 @@ const pages = [
     selector: ".player-shell",
     expectSourceSwitch: true,
   },
+  {
+    path: "/player.html?tmdbId=source-switch-failure-tv&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1",
+    selector: ".player-shell",
+    expectSourceSwitchFailureRestore: true,
+  },
 ];
 
 async function runSmoke() {
@@ -407,6 +412,7 @@ async function runSmoke() {
       let sawHlsMasterRequest = false;
       let sawRemuxRequest = false;
       let sawSourceSwitchResolveHash = "";
+      let sourceSwitchResolveHashes = [];
       let sawHlsManagedResolve = false;
       let sawSportsBasketballMatches = false;
       let sawHlsManagedImportHold = false;
@@ -511,10 +517,15 @@ async function runSmoke() {
         if (url.pathname === "/api/remux") {
           sawRemuxRequest = true;
         }
-        if (pageSpec.expectSourceSwitch && url.pathname === "/api/resolve/tv") {
+        if (
+          (pageSpec.expectSourceSwitch ||
+            pageSpec.expectSourceSwitchFailureRestore) &&
+          url.pathname === "/api/resolve/tv"
+        ) {
           const sourceHash = url.searchParams.get("sourceHash") || "";
           if (sourceHash) {
             sawSourceSwitchResolveHash = sourceHash;
+            sourceSwitchResolveHashes.push(sourceHash);
           }
         }
         if (
@@ -611,6 +622,61 @@ async function runSmoke() {
               },
             }),
           );
+        });
+      }
+
+      if (pageSpec.expectSourceSwitch || pageSpec.expectSourceSwitchFailureRestore) {
+        await context.addInitScript(({ sourceHashes, failingHash }) => {
+          const shouldHandleSource = (media) => {
+            const currentSource = String(
+              media.currentSrc || media.getAttribute("src") || "",
+            );
+            return sourceHashes.some((hash) => currentSource.includes(hash));
+          };
+          const isFailingSource = (media) => {
+            if (!failingHash) {
+              return false;
+            }
+            const currentSource = String(
+              media.currentSrc || media.getAttribute("src") || "",
+            );
+            return currentSource.includes(failingHash);
+          };
+          const originalLoad = HTMLMediaElement.prototype.load;
+          const originalPlay = HTMLMediaElement.prototype.play;
+          HTMLMediaElement.prototype.load = function patchedLoad(...args) {
+            if (!shouldHandleSource(this)) {
+              return originalLoad.apply(this, args);
+            }
+            if (!isFailingSource(this)) {
+              queueMicrotask(() => {
+                this.dispatchEvent(new Event("loadedmetadata"));
+                this.dispatchEvent(new Event("canplay"));
+              });
+            }
+            return undefined;
+          };
+          HTMLMediaElement.prototype.play = function patchedPlay(...args) {
+            if (!shouldHandleSource(this)) {
+              return originalPlay.apply(this, args);
+            }
+            if (isFailingSource(this)) {
+              queueMicrotask(() => {
+                this.dispatchEvent(new Event("error"));
+              });
+              return new Promise(() => {});
+            }
+            queueMicrotask(() => {
+              this.dispatchEvent(new Event("playing"));
+              this.dispatchEvent(new Event("timeupdate"));
+            });
+            return Promise.resolve();
+          };
+        }, {
+          sourceHashes: [sourceSwitchHashA, sourceSwitchHashB],
+          failingHash: pageSpec.expectSourceSwitchFailureRestore
+            ? sourceSwitchHashB
+            : "",
         });
       }
 
@@ -881,6 +947,11 @@ async function runSmoke() {
           sourceSwitchHashB,
           { timeout: 8_000 },
         );
+        await page.evaluate((hash) => {
+          document
+            .querySelector(`.source-option[data-source-hash="${hash}"]`)
+            ?.click();
+        }, sourceSwitchHashB);
         for (let attempt = 0; attempt < 80; attempt += 1) {
           const switched = await page.evaluate((expectedHash) => {
             const selectedHash =
@@ -927,13 +998,87 @@ async function runSmoke() {
         }));
         if (
           sawSourceSwitchResolveHash !== sourceSwitchHashB ||
+          !sourceSwitchResolveHashes.includes(sourceSwitchHashB) ||
           switchState.selectedHash !== sourceSwitchHashB ||
           !switchState.videoSource.includes(sourceSwitchHashB)
         ) {
           throw new Error(
             `${pageSpec.path}\nSource switch failed.\n${JSON.stringify({
               sawSourceSwitchResolveHash,
+              sourceSwitchResolveHashes,
               switchState,
+            })}`,
+          );
+        }
+      }
+
+      if (pageSpec.expectSourceSwitchFailureRestore) {
+        await page.waitForFunction(
+          (hash) =>
+            Boolean(
+              document.querySelector(`.source-option[data-source-hash="${hash}"]`),
+            ) &&
+            (document.querySelector("video")?.getAttribute("src") || "").includes(hash),
+          sourceSwitchHashA,
+          { timeout: 8_000 },
+        );
+        await page.waitForSelector("#toggleSource", { state: "visible", timeout: 8_000 });
+        await page.click("#toggleSource");
+        await page.evaluate(() => {
+          const sourceControl = document.querySelector("#sourceControl");
+          sourceControl?.classList.add("is-open");
+          document.querySelector("#toggleSource")?.setAttribute("aria-expanded", "true");
+        });
+        await page.waitForFunction(
+          (hash) =>
+            Boolean(
+              document.querySelector(`.source-option[data-source-hash="${hash}"]`),
+            ),
+          sourceSwitchHashB,
+          { timeout: 8_000 },
+        );
+        await page.evaluate((hash) => {
+          document
+            .querySelector(`.source-option[data-source-hash="${hash}"]`)
+            ?.click();
+        }, sourceSwitchHashB);
+        await page.waitForFunction(
+          (restoredHash) => {
+            const selectedHash =
+              document.querySelector(".source-option[aria-selected='true']")
+                ?.dataset.sourceHash || "";
+            const videoSource = document.querySelector("video")?.getAttribute("src") || "";
+            const resolverVisible = Boolean(
+              document.querySelector(".resolver-overlay:not([hidden])"),
+            );
+            return (
+              selectedHash === restoredHash &&
+              videoSource.includes(restoredHash) &&
+              !resolverVisible
+            );
+          },
+          sourceSwitchHashA,
+          { timeout: 8_000 },
+        );
+        const restoreState = await page.evaluate(() => ({
+          selectedHash:
+            document.querySelector(".source-option[aria-selected='true']")
+              ?.dataset.sourceHash || "",
+          videoSource: document.querySelector("video")?.getAttribute("src") || "",
+          resolverText:
+            document.querySelector(".resolver-overlay:not([hidden]) .resolver-card")
+              ?.textContent || "",
+        }));
+        if (
+          !sourceSwitchResolveHashes.includes(sourceSwitchHashB) ||
+          restoreState.selectedHash !== sourceSwitchHashA ||
+          !restoreState.videoSource.includes(sourceSwitchHashA)
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nFailed manual source should restore previous playback.\n${JSON.stringify({
+              sawSourceSwitchResolveHash,
+              sourceSwitchResolveHashes,
+              restoreState,
             })}`,
           );
         }

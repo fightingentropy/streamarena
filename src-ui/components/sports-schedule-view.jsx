@@ -57,10 +57,11 @@ const SPORT_TABS = Object.freeze(
   ),
 );
 
-const SPORTS_SCHEDULE_SOURCES = Object.freeze(["streamed", "matchstream"]);
+const SPORTS_SCHEDULE_SOURCES = Object.freeze(["streamed", "matchstream", "ntvs"]);
 const SPORTS_SOURCE_LABELS = Object.freeze({
   streamed: "Streamed",
   matchstream: "MatchStream",
+  ntvs: "NTVS",
 });
 
 function normalizeSport(value) {
@@ -109,14 +110,27 @@ function sportsSourceLabel(source) {
   return SPORTS_SOURCE_LABELS[source] || "Sports";
 }
 
+function sportsScheduleSourcesForSport(sport) {
+  return sport === "football"
+    ? SPORTS_SCHEDULE_SOURCES
+    : SPORTS_SCHEDULE_SOURCES.filter((source) => source !== "ntvs");
+}
+
 function normalizeProviderId(value) {
   const provider = String(value || "").trim().toLowerCase();
-  return provider === "streamed" || provider === "matchstream" ? provider : "";
+  return provider === "streamed" || provider === "matchstream" || provider === "ntvs"
+    ? provider
+    : "";
 }
 
 function isProviderLabel(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  return normalized === "streamed" || normalized === "matchstream" || normalized === "auto";
+  return (
+    normalized === "streamed" ||
+    normalized === "matchstream" ||
+    normalized === "ntvs" ||
+    normalized === "auto"
+  );
 }
 
 function getLocalTimeZone() {
@@ -290,6 +304,7 @@ function getSportsPlayerEpisodeLabel(match) {
     "auto",
     "streamed",
     "matchstream",
+    "ntvs",
     provider,
     ...((Array.isArray(match?.providers) ? match.providers : [])
       .map(normalizeProviderId)
@@ -435,12 +450,13 @@ export default function SportsScheduleView(options = {}) {
 
   async function loadMatches() {
     const requestId = ++loadSequence;
+    const activeSport = selectedSport();
     const activeConfig = config();
     setStatus("loading");
     setErrorText("");
     try {
       const sourceResults = await Promise.allSettled(
-        SPORTS_SCHEDULE_SOURCES.map(async (source) => {
+        sportsScheduleSourcesForSport(activeSport).map(async (source) => {
           const payload = await fetchSportsSchedule(activeConfig, source);
           return {
             source,

@@ -32,35 +32,14 @@ async function loadPlaywright() {
 
 const { chromium } = await loadPlaywright();
 
-const sourceUrl = String(process.argv[2] || "").trim();
-const timeoutMs = Number(process.env.MATCHSTREAM_HLS_RESOLVE_TIMEOUT_MS || 18000);
+const embedUrl = String(process.argv[2] || "").trim();
+const timeoutMs = Number(process.env.NTVS_HLS_RESOLVE_TIMEOUT_MS || 18000);
 const rawProxy = String(
-  process.env.MATCHSTREAM_BROWSER_PROXY ||
+  process.env.NTVS_EMBED_BROWSER_PROXY ||
     process.env.SPORTS_HTTP_PROXY ||
     process.env.OUTBOUND_HTTP_PROXY ||
     "",
 ).trim();
-
-const legacyChannelHosts = new Set(["glisco.link", "evfancy.link", "strongst.link", "l2l2.link"]);
-const brightcoreHosts = new Set(["brightcoremind.com", "www.brightcoremind.com"]);
-const bootstrapHosts = new Set([
-  "adexchangerapid.com",
-  "www.adexchangerapid.com",
-  "dohaunting.com",
-  "www.dohaunting.com",
-  "jnbhi.com",
-  "www.jnbhi.com",
-  "lineagest.click",
-  "www.lineagest.click",
-  "mxbrbviqikqaw.com",
-  "www.mxbrbviqikqaw.com",
-]);
-const embedPlayerHosts = new Set([
-  "helpless.click",
-  "www.helpless.click",
-  ...bootstrapHosts,
-]);
-const hlsRootHosts = ["zohanayaan.com", "28585519.net"];
 
 function normalizeProxyServer(value) {
   if (!value) return "";
@@ -71,43 +50,22 @@ function hostMatches(host, allowed) {
   return host === allowed || host.endsWith(`.${allowed}`);
 }
 
-function isMatchstreamChannelHost(host) {
-  const normalized = String(host || "").toLowerCase();
-  if (legacyChannelHosts.has(normalized)) return true;
-  return /^s\d+\.[a-z0-9-]+\.[a-z]{2,24}$/i.test(normalized);
-}
-
-function isSupportedChannelUrl(value) {
-  try {
-    const url = new URL(value);
-    return (
-      (url.protocol === "https:" || url.protocol === "http:") &&
-      isMatchstreamChannelHost(url.hostname) &&
-      url.pathname.replace(/^\/+/, "") === "ch" &&
-      Boolean(url.searchParams.get("id")?.trim())
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isSupportedPlayerUrl(value) {
+function isSupportedEmbedUrl(value) {
   try {
     const url = new URL(value);
     const host = url.hostname.toLowerCase();
     return (
-      ((brightcoreHosts.has(host) &&
-        (url.pathname === "/embedb.php" || url.pathname === "/embedw.php")) ||
-        (embedPlayerHosts.has(host) && url.pathname.startsWith("/e/"))) &&
-      (url.protocol === "https:" || url.protocol === "http:")
+      url.protocol === "https:" &&
+      (host === "embed.st" || host === "www.embed.st") &&
+      url.pathname.startsWith("/embed/")
     );
   } catch {
     return false;
   }
 }
 
-function isMatchstreamHlsHost(host) {
-  return hlsRootHosts.some((allowed) => hostMatches(host, allowed));
+function isNtvsHlsHost(host) {
+  return hostMatches(host, "strmd.st");
 }
 
 function isStreamPlaylistUrl(value) {
@@ -115,7 +73,7 @@ function isStreamPlaylistUrl(value) {
     const url = new URL(value);
     return (
       (url.protocol === "https:" || url.protocol === "http:") &&
-      isMatchstreamHlsHost(url.hostname.toLowerCase()) &&
+      isNtvsHlsHost(url.hostname.toLowerCase()) &&
       url.pathname.toLowerCase().endsWith(".m3u8")
     );
   } catch {
@@ -129,44 +87,33 @@ function isAllowedRequestUrl(value) {
     const url = new URL(value);
     const host = url.hostname.toLowerCase();
     return (
-      isMatchstreamChannelHost(host) ||
-      brightcoreHosts.has(host) ||
-      embedPlayerHosts.has(host) ||
-      bootstrapHosts.has(host) ||
+      host === "embed.st" ||
+      host === "www.embed.st" ||
       host === "cdn.jsdelivr.net" ||
       host.endsWith(".jsdelivr.net") ||
-      host === "ajax.googleapis.com" ||
-      host === "maxcdn.bootstrapcdn.com" ||
-      host === "code.jquery.com" ||
-      isMatchstreamHlsHost(host)
+      host === "llvpn.com" ||
+      host === "www.llvpn.com" ||
+      isNtvsHlsHost(host)
     );
   } catch {
     return false;
   }
 }
 
-if (!isSupportedChannelUrl(sourceUrl)) {
-  console.error("Usage: resolve-matchstream-hls.mjs https://s3.vertex.st/ch?id=...");
+if (!isSupportedEmbedUrl(embedUrl)) {
+  console.error("Usage: resolve-ntvs-hls.mjs https://embed.st/embed/...");
   process.exit(2);
 }
 
 let browser;
 let resolvedUrl = "";
-let playerPageUrl = "";
 let rejectedPlaylist = "";
 let rejectedPlaylistStatus = 0;
 
-function rememberPlayerPage(value) {
-  if (value && isSupportedPlayerUrl(value)) {
-    playerPageUrl = value;
-  }
-}
-
-function rememberResolvedPlaylist(value, status, frameUrl = "") {
+function rememberResolvedPlaylist(value, status) {
   if (resolvedUrl || !isStreamPlaylistUrl(value)) return;
   if (status >= 200 && status < 300) {
     resolvedUrl = value;
-    rememberPlayerPage(frameUrl);
     return;
   }
   rejectedPlaylist = value;
@@ -175,7 +122,6 @@ function rememberResolvedPlaylist(value, status, frameUrl = "") {
 
 try {
   const proxyServer = normalizeProxyServer(rawProxy);
-  const channelId = new URL(sourceUrl).searchParams.get("id") || "";
   browser = await chromium.launch({
     headless: true,
     proxy: proxyServer ? { server: proxyServer } : undefined,
@@ -187,14 +133,8 @@ try {
   });
 
   await page.route("**/*", async (route) => {
-    const request = route.request();
-    const requestUrl = request.url();
-    if (isStreamPlaylistUrl(requestUrl)) {
-      rememberPlayerPage(request.frame()?.url() || "");
-      await route.continue();
-      return;
-    }
-    if (isAllowedRequestUrl(requestUrl)) {
+    const requestUrl = route.request().url();
+    if (isStreamPlaylistUrl(requestUrl) || isAllowedRequestUrl(requestUrl)) {
       await route.continue();
       return;
     }
@@ -205,28 +145,14 @@ try {
     popup.close().catch(() => {});
   });
 
-  page.on("framenavigated", (frame) => rememberPlayerPage(frame.url()));
-
   page.on("response", (response) => {
-    rememberResolvedPlaylist(
-      response.url(),
-      response.status(),
-      response.request().frame()?.url() || "",
-    );
+    rememberResolvedPlaylist(response.url(), response.status());
   });
 
-  await page.goto(sourceUrl, {
+  await page.goto(embedUrl, {
     waitUntil: "domcontentloaded",
     timeout: Math.max(5000, Math.min(timeoutMs, 30000)),
   });
-
-  await page
-    .evaluate((id) => {
-      if (id && typeof window.loadPlayerChannel === "function") {
-        window.loadPlayerChannel(id);
-      }
-    }, channelId)
-    .catch(() => {});
 
   const deadline = Date.now() + timeoutMs;
   let clicked = false;
@@ -247,15 +173,15 @@ try {
       rejectedPlaylist && rejectedPlaylistStatus
         ? ` Last playlist response was HTTP ${rejectedPlaylistStatus}: ${rejectedPlaylist}`
         : "";
-    console.error(`Timed out waiting for a working MatchStream HLS playlist.${rejectedDetail}`);
+    console.error(`Timed out waiting for a working NTVS HLS playlist.${rejectedDetail}`);
     process.exit(1);
   }
 
   console.log(
     JSON.stringify({
       playbackUrl: resolvedUrl,
-      playerPage: playerPageUrl || sourceUrl,
-      referer: playerPageUrl || sourceUrl,
+      playerPage: embedUrl,
+      referer: embedUrl,
     }),
   );
 } catch (error) {

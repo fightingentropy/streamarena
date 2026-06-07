@@ -14,8 +14,41 @@ export const ANT1_STREAM_URL =
   "https://pcdn.antennaplus.gr/live/media0/antenna-gr/HLS/index.m3u8";
 export const ALPHA_TV_STREAM_URL =
   "https://alphatvlive2.siliconweb.com/alphatvlive/live_abr/playlist.m3u8";
-export const NOVASPORTS_STREAM_URL =
-  "https://ntvs.cx/channel-hesgoales/NOVASPORTS-1";
+const NOVASPORTS_CHANNEL_BASE_URL =
+  "https://ntvs.cx/channel-hesgoales";
+
+export function novasportsChannelUrl(channelNumber) {
+  return `${NOVASPORTS_CHANNEL_BASE_URL}/NOVASPORTS-${channelNumber}`;
+}
+
+export const NOVASPORTS_STREAM_URL = novasportsChannelUrl(1);
+
+const NOVASPORTS_LIVE_CHANNELS = Object.freeze(
+  [1, 2, 3, 4, 5, 6].map((channelNumber) => {
+    const source = novasportsChannelUrl(channelNumber);
+    return {
+      id: `novasports-${channelNumber}`,
+      title: `Nova Sports ${channelNumber}`,
+      source,
+      defaultStreamId: "default",
+      streams: [
+        {
+          id: "default",
+          label: `Nova Sports ${channelNumber} Live`,
+          source,
+          quality: "Live HLS",
+        },
+      ],
+      liveEmbed: true,
+      liveResolver: "sports",
+      artwork: "assets/images/novasports-live.svg",
+      genre: "Sports",
+      region: "Greece",
+      quality: "Live HLS",
+    };
+  }),
+);
+
 export const TOP_NEWS_STREAM_URL =
   "https://player.twitch.tv/?channel=topmedia_topnews&parent=top-channel.tv";
 
@@ -172,26 +205,7 @@ export const LIVE_CHANNELS = Object.freeze([
     region: "Albania",
     quality: "Live HLS",
   },
-  {
-    id: "novasports",
-    title: "Nova Sports",
-    source: NOVASPORTS_STREAM_URL,
-    defaultStreamId: "default",
-    streams: [
-      {
-        id: "default",
-        label: "Nova Sports Live",
-        source: NOVASPORTS_STREAM_URL,
-        quality: "Live HLS",
-      },
-    ],
-    liveEmbed: true,
-    liveResolver: "sports",
-    artwork: "assets/images/novasports-live.svg",
-    genre: "Sports",
-    region: "International",
-    quality: "Live HLS",
-  },
+  ...NOVASPORTS_LIVE_CHANNELS,
 ]);
 
 export const LIVE_CHANNEL_PLAYBACK_FALLBACKS = Object.freeze(

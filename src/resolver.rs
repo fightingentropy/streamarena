@@ -404,21 +404,19 @@ struct NoTorrentStreamResponse {
 #[derive(Debug, Deserialize)]
 struct NoTorrentStreamEntry {
     #[serde(default)]
-    title: String,
-    #[serde(default)]
     url: String,
-    #[serde(default)]
-    externalUrl: String,
-    #[serde(default)]
-    behaviorHints: NoTorrentBehaviorHints,
+    #[serde(default, rename = "externalUrl")]
+    external_url: String,
+    #[serde(default, rename = "behaviorHints")]
+    behavior_hints: NoTorrentBehaviorHints,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct NoTorrentBehaviorHints {
     #[serde(default)]
     headers: HashMap<String, String>,
-    #[serde(default)]
-    proxyHeaders: NoTorrentProxyHeaders,
+    #[serde(default, rename = "proxyHeaders")]
+    proxy_headers: NoTorrentProxyHeaders,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -431,16 +429,18 @@ const LORDFLIX_API_BASE: &str = "https://snowhouse.lordflix.club";
 const LORDFLIX_ENC_DEC_API: &str = "https://enc-dec.app/api";
 const LORDFLIX_REFERER: &str = "https://lordflix.org/";
 const LORDFLIX_SERVERS: &[&str] = &[
-    "Berlin", "Marseille", "Phoenix", "Oslo", "Luna", "Sakura", "Rio", "Ativa", "Moscow",
+    "Phoenix", "Rio", "Ativa", "Oslo", "Luna", "Sakura", "Berlin", "Marseille", "Moscow",
     "Backrooms",
 ];
 const NOTORRENT_API_BASE: &str = "https://addon-osvh.onrender.com";
+const ICEFY_HLS_RETRY_ATTEMPTS: usize = 3;
+const ICEFY_HLS_RETRY_DELAY_MS: u64 = 900;
 
 const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
     ExternalEmbedProvider {
         id: "videasy",
         label: "VidEasy",
-        priority: 50,
+        priority: 5,
     },
     ExternalEmbedProvider {
         id: "vidlink",
@@ -448,34 +448,34 @@ const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
         priority: 0,
     },
     ExternalEmbedProvider {
-        id: "icefy",
-        label: "Icefy",
-        priority: 5,
-    },
-    ExternalEmbedProvider {
         id: "vidrock",
         label: "VidRock",
-        priority: 8,
+        priority: 1,
     },
     ExternalEmbedProvider {
         id: "notorrent",
         label: "NoTorrent",
-        priority: 7,
-    },
-    ExternalEmbedProvider {
-        id: "lordflix",
-        label: "LordFlix",
-        priority: 9,
-    },
-    ExternalEmbedProvider {
-        id: "vidapi",
-        label: "VidApi",
-        priority: 10,
+        priority: 2,
     },
     ExternalEmbedProvider {
         id: "vixsrc",
         label: "VixSrc",
-        priority: 14,
+        priority: 3,
+    },
+    ExternalEmbedProvider {
+        id: "lordflix",
+        label: "LordFlix",
+        priority: 4,
+    },
+    ExternalEmbedProvider {
+        id: "icefy",
+        label: "Icefy",
+        priority: 6,
+    },
+    ExternalEmbedProvider {
+        id: "vidapi",
+        label: "VidApi",
+        priority: 99,
     },
 ];
 
@@ -5317,9 +5317,8 @@ fn is_default_external_embed_hls_fallback_source(source: ExternalEmbedSource) ->
             .map(|server| server.id == "YORU")
             .unwrap_or(true),
         "vidlink" => source.server.is_none(),
-        "icefy" | "vidrock" | "vidapi" | "vixsrc" | "lordflix" | "notorrent" => {
-            source.server.is_none()
-        }
+        "vidrock" | "notorrent" | "vixsrc" | "lordflix" | "icefy" => source.server.is_none(),
+        "vidapi" => false,
         _ => false,
     }
 }
@@ -5333,15 +5332,15 @@ fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) -> bool {
 
 fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 {
     match source.provider.id {
-        "vidlink" => 1_250,
-        "icefy" => 1_100,
-        "vidrock" => 1_025,
-        "lordflix" => 975,
-        "vidapi" => 950,
-        "notorrent" => 900,
-        "vixsrc" => 800,
-        "videasy" if source.server.is_none() => 400,
-        "videasy" => 200,
+        "vidlink" => 1_350,
+        "vidrock" => 1_200,
+        "notorrent" => 1_150,
+        "vixsrc" => 1_100,
+        "lordflix" => 1_050,
+        "videasy" if source.server.is_none() => 1_000,
+        "icefy" => 700,
+        "vidapi" => 100,
+        "videasy" => 150,
         _ => 0,
     }
 }
@@ -5349,8 +5348,11 @@ fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 
 fn external_embed_source_quality_score(source: ExternalEmbedSource) -> i64 {
     match source.provider.id {
         "videasy" if source.server.map(|server| server.id) == Some("YORU") => 600,
-        "vidlink" | "icefy" | "vidrock" | "vidapi" | "vixsrc" | "lordflix" | "notorrent" => 400,
-        "videasy" => 350,
+        "vidlink" | "vidrock" | "notorrent" | "vixsrc" | "lordflix" => 400,
+        "videasy" if source.server.is_none() => 400,
+        "icefy" => 350,
+        "vidapi" => 200,
+        "videasy" => 300,
         _ => 0,
     }
 }
@@ -5655,12 +5657,13 @@ fn external_embed_source_priority(source: ExternalEmbedSource, _metadata: &Resol
     }
     if matches!(
         source.provider.id,
-        "icefy" | "vidrock" | "vidapi" | "vixsrc"
-    ) {
+        "vidrock" | "notorrent" | "vixsrc" | "lordflix" | "icefy" | "vidapi"
+    ) && source.server.is_none()
+    {
         return source.provider.priority;
     }
     if source.provider.id == "videasy" && source.server.is_none() {
-        return 25;
+        return source.provider.priority;
     }
     if source.provider.id == "videasy" {
         return source
@@ -5706,7 +5709,7 @@ fn external_embed_source_detail_label(source: ExternalEmbedSource) -> &'static s
     match source.provider.id {
         "icefy" => return "Fast native HLS",
         "vidrock" => return "Native HLS",
-        "vidapi" => return "Multi-source native HLS",
+        "vidapi" => return "Upstream API currently unavailable",
         "vixsrc" => return "Native HLS, alternate audio",
         "lordflix" => return "Multi-server native HLS",
         "notorrent" => return "Stremio addon HLS",
@@ -5822,10 +5825,27 @@ async fn resolve_icefy_hls_playback_source(
     timeout_ms: u64,
 ) -> Option<ExternalEmbedHlsPlaybackSource> {
     let referer = "https://streams.icefy.top/";
-    let response =
-        fetch_external_json::<IcefyStreamResponse>(client, api_url, Some(referer), timeout_ms)
-            .await?;
-    validate_external_embed_hls_playlist(client, &response.stream, Some(referer), timeout_ms).await
+    for attempt in 0..ICEFY_HLS_RETRY_ATTEMPTS {
+        if attempt > 0 {
+            sleep(Duration::from_millis(
+                ICEFY_HLS_RETRY_DELAY_MS.saturating_mul(attempt as u64),
+            ))
+            .await;
+        }
+        let Some(response) =
+            fetch_external_json::<IcefyStreamResponse>(client, api_url, Some(referer), timeout_ms)
+                .await
+        else {
+            continue;
+        };
+        if let Some(source) =
+            validate_external_embed_hls_playlist(client, &response.stream, Some(referer), timeout_ms)
+                .await
+        {
+            return Some(source);
+        }
+    }
+    None
 }
 
 async fn resolve_vidapi_hls_playback_source(
@@ -5897,8 +5917,13 @@ async fn resolve_vixsrc_hls_playback_source(
         query.append_pair("expires", &expires);
         query.append_pair("h", "1");
     }
-    validate_external_embed_hls_playlist(client, playlist_url.as_str(), Some(api_url), timeout_ms)
-        .await
+    validate_external_embed_hls_playlist(
+        client,
+        playlist_url.as_str(),
+        Some(embed_url.as_str()),
+        timeout_ms,
+    )
+    .await
 }
 
 async fn resolve_vidrock_hls_playback_source(
@@ -6160,7 +6185,7 @@ async fn resolve_notorrent_hls_playback_source(
     .await?;
 
     for stream in response.streams {
-        if !stream.externalUrl.trim().is_empty() {
+        if !stream.external_url.trim().is_empty() {
             continue;
         }
         let stream_url = stream.url.trim();
@@ -6182,8 +6207,8 @@ async fn resolve_notorrent_hls_playback_source(
 }
 
 fn notorrent_stream_referer(stream: &NoTorrentStreamEntry) -> Option<String> {
-    let mut headers = stream.behaviorHints.headers.clone();
-    headers.extend(stream.behaviorHints.proxyHeaders.request.clone());
+    let mut headers = stream.behavior_hints.headers.clone();
+    headers.extend(stream.behavior_hints.proxy_headers.request.clone());
     headers
         .get("Referer")
         .or_else(|| headers.get("referer"))
@@ -8182,28 +8207,45 @@ mod tests {
             external_embed_source_hash(source, &metadata),
             sources[0].sourceHash
         );
-        assert_eq!(sources[1].primary, "Icefy");
-        assert_eq!(sources[1].provider, "LivNet");
-        assert_eq!(sources[1].filename, "Icefy embed");
-        assert_eq!(sources[1].qualityLabel, "1080p");
-        assert_eq!(sources[1].releaseGroup, "Fast native HLS");
-        assert_eq!(sources[2].primary, "VidRock");
-        assert_eq!(sources[3].primary, "VidApi");
-        assert_eq!(sources[4].primary, "VixSrc");
+        assert_eq!(sources[1].primary, "VidRock");
+        assert_eq!(sources[2].primary, "NoTorrent");
+        assert_eq!(sources[3].primary, "VixSrc");
+        assert_eq!(sources[4].primary, "LordFlix");
         assert_eq!(sources[5].primary, "VidEasy");
         assert_eq!(sources[5].provider, "LivNet");
         assert_eq!(sources[5].filename, "VidEasy embed");
-        assert_eq!(sources[6].primary, "Yoru");
-        assert_eq!(sources[6].provider, "VidEasy");
-        assert_eq!(sources[6].filename, "VidEasy Yoru embed");
-        assert_eq!(sources[6].qualityLabel, "4K");
-        assert_eq!(sources[6].releaseGroup, "Movies only, may have 4K");
-        assert_eq!(sources[7].primary, "Neon");
-        assert_eq!(sources[7].provider, "VidEasy");
-        assert_eq!(sources[7].filename, "VidEasy Neon embed");
-        assert_eq!(sources[7].qualityLabel, "HLS");
-        assert_eq!(sources[7].releaseGroup, "Original audio");
-        let neon_source = external_embed_source_for_source_hash(&metadata, &sources[7].sourceHash)
+        assert_eq!(sources[6].primary, "Icefy");
+        assert_eq!(sources[6].provider, "LivNet");
+        assert_eq!(sources[6].filename, "Icefy embed");
+        assert_eq!(sources[6].qualityLabel, "1080p");
+        assert_eq!(sources[6].releaseGroup, "Fast native HLS");
+
+        let yoru_summary = sources
+            .iter()
+            .find(|source| source.primary == "Yoru")
+            .expect("yoru source");
+        assert_eq!(yoru_summary.provider, "VidEasy");
+        assert_eq!(yoru_summary.qualityLabel, "4K");
+
+        let notorrent_summary = sources
+            .iter()
+            .find(|source| source.primary == "NoTorrent")
+            .expect("notorrent source");
+        assert_eq!(notorrent_summary.provider, "LivNet");
+        assert_eq!(notorrent_summary.releaseGroup, "Stremio addon HLS");
+
+        let lordflix_summary = sources
+            .iter()
+            .find(|source| source.primary == "LordFlix")
+            .expect("lordflix source");
+        assert_eq!(lordflix_summary.provider, "LivNet");
+        assert_eq!(lordflix_summary.releaseGroup, "Multi-server native HLS");
+
+        let neon_source = sources
+            .iter()
+            .find(|source| source.primary == "Neon")
+            .expect("neon source summary");
+        let neon_source = external_embed_source_for_source_hash(&metadata, &neon_source.sourceHash)
             .expect("matching neon external provider");
         assert_eq!(neon_source.provider.id, "videasy");
         assert_eq!(neon_source.server.map(|server| server.id), Some("NEON"));
@@ -8235,8 +8277,8 @@ mod tests {
         assert_eq!(tv_sources.len(), 15);
         assert_eq!(tv_sources[0].primary, "VidLink");
         assert_eq!(tv_sources[0].provider, "LivNet");
-        assert_eq!(tv_sources[1].primary, "Icefy");
-        assert_eq!(tv_sources[2].primary, "VidRock");
+        assert_eq!(tv_sources[1].primary, "VidRock");
+        assert_eq!(tv_sources[2].primary, "NoTorrent");
     }
 
     #[test]
@@ -8294,15 +8336,14 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(source_ids.first(), Some(&("vidlink", "default")));
-        assert_eq!(source_ids.get(1), Some(&("icefy", "default")));
-        assert_eq!(source_ids.get(2), Some(&("vidrock", "default")));
-        assert_eq!(source_ids.get(3), Some(&("lordflix", "default")));
-        assert_eq!(source_ids.get(4), Some(&("notorrent", "default")));
-        assert_eq!(source_ids.get(5), Some(&("vidapi", "default")));
-        assert_eq!(source_ids.get(6), Some(&("vixsrc", "default")));
-        assert_eq!(source_ids.get(7), Some(&("videasy", "default")));
-        assert_eq!(source_ids.get(8), Some(&("videasy", "YORU")));
-        assert_eq!(source_ids.len(), 9);
+        assert_eq!(source_ids.get(1), Some(&("vidrock", "default")));
+        assert_eq!(source_ids.get(2), Some(&("notorrent", "default")));
+        assert_eq!(source_ids.get(3), Some(&("vixsrc", "default")));
+        assert_eq!(source_ids.get(4), Some(&("lordflix", "default")));
+        assert_eq!(source_ids.get(5), Some(&("videasy", "default")));
+        assert_eq!(source_ids.get(6), Some(&("icefy", "default")));
+        assert_eq!(source_ids.get(7), Some(&("videasy", "YORU")));
+        assert_eq!(source_ids.len(), 8);
 
         let tv_metadata = sample_tv_metadata();
         let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
@@ -8323,15 +8364,14 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(tv_source_ids.first(), Some(&("vidlink", "default")));
-        assert_eq!(tv_source_ids.get(1), Some(&("icefy", "default")));
-        assert_eq!(tv_source_ids.get(2), Some(&("vidrock", "default")));
-        assert_eq!(tv_source_ids.get(3), Some(&("lordflix", "default")));
-        assert_eq!(tv_source_ids.get(4), Some(&("notorrent", "default")));
-        assert_eq!(tv_source_ids.get(5), Some(&("vidapi", "default")));
-        assert_eq!(tv_source_ids.get(6), Some(&("vixsrc", "default")));
-        assert_eq!(tv_source_ids.get(7), Some(&("videasy", "default")));
-        assert_eq!(tv_source_ids.get(8), Some(&("videasy", "YORU")));
-        assert_eq!(tv_source_ids.len(), 9);
+        assert_eq!(tv_source_ids.get(1), Some(&("vidrock", "default")));
+        assert_eq!(tv_source_ids.get(2), Some(&("notorrent", "default")));
+        assert_eq!(tv_source_ids.get(3), Some(&("vixsrc", "default")));
+        assert_eq!(tv_source_ids.get(4), Some(&("lordflix", "default")));
+        assert_eq!(tv_source_ids.get(5), Some(&("videasy", "default")));
+        assert_eq!(tv_source_ids.get(6), Some(&("icefy", "default")));
+        assert_eq!(tv_source_ids.get(7), Some(&("videasy", "YORU")));
+        assert_eq!(tv_source_ids.len(), 8);
 
         let neon_source = external_embed_sources()
             .into_iter()
