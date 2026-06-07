@@ -22,6 +22,7 @@ use crate::utils::now_ms;
 
 const STREAMED_SOURCE_ID: &str = "streamed";
 const MATCHSTREAM_SOURCE_ID: &str = "matchstream";
+const NTVS_SOURCE_ID: &str = "ntvs";
 const AUTO_SOURCE_ID: &str = "auto";
 const STREAMED_FOOTBALL_CACHE_KEY: &str = "streamed:football";
 const STREAMED_BASKETBALL_CACHE_KEY: &str = "streamed:basketball";
@@ -37,6 +38,7 @@ const MATCHSTREAM_HOCKEY_CACHE_KEY: &str = "matchstream:hockey";
 const MATCHSTREAM_BASEBALL_CACHE_KEY: &str = "matchstream:baseball";
 const MATCHSTREAM_AMERICAN_FOOTBALL_CACHE_KEY: &str = "matchstream:american-football";
 const MATCHSTREAM_CRICKET_CACHE_KEY: &str = "matchstream:cricket";
+const NTVS_FOOTBALL_CACHE_KEY: &str = "ntvs:football";
 const STREAMED_MATCHES_BASE_URL: &str = "https://streamed.pk/api/matches";
 const STREAMED_FOOTBALL_MATCHES_URL: &str = "https://streamed.pk/api/matches/football";
 const STREAMED_BASKETBALL_MATCHES_URL: &str = "https://streamed.pk/api/matches/basketball";
@@ -53,6 +55,14 @@ const MATCHSTREAM_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
 const MATCHSTREAM_WEBMASTER_URL: &str = "https://matchstream.do/webmaster";
 const MATCHSTREAM_VIEWER_URL: &str = "https://matchstream.do/viewer";
 const MATCHSTREAM_DEFAULT_DURATION_MINUTES: i64 = 180;
+const NTVS_SEARCH_URL: &str = "https://ntvs.cx/api/search";
+const NTVS_REFERER: &str = "https://ntvs.cx/";
+const NTVS_DEFAULT_SERVER: &str = "kobra";
+const NTVS_FOOTBALL_SEARCH_QUERY: &str = "football";
+const NTVS_DEFAULT_DURATION_MINUTES: i64 = 180;
+const NTVS_EMBED_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-ntvs-hls.mjs";
+const NTVS_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-ntvs-hls.mjs";
+const NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
 const SPORTS_HTTP_PROXY_ENV: &str = "SPORTS_HTTP_PROXY";
 const SPORTS_HTTP_CLIENT_TIMEOUT_SECONDS: u64 = 30;
 const MAX_LIVE_STREAM_CANDIDATES: usize = 12;
@@ -141,6 +151,44 @@ struct MatchstreamHlsResolverOutput {
 }
 
 #[derive(Debug, Deserialize)]
+struct NtvsSearchPayload {
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
+    success: bool,
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
+    message: String,
+    #[serde(default)]
+    data: Vec<NtvsMatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NtvsMatch {
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
+    id: String,
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
+    title: String,
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
+    category: String,
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
+    date: i64,
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
+    popular: bool,
+    #[serde(default)]
+    teams: StreamedTeams,
+    #[serde(default, deserialize_with = "deserialize_streamed_sources")]
+    sources: Vec<StreamedSource>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NtvsHlsResolverOutput {
+    #[serde(rename = "playbackUrl")]
+    playback_url: String,
+    #[serde(default, rename = "playerPage")]
+    player_page: String,
+    #[serde(default)]
+    referer: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SportsScheduleQuery {
     #[serde(default)]
     source: Option<String>,
@@ -158,6 +206,7 @@ enum SportsScheduleSource {
     Auto,
     Streamed,
     Matchstream,
+    Ntvs,
 }
 
 #[derive(Clone)]
@@ -603,6 +652,7 @@ impl SportsScheduleSource {
             AUTO_SOURCE_ID => Ok(Self::Auto),
             STREAMED_SOURCE_ID => Ok(Self::Streamed),
             MATCHSTREAM_SOURCE_ID => Ok(Self::Matchstream),
+            NTVS_SOURCE_ID => Ok(Self::Ntvs),
             _ => Err(ApiError::bad_request("Unsupported sports schedule source.")),
         }
     }
@@ -617,6 +667,7 @@ pub async fn football_matches_handler(
         query,
         STREAMED_FOOTBALL_CACHE_KEY,
         MATCHSTREAM_FOOTBALL_CACHE_KEY,
+        Some(NTVS_FOOTBALL_CACHE_KEY),
         "football",
         "Football",
     )
@@ -632,6 +683,7 @@ pub async fn basketball_matches_handler(
         query,
         STREAMED_BASKETBALL_CACHE_KEY,
         MATCHSTREAM_BASKETBALL_CACHE_KEY,
+        None,
         "basketball",
         "Basketball",
     )
@@ -647,6 +699,7 @@ pub async fn tennis_matches_handler(
         query,
         STREAMED_TENNIS_CACHE_KEY,
         MATCHSTREAM_TENNIS_CACHE_KEY,
+        None,
         "tennis",
         "Tennis",
     )
@@ -662,6 +715,7 @@ pub async fn hockey_matches_handler(
         query,
         STREAMED_HOCKEY_CACHE_KEY,
         MATCHSTREAM_HOCKEY_CACHE_KEY,
+        None,
         "hockey",
         "Hockey",
     )
@@ -677,6 +731,7 @@ pub async fn baseball_matches_handler(
         query,
         STREAMED_BASEBALL_CACHE_KEY,
         MATCHSTREAM_BASEBALL_CACHE_KEY,
+        None,
         "baseball",
         "Baseball",
     )
@@ -692,6 +747,7 @@ pub async fn american_football_matches_handler(
         query,
         STREAMED_AMERICAN_FOOTBALL_CACHE_KEY,
         MATCHSTREAM_AMERICAN_FOOTBALL_CACHE_KEY,
+        None,
         "american-football",
         "American Football",
     )
@@ -707,6 +763,7 @@ pub async fn cricket_matches_handler(
         query,
         STREAMED_CRICKET_CACHE_KEY,
         MATCHSTREAM_CRICKET_CACHE_KEY,
+        None,
         "cricket",
         "Cricket",
     )
@@ -718,6 +775,7 @@ async fn sport_matches_response(
     query: SportsScheduleQuery,
     streamed_cache_key: &'static str,
     matchstream_cache_key: &'static str,
+    ntvs_cache_key: Option<&'static str>,
     streamed_category: &'static str,
     sport_name: &'static str,
 ) -> AppResult<Response<Body>> {
@@ -727,6 +785,7 @@ async fn sport_matches_response(
                 state,
                 streamed_cache_key,
                 matchstream_cache_key,
+                ntvs_cache_key,
                 streamed_category,
                 sport_name,
             )
@@ -744,6 +803,14 @@ async fn sport_matches_response(
         SportsScheduleSource::Matchstream => {
             matchstream_sport_matches_response(state, matchstream_cache_key, sport_name).await
         }
+        SportsScheduleSource::Ntvs => {
+            let Some(ntvs_cache_key) = ntvs_cache_key else {
+                return Err(ApiError::bad_request(
+                    "NTVS schedule is only available for football.",
+                ));
+            };
+            ntvs_sport_matches_response(state, ntvs_cache_key, sport_name).await
+        }
     }
 }
 
@@ -751,6 +818,7 @@ async fn auto_sport_matches_response(
     state: &AppState,
     streamed_cache_key: &'static str,
     matchstream_cache_key: &'static str,
+    ntvs_cache_key: Option<&'static str>,
     streamed_category: &'static str,
     sport_name: &'static str,
 ) -> AppResult<Response<Body>> {
@@ -766,14 +834,31 @@ async fn auto_sport_matches_response(
         Err(error) => error,
     };
 
-    match matchstream_sport_matches_response(state, matchstream_cache_key, sport_name).await {
-        Ok(response) => Ok(response),
-        Err(matchstream_error) => Err(ApiError::bad_gateway(format!(
-            "Sports schedule providers failed. Streamed: {} MatchStream: {}",
-            api_error_message(&streamed_error),
-            api_error_message(&matchstream_error)
-        ))),
+    let matchstream_error =
+        match matchstream_sport_matches_response(state, matchstream_cache_key, sport_name).await {
+            Ok(response) => return Ok(response),
+            Err(error) => error,
+        };
+
+    if let Some(ntvs_cache_key) = ntvs_cache_key {
+        match ntvs_sport_matches_response(state, ntvs_cache_key, sport_name).await {
+            Ok(response) => return Ok(response),
+            Err(ntvs_error) => {
+                return Err(ApiError::bad_gateway(format!(
+                    "Sports schedule providers failed. Streamed: {} MatchStream: {} NTVS: {}",
+                    api_error_message(&streamed_error),
+                    api_error_message(&matchstream_error),
+                    api_error_message(&ntvs_error)
+                )));
+            }
+        }
     }
+
+    Err(ApiError::bad_gateway(format!(
+        "Sports schedule providers failed. Streamed: {} MatchStream: {}",
+        api_error_message(&streamed_error),
+        api_error_message(&matchstream_error)
+    )))
 }
 
 fn api_error_message(error: &ApiError) -> &str {
@@ -1212,6 +1297,151 @@ fn build_matchstream_sport_matches_payload(
     )
 }
 
+async fn ntvs_sport_matches_response(
+    state: &AppState,
+    cache_key: &'static str,
+    sport_name: &'static str,
+) -> AppResult<Response<Body>> {
+    if let Some(payload) = state.sports_schedule_cache.fresh(cache_key, now_ms()) {
+        return Ok(schedule_response(payload, "hit"));
+    }
+
+    let schedule_lock = state.sports_schedule_cache.lock_for(cache_key);
+    let _guard = schedule_lock.lock().await;
+    if let Some(payload) = state.sports_schedule_cache.fresh(cache_key, now_ms()) {
+        return Ok(schedule_response(payload, "hit"));
+    }
+
+    let started_at_ms = now_ms();
+    match fetch_ntvs_sport_matches_payload(state, sport_name).await {
+        Ok((payload, fetched_at_ms)) => {
+            state
+                .sports_provider_health
+                .record_success(NTVS_SOURCE_ID, "schedule", started_at_ms);
+            state
+                .sports_schedule_cache
+                .insert(cache_key, payload.clone(), fetched_at_ms);
+            Ok(schedule_response(payload, "miss"))
+        }
+        Err(error) => {
+            state.sports_provider_health.record_failure(
+                NTVS_SOURCE_ID,
+                "schedule",
+                started_at_ms,
+                api_error_message(&error),
+            );
+            if let Some(payload) = state.sports_schedule_cache.stale(cache_key, now_ms()) {
+                return Ok(schedule_response(payload, "stale"));
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn fetch_ntvs_sport_matches_payload(
+    state: &AppState,
+    sport_name: &'static str,
+) -> AppResult<(Value, i64)> {
+    let source_url = ntvs_search_url(NTVS_FOOTBALL_SEARCH_QUERY, NTVS_DEFAULT_SERVER);
+    let response = sports_http_client(state)?
+        .get(&source_url)
+        .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
+        .header(reqwest::header::REFERER, NTVS_REFERER)
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                ApiError::gateway_timeout(format!("Timed out fetching NTVS {sport_name} schedule."))
+            } else {
+                ApiError::bad_gateway(format!(
+                    "Failed to fetch NTVS {sport_name} schedule: {error}"
+                ))
+            }
+        })?;
+
+    if !response.status().is_success() {
+        return Err(ApiError::bad_gateway(format!(
+            "NTVS {sport_name} schedule returned HTTP {}.",
+            response.status(),
+        )));
+    }
+
+    let payload = response
+        .json::<NtvsSearchPayload>()
+        .await
+        .map_err(|error| {
+            ApiError::bad_gateway(format!(
+                "Failed to parse NTVS {sport_name} schedule: {error}"
+            ))
+        })?;
+    if !payload.success {
+        let message = payload.message.trim();
+        return Err(ApiError::bad_gateway(if message.is_empty() {
+            format!("NTVS {sport_name} schedule failed.")
+        } else {
+            format!("NTVS {sport_name} schedule failed: {message}")
+        }));
+    }
+
+    Ok(build_ntvs_sport_matches_payload(
+        payload.data,
+        &source_url,
+        sport_name,
+    ))
+}
+
+fn ntvs_search_url(query: &str, server: &str) -> String {
+    let mut url = Url::parse(NTVS_SEARCH_URL).expect("valid NTVS search URL");
+    url.query_pairs_mut()
+        .append_pair("q", query)
+        .append_pair("server", server);
+    url.to_string()
+}
+
+#[cfg(test)]
+fn build_ntvs_football_matches_payload(source_matches: Vec<NtvsMatch>) -> (Value, i64) {
+    build_ntvs_sport_matches_payload(
+        source_matches,
+        &ntvs_search_url(NTVS_FOOTBALL_SEARCH_QUERY, NTVS_DEFAULT_SERVER),
+        "Football",
+    )
+}
+
+fn build_ntvs_sport_matches_payload(
+    source_matches: Vec<NtvsMatch>,
+    source_url: &str,
+    default_sport_name: &'static str,
+) -> (Value, i64) {
+    let now = now_ms();
+    let matches = source_matches
+        .into_iter()
+        .filter(|match_item| {
+            match_item.date > 0
+                && !match_item.title.trim().is_empty()
+                && ntvs_match_link_count(match_item) > 0
+                && ntvs_category_matches(match_item.category.trim(), default_sport_name)
+                && match_item
+                    .date
+                    .saturating_add(NTVS_DEFAULT_DURATION_MINUTES.saturating_mul(60_000))
+                    > now
+        })
+        .map(|match_item| normalize_ntvs_sport_match(match_item, default_sport_name))
+        .collect::<Vec<_>>();
+    let fetched_at_ms = now_ms();
+
+    (
+        json!({
+            "source": NTVS_REFERER,
+            "sourceFetchUrl": source_url,
+            "sourceProvider": NTVS_SOURCE_ID,
+            "sport": default_sport_name,
+            "fetchedAt": fetched_at_ms,
+            "matches": matches
+        }),
+        fetched_at_ms,
+    )
+}
+
 fn schedule_response(payload: Value, cache_status: &'static str) -> Response<Body> {
     let mut response = json_response(payload);
     response.headers_mut().insert(
@@ -1280,10 +1510,12 @@ async fn sports_stream_resolve_response(
 
     for (candidate_index, source_url) in candidates.iter().enumerate() {
         let provider = sports_stream_provider_id(source_url).unwrap_or("unknown");
-        let resolved_result = if is_streamed_stream_api_url(source_url) {
+        let resolved_result = if is_supported_streamed_stream_url(source_url) {
             resolve_cached_streamed_live_stream(state, source_url, candidate_index).await
         } else if is_supported_matchstream_stream_url(source_url) {
             resolve_cached_matchstream_live_stream(state, source_url, candidate_index).await
+        } else if is_supported_ntvs_stream_url(source_url) {
+            resolve_cached_ntvs_live_stream(state, source_url, candidate_index).await
         } else {
             Err(ApiError::bad_request("Unsupported sports live stream URL."))
         };
@@ -1479,6 +1711,56 @@ async fn resolve_cached_matchstream_live_stream(
     }
 }
 
+async fn resolve_cached_ntvs_live_stream(
+    state: &AppState,
+    source_url: &Url,
+    candidate_index: usize,
+) -> AppResult<ResolvedLiveStream> {
+    let cache_key = sports_stream_resolve_cache_key(NTVS_SOURCE_ID, source_url);
+    if let Some(mut resolved) = state
+        .sports_stream_resolve_cache
+        .fresh(&cache_key, now_ms())
+    {
+        resolved.candidate_index = candidate_index;
+        resolved.attempted_streams = candidate_index + 1;
+        return Ok(resolved);
+    }
+
+    let lock = state.sports_stream_resolve_cache.lock_for(&cache_key);
+    let _guard = lock.lock().await;
+    if let Some(mut resolved) = state
+        .sports_stream_resolve_cache
+        .fresh(&cache_key, now_ms())
+    {
+        resolved.candidate_index = candidate_index;
+        resolved.attempted_streams = candidate_index + 1;
+        return Ok(resolved);
+    }
+
+    let started_at_ms = now_ms();
+    let _permit = state.sports_stream_resolve_cache.acquire_permit().await?;
+    match resolve_verified_ntvs_live_stream_uncached(state, source_url, candidate_index).await {
+        Ok(resolved) => {
+            state
+                .sports_provider_health
+                .record_success(NTVS_SOURCE_ID, "stream", started_at_ms);
+            state
+                .sports_stream_resolve_cache
+                .insert(cache_key, resolved.clone(), now_ms());
+            Ok(resolved)
+        }
+        Err(error) => {
+            state.sports_provider_health.record_failure(
+                NTVS_SOURCE_ID,
+                "stream",
+                started_at_ms,
+                api_error_message(&error),
+            );
+            Err(error)
+        }
+    }
+}
+
 fn sports_stream_resolve_cache_key(provider: &'static str, source_url: &Url) -> String {
     format!("{provider}:{}", normalize_url_cache_key(source_url))
 }
@@ -1502,15 +1784,19 @@ async fn resolve_verified_streamed_live_stream_uncached(
     let mut errors = Vec::new();
     for stream in streams {
         let embed_url = match Url::parse(stream.embed_url.trim()) {
-            Ok(url) if is_supported_streamed_embed_url(&url) => url,
+            Ok(url)
+                if is_supported_streamed_embed_url(&url) || is_supported_ntvs_embed_url(&url) =>
+            {
+                url
+            }
             _ => {
                 errors.push("Streamed returned an unsupported embed URL.".to_owned());
                 continue;
             }
         };
-        if let Some(playback_url) = resolve_streamed_embed_hls_url(&embed_url).await {
-            let player_page_url =
-                Url::parse(STREAMED_EMBED_REFERER).unwrap_or_else(|_| embed_url.clone());
+        if let Some((playback_url, player_page_url)) =
+            resolve_streamed_embed_playback_url(&embed_url).await
+        {
             return Ok(ResolvedLiveStream {
                 source_url: source_url.clone(),
                 player_page_url,
@@ -1531,6 +1817,21 @@ async fn resolve_verified_streamed_live_stream_uncached(
     Err(ApiError::bad_gateway(format!(
         "No playable Streamed embed found.{latest_error}"
     )))
+}
+
+async fn resolve_streamed_embed_playback_url(embed_url: &Url) -> Option<(Url, Url)> {
+    if is_supported_streamed_embed_url(embed_url) {
+        let playback_url = resolve_streamed_embed_hls_url(embed_url).await?;
+        let player_page_url =
+            Url::parse(STREAMED_EMBED_REFERER).unwrap_or_else(|_| embed_url.clone());
+        return Some((playback_url, player_page_url));
+    }
+
+    if is_supported_ntvs_embed_url(embed_url) {
+        return resolve_ntvs_hls_url(embed_url).await;
+    }
+
+    None
 }
 
 async fn resolve_verified_matchstream_live_stream_uncached(
@@ -1558,6 +1859,45 @@ async fn resolve_verified_matchstream_live_stream_uncached(
         candidate_index,
         attempted_streams: candidate_index + 1,
     })
+}
+
+async fn resolve_verified_ntvs_live_stream_uncached(
+    state: &AppState,
+    source_url: &Url,
+    candidate_index: usize,
+) -> AppResult<ResolvedLiveStream> {
+    if !is_supported_ntvs_stream_url(source_url) {
+        return Err(ApiError::bad_request("Unsupported NTVS live stream URL."));
+    }
+
+    let player_page_urls = ntvs_player_page_candidates(state, source_url).await?;
+    let mut errors = Vec::new();
+    for player_page_url in player_page_urls {
+        if let Some((playback_url, resolved_player_page_url)) =
+            resolve_ntvs_hls_url(&player_page_url).await
+        {
+            return Ok(ResolvedLiveStream {
+                source_url: source_url.clone(),
+                player_page_url: resolved_player_page_url,
+                playback_url,
+                playback_type: "hls",
+                candidate_index,
+                attempted_streams: candidate_index + 1,
+            });
+        }
+        errors.push(format!(
+            "{} could not produce an HLS playlist.",
+            player_page_url.as_str()
+        ));
+    }
+
+    let latest_error = errors
+        .last()
+        .map(|error| format!(" Last error: {error}"))
+        .unwrap_or_default();
+    Err(ApiError::bad_gateway(format!(
+        "No playable NTVS embed found.{latest_error}"
+    )))
 }
 
 async fn resolve_streamed_embed_hls_url(embed_url: &Url) -> Option<Url> {
@@ -1644,6 +1984,53 @@ async fn resolve_matchstream_hls_url(source_url: &Url) -> Option<(Url, Url)> {
     Some((playback_url, player_page_url))
 }
 
+async fn resolve_ntvs_hls_url(embed_url: &Url) -> Option<(Url, Url)> {
+    let script_path = ntvs_embed_hls_resolver_script_path();
+    if matches!(
+        script_path.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "off" | "disabled"
+    ) {
+        return None;
+    }
+
+    let mut command = Command::new("node");
+    command
+        .arg(script_path)
+        .arg(embed_url.as_str())
+        .env(
+            "NTVS_HLS_RESOLVE_TIMEOUT_MS",
+            (NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS * 1000).to_string(),
+        )
+        .kill_on_drop(true);
+
+    let output = timeout(
+        Duration::from_secs(NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS + 4),
+        command.output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let resolver_output = serde_json::from_slice::<NtvsHlsResolverOutput>(&output.stdout).ok()?;
+    let playback_url = Url::parse(resolver_output.playback_url.trim()).ok()?;
+    if !is_supported_ntvs_hls_url(&playback_url) {
+        return None;
+    }
+    let player_page_text = if resolver_output.player_page.trim().is_empty() {
+        resolver_output.referer.trim()
+    } else {
+        resolver_output.player_page.trim()
+    };
+    let player_page_url = Url::parse(player_page_text)
+        .ok()
+        .filter(is_supported_ntvs_embed_url)
+        .unwrap_or_else(|| embed_url.clone());
+    Some((playback_url, player_page_url))
+}
+
 fn streamed_embed_hls_resolver_script_path() -> String {
     if let Some(value) = std::env::var("STREAMED_HLS_RESOLVER_SCRIPT")
         .ok()
@@ -1674,6 +2061,22 @@ fn matchstream_hls_resolver_script_path() -> String {
     }
 
     MATCHSTREAM_HLS_RESOLVER_RUNTIME_SCRIPT.to_owned()
+}
+
+fn ntvs_embed_hls_resolver_script_path() -> String {
+    if let Some(value) = std::env::var("NTVS_HLS_RESOLVER_SCRIPT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+
+    if Path::new(NTVS_EMBED_HLS_RESOLVER_SCRIPT).is_file() {
+        return NTVS_EMBED_HLS_RESOLVER_SCRIPT.to_owned();
+    }
+
+    NTVS_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT.to_owned()
 }
 
 fn sports_live_stream_source_candidates(
@@ -1714,7 +2117,7 @@ fn live_stream_source_candidates(
 ) -> AppResult<Vec<Url>> {
     let primary = Url::parse(primary_url.trim())
         .map_err(|_| ApiError::bad_request("Invalid live stream URL."))?;
-    if !is_streamed_stream_api_url(&primary) {
+    if !is_supported_streamed_stream_url(&primary) {
         return Err(ApiError::bad_request(
             "Unsupported Streamed live stream URL.",
         ));
@@ -1730,7 +2133,7 @@ fn live_stream_source_candidates(
         let Ok(parsed) = Url::parse(fallback_url.trim()) else {
             continue;
         };
-        if !is_streamed_stream_api_url(&parsed) {
+        if !is_supported_streamed_stream_url(&parsed) {
             continue;
         }
         push_unique_stream_candidate(&mut candidates, &mut seen, parsed);
@@ -1808,6 +2211,10 @@ async fn fetch_streamed_embed_streams(
     state: &AppState,
     source_url: &Url,
 ) -> AppResult<Vec<StreamedEmbedStream>> {
+    if is_streamed_watch_url(source_url) {
+        return fetch_streamed_watch_embed_streams(state, source_url).await;
+    }
+
     let response = sports_http_client(state)?
         .get(source_url.clone())
         .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
@@ -1839,11 +2246,238 @@ async fn fetch_streamed_embed_streams(
     Ok(streams)
 }
 
+async fn fetch_streamed_watch_embed_streams(
+    state: &AppState,
+    source_url: &Url,
+) -> AppResult<Vec<StreamedEmbedStream>> {
+    let response = sports_http_client(state)?
+        .get(source_url.clone())
+        .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
+        .header(reqwest::header::REFERER, STREAMED_REFERER)
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                ApiError::gateway_timeout("Timed out fetching Streamed watch page.")
+            } else {
+                ApiError::bad_gateway(format!("Failed to fetch Streamed watch page: {error}"))
+            }
+        })?;
+
+    if !response.status().is_success() {
+        return Err(ApiError::bad_gateway(format!(
+            "Streamed watch page returned HTTP {}.",
+            response.status()
+        )));
+    }
+
+    let html = response.text().await.map_err(|error| {
+        ApiError::bad_gateway(format!("Failed to read Streamed watch page: {error}"))
+    })?;
+    let streams = extract_streamed_watch_embed_streams(&html, source_url);
+    if streams.is_empty() {
+        return Err(ApiError::bad_gateway(
+            "Streamed watch page did not include a supported embed.",
+        ));
+    }
+    Ok(streams)
+}
+
+fn extract_streamed_watch_embed_streams(html: &str, base_url: &Url) -> Vec<StreamedEmbedStream> {
+    let mut seen = BTreeSet::new();
+    extract_html_attribute_values(html, "src")
+        .into_iter()
+        .filter_map(|value| resolve_html_url(base_url, &value))
+        .filter(|url| is_supported_streamed_embed_url(url) || is_supported_ntvs_embed_url(url))
+        .filter(|url| seen.insert(url.as_str().trim_end_matches('/').to_owned()))
+        .map(|url| StreamedEmbedStream {
+            stream_no: parse_embed_stream_number(&url).unwrap_or(1),
+            hd: true,
+            embed_url: url.to_string(),
+        })
+        .collect()
+}
+
+fn parse_embed_stream_number(url: &Url) -> Option<i64> {
+    url.path_segments()?
+        .next_back()?
+        .parse::<i64>()
+        .ok()
+        .filter(|value| *value > 0)
+}
+
+async fn ntvs_player_page_candidates(state: &AppState, source_url: &Url) -> AppResult<Vec<Url>> {
+    if is_supported_ntvs_embed_url(source_url) {
+        return Ok(vec![source_url.clone()]);
+    }
+
+    if is_supported_ntvs_wrapper_embed_url(source_url) {
+        return fetch_ntvs_direct_embed_candidates(state, source_url).await;
+    }
+
+    if !is_supported_ntvs_watch_url(source_url) && !is_supported_ntvs_channel_url(source_url) {
+        return Err(ApiError::bad_request("Unsupported NTVS live stream URL."));
+    }
+
+    let referer = ntvs_referer_for_url(source_url);
+    let html = fetch_ntvs_html(state, source_url, &referer).await?;
+    let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for url in extract_ntvs_candidate_urls(&html, source_url) {
+        if is_supported_ntvs_embed_url(&url) {
+            push_unique_stream_candidate(&mut candidates, &mut seen, url);
+            continue;
+        }
+        if !is_supported_ntvs_wrapper_embed_url(&url) {
+            continue;
+        }
+        if let Ok(embed_urls) = fetch_ntvs_direct_embed_candidates(state, &url).await {
+            for embed_url in embed_urls {
+                push_unique_stream_candidate(&mut candidates, &mut seen, embed_url);
+                if candidates.len() >= MAX_LIVE_STREAM_CANDIDATES {
+                    break;
+                }
+            }
+        }
+        if candidates.len() >= MAX_LIVE_STREAM_CANDIDATES {
+            break;
+        }
+    }
+
+    if candidates.is_empty() {
+        return Err(ApiError::bad_gateway(
+            "NTVS watch page did not include a supported embed.",
+        ));
+    }
+    Ok(candidates)
+}
+
+async fn fetch_ntvs_direct_embed_candidates(
+    state: &AppState,
+    wrapper_url: &Url,
+) -> AppResult<Vec<Url>> {
+    let html = fetch_ntvs_html(state, wrapper_url, wrapper_url.as_str()).await?;
+    let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+    for url in extract_ntvs_candidate_urls(&html, wrapper_url) {
+        if is_supported_ntvs_embed_url(&url) {
+            push_unique_stream_candidate(&mut candidates, &mut seen, url);
+            if candidates.len() >= MAX_LIVE_STREAM_CANDIDATES {
+                break;
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return Err(ApiError::bad_gateway(
+            "NTVS wrapper did not include a supported embed.",
+        ));
+    }
+    Ok(candidates)
+}
+
+async fn fetch_ntvs_html(state: &AppState, url: &Url, referer: &str) -> AppResult<String> {
+    let response = sports_http_client(state)?
+        .get(url.clone())
+        .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
+        .header(reqwest::header::REFERER, referer)
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                ApiError::gateway_timeout("Timed out fetching NTVS stream page.")
+            } else {
+                ApiError::bad_gateway(format!("Failed to fetch NTVS stream page: {error}"))
+            }
+        })?;
+
+    if !response.status().is_success() {
+        return Err(ApiError::bad_gateway(format!(
+            "NTVS stream page returned HTTP {}.",
+            response.status()
+        )));
+    }
+
+    response
+        .text()
+        .await
+        .map_err(|error| ApiError::bad_gateway(format!("Failed to read NTVS stream page: {error}")))
+}
+
+fn extract_ntvs_candidate_urls(html: &str, base_url: &Url) -> Vec<Url> {
+    ["src", "value"]
+        .into_iter()
+        .flat_map(|attribute| extract_html_attribute_values(html, attribute))
+        .filter_map(|value| resolve_html_url(base_url, &value))
+        .filter(|url| is_supported_ntvs_wrapper_embed_url(url) || is_supported_ntvs_embed_url(url))
+        .collect()
+}
+
+fn extract_html_attribute_values(html: &str, attribute: &str) -> Vec<String> {
+    let lower_html = html.to_ascii_lowercase();
+    let mut values = Vec::new();
+    for quote in ['"', '\''] {
+        let pattern = format!("{attribute}={quote}");
+        let mut offset = 0usize;
+        while let Some(relative_start) = lower_html[offset..].find(&pattern) {
+            let value_start = offset + relative_start + pattern.len();
+            let Some(relative_end) = html[value_start..].find(quote) else {
+                break;
+            };
+            values.push(decode_basic_html_entities(
+                &html[value_start..value_start + relative_end],
+            ));
+            offset = value_start + relative_end + 1;
+        }
+    }
+    values
+}
+
+fn decode_basic_html_entities(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+}
+
+fn resolve_html_url(base_url: &Url, value: &str) -> Option<Url> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.to_ascii_lowercase().starts_with("javascript:") {
+        return None;
+    }
+    base_url.join(trimmed).ok()
+}
+
+fn ntvs_referer_for_url(url: &Url) -> String {
+    match url
+        .host_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "ntv.cx" | "www.ntv.cx" => "https://ntv.cx/".to_owned(),
+        _ => NTVS_REFERER.to_owned(),
+    }
+}
+
 fn is_streamed_stream_api_url(url: &Url) -> bool {
     matches!(
         url.host_str().unwrap_or_default(),
         "streamed.pk" | "www.streamed.pk"
     ) && url.path().starts_with("/api/stream/")
+}
+
+fn is_streamed_watch_url(url: &Url) -> bool {
+    matches!(
+        url.host_str().unwrap_or_default(),
+        "streamed.pk" | "www.streamed.pk"
+    ) && url.path().starts_with("/watch/")
+}
+
+fn is_supported_streamed_stream_url(url: &Url) -> bool {
+    is_streamed_stream_api_url(url) || is_streamed_watch_url(url)
 }
 
 fn is_supported_streamed_embed_url(url: &Url) -> bool {
@@ -1865,17 +2499,78 @@ fn is_supported_streamed_hls_url(url: &Url) -> bool {
 }
 
 fn is_supported_sports_stream_url(url: &Url) -> bool {
-    is_streamed_stream_api_url(url) || is_supported_matchstream_stream_url(url)
+    is_supported_streamed_stream_url(url)
+        || is_supported_matchstream_stream_url(url)
+        || is_supported_ntvs_stream_url(url)
 }
 
 fn sports_stream_provider_id(url: &Url) -> Option<&'static str> {
-    if is_streamed_stream_api_url(url) {
+    if is_supported_streamed_stream_url(url) {
         return Some(STREAMED_SOURCE_ID);
     }
     if is_supported_matchstream_stream_url(url) {
         return Some(MATCHSTREAM_SOURCE_ID);
     }
+    if is_supported_ntvs_stream_url(url) {
+        return Some(NTVS_SOURCE_ID);
+    }
     None
+}
+
+fn is_supported_ntvs_stream_url(url: &Url) -> bool {
+    is_supported_ntvs_watch_url(url)
+        || is_supported_ntvs_channel_url(url)
+        || is_supported_ntvs_wrapper_embed_url(url)
+        || is_supported_ntvs_embed_url(url)
+}
+
+fn is_supported_ntvs_watch_url(url: &Url) -> bool {
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    is_ntvs_host(&host) && url.path().starts_with("/watch/")
+}
+
+fn is_supported_ntvs_channel_url(url: &Url) -> bool {
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    is_ntvs_host(&host) && url.path().starts_with("/channel-hesgoales/")
+}
+
+fn is_supported_ntvs_wrapper_embed_url(url: &Url) -> bool {
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    is_ntvs_host(&host)
+        && url.path() == "/embed"
+        && url
+            .query_pairs()
+            .any(|(key, value)| key == "t" && !value.trim().is_empty())
+}
+
+fn is_ntvs_host(host: &str) -> bool {
+    matches!(host, "ntv.cx" | "www.ntv.cx" | "ntvs.cx" | "www.ntvs.cx")
+}
+
+fn is_supported_ntvs_embed_url(url: &Url) -> bool {
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    matches!(host.as_str(), "embed.st" | "www.embed.st") && url.path().starts_with("/embed/")
+}
+
+fn is_supported_ntvs_hls_url(url: &Url) -> bool {
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    (host == "strmd.st" || host.ends_with(".strmd.st"))
+        && url.path().to_ascii_lowercase().ends_with(".m3u8")
 }
 
 fn is_supported_matchstream_stream_url(url: &Url) -> bool {
@@ -1929,9 +2624,27 @@ fn is_supported_matchstream_player_url(url: &Url) -> bool {
         "brightcoremind.com" | "www.brightcoremind.com" => {
             matches!(url.path(), "/embedb.php" | "/embedw.php")
         }
-        "helpless.click" | "www.helpless.click" => url.path().starts_with("/e/"),
+        host if is_matchstream_embed_player_host(host) => url.path().starts_with("/e/"),
         _ => false,
     }
+}
+
+fn is_matchstream_embed_player_host(host: &str) -> bool {
+    matches!(
+        host,
+        "adexchangerapid.com"
+            | "www.adexchangerapid.com"
+            | "dohaunting.com"
+            | "www.dohaunting.com"
+            | "helpless.click"
+            | "www.helpless.click"
+            | "jnbhi.com"
+            | "www.jnbhi.com"
+            | "lineagest.click"
+            | "www.lineagest.click"
+            | "mxbrbviqikqaw.com"
+            | "www.mxbrbviqikqaw.com"
+    )
 }
 
 fn is_supported_matchstream_hls_url(url: &Url) -> bool {
@@ -2200,6 +2913,115 @@ fn normalize_matchstream_sport_match(
     })
 }
 
+fn ntvs_category_matches(category: &str, default_sport_name: &str) -> bool {
+    category.trim().is_empty() || category.trim().eq_ignore_ascii_case(default_sport_name)
+}
+
+fn ntvs_match_link_count(match_item: &NtvsMatch) -> usize {
+    match_item
+        .sources
+        .iter()
+        .filter(|source| ntvs_source_embed_url(source, 1).is_some())
+        .count()
+}
+
+fn normalize_ntvs_sport_match(
+    match_item: NtvsMatch,
+    default_sport_name: &'static str,
+) -> serde_json::Value {
+    let title = match_item.title.trim().to_owned();
+    let team1 = match_item
+        .teams
+        .home
+        .as_ref()
+        .map(|team| team.name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    let team2 = match_item
+        .teams
+        .away
+        .as_ref()
+        .map(|team| team.name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    let sport = if match_item.category.trim().is_empty() {
+        default_sport_name.to_owned()
+    } else {
+        title_case_ascii(match_item.category.trim())
+    };
+    let mut streams = Vec::new();
+    let mut channels = Vec::new();
+
+    for (index, source) in match_item.sources.iter().enumerate() {
+        let Some(source_url) = ntvs_source_embed_url(source, 1) else {
+            continue;
+        };
+        let source_name = source.source.trim();
+        let display_source = title_case_ascii(source_name);
+        streams.push(json!({
+            "id": format!("ntvs-{source_name}-{index}"),
+            "label": format!("NTVS {display_source}"),
+            "source": source_url,
+            "provider": NTVS_SOURCE_ID,
+            "playbackType": "hls",
+            "quality": "HD"
+        }));
+        channels.push(json!({
+            "name": format!("NTVS {display_source}"),
+            "language": "HD",
+            "linkCount": 1
+        }));
+    }
+
+    let ends_at_timestamp = match_item
+        .date
+        .saturating_add(NTVS_DEFAULT_DURATION_MINUTES.saturating_mul(60_000));
+
+    json!({
+        "id": format!("ntvs-{}", match_item.id.trim()),
+        "title": title,
+        "matchText": title,
+        "sourceDisplayTime": "",
+        "league": "NTVS",
+        "sport": sport,
+        "team1": team1,
+        "team2": team2,
+        "primaryChannel": "NTVS Kobra",
+        "important": match_item.popular,
+        "sourceMatchDate": "",
+        "startTimestamp": match_item.date,
+        "endsAtTimestamp": ends_at_timestamp,
+        "durationMinutes": NTVS_DEFAULT_DURATION_MINUTES,
+        "linkCount": streams.len(),
+        "channelCount": channels.len(),
+        "channels": channels,
+        "streams": streams,
+        "languages": ["HD"],
+        "provider": NTVS_SOURCE_ID
+    })
+}
+
+fn ntvs_source_embed_url(source: &StreamedSource, stream_no: i64) -> Option<String> {
+    let source_name = source.source.trim();
+    let source_id = source.id.trim();
+    if source_name.is_empty() || source_id.is_empty() {
+        return None;
+    }
+
+    let mut url = Url::parse("https://embed.st/").ok()?;
+    let stream_no_text = stream_no.max(1).to_string();
+    {
+        let mut segments = url.path_segments_mut().ok()?;
+        segments.push("embed");
+        segments.push(source_name);
+        segments.push(source_id);
+        segments.push(&stream_no_text);
+    }
+    Some(url.to_string())
+}
+
 fn title_case_ascii(value: &str) -> String {
     value
         .split(|ch: char| !ch.is_ascii_alphanumeric())
@@ -2220,18 +3042,25 @@ fn title_case_ascii(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MATCHSTREAM_WEBMASTER_URL, MatchstreamChannel, MatchstreamMatch,
+        MATCHSTREAM_WEBMASTER_URL, MatchstreamChannel, MatchstreamMatch, NTVS_SOURCE_ID, NtvsMatch,
         SPORTS_SCHEDULE_FUTURE_CACHE_TTL_MS, SPORTS_SCHEDULE_STALE_IF_ERROR_MS,
-        SPORTS_STREAM_RESOLVE_CACHE_TTL_MS, STREAMED_FOOTBALL_MATCHES_URL, SportsScheduleCache,
-        SportsScheduleSource, SportsStreamResolveCache, StreamedMatch, StreamedSource,
-        StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
-        build_streamed_football_matches_payload, extract_matchstream_matches,
+        SPORTS_STREAM_RESOLVE_CACHE_TTL_MS, STREAMED_FOOTBALL_MATCHES_URL, STREAMED_SOURCE_ID,
+        SportsScheduleCache, SportsScheduleSource, SportsStreamResolveCache, StreamedMatch,
+        StreamedSource, StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
+        build_ntvs_football_matches_payload, build_streamed_football_matches_payload,
+        extract_matchstream_matches, extract_ntvs_candidate_urls,
+        extract_streamed_watch_embed_streams, is_streamed_watch_url,
         is_supported_matchstream_hls_url, is_supported_matchstream_player_url,
-        is_supported_matchstream_stream_url, is_supported_streamed_hls_url,
-        live_stream_source_candidates, matchstream_live_stream_source_candidates,
-        normalize_matchstream_link, parse_fallback_stream_urls, remove_streamed_sources_by_index,
+        is_supported_matchstream_stream_url, is_supported_ntvs_embed_url,
+        is_supported_ntvs_channel_url, is_supported_ntvs_hls_url,
+        is_supported_ntvs_stream_url, is_supported_ntvs_watch_url,
+        is_supported_ntvs_wrapper_embed_url, is_supported_streamed_hls_url,
+        is_supported_streamed_stream_url, live_stream_source_candidates,
+        matchstream_live_stream_source_candidates, normalize_matchstream_link,
+        ntvs_source_embed_url, parse_fallback_stream_urls, remove_streamed_sources_by_index,
         sports_live_stream_source_candidates, sports_schedule_fresh_ttl_ms,
-        sports_stream_resolve_cache_key, streamed_match_is_live, streamed_source_stream_api_url,
+        sports_stream_provider_id, sports_stream_resolve_cache_key, streamed_match_is_live,
+        streamed_source_stream_api_url,
     };
     use crate::utils::now_ms;
     use serde_json::json;
@@ -2272,6 +3101,10 @@ mod tests {
         assert_eq!(
             SportsScheduleSource::from_query(Some("matchstream")).unwrap(),
             SportsScheduleSource::Matchstream
+        );
+        assert_eq!(
+            SportsScheduleSource::from_query(Some("ntvs")).unwrap(),
+            SportsScheduleSource::Ntvs
         );
     }
 
@@ -2410,6 +3243,159 @@ mod tests {
             streamed_source_stream_api_url(&live_match.sources[0]).as_deref(),
             Some("https://streamed.pk/api/stream/echo/morocco-vs-madagascar-football-1545264")
         );
+
+        let watch =
+            url::Url::parse("https://streamed.pk/watch/kosovo-vs-andorra-2472554/admin/1").unwrap();
+        assert!(is_streamed_watch_url(&watch));
+        assert!(is_supported_streamed_stream_url(&watch));
+        assert_eq!(sports_stream_provider_id(&watch), Some(STREAMED_SOURCE_ID));
+    }
+
+    #[test]
+    fn extracts_streamed_watch_embed_candidates_from_html() {
+        let base =
+            url::Url::parse("https://streamed.pk/watch/kosovo-vs-andorra-2472554/admin/1").unwrap();
+        let html = r#"
+            <iframe src="https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1"></iframe>
+            <iframe src="https://embedsports.top/embed/admin/legacy-source/2"></iframe>
+            <iframe src="https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1"></iframe>
+            <iframe src="https://example.test/embed/admin/ppv-kosovo-vs-andorra/1"></iframe>
+        "#;
+
+        let streams = extract_streamed_watch_embed_streams(html, &base)
+            .into_iter()
+            .map(|stream| (stream.stream_no, stream.hd, stream.embed_url))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            streams,
+            vec![
+                (
+                    1,
+                    true,
+                    "https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1".to_owned()
+                ),
+                (
+                    2,
+                    true,
+                    "https://embedsports.top/embed/admin/legacy-source/2".to_owned()
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_ntvs_payload_with_embed_sources() {
+        let (payload, _) = build_ntvs_football_matches_payload(vec![NtvsMatch {
+            id: "kosovo-vs-andorra-2472554".to_owned(),
+            title: "Kosovo vs Andorra".to_owned(),
+            category: "football".to_owned(),
+            date: now_ms() + 60_000,
+            popular: true,
+            teams: StreamedTeams {
+                home: Some(StreamedTeam {
+                    name: "Kosovo".to_owned(),
+                }),
+                away: Some(StreamedTeam {
+                    name: "Andorra".to_owned(),
+                }),
+            },
+            sources: vec![
+                StreamedSource {
+                    source: "admin".to_owned(),
+                    id: "ppv-kosovo-vs-andorra".to_owned(),
+                },
+                StreamedSource {
+                    source: "echo".to_owned(),
+                    id: "kosovo-vs-andorra-football-1545036".to_owned(),
+                },
+            ],
+        }]);
+        let matches = payload["matches"].as_array().unwrap();
+
+        assert_eq!(payload["sourceProvider"], NTVS_SOURCE_ID);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["provider"], NTVS_SOURCE_ID);
+        assert_eq!(matches[0]["league"], "NTVS");
+        assert_eq!(matches[0]["linkCount"], 2);
+        assert_eq!(
+            matches[0]["streams"][0]["source"],
+            "https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1"
+        );
+        assert_eq!(
+            ntvs_source_embed_url(
+                &StreamedSource {
+                    source: "admin".to_owned(),
+                    id: "ppv-kosovo-vs-andorra".to_owned(),
+                },
+                1
+            )
+            .as_deref(),
+            Some("https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1")
+        );
+    }
+
+    #[test]
+    fn accepts_ntvs_stream_and_hls_urls_only() {
+        let watch =
+            url::Url::parse("https://ntvs.cx/watch/kobra/kosovo-vs-andorra-2472554").unwrap();
+        let ntv_watch =
+            url::Url::parse("https://ntv.cx/watch/kobra/kosovo-vs-andorra-2472554").unwrap();
+        let channel =
+            url::Url::parse("https://ntvs.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
+        let ntv_channel =
+            url::Url::parse("https://ntv.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
+        let wrapper = url::Url::parse("https://ntvs.cx/embed?t=abc123").unwrap();
+        let ntv_wrapper = url::Url::parse("https://ntv.cx/embed?t=abc123").unwrap();
+        let embed =
+            url::Url::parse("https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1").unwrap();
+        let hls =
+            url::Url::parse("https://lb10.strmd.st/secure/token/rtmp/stream/id/1/playlist.m3u8")
+                .unwrap();
+        let segment =
+            url::Url::parse("https://lb10.strmd.st/secure/token/rtmp/stream/id/1/segment.ts")
+                .unwrap();
+        let other = url::Url::parse("https://example.test/embed/admin/id/1").unwrap();
+
+        assert!(is_supported_ntvs_watch_url(&watch));
+        assert!(is_supported_ntvs_watch_url(&ntv_watch));
+        assert!(is_supported_ntvs_channel_url(&channel));
+        assert!(is_supported_ntvs_channel_url(&ntv_channel));
+        assert!(is_supported_ntvs_wrapper_embed_url(&wrapper));
+        assert!(is_supported_ntvs_wrapper_embed_url(&ntv_wrapper));
+        assert!(is_supported_ntvs_embed_url(&embed));
+        assert!(is_supported_ntvs_stream_url(&watch));
+        assert!(is_supported_ntvs_stream_url(&ntv_watch));
+        assert!(is_supported_ntvs_stream_url(&channel));
+        assert!(is_supported_ntvs_stream_url(&ntv_channel));
+        assert!(is_supported_ntvs_stream_url(&embed));
+        assert_eq!(sports_stream_provider_id(&embed), Some(NTVS_SOURCE_ID));
+        assert!(is_supported_ntvs_hls_url(&hls));
+        assert!(!is_supported_ntvs_hls_url(&segment));
+        assert!(!is_supported_ntvs_stream_url(&other));
+    }
+
+    #[test]
+    fn extracts_ntvs_wrapper_and_embed_candidates_from_html() {
+        let base = url::Url::parse("https://ntv.cx/watch/kobra/kosovo-vs-andorra-2472554").unwrap();
+        let html = r#"
+            <option value="/embed?t=abc&amp;server=kobra">Server Kobra</option>
+            <iframe src="https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1"></iframe>
+            <iframe src="https://example.test/embed/admin/ppv-kosovo-vs-andorra/1"></iframe>
+        "#;
+
+        let candidates = extract_ntvs_candidate_urls(html, &base)
+            .into_iter()
+            .map(|url| url.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            candidates,
+            vec![
+                "https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1".to_owned(),
+                "https://ntv.cx/embed?t=abc&server=kobra".to_owned(),
+            ]
+        );
     }
 
     #[test]
@@ -2457,6 +3443,8 @@ mod tests {
             url::Url::parse("https://brightcoremind.com/embedb.php?player=desktop&live=do6")
                 .unwrap();
         let helpless = url::Url::parse("https://helpless.click/e/sugutdh5wpwe").unwrap();
+        let lineagest =
+            url::Url::parse("https://lineagest.click/e/mbsb8pkj0dg6l?color=FF661A").unwrap();
         let zohanayaan =
             url::Url::parse("https://cdn6.zohanayaan.com:1686/hls/do6.m3u8?token=1").unwrap();
         let xst = url::Url::parse("https://media.example.28585519.net/hls/live.m3u8").unwrap();
@@ -2465,6 +3453,7 @@ mod tests {
 
         assert!(is_supported_matchstream_player_url(&brightcore));
         assert!(is_supported_matchstream_player_url(&helpless));
+        assert!(is_supported_matchstream_player_url(&lineagest));
         assert!(is_supported_matchstream_hls_url(&zohanayaan));
         assert!(is_supported_matchstream_hls_url(&xst));
         assert!(!is_supported_matchstream_hls_url(&segment));
@@ -2500,7 +3489,7 @@ mod tests {
         let candidates = sports_live_stream_source_candidates(
             "https://streamed.pk/api/stream/admin/a",
             Some(
-                r#"["https://evfancy.link//ch?id=4","https://streamed.pk/api/stream/echo/a","https://example.test/live"]"#,
+                r#"["https://evfancy.link//ch?id=4","https://streamed.pk/api/stream/echo/a","https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1","https://streamed.pk/watch/kosovo-vs-andorra-2472554/admin/1","https://example.test/live"]"#,
             ),
         )
         .unwrap();
@@ -2514,6 +3503,8 @@ mod tests {
                 "https://streamed.pk/api/stream/admin/a",
                 "https://evfancy.link/ch?id=4",
                 "https://streamed.pk/api/stream/echo/a",
+                "https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1",
+                "https://streamed.pk/watch/kosovo-vs-andorra-2472554/admin/1",
             ]
         );
     }

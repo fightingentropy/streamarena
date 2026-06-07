@@ -14,6 +14,8 @@ export const ANT1_STREAM_URL =
   "https://pcdn.antennaplus.gr/live/media0/antenna-gr/HLS/index.m3u8";
 export const ALPHA_TV_STREAM_URL =
   "https://alphatvlive2.siliconweb.com/alphatvlive/live_abr/playlist.m3u8";
+export const NOVASPORTS_STREAM_URL =
+  "https://ntvs.cx/channel-hesgoales/NOVASPORTS-1";
 export const TOP_NEWS_STREAM_URL =
   "https://player.twitch.tv/?channel=topmedia_topnews&parent=top-channel.tv";
 
@@ -168,6 +170,26 @@ export const LIVE_CHANNELS = Object.freeze([
     artwork: "assets/images/top-news-live.svg",
     genre: "News",
     region: "Albania",
+    quality: "Live HLS",
+  },
+  {
+    id: "novasports",
+    title: "Nova Sports",
+    source: NOVASPORTS_STREAM_URL,
+    defaultStreamId: "default",
+    streams: [
+      {
+        id: "default",
+        label: "Nova Sports Live",
+        source: NOVASPORTS_STREAM_URL,
+        quality: "Live HLS",
+      },
+    ],
+    liveEmbed: true,
+    liveResolver: "sports",
+    artwork: "assets/images/novasports-live.svg",
+    genre: "Sports",
+    region: "International",
     quality: "Live HLS",
   },
 ]);
