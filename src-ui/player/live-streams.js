@@ -198,9 +198,6 @@ export function getLivePlaybackSource(source, isLivePlayback, options = {}) {
   if (isLiveHlsProxyPlaybackSource(normalizedSource)) {
     return normalizedSource;
   }
-  if (isLivePlayback && isBrowserBoundLiveHlsHost(normalizedSource)) {
-    return normalizedSource;
-  }
   const shouldProxy =
     isLivePlayback &&
     isHlsPlaybackSource(normalizedSource) &&
