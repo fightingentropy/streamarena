@@ -1523,7 +1523,7 @@ async fn sports_stream_resolve_response(
 
         match resolved_result {
             Ok(resolved) if resolved.playback_type == "hls" => {
-                return Ok(resolved_live_stream_response(resolved, provider, false));
+                return Ok(resolved_live_stream_response(state, resolved, provider, false));
             }
             Ok(resolved) => {
                 errors.push(format!(
@@ -1559,6 +1559,7 @@ async fn streamed_stream_resolve_response(
         match resolve_cached_streamed_live_stream(state, source_url, candidate_index).await {
             Ok(resolved) if resolved.playback_type == "hls" => {
                 return Ok(resolved_live_stream_response(
+                    state,
                     resolved,
                     STREAMED_SOURCE_ID,
                     false,
@@ -1588,11 +1589,20 @@ async fn streamed_stream_resolve_response(
 }
 
 fn resolved_live_stream_response(
+    state: &AppState,
     resolved: ResolvedLiveStream,
     provider: &'static str,
     _cache_hit: bool,
 ) -> Response<Body> {
-    let playback_url_text = resolved.playback_url.to_string();
+    let playback_url_text = if resolved.playback_type == "hls" {
+        crate::live::build_trusted_external_embed_hls_playback_source(
+            resolved.playback_url.as_str(),
+            Some(resolved.player_page_url.as_str()),
+            state.config.live_hls_proxy_secret.as_str(),
+        )
+    } else {
+        resolved.playback_url.to_string()
+    };
     json_response(json!({
         "source": resolved.source_url.as_str(),
         "provider": provider,
@@ -2504,7 +2514,7 @@ fn extract_ntvs_candidate_urls(html: &str, base_url: &Url) -> Vec<Url> {
     for url in ["src", "value", "data-src", "href"]
         .into_iter()
         .flat_map(|attribute| extract_html_attribute_values(html, attribute))
-        .filter_map(|value| resolve_html_url(base_url, &value))
+        .filter_map(|value| resolve_ntvs_candidate_url(base_url, &value))
         .filter(|url| {
             is_supported_ntvs_wrapper_embed_url(url)
                 || is_supported_ntvs_embed_url(url)
@@ -2547,7 +2557,7 @@ fn extract_ntvs_script_candidate_urls(html: &str, base_url: &Url) -> Vec<Url> {
     }
 
     for value in values {
-        if let Some(url) = resolve_html_url(base_url, &value) {
+        if let Some(url) = resolve_ntvs_candidate_url(base_url, &value) {
             if is_supported_ntvs_wrapper_embed_url(&url)
                 || is_supported_ntvs_embed_url(&url)
                 || is_supported_ntvs_hesgoaler_player_url(&url)
@@ -2633,6 +2643,58 @@ fn resolve_html_url(base_url: &Url, value: &str) -> Option<Url> {
         return None;
     }
     base_url.join(trimmed).ok()
+}
+
+fn resolve_ntvs_candidate_url(base_url: &Url, value: &str) -> Option<Url> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.to_ascii_lowercase().starts_with("javascript:") {
+        return None;
+    }
+
+    if let Some(hesgoaler_url) = resolve_ntvs_hesgoaler_player_url(trimmed) {
+        return Some(hesgoaler_url);
+    }
+
+    if let Ok(url) = Url::parse(trimmed) {
+        if let Some(host) = url.host_str().map(|host| host.to_ascii_lowercase()) {
+            if is_ntvs_host(&host) {
+                if let Some(hesgoaler_url) =
+                    resolve_ntvs_hesgoaler_player_url(&format!("{}{}", url.path(), url.query().map(|query| format!("?{query}")).unwrap_or_default()))
+                {
+                    return Some(hesgoaler_url);
+                }
+            }
+        }
+        if is_supported_ntvs_wrapper_embed_url(&url)
+            || is_supported_ntvs_embed_url(&url)
+            || is_supported_ntvs_hesgoaler_player_url(&url)
+        {
+            return Some(url);
+        }
+    }
+
+    resolve_html_url(base_url, trimmed)
+}
+
+fn resolve_ntvs_hesgoaler_player_url(value: &str) -> Option<Url> {
+    let trimmed = value.trim();
+    let (path, query) = trimmed.split_once('?').unwrap_or((trimmed, ""));
+    if !path.eq_ignore_ascii_case("/stream.php") {
+        return None;
+    }
+    let channel = query
+        .split('&')
+        .find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key.eq_ignore_ascii_case("ch") && !value.trim().is_empty()).then_some(value.trim())
+        })?;
+    let mut url = Url::parse("https://hesgoaler.com/stream.php").ok()?;
+    {
+        let mut query_pairs = url.query_pairs_mut();
+        query_pairs.clear();
+        query_pairs.append_pair("ch", channel);
+    }
+    Some(url)
 }
 
 fn normalize_ntvs_fetch_url(url: &Url) -> Url {
@@ -3255,7 +3317,7 @@ mod tests {
         build_ntvs_football_matches_payload, build_streamed_football_matches_payload,
         extract_matchstream_matches, extract_ntvs_candidate_urls,
         extract_streamed_watch_embed_streams, is_streamed_watch_url,
-        normalize_ntvs_fetch_url,
+        normalize_ntvs_fetch_url, resolve_ntvs_candidate_url,
         is_supported_matchstream_hls_url, is_supported_matchstream_player_url,
         is_supported_matchstream_stream_url, is_supported_ntvs_channel_url,
         is_supported_ntvs_embed_url, is_supported_ntvs_hesgoaler_player_url,
@@ -3703,11 +3765,23 @@ mod tests {
 
         candidates.sort();
         let mut expected = vec![
+            "https://hesgoaler.com/stream.php?ch=NOVASPORTS1".to_owned(),
             "https://ntv.cx/embed?t=OFd0cFZIcCtUQ3NleURxSUs1SW9VTHRKb2tpMjlQWXN2Y29SM2E0UDdvOFo5K2I4MWdPWHgvSVZxZDB3YnNjSw~~".to_owned(),
             "https://ntv.cx/embed?t=single".to_owned(),
         ];
         expected.sort();
         assert_eq!(candidates, expected);
+    }
+
+    #[test]
+    fn resolves_relative_ntvs_stream_php_paths_to_hesgoaler() {
+        let base = url::Url::parse("https://ntvs.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
+        let resolved = resolve_ntvs_candidate_url(&base, "/stream.php?ch=NOVASPORTS1")
+            .expect("hesgoaler candidate");
+        assert_eq!(
+            resolved.as_str(),
+            "https://hesgoaler.com/stream.php?ch=NOVASPORTS1"
+        );
     }
 
     #[test]

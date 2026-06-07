@@ -153,8 +153,16 @@ export function shouldShowLiveStreamControls(isLivePlayback, options) {
   return Boolean(isLivePlayback && options.length > 1);
 }
 
+export function isLiveHlsProxyPlaybackSource(source) {
+  const normalized = normalizePlaybackSourceValue(source);
+  return normalized.includes("/api/live/hls.m3u8");
+}
+
 export function getLivePlaybackSource(source, isLivePlayback, options = {}) {
   const normalizedSource = normalizePlaybackSourceValue(source);
+  if (isLiveHlsProxyPlaybackSource(normalizedSource)) {
+    return normalizedSource;
+  }
   const shouldProxy =
     isLivePlayback &&
     isHlsPlaybackSource(normalizedSource) &&

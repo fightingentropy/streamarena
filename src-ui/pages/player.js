@@ -3672,7 +3672,7 @@ function handleLiveIframePlaybackError() {
     void tryNextTmdbSource();
     return;
   }
-  attemptTmdbRecovery("Embed unavailable. Trying torrent...");
+  attemptTmdbRecovery("Embed unavailable. Trying another source...");
 }
 
 function clearLiveIframePlayback() {
@@ -4538,7 +4538,10 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
     return true;
   }
 
-  if (tmdbResolveRetries < maxTmdbResolveRetries) {
+  if (
+    shouldAllowTorrentResolveFallback() &&
+    tmdbResolveRetries < maxTmdbResolveRetries
+  ) {
     tmdbResolveRetries += 1;
     tmdbSkipExternalEmbed = true;
     showResolver(
@@ -6433,7 +6436,10 @@ async function resolveLivePlaybackSource(source) {
     throw new Error("Could not resolve this live stream.");
   }
   return getLivePlaybackSource(playbackUrl, true, {
-    referer: payload?.playerPage || resolvedSource || normalizedSource,
+    referer:
+      playbackUrl.includes("/api/live/hls.m3u8")
+        ? ""
+        : payload?.playerPage || resolvedSource || normalizedSource,
   });
 }
 
