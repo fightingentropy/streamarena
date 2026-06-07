@@ -85,7 +85,8 @@ rsync -a -e "$RSYNC_SSH" target/release/netflix-rust-backend "$MINI_HOST:$REMOTE
 rsync -a -e "$RSYNC_SSH" scripts/resolve-external-embed-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-external-embed-hls.mjs"
 rsync -a -e "$RSYNC_SSH" scripts/resolve-streamed-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-streamed-hls.mjs"
 rsync -a -e "$RSYNC_SSH" scripts/resolve-matchstream-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-matchstream-hls.mjs"
-"${SSH_BASE[@]}" "$MINI_HOST" "chmod 755 '$REMOTE_APP/bin/resolve-external-embed-hls.mjs' '$REMOTE_APP/bin/resolve-streamed-hls.mjs' '$REMOTE_APP/bin/resolve-matchstream-hls.mjs'"
+rsync -a -e "$RSYNC_SSH" scripts/resolve-ntvs-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-ntvs-hls.mjs"
+"${SSH_BASE[@]}" "$MINI_HOST" "chmod 755 '$REMOTE_APP/bin/resolve-external-embed-hls.mjs' '$REMOTE_APP/bin/resolve-streamed-hls.mjs' '$REMOTE_APP/bin/resolve-matchstream-hls.mjs' '$REMOTE_APP/bin/resolve-ntvs-hls.mjs'"
 
 rsync -a -e "$RSYNC_SSH" assets/library.json "$MINI_HOST:$REMOTE_APP/assets/library.json"
 rsync -a --delete -e "$RSYNC_SSH" assets/images/ "$MINI_HOST:$REMOTE_APP/assets/images/"

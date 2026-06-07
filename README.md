@@ -102,7 +102,7 @@ Startup flow:
 
 1. `src/main.rs` loads `.env`, builds `Config`, initializes the SQLite database, and creates shared services.
 2. The app creates a shared HTTP client. If `OUTBOUND_HTTP_PROXY` is set, server outbound HTTP uses that proxy.
-   Sports provider traffic can instead use `SPORTS_HTTP_PROXY` so only sports schedules, sports stream API calls, and Streamed browser HLS extraction go through that proxy.
+   Sports provider traffic can instead use `SPORTS_HTTP_PROXY` so only sports schedules, sports stream API calls, and sports browser HLS extraction go through that proxy.
 3. Services are wired into `AppState`: TMDB, media probing/subtitles, local torrent/cache, resolver, streaming/remux/HLS, uploads, runtime ffmpeg capabilities, sports schedule cache, and home bootstrap cache.
 4. A background task runs every 60 seconds to sweep stale SQLite/cache data, upload sessions, and streaming jobs.
 5. `HomeBootstrapCache` starts warming TMDB/home data as soon as the server boots.
@@ -434,7 +434,7 @@ Server:
 - `HOST` - default `127.0.0.1`.
 - `PORT` - default `5173`.
 - `OUTBOUND_HTTP_PROXY` - optional HTTP/SOCKS proxy for server outbound requests.
-- `SPORTS_HTTP_PROXY` - optional HTTP/SOCKS proxy only for sports provider schedule/stream requests and Streamed browser HLS extraction. For Cloudflare WARP proxy mode this is typically `socks5://127.0.0.1:40000`.
+- `SPORTS_HTTP_PROXY` - optional HTTP/SOCKS proxy only for sports provider schedule/stream requests and sports browser HLS extraction. For Cloudflare WARP proxy mode this is typically `socks5://127.0.0.1:40000`.
 - `MAX_UPLOAD_BYTES` - default 10 GiB, clamped to at least 50 MiB.
 
 Embed/live resolver helpers:
@@ -446,11 +446,13 @@ Embed/live resolver helpers:
 - `VIDLINK_NATIVE_ASSET_CACHE_TTL_MS` - TTL for cached VidLink native token assets fetched by the Node resolver; default 7200000.
 - `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs` when present, otherwise `bin/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
 - `MATCHSTREAM_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-matchstream-hls.mjs` when present, otherwise `bin/resolve-matchstream-hls.mjs`; set to `0`/`off` to disable.
+- `NTVS_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-ntvs-hls.mjs` when present, otherwise `bin/resolve-ntvs-hls.mjs`; set to `0`/`off` to disable.
 - `SPORTS_RESOLVER_MAX_CONCURRENT` - max concurrent sports Playwright HLS resolver jobs; default 2.
 - `SPORTS_RESOLVER_QUEUE_TIMEOUT_MS` - max time a sports stream resolve waits for resolver capacity; default 3000.
 - `EXTERNAL_EMBED_BROWSER_PROXY` - optional Playwright proxy override for external embeds.
 - `STREAMED_EMBED_BROWSER_PROXY` - optional Playwright proxy override for Streamed sports embeds.
 - `MATCHSTREAM_BROWSER_PROXY` - optional Playwright proxy override for MatchStream sports embeds.
+- `NTVS_EMBED_BROWSER_PROXY` - optional Playwright proxy override for NTVS sports embeds.
 
 Supported movie/TV native HLS hosts:
 
@@ -586,6 +588,7 @@ Internal resolver helpers:
 - `scripts/resolve-external-embed-hls.mjs` - VidLink native Node/WASM and VidEasy Playwright helper for movie/TV native HLS extraction.
 - `scripts/resolve-streamed-hls.mjs` - Playwright helper for Streamed sports HLS extraction; mini deploy copies it to `bin/resolve-streamed-hls.mjs`.
 - `scripts/resolve-matchstream-hls.mjs` - Playwright helper for MatchStream sports HLS extraction; mini deploy copies it to `bin/resolve-matchstream-hls.mjs`.
+- `scripts/resolve-ntvs-hls.mjs` - Playwright helper for NTVS/Embed.st sports HLS extraction; mini deploy copies it to `bin/resolve-ntvs-hls.mjs`.
 
 ## Mac Mini Infrastructure
 
@@ -623,11 +626,12 @@ Sports proxy/WARP:
 - Required sports env: `SPORTS_HTTP_PROXY=http://127.0.0.1:40000`.
 - Existing full-backend proxy env may also point at the same listener: `OUTBOUND_HTTP_PROXY=http://127.0.0.1:40000`.
 - Streamed may fail directly from the ISP path; the expected healthy path is through WARP's local proxy.
-- `scripts/check-mini.sh` validates WARP status, WARP proxy mode, the `SPORTS_HTTP_PROXY` value, and a real proxied `https://streamed.pk/api/matches/football` request.
+- `scripts/check-mini.sh` validates WARP status, WARP proxy mode, the `SPORTS_HTTP_PROXY` value, and real proxied Streamed/NTVS football schedule requests.
 - `scripts/deploy-mini.sh` deploys resolver helpers:
   - `bin/resolve-external-embed-hls.mjs` for movie/TV native HLS.
   - `bin/resolve-streamed-hls.mjs` for Streamed sports native HLS.
   - `bin/resolve-matchstream-hls.mjs` for MatchStream sports native HLS.
+  - `bin/resolve-ntvs-hls.mjs` for NTVS sports native HLS.
 
 Useful sports proxy checks:
 
@@ -773,9 +777,9 @@ Movie/TV external embed fails:
 Live sports stream fails:
 
 - Install Playwright Chromium with `bun run bench:playback:install`.
-- Check `STREAMED_HLS_RESOLVER_SCRIPT`.
+- Check `STREAMED_HLS_RESOLVER_SCRIPT`, `MATCHSTREAM_HLS_RESOLVER_SCRIPT`, or `NTVS_HLS_RESOLVER_SCRIPT`.
 - If the default sports source fails to load, switch the `/sports` source picker to MatchStream or leave it on Auto so the backend can fall back when Streamed is unreachable.
-- If a sports provider needs a proxy, set `SPORTS_HTTP_PROXY`; use `STREAMED_EMBED_BROWSER_PROXY` only when the Streamed browser extractor needs a different proxy from the schedule/API requests.
+- If a sports provider needs a proxy, set `SPORTS_HTTP_PROXY`; use provider-specific browser proxy overrides only when a browser extractor needs a different proxy from the schedule/API requests.
 
 Upload fails:
 

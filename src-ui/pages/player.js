@@ -430,7 +430,10 @@ function normalizeLiveEpisodeLabel(value) {
     return label;
   }
   const normalized = label.toLowerCase();
-  return normalized === "streamed" || normalized === "matchstream" || normalized === "auto"
+  return normalized === "streamed" ||
+    normalized === "matchstream" ||
+    normalized === "ntvs" ||
+    normalized === "auto"
     ? ""
     : label;
 }
@@ -2533,6 +2536,45 @@ function getSourceOptionByHash(sourceHash) {
         normalizeSourceHash(option?.sourceHash || "") === normalizedHash,
     ) || null
   );
+}
+
+function getCurrentResolvedSourceOptionFallback(sourceHash = selectedSourceHash) {
+  const normalizedHash = normalizeSourceHash(sourceHash);
+  if (!normalizedHash) {
+    return null;
+  }
+
+  const existingOption = getSourceOptionByHash(normalizedHash);
+  if (existingOption) {
+    return existingOption;
+  }
+
+  const sourceName = String(
+    currentTmdbResolvedFilename ||
+      currentTmdbSelectedFile ||
+      activeTrackSourceInput ||
+      "",
+  ).trim();
+  const resolverProvider = String(currentTmdbResolverProvider || "")
+    .trim()
+    .toLowerCase();
+  if (!sourceName && !resolverProvider) {
+    return null;
+  }
+
+  const isExternalEmbed = resolverProvider === "external-embed";
+  return {
+    sourceHash: normalizedHash,
+    infoHash: normalizedHash,
+    primary: sourceName || "Current source",
+    filename: sourceName,
+    provider: isExternalEmbed ? "LivNet" : "Current",
+    qualityLabel: isExternalEmbed ? "HLS" : "",
+    container: isExternalEmbed ? "hls" : "",
+    seeders: 0,
+    size: "",
+    releaseGroup: "",
+  };
 }
 
 function getSourceSelectLabel(option = {}) {
@@ -5838,6 +5880,16 @@ function normalizeLiveStreamPreferenceProvider(streamOption = {}) {
       return "streamed";
     }
     if (
+      host === "ntvs.cx" ||
+      host === "www.ntvs.cx" ||
+      host === "ntv.cx" ||
+      host === "www.ntv.cx" ||
+      host === "embed.st" ||
+      host === "www.embed.st"
+    ) {
+      return "ntvs";
+    }
+    if (
       host.includes("matchstream") ||
       host.endsWith(".st") ||
       host.endsWith(".to") ||
@@ -6278,15 +6330,31 @@ function resetLiveStreamPlaybackState() {
 function getLiveEmbedFallbackSources(source) {
   const normalizedSource = normalizePlaybackSourceValue(source);
   const seenSources = new Set([normalizedSource]);
-  return liveStreamOptions
-    .map((option) => normalizePlaybackSourceValue(option?.source))
-    .filter((candidateSource) => {
-      if (!candidateSource || seenSources.has(candidateSource)) {
-        return false;
-      }
-      seenSources.add(candidateSource);
-      return true;
-    })
+  const selectedOption =
+    liveStreamOptions.find(
+      (option) => normalizePlaybackSourceValue(option?.source) === normalizedSource,
+    ) ||
+    liveStreamOptions.find((option) => option.id === selectedLiveStreamId) ||
+    {};
+  const selectedProvider = normalizeLiveStreamPreferenceProvider(selectedOption);
+  const sameProviderSources = [];
+  const otherProviderSources = [];
+
+  liveStreamOptions.forEach((option) => {
+    const candidateSource = normalizePlaybackSourceValue(option?.source);
+    if (!candidateSource || seenSources.has(candidateSource)) {
+      return;
+    }
+    seenSources.add(candidateSource);
+    const candidateProvider = normalizeLiveStreamPreferenceProvider(option);
+    if (selectedProvider && candidateProvider === selectedProvider) {
+      sameProviderSources.push(candidateSource);
+    } else {
+      otherProviderSources.push(candidateSource);
+    }
+  });
+
+  return [...sameProviderSources, ...otherProviderSources]
     .slice(0, LIVE_EMBED_FALLBACK_SOURCE_LIMIT);
 }
 
@@ -8018,6 +8086,13 @@ function schedulePlaybackRecovery(
   message = "",
   { delayMs = null, resetAttempts = false } = {},
 ) {
+  if (pendingManualSourceSwitchRestore) {
+    void restoreManualSourceSwitchPlayback(
+      message || "Selected source could not start.",
+    );
+    return true;
+  }
+
   if (isManualSourceSwitchRequestActive()) {
     return true;
   }
@@ -8380,11 +8455,11 @@ function tryAlternatePlaybackSourceNow() {
 async function handlePlaybackErrorRecovery(message) {
   const fallbackMessage =
     String(message || "").trim() || "Resolved stream could not be played.";
-  if (isManualSourceSwitchRequestActive()) {
-    return true;
-  }
   if (pendingManualSourceSwitchRestore) {
     return restoreManualSourceSwitchPlayback(fallbackMessage);
+  }
+  if (isManualSourceSwitchRequestActive()) {
+    return true;
   }
   if (isBrowserOffline()) {
     schedulePlaybackRecovery("offline", "", { resetAttempts: true });
@@ -8964,31 +9039,35 @@ async function fetchTmdbSourceOptionsViaBackend() {
       return;
     }
     const options = Array.isArray(payload?.sources) ? payload.sources : [];
-    availablePlaybackSources = sortSourcesBySeeders(
-      options
-        .map((item) => ({
-          ...item,
-          sourceHash: normalizeSourceHash(
-            item?.sourceHash || item?.infoHash || "",
-          ),
-        }))
-        .filter((item) => Boolean(item.sourceHash)),
-      {
-        preferContainer: getSourceListPreferredContainer(),
-      },
-    );
+    const previousSelectedSourceOption =
+      getCurrentResolvedSourceOptionFallback(selectedSourceHash);
+    const nextPlaybackSources = options
+      .map((item) => ({
+        ...item,
+        sourceHash: normalizeSourceHash(
+          item?.sourceHash || item?.infoHash || "",
+        ),
+      }))
+      .filter((item) => Boolean(item.sourceHash));
 
     if (
       selectedSourceHash &&
-      !availablePlaybackSources.some(
+      !nextPlaybackSources.some(
         (item) => item.sourceHash === selectedSourceHash,
       )
     ) {
-      selectedSourceHash = "";
-      sourceSelectionPinned = false;
-      applyPreferredSourceAudioSync(selectedSourceHash);
-      persistSourceHashInUrl();
+      if (previousSelectedSourceOption) {
+        nextPlaybackSources.unshift(previousSelectedSourceOption);
+      } else {
+        selectedSourceHash = "";
+        sourceSelectionPinned = false;
+        applyPreferredSourceAudioSync(selectedSourceHash);
+        persistSourceHashInUrl();
+      }
     }
+    availablePlaybackSources = sortSourcesBySeeders(nextPlaybackSources, {
+      preferContainer: getSourceListPreferredContainer(),
+    });
     isFetchingPlaybackSources = false;
     renderSourceOptionsWhenStable();
   } catch {
@@ -10342,6 +10421,13 @@ async function handleSourceOptionSelection(nextSourceHash) {
     resumeSeconds: resumeFrom,
     wasPaused,
   });
+  selectedSourceHash = normalizedNextSourceHash;
+  sourceSelectionPinned = true;
+  applyPreferredSourceAudioSync(selectedSourceHash);
+  persistSourceHashInUrl();
+  syncAudioState();
+  syncSourceSelectionState();
+  renderSelectedSourceDetails();
   tmdbResolveRetries = 0;
   closeAudioPopover(false, { force: true });
   closeSourcePopover(false, { force: true });

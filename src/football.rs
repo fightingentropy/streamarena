@@ -2470,8 +2470,9 @@ async fn fetch_ntvs_direct_embed_candidates(
 }
 
 async fn fetch_ntvs_html(state: &AppState, url: &Url, referer: &str) -> AppResult<String> {
+    let fetch_url = normalize_ntvs_fetch_url(url);
     let response = sports_http_client(state)?
-        .get(url.clone())
+        .get(fetch_url)
         .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
         .header(reqwest::header::REFERER, referer)
         .send()
@@ -2634,16 +2635,26 @@ fn resolve_html_url(base_url: &Url, value: &str) -> Option<Url> {
     base_url.join(trimmed).ok()
 }
 
-fn ntvs_referer_for_url(url: &Url) -> String {
-    match url
-        .host_str()
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "ntv.cx" | "www.ntv.cx" => "https://ntv.cx/".to_owned(),
-        _ => NTVS_REFERER.to_owned(),
+fn normalize_ntvs_fetch_url(url: &Url) -> Url {
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let normalized_host = match host.as_str() {
+        "ntv.cx" => Some("ntvs.cx"),
+        "www.ntv.cx" => Some("www.ntvs.cx"),
+        _ => None,
+    };
+    let Some(normalized_host) = normalized_host else {
+        return url.clone();
+    };
+
+    let mut normalized = url.clone();
+    if normalized.set_host(Some(normalized_host)).is_err() {
+        return url.clone();
     }
+    normalized
+}
+
+fn ntvs_referer_for_url(_url: &Url) -> String {
+    NTVS_REFERER.to_owned()
 }
 
 fn is_streamed_stream_api_url(url: &Url) -> bool {
@@ -3244,6 +3255,7 @@ mod tests {
         build_ntvs_football_matches_payload, build_streamed_football_matches_payload,
         extract_matchstream_matches, extract_ntvs_candidate_urls,
         extract_streamed_watch_embed_streams, is_streamed_watch_url,
+        normalize_ntvs_fetch_url,
         is_supported_matchstream_hls_url, is_supported_matchstream_player_url,
         is_supported_matchstream_stream_url, is_supported_ntvs_channel_url,
         is_supported_ntvs_embed_url, is_supported_ntvs_hesgoaler_player_url,
@@ -3696,6 +3708,49 @@ mod tests {
         ];
         expected.sort();
         assert_eq!(candidates, expected);
+    }
+
+    #[test]
+    fn normalizes_ntv_cx_fetch_urls_to_ntvs_cx() {
+        let ntv_channel =
+            url::Url::parse("https://ntv.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
+        let ntv_embed = url::Url::parse(
+            "https://ntv.cx/embed?t=OFd0cFZIcCtUQ3NleURxSUs1SW9VTHRKb2tpMjlQWXN2Y29SM2E0UDdvOFo5K2I4MWdPWHgvSVZxZDB3YnNjSw~~",
+        )
+        .unwrap();
+
+        assert_eq!(
+            normalize_ntvs_fetch_url(&ntv_channel).as_str(),
+            "https://ntvs.cx/channel-hesgoales/NOVASPORTS-1"
+        );
+        assert_eq!(
+            normalize_ntvs_fetch_url(&ntv_embed).as_str(),
+            "https://ntvs.cx/embed?t=OFd0cFZIcCtUQ3NleURxSUs1SW9VTHRKb2tpMjlQWXN2Y29SM2E0UDdvOFo5K2I4MWdPWHgvSVZxZDB3YnNjSw~~"
+        );
+    }
+
+    #[test]
+    fn extracts_ntvs_candidates_from_channel_iframe_src() {
+        let base = url::Url::parse("https://ntv.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
+        let html = r#"
+            <iframe
+                src="/embed?t=OFd0cFZIcCtUQ3NleURxSUs1SW9VTHRKb2tpMjlQWXN2Y29SM2E0UDdvOFo5K2I4MWdPWHgvSVZxZDB3YnNjSw~~"
+            ></iframe>
+        "#;
+
+        let mut candidates = extract_ntvs_candidate_urls(html, &base)
+            .into_iter()
+            .map(|url| url.to_string())
+            .collect::<Vec<_>>();
+        candidates.sort();
+
+        assert_eq!(
+            candidates,
+            vec![
+                "https://ntv.cx/embed?t=OFd0cFZIcCtUQ3NleURxSUs1SW9VTHRKb2tpMjlQWXN2Y29SM2E0UDdvOFo5K2I4MWdPWHgvSVZxZDB3YnNjSw~~"
+                    .to_owned(),
+            ]
+        );
     }
 
     #[test]

@@ -31,6 +31,8 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "cdn.skycdp.com",
     "msvdn.net",
     "siliconweb.com",
+    "strmd.st",
+    "lovetier.bz",
     "strmd.top",
     "zohanayaan.com",
     "easy.speedsterwave.app",
@@ -612,8 +614,7 @@ fn rewrite_live_hls_media_playlist(
         saw_segment = true;
         let segment_uri = resolve_hls_uri(base_url, line)
             .map(|absolute_uri| {
-                let referer =
-                    live_hls_resource_referer_for_url(base_url, &absolute_uri, referer);
+                let referer = live_hls_resource_referer_for_url(base_url, &absolute_uri, referer);
                 live_hls_proxy_resource_url_with_trust(
                     &absolute_uri,
                     referer,
@@ -681,8 +682,7 @@ fn rewrite_vod_hls_media_playlist(
 
         let segment_uri = resolve_hls_uri(base_url, line)
             .map(|absolute_uri| {
-                let referer =
-                    live_hls_resource_referer_for_url(base_url, &absolute_uri, referer);
+                let referer = live_hls_resource_referer_for_url(base_url, &absolute_uri, referer);
                 live_hls_proxy_resource_url_with_trust(
                     &absolute_uri,
                     referer,
@@ -707,14 +707,13 @@ fn live_hls_resource_referer_for_url<'a>(
     }
 }
 
-fn should_omit_hls_resource_referer(
-    base_url: &Url,
-    input: &str,
-    referer: Option<&str>,
-) -> bool {
+fn should_omit_hls_resource_referer(base_url: &Url, input: &str, referer: Option<&str>) -> bool {
     if !referer
         .and_then(|value| Url::parse(value).ok())
-        .and_then(|url| url.host_str().map(|host| host.eq_ignore_ascii_case("vidlink.pro")))
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.eq_ignore_ascii_case("vidlink.pro"))
+        })
         .unwrap_or(false)
     {
         return false;
@@ -897,6 +896,14 @@ mod tests {
             "https://lb12.strmd.top/secure/token/rtmp/stream/id/1/playlist.m3u8"
                 .parse()
                 .expect("streamed sports url");
+        let ntvs_sports: url::Url =
+            "https://lb10.strmd.st/secure/token/rtmp/stream/id/1/playlist.m3u8"
+                .parse()
+                .expect("ntvs sports url");
+        let ntvs_hesgoaler: url::Url =
+            "https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8?token=abc"
+                .parse()
+                .expect("ntvs hesgoaler url");
         let matchstream_sports: url::Url =
             "https://cdn6.zohanayaan.com:1686/hls/do6.m3u8?md5=abc&expires=1780252412"
                 .parse()
@@ -940,6 +947,8 @@ mod tests {
         assert!(is_allowed_live_hls_url(&twitch_variant));
         assert!(is_allowed_live_hls_url(&twitch_segment));
         assert!(is_allowed_live_hls_url(&streamed_sports));
+        assert!(is_allowed_live_hls_url(&ntvs_sports));
+        assert!(is_allowed_live_hls_url(&ntvs_hesgoaler));
         assert!(is_allowed_live_hls_url(&matchstream_sports));
         assert!(is_allowed_live_hls_url(&videasy_hls));
         assert!(is_allowed_live_hls_url(&videasy_new_hls));

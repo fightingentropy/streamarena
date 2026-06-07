@@ -357,7 +357,8 @@ pub async fn debug_sports(
         "providerHealth": state.sports_provider_health.summary(true),
         "proxyConfigured": std::env::var("SPORTS_HTTP_PROXY").ok().is_some_and(|value| !value.trim().is_empty()),
         "streamedResolverConfigured": std::env::var("STREAMED_HLS_RESOLVER_SCRIPT").ok().map(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "disabled")).unwrap_or(true),
-        "matchstreamResolverConfigured": std::env::var("MATCHSTREAM_HLS_RESOLVER_SCRIPT").ok().map(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "disabled")).unwrap_or(true)
+        "matchstreamResolverConfigured": std::env::var("MATCHSTREAM_HLS_RESOLVER_SCRIPT").ok().map(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "disabled")).unwrap_or(true),
+        "ntvsResolverConfigured": std::env::var("NTVS_HLS_RESOLVER_SCRIPT").ok().map(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "disabled")).unwrap_or(true)
     })))
 }
 
