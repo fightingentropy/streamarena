@@ -23,7 +23,6 @@ const LIVE_CHANNEL_ARTWORK = Object.freeze({
   ant1: "assets/images/live-thumbs/ant1.svg",
   alphaTv: "assets/images/live-thumbs/alpha-tv.png",
   topNews: "assets/images/live-thumbs/top-news.jpg",
-  novaSports: "assets/images/live-thumbs/novasports.png",
 });
 
 const NOVASPORTS_CHANNEL_BASE_URL =
@@ -53,7 +52,7 @@ const NOVASPORTS_LIVE_CHANNELS = Object.freeze(
       ],
       liveEmbed: true,
       liveResolver: "sports",
-      artwork: LIVE_CHANNEL_ARTWORK.novaSports,
+      artwork: `assets/images/live-thumbs/novasports-${channelNumber}.png`,
       genre: "Sports",
       region: "Greece",
       quality: "Live HLS",
