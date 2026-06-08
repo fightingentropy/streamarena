@@ -2611,8 +2611,9 @@ fn extract_html_attribute_values(html: &str, attribute: &str) -> Vec<String> {
 
     let lower_html = html.to_ascii_lowercase();
     let mut values = Vec::new();
+    let lower_attribute = attribute.to_ascii_lowercase();
     for quote in ['"', '\''] {
-        let pattern = format!("{attribute}={quote}");
+        let pattern = format!("{lower_attribute}={quote}");
         let mut offset = 0usize;
         while let Some(relative_start) = lower_html[offset..].find(&pattern) {
             let value_start = offset + relative_start + pattern.len();

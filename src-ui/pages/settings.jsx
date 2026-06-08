@@ -92,17 +92,35 @@ function getStoredDefaultAudioLanguage() {
 
 // ─── Persist helpers (localStorage + server sync) ───────────────────────────
 
+let onPreferenceSyncError = null;
+
+export function setPreferenceSyncErrorHandler(handler) {
+  onPreferenceSyncError = typeof handler === "function" ? handler : null;
+}
+
+function syncPreferenceToServer(payload) {
+  fetch("/api/user/preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error(`Preference sync failed: ${res.status}`);
+    })
+    .catch((error) => {
+      // Don't claim success when the server is out of sync — surface it.
+      console.warn("Failed to sync preference to server", error);
+      onPreferenceSyncError?.(error);
+    });
+}
+
 function persistSubtitleColorPreference(value) {
   const normalized = normalizeSubtitleColor(value);
   try {
     if (normalized === DEFAULT_SUBTITLE_COLOR) localStorage.removeItem(SUBTITLE_COLOR_PREF_KEY);
     else localStorage.setItem(SUBTITLE_COLOR_PREF_KEY, normalized);
   } catch {}
-  fetch("/api/user/preferences", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [SUBTITLE_COLOR_PREF_KEY]: normalized }),
-  }).catch(() => {});
+  syncPreferenceToServer({ [SUBTITLE_COLOR_PREF_KEY]: normalized });
   return normalized;
 }
 
@@ -112,11 +130,7 @@ function persistDefaultAudioLanguage(value) {
     if (normalized === "en") localStorage.removeItem(DEFAULT_AUDIO_LANGUAGE_PREF_KEY);
     else localStorage.setItem(DEFAULT_AUDIO_LANGUAGE_PREF_KEY, normalized);
   } catch {}
-  fetch("/api/user/preferences", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [DEFAULT_AUDIO_LANGUAGE_PREF_KEY]: normalized }),
-  }).catch(() => {});
+  syncPreferenceToServer({ [DEFAULT_AUDIO_LANGUAGE_PREF_KEY]: normalized });
   return normalized;
 }
 
@@ -126,11 +140,7 @@ function persistAvatarStylePreference(styleValue) {
     if (style === DEFAULT_AVATAR_STYLE) localStorage.removeItem(PROFILE_AVATAR_STYLE_PREF_KEY);
     else localStorage.setItem(PROFILE_AVATAR_STYLE_PREF_KEY, style);
   } catch {}
-  fetch("/api/user/preferences", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [PROFILE_AVATAR_STYLE_PREF_KEY]: style }),
-  }).catch(() => {});
+  syncPreferenceToServer({ [PROFILE_AVATAR_STYLE_PREF_KEY]: style });
   return style;
 }
 
@@ -140,11 +150,7 @@ function persistAvatarModePreference(modeValue) {
     if (mode === DEFAULT_AVATAR_MODE) localStorage.removeItem(PROFILE_AVATAR_MODE_PREF_KEY);
     else localStorage.setItem(PROFILE_AVATAR_MODE_PREF_KEY, mode);
   } catch {}
-  fetch("/api/user/preferences", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [PROFILE_AVATAR_MODE_PREF_KEY]: mode }),
-  }).catch(() => {});
+  syncPreferenceToServer({ [PROFILE_AVATAR_MODE_PREF_KEY]: mode });
   return mode;
 }
 
@@ -154,11 +160,7 @@ function persistAvatarImagePreference(imageData) {
     if (!safeImage) localStorage.removeItem(PROFILE_AVATAR_IMAGE_PREF_KEY);
     else localStorage.setItem(PROFILE_AVATAR_IMAGE_PREF_KEY, safeImage);
   } catch {}
-  fetch("/api/user/preferences", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [PROFILE_AVATAR_IMAGE_PREF_KEY]: safeImage || "" }),
-  }).catch(() => {});
+  syncPreferenceToServer({ [PROFILE_AVATAR_IMAGE_PREF_KEY]: safeImage || "" });
   return safeImage || "";
 }
 

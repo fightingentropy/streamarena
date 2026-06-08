@@ -68,10 +68,12 @@ pub async fn require_auth(db: &Db, headers: &HeaderMap) -> AppResult<AuthUser> {
         .await?
         .ok_or_else(|| ApiError::unauthorized("Session not found."))?;
 
+    // Fail closed on a broken clock: defaulting to epoch (0) would make every
+    // session look unexpired and bypass the check below.
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
-        .unwrap_or_default();
+        .map_err(|_| ApiError::internal("System clock error."))?;
 
     if expires_at <= now_ms {
         return Err(ApiError::unauthorized("Session expired."));
@@ -90,9 +92,10 @@ pub async fn require_auth(db: &Db, headers: &HeaderMap) -> AppResult<AuthUser> {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len() * 2);
     for &b in bytes {
-        s.push_str(&format!("{:02x}", b));
+        let _ = write!(s, "{b:02x}");
     }
     s
 }

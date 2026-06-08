@@ -2119,7 +2119,14 @@ fn normalize_resume_seconds_value(value: Option<&Value>) -> f64 {
 fn normalize_user_updated_at(value: Option<&Value>) -> i64 {
     let now = now_ms();
     let candidate = value.and_then(Value::as_i64).unwrap_or(now);
-    if candidate > 0 { candidate } else { now }
+    if candidate <= 0 {
+        return now;
+    }
+    // Cap future timestamps so a device with a wrong clock can't report a
+    // year-3000 time and permanently win last-write-wins progress merges. Past
+    // values are left untouched — they simply lose to newer entries.
+    const MAX_FUTURE_SKEW_MS: i64 = 24 * 60 * 60 * 1000;
+    candidate.min(now + MAX_FUTURE_SKEW_MS)
 }
 
 fn insert_bounded_string(
@@ -3397,7 +3404,7 @@ mod tests {
         apply_security_headers, build_playback_session_key, find_episode_pattern, is_valid_email,
         normalize_preferred_audio_lang, normalize_subtitle_preference,
         normalize_sync_continue_watching_entries, normalize_sync_watch_progress_entries,
-        query_flag_enabled, sanitize_my_list_entries,
+        normalize_user_updated_at, now_ms, query_flag_enabled, sanitize_my_list_entries,
     };
     use axum::http::header::{CONTENT_TYPE, HOST};
     use axum::http::{HeaderMap, HeaderValue, Uri};
@@ -3542,6 +3549,20 @@ mod tests {
         assert!(continue_watching.iter().any(|entry| {
             entry["sourceIdentity"] == "movie:2" && entry["resumeSeconds"] == 15.0
         }));
+    }
+
+    #[test]
+    fn normalize_user_updated_at_caps_future_but_keeps_past() {
+        let now = now_ms();
+        // Legacy/small timestamps pass through untouched.
+        assert_eq!(normalize_user_updated_at(Some(&serde_json::json!(123))), 123);
+        // Non-positive falls back to now.
+        assert!(normalize_user_updated_at(Some(&serde_json::json!(0))) >= now);
+        // A year-3000 timestamp is capped to roughly now (within the skew window).
+        let far_future = now + 1_000 * 60 * 60 * 24 * 365 * 100;
+        let capped = normalize_user_updated_at(Some(&serde_json::json!(far_future)));
+        assert!(capped <= now + 24 * 60 * 60 * 1000 + 1_000);
+        assert!(capped < far_future);
     }
 
     #[test]

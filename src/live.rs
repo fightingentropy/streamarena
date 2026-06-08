@@ -229,13 +229,6 @@ pub fn is_browser_bound_live_hls_upstream(url: &Url) -> bool {
         || host.ends_with(".strmd.top")
 }
 
-pub fn prefers_direct_browser_live_hls_playback(input: &str) -> bool {
-    Url::parse(input.trim())
-        .ok()
-        .as_ref()
-        .is_some_and(is_browser_bound_live_hls_upstream)
-}
-
 pub fn build_sports_live_hls_playback_source(
     input: &str,
     referer: Option<&str>,
@@ -1088,7 +1081,7 @@ mod tests {
         browser_bound_live_hls_referer_header, host_matches_allowed_live_hls_host,
         is_allowed_live_hls_url, is_browser_bound_live_hls_upstream,
         is_public_external_embed_hls_proxy_url, is_trusted_external_embed_hls_request,
-        normalize_hls_referer, prefers_direct_browser_live_hls_playback, query_pairs,
+        normalize_hls_referer, query_pairs,
         rewrite_live_hls_playlist,
     };
 
@@ -1417,7 +1410,6 @@ mod tests {
         assert!(is_browser_bound_live_hls_upstream(&strmd));
         assert!(is_browser_bound_live_hls_upstream(&strmd_top));
         assert!(!is_browser_bound_live_hls_upstream(&hesgoaler));
-        assert!(prefers_direct_browser_live_hls_playback(strmd.as_str()));
 
         let secret = "test-live-hls-proxy-secret-with-enough-length";
         let referer = "https://embed.st/embed/admin/ppv-croatia-vs-slovenia/1";

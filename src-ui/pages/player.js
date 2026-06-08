@@ -153,6 +153,9 @@ let pendingRecoverySeekSeconds = null;
 let controlsHideTimeout = null;
 let singleClickPlaybackToggleTimeout = null;
 let seekLoadingTimeout = null;
+let unavailableEpisodeResolverHideTimeout = null;
+let audioDecodeRecoveryResetTimeout = null;
+let subtitleRestoreAfterSourceChangeTimeout = null;
 let tmdbSourceQueue = [];
 let tmdbSourceAttemptIndex = 0;
 let pendingManualSourceSwitchRestore = null;
@@ -249,6 +252,7 @@ let liveSourcePreferenceEntries = null;
 
 const _cleanups = [];
 function trackListener(target, event, handler, options) {
+  if (!target) return;
   target.addEventListener(event, handler, options);
   _cleanups.push(() => target.removeEventListener(event, handler, options));
 }
@@ -5031,7 +5035,8 @@ function navigateToSeriesEpisode(nextIndex) {
       showStatus: true,
       isError: true,
     });
-    window.setTimeout(() => {
+    window.clearTimeout(unavailableEpisodeResolverHideTimeout);
+    unavailableEpisodeResolverHideTimeout = window.setTimeout(() => {
       hideResolver();
     }, 2200);
     closeEpisodesPopover();
@@ -7504,7 +7509,8 @@ function recoverSilentAudioPlayback() {
     });
   }
 
-  window.setTimeout(() => {
+  window.clearTimeout(audioDecodeRecoveryResetTimeout);
+  audioDecodeRecoveryResetTimeout = window.setTimeout(() => {
     audioDecodeRecoveryInFlight = false;
   }, audioDecodeGraceAfterSourceChangeMs);
   return true;
@@ -10764,7 +10770,8 @@ trackListener(video, "loadedmetadata", () => {
   syncSubtitleTrackVisibility();
   refreshActiveSubtitlePlacement();
   renderCustomSubtitleOverlay();
-  window.setTimeout(() => {
+  window.clearTimeout(subtitleRestoreAfterSourceChangeTimeout);
+  subtitleRestoreAfterSourceChangeTimeout = window.setTimeout(() => {
     restoreSelectedSubtitleTrackAfterSourceChange();
     syncSubtitleTrackVisibility();
     refreshActiveSubtitlePlacement();
@@ -11155,28 +11162,6 @@ trackListener(window, "storage", (event) => {
     }
   }
 });
-trackListener(window, "beforeunload", () => {
-  clearSingleClickPlaybackToggle();
-  hideSeekLoadingIndicator();
-  clearControlsHideTimer();
-  clearStreamStallRecovery();
-  clearLiveVisualHealthWatch({ resetSamples: true });
-  clearLiveStartupHealthWatch({ resetRequest: true });
-  clearPlaybackRecovery();
-  persistResumeTime(true);
-});
-trackListener(window, "pagehide", () => {
-  clearSingleClickPlaybackToggle();
-  hideSeekLoadingIndicator();
-  clearControlsHideTimer();
-  clearStreamStallRecovery();
-  clearLiveVisualHealthWatch({ resetSamples: true });
-  clearLiveStartupHealthWatch({ resetRequest: true });
-  clearPlaybackRecovery();
-  persistResumeTime(true);
-});
-trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
-
     syncMuteState();
     syncPlayState();
     // Restore saved playback speed
@@ -11237,11 +11222,12 @@ trackListener(document, "visibilitychange", handleDocumentVisibilityChange);
       resumeFlushIntervalId = 0;
     }
     clearInitialResumeRetry();
-    document.removeEventListener("keydown", handleGlobalKeydown);
-    document.removeEventListener("mousemove", handleGlobalMousemove);
-    window.removeEventListener("beforeunload", handleGlobalBeforeunload);
-    window.removeEventListener("pagehide", handleGlobalBeforeunload);
-    document.removeEventListener("visibilitychange", handleDocumentVisibilityChange);
+    window.clearTimeout(unavailableEpisodeResolverHideTimeout);
+    window.clearTimeout(audioDecodeRecoveryResetTimeout);
+    window.clearTimeout(subtitleRestoreAfterSourceChangeTimeout);
+    if (window.__NETFLIX_PLAYBACK_BENCHMARK__) {
+      delete window.__NETFLIX_PLAYBACK_BENCHMARK__;
+    }
     clearControlsHideTimer();
     clearSingleClickPlaybackToggle();
     clearStreamStallRecovery();
