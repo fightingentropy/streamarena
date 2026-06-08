@@ -38,9 +38,11 @@ const FFMPEG_STDERR_MAX_LINES: usize = 80;
 const FFMPEG_STDERR_MAX_BYTES: usize = 16 * 1024;
 const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v6";
 
-const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "mp2", "opus", "vorbis", "flac", "alac"];
+const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "opus", "vorbis", "flac", "alac"];
+// `mp2` (MPEG-1/2 Audio Layer II) is intentionally treated as unsafe: unlike MP3
+// (Layer III) it is not decodable through Media Source Extensions / hls.js.
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
-    &["ac3", "eac3", "dts", "dca", "truehd", "mlp", "pcm_", "wma"];
+    &["ac3", "eac3", "dts", "dca", "truehd", "mlp", "pcm_", "wma", "mp2"];
 
 #[derive(Clone)]
 pub struct StreamingService {

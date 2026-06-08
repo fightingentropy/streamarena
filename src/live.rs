@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -8,6 +9,7 @@ use axum::extract::State;
 use axum::http::{Method, Response, Uri};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use dashmap::DashMap;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
@@ -17,8 +19,9 @@ use url::Url;
 use url::form_urlencoded::byte_serialize;
 
 use crate::error::{ApiError, AppResult};
-use crate::process::to_absolute_playback_url;
+use crate::process::{run_process_pipe, to_absolute_playback_url};
 use crate::routes::AppState;
+use crate::utils::now_ms;
 
 const LIVE_HLS_EDGE_SEGMENT_COUNT: usize = 8;
 const LIVE_HLS_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -127,8 +130,19 @@ pub async fn live_hls_resource_handler(
     }
     let live_request = live_hls_request_input(&state, &uri, LiveHlsRequestKind::Resource)?;
     let fetched = fetch_live_hls_resource_upstream(&state, &live_request).await?;
-    let content_type = fetched.content_type;
-    let bytes = fetched.bytes;
+    let mut content_type = fetched.content_type;
+    let mut bytes = fetched.bytes;
+
+    // Some upstreams (e.g. NTVS/hesgoaler Nova Sports 1) ship MP2 audio that the
+    // browser/MSE/hls.js cannot decode. Transcode just the audio to AAC (video
+    // is copied) so the segment plays. The decision is probed once per stream.
+    if is_live_ts_segment(&live_request.source_url, &content_type)
+        && let Some(transcoded) =
+            maybe_transcode_live_segment_audio(&state, &live_request.source_url, &bytes).await
+    {
+        bytes = transcoded;
+        content_type = "video/mp2t".to_owned();
+    }
 
     Response::builder()
         .status(200)
@@ -136,6 +150,144 @@ pub async fn live_hls_resource_handler(
         .header("cache-control", "no-store")
         .body(Body::from(bytes))
         .map_err(|error| ApiError::internal(error.to_string()))
+}
+
+const LIVE_AUDIO_TRANSCODE_DECISION_TTL_MS: i64 = 10 * 60 * 1000;
+const LIVE_AUDIO_TRANSCODE_MAX_ENTRIES: usize = 256;
+const LIVE_SEGMENT_PROBE_TIMEOUT_MS: u64 = 8_000;
+const LIVE_SEGMENT_TRANSCODE_TIMEOUT_MS: u64 = 20_000;
+const LIVE_SEGMENT_MAX_TRANSCODE_BYTES: usize = 24 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct LiveAudioDecision {
+    needs_transcode: bool,
+    decided_at_ms: i64,
+}
+
+/// Per-stream cache of "does this live stream's audio need transcoding to AAC".
+/// Keyed by upstream host + first path segment (the channel), so the audio codec
+/// is probed once per channel instead of on every segment.
+#[derive(Clone, Default)]
+pub struct LiveAudioTranscodeCache {
+    entries: Arc<DashMap<String, LiveAudioDecision>>,
+}
+
+impl LiveAudioTranscodeCache {
+    pub fn new() -> Self {
+        Self {
+            entries: Arc::new(DashMap::new()),
+        }
+    }
+
+    fn get_fresh(&self, key: &str) -> Option<bool> {
+        let entry = self.entries.get(key)?;
+        if now_ms() - entry.decided_at_ms > LIVE_AUDIO_TRANSCODE_DECISION_TTL_MS {
+            return None;
+        }
+        Some(entry.needs_transcode)
+    }
+
+    fn record(&self, key: String, needs_transcode: bool) {
+        self.entries.insert(
+            key,
+            LiveAudioDecision {
+                needs_transcode,
+                decided_at_ms: now_ms(),
+            },
+        );
+    }
+
+    pub fn prune(&self) {
+        let now = now_ms();
+        self.entries
+            .retain(|_, value| now - value.decided_at_ms <= LIVE_AUDIO_TRANSCODE_DECISION_TTL_MS);
+        if self.entries.len() > LIVE_AUDIO_TRANSCODE_MAX_ENTRIES {
+            self.entries.clear();
+        }
+    }
+}
+
+fn is_live_ts_segment(url: &Url, content_type: &str) -> bool {
+    url.path().to_ascii_lowercase().ends_with(".ts")
+        || content_type.to_ascii_lowercase().contains("mp2t")
+}
+
+fn live_audio_stream_key(url: &Url) -> String {
+    let host = url.host_str().unwrap_or_default();
+    let first_segment = url
+        .path_segments()
+        .and_then(|mut segments| segments.next())
+        .unwrap_or_default();
+    format!("{host}/{first_segment}")
+}
+
+fn audio_codec_needs_live_transcode(codec: &str) -> bool {
+    let codec = codec.trim().to_ascii_lowercase();
+    !codec.is_empty() && codec != "aac" && codec != "mp3"
+}
+
+async fn probe_live_segment_audio_codec(bytes: Vec<u8>) -> Option<String> {
+    let args = [
+        "ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name",
+        "-of", "default=nw=1:nk=1", "-i", "-",
+    ]
+    .iter()
+    .map(|value| (*value).to_owned())
+    .collect::<Vec<_>>();
+    let output = run_process_pipe(&args, bytes, LIVE_SEGMENT_PROBE_TIMEOUT_MS)
+        .await
+        .ok()?;
+    let codec = String::from_utf8_lossy(&output).trim().to_ascii_lowercase();
+    (!codec.is_empty()).then_some(codec)
+}
+
+async fn transcode_live_segment_audio_to_aac(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    // Copy the video stream untouched and re-encode only the audio to AAC.
+    // `-copyts` preserves the upstream timestamps so segments stay aligned in the
+    // player's live timeline.
+    let args = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-copyts", "-i", "-", "-map", "0:v?",
+        "-map", "0:a?", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-muxpreload", "0",
+        "-muxdelay", "0", "-f", "mpegts", "-",
+    ]
+    .iter()
+    .map(|value| (*value).to_owned())
+    .collect::<Vec<_>>();
+    run_process_pipe(&args, bytes, LIVE_SEGMENT_TRANSCODE_TIMEOUT_MS).await
+}
+
+async fn maybe_transcode_live_segment_audio(
+    state: &AppState,
+    url: &Url,
+    bytes: &[u8],
+) -> Option<Vec<u8>> {
+    if bytes.is_empty() || bytes.len() > LIVE_SEGMENT_MAX_TRANSCODE_BYTES {
+        return None;
+    }
+    let key = live_audio_stream_key(url);
+    let needs_transcode = match state.live_audio_transcode_cache.get_fresh(&key) {
+        Some(decision) => decision,
+        None => match probe_live_segment_audio_codec(bytes.to_vec()).await {
+            Some(codec) => {
+                let decision = audio_codec_needs_live_transcode(&codec);
+                state.live_audio_transcode_cache.record(key, decision);
+                decision
+            }
+            // Probe failed: serve the segment as-is and retry detection later.
+            None => return None,
+        },
+    };
+    if !needs_transcode {
+        return None;
+    }
+    match transcode_live_segment_audio_to_aac(bytes.to_vec()).await {
+        Ok(output) if !output.is_empty() => Some(output),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(error = %error, "live segment audio transcode failed; serving original");
+            None
+        }
+    }
 }
 
 fn query_pairs(query: &str) -> BTreeMap<String, String> {
@@ -718,7 +870,7 @@ fn rewrite_live_hls_master_playlist(
         }
 
         if line.starts_with('#') {
-            rewritten.push(rewrite_hls_uri_attribute(
+            let rewritten_line = rewrite_hls_uri_attribute(
                 base_url,
                 line,
                 referer,
@@ -739,7 +891,8 @@ fn rewrite_live_hls_master_playlist(
                         )
                     }
                 },
-            ));
+            );
+            rewritten.push(strip_video_only_stream_inf_codecs(&rewritten_line));
             continue;
         }
 
@@ -757,6 +910,60 @@ fn rewrite_live_hls_master_playlist(
         rewritten = prefer_english_hls_audio_defaults(rewritten);
     }
     rewritten.join("\n")
+}
+
+/// Drop a `CODECS="..."` attribute from an `#EXT-X-STREAM-INF` line when it only
+/// declares a video codec. Some upstreams (e.g. NTVS/hesgoaler MP2 streams) ship
+/// muxed audio+video but advertise just the video codec, which makes hls.js set
+/// up a video-only buffer and break once audio appears. With CODECS removed,
+/// hls.js probes the actual (possibly transcoded) segments instead.
+fn strip_video_only_stream_inf_codecs(line: &str) -> String {
+    if !line.trim_start().starts_with("#EXT-X-STREAM-INF") {
+        return line.to_owned();
+    }
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("codecs=") {
+        return line.to_owned();
+    }
+    let declares_audio_codec = ["mp4a", "ac-3", "ec-3", "opus", "flac", "alac", "dts"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    if declares_audio_codec {
+        return line.to_owned();
+    }
+    remove_stream_inf_codecs_attribute(line)
+}
+
+fn remove_stream_inf_codecs_attribute(line: &str) -> String {
+    let Some((tag, attributes)) = line.split_once(':') else {
+        return line.to_owned();
+    };
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for ch in attributes.chars() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+                current.push(ch);
+            }
+            ',' if !in_quotes => parts.push(std::mem::take(&mut current)),
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    let kept = parts
+        .into_iter()
+        .filter(|attr| {
+            !attr
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("CODECS=")
+        })
+        .collect::<Vec<_>>();
+    format!("{tag}:{}", kept.join(","))
 }
 
 fn rewrite_live_hls_media_playlist(
@@ -1076,14 +1283,67 @@ fn find_hls_attribute_start(line: &str, attribute: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        LiveHlsRequestKind, build_sports_live_hls_playback_source,
+        LiveHlsRequestKind, audio_codec_needs_live_transcode,
+        build_sports_live_hls_playback_source,
         build_trusted_external_embed_hls_playback_source,
         browser_bound_live_hls_referer_header, host_matches_allowed_live_hls_host,
-        is_allowed_live_hls_url, is_browser_bound_live_hls_upstream,
+        is_allowed_live_hls_url, is_browser_bound_live_hls_upstream, is_live_ts_segment,
         is_public_external_embed_hls_proxy_url, is_trusted_external_embed_hls_request,
-        normalize_hls_referer, query_pairs,
-        rewrite_live_hls_playlist,
+        live_audio_stream_key, normalize_hls_referer, query_pairs, rewrite_live_hls_playlist,
+        strip_video_only_stream_inf_codecs,
     };
+
+    #[test]
+    fn strips_video_only_codecs_but_keeps_complete_ones() {
+        // Video-only CODECS (the Nova Sports 1 MP2 case) gets stripped.
+        let video_only = "#EXT-X-STREAM-INF:BANDWIDTH=8730000,RESOLUTION=1920x1080,CODECS=\"avc1.640029\"";
+        let stripped = strip_video_only_stream_inf_codecs(video_only);
+        assert!(!stripped.to_ascii_lowercase().contains("codecs="));
+        assert!(stripped.contains("BANDWIDTH=8730000"));
+        assert!(stripped.contains("RESOLUTION=1920x1080"));
+
+        // Audio+video CODECS (the working Nova Sports 2 case) is preserved.
+        let complete =
+            "#EXT-X-STREAM-INF:BANDWIDTH=6190000,CODECS=\"avc1.4d4029,mp4a.40.2\",RESOLUTION=1280x720";
+        assert_eq!(strip_video_only_stream_inf_codecs(complete), complete);
+
+        // Non STREAM-INF lines are untouched.
+        let other = "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",CODECS=\"mp4a.40.2\"";
+        assert_eq!(strip_video_only_stream_inf_codecs(other), other);
+    }
+
+    #[test]
+    fn classifies_live_audio_transcode_need() {
+        assert!(audio_codec_needs_live_transcode("mp2"));
+        assert!(audio_codec_needs_live_transcode("ac3"));
+        assert!(!audio_codec_needs_live_transcode("aac"));
+        assert!(!audio_codec_needs_live_transcode("mp3"));
+        assert!(!audio_codec_needs_live_transcode(""));
+    }
+
+    #[test]
+    fn derives_stable_live_audio_stream_key_ignoring_token() {
+        let a: url::Url =
+            "https://lovely.lovetier.bz/NOVASPORTS1/tracks-v1a1/seg-1.ts?token=abc".parse().unwrap();
+        let b: url::Url =
+            "https://lovely.lovetier.bz/NOVASPORTS1/tracks-v1a1/seg-2.ts?token=xyz".parse().unwrap();
+        assert_eq!(live_audio_stream_key(&a), live_audio_stream_key(&b));
+        assert_eq!(live_audio_stream_key(&a), "lovely.lovetier.bz/NOVASPORTS1");
+
+        let other: url::Url =
+            "https://lovely.lovetier.bz/NOVASPORTS2/tracks-v1a1/seg-1.ts".parse().unwrap();
+        assert_ne!(live_audio_stream_key(&a), live_audio_stream_key(&other));
+    }
+
+    #[test]
+    fn detects_ts_segments() {
+        let ts: url::Url = "https://host.example/path/seg.ts".parse().unwrap();
+        assert!(is_live_ts_segment(&ts, "application/octet-stream"));
+        let m3u8: url::Url = "https://host.example/path/index.m3u8".parse().unwrap();
+        assert!(!is_live_ts_segment(&m3u8, "application/vnd.apple.mpegurl"));
+        let by_content: url::Url = "https://host.example/path/seg".parse().unwrap();
+        assert!(is_live_ts_segment(&by_content, "video/mp2t"));
+    }
 
     #[test]
     fn live_hls_proxy_rejects_unapproved_hosts() {

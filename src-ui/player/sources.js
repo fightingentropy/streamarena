@@ -343,7 +343,6 @@ export function sortSourcesBySeeders(sources = [], { preferContainer = "" } = {}
 const browserSafeAudioCodecSet = new Set([
   "aac",
   "mp3",
-  "mp2",
   "opus",
   "vorbis",
   "flac",
@@ -359,6 +358,8 @@ const browserUnsafeAudioCodecPrefixes = [
   "mlp",
   "pcm_",
   "wma",
+  // MPEG-1/2 Audio Layer II is not decodable via MSE (unlike MP3/Layer III).
+  "mp2",
 ];
 
 /**

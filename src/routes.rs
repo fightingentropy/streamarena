@@ -68,6 +68,7 @@ pub struct AppState {
     pub sports_stream_resolve_cache: SportsStreamResolveCache,
     pub sports_provider_health: SportsProviderHealth,
     pub home_bootstrap_cache: home_bootstrap::HomeBootstrapCache,
+    pub live_audio_transcode_cache: crate::live::LiveAudioTranscodeCache,
     pub auth_rate_limiter: std::sync::Arc<crate::rate_limit::RateLimiter>,
     pub sports_stream_rate_limiter: std::sync::Arc<crate::rate_limit::RateLimiter>,
     pub started_at_ms: i64,

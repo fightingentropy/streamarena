@@ -303,6 +303,52 @@ pub async fn run_process_to_file(
     Ok(())
 }
 
+/// Run a process, writing `input` to its stdin and returning its stdout bytes.
+/// stdin is written from a spawned task while stdout/stderr are drained
+/// concurrently (via `wait_with_output`) to avoid pipe-buffer deadlock. Used to
+/// transcode/probe a single live HLS segment without touching disk.
+pub async fn run_process_pipe(
+    command: &[String],
+    input: Vec<u8>,
+    timeout_ms: u64,
+) -> Result<Vec<u8>, String> {
+    let mut iter = command.iter();
+    let Some(program) = iter.next() else {
+        return Err("Missing executable.".to_owned());
+    };
+    let mut child = Command::new(program)
+        .args(iter)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(&input).await;
+            let _ = stdin.shutdown().await;
+        });
+    }
+    let output = timeout(
+        Duration::from_millis(timeout_ms.max(1_000)),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| "Process timed out.".to_owned())?
+    .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if stderr.is_empty() {
+            format!("Process exited with code {:?}", output.status.code())
+        } else {
+            stderr
+        });
+    }
+    Ok(output.stdout)
+}
+
 fn can_use_hwaccel_mode(snapshot: &FfmpegSnapshot, mode: &str) -> bool {
     let safe_mode = mode.trim().to_lowercase();
     if safe_mode.is_empty() || safe_mode == "auto" {
