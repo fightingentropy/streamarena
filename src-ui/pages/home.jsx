@@ -1027,26 +1027,11 @@ function selectFeaturedHeroCandidate(candidates) {
   return selected;
 }
 
+// Hero auto-preview is intentionally disabled: these stubs make
+// getHeroPreviewSrc() empty so canPlayHeroPreview() is always false. Re-enable
+// the feature by returning real preview paths / a populated manifest here.
 function normalizeHeroPreviewPath(value) {
   return "";
-}
-
-function normalizeHeroPreviewManifest(payload) {
-  const entries = Array.isArray(payload?.entries) ? payload.entries : [];
-  const previewMap = new Map();
-  entries.forEach((entry) => {
-    const tmdbId = String(entry?.tmdbId || "").trim();
-    const src = normalizeHeroPreviewPath(entry?.src);
-    if (!tmdbId || !src) {
-      return;
-    }
-    previewMap.set(tmdbId, {
-      src,
-      title: String(entry?.title || "").trim(),
-      updatedAt: String(entry?.updatedAt || payload?.updatedAt || "").trim(),
-    });
-  });
-  return previewMap;
 }
 
 async function fetchHeroPreviewManifest() {
@@ -3364,14 +3349,6 @@ export default function HomePage() {
     container.appendChild(fragment);
     attachArtworkImageFallbacks(container);
     queueOfflineArtworkFromElement(container);
-  }
-
-  function normalizeLibraryTitleKey(value) {
-    return String(value || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, " ")
-      .trim();
   }
 
   function getLocalSeriesIdentity(item) {

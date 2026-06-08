@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { createSignal, onMount } from "solid-js";
 
 // ─── Migrate localStorage data to server ───
 
@@ -82,11 +82,13 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = createSignal(false);
 
   // If already authenticated, redirect to home
-  fetch("/api/auth/me")
-    .then((res) => {
-      if (res.ok) window.location.href = "/";
-    })
-    .catch(() => {});
+  onMount(() => {
+    void fetch("/api/auth/me")
+      .then((res) => {
+        if (res.ok) window.location.href = "/";
+      })
+      .catch(() => {});
+  });
 
   function toggleMode() {
     setIsSignUp((prev) => !prev);

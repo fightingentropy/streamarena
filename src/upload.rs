@@ -491,6 +491,14 @@ impl UploadService {
                 .map_err(|_| ApiError::bad_request("Invalid multipart form payload."))?
             {
                 file_size += chunk.len() as u64;
+                // The raw body stream bypasses DefaultBodyLimit (that only
+                // applies to buffering extractors), so enforce the size cap
+                // here to avoid filling the temp dir with an oversized upload.
+                if file_size > self.config.max_upload_bytes as u64 {
+                    drop(temp_file);
+                    let _ = fs::remove_file(&next_temp_path).await;
+                    return Err(total_upload_limit_error(self.config.max_upload_bytes));
+                }
                 temp_file
                     .write_all(&chunk)
                     .await

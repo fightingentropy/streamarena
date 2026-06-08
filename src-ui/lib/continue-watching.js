@@ -10,6 +10,8 @@ export const DEFAULT_LOCAL_THUMBNAIL = "assets/images/thumbnail.jpg";
 
 const SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:movie:";
 const SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:movie:";
+const TV_SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:tv:";
+const TV_SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:tv:";
 const PRIDE_PREJUDICE_SOURCE =
   "assets/videos/Pride.Prejudice.2005.2160p.4K.WEB.x265.10bit.AAC5.1-[YTS.MX].mp4";
 const PRIDE_PREJUDICE_THUMBNAIL = "assets/images/pride-prejudice-thumb.jpg";
@@ -226,10 +228,27 @@ function removeContinueMetaEntriesForSource(
 
 function removeLocalTitleTrackPreferences(tmdbId, mediaType = "movie") {
   const normalizedTmdbId = String(tmdbId || "").trim();
+  if (!/^\d+$/.test(normalizedTmdbId)) {
+    return;
+  }
   const normalizedMediaType = String(mediaType || "")
     .trim()
     .toLowerCase();
-  if (normalizedMediaType === "tv" || !/^\d+$/.test(normalizedTmdbId)) {
+  if (normalizedMediaType === "tv") {
+    // TV subtitle prefs are keyed per-episode (…:tv:<id>:s<n>:e<n>), so sweep
+    // every stored key for this series rather than skipping cleanup entirely.
+    const tvKeyPrefixes = [
+      `${TV_SUBTITLE_LANG_PREF_KEY_PREFIX}${normalizedTmdbId}:`,
+      `${TV_SUBTITLE_STREAM_PREF_KEY_PREFIX}${normalizedTmdbId}:`,
+    ];
+    const keysToRemove = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key && tvKeyPrefixes.some((prefix) => key.startsWith(prefix))) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((key) => localStorage.removeItem(key));
     return;
   }
   localStorage.removeItem(`${AUDIO_LANG_PREF_KEY_PREFIX}${normalizedTmdbId}`);

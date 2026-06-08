@@ -580,6 +580,7 @@ export function createPlaybackBenchmarkApi({
           audioStreamIndex,
           getPreferredAudioSyncMs(),
           subtitleStreamIndex,
+          undefined, // sourceHash: fall back to the selected source's hash
           videoMode,
         );
       } else if (mode === "hls") {

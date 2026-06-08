@@ -146,6 +146,20 @@ static VIXSRC_EXPIRES_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"expires["']\s*:\s*["']([^"']+)"#).expect("valid expires regex"));
 static VIXSRC_PLAYLIST_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"url\s*:\s*["']([^"']+)"#).expect("valid playlist regex"));
+static RESOLUTION_2160_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(2160p|4k|uhd)\b").expect("valid 2160 regex"));
+static RESOLUTION_1080_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(1080p|full\s*hd)\b").expect("valid 1080 regex"));
+static RESOLUTION_720_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b720p\b").expect("valid 720 regex"));
+static RESOLUTION_480_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(480p|sd)\b").expect("valid 480 regex"));
+static CONTAINER_MP4_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\.mp4(?:$|[?#&/])").expect("valid mp4 regex"));
+static CONTAINER_MKV_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\.mkv(?:$|[?#&/])").expect("valid mkv regex"));
+static FILENAME_YEAR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:19|20)\d{2}\b").expect("valid year regex"));
 
 #[derive(Clone)]
 pub struct ResolverService {
@@ -4942,28 +4956,16 @@ fn parse_vertical_resolution_from_text(value: &str) -> i64 {
     if stream_text.is_empty() {
         return 0;
     }
-    if Regex::new(r"\b(2160p|4k|uhd)\b")
-        .expect("valid 2160 regex")
-        .is_match(&stream_text)
-    {
+    if RESOLUTION_2160_RE.is_match(&stream_text) {
         return 2160;
     }
-    if Regex::new(r"\b(1080p|full\s*hd)\b")
-        .expect("valid 1080 regex")
-        .is_match(&stream_text)
-    {
+    if RESOLUTION_1080_RE.is_match(&stream_text) {
         return 1080;
     }
-    if Regex::new(r"\b720p\b")
-        .expect("valid 720 regex")
-        .is_match(&stream_text)
-    {
+    if RESOLUTION_720_RE.is_match(&stream_text) {
         return 720;
     }
-    if Regex::new(r"\b(480p|sd)\b")
-        .expect("valid 480 regex")
-        .is_match(&stream_text)
-    {
+    if RESOLUTION_480_RE.is_match(&stream_text) {
         return 480;
     }
     0
@@ -6228,6 +6230,13 @@ async fn fetch_external_text(
     if url.scheme() != "https" {
         return None;
     }
+    // SSRF guard: only fetch public hostnames. External providers can return
+    // relative/protocol-relative URLs (e.g. VixSrc `src`) that join into an
+    // attacker-chosen host, so validate the resolved host before any request.
+    let host = url.host_str()?.to_ascii_lowercase();
+    if !is_public_external_embed_hls_hostname(&host) {
+        return None;
+    }
     let mut request = client
         .get(url)
         .header(header::USER_AGENT, EXTERNAL_EMBED_USER_AGENT)
@@ -7294,12 +7303,8 @@ fn has_url_like_container_extension(value: &str, container: &str) -> bool {
         return false;
     }
     match container {
-        "mp4" => Regex::new(r"\.mp4(?:$|[?#&/])")
-            .expect("valid mp4 regex")
-            .is_match(&normalized),
-        "mkv" => Regex::new(r"\.mkv(?:$|[?#&/])")
-            .expect("valid mkv regex")
-            .is_match(&normalized),
+        "mp4" => CONTAINER_MP4_RE.is_match(&normalized),
+        "mkv" => CONTAINER_MKV_RE.is_match(&normalized),
         _ => false,
     }
 }
@@ -7647,8 +7652,7 @@ fn does_filename_likely_match_movie(filename: &str, movie_title: &str, movie_yea
         return true;
     }
     let expected_year = movie_year.trim();
-    let year_matches_in_filename = Regex::new(r"\b(?:19|20)\d{2}\b")
-        .expect("valid year regex")
+    let year_matches_in_filename = FILENAME_YEAR_RE
         .find_iter(&normalized_filename)
         .map(|value| value.as_str().to_owned())
         .collect::<Vec<_>>();
@@ -7697,8 +7701,7 @@ fn does_filename_likely_match_tv_episode(
         return true;
     }
     let expected_year = show_year.trim();
-    let year_matches_in_filename = Regex::new(r"\b(?:19|20)\d{2}\b")
-        .expect("valid year regex")
+    let year_matches_in_filename = FILENAME_YEAR_RE
         .find_iter(&normalized_filename)
         .map(|value| value.as_str().to_owned())
         .collect::<Vec<_>>();

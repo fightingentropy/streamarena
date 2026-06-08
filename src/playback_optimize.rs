@@ -57,10 +57,6 @@ pub async fn optimize_playback_cache_file(
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?;
 
-    if input_path != output_path.as_path() {
-        let _ = fs::remove_file(input_path).await;
-    }
-
     let metadata = fs::metadata(&output_path)
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?;
@@ -69,6 +65,12 @@ pub async fn optimize_playback_cache_file(
         return Err(ApiError::bad_gateway(
             "Playback optimization produced an empty file.",
         ));
+    }
+
+    // Only remove the original once we have a validated, non-empty output, so a
+    // failed optimization leaves the best-effort fallback a real file to return.
+    if input_path != output_path.as_path() {
+        let _ = fs::remove_file(input_path).await;
     }
 
     Ok(OptimizedPlaybackFile {

@@ -1,10 +1,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now_ms() -> i64 {
+    // A clock set before the UNIX epoch is unrecoverable: returning 0 here would
+    // silently disable every time-based check (session expiry, cache TTLs, rate
+    // limits), so fail loudly instead of defaulting to epoch.
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
+        .expect("system clock is set before the UNIX epoch")
 }
 
 pub fn hash_stable_string(value: &str) -> String {

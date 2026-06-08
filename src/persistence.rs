@@ -2736,6 +2736,9 @@ fn tmdb_tv_id_from_series_id(series_id: &str) -> Option<String> {
 fn open_connection(path: &PathBuf) -> Result<Connection, rusqlite::Error> {
     let connection = Connection::open(path)?;
     connection.busy_timeout(Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))?;
+    // SQLite disables foreign keys by default, and the setting is per-connection,
+    // so enable it on every pooled connection to honor ON DELETE CASCADE.
+    connection.pragma_update(None, "foreign_keys", true)?;
     Ok(connection)
 }
 
