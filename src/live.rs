@@ -134,8 +134,9 @@ pub async fn live_hls_resource_handler(
     let mut bytes = fetched.bytes;
 
     // Some upstreams (e.g. NTVS/hesgoaler Nova Sports 1) ship MP2 audio that the
-    // browser/MSE/hls.js cannot decode. Transcode just the audio to AAC (video
-    // is copied) so the segment plays. The decision is probed once per stream.
+    // browser cannot decode, and an H.264 bitstream that breaks Chrome once
+    // ffmpeg touches the container. Re-encode such segments to browser-safe
+    // H.264 + AAC. The decision is probed once per stream and cached.
     if is_live_ts_segment(&live_request.source_url, &content_type)
         && let Some(transcoded) =
             maybe_transcode_live_segment_audio(&state, &live_request.source_url, &bytes).await
@@ -157,6 +158,7 @@ const LIVE_AUDIO_TRANSCODE_MAX_ENTRIES: usize = 256;
 const LIVE_SEGMENT_PROBE_TIMEOUT_MS: u64 = 8_000;
 const LIVE_SEGMENT_TRANSCODE_TIMEOUT_MS: u64 = 20_000;
 const LIVE_SEGMENT_MAX_TRANSCODE_BYTES: usize = 24 * 1024 * 1024;
+const LIVE_SEGMENT_VIDEO_BITRATE: &str = "6000k";
 
 #[derive(Clone, Copy)]
 struct LiveAudioDecision {
@@ -241,19 +243,38 @@ async fn probe_live_segment_audio_codec(bytes: Vec<u8>) -> Option<String> {
     (!codec.is_empty()).then_some(codec)
 }
 
-async fn transcode_live_segment_audio_to_aac(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    // Copy the video stream untouched and re-encode only the audio to AAC.
-    // `-copyts` preserves the upstream timestamps so segments stay aligned in the
-    // player's live timeline.
+async fn transcode_live_segment_to_browser_safe(
+    bytes: Vec<u8>,
+    video_encoder: &str,
+) -> Result<Vec<u8>, String> {
+    // Re-encode both video and audio to browser-decodable codecs. Copying the
+    // video is NOT enough: some upstreams (e.g. NTVS/hesgoaler Nova Sports) ship
+    // an H.264 bitstream that ffmpeg's demux/remux leaves undecodable in Chrome
+    // (PIPELINE_ERROR_DECODE), whether the segment is copied or re-muxed — only a
+    // fresh encode plays reliably. `-copyts` keeps live timestamps aligned so the
+    // re-encoded segments concatenate cleanly in the player's live timeline.
     let args = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-copyts", "-i", "-", "-map", "0:v?",
-        "-map", "0:a?", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-muxpreload", "0",
-        "-muxdelay", "0", "-f", "mpegts", "-",
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-copyts", "-i", "-", "-map", "0:v:0?",
+        "-map", "0:a:0?", "-c:v", video_encoder, "-b:v", LIVE_SEGMENT_VIDEO_BITRATE, "-c:a", "aac",
+        "-b:a", "160k", "-muxpreload", "0", "-muxdelay", "0", "-f", "mpegts", "-",
     ]
     .iter()
     .map(|value| (*value).to_owned())
     .collect::<Vec<_>>();
     run_process_pipe(&args, bytes, LIVE_SEGMENT_TRANSCODE_TIMEOUT_MS).await
+}
+
+fn live_segment_video_encoder(snapshot: &crate::process::FfmpegSnapshot) -> &'static str {
+    // Prefer hardware H.264 (cheap on Apple Silicon); fall back to software.
+    if snapshot.encoders.h264_videotoolbox {
+        "h264_videotoolbox"
+    } else if snapshot.encoders.h264_nvenc {
+        "h264_nvenc"
+    } else if snapshot.encoders.h264_qsv {
+        "h264_qsv"
+    } else {
+        "libx264"
+    }
 }
 
 async fn maybe_transcode_live_segment_audio(
@@ -280,11 +301,13 @@ async fn maybe_transcode_live_segment_audio(
     if !needs_transcode {
         return None;
     }
-    match transcode_live_segment_audio_to_aac(bytes.to_vec()).await {
+    let capabilities = state.runtime.get_ffmpeg_capabilities(false).await;
+    let video_encoder = live_segment_video_encoder(&capabilities);
+    match transcode_live_segment_to_browser_safe(bytes.to_vec(), video_encoder).await {
         Ok(output) if !output.is_empty() => Some(output),
         Ok(_) => None,
         Err(error) => {
-            tracing::warn!(error = %error, "live segment audio transcode failed; serving original");
+            tracing::warn!(error = %error, "live segment transcode failed; serving original");
             None
         }
     }
