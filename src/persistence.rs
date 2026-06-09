@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -2350,7 +2350,93 @@ fn get_playback_session_inner(
 }
 
 fn init_schema(path: PathBuf) -> Result<(), rusqlite::Error> {
-    let connection = open_connection(&path)?;
+    match build_schema(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if is_corruption_error(&error) => {
+            tracing::warn!(
+                database = %path.display(),
+                error = %error,
+                "resolver cache database is corrupt; quarantining it and rebuilding from scratch"
+            );
+            if let Err(io_error) = quarantine_corrupt_db(&path) {
+                tracing::error!(
+                    database = %path.display(),
+                    error = %io_error,
+                    "failed to quarantine corrupt resolver cache database; cannot recover"
+                );
+                return Err(error);
+            }
+            build_schema(&path)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// True for SQLite errors that mean the database file itself is unusable
+/// (malformed pages, or not a database) rather than a transient or logic error.
+/// These are the only cases a from-scratch rebuild can recover from — the
+/// resolver cache is regenerable, so it is always safe to discard and rebuild.
+fn is_corruption_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(
+                failure.code,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+            )
+    )
+}
+
+/// Move a corrupt database file aside (kept for forensics) and remove its stale
+/// `-wal`/`-shm` siblings so the next open creates a clean database in its place.
+fn quarantine_corrupt_db(path: &Path) -> std::io::Result<()> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    let mut backup = corrupt_backup_path(path, &format!("corrupt-{stamp}"));
+    let mut attempt = 1u32;
+    while backup.exists() {
+        backup = corrupt_backup_path(path, &format!("corrupt-{stamp}-{attempt}"));
+        attempt += 1;
+    }
+    std::fs::rename(path, &backup)?;
+    tracing::warn!(backup = %backup.display(), "moved corrupt database aside");
+    // The write-ahead log and shared-memory files belong to the quarantined
+    // database; drop them so SQLite builds a fresh database from scratch.
+    let _ = std::fs::remove_file(append_suffix(path, "-wal"));
+    let _ = std::fs::remove_file(append_suffix(path, "-shm"));
+    Ok(())
+}
+
+/// Append a suffix to a path's full filename (not its extension), preserving the
+/// original bytes so non-UTF-8 paths survive untouched.
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Build the quarantine path for a corrupt database, inserting the marker before
+/// the extension: `resolver-cache.sqlite` -> `resolver-cache.corrupt-<stamp>.sqlite`.
+/// Falls back to appending the marker when the path has no stem/extension to split
+/// on, so an unusual path still gets moved aside rather than left in place.
+fn corrupt_backup_path(path: &Path, marker: &str) -> PathBuf {
+    match (path.file_stem(), path.extension()) {
+        (Some(stem), Some(extension)) => {
+            let mut name = stem.to_os_string();
+            name.push(".");
+            name.push(marker);
+            name.push(".");
+            name.push(extension);
+            path.with_file_name(name)
+        }
+        _ => append_suffix(path, &format!(".{marker}")),
+    }
+}
+
+fn build_schema(path: &PathBuf) -> Result<(), rusqlite::Error> {
+    let connection = open_connection(path)?;
     connection.execute_batch(
         "
         PRAGMA journal_mode = WAL;
@@ -4206,5 +4292,73 @@ mod tests {
         assert_eq!(db.user_count().await.expect("count users"), 1);
 
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn initialize_recovers_from_a_corrupt_database_file() {
+        let path = unique_temp_db_path("corrupt-recovery");
+        // A file that SQLite cannot read as a database — exactly what takes the
+        // server down on boot if init bubbles the error up instead of recovering.
+        let mut corrupt = b"SQLite format 3\0".to_vec();
+        corrupt.extend_from_slice(&[0xFFu8; 512]);
+        tokio::fs::write(&path, &corrupt)
+            .await
+            .expect("write corrupt db file");
+
+        // initialize() must succeed by quarantining the bad file and rebuilding.
+        let db = setup_test_playback_session_db(&path).await;
+        let counts = db
+            .persistent_counts()
+            .await
+            .expect("query counts after recovery");
+        assert_eq!(counts.title_preference_size, 0);
+
+        // The rebuilt database is healthy and carries the full schema.
+        let check_path = path.clone();
+        let (integrity, table_count) = super::task::spawn_blocking(move || {
+            let connection = open_connection(&check_path)?;
+            let integrity =
+                connection.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))?;
+            let table_count = connection.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?;
+            Ok::<(String, i64), rusqlite::Error>((integrity, table_count))
+        })
+        .await
+        .expect("join integrity check")
+        .expect("run integrity check");
+        assert_eq!(integrity, "ok");
+        assert_eq!(
+            table_count, 14,
+            "rebuilt cache database should expose the full 14-table schema"
+        );
+
+        // The corrupt original was preserved alongside, not deleted, with the
+        // marker inserted before the extension (foo.sqlite -> foo.corrupt-<ts>.sqlite).
+        let stem = path.file_stem().expect("db file stem").to_owned();
+        let parent = path.parent().expect("db parent dir").to_path_buf();
+        let prefix = format!("{}.corrupt-", stem.to_string_lossy());
+        let mut backups = Vec::new();
+        let mut entries = tokio::fs::read_dir(&parent).await.expect("read temp dir");
+        while let Some(entry) = entries.next_entry().await.expect("read dir entry") {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(prefix.as_str())
+            {
+                backups.push(entry.path());
+            }
+        }
+        assert!(
+            !backups.is_empty(),
+            "expected the corrupt database to be quarantined alongside the rebuilt one"
+        );
+
+        let _ = tokio::fs::remove_file(&path).await;
+        for backup in backups {
+            let _ = tokio::fs::remove_file(backup).await;
+        }
     }
 }
