@@ -14,6 +14,7 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
 use tokio::process::Command;
+use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use url::Url;
 use url::form_urlencoded::byte_serialize;
@@ -34,6 +35,8 @@ const LIVE_HLS_SIGNATURE_CONTEXT: &[u8] = b"netflix-live-hls-v1";
 const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "liveproduseast.akamaized.net",
     "liveproduseast.global.ssl.fastly.net",
+    "liveprodusphoenixeast.global.ssl.fastly.net",
+    "liveprodusphoenixeast.akamaized.net",
     "vs-hls-push-ww-live.akamaized.net",
     "jmp2.uk",
     "www.bloomberg.com",
@@ -133,16 +136,21 @@ pub async fn live_hls_resource_handler(
     let mut content_type = fetched.content_type;
     let mut bytes = fetched.bytes;
 
-    // Some upstreams (e.g. NTVS/hesgoaler Nova Sports 1) ship MP2 audio that the
-    // browser cannot decode, and an H.264 bitstream that breaks Chrome once
-    // ffmpeg touches the container. Re-encode such segments to browser-safe
+    // Some upstreams ship audio/markers the browser can't handle (Nova Sports MP2
+    // audio; Bloomberg SCTE-35 ad markers) or an H.264 bitstream that breaks Chrome
+    // once ffmpeg touches the container. Re-encode such segments to browser-safe
     // H.264 + AAC. The decision is probed once per stream and cached.
-    if is_live_ts_segment(&live_request.source_url, &content_type)
-        && let Some(transcoded) =
-            maybe_transcode_live_segment_audio(&state, &live_request.source_url, &bytes).await
-    {
-        bytes = transcoded;
-        content_type = "video/mp2t".to_owned();
+    if is_live_ts_segment(&live_request.source_url, &content_type) {
+        match process_live_segment(&state, &live_request.source_url, &bytes).await {
+            LiveSegmentOutcome::Passthrough => {}
+            LiveSegmentOutcome::Transcoded(output) => {
+                bytes = output;
+                content_type = "video/mp2t".to_owned();
+            }
+            LiveSegmentOutcome::TranscodeFailed => {
+                return Err(ApiError::bad_gateway("Live segment transcode failed."));
+            }
+        }
     }
 
     Response::builder()
@@ -159,6 +167,23 @@ const LIVE_SEGMENT_PROBE_TIMEOUT_MS: u64 = 8_000;
 const LIVE_SEGMENT_TRANSCODE_TIMEOUT_MS: u64 = 20_000;
 const LIVE_SEGMENT_MAX_TRANSCODE_BYTES: usize = 24 * 1024 * 1024;
 const LIVE_SEGMENT_VIDEO_BITRATE: &str = "6000k";
+const LIVE_REENCODE_MAX_CONCURRENT: usize = 3;
+
+// Cap concurrent live segment re-encodes: a cold-start burst of hardware encodes
+// overloads VideoToolbox and some fail ("Broken pipe"), so serialize beyond a
+// small limit instead of failing.
+static LIVE_REENCODE_SEMAPHORE: Semaphore = Semaphore::const_new(LIVE_REENCODE_MAX_CONCURRENT);
+
+/// Result of running a live `.ts` segment through the transcode pipeline.
+enum LiveSegmentOutcome {
+    /// Serve the upstream bytes unchanged.
+    Passthrough,
+    /// Serve these re-encoded bytes (browser-safe H.264 + AAC).
+    Transcoded(Vec<u8>),
+    /// The segment required re-encoding but it failed; the caller should return
+    /// an error so the player retries the fragment rather than play a broken one.
+    TranscodeFailed,
+}
 
 #[derive(Clone, Copy)]
 struct LiveAudioDecision {
@@ -228,10 +253,16 @@ fn audio_codec_needs_live_transcode(codec: &str) -> bool {
     !codec.is_empty() && codec != "aac" && codec != "mp3"
 }
 
-async fn probe_live_segment_audio_codec(bytes: Vec<u8>) -> Option<String> {
+/// Decide whether a live `.ts` segment must be re-encoded to play in the browser.
+/// Returns None if the probe failed (so the caller can retry on a later segment).
+/// A segment needs transcoding when it has audio the browser can't decode
+/// (anything but AAC/MP3) OR carries a data/SCTE-35/subtitle stream — Bloomberg's
+/// feed embeds SCTE-35 ad markers that trip hls.js's transmux; the re-encode maps
+/// only video+audio, dropping those streams.
+async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<bool> {
     let args = [
-        "ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name",
-        "-of", "default=nw=1:nk=1", "-i", "-",
+        "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name", "-of",
+        "csv=p=0", "-i", "-",
     ]
     .iter()
     .map(|value| (*value).to_owned())
@@ -239,8 +270,39 @@ async fn probe_live_segment_audio_codec(bytes: Vec<u8>) -> Option<String> {
     let output = run_process_pipe(&args, bytes, LIVE_SEGMENT_PROBE_TIMEOUT_MS)
         .await
         .ok()?;
-    let codec = String::from_utf8_lossy(&output).trim().to_ascii_lowercase();
-    (!codec.is_empty()).then_some(codec)
+    let text = String::from_utf8_lossy(&output);
+    let mut saw_stream = false;
+    let mut needs_transcode = false;
+    for line in text.lines() {
+        let tokens: Vec<String> = line
+            .split(',')
+            .map(|token| token.trim().to_ascii_lowercase())
+            .filter(|token| !token.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            continue;
+        }
+        saw_stream = true;
+        // Data / SCTE-35 / subtitle PIDs break hls.js's TS transmux; drop them.
+        if tokens
+            .iter()
+            .any(|token| matches!(token.as_str(), "data" | "subtitle" | "scte_35" | "timed_id3"))
+        {
+            needs_transcode = true;
+        }
+        // Non-AAC/MP3 audio is not decodable through MSE.
+        if tokens.iter().any(|token| token == "audio") {
+            let codec = tokens
+                .iter()
+                .find(|token| *token != "audio")
+                .cloned()
+                .unwrap_or_default();
+            if audio_codec_needs_live_transcode(&codec) {
+                needs_transcode = true;
+            }
+        }
+    }
+    saw_stream.then_some(needs_transcode)
 }
 
 async fn transcode_live_segment_to_browser_safe(
@@ -261,6 +323,11 @@ async fn transcode_live_segment_to_browser_safe(
     .iter()
     .map(|value| (*value).to_owned())
     .collect::<Vec<_>>();
+    // Limit concurrent encodes to avoid overloading the hardware encoder.
+    let _permit = LIVE_REENCODE_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|error| error.to_string())?;
     run_process_pipe(&args, bytes, LIVE_SEGMENT_TRANSCODE_TIMEOUT_MS).await
 }
 
@@ -277,38 +344,36 @@ fn live_segment_video_encoder(snapshot: &crate::process::FfmpegSnapshot) -> &'st
     }
 }
 
-async fn maybe_transcode_live_segment_audio(
-    state: &AppState,
-    url: &Url,
-    bytes: &[u8],
-) -> Option<Vec<u8>> {
+async fn process_live_segment(state: &AppState, url: &Url, bytes: &[u8]) -> LiveSegmentOutcome {
     if bytes.is_empty() || bytes.len() > LIVE_SEGMENT_MAX_TRANSCODE_BYTES {
-        return None;
+        return LiveSegmentOutcome::Passthrough;
     }
     let key = live_audio_stream_key(url);
     let needs_transcode = match state.live_audio_transcode_cache.get_fresh(&key) {
         Some(decision) => decision,
-        None => match probe_live_segment_audio_codec(bytes.to_vec()).await {
-            Some(codec) => {
-                let decision = audio_codec_needs_live_transcode(&codec);
+        None => match probe_live_segment_needs_transcode(bytes.to_vec()).await {
+            Some(decision) => {
                 state.live_audio_transcode_cache.record(key, decision);
                 decision
             }
             // Probe failed: serve the segment as-is and retry detection later.
-            None => return None,
+            None => return LiveSegmentOutcome::Passthrough,
         },
     };
     if !needs_transcode {
-        return None;
+        return LiveSegmentOutcome::Passthrough;
     }
     let capabilities = state.runtime.get_ffmpeg_capabilities(false).await;
     let video_encoder = live_segment_video_encoder(&capabilities);
     match transcode_live_segment_to_browser_safe(bytes.to_vec(), video_encoder).await {
-        Ok(output) if !output.is_empty() => Some(output),
-        Ok(_) => None,
+        Ok(output) if !output.is_empty() => LiveSegmentOutcome::Transcoded(output),
+        // The stream needs re-encoding but it failed/produced nothing. Serving the
+        // original would play a broken (e.g. SCTE-35 / MP2) segment, so signal the
+        // caller to return an error and let the player retry the fragment instead.
+        Ok(_) => LiveSegmentOutcome::TranscodeFailed,
         Err(error) => {
-            tracing::warn!(error = %error, "live segment transcode failed; serving original");
-            None
+            tracing::warn!(error = %error, "live segment transcode failed; asking player to retry");
+            LiveSegmentOutcome::TranscodeFailed
         }
     }
 }
