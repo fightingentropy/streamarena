@@ -1,5 +1,5 @@
 export const BLOOMBERG_US_STREAM_URL =
-  "https://www.bloomberg.com/media-manifest/streams/us.m3u8";
+  "https://liveprodusphoenixeast.global.ssl.fastly.net/USPhx-HD/index.m3u8";
 export const BBC_NEWS_STREAM_URL =
   "https://vs-hls-push-ww-live.akamaized.net/x=4/i=urn:bbc:pips:service:bbc_news_channel_hd/mobile_wifi_main_hd_abr_v2.m3u8";
 export const BBC_NEWS_ROKU_STREAM_URL =
