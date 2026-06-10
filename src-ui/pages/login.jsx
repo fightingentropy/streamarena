@@ -1,4 +1,4 @@
-import { createSignal, onMount } from "solid-js";
+import { createSignal, onMount, Show } from "solid-js";
 
 // ─── Migrate localStorage data to server ───
 
@@ -78,7 +78,9 @@ async function migrateLocalStorageToServer() {
 
 export default function LoginPage() {
   const [isSignUp, setIsSignUp] = createSignal(false);
+  const [forgot, setForgot] = createSignal(false);
   const [error, setError] = createSignal("");
+  const [notice, setNotice] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
 
   // If already authenticated, redirect to home
@@ -92,7 +94,52 @@ export default function LoginPage() {
 
   function toggleMode() {
     setIsSignUp((prev) => !prev);
+    setForgot(false);
     setError("");
+    setNotice("");
+  }
+
+  function showForgot() {
+    setForgot(true);
+    setIsSignUp(false);
+    setError("");
+    setNotice("");
+  }
+
+  function backToSignIn() {
+    setForgot(false);
+    setError("");
+    setNotice("");
+  }
+
+  async function handleForgot(e) {
+    e.preventDefault();
+    setError("");
+    setNotice("");
+    const email = e.target.email.value.trim();
+    if (!email) {
+      setError("Please enter your email.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/auth/forgot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Request failed (${res.status})`);
+      }
+      setNotice(
+        "If an account exists for that email, a password-reset link is on its way. Check your inbox.",
+      );
+    } catch (err) {
+      setError(err.message || "Something went wrong. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function handleSubmit(e) {
@@ -142,19 +189,19 @@ export default function LoginPage() {
         <a href="/" class="login-logo">
           <img src="/assets/icons/netflix-n.svg" alt="Netflix" />
         </a>
-        <h1>{(isSignUp() ? "Create Account" : "Sign In")}</h1>
-        <form class="login-form" onSubmit={handleSubmit}>
-          <div
-            class="login-field"
-            hidden={!isSignUp()}
-          >
+        <h1>{forgot() ? "Reset password" : isSignUp() ? "Create Account" : "Sign In"}</h1>
+        <form class="login-form" onSubmit={forgot() ? handleForgot : handleSubmit}>
+          <p class="login-sub" hidden={!forgot()}>
+            Enter your account email and we'll send you a link to set a new password.
+          </p>
+          <div class="login-field" hidden={!isSignUp() || forgot()}>
             <label for="displayName">Display name</label>
             <input
               id="displayName"
               name="displayName"
               type="text"
               autocomplete="name"
-              required={isSignUp()}
+              required={isSignUp() && !forgot()}
             />
           </div>
           <div class="login-field">
@@ -167,39 +214,47 @@ export default function LoginPage() {
               required
             />
           </div>
-          <div class="login-field">
+          <div class="login-field" hidden={forgot()}>
             <label for="password">Password</label>
             <input
               id="password"
               name="password"
               type="password"
               autocomplete={isSignUp() ? "new-password" : "current-password"}
-              required
+              required={!forgot()}
             />
           </div>
-          <p
-            class="login-error"
-            hidden={!error()}
-          >
+          <p class="login-forgot" hidden={isSignUp() || forgot()}>
+            <button class="login-toggle-btn" type="button" onClick={showForgot}>
+              Forgot password?
+            </button>
+          </p>
+          <p class="login-notice" hidden={!notice()}>
+            {notice()}
+          </p>
+          <p class="login-error" hidden={!error()}>
             {error()}
           </p>
-          <button
-            class="login-btn"
-            type="submit"
-            disabled={submitting()}
-          >
-            {(isSignUp() ? "Create Account" : "Sign In")}
+          <button class="login-btn" type="submit" disabled={submitting()}>
+            {forgot() ? "Send reset link" : isSignUp() ? "Create Account" : "Sign In"}
           </button>
         </form>
         <p class="login-toggle">
-          <span>{(isSignUp() ? "Already have an account?" : "New here?")}</span>
-          <button
-            class="login-toggle-btn"
-            type="button"
-            onClick={toggleMode}
+          <Show
+            when={forgot()}
+            fallback={
+              <>
+                <span>{isSignUp() ? "Already have an account?" : "New here?"}</span>{" "}
+                <button class="login-toggle-btn" type="button" onClick={toggleMode}>
+                  {isSignUp() ? "Sign in" : "Create account"}
+                </button>
+              </>
+            }
           >
-            {(isSignUp() ? "Sign in" : "Create account")}
-          </button>
+            <button class="login-toggle-btn" type="button" onClick={backToSignIn}>
+              Back to sign in
+            </button>
+          </Show>
         </p>
       </div>
     </main>

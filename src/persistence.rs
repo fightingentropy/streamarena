@@ -138,6 +138,57 @@ pub struct SourceHealthStats {
     pub playback_error_count: i64,
 }
 
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AdminOverview {
+    pub totalUsers: i64,
+    pub newUsers24h: i64,
+    pub newUsers7d: i64,
+    pub newUsers30d: i64,
+    pub verifiedUsers: i64,
+    pub adminUsers: i64,
+    pub disabledUsers: i64,
+    pub activeSessions: i64,
+    pub activeUsers: i64,
+    pub continueWatchingItems: i64,
+    pub myListItems: i64,
+    pub watchProgressItems: i64,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminDailyCount {
+    pub date: String,
+    pub signups: i64,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminUserRow {
+    pub id: i64,
+    pub email: String,
+    pub displayName: String,
+    pub createdAt: i64,
+    pub emailVerifiedAt: Option<i64>,
+    pub isAdmin: bool,
+    pub isDisabled: bool,
+    pub sessionCount: i64,
+    pub continueWatchingCount: i64,
+    pub myListCount: i64,
+    pub lastActiveAt: Option<i64>,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminActivityEvent {
+    pub kind: String,
+    pub ts: i64,
+    pub email: String,
+    pub displayName: String,
+    pub title: String,
+    pub detail: String,
+}
+
 impl Db {
     pub async fn initialize(config: &Config) -> AppResult<Self> {
         let path = config.persistent_cache_db_path.clone();
@@ -1405,36 +1456,6 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
-    pub async fn get_user_by_id(
-        &self,
-        user_id: i64,
-    ) -> AppResult<Option<(i64, String, String, String)>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
-        task::spawn_blocking(move || {
-            let connection = take_connection(&pool, &path)?;
-            let row = connection
-                .query_row(
-                    "SELECT id, username, password_hash, display_name FROM users WHERE id = ?",
-                    [user_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                        ))
-                    },
-                )
-                .optional()?;
-            return_connection(&pool, connection);
-            Ok::<Option<(i64, String, String, String)>, rusqlite::Error>(row)
-        })
-        .await
-        .map_err(|error| ApiError::internal(error.to_string()))?
-        .map_err(|error| ApiError::internal(error.to_string()))
-    }
-
     pub async fn create_session(
         &self,
         token: String,
@@ -1496,6 +1517,355 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))?
         .map_err(|error| ApiError::internal(error.to_string()))?;
         Ok(())
+    }
+
+    // ── Admin dashboard ──────────────────────────────────────────────
+
+    /// Identity + authorization flags for a user. Used by `require_auth`
+    /// (which also enforces `is_disabled`) and `require_admin`.
+    pub async fn get_auth_user(
+        &self,
+        user_id: i64,
+    ) -> AppResult<Option<(i64, String, String, bool, bool)>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let row = connection
+                .query_row(
+                    "SELECT id, username, display_name, is_admin, is_disabled
+                     FROM users WHERE id = ?",
+                    [user_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)? != 0,
+                            row.get::<_, i64>(4)? != 0,
+                        ))
+                    },
+                )
+                .optional()?;
+            return_connection(&pool, connection);
+            Ok::<Option<(i64, String, String, bool, bool)>, rusqlite::Error>(row)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn admin_overview(&self) -> AppResult<AdminOverview> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            let day = 24 * 60 * 60 * 1000i64;
+            let scalar = |sql: &str| connection.query_row(sql, [], |row| row.get::<_, i64>(0));
+            let scalar1 =
+                |sql: &str, arg: i64| connection.query_row(sql, [arg], |row| row.get::<_, i64>(0));
+            let overview = AdminOverview {
+                totalUsers: scalar("SELECT COUNT(*) FROM users")?,
+                newUsers24h: scalar1("SELECT COUNT(*) FROM users WHERE created_at >= ?", now - day)?,
+                newUsers7d: scalar1(
+                    "SELECT COUNT(*) FROM users WHERE created_at >= ?",
+                    now - 7 * day,
+                )?,
+                newUsers30d: scalar1(
+                    "SELECT COUNT(*) FROM users WHERE created_at >= ?",
+                    now - 30 * day,
+                )?,
+                verifiedUsers: scalar("SELECT COUNT(*) FROM users WHERE email_verified_at IS NOT NULL")?,
+                adminUsers: scalar("SELECT COUNT(*) FROM users WHERE is_admin = 1")?,
+                disabledUsers: scalar("SELECT COUNT(*) FROM users WHERE is_disabled = 1")?,
+                activeSessions: scalar1("SELECT COUNT(*) FROM auth_sessions WHERE expires_at > ?", now)?,
+                activeUsers: scalar1(
+                    "SELECT COUNT(DISTINCT user_id) FROM auth_sessions WHERE expires_at > ?",
+                    now,
+                )?,
+                continueWatchingItems: scalar("SELECT COUNT(*) FROM user_continue_watching")?,
+                myListItems: scalar("SELECT COUNT(*) FROM user_my_list")?,
+                watchProgressItems: scalar("SELECT COUNT(*) FROM user_watch_progress")?,
+            };
+            return_connection(&pool, connection);
+            Ok::<AdminOverview, rusqlite::Error>(overview)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// New sign-ups per UTC day for the last `days` days, zero-filled so the
+    /// chart always has a continuous axis.
+    pub async fn admin_growth(&self, days: i64) -> AppResult<Vec<AdminDailyCount>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        let days = days.clamp(1, 90);
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let start_modifier = format!("-{} days", days - 1);
+            let mut stmt = connection.prepare(
+                "WITH RECURSIVE dates(d) AS (
+                   SELECT date('now', ?1)
+                   UNION ALL
+                   SELECT date(d, '+1 day') FROM dates WHERE d < date('now')
+                 )
+                 SELECT d,
+                        (SELECT COUNT(*) FROM users
+                          WHERE date(created_at / 1000, 'unixepoch') = d) AS signups
+                 FROM dates
+                 ORDER BY d",
+            )?;
+            let rows = stmt
+                .query_map([start_modifier.as_str()], |row| {
+                    Ok(AdminDailyCount {
+                        date: row.get::<_, String>(0)?,
+                        signups: row.get::<_, i64>(1)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            return_connection(&pool, connection);
+            Ok::<Vec<AdminDailyCount>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn admin_users(
+        &self,
+        search: String,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<Vec<AdminUserRow>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        let limit = limit.clamp(1, 500);
+        let offset = offset.max(0);
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            let like = format!("%{}%", search);
+            let mut stmt = connection.prepare(
+                "SELECT
+                   u.id,
+                   u.username,
+                   u.display_name,
+                   u.created_at,
+                   u.email_verified_at,
+                   u.is_admin,
+                   u.is_disabled,
+                   (SELECT COUNT(*) FROM auth_sessions s
+                      WHERE s.user_id = u.id AND s.expires_at > ?1) AS active_sessions,
+                   (SELECT COUNT(*) FROM user_continue_watching c WHERE c.user_id = u.id) AS cw,
+                   (SELECT COUNT(*) FROM user_my_list m WHERE m.user_id = u.id) AS ml,
+                   (SELECT MAX(t) FROM (
+                      SELECT MAX(updated_at) AS t FROM user_continue_watching WHERE user_id = u.id
+                      UNION ALL
+                      SELECT MAX(updated_at) FROM user_watch_progress WHERE user_id = u.id
+                      UNION ALL
+                      SELECT MAX(created_at) FROM auth_sessions WHERE user_id = u.id
+                    )) AS last_active
+                 FROM users u
+                 WHERE ?2 = '' OR u.username LIKE ?3 OR u.display_name LIKE ?3
+                 ORDER BY u.created_at DESC
+                 LIMIT ?4 OFFSET ?5",
+            )?;
+            let rows = stmt
+                .query_map(params![now, search, like, limit, offset], |row| {
+                    Ok(AdminUserRow {
+                        id: row.get::<_, i64>(0)?,
+                        email: row.get::<_, String>(1)?,
+                        displayName: row.get::<_, String>(2)?,
+                        createdAt: row.get::<_, i64>(3)?,
+                        emailVerifiedAt: row.get::<_, Option<i64>>(4)?,
+                        isAdmin: row.get::<_, i64>(5)? != 0,
+                        isDisabled: row.get::<_, i64>(6)? != 0,
+                        sessionCount: row.get::<_, i64>(7)?,
+                        continueWatchingCount: row.get::<_, i64>(8)?,
+                        myListCount: row.get::<_, i64>(9)?,
+                        lastActiveAt: row.get::<_, Option<i64>>(10)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            return_connection(&pool, connection);
+            Ok::<Vec<AdminUserRow>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// A merged, time-sorted feed of recent sign-ins, watches, and sign-ups.
+    pub async fn admin_activity(&self, limit: i64) -> AppResult<Vec<AdminActivityEvent>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        let limit = limit.clamp(1, 200);
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let mut events: Vec<AdminActivityEvent> = Vec::new();
+
+            {
+                let mut stmt = connection.prepare(
+                    "SELECT s.created_at, u.username, u.display_name
+                     FROM auth_sessions s JOIN users u ON u.id = s.user_id
+                     ORDER BY s.created_at DESC LIMIT ?1",
+                )?;
+                let rows = stmt
+                    .query_map([limit], |row| {
+                        Ok(AdminActivityEvent {
+                            kind: "login".to_owned(),
+                            ts: row.get::<_, i64>(0)?,
+                            email: row.get::<_, String>(1)?,
+                            displayName: row.get::<_, String>(2)?,
+                            title: String::new(),
+                            detail: "Signed in".to_owned(),
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                events.extend(rows);
+            }
+            {
+                let mut stmt = connection.prepare(
+                    "SELECT c.updated_at, u.username, u.display_name, c.title, c.episode
+                     FROM user_continue_watching c JOIN users u ON u.id = c.user_id
+                     ORDER BY c.updated_at DESC LIMIT ?1",
+                )?;
+                let rows = stmt
+                    .query_map([limit], |row| {
+                        let title = row.get::<_, String>(3)?;
+                        let episode = row.get::<_, String>(4)?;
+                        let detail = if episode.trim().is_empty() {
+                            "Watched".to_owned()
+                        } else {
+                            format!("Watched · {}", episode)
+                        };
+                        Ok(AdminActivityEvent {
+                            kind: "watch".to_owned(),
+                            ts: row.get::<_, i64>(0)?,
+                            email: row.get::<_, String>(1)?,
+                            displayName: row.get::<_, String>(2)?,
+                            title,
+                            detail,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                events.extend(rows);
+            }
+            {
+                let mut stmt = connection.prepare(
+                    "SELECT created_at, username, display_name FROM users
+                     ORDER BY created_at DESC LIMIT ?1",
+                )?;
+                let rows = stmt
+                    .query_map([limit], |row| {
+                        Ok(AdminActivityEvent {
+                            kind: "signup".to_owned(),
+                            ts: row.get::<_, i64>(0)?,
+                            email: row.get::<_, String>(1)?,
+                            displayName: row.get::<_, String>(2)?,
+                            title: String::new(),
+                            detail: "Created account".to_owned(),
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                events.extend(rows);
+            }
+
+            return_connection(&pool, connection);
+            events.sort_by(|a, b| b.ts.cmp(&a.ts));
+            events.truncate(limit as usize);
+            Ok::<Vec<AdminActivityEvent>, rusqlite::Error>(events)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// Set a new password hash and force re-login by clearing the user's
+    /// sessions. Returns the number of user rows changed (0 = no such user).
+    pub async fn admin_set_password(
+        &self,
+        user_id: i64,
+        password_hash: String,
+    ) -> AppResult<usize> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let tx = connection.unchecked_transaction()?;
+            let changed = tx.execute(
+                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                params![password_hash, now_ms(), user_id],
+            )?;
+            if changed > 0 {
+                tx.execute("DELETE FROM auth_sessions WHERE user_id = ?", [user_id])?;
+            }
+            tx.commit()?;
+            return_connection(&pool, connection);
+            Ok::<usize, rusqlite::Error>(changed)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn admin_set_disabled(&self, user_id: i64, disabled: bool) -> AppResult<usize> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let tx = connection.unchecked_transaction()?;
+            let changed = tx.execute(
+                "UPDATE users SET is_disabled = ?, updated_at = ? WHERE id = ?",
+                params![i64::from(disabled), now_ms(), user_id],
+            )?;
+            if disabled && changed > 0 {
+                tx.execute("DELETE FROM auth_sessions WHERE user_id = ?", [user_id])?;
+            }
+            tx.commit()?;
+            return_connection(&pool, connection);
+            Ok::<usize, rusqlite::Error>(changed)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn admin_set_admin(&self, user_id: i64, is_admin: bool) -> AppResult<usize> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let changed = connection.execute(
+                "UPDATE users SET is_admin = ?, updated_at = ? WHERE id = ?",
+                params![i64::from(is_admin), now_ms(), user_id],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<usize, rusqlite::Error>(changed)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// Hard-delete a user. ON DELETE CASCADE removes their sessions,
+    /// preferences, watch progress, continue-watching, and list rows.
+    pub async fn admin_delete_user(&self, user_id: i64) -> AppResult<usize> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let changed = connection.execute("DELETE FROM users WHERE id = ?", [user_id])?;
+            return_connection(&pool, connection);
+            Ok::<usize, rusqlite::Error>(changed)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
     }
 
     // ── Email verification ───────────────────────────────────────────
@@ -1580,6 +1950,101 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))?
         .map_err(|error| ApiError::internal(error.to_string()))?;
         Ok(())
+    }
+
+    // ── Password reset ───────────────────────────────────────────────
+
+    /// Store a reset token (hashed) for an email, replacing any prior token so
+    /// only the most recent link stays valid.
+    pub async fn create_password_reset_token(
+        &self,
+        email: String,
+        token_hash: String,
+        expires_at: i64,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            connection.execute(
+                "DELETE FROM password_reset_tokens WHERE email = ?",
+                [email.as_str()],
+            )?;
+            connection.execute(
+                "INSERT INTO password_reset_tokens (token_hash, email, expires_at, created_at)
+                 VALUES (?, ?, ?, ?)",
+                params![token_hash, email, expires_at, now],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Look up a reset token by its hash and delete it (single-use), returning
+    /// the associated email and expiry if it existed. Consumed regardless of
+    /// expiry so used/stale tokens cannot be replayed.
+    pub async fn consume_password_reset_token(
+        &self,
+        token_hash: String,
+    ) -> AppResult<Option<(String, i64)>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let row = connection
+                .query_row(
+                    "SELECT email, expires_at FROM password_reset_tokens WHERE token_hash = ?",
+                    [token_hash.as_str()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()?;
+            connection.execute(
+                "DELETE FROM password_reset_tokens WHERE token_hash = ?",
+                [token_hash.as_str()],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<Option<(String, i64)>, rusqlite::Error>(row)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// Set a user's password by email and clear their sessions (force re-login
+    /// everywhere). Returns rows changed (0 = no such user).
+    pub async fn set_password_by_email(
+        &self,
+        email: String,
+        password_hash: String,
+    ) -> AppResult<usize> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let tx = connection.unchecked_transaction()?;
+            let changed = tx.execute(
+                "UPDATE users SET password_hash = ?, updated_at = ? WHERE username = ?",
+                params![password_hash, now_ms(), email],
+            )?;
+            if changed > 0 {
+                tx.execute(
+                    "DELETE FROM auth_sessions
+                     WHERE user_id IN (SELECT id FROM users WHERE username = ?)",
+                    [email.as_str()],
+                )?;
+            }
+            tx.commit()?;
+            return_connection(&pool, connection);
+            Ok::<usize, rusqlite::Error>(changed)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
     }
 
     /// Returns the verification timestamp for a user, or None if unverified or
@@ -2628,6 +3093,8 @@ fn build_schema(path: &PathBuf) -> Result<(), rusqlite::Error> {
           password_hash TEXT NOT NULL,
           display_name TEXT NOT NULL DEFAULT '',
           email_verified_at INTEGER,
+          is_admin INTEGER NOT NULL DEFAULT 0,
+          is_disabled INTEGER NOT NULL DEFAULT 0,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
@@ -2645,6 +3112,13 @@ fn build_schema(path: &PathBuf) -> Result<(), rusqlite::Error> {
           created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_email_verification_email ON email_verification_tokens(email);
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+          token_hash TEXT PRIMARY KEY,
+          email TEXT NOT NULL,
+          expires_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_password_reset_email ON password_reset_tokens(email);
         CREATE TABLE IF NOT EXISTS user_preferences (
           user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           pref_key TEXT NOT NULL,
@@ -2726,6 +3200,20 @@ fn build_schema(path: &PathBuf) -> Result<(), rusqlite::Error> {
         "users",
         "email_verified_at",
         "email_verified_at INTEGER",
+    )?;
+    // Admin dashboard: per-account authorization + moderation flags. Added via
+    // ALTER for pre-existing databases. 0 = normal user / enabled.
+    ensure_text_column(
+        &connection,
+        "users",
+        "is_admin",
+        "is_admin INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_text_column(
+        &connection,
+        "users",
+        "is_disabled",
+        "is_disabled INTEGER NOT NULL DEFAULT 0",
     )?;
     migrate_title_preferences_schema(&connection)?;
     Ok(())

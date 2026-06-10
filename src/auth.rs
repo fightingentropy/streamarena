@@ -10,6 +10,7 @@ pub struct AuthUser {
     pub id: i64,
     pub email: String,
     pub display_name: String,
+    pub is_admin: bool,
 }
 
 pub fn hash_password(password: &str) -> Result<String, String> {
@@ -79,16 +80,34 @@ pub async fn require_auth(db: &Db, headers: &HeaderMap) -> AppResult<AuthUser> {
         return Err(ApiError::unauthorized("Session expired."));
     }
 
-    let (id, email, _password_hash, display_name) = db
-        .get_user_by_id(user_id)
+    let (id, email, display_name, is_admin, is_disabled) = db
+        .get_auth_user(user_id)
         .await?
         .ok_or_else(|| ApiError::unauthorized("User not found."))?;
+
+    // A disabled account is treated as not-authenticated everywhere: the
+    // session may still be valid, but every protected route and gated page
+    // funnels through here, so this one check locks them out app-wide.
+    if is_disabled {
+        return Err(ApiError::unauthorized("Account disabled."));
+    }
 
     Ok(AuthUser {
         id,
         email,
         display_name,
+        is_admin,
     })
+}
+
+/// Like `require_auth`, but additionally requires the `is_admin` flag.
+/// Returns 403 for a valid, non-admin session.
+pub async fn require_admin(db: &Db, headers: &HeaderMap) -> AppResult<AuthUser> {
+    let user = require_auth(db, headers).await?;
+    if !user.is_admin {
+        return Err(ApiError::forbidden("Admin access required."));
+    }
+    Ok(user)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

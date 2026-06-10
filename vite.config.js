@@ -13,6 +13,8 @@ const pages = {
   settings: resolve(__dirname, "settings.html"),
   live: resolve(__dirname, "live.html"),
   sports: resolve(__dirname, "sports.html"),
+  admin: resolve(__dirname, "admin.html"),
+  "reset-password": resolve(__dirname, "reset-password.html"),
 };
 
 export default defineConfig({
@@ -40,6 +42,15 @@ export default defineConfig({
           } else if (req.url === "/sports" || req.url?.startsWith("/sports?")) {
             const [, query] = req.url.split("?");
             req.url = `/sports.html${query ? `?${query}` : ""}`;
+          } else if (req.url === "/admin" || req.url?.startsWith("/admin?")) {
+            const [, query] = req.url.split("?");
+            req.url = `/admin.html${query ? `?${query}` : ""}`;
+          } else if (
+            req.url === "/reset-password" ||
+            req.url?.startsWith("/reset-password/") ||
+            req.url?.startsWith("/reset-password?")
+          ) {
+            req.url = "/reset-password.html";
           }
           next();
         });

@@ -205,6 +205,8 @@ pub fn build_router(state: AppState) -> Router {
             "/api/auth/resend-verification",
             any(auth_resend_verification_handler),
         )
+        .route("/api/auth/forgot", any(auth_forgot_handler))
+        .route("/api/auth/reset", any(auth_reset_handler))
         .route("/api/home/bootstrap", get(home_bootstrap_handler));
 
     let protected_api = Router::new()
@@ -298,15 +300,231 @@ pub fn build_router(state: AppState) -> Router {
             api_auth_middleware,
         ));
 
+    // Admin dashboard API. Each handler calls `auth::require_admin`, so these
+    // are gated independently (authentication + admin check in one step).
+    let admin_api = Router::new()
+        .route("/api/admin/overview", get(admin_overview_handler))
+        .route("/api/admin/growth", get(admin_growth_handler))
+        .route("/api/admin/users", get(admin_users_handler))
+        .route("/api/admin/activity", get(admin_activity_handler))
+        .route(
+            "/api/admin/users/reset-password",
+            any(admin_reset_password_handler),
+        )
+        .route(
+            "/api/admin/users/set-disabled",
+            any(admin_set_disabled_handler),
+        )
+        .route("/api/admin/users/set-admin", any(admin_set_admin_handler))
+        .route("/api/admin/users/delete", any(admin_delete_user_handler));
+
     Router::new()
         .merge(public_api)
         .merge(protected_api)
+        .merge(admin_api)
         .fallback(any(serve_static))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state,
             security_headers_middleware,
         ))
+}
+
+fn admin_query_param(uri: &Uri, key: &str) -> Option<String> {
+    let query = uri.query()?;
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.into_owned())
+}
+
+fn admin_query_i64(uri: &Uri, key: &str, fallback: i64) -> i64 {
+    admin_query_param(uri, key)
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(fallback)
+}
+
+async fn admin_overview_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let overview = state.db.admin_overview().await?;
+    let value =
+        serde_json::to_value(overview).map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(json_response(value))
+}
+
+async fn admin_growth_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let days = admin_query_i64(&uri, "days", 30);
+    let rows = state.db.admin_growth(days).await?;
+    let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(json_response(json!({ "days": value })))
+}
+
+async fn admin_users_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let search = admin_query_param(&uri, "search").unwrap_or_default();
+    let limit = admin_query_i64(&uri, "limit", 200);
+    let offset = admin_query_i64(&uri, "offset", 0);
+    let rows = state.db.admin_users(search, limit, offset).await?;
+    let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(json_response(json!({ "users": value })))
+}
+
+async fn admin_activity_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let limit = admin_query_i64(&uri, "limit", 50);
+    let rows = state.db.admin_activity(limit).await?;
+    let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(json_response(json!({ "events": value })))
+}
+
+async fn admin_reset_password_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let payload = parse_json_body(request).await?;
+    let user_id = payload
+        .get("userId")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| ApiError::bad_request("userId is required."))?;
+    let password = payload
+        .get("password")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if password.chars().count() < 6 {
+        return Err(ApiError::bad_request(
+            "Password must be at least 6 characters.",
+        ));
+    }
+    let hash = auth::hash_password(password).map_err(|error| ApiError::internal(error))?;
+    let changed = state.db.admin_set_password(user_id, hash).await?;
+    if changed == 0 {
+        return Err(ApiError::not_found("User not found."));
+    }
+    Ok(json_response(json!({ "ok": true })))
+}
+
+async fn admin_set_disabled_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    let admin = auth::require_admin(&state.db, &headers).await?;
+    let payload = parse_json_body(request).await?;
+    let user_id = payload
+        .get("userId")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| ApiError::bad_request("userId is required."))?;
+    let disabled = payload
+        .get("disabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if disabled && user_id == admin.id {
+        return Err(ApiError::bad_request(
+            "You cannot disable your own account.",
+        ));
+    }
+    let changed = state.db.admin_set_disabled(user_id, disabled).await?;
+    if changed == 0 {
+        return Err(ApiError::not_found("User not found."));
+    }
+    Ok(json_response(json!({ "ok": true, "disabled": disabled })))
+}
+
+async fn admin_set_admin_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    let admin = auth::require_admin(&state.db, &headers).await?;
+    let payload = parse_json_body(request).await?;
+    let user_id = payload
+        .get("userId")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| ApiError::bad_request("userId is required."))?;
+    let make_admin = payload
+        .get("isAdmin")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !make_admin && user_id == admin.id {
+        return Err(ApiError::bad_request(
+            "You cannot remove your own admin access.",
+        ));
+    }
+    let changed = state.db.admin_set_admin(user_id, make_admin).await?;
+    if changed == 0 {
+        return Err(ApiError::not_found("User not found."));
+    }
+    Ok(json_response(json!({ "ok": true, "isAdmin": make_admin })))
+}
+
+async fn admin_delete_user_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    let admin = auth::require_admin(&state.db, &headers).await?;
+    let payload = parse_json_body(request).await?;
+    let user_id = payload
+        .get("userId")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| ApiError::bad_request("userId is required."))?;
+    if user_id == admin.id {
+        return Err(ApiError::bad_request("You cannot delete your own account."));
+    }
+    let changed = state.db.admin_delete_user(user_id).await?;
+    if changed == 0 {
+        return Err(ApiError::not_found("User not found."));
+    }
+    Ok(json_response(json!({ "ok": true })))
 }
 
 pub async fn debug_cache(
@@ -2020,6 +2238,12 @@ async fn auth_login_handler(
         return Err(ApiError::unauthorized("Invalid email or password."));
     }
 
+    if let Some((_, _, _, _, is_disabled)) = state.db.get_auth_user(user_id).await? {
+        if is_disabled {
+            return Err(ApiError::forbidden("This account has been disabled."));
+        }
+    }
+
     let token = auth::generate_session_token();
     let expires_at = now_ms() + SESSION_MAX_AGE_SECONDS * 1000;
     state
@@ -2081,7 +2305,8 @@ async fn auth_me_handler(
         "id": user.id,
         "email": user.email,
         "displayName": user.display_name,
-        "emailVerified": email_verified
+        "emailVerified": email_verified,
+        "isAdmin": user.is_admin
     })))
 }
 
@@ -2162,6 +2387,121 @@ async fn auth_resend_verification_handler(
                 tracing::error!("failed to store resend verification token: {error:?}");
             }
         }
+    }
+
+    Ok(json_response(json!({ "ok": true })))
+}
+
+/// Begin a password reset. If the email maps to an account, issue a single-use
+/// token and email a reset link. Always returns `{ ok: true }` (even for
+/// unknown addresses) so it never reveals whether an email is registered.
+async fn auth_forgot_handler(
+    State(state): State<AppState>,
+    method: Method,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
+    }
+    let payload = parse_json_body(request).await?;
+    let email = payload
+        .get("email")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    if email.is_empty() {
+        return Err(ApiError::bad_request("Email is required."));
+    }
+
+    if !state
+        .auth_rate_limiter
+        .check_and_record(&format!("forgot:{email}"))
+    {
+        return Err(ApiError::too_many_requests(
+            "Too many reset requests. Please wait and try again.",
+        ));
+    }
+
+    // Act only for real accounts, but always respond identically.
+    if state.db.get_user_by_email(email.clone()).await?.is_some() {
+        let raw_token = auth::generate_session_token();
+        let reset_expires_at = now_ms() + crate::email::RESET_TOKEN_TTL_MS;
+        match state
+            .db
+            .create_password_reset_token(
+                email.clone(),
+                crate::email::sha256_hex(&raw_token),
+                reset_expires_at,
+            )
+            .await
+        {
+            Ok(()) => {
+                let send_state = state.clone();
+                let send_email = email.clone();
+                tokio::spawn(async move {
+                    crate::email::send_password_reset_email(&send_state, &send_email, &raw_token)
+                        .await;
+                });
+            }
+            Err(error) => {
+                tracing::error!("failed to store password reset token: {error:?}");
+            }
+        }
+    }
+
+    Ok(json_response(json!({ "ok": true })))
+}
+
+/// Complete a password reset: validate the single-use token, set the new
+/// password, and invalidate the user's existing sessions.
+async fn auth_reset_handler(
+    State(state): State<AppState>,
+    method: Method,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
+    }
+    let payload = parse_json_body(request).await?;
+    let token = payload
+        .get("token")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let password = payload
+        .get("password")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if token.is_empty() {
+        return Err(ApiError::bad_request("Missing reset token."));
+    }
+    if password.chars().count() < 6 {
+        return Err(ApiError::bad_request(
+            "Password must be at least 6 characters.",
+        ));
+    }
+
+    let (email, expires_at) = state
+        .db
+        .consume_password_reset_token(crate::email::sha256_hex(&token))
+        .await?
+        .ok_or_else(|| {
+            ApiError::bad_request("This reset link is invalid or has already been used.")
+        })?;
+    if expires_at <= now_ms() {
+        return Err(ApiError::bad_request("This reset link has expired."));
+    }
+
+    let hash = auth::hash_password(password).map_err(ApiError::internal)?;
+    let changed = state.db.set_password_by_email(email, hash).await?;
+    if changed == 0 {
+        return Err(ApiError::bad_request("This reset link is no longer valid."));
     }
 
     Ok(json_response(json!({ "ok": true })))

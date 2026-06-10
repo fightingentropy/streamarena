@@ -229,6 +229,31 @@ a:focus-visible {
   text-decoration-color: #ffffff;
 }
 
+/* ─── Forgot / reset ─── */
+
+.login-sub {
+  margin: -8px 0 4px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.login-forgot {
+  margin: 2px 0 0;
+  text-align: right;
+}
+
+.login-notice {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: rgba(80, 200, 120, 0.1);
+  color: #6ee7a0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 /* ─── Responsive ─── */
 
 @media (max-width: 480px) {

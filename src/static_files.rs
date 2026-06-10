@@ -175,6 +175,9 @@ fn resolve_local_path(frontend_dir: &Path, repo_root: &Path, pathname: &str) -> 
     if decoded.starts_with("/watch/") || decoded == "/watch" {
         return Some(frontend_dir.join("player.html"));
     }
+    if decoded.starts_with("/reset-password/") || decoded == "/reset-password" {
+        return Some(frontend_dir.join("reset-password.html"));
+    }
     if decoded.starts_with("/assets/") {
         let normalized = normalize_path(decoded.trim_start_matches('/'))?;
         let file_path = repo_root.join(normalized);
