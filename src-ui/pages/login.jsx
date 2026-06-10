@@ -104,7 +104,6 @@ export default function LoginPage() {
     const email = form.email.value.trim();
     const password = form.password.value;
     const displayName = form.displayName?.value.trim() || "";
-    const inviteCode = form.inviteCode?.value.trim() || "";
 
     if (!email || !password || (isSignUp() && !displayName)) {
       setError("Please fill in all fields.");
@@ -115,12 +114,7 @@ export default function LoginPage() {
     try {
       const endpoint = isSignUp() ? "/api/auth/signup" : "/api/auth/login";
       const payload = isSignUp()
-        ? {
-            email,
-            password,
-            displayName,
-            ...(inviteCode ? { inviteCode } : {}),
-          }
+        ? { email, password, displayName }
         : { email, password };
 
       const res = await fetch(endpoint, {
@@ -171,18 +165,6 @@ export default function LoginPage() {
               type="email"
               autocomplete="email"
               required
-            />
-          </div>
-          <div
-            class="login-field"
-            hidden={!isSignUp()}
-          >
-            <label for="inviteCode">Invite code</label>
-            <input
-              id="inviteCode"
-              name="inviteCode"
-              type="text"
-              autocomplete="off"
             />
           </div>
           <div class="login-field">

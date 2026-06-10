@@ -1,4 +1,5 @@
 import { hydrateFromServer } from "./auth.js";
+import { initEmailVerificationBanner } from "./email-verification-banner.js";
 import { mountPage } from "./mount-page.js";
 
 async function loadPageComponent(loadPage) {
@@ -23,6 +24,7 @@ export async function mountAuthenticatedPage(loadPage, options = {}) {
   mountPage(await componentPromise, options);
 
   void hydrateFromServer();
+  initEmailVerificationBanner(user);
 }
 
 export async function mountPublicPage(loadPage, options = {}) {

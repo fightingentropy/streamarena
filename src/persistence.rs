@@ -1498,6 +1498,112 @@ impl Db {
         Ok(())
     }
 
+    // ── Email verification ───────────────────────────────────────────
+
+    /// Store a verification token (hashed) for an email, replacing any prior
+    /// token for that email so only the most recent link stays valid.
+    pub async fn create_email_verification_token(
+        &self,
+        email: String,
+        token_hash: String,
+        expires_at: i64,
+    ) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            connection.execute(
+                "DELETE FROM email_verification_tokens WHERE email = ?",
+                [email.as_str()],
+            )?;
+            connection.execute(
+                "INSERT INTO email_verification_tokens (token_hash, email, expires_at, created_at)
+                 VALUES (?, ?, ?, ?)",
+                params![token_hash, email, expires_at, now],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Look up a verification token by its hash and delete it (single-use),
+    /// returning the associated email and expiry if it existed. The token is
+    /// consumed regardless of expiry so used/stale tokens cannot be replayed.
+    pub async fn consume_email_verification_token(
+        &self,
+        token_hash: String,
+    ) -> AppResult<Option<(String, i64)>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let row = connection
+                .query_row(
+                    "SELECT email, expires_at FROM email_verification_tokens WHERE token_hash = ?",
+                    [token_hash.as_str()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()?;
+            connection.execute(
+                "DELETE FROM email_verification_tokens WHERE token_hash = ?",
+                [token_hash.as_str()],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<Option<(String, i64)>, rusqlite::Error>(row)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// Mark a user's email as verified. Idempotent: only sets the timestamp the
+    /// first time (the `email_verified_at IS NULL` guard).
+    pub async fn mark_email_verified(&self, email: String, verified_at: i64) -> AppResult<()> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "UPDATE users SET email_verified_at = ?, updated_at = ?
+                 WHERE username = ? AND email_verified_at IS NULL",
+                params![verified_at, now_ms(), email],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Returns the verification timestamp for a user, or None if unverified or
+    /// the user does not exist.
+    pub async fn email_verified_at(&self, user_id: i64) -> AppResult<Option<i64>> {
+        let path = self.path.clone();
+        let pool = self.pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let row = connection
+                .query_row(
+                    "SELECT email_verified_at FROM users WHERE id = ?",
+                    [user_id],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .optional()?;
+            return_connection(&pool, connection);
+            Ok::<Option<i64>, rusqlite::Error>(row.flatten())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
     pub async fn get_user_preferences(&self, user_id: i64) -> AppResult<Vec<(String, String)>> {
         let path = self.path.clone();
         let pool = self.pool.clone();
@@ -2521,6 +2627,7 @@ fn build_schema(path: &PathBuf) -> Result<(), rusqlite::Error> {
           username TEXT NOT NULL UNIQUE COLLATE NOCASE,
           password_hash TEXT NOT NULL,
           display_name TEXT NOT NULL DEFAULT '',
+          email_verified_at INTEGER,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
@@ -2531,6 +2638,13 @@ fn build_schema(path: &PathBuf) -> Result<(), rusqlite::Error> {
           expires_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
+        CREATE TABLE IF NOT EXISTS email_verification_tokens (
+          token_hash TEXT PRIMARY KEY,
+          email TEXT NOT NULL,
+          expires_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_email_verification_email ON email_verification_tokens(email);
         CREATE TABLE IF NOT EXISTS user_preferences (
           user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           pref_key TEXT NOT NULL,
@@ -2604,6 +2718,14 @@ fn build_schema(path: &PathBuf) -> Result<(), rusqlite::Error> {
         "user_continue_watching",
         "filename",
         "filename TEXT NOT NULL DEFAULT ''",
+    )?;
+    // Soft email verification: nullable timestamp (ms) set when the user confirms
+    // their email. NULL = unverified. Added via ALTER for pre-existing databases.
+    ensure_text_column(
+        &connection,
+        "users",
+        "email_verified_at",
+        "email_verified_at INTEGER",
     )?;
     migrate_title_preferences_schema(&connection)?;
     Ok(())
@@ -4260,6 +4382,10 @@ mod tests {
             open_signup_enabled: false,
             signup_invite_code: String::new(),
             live_hls_proxy_secret: "test-live-hls-proxy-secret-with-enough-length".to_owned(),
+            app_origin: "https://streamthatshit.com".to_owned(),
+            email_from: "noreply@streamthatshit.com".to_owned(),
+            cf_account_id: String::new(),
+            cf_email_api_token: String::new(),
         };
         Db::initialize(&config).await.expect("init db")
     }
@@ -4290,6 +4416,69 @@ mod tests {
             .expect("attempt second first user");
         assert!(second.is_none());
         assert_eq!(db.user_count().await.expect("count users"), 1);
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn email_verification_token_is_single_use_and_marks_user_verified() {
+        let path = unique_temp_db_path("email-verify");
+        let db = setup_test_playback_session_db(&path).await;
+
+        let email = "viewer@example.com".to_owned();
+        let user_id = db
+            .create_user(email.clone(), "hash".to_owned(), "Viewer".to_owned())
+            .await
+            .expect("create user");
+        assert_eq!(
+            db.email_verified_at(user_id).await.expect("verified at"),
+            None,
+            "new users start unverified"
+        );
+
+        db.create_email_verification_token(email.clone(), "hash-a".to_owned(), 10_000)
+            .await
+            .expect("create token a");
+        // A second token for the same email invalidates the first.
+        db.create_email_verification_token(email.clone(), "hash-b".to_owned(), 20_000)
+            .await
+            .expect("create token b");
+        assert!(
+            db.consume_email_verification_token("hash-a".to_owned())
+                .await
+                .expect("consume a")
+                .is_none(),
+            "superseded token is no longer valid"
+        );
+
+        let consumed = db
+            .consume_email_verification_token("hash-b".to_owned())
+            .await
+            .expect("consume b");
+        assert_eq!(consumed, Some((email.clone(), 20_000)));
+        assert!(
+            db.consume_email_verification_token("hash-b".to_owned())
+                .await
+                .expect("consume b twice")
+                .is_none(),
+            "tokens are single-use"
+        );
+
+        db.mark_email_verified(email.clone(), 123_456)
+            .await
+            .expect("mark verified");
+        assert_eq!(
+            db.email_verified_at(user_id).await.expect("verified at"),
+            Some(123_456)
+        );
+        // Idempotent: a later mark does not overwrite the first timestamp.
+        db.mark_email_verified(email, 999_999)
+            .await
+            .expect("mark verified again");
+        assert_eq!(
+            db.email_verified_at(user_id).await.expect("verified at"),
+            Some(123_456)
+        );
 
         let _ = tokio::fs::remove_file(&path).await;
     }
@@ -4331,8 +4520,8 @@ mod tests {
         .expect("run integrity check");
         assert_eq!(integrity, "ok");
         assert_eq!(
-            table_count, 14,
-            "rebuilt cache database should expose the full 14-table schema"
+            table_count, 15,
+            "rebuilt cache database should expose the full 15-table schema"
         );
 
         // The corrupt original was preserved alongside, not deleted, with the
