@@ -62,6 +62,7 @@ caddy_data_dir="/var/db/netflix-caddy"
 caddy_log_dir="$state_dir"
 app_plist="/Library/LaunchDaemons/com.fightingentropy.netflix-app.plist"
 caddy_plist="/Library/LaunchDaemons/com.fightingentropy.netflix-caddy.plist"
+sysctl_plist="/Library/LaunchDaemons/com.fightingentropy.netflix-sysctl.plist"
 caddy_bin="/usr/local/bin/caddy"
 
 mkdir -p "$state_dir" "$bin_dir" "$caddy_config_dir"
@@ -265,18 +266,46 @@ cat > "$tmp_caddy_plist" <<PLIST
 </plist>
 PLIST
 
+# Boot-time kernel tuning: the default accept-queue cap (kern.ipc.somaxconn=128)
+# clamps the backend's requested listen backlog, dropping connection bursts under
+# load. A one-shot RunAtLoad daemon raises it so the setting survives reboots.
+tmp_sysctl_plist="$(mktemp)"
+cat > "$tmp_sysctl_plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fightingentropy.netflix-sysctl</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/sbin/sysctl</string>
+    <string>-w</string>
+    <string>kern.ipc.somaxconn=1024</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+
 sudo install -m 644 "$tmp_app_plist" "$app_plist"
 sudo install -m 644 "$tmp_caddy_plist" "$caddy_plist"
-rm -f "$tmp_app_plist" "$tmp_caddy_plist"
+sudo install -m 644 "$tmp_sysctl_plist" "$sysctl_plist"
+rm -f "$tmp_app_plist" "$tmp_caddy_plist" "$tmp_sysctl_plist"
 
 sudo launchctl bootout system "$app_plist" 2>/dev/null || true
 sudo launchctl bootout system "$caddy_plist" 2>/dev/null || true
+sudo launchctl bootout system "$sysctl_plist" 2>/dev/null || true
 sudo launchctl bootstrap system "$app_plist"
 sudo launchctl bootstrap system "$caddy_plist"
+sudo launchctl bootstrap system "$sysctl_plist"
 sudo launchctl enable system/com.fightingentropy.netflix-app 2>/dev/null || true
 sudo launchctl enable system/com.fightingentropy.netflix-caddy 2>/dev/null || true
+sudo launchctl enable system/com.fightingentropy.netflix-sysctl 2>/dev/null || true
 sudo launchctl kickstart -k system/com.fightingentropy.netflix-app
 sudo launchctl kickstart -k system/com.fightingentropy.netflix-caddy
+sudo launchctl kickstart system/com.fightingentropy.netflix-sysctl
 
 sleep 2
 backend_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/library || true)
