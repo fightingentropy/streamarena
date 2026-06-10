@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::extract::DefaultBodyLimit;
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::error::AppResult;
@@ -170,9 +170,39 @@ async fn main() -> AppResult<()> {
         .map_err(|error: std::net::AddrParseError| {
             crate::error::ApiError::internal(error.to_string())
         })?;
-    let listener = TcpListener::bind(addr)
-        .await
-        .map_err(|error: std::io::Error| crate::error::ApiError::internal(error.to_string()))?;
+    // launchd's KeepAlive (and the watchdog's `launchctl kickstart -k`) can relaunch the
+    // backend a moment before the previous instance has released the port, which surfaces
+    // as `AddrInUse`. Exiting here just makes the supervisor relaunch us again, turning a
+    // sub-second overlap into the bind crash-loop seen in backend.err.log. Wait the old
+    // instance out instead of dying.
+    const MAX_BIND_ATTEMPTS: u32 = 20;
+    const BIND_RETRY_DELAY: Duration = Duration::from_secs(1);
+    let listener = {
+        let mut attempt = 1u32;
+        loop {
+            match TcpListener::bind(addr).await {
+                Ok(listener) => break listener,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::AddrInUse
+                        && attempt < MAX_BIND_ATTEMPTS =>
+                {
+                    warn!(
+                        "{} is in use (attempt {}/{}); a previous instance may still be \
+                         shutting down — retrying in {}s",
+                        addr,
+                        attempt,
+                        MAX_BIND_ATTEMPTS,
+                        BIND_RETRY_DELAY.as_secs(),
+                    );
+                    tokio::time::sleep(BIND_RETRY_DELAY).await;
+                    attempt += 1;
+                }
+                Err(error) => {
+                    return Err(crate::error::ApiError::internal(error.to_string()));
+                }
+            }
+        }
+    };
     let display_addr = format_startup_url(listener.local_addr().unwrap_or(addr));
     info!("Rust server running at http://{}", display_addr);
     axum::serve(
