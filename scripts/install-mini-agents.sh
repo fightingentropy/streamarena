@@ -98,12 +98,17 @@ set -euo pipefail
 url="__WATCHDOG_URL__"
 timeout_seconds="__WATCHDOG_TIMEOUT_SECONDS__"
 failure_threshold="__WATCHDOG_FAILURE_THRESHOLD__"
+# A genuine outage of `failure_threshold` strikes at the ~60s probe interval spans at
+# least ~(threshold-1)*60s of wall-clock. Require the failing streak to cover most of
+# that before restarting, so a burst of bunched/overlapping probes can't trip a restart
+# on a momentary blip. Assumes the 60s StartInterval in the watchdog plist below.
+min_streak_seconds=$(( (failure_threshold - 1) * 45 ))
 app="__REMOTE_APP__"
 launcher="/Users/hermes/.local/bin/netflix-run-backend"
 state_dir="/Users/hermes/.local/state/netflix"
 log_file="$state_dir/watchdog.log"
 fail_file="$state_dir/watchdog.failures"
-lock_dir="$state_dir/watchdog.lock"
+run_lock="$state_dir/watchdog.run.lock"
 backend_pattern="$app/bin/netflix-rust-backend"
 launchd_label="com.fightingentropy.netflix-app"
 
@@ -119,16 +124,25 @@ log() {
   chmod 600 "$log_file"
 }
 
-failures() {
-  if [[ -f "$fail_file" ]]; then
-    tr -cd '0-9' < "$fail_file"
+# Failure state is "<count> <first_failure_epoch>" so a streak can be measured in real
+# wall-clock time, not just a raw count that overlapping probes could inflate.
+read_failures() {
+  local raw count first
+  raw="$(cat "$fail_file" 2>/dev/null || true)"
+  if [[ "$raw" == *" "* ]]; then
+    count="${raw%% *}"
+    first="${raw#* }"
   else
-    printf '0'
+    count="$raw"
+    first=0
   fi
+  count="${count//[^0-9]/}"
+  first="${first//[^0-9]/}"
+  printf '%s %s\n' "${count:-0}" "${first:-0}"
 }
 
 record_failures() {
-  printf '%s\n' "$1" > "$fail_file"
+  printf '%s %s\n' "$1" "$2" > "$fail_file"
   chmod 600 "$fail_file"
 }
 
@@ -158,12 +172,6 @@ restart_backend() {
   local reason="$1"
   local old_pids
   local current_pids
-
-  if ! mkdir "$lock_dir" 2>/dev/null; then
-    log "restart skipped reason=$reason lock=held"
-    return 0
-  fi
-  trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
 
   log "restart begin reason=$reason"
   kill_stale_ffmpeg
@@ -210,23 +218,60 @@ restart_backend() {
   log "restart end reason=$reason"
 }
 
-http_code="$(curl -sS -o /dev/null -w "%{http_code}" --max-time "$timeout_seconds" "$url" 2>/dev/null || true)"
+# Single-instance guard: never let two overlapping watchdog runs race the failure
+# counter. A slow run (curl timeout, restart sleeps) can let the 60s StartInterval
+# bunch up; concurrent runs previously racked up `failure_threshold` strikes in
+# seconds, turning a momentary blip into a needless restart. One run at a time.
+if [[ -d "$run_lock" ]]; then
+  lock_age=$(( $(date +%s) - $(stat -f %m "$run_lock" 2>/dev/null || echo 0) ))
+  if [[ "$lock_age" -ge 300 ]]; then
+    rmdir "$run_lock" 2>/dev/null || true
+  fi
+fi
+if ! mkdir "$run_lock" 2>/dev/null; then
+  exit 0
+fi
+trap 'rmdir "$run_lock" 2>/dev/null || true' EXIT
+
+now_epoch="$(date +%s)"
+
+# Capture curl's real exit code (7=refused/down, 28=timed out/hung) as extra signal;
+# both surface as HTTP 000. `set +e` so the failing probe itself doesn't abort us.
+set +e
+http_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$timeout_seconds" "$url" 2>/dev/null)"
+curl_status=$?
+set -e
 http_code="${http_code:-000}"
+case "$curl_status" in
+  0) probe="http=$http_code" ;;
+  7) probe="http=000 reason=refused" ;;
+  28) probe="http=000 reason=timeout" ;;
+  *) probe="http=000 reason=curl_exit_$curl_status" ;;
+esac
 
 if [[ "$http_code" == "200" ]]; then
-  previous="$(failures)"
+  read -r prev_count _prev_first < <(read_failures)
   clear_failures
-  log "OK url=$url http=$http_code previous_failures=$previous"
+  log "OK url=$url $probe previous_failures=$prev_count"
   exit 0
 fi
 
-count="$(failures)"
-count=$((count + 1))
-record_failures "$count"
-log "FAIL url=$url http=$http_code failures=$count threshold=$failure_threshold"
+read -r prev_count prev_first < <(read_failures)
+if [[ "$prev_count" -eq 0 || "$prev_first" -eq 0 ]]; then
+  count=1
+  first_epoch="$now_epoch"
+else
+  count=$((prev_count + 1))
+  first_epoch="$prev_first"
+fi
+record_failures "$count" "$first_epoch"
+streak_seconds=$((now_epoch - first_epoch))
+log "FAIL url=$url $probe failures=$count threshold=$failure_threshold streak=${streak_seconds}s min_streak=${min_streak_seconds}s"
 
-if [[ "$count" -ge "$failure_threshold" ]]; then
-  restart_backend "probe_http_$http_code failures=$count threshold=$failure_threshold"
+# Restart only on a sustained outage: enough strikes AND spanning real wall-clock,
+# so a brief/transient HTTP 000 blip can no longer force a restart.
+if [[ "$count" -ge "$failure_threshold" && "$streak_seconds" -ge "$min_streak_seconds" ]]; then
+  restart_backend "probe_${probe// /_} failures=$count threshold=$failure_threshold streak=${streak_seconds}s"
 fi
 SCRIPT
 sed -i '' \
