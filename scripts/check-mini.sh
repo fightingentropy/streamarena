@@ -39,7 +39,10 @@ tunnel_plist="/Library/LaunchDaemons/com.cloudflare.cloudflared.netflix.plist"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 node_deps_dir="${NETFLIX_NODE_DEPS_DIR:-$HOME/.local/share/netflix-node}"
 
-runtime_tree=$(find "$app" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort | paste -sd, - || true)
+# A 600-permissioned .env in the app dir is a supported config source (the
+# backend loads it via dotenvy); exclude it from the structure check and verify
+# its permissions separately below.
+runtime_tree=$(find "$app" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | grep -vxF .env | sort | paste -sd, - || true)
 app_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/health/live || true)
 library_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/library || true)
 caddy_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1/api/library || true)
@@ -57,6 +60,7 @@ video_files=$(find "$app/assets/videos" -type f 2>/dev/null | wc -l | tr -d ' ' 
 asset_symlinks=$(find "$app/assets" -type l 2>/dev/null | wc -l | tr -d ' ' || true)
 env_mode=$(stat -f '%Lp' "$HOME/.config/netflix/env" 2>/dev/null || echo missing)
 env_in_app=$(test -e "$app/.env" && echo yes || echo no)
+app_env_mode=$(stat -f '%Lp' "$app/.env" 2>/dev/null || echo none)
 sports_http_proxy=$(
   awk -F= '/^SPORTS_HTTP_PROXY=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/netflix/env" 2>/dev/null || true
 )
@@ -144,6 +148,7 @@ printf 'video_files=%s\n' "$video_files"
 printf 'asset_symlinks=%s\n' "$asset_symlinks"
 printf 'env_mode=%s\n' "$env_mode"
 printf 'env_in_app=%s\n' "$env_in_app"
+printf 'app_env_mode=%s\n' "$app_env_mode"
 printf 'sports_proxy_matches_expected=%s\n' "$sports_proxy_matches_expected"
 printf 'app_daemon=%s\n' "$app_daemon"
 printf 'caddy_daemon=%s\n' "$caddy_daemon"
@@ -203,6 +208,7 @@ caddy_version=$(value_for caddy_version)
 asset_symlinks=$(value_for asset_symlinks)
 env_mode=$(value_for env_mode)
 env_in_app=$(value_for env_in_app)
+app_env_mode=$(value_for app_env_mode)
 sports_proxy_matches_expected=$(value_for sports_proxy_matches_expected)
 app_daemon=$(value_for app_daemon)
 caddy_daemon=$(value_for caddy_daemon)
@@ -257,7 +263,13 @@ ntvs_proxy_http=$(value_for ntvs_proxy_http)
 [[ "$libsodium_module" == "yes" ]] && pass "libsodium-wrappers module is installed for native VidLink resolver" || bad "libsodium-wrappers module is missing for native VidLink resolver"
 [[ "$playwright_chromium" == "yes" ]] && pass "Playwright Chromium is installed for resolver helpers" || bad "Playwright Chromium is missing for resolver helpers"
 [[ "$env_mode" == "600" ]] && pass "server env permissions are 600" || bad "server env permissions are $env_mode"
-[[ "$env_in_app" == "no" ]] && pass "server env is outside deploy tree" || bad "server .env still exists in deploy tree"
+if [[ "$env_in_app" == "no" ]]; then
+  pass "deploy tree has no .env (secrets stay in the canonical env file)"
+elif [[ "$app_env_mode" == "600" ]]; then
+  pass "deploy-tree .env is present and 600-secured"
+else
+  bad "deploy-tree .env permissions are $app_env_mode (expected 600)"
+fi
 [[ "$sports_proxy_matches_expected" == "yes" ]] && pass "SPORTS_HTTP_PROXY points at WARP local proxy" || bad "SPORTS_HTTP_PROXY does not match expected WARP local proxy"
 [[ "$warp_cli" != "missing" ]] && pass "WARP CLI is installed ($warp_cli)" || bad "WARP CLI is missing"
 [[ "$warp_status" == "Connected" ]] && pass "WARP is connected" || bad "WARP status is $warp_status"
