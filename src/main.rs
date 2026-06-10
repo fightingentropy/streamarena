@@ -53,6 +53,56 @@ fn format_startup_url(addr: SocketAddr) -> String {
     }
 }
 
+/// Raise the open-file-descriptor soft limit. The macOS launchd default is only
+/// 256, which a media proxy (client connections + upstream HLS fetches + ffmpeg
+/// pipes + cache/DB files) exhausts under peak load — surfacing as
+/// `Too many open files (os error 24)`, after which the server can no longer
+/// accept connections (the watchdog then sees http=000 and restarts it). The hard
+/// limit is effectively unbounded (capped by kern.maxfilesperproc), so lift the
+/// soft limit toward a comfortable ceiling. Best-effort: log and continue on error.
+#[cfg(unix)]
+fn raise_open_file_limit() {
+    const DESIRED_SOFT: libc::rlim_t = 16_384;
+    // SAFETY: getrlimit/setrlimit take a valid resource id and a pointer to a
+    // locally-owned rlimit; no aliasing or lifetime concerns.
+    unsafe {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            warn!(
+                "could not read RLIMIT_NOFILE: {}",
+                std::io::Error::last_os_error()
+            );
+            return;
+        }
+        let target = if limit.rlim_max == libc::RLIM_INFINITY {
+            DESIRED_SOFT
+        } else {
+            DESIRED_SOFT.min(limit.rlim_max)
+        };
+        if limit.rlim_cur >= target {
+            return;
+        }
+        let previous = limit.rlim_cur;
+        limit.rlim_cur = target;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+            warn!(
+                "could not raise RLIMIT_NOFILE {} -> {}: {}",
+                previous,
+                target,
+                std::io::Error::last_os_error()
+            );
+            return;
+        }
+        info!("raised open-file soft limit {} -> {}", previous, target);
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_open_file_limit() {}
+
 #[tokio::main]
 async fn main() -> AppResult<()> {
     dotenvy::dotenv().ok();
@@ -62,6 +112,8 @@ async fn main() -> AppResult<()> {
                 .unwrap_or_else(|_| "netflix_rust_backend=info,tower_http=info".into()),
         )
         .init();
+
+    raise_open_file_limit();
 
     let config = Config::load();
     let db = Db::initialize(&config).await?;
