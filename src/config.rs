@@ -50,6 +50,14 @@ pub struct Config {
     pub open_signup_enabled: bool,
     pub signup_invite_code: String,
     pub live_hls_proxy_secret: String,
+    /// Public origin used to build email verification links (e.g. https://streamthatshit.com).
+    pub app_origin: String,
+    /// From address for transactional email (e.g. noreply@streamthatshit.com).
+    pub email_from: String,
+    /// Cloudflare account id that owns the Email Sending domain.
+    pub cf_account_id: String,
+    /// Cloudflare API token with the "Email Sending: Edit" permission.
+    pub cf_email_api_token: String,
 }
 
 impl Config {
@@ -186,8 +194,10 @@ impl Config {
             session_cookie_secure: normalize_bool_flag(
                 env::var("SESSION_COOKIE_SECURE").unwrap_or_else(|_| "1".to_owned()),
             ),
+            // Public sign-up is open by default. Set OPEN_SIGNUP=0 to re-close it
+            // (only the first account can be created once closed).
             open_signup_enabled: normalize_bool_flag(
-                env::var("OPEN_SIGNUP").unwrap_or_else(|_| "0".to_owned()),
+                env::var("OPEN_SIGNUP").unwrap_or_else(|_| "1".to_owned()),
             ),
             signup_invite_code: env::var("SIGNUP_INVITE_CODE")
                 .unwrap_or_default()
@@ -198,6 +208,23 @@ impl Config {
                 .map(|value| value.trim().to_owned())
                 .filter(|value| value.len() >= 32)
                 .unwrap_or_else(generate_live_hls_proxy_secret),
+            app_origin: env::var("APP_ORIGIN")
+                .unwrap_or_else(|_| "https://streamthatshit.com".to_owned())
+                .trim()
+                .trim_end_matches('/')
+                .to_owned(),
+            email_from: env::var("EMAIL_FROM")
+                .unwrap_or_else(|_| "noreply@streamthatshit.com".to_owned())
+                .trim()
+                .to_owned(),
+            cf_account_id: env::var("CF_ACCOUNT_ID")
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
+            cf_email_api_token: env::var("CF_EMAIL_API_TOKEN")
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
         }
     }
 }

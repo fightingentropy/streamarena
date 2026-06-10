@@ -4,8 +4,8 @@ use std::path::Path;
 use axum::RequestExt;
 use axum::Router;
 use axum::body::{Body, to_bytes};
-use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::{HeaderName, HeaderValue, Method, Response, Uri};
+use axum::extract::{DefaultBodyLimit, Path as AxumPath, Request, State};
+use axum::http::{HeaderName, HeaderValue, Method, Response, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::routing::{any, get};
 use serde_json::{Value, json};
@@ -200,6 +200,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/signup", any(auth_signup_handler))
         .route("/api/auth/login", any(auth_login_handler))
         .route("/api/auth/logout", any(auth_logout_handler))
+        .route("/api/auth/verify/{token}", get(auth_verify_handler))
+        .route(
+            "/api/auth/resend-verification",
+            any(auth_resend_verification_handler),
+        )
         .route("/api/home/bootstrap", get(home_bootstrap_handler));
 
     let protected_api = Router::new()
@@ -1923,12 +1928,39 @@ async fn auth_signup_handler(
         .create_session(token.clone(), user_id, expires_at)
         .await?;
 
+    // Soft email verification: issue a single-use token and email a confirmation
+    // link. Best-effort — a delivery problem must never fail sign-up. The user is
+    // logged in immediately and nudged to verify by a banner in the app.
+    let raw_token = auth::generate_session_token();
+    let verify_expires_at = now_ms() + crate::email::VERIFY_TOKEN_TTL_MS;
+    match state
+        .db
+        .create_email_verification_token(
+            email.clone(),
+            crate::email::sha256_hex(&raw_token),
+            verify_expires_at,
+        )
+        .await
+    {
+        Ok(()) => {
+            let send_state = state.clone();
+            let send_email = email.clone();
+            tokio::spawn(async move {
+                crate::email::send_verification_email(&send_state, &send_email, &raw_token).await;
+            });
+        }
+        Err(error) => {
+            tracing::error!("failed to store email verification token: {error:?}");
+        }
+    }
+
     let mut response = json_response(json!({
         "ok": true,
         "user": {
             "id": user_id,
             "email": email,
-            "displayName": display_name
+            "displayName": display_name,
+            "emailVerified": false
         }
     }));
     response.headers_mut().insert(
@@ -2044,11 +2076,95 @@ async fn auth_me_handler(
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
     let user = auth::require_auth(&state.db, &headers).await?;
+    let email_verified = state.db.email_verified_at(user.id).await?.is_some();
     Ok(json_response(json!({
         "id": user.id,
         "email": user.email,
-        "displayName": user.display_name
+        "displayName": user.display_name,
+        "emailVerified": email_verified
     })))
+}
+
+fn redirect_response(location: &str) -> AppResult<Response<Body>> {
+    Response::builder()
+        .status(StatusCode::FOUND)
+        .header(axum::http::header::LOCATION, location)
+        .body(Body::empty())
+        .map_err(|_| ApiError::internal("Failed to build redirect response."))
+}
+
+/// Confirms an email-verification link clicked from the inbox. The token is
+/// single-use; the outcome is communicated to the SPA via `?verified=` so it can
+/// show a notice. Always redirects (never returns a bare error page).
+async fn auth_verify_handler(
+    State(state): State<AppState>,
+    AxumPath(raw_token): AxumPath<String>,
+) -> AppResult<Response<Body>> {
+    let outcome = match state
+        .db
+        .consume_email_verification_token(crate::email::sha256_hex(raw_token.trim()))
+        .await?
+    {
+        None => "invalid",
+        Some((token_email, expires_at)) => {
+            if expires_at <= now_ms() {
+                "expired"
+            } else {
+                state.db.mark_email_verified(token_email, now_ms()).await?;
+                "success"
+            }
+        }
+    };
+    redirect_response(&format!("{}/?verified={}", state.config.app_origin, outcome))
+}
+
+/// Re-sends the verification email for the signed-in user. Rate-limited and
+/// intentionally generic (always `{ ok: true }`) so it reveals nothing about
+/// account state.
+async fn auth_resend_verification_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
+    }
+    let user = auth::require_auth(&state.db, &headers).await?;
+
+    if !state
+        .auth_rate_limiter
+        .check_and_record(&format!("verify-resend:{}", user.id))
+    {
+        return Err(ApiError::too_many_requests(
+            "Too many verification emails requested. Please wait and try again.",
+        ));
+    }
+
+    // Only (re)send while the account is still unverified.
+    if state.db.email_verified_at(user.id).await?.is_none() {
+        let raw_token = auth::generate_session_token();
+        let verify_expires_at = now_ms() + crate::email::VERIFY_TOKEN_TTL_MS;
+        match state
+            .db
+            .create_email_verification_token(
+                user.email.clone(),
+                crate::email::sha256_hex(&raw_token),
+                verify_expires_at,
+            )
+            .await
+        {
+            Ok(()) => {
+                crate::email::send_verification_email(&state, &user.email, &raw_token).await;
+            }
+            Err(error) => {
+                tracing::error!("failed to store resend verification token: {error:?}");
+            }
+        }
+    }
+
+    Ok(json_response(json!({ "ok": true })))
 }
 
 fn is_valid_email(value: &str) -> bool {

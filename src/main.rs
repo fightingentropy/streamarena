@@ -1,5 +1,6 @@
 mod auth;
 mod config;
+mod email;
 mod error;
 mod football;
 mod home_bootstrap;

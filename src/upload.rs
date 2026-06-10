@@ -2062,6 +2062,10 @@ mod tests {
             open_signup_enabled: false,
             signup_invite_code: String::new(),
             live_hls_proxy_secret: "test-live-hls-proxy-secret-with-enough-length".to_owned(),
+            app_origin: "https://streamthatshit.com".to_owned(),
+            email_from: "noreply@streamthatshit.com".to_owned(),
+            cf_account_id: String::new(),
+            cf_email_api_token: String::new(),
         };
         tokio::fs::create_dir_all(&assets_dir)
             .await
