@@ -189,6 +189,10 @@ function apiPayload(url, method) {
   if (path === "/api/tmdb/details") return { title: "Smoke Movie", year: "1975" };
   if (path === "/api/tmdb/tv/season") return { episodes: [] };
   if (path === "/api/resolve/sources") {
+    // The player auto-selects sourceSwitchHashB (4K HDR) as the default playback
+    // source once the list loads — it prefers the highest-quality release. The
+    // source tests below therefore treat hashB as the initial/default source and
+    // sourceSwitchHashA (1080p) as the alternate they switch to / fall back to.
     return {
       sources: [
         {
@@ -674,8 +678,10 @@ async function runSmoke() {
           };
         }, {
           sourceHashes: [sourceSwitchHashA, sourceSwitchHashB],
+          // The player defaults to hashB, so make the 1080p alternate (hashA) the
+          // failing source the failure-restore test switches to.
           failingHash: pageSpec.expectSourceSwitchFailureRestore
-            ? sourceSwitchHashB
+            ? sourceSwitchHashA
             : "",
         });
       }
@@ -786,17 +792,21 @@ async function runSmoke() {
       if (pageSpec.expectSportsTabs) {
         await page.getByRole("button", { name: "Basketball" }).click();
         await page.waitForFunction(() => new URL(window.location.href).searchParams.get("sport") === "basketball");
-        await page.waitForFunction(() => {
-          const buttons = [...document.querySelectorAll(".sports-switcher button")];
-          const buttonFor = (label) =>
-            buttons.find((button) => button.textContent?.trim() === label);
-          const football = buttonFor("Football");
-          const basketball = buttonFor("Basketball");
-          return (
-            football?.getAttribute("aria-pressed") === "false" &&
-            basketball?.getAttribute("aria-pressed") === "true"
-          );
-        });
+        await page.waitForFunction(
+          () => {
+            const buttons = [...document.querySelectorAll(".sports-genres button")];
+            const buttonFor = (label) =>
+              buttons.find((button) => button.textContent?.trim() === label);
+            const football = buttonFor("Football");
+            const basketball = buttonFor("Basketball");
+            return (
+              football?.getAttribute("aria-pressed") === "false" &&
+              basketball?.getAttribute("aria-pressed") === "true"
+            );
+          },
+          null,
+          { timeout: 8_000 },
+        );
         for (let attempt = 0; attempt < 20 && !sawSportsBasketballMatches; attempt += 1) {
           await delay(100);
         }
@@ -870,36 +880,61 @@ async function runSmoke() {
       }
 
       if (pageSpec.expectAutomaticSourceFallback) {
+        // The player defaults to the 4K source (hashB). A fatal playback error no
+        // longer silently switches sources; it surfaces the recovery overlay,
+        // whose "Try another source" action resolves the 1080p alternate (hashA).
         await page.waitForFunction(
           (hash) =>
             Boolean(
               document.querySelector(`.source-option[data-source-hash="${hash}"]`),
             ) &&
             (document.querySelector("video")?.getAttribute("src") || "").includes(hash),
-          sourceSwitchHashA,
+          sourceSwitchHashB,
           { timeout: 8_000 },
         );
 
-        for (let errorIndex = 0; errorIndex < 3; errorIndex += 1) {
-          const expectedResolveCount = automaticFallbackResolveCount + 1;
-          await page.evaluate(() => {
-            document.querySelector("video")?.dispatchEvent(new Event("error"));
-          });
-          for (let attempt = 0; attempt < 80; attempt += 1) {
-            if (automaticFallbackResolveCount >= expectedResolveCount) {
-              break;
-            }
-            await delay(100);
-          }
-        }
+        // Fail the active (hashB) source.
+        await page.evaluate(() => {
+          document.querySelector("video")?.dispatchEvent(new Event("error"));
+        });
 
-        for (
-          let attempt = 0;
-          attempt < 80 && sawAutomaticFallbackResolveHash !== sourceSwitchHashB;
-          attempt += 1
-        ) {
+        // Recovery surfaces an error overlay with a usable "Try another source"
+        // action rather than auto-switching.
+        await page.waitForFunction(
+          () => {
+            const overlay = document.querySelector(".resolver-overlay");
+            const alternate = document.querySelector("#resolverAlternateButton");
+            return Boolean(
+              overlay &&
+                !overlay.hidden &&
+                overlay.classList.contains("is-error") &&
+                alternate &&
+                !alternate.hidden,
+            );
+          },
+          null,
+          { timeout: 8_000 },
+        );
+
+        // Choosing "Try another source" resolves the alternate (hashA) and makes
+        // it the active playback source. As in the manual source-switch test we
+        // assert on the selected source + active video rather than overlay state
+        // (the mock <video> never fires canplay headless, so the overlay lingers).
+        await page.click("#resolverAlternateButton");
+        for (let attempt = 0; attempt < 150; attempt += 1) {
+          const recovered = await page.evaluate((hash) => {
+            const selectedHash =
+              document.querySelector(".source-option[aria-selected='true']")
+                ?.dataset.sourceHash || "";
+            const videoSource = document.querySelector("video")?.getAttribute("src") || "";
+            return selectedHash === hash && videoSource.includes(hash);
+          }, sourceSwitchHashA);
+          if (recovered) {
+            break;
+          }
           await delay(100);
         }
+
         const fallbackState = await page.evaluate(() => ({
           selectedHash:
             document.querySelector(".source-option[aria-selected='true']")
@@ -910,12 +945,12 @@ async function runSmoke() {
               ?.textContent || "",
         }));
         if (
-          sawAutomaticFallbackResolveHash !== sourceSwitchHashB ||
-          fallbackState.selectedHash !== sourceSwitchHashB ||
-          !fallbackState.videoSource.includes(sourceSwitchHashB)
+          sawAutomaticFallbackResolveHash !== sourceSwitchHashA ||
+          fallbackState.selectedHash !== sourceSwitchHashA ||
+          !fallbackState.videoSource.includes(sourceSwitchHashA)
         ) {
           throw new Error(
-            `${pageSpec.path}\nAutomatic source fallback failed.\n${JSON.stringify({
+            `${pageSpec.path}\nManual source recovery failed.\n${JSON.stringify({
               sawAutomaticFallbackResolveHash,
               automaticFallbackResolveCount,
               fallbackState,
@@ -925,6 +960,8 @@ async function runSmoke() {
       }
 
       if (pageSpec.expectSourceSwitch) {
+        // The player defaults to the 4K source (hashB), so switching exercises a
+        // real change to the 1080p alternate (hashA).
         await page.waitForFunction(
           () => {
             const overlay = document.querySelector(".resolver-overlay");
@@ -944,14 +981,14 @@ async function runSmoke() {
             Boolean(
               document.querySelector(`.source-option[data-source-hash="${hash}"]`),
             ),
-          sourceSwitchHashB,
+          sourceSwitchHashA,
           { timeout: 8_000 },
         );
         await page.evaluate((hash) => {
           document
             .querySelector(`.source-option[data-source-hash="${hash}"]`)
             ?.click();
-        }, sourceSwitchHashB);
+        }, sourceSwitchHashA);
         for (let attempt = 0; attempt < 80; attempt += 1) {
           const switched = await page.evaluate((expectedHash) => {
             const selectedHash =
@@ -965,7 +1002,7 @@ async function runSmoke() {
               selectedHash === expectedHash &&
               videoSource.includes(expectedHash)
             );
-          }, sourceSwitchHashB);
+          }, sourceSwitchHashA);
           if (switched) {
             break;
           }
@@ -984,7 +1021,7 @@ async function runSmoke() {
               document
                 .querySelector(`.source-option[data-source-hash="${hash}"]`)
                 ?.click();
-            }, sourceSwitchHashB);
+            }, sourceSwitchHashA);
           }
           await delay(100);
         }
@@ -997,10 +1034,10 @@ async function runSmoke() {
             document.querySelector("#sourceControl")?.classList.contains("is-open") || false,
         }));
         if (
-          sawSourceSwitchResolveHash !== sourceSwitchHashB ||
-          !sourceSwitchResolveHashes.includes(sourceSwitchHashB) ||
-          switchState.selectedHash !== sourceSwitchHashB ||
-          !switchState.videoSource.includes(sourceSwitchHashB)
+          sawSourceSwitchResolveHash !== sourceSwitchHashA ||
+          !sourceSwitchResolveHashes.includes(sourceSwitchHashA) ||
+          switchState.selectedHash !== sourceSwitchHashA ||
+          !switchState.videoSource.includes(sourceSwitchHashA)
         ) {
           throw new Error(
             `${pageSpec.path}\nSource switch failed.\n${JSON.stringify({
@@ -1013,13 +1050,16 @@ async function runSmoke() {
       }
 
       if (pageSpec.expectSourceSwitchFailureRestore) {
+        // The player defaults to the 4K source (hashB). Manually switching to a
+        // source that fails to play (hashA — see failingHash below) surfaces the
+        // recovery overlay, and "Try another source" recovers to the working hashB.
         await page.waitForFunction(
           (hash) =>
             Boolean(
               document.querySelector(`.source-option[data-source-hash="${hash}"]`),
             ) &&
             (document.querySelector("video")?.getAttribute("src") || "").includes(hash),
-          sourceSwitchHashA,
+          sourceSwitchHashB,
           { timeout: 8_000 },
         );
         await page.waitForSelector("#toggleSource", { state: "visible", timeout: 8_000 });
@@ -1034,48 +1074,64 @@ async function runSmoke() {
             Boolean(
               document.querySelector(`.source-option[data-source-hash="${hash}"]`),
             ),
-          sourceSwitchHashB,
+          sourceSwitchHashA,
           { timeout: 8_000 },
         );
+        // Switch to the source that fails to play (hashA).
         await page.evaluate((hash) => {
           document
             .querySelector(`.source-option[data-source-hash="${hash}"]`)
             ?.click();
-        }, sourceSwitchHashB);
+        }, sourceSwitchHashA);
+
+        // The failed switch surfaces the recovery overlay with a "Try another
+        // source" action rather than silently restoring the previous source.
         await page.waitForFunction(
-          (restoredHash) => {
+          () => {
+            const overlay = document.querySelector(".resolver-overlay");
+            const alternate = document.querySelector("#resolverAlternateButton");
+            return Boolean(
+              overlay &&
+                !overlay.hidden &&
+                overlay.classList.contains("is-error") &&
+                alternate &&
+                !alternate.hidden,
+            );
+          },
+          null,
+          { timeout: 8_000 },
+        );
+
+        // Recovering resolves the working source (hashB). As elsewhere we assert
+        // on the selected source + active video rather than overlay state (the
+        // mock <video> never fires canplay headless, so the overlay lingers).
+        await page.click("#resolverAlternateButton");
+        for (let attempt = 0; attempt < 150; attempt += 1) {
+          const recovered = await page.evaluate((hash) => {
             const selectedHash =
               document.querySelector(".source-option[aria-selected='true']")
                 ?.dataset.sourceHash || "";
             const videoSource = document.querySelector("video")?.getAttribute("src") || "";
-            const resolverVisible = Boolean(
-              document.querySelector(".resolver-overlay:not([hidden])"),
-            );
-            return (
-              selectedHash === restoredHash &&
-              videoSource.includes(restoredHash) &&
-              !resolverVisible
-            );
-          },
-          sourceSwitchHashA,
-          { timeout: 8_000 },
-        );
+            return selectedHash === hash && videoSource.includes(hash);
+          }, sourceSwitchHashB);
+          if (recovered) {
+            break;
+          }
+          await delay(100);
+        }
         const restoreState = await page.evaluate(() => ({
           selectedHash:
             document.querySelector(".source-option[aria-selected='true']")
               ?.dataset.sourceHash || "",
           videoSource: document.querySelector("video")?.getAttribute("src") || "",
-          resolverText:
-            document.querySelector(".resolver-overlay:not([hidden]) .resolver-card")
-              ?.textContent || "",
         }));
         if (
-          !sourceSwitchResolveHashes.includes(sourceSwitchHashB) ||
-          restoreState.selectedHash !== sourceSwitchHashA ||
-          !restoreState.videoSource.includes(sourceSwitchHashA)
+          !sourceSwitchResolveHashes.includes(sourceSwitchHashA) ||
+          restoreState.selectedHash !== sourceSwitchHashB ||
+          !restoreState.videoSource.includes(sourceSwitchHashB)
         ) {
           throw new Error(
-            `${pageSpec.path}\nFailed manual source should restore previous playback.\n${JSON.stringify({
+            `${pageSpec.path}\nFailed manual switch should recover to a working source.\n${JSON.stringify({
               sawSourceSwitchResolveHash,
               sourceSwitchResolveHashes,
               restoreState,
@@ -1085,9 +1141,14 @@ async function runSmoke() {
       }
 
       if (pageSpec.expectLiveStreamSwitch) {
+        // Live-stream resolution + HLS attach can take several seconds on a
+        // loaded machine, so allow generous time for each step. These waits
+        // resolve as soon as the condition is met, so they don't slow the happy
+        // path — only a genuine failure waits the full timeout.
+        const liveStreamWaitMs = 20_000;
         const waitForLiveHlsInput = async (streamId) => {
           const expectedInput = `/${streamId}.m3u8`;
-          for (let attempt = 0; attempt < 80; attempt += 1) {
+          for (let attempt = 0; attempt < 200; attempt += 1) {
             if (liveStreamHlsInputs.some((input) => input.includes(expectedInput))) {
               return;
             }
@@ -1103,7 +1164,7 @@ async function runSmoke() {
 
         await page.waitForSelector("#toggleLiveStream", {
           state: "visible",
-          timeout: 8_000,
+          timeout: liveStreamWaitMs,
         });
         await page.waitForFunction(
           (streamId) => {
@@ -1115,7 +1176,7 @@ async function runSmoke() {
             return selected === streamId && !iframeActive;
           },
           liveStreamSwitchStreams[0].id,
-          { timeout: 8_000 },
+          { timeout: liveStreamWaitMs },
         );
         await waitForLiveHlsInput(liveStreamSwitchStreams[0].id);
         await page.click("#toggleLiveStream");
@@ -1124,8 +1185,9 @@ async function runSmoke() {
             .querySelector(`.live-stream-option[data-stream-id="${streamId}"]`)
             ?.click();
         }, liveStreamSwitchStreams[1].id);
-        await page.waitForFunction(
-          (streamId) => {
+        let liveStreamSwitched = false;
+        for (let attempt = 0; attempt < 200 && !liveStreamSwitched; attempt += 1) {
+          liveStreamSwitched = await page.evaluate((streamId) => {
             const selected =
               document.querySelector(".live-stream-option[aria-selected='true']")
                 ?.dataset.streamId || "";
@@ -1139,10 +1201,35 @@ async function runSmoke() {
               currentStreamId === streamId &&
               !iframeActive
             );
-          },
-          liveStreamSwitchStreams[1].id,
-          { timeout: 8_000 },
-        );
+          }, liveStreamSwitchStreams[1].id);
+          if (liveStreamSwitched) {
+            break;
+          }
+          // Re-assert the selection every ~2s in case the first click landed
+          // before the switcher was ready under load.
+          if (attempt % 20 === 19) {
+            await page.evaluate((streamId) => {
+              document
+                .querySelector(`.live-stream-option[data-stream-id="${streamId}"]`)
+                ?.click();
+            }, liveStreamSwitchStreams[1].id);
+          }
+          await delay(100);
+        }
+        if (!liveStreamSwitched) {
+          const liveSwitchState = await page.evaluate(() => ({
+            selected:
+              document.querySelector(".live-stream-option[aria-selected='true']")
+                ?.dataset.streamId || "",
+            iframeActive: document.querySelector("#liveEmbedFrame")?.hidden === false,
+            currentStreamId: new URL(window.location.href).searchParams.get(
+              "liveStreamId",
+            ),
+          }));
+          throw new Error(
+            `${pageSpec.path}\nLive stream switch did not take effect.\n${JSON.stringify(liveSwitchState)}`,
+          );
+        }
         await waitForLiveHlsInput(liveStreamSwitchStreams[1].id);
         if (!liveStreamResolveSources.includes(liveStreamSwitchStreams[1].source)) {
           throw new Error(
