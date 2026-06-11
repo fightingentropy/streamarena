@@ -5363,6 +5363,7 @@ mod tests {
             open_signup_enabled: false,
             signup_invite_code: String::new(),
             live_hls_proxy_secret: "test-live-hls-proxy-secret-with-enough-length".to_owned(),
+            live_hls_resource_worker_base: String::new(),
             app_origin: "https://streamthatshit.com".to_owned(),
             email_from: "noreply@streamthatshit.com".to_owned(),
             cf_account_id: String::new(),

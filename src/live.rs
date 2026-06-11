@@ -111,6 +111,11 @@ pub async fn live_hls_handler(
         live_request.referer.as_deref(),
         trusted_secret,
     );
+    let rewritten = maybe_route_live_resources_to_worker(
+        &state,
+        rewritten,
+        live_request.trusted_external_embed,
+    );
 
     Response::builder()
         .status(200)
@@ -121,6 +126,54 @@ pub async fn live_hls_handler(
         .header("cache-control", "no-store")
         .body(Body::from(rewritten))
         .map_err(|error| ApiError::internal(error.to_string()))
+}
+
+/// When the Cloudflare live-segment Worker is configured and this stream is
+/// known browser-safe (no transcode needed — the Worker can't run ffmpeg),
+/// rewrite the relative `/api/live/hls-resource` segment URLs to absolute Worker
+/// URLs so the segment bytes serve from Cloudflare's network instead of the
+/// mini's home uplink. Only the host changes — same path, params and HMAC
+/// signature — so the Worker validates the identical signature. No-op when
+/// disabled, untrusted, or the transcode decision is unknown/needed (in which
+/// case the mini keeps serving so transcoding still works).
+fn maybe_route_live_resources_to_worker(
+    state: &AppState,
+    rewritten: String,
+    trusted_external_embed: bool,
+) -> String {
+    let worker_base = state.config.live_hls_resource_worker_base.trim();
+    if worker_base.is_empty() || !trusted_external_embed {
+        return rewritten;
+    }
+    let browser_safe = first_live_resource_input(&rewritten)
+        .as_deref()
+        .and_then(|input| Url::parse(input).ok())
+        .map(|url| live_audio_stream_key(&url))
+        .and_then(|key| state.live_audio_transcode_cache.get_fresh(&key))
+        == Some(false);
+    if !browser_safe {
+        return rewritten;
+    }
+    rewritten.replace(
+        "/api/live/hls-resource",
+        &format!("{worker_base}/api/live/hls-resource"),
+    )
+}
+
+/// Extract the upstream segment URL (`input` query param) from the first bare
+/// `/api/live/hls-resource?…` line of a rewritten media playlist, used to derive
+/// the stream's transcode-cache key.
+fn first_live_resource_input(playlist: &str) -> Option<String> {
+    for line in playlist.lines() {
+        if let Some(query) = line.trim().strip_prefix("/api/live/hls-resource?") {
+            for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+                if key == "input" {
+                    return Some(value.into_owned());
+                }
+            }
+        }
+    }
+    None
 }
 
 pub async fn live_hls_resource_handler(
@@ -1394,6 +1447,32 @@ mod tests {
         live_audio_stream_key, normalize_hls_referer, query_pairs, rewrite_live_hls_playlist,
         strip_video_only_stream_inf_codecs,
     };
+
+    #[test]
+    fn first_live_resource_input_extracts_segment_url() {
+        let playlist = "#EXTM3U\n#EXTINF:6.0,\n/api/live/hls-resource?input=https%3A%2F%2Fcdn.example.com%2Fseg%2F1.ts&referer=https%3A%2F%2Fr%2F&externalEmbed=1&sig=abc\n";
+        assert_eq!(
+            super::first_live_resource_input(playlist).as_deref(),
+            Some("https://cdn.example.com/seg/1.ts"),
+        );
+        assert_eq!(
+            super::first_live_resource_input("#EXTM3U\nno-resources-here\n"),
+            None,
+        );
+    }
+
+    #[test]
+    fn live_hls_signature_matches_cross_checked_vector() {
+        // Cross-checked against an independent HMAC-SHA256 (Web Crypto / Node) so
+        // the Cloudflare live-proxy Worker validates the exact signatures the
+        // backend produces. Changing this output breaks Worker verification.
+        let sig = super::sign_live_hls_proxy_url(
+            "https://www.bloomberg.com/parity-probe.ts",
+            Some("https://example.test/"),
+            "paritytest12345",
+        );
+        assert_eq!(sig, "cxrB-f12ka967rfMS41UeX4azDD4cso-lAwbwwX90Qs");
+    }
 
     #[test]
     fn strips_video_only_codecs_but_keeps_complete_ones() {

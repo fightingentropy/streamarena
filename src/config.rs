@@ -55,6 +55,11 @@ pub struct Config {
     pub open_signup_enabled: bool,
     pub signup_invite_code: String,
     pub live_hls_proxy_secret: String,
+    /// When set (env `LIVE_HLS_RESOURCE_WORKER_BASE`), browser-safe live HLS
+    /// segment URLs are rewritten to this Cloudflare Worker base so segment
+    /// bandwidth is served from Cloudflare instead of the mini's home uplink.
+    /// Empty = disabled (mini serves segments, as before).
+    pub live_hls_resource_worker_base: String,
     /// Public origin used to build email verification links (e.g. https://streamthatshit.com).
     pub app_origin: String,
     /// From address for transactional email (e.g. noreply@streamthatshit.com).
@@ -214,6 +219,11 @@ impl Config {
                 .map(|value| value.trim().to_owned())
                 .filter(|value| value.len() >= 32)
                 .unwrap_or_else(generate_live_hls_proxy_secret),
+            live_hls_resource_worker_base: env::var("LIVE_HLS_RESOURCE_WORKER_BASE")
+                .unwrap_or_default()
+                .trim()
+                .trim_end_matches('/')
+                .to_owned(),
             app_origin: env::var("APP_ORIGIN")
                 .unwrap_or_else(|_| "https://streamthatshit.com".to_owned())
                 .trim()
