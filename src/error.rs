@@ -51,6 +51,10 @@ impl ApiError {
         Self::new(StatusCode::GATEWAY_TIMEOUT, message)
     }
 
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+
     pub fn message(&self) -> Option<&str> {
         self.payload.get("error").and_then(Value::as_str)
     }

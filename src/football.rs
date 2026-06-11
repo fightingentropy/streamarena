@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, HeaderValue, Response};
+use axum::http::{HeaderMap, HeaderValue, Response, StatusCode};
 use dashmap::DashMap;
 use futures_util::stream::{self, StreamExt};
 use regex::Regex;
@@ -70,6 +70,12 @@ const MAX_LIVE_STREAM_CANDIDATES: usize = 12;
 const STREAMED_SOURCE_PREFLIGHT_MAX_CONCURRENT: usize = 8;
 const STREAMED_SOURCE_PREFLIGHT_TIMEOUT_SECONDS: u64 = 6;
 const SPORTS_STREAM_RESOLVE_CACHE_TTL_MS: i64 = 60 * 1000;
+/// How long a failed resolve is remembered. Without this, a dead source re-runs
+/// its full resolver script (up to ~24s) on every player failover cycle and for
+/// every viewer of the same match, tying up the small resolver permit pool.
+/// Kept shorter than the success TTL so a source that comes alive mid-match
+/// recovers quickly.
+const SPORTS_STREAM_RESOLVE_FAILURE_TTL_MS: i64 = 45 * 1000;
 const SPORTS_STREAM_RESOLVE_CACHE_MAX_ENTRIES: usize = 512;
 const SPORTS_SCHEDULE_LIVE_CACHE_TTL_MS: i64 = 60 * 1000;
 const SPORTS_SCHEDULE_NEAR_LIVE_CACHE_TTL_MS: i64 = 3 * 60 * 1000;
@@ -365,6 +371,7 @@ impl SportsScheduleCache {
 #[derive(Clone)]
 pub struct SportsStreamResolveCache {
     entries: Arc<DashMap<String, CachedResolvedLiveStream>>,
+    failures: Arc<DashMap<String, CachedResolveFailure>>,
     locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
     permits: Arc<Semaphore>,
     max_concurrent: usize,
@@ -378,11 +385,19 @@ struct CachedResolvedLiveStream {
     expires_at_ms: i64,
 }
 
+#[derive(Clone)]
+struct CachedResolveFailure {
+    message: String,
+    cached_at_ms: i64,
+    expires_at_ms: i64,
+}
+
 impl SportsStreamResolveCache {
     pub fn new(max_concurrent: usize, queue_timeout_ms: u64) -> Self {
         let max_concurrent = max_concurrent.max(1);
         Self {
             entries: Arc::new(DashMap::new()),
+            failures: Arc::new(DashMap::new()),
             locks: Arc::new(DashMap::new()),
             permits: Arc::new(Semaphore::new(max_concurrent)),
             max_concurrent,
@@ -407,6 +422,25 @@ impl SportsStreamResolveCache {
             },
         );
         self.trim();
+    }
+
+    fn fresh_failure(&self, key: &str, now: i64) -> Option<String> {
+        self.failures.get(key).and_then(|entry| {
+            let cached = entry.value();
+            (now <= cached.expires_at_ms).then(|| cached.message.clone())
+        })
+    }
+
+    fn insert_failure(&self, key: String, message: String, cached_at_ms: i64) {
+        self.failures.insert(
+            key,
+            CachedResolveFailure {
+                message,
+                cached_at_ms,
+                expires_at_ms: cached_at_ms.saturating_add(SPORTS_STREAM_RESOLVE_FAILURE_TTL_MS),
+            },
+        );
+        self.trim_failures();
     }
 
     fn lock_for(&self, key: &str) -> Arc<Mutex<()>> {
@@ -449,9 +483,28 @@ impl SportsStreamResolveCache {
         }
     }
 
+    fn trim_failures(&self) {
+        if self.failures.len() <= SPORTS_STREAM_RESOLVE_CACHE_MAX_ENTRIES {
+            return;
+        }
+        let mut failures = self
+            .failures
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().cached_at_ms))
+            .collect::<Vec<_>>();
+        failures.sort_by_key(|(_, cached_at_ms)| *cached_at_ms);
+        let overflow = failures
+            .len()
+            .saturating_sub(SPORTS_STREAM_RESOLVE_CACHE_MAX_ENTRIES);
+        for (key, _) in failures.into_iter().take(overflow) {
+            self.failures.remove(&key);
+        }
+    }
+
     pub fn prune(&self) {
         let now = now_ms();
         self.entries.retain(|_, cached| now <= cached.expires_at_ms);
+        self.failures.retain(|_, cached| now <= cached.expires_at_ms);
         self.locks.retain(|_, lock| Arc::strong_count(lock) > 1);
     }
 
@@ -464,7 +517,10 @@ impl SportsStreamResolveCache {
             "maxConcurrent": self.max_concurrent,
             "availablePermits": self.permits.available_permits(),
             "queueTimeoutMs": self.queue_timeout_ms,
-            "freshEntries": self.entries.iter().filter(|entry| now <= entry.value().expires_at_ms).count()
+            "freshEntries": self.entries.iter().filter(|entry| now <= entry.value().expires_at_ms).count(),
+            "failureEntries": self.failures.len(),
+            "failureTtlMs": SPORTS_STREAM_RESOLVE_FAILURE_TTL_MS,
+            "freshFailureEntries": self.failures.iter().filter(|entry| now <= entry.value().expires_at_ms).count()
         })
     }
 }
@@ -1631,6 +1687,15 @@ async fn resolve_cached_streamed_live_stream(
         return Ok(resolved);
     }
 
+    if let Some(message) = state
+        .sports_stream_resolve_cache
+        .fresh_failure(&cache_key, now_ms())
+    {
+        return Err(ApiError::bad_gateway(format!(
+            "Recently failed to resolve this source (cached): {message}"
+        )));
+    }
+
     let lock = state.sports_stream_resolve_cache.lock_for(&cache_key);
     let _guard = lock.lock().await;
     if let Some(mut resolved) = state
@@ -1640,6 +1705,15 @@ async fn resolve_cached_streamed_live_stream(
         resolved.candidate_index = candidate_index;
         resolved.attempted_streams = candidate_index + 1;
         return Ok(resolved);
+    }
+
+    if let Some(message) = state
+        .sports_stream_resolve_cache
+        .fresh_failure(&cache_key, now_ms())
+    {
+        return Err(ApiError::bad_gateway(format!(
+            "Recently failed to resolve this source (cached): {message}"
+        )));
     }
 
     let started_at_ms = now_ms();
@@ -1663,6 +1737,13 @@ async fn resolve_cached_streamed_live_stream(
                 started_at_ms,
                 api_error_message(&error),
             );
+            if error.status() != StatusCode::TOO_MANY_REQUESTS {
+                state.sports_stream_resolve_cache.insert_failure(
+                    cache_key,
+                    api_error_message(&error).to_owned(),
+                    now_ms(),
+                );
+            }
             Err(error)
         }
     }
@@ -1683,6 +1764,15 @@ async fn resolve_cached_matchstream_live_stream(
         return Ok(resolved);
     }
 
+    if let Some(message) = state
+        .sports_stream_resolve_cache
+        .fresh_failure(&cache_key, now_ms())
+    {
+        return Err(ApiError::bad_gateway(format!(
+            "Recently failed to resolve this source (cached): {message}"
+        )));
+    }
+
     let lock = state.sports_stream_resolve_cache.lock_for(&cache_key);
     let _guard = lock.lock().await;
     if let Some(mut resolved) = state
@@ -1692,6 +1782,15 @@ async fn resolve_cached_matchstream_live_stream(
         resolved.candidate_index = candidate_index;
         resolved.attempted_streams = candidate_index + 1;
         return Ok(resolved);
+    }
+
+    if let Some(message) = state
+        .sports_stream_resolve_cache
+        .fresh_failure(&cache_key, now_ms())
+    {
+        return Err(ApiError::bad_gateway(format!(
+            "Recently failed to resolve this source (cached): {message}"
+        )));
     }
 
     let started_at_ms = now_ms();
@@ -1717,6 +1816,13 @@ async fn resolve_cached_matchstream_live_stream(
                 started_at_ms,
                 api_error_message(&error),
             );
+            if error.status() != StatusCode::TOO_MANY_REQUESTS {
+                state.sports_stream_resolve_cache.insert_failure(
+                    cache_key,
+                    api_error_message(&error).to_owned(),
+                    now_ms(),
+                );
+            }
             Err(error)
         }
     }
@@ -1737,6 +1843,15 @@ async fn resolve_cached_ntvs_live_stream(
         return Ok(resolved);
     }
 
+    if let Some(message) = state
+        .sports_stream_resolve_cache
+        .fresh_failure(&cache_key, now_ms())
+    {
+        return Err(ApiError::bad_gateway(format!(
+            "Recently failed to resolve this source (cached): {message}"
+        )));
+    }
+
     let lock = state.sports_stream_resolve_cache.lock_for(&cache_key);
     let _guard = lock.lock().await;
     if let Some(mut resolved) = state
@@ -1746,6 +1861,15 @@ async fn resolve_cached_ntvs_live_stream(
         resolved.candidate_index = candidate_index;
         resolved.attempted_streams = candidate_index + 1;
         return Ok(resolved);
+    }
+
+    if let Some(message) = state
+        .sports_stream_resolve_cache
+        .fresh_failure(&cache_key, now_ms())
+    {
+        return Err(ApiError::bad_gateway(format!(
+            "Recently failed to resolve this source (cached): {message}"
+        )));
     }
 
     let started_at_ms = now_ms();
@@ -1767,6 +1891,13 @@ async fn resolve_cached_ntvs_live_stream(
                 started_at_ms,
                 api_error_message(&error),
             );
+            if error.status() != StatusCode::TOO_MANY_REQUESTS {
+                state.sports_stream_resolve_cache.insert_failure(
+                    cache_key,
+                    api_error_message(&error).to_owned(),
+                    now_ms(),
+                );
+            }
             Err(error)
         }
     }
@@ -3374,7 +3505,8 @@ mod tests {
     use super::{
         MATCHSTREAM_WEBMASTER_URL, MatchstreamChannel, MatchstreamMatch, NTVS_SOURCE_ID, NtvsMatch,
         SPORTS_SCHEDULE_FUTURE_CACHE_TTL_MS, SPORTS_SCHEDULE_STALE_IF_ERROR_MS,
-        SPORTS_STREAM_RESOLVE_CACHE_TTL_MS, STREAMED_FOOTBALL_MATCHES_URL, STREAMED_SOURCE_ID,
+        SPORTS_STREAM_RESOLVE_CACHE_TTL_MS, SPORTS_STREAM_RESOLVE_FAILURE_TTL_MS,
+        STREAMED_FOOTBALL_MATCHES_URL, STREAMED_SOURCE_ID,
         SportsScheduleCache, SportsScheduleSource, SportsStreamResolveCache, StreamedMatch,
         StreamedSource, StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
         build_ntvs_football_matches_payload, build_streamed_football_matches_payload,
@@ -4177,5 +4309,28 @@ mod tests {
                 .is_none()
         );
         assert!(cache.fresh(&streamed_key, 1_000).is_none());
+    }
+
+    #[test]
+    fn sports_stream_resolve_cache_remembers_failures_briefly() {
+        let cache = SportsStreamResolveCache::new(1, 100);
+        let source_url = url::Url::parse("https://ntv.cx/watch/kobra/dead-source-1").unwrap();
+        let key = sports_stream_resolve_cache_key(NTVS_SOURCE_ID, &source_url);
+
+        assert!(cache.fresh_failure(&key, 1_000).is_none());
+        cache.insert_failure(key.clone(), "resolver timed out".to_owned(), 1_000);
+        assert_eq!(
+            cache
+                .fresh_failure(&key, 1_000 + SPORTS_STREAM_RESOLVE_FAILURE_TTL_MS)
+                .as_deref(),
+            Some("resolver timed out")
+        );
+        assert!(
+            cache
+                .fresh_failure(&key, 1_000 + SPORTS_STREAM_RESOLVE_FAILURE_TTL_MS + 1)
+                .is_none()
+        );
+        // A cached failure must not leak into the success cache.
+        assert!(cache.fresh(&key, 1_000).is_none());
     }
 }
