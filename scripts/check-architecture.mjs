@@ -78,12 +78,26 @@ async function checkViteShape() {
 async function checkEntrypoints() {
   const entriesDir = join(rootDir, "src-ui/entries");
   const files = (await readdir(entriesDir)).filter((name) => name.endsWith(".js")).sort();
+  // Pages reachable while logged out (the login screen, and the password-reset
+  // link emailed to signed-out users) mount via mountPublicPage.
+  const publicPages = new Set(["login.js", "reset-password.js"]);
+  // admin.js needs an *admin* session, not just any authenticated one, so it
+  // gates itself against /api/auth/me and redirects rather than using the
+  // generic authenticated-page helper.
+  const selfGatedPages = new Set(["admin.js"]);
   for (const file of files) {
     const relPath = `src-ui/entries/${file}`;
     const source = await readText(relPath);
-    if (file === "login.js") {
+    if (publicPages.has(file)) {
       if (!source.includes("mountPublicPage")) {
         fail(`${relPath} should use mountPublicPage.`);
+      }
+      continue;
+    }
+    if (selfGatedPages.has(file)) {
+      // Still must enforce a session, just through its own admin-aware path.
+      if (!source.includes("/api/auth/me")) {
+        fail(`${relPath} should gate access against /api/auth/me.`);
       }
       continue;
     }
