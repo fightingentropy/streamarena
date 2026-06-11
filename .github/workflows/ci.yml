@@ -1,0 +1,65 @@
+name: CI
+
+# Gate every push and PR to main on the same `bun run check` the deploy script
+# runs locally: lint (JS syntax), Vite build, architecture check, the Rust test
+# suite (cargo test), and the frontend tests (a real Vite dev server driven by
+# headless Chromium via Playwright). This is the enforcement that was previously
+# missing — deploys relied on the developer remembering to run it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref so only the latest commit is checked.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: bun run check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Documented runtime dependency (ffprobe/ffmpeg power probing + transcode).
+      # No current test shells out to it, but install for parity and to keep any
+      # future ffmpeg-touching test green.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      # edition = "2024" needs a recent stable Rust (>= 1.85); @stable tracks it.
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      # frontend-smoke.mjs launches headless Chromium; --with-deps pulls the
+      # Linux system libraries the browser needs on the CI runner.
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
+
+      # lint:frontend && build && check:architecture && test:rust && test:frontend
+      - name: Run full check
+        run: bun run check

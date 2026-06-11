@@ -11,6 +11,8 @@ PLAYWRIGHT_VERSION="${PLAYWRIGHT_VERSION:-^1.54.2}"
 LIBSODIUM_WRAPPERS_VERSION="${LIBSODIUM_WRAPPERS_VERSION:-^0.8.4}"
 
 SKIP_BUILD=0
+SKIP_CHECK=0
+ALLOW_STALE=0
 RESTART=1
 VIDEOS=()
 
@@ -21,8 +23,17 @@ Usage: scripts/deploy-mini.sh [options]
 Builds on the MacBook, deploys runtime artifacts to the Mac mini, restarts the
 backend through launchd, then runs scripts/check-mini.sh.
 
+By default this runs `bun run check` (lint + build + arch + Rust tests +
+frontend tests) before shipping, so broken code can't be deployed. With
+--skip-build it also refuses to deploy a release binary that is older than the
+Rust sources, which is what caused past "stale binary" deploys.
+
 Options:
-  --skip-build         Reuse existing dist/ and target/release binary.
+  --skip-build         Reuse existing dist/ and target/release binary. Refuses
+                       to proceed if the binary is older than src/ or the Cargo
+                       manifests (override with --allow-stale).
+  --skip-check         Skip the pre-deploy `bun run check` gate (faster, unsafe).
+  --allow-stale        With --skip-build, deploy even if the binary looks stale.
   --no-restart         Sync files but do not restart the backend.
   --video <path>       Also copy one symlinked/local video target as a real file
                        to the Mac mini assets/videos directory. May be repeated.
@@ -42,6 +53,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build)
       SKIP_BUILD=1
+      shift
+      ;;
+    --skip-check)
+      SKIP_CHECK=1
+      shift
+      ;;
+    --allow-stale)
+      ALLOW_STALE=1
       shift
       ;;
     --no-restart)
@@ -68,14 +87,49 @@ done
 SSH_BASE=(ssh -i "$SSH_KEY" -o BatchMode=yes)
 RSYNC_SSH="ssh -i $SSH_KEY -o BatchMode=yes"
 
+BACKEND_BIN="target/release/netflix-rust-backend"
+
+# Fail if any path in $@ is newer than the reference artifact. Uses `find
+# -newer ... -print -quit`, which behaves identically on BSD/macOS and GNU find
+# (no `stat` format differences), and stops at the first offending file.
+assert_artifact_fresh() {
+  local label="$1" artifact="$2"
+  shift 2
+  [[ -e "$artifact" ]] || return 0 # existence is checked separately below
+  local newer
+  newer="$(find "$@" -newer "$artifact" -print -quit 2>/dev/null || true)"
+  if [[ -n "$newer" ]]; then
+    echo "Refusing --skip-build: $label is older than the source tree." >&2
+    echo "  changed since last build: $newer" >&2
+    echo "  rebuild without --skip-build, or pass --allow-stale to override." >&2
+    exit 1
+  fi
+}
+
+# Pre-deploy validation gate: lint, build, architecture check, and the Rust +
+# frontend test suites. Skipping this is what let broken code reach the mini.
+if [[ "$SKIP_CHECK" -eq 0 ]]; then
+  bun run check
+fi
+
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
   export CARGO_TARGET_DIR="$ROOT_DIR/target"
-  bun run build
+  # `bun run check` already produced dist/ via `vite build`; only rebuild the
+  # frontend here when the check gate was skipped. The release binary is always
+  # built (check runs the debug `cargo test`, not a release build).
+  if [[ "$SKIP_CHECK" -ne 0 ]]; then
+    bun run build
+  fi
   cargo build --release
+elif [[ "$ALLOW_STALE" -eq 0 ]]; then
+  # Reusing a prebuilt binary: make sure it isn't older than the Rust sources,
+  # so `--skip-build` can never silently ship a stale binary.
+  assert_artifact_fresh "release binary ($BACKEND_BIN)" "$BACKEND_BIN" \
+    src Cargo.toml Cargo.lock
 fi
 
 [[ -d dist ]] || { echo "Missing dist/. Run without --skip-build first." >&2; exit 1; }
-[[ -x target/release/netflix-rust-backend ]] || { echo "Missing target/release/netflix-rust-backend. Run without --skip-build first." >&2; exit 1; }
+[[ -x "$BACKEND_BIN" ]] || { echo "Missing $BACKEND_BIN. Run without --skip-build first." >&2; exit 1; }
 
 "${SSH_BASE[@]}" "$MINI_HOST" "mkdir -p '$REMOTE_APP/dist' '$REMOTE_APP/bin' '$REMOTE_APP/assets/images' '$REMOTE_APP/assets/icons' '$REMOTE_APP/assets/videos'"
 
