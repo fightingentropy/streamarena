@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "netflix-live-hls-proxy",
+  "main": "src/index.js",
+  "compatibility_date": "2026-05-23",
+  "workers_dev": true,
+  "observability": { "enabled": true }
+  // Secret (set out-of-band, never committed):
+  //   wrangler secret put LIVE_HLS_PROXY_SECRET
+  // Must equal the mini's LIVE_HLS_PROXY_SECRET so signatures validate.
+}
