@@ -1,9 +1,26 @@
+use std::sync::LazyLock;
+
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use axum::http::HeaderMap;
+use tokio::sync::Semaphore;
 
 use crate::error::{ApiError, AppResult};
 use crate::persistence::Db;
+
+/// Bound on concurrent Argon2 operations. Argon2id with the default params is
+/// memory-hard (~19 MiB) and CPU-bound, so each hash/verify is run on the
+/// blocking pool (never an async worker) AND capped here: an unbounded
+/// signup/login burst would otherwise spawn hundreds of parallel hashes,
+/// saturating CPU and risking OOM. Sized to the core count so hashing keeps the
+/// CPU busy without oversubscribing it; excess callers wait briefly for a permit.
+static HASH_CONCURRENCY: LazyLock<Semaphore> = LazyLock::new(|| {
+    let permits = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .max(2);
+    Semaphore::new(permits)
+});
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {
@@ -32,6 +49,34 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok()
+}
+
+/// Async wrapper around [`hash_password`]: runs the CPU-heavy, memory-hard
+/// Argon2 work on the blocking pool under the [`HASH_CONCURRENCY`] cap so it
+/// never blocks an async worker thread. Blocking a worker on hashing is what
+/// stalls unrelated requests — including the `/api/health/live` probe the
+/// watchdog uses — under a signup surge.
+pub async fn hash_password_async(password: String) -> Result<String, String> {
+    let _permit = HASH_CONCURRENCY
+        .acquire()
+        .await
+        .map_err(|error| error.to_string())?;
+    tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// Async wrapper around [`verify_password`] with the same offloading and
+/// concurrency cap as [`hash_password_async`]. Any internal failure (semaphore
+/// closed or join error) returns `false`: a broken verification must fail
+/// closed, never bypass the password check.
+pub async fn verify_password_async(password: String, hash: String) -> bool {
+    let Ok(_permit) = HASH_CONCURRENCY.acquire().await else {
+        return false;
+    };
+    tokio::task::spawn_blocking(move || verify_password(&password, &hash))
+        .await
+        .unwrap_or(false)
 }
 
 /// Generate a cryptographically random session token.

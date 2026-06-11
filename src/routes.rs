@@ -16,6 +16,7 @@ use axum::http::HeaderMap;
 use crate::auth;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult, json_response};
+use crate::health::HealthInputs;
 use crate::football::{
     SportsProviderHealth, SportsScheduleCache, SportsStreamResolveCache,
     american_football_matches_handler, baseball_matches_handler, basketball_matches_handler,
@@ -70,8 +71,15 @@ pub struct AppState {
     pub home_bootstrap_cache: home_bootstrap::HomeBootstrapCache,
     pub live_audio_transcode_cache: crate::live::LiveAudioTranscodeCache,
     pub auth_rate_limiter: std::sync::Arc<crate::rate_limit::RateLimiter>,
+    /// Generous global anti-abuse backstop for signups. Per-IP limiting (via
+    /// `auth_rate_limiter`) protects against single-source floods; this caps the
+    /// aggregate so a distributed botnet can't create unlimited accounts. Set
+    /// high enough never to throttle an organic signup surge.
+    pub signup_global_rate_limiter: std::sync::Arc<crate::rate_limit::RateLimiter>,
     pub sports_stream_rate_limiter: std::sync::Arc<crate::rate_limit::RateLimiter>,
     pub started_at_ms: i64,
+    pub http_metrics: std::sync::Arc<crate::health::HttpMetrics>,
+    pub host_probe: std::sync::Arc<crate::health::HostProbe>,
 }
 
 const JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
@@ -165,6 +173,22 @@ async fn security_headers_middleware(
     response
 }
 
+/// Tally every response by status class for the admin Health panel. `/api/live/*`
+/// 5xx (the HLS proxy's upstream failures — the `fragLoadError` source) get an
+/// extra dedicated count. Adds one atomic increment per request; no allocation.
+async fn http_metrics_middleware(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response<Body> {
+    let is_live_proxy = request.uri().path().starts_with("/api/live");
+    let response = next.run(request).await;
+    state
+        .http_metrics
+        .record(response.status().as_u16(), is_live_proxy);
+    response
+}
+
 async fn parse_json_body(request: Request<Body>) -> AppResult<Value> {
     let bytes = to_bytes(request.into_body(), JSON_BODY_LIMIT_BYTES)
         .await
@@ -192,22 +216,89 @@ async fn api_auth_middleware(
     Ok(next.run(request).await)
 }
 
+/// Best-effort client IP for rate-limiting. The backend always sits behind our
+/// own Caddy on loopback, which sets `X-Forwarded-For`, so the left-most entry
+/// is the real client. Falls back to the peer address (direct connections, e.g.
+/// local dev) and finally a constant, so a missing IP degrades to a single
+/// shared bucket rather than failing.
+/// Parse the left-most (original-client) entry from an `X-Forwarded-For` value.
+/// Returns `None` for an empty/blank header so the caller falls back to the peer.
+fn parse_forwarded_for(header: &str) -> Option<String> {
+    header
+        .split(',')
+        .next()
+        .map(str::trim)
+        .filter(|ip| !ip.is_empty())
+        .map(str::to_owned)
+}
+
+fn extract_client_ip(request: &Request<Body>) -> String {
+    if let Some(ip) = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_forwarded_for)
+    {
+        return ip;
+    }
+    request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+/// Max concurrent in-flight requests across the throttled auth routes. With
+/// Argon2 offloaded these resolve in well under a second, so reaching this many
+/// at once signals a genuine overload worth shedding rather than queueing.
+const AUTH_ROUTE_MAX_INFLIGHT: usize = 256;
+/// Upper bound on a single auth request. Comfortably above a normal
+/// hash/login/email round-trip; its job is to bound the pathological tail.
+const AUTH_ROUTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+static AUTH_ROUTE_CONCURRENCY: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(AUTH_ROUTE_MAX_INFLIGHT);
+
+/// Concurrency limit + timeout for the cheap mutating auth routes. Sheds with a
+/// fast, retryable 503 when at capacity or when a request overruns the budget,
+/// so a signup/login burst can never pile up and starve the shared runtime.
+async fn auth_throttle_middleware(
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response<Body>, ApiError> {
+    let busy =
+        || ApiError::service_unavailable("The server is busy right now. Please try again shortly.");
+    let _permit = AUTH_ROUTE_CONCURRENCY.try_acquire().map_err(|_| busy())?;
+    match tokio::time::timeout(AUTH_ROUTE_TIMEOUT, next.run(request)).await {
+        Ok(response) => Ok(response),
+        Err(_elapsed) => Err(busy()),
+    }
+}
+
 pub fn build_router(state: AppState) -> Router {
     let public_api = Router::new()
         .route("/api/health/live", any(health_live_handler))
         .route("/api/health", any(health_handler))
         .route("/api/config", any(config_handler))
-        .route("/api/auth/signup", any(auth_signup_handler))
-        .route("/api/auth/login", any(auth_login_handler))
         .route("/api/auth/logout", any(auth_logout_handler))
         .route("/api/auth/verify/{token}", get(auth_verify_handler))
+        .route("/api/home/bootstrap", get(home_bootstrap_handler));
+
+    // The cheap mutating auth routes do the surge-heavy work (Argon2 hashing +
+    // outbound verification/reset email). A concurrency cap + per-request
+    // timeout turns an overload into fast 503s instead of a pile-up that starves
+    // the runtime. Health and the long-lived streaming/upload routes are
+    // intentionally NOT wrapped — a short timeout would break video playback,
+    // and the watchdog's health probe must always get an immediate answer.
+    let auth_throttled = Router::new()
+        .route("/api/auth/signup", any(auth_signup_handler))
+        .route("/api/auth/login", any(auth_login_handler))
         .route(
             "/api/auth/resend-verification",
             any(auth_resend_verification_handler),
         )
         .route("/api/auth/forgot", any(auth_forgot_handler))
         .route("/api/auth/reset", any(auth_reset_handler))
-        .route("/api/home/bootstrap", get(home_bootstrap_handler));
+        .route_layer(middleware::from_fn(auth_throttle_middleware));
 
     let protected_api = Router::new()
         .route(
@@ -316,14 +407,24 @@ pub fn build_router(state: AppState) -> Router {
             any(admin_set_disabled_handler),
         )
         .route("/api/admin/users/set-admin", any(admin_set_admin_handler))
-        .route("/api/admin/users/delete", any(admin_delete_user_handler));
+        .route("/api/admin/users/delete", any(admin_delete_user_handler))
+        .route("/api/admin/health", get(admin_health_handler))
+        .route(
+            "/api/admin/health/history",
+            get(admin_health_history_handler),
+        );
 
     Router::new()
         .merge(public_api)
+        .merge(auth_throttled)
         .merge(protected_api)
         .merge(admin_api)
         .fallback(any(serve_static))
         .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            http_metrics_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             state,
             security_headers_middleware,
@@ -432,7 +533,9 @@ async fn admin_reset_password_handler(
             "Password must be at least 6 characters.",
         ));
     }
-    let hash = auth::hash_password(password).map_err(|error| ApiError::internal(error))?;
+    let hash = auth::hash_password_async(password.to_string())
+        .await
+        .map_err(ApiError::internal)?;
     let changed = state.db.admin_set_password(user_id, hash).await?;
     if changed == 0 {
         return Err(ApiError::not_found("User not found."));
@@ -525,6 +628,231 @@ async fn admin_delete_user_handler(
         return Err(ApiError::not_found("User not found."));
     }
     Ok(json_response(json!({ "ok": true })))
+}
+
+/// Everything one health snapshot needs, shared by the live `/api/admin/health`
+/// endpoint and the background sampler that persists it.
+struct HealthGather {
+    uptime_seconds: i64,
+    host: crate::health::HostMetrics,
+    http: crate::health::HttpCounters,
+    req_5xx_rate: f64,
+    playback_failure_rate: f64,
+    playback_window_total: i64,
+    source_success_total: i64,
+    source_failure_total: i64,
+    restarts_last_1h: i64,
+    minutes_since_last_restart: Option<i64>,
+    worst_provider_consecutive_failures: i64,
+    provider_summary: Value,
+    streaming_stats: Value,
+    resolver_stats: Value,
+    status: crate::health::Status,
+    checks: Vec<crate::health::Check>,
+}
+
+/// Assemble a health snapshot: live host/request/provider signals plus rates
+/// derived as deltas against the recent sample history, rolled into a status.
+async fn gather_health(state: &AppState) -> AppResult<HealthGather> {
+    let now = now_ms();
+    let uptime_seconds = ((now - state.started_at_ms) / 1000).max(0);
+
+    let host = state
+        .host_probe
+        .snapshot(&state.config.persistent_cache_db_path);
+    let http = state.http_metrics.snapshot();
+
+    // Rates are computed over the last ~10 minutes of samples. The in-memory
+    // counters reset to zero on restart, so a current value below the baseline
+    // means we restarted within the window — count from zero in that case.
+    let recent = state.db.recent_health_samples(now - 10 * 60 * 1000).await?;
+    let baseline = recent.first();
+    let delta = |current: i64, base: i64| -> i64 {
+        if current >= base { current - base } else { current }
+    };
+    let (http_window_total, http_window_5xx, live_proxy_window_5xx) = match baseline {
+        Some(b) => (
+            delta(http.reqTotal as i64, b.reqTotal),
+            delta(http.req5xx as i64, b.req5xx),
+            delta(http.liveProxy5xx as i64, b.liveProxy5xx),
+        ),
+        None => (
+            http.reqTotal as i64,
+            http.req5xx as i64,
+            http.liveProxy5xx as i64,
+        ),
+    };
+
+    let (source_success_total, source_failure_total) = state.db.source_health_totals().await?;
+    let (pb_success_window, pb_failure_window) = match baseline {
+        Some(b) => (
+            delta(source_success_total, b.playbackSuccessTotal),
+            delta(source_failure_total, b.playbackFailureTotal),
+        ),
+        None => (source_success_total, source_failure_total),
+    };
+    let playback_window_total = pb_success_window + pb_failure_window;
+
+    let starts = state.db.service_starts_since(now - 60 * 60 * 1000).await?;
+    let restarts_last_1h = starts.len() as i64;
+    let minutes_since_last_restart = starts.first().map(|s| ((now - s.startedAt) / 60_000).max(0));
+
+    let provider_summary = state.sports_provider_health.summary(true);
+    let worst_provider_consecutive_failures = provider_summary
+        .get("providers")
+        .and_then(Value::as_array)
+        .map(|providers| {
+            providers
+                .iter()
+                .filter_map(|p| p.get("consecutiveFailures").and_then(Value::as_i64))
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+
+    let streaming_stats = serde_json::to_value(state.streaming.stats()).unwrap_or_else(|_| json!({}));
+    let resolver_stats = serde_json::to_value(state.resolver.stats()).unwrap_or_else(|_| json!({}));
+
+    let req_5xx_rate = if http_window_total > 0 {
+        http_window_5xx as f64 / http_window_total as f64 * 100.0
+    } else {
+        0.0
+    };
+    let playback_failure_rate = if playback_window_total > 0 {
+        pb_failure_window as f64 / playback_window_total as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    let inputs = HealthInputs {
+        restarts_last_1h,
+        minutes_since_last_restart,
+        fd_count: host.fdCount,
+        fd_limit: host.fdLimit,
+        mem_used: host.memUsed,
+        mem_total: host.memTotal,
+        disk_free: host.diskFree,
+        disk_total: host.diskTotal,
+        load1: host.load1,
+        num_cpus: host.numCpus,
+        http_window_total,
+        http_window_5xx,
+        live_proxy_window_5xx,
+        worst_provider_consecutive_failures,
+        playback_window_total,
+        playback_window_failures: pb_failure_window,
+    };
+    let (status, checks) = crate::health::compute_status(&inputs);
+
+    Ok(HealthGather {
+        uptime_seconds,
+        host,
+        http,
+        req_5xx_rate,
+        playback_failure_rate,
+        playback_window_total,
+        source_success_total,
+        source_failure_total,
+        restarts_last_1h,
+        minutes_since_last_restart,
+        worst_provider_consecutive_failures,
+        provider_summary,
+        streaming_stats,
+        resolver_stats,
+        status,
+        checks,
+    })
+}
+
+/// Take one health snapshot and persist it. Best-effort: the background sampler
+/// calls this on a timer, and a failed sample should never take the loop down.
+pub async fn record_health_sample(state: &AppState) {
+    let report = match gather_health(state).await {
+        Ok(report) => report,
+        Err(error) => {
+            tracing::warn!("health sampler: gather failed: {error:?}");
+            return;
+        }
+    };
+    let sample = crate::persistence::HealthSampleRow {
+        ts: now_ms(),
+        uptimeSeconds: report.uptime_seconds,
+        status: report.status.as_i64(),
+        fdCount: report.host.fdCount,
+        fdLimit: report.host.fdLimit,
+        memUsed: report.host.memUsed,
+        memTotal: report.host.memTotal,
+        load1: report.host.load1,
+        numCpus: report.host.numCpus,
+        diskFree: report.host.diskFree,
+        diskTotal: report.host.diskTotal,
+        reqTotal: report.http.reqTotal as i64,
+        req4xx: report.http.req4xx as i64,
+        req5xx: report.http.req5xx as i64,
+        liveProxy5xx: report.http.liveProxy5xx as i64,
+        req5xxRate: report.req_5xx_rate,
+        playbackSuccessTotal: report.source_success_total,
+        playbackFailureTotal: report.source_failure_total,
+        playbackFailureRate: report.playback_failure_rate,
+        worstProviderConsecutiveFailures: report.worst_provider_consecutive_failures,
+    };
+    if let Err(error) = state.db.insert_health_sample(sample).await {
+        tracing::warn!("health sampler: insert failed: {error:?}");
+    }
+}
+
+async fn admin_health_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let report = gather_health(&state).await?;
+    Ok(json_response(json!({
+        "status": report.status,
+        "checks": report.checks,
+        "uptimeSeconds": report.uptime_seconds,
+        "host": report.host,
+        "http": {
+            "counters": report.http,
+            "req5xxRate": report.req_5xx_rate,
+        },
+        "playback": {
+            "successTotal": report.source_success_total,
+            "failureTotal": report.source_failure_total,
+            "failureRate": report.playback_failure_rate,
+            "windowTotal": report.playback_window_total,
+        },
+        "restarts": {
+            "lastHour": report.restarts_last_1h,
+            "minutesSinceLast": report.minutes_since_last_restart,
+        },
+        "providers": report.provider_summary,
+        "streaming": report.streaming_stats,
+        "resolver": report.resolver_stats,
+        "sampledAt": now_ms(),
+    })))
+}
+
+async fn admin_health_history_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let hours = admin_query_i64(&uri, "hours", 24).clamp(1, 48);
+    let since = now_ms() - hours * 60 * 60 * 1000;
+    let samples = state.db.recent_health_samples(since).await?;
+    let value =
+        serde_json::to_value(samples).map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(json_response(json!({ "hours": hours, "samples": value })))
 }
 
 pub async fn debug_cache(
@@ -2065,6 +2393,8 @@ async fn auth_signup_handler(
             "Method not allowed. Use POST.",
         ));
     }
+    // Captured before the body is consumed below; used for per-IP rate limiting.
+    let client_ip = extract_client_ip(&request);
     let payload = parse_json_body(request).await?;
     let email = payload
         .get("email")
@@ -2107,7 +2437,18 @@ async fn auth_signup_handler(
         ));
     }
 
-    if !state.auth_rate_limiter.check_and_record("signup:global") {
+    // Rate-limit per client IP, not globally: the old single "signup:global" key
+    // capped the entire site to 12 signups per 15 minutes, which a real signup
+    // surge hits immediately. Per-IP stops a single source flooding accounts
+    // while letting many distinct users through; the generous global backstop
+    // only trips on egregious distributed abuse.
+    if !state
+        .auth_rate_limiter
+        .check_and_record(&format!("signup:{client_ip}"))
+        || !state
+            .signup_global_rate_limiter
+            .check_and_record("signup:global")
+    {
         return Err(ApiError::too_many_requests(
             "Too many sign-up attempts right now. Please wait and try again.",
         ));
@@ -2124,7 +2465,9 @@ async fn auth_signup_handler(
         return Err(ApiError::bad_request("Email already in use."));
     }
 
-    let password_hash = auth::hash_password(&password).map_err(ApiError::internal)?;
+    let password_hash = auth::hash_password_async(password)
+        .await
+        .map_err(ApiError::internal)?;
 
     let user_id = if is_open_signup {
         state
@@ -2234,7 +2577,7 @@ async fn auth_login_handler(
         .await?
         .ok_or_else(|| ApiError::unauthorized("Invalid email or password."))?;
 
-    if !auth::verify_password(&password, &password_hash) {
+    if !auth::verify_password_async(password, password_hash).await {
         return Err(ApiError::unauthorized("Invalid email or password."));
     }
 
@@ -2498,7 +2841,9 @@ async fn auth_reset_handler(
         return Err(ApiError::bad_request("This reset link has expired."));
     }
 
-    let hash = auth::hash_password(password).map_err(ApiError::internal)?;
+    let hash = auth::hash_password_async(password.to_string())
+        .await
+        .map_err(ApiError::internal)?;
     let changed = state.db.set_password_by_email(email, hash).await?;
     if changed == 0 {
         return Err(ApiError::bad_request("This reset link is no longer valid."));
@@ -3865,6 +4210,28 @@ mod tests {
     };
     use axum::http::header::{CONTENT_TYPE, HOST};
     use axum::http::{HeaderMap, HeaderValue, Uri};
+
+    #[test]
+    fn forwarded_for_takes_left_most_client_ip() {
+        // Single IP passes through.
+        assert_eq!(
+            super::parse_forwarded_for("1.2.3.4").as_deref(),
+            Some("1.2.3.4")
+        );
+        // Proxy chain: the original client is the left-most entry.
+        assert_eq!(
+            super::parse_forwarded_for("1.2.3.4, 5.6.7.8, 9.10.11.12").as_deref(),
+            Some("1.2.3.4")
+        );
+        // Surrounding whitespace is trimmed.
+        assert_eq!(
+            super::parse_forwarded_for("  1.2.3.4  ").as_deref(),
+            Some("1.2.3.4")
+        );
+        // Blank/empty header yields None so the caller falls back to the peer IP.
+        assert_eq!(super::parse_forwarded_for(""), None);
+        assert_eq!(super::parse_forwarded_for("   "), None);
+    }
 
     #[test]
     fn normalizes_audio_preferences() {

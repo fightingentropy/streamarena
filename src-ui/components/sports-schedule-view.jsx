@@ -393,6 +393,13 @@ function liveProgressPercent(match, now) {
   return Math.max(0, Math.min(100, ((now - match.startTimestamp) / span) * 100));
 }
 
+// The strict `style-src-attr 'none'` CSP blocks inline element styles, so the
+// live progress width is expressed as a 5%-stepped utility class
+// (.sports-card-progress-fill.is-w-* in sports.css) rather than style={{ width }}.
+function liveProgressWidthClass(match, now) {
+  return `is-w-${Math.round(liveProgressPercent(match, now) / 5) * 5}`;
+}
+
 function renderCard(match, nowAccessor, config) {
   const leagueLabel = getMatchDisplayLeague(match);
   const linksLabel = `${match.linkCount} ${match.linkCount === 1 ? "link" : "links"}`;
@@ -443,8 +450,7 @@ function renderCard(match, nowAccessor, config) {
             ? <>
               <span class="sports-card-progress">
                 <span
-                  class="sports-card-progress-fill"
-                  style={{ width: `${liveProgressPercent(match, nowAccessor())}%` }}
+                  class={`sports-card-progress-fill ${liveProgressWidthClass(match, nowAccessor())}`}
                 ></span>
               </span>
             </>

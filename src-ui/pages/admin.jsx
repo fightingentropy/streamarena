@@ -1,4 +1,12 @@
-import { createMemo, createSignal, For, onMount, Show } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
 
 import { signOut } from "../lib/auth.js";
 
@@ -129,6 +137,99 @@ function GrowthChart(props) {
   );
 }
 
+const STATUS_LABEL = {
+  green: "All systems smooth",
+  amber: "Running degraded",
+  red: "Service issues",
+};
+
+// Map a backend status ("green"/"amber"/"red") to the CSS state class shared by
+// the status card, dots, and pill.
+function statusClass(status) {
+  if (status === "red") return "is-down";
+  if (status === "amber") return "is-warn";
+  return "is-ok";
+}
+
+// One-line summary for the status card: the failing checks' details, or a
+// reassuring all-clear.
+function healthSummary(h) {
+  if (!h) return "";
+  const bad = (h.checks || []).filter((c) => c.status !== "green");
+  if (!bad.length) return "All checks passing.";
+  return bad.map((c) => c.detail).join(" · ");
+}
+
+function fmtBytes(n) {
+  const v = Number(n) || 0;
+  if (v <= 0) return "—";
+  const gb = v / 1e9;
+  if (gb >= 1) return `${gb.toFixed(gb >= 10 ? 0 : 1)} GB`;
+  return `${(v / 1e6).toFixed(0)} MB`;
+}
+
+function fmtUptime(seconds) {
+  const s = Math.max(0, Number(seconds) || 0);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function ratioPct(part, whole) {
+  const w = Number(whole) || 0;
+  if (w <= 0) return 0;
+  return ((Number(part) || 0) / w) * 100;
+}
+
+// CSP-safe sparkline (same approach as GrowthChart): geometry via presentation
+// attributes, colors via CSS classes — no inline `style`. `preserveAspectRatio`
+// stretches it to the card; `non-scaling-stroke` (in admin.css) keeps the line
+// crisp. `max` is a floor so an all-zero series doesn't amplify noise.
+function Sparkline(props) {
+  const W = 240;
+  const H = 48;
+  const pad = 3;
+  const values = () => props.values || [];
+  const max = () => Math.max(props.max || 0, 1, ...values());
+  const stepX = () => (W - pad * 2) / Math.max(1, values().length - 1);
+  const linePoints = () =>
+    values()
+      .map((v, i) => {
+        const x = pad + i * stepX();
+        const y = H - pad - (Math.max(0, v) / max()) * (H - pad * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(" ");
+  const areaPoints = () => {
+    const line = linePoints();
+    if (!line) return "";
+    const lastX = pad + (values().length - 1) * stepX();
+    return `${pad.toFixed(1)},${H - pad} ${line} ${lastX.toFixed(1)},${H - pad}`;
+  };
+  const toneClass = () =>
+    props.tone === "red" ? "is-red" : props.tone === "amber" ? "is-amber" : "";
+  return (
+    <Show
+      when={values().length > 1}
+      fallback={<div class="admin-spark-empty">collecting…</div>}
+    >
+      <svg
+        class={`admin-spark ${toneClass()}`}
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={props.label || "trend"}
+      >
+        <polygon class="admin-spark-fill" points={areaPoints()} />
+        <polyline class="admin-spark-line" points={linePoints()} />
+      </svg>
+    </Show>
+  );
+}
+
 function ActivityFeed(props) {
   return (
     <Show
@@ -197,9 +298,14 @@ export default function AdminPage() {
   const [pwTarget, setPwTarget] = createSignal(null);
   const [pwValue, setPwValue] = createSignal("");
   const [pwError, setPwError] = createSignal("");
+  const [health, setHealth] = createSignal(null);
+  const [healthHistory, setHealthHistory] = createSignal([]);
+  const [healthStatus, setHealthStatus] = createSignal("idle");
+  const [healthError, setHealthError] = createSignal("");
 
   let searchTimer;
   let flashTimer;
+  let healthTimer;
 
   function showFlash(text, isError = false) {
     setFlash({ text, isError });
@@ -230,9 +336,31 @@ export default function AdminPage() {
       setActivity(ac.events || []);
       await loadUsers();
       setStatus("ready");
+      // Populate the at-a-glance status pill on the overview without blocking
+      // the main load; the Health tab does the full fetch + 20s polling.
+      getJson("/api/admin/health")
+        .then(setHealth)
+        .catch(() => {});
     } catch (e) {
       setError(e.message || "Unknown error");
       setStatus("error");
+    }
+  }
+
+  async function loadHealth(initial = false) {
+    if (initial) setHealthStatus("loading");
+    try {
+      const [snap, hist] = await Promise.all([
+        getJson("/api/admin/health"),
+        getJson("/api/admin/health/history?hours=24"),
+      ]);
+      setHealth(snap);
+      setHealthHistory(hist.samples || []);
+      setHealthError("");
+      setHealthStatus("ready");
+    } catch (e) {
+      setHealthError(e.message || "Couldn’t load service health.");
+      if (initial) setHealthStatus("error");
     }
   }
 
@@ -349,6 +477,108 @@ export default function AdminPage() {
     ];
   });
 
+  const healthKpis = createMemo(() => {
+    const h = health();
+    if (!h) return [];
+    const host = h.host || {};
+    const http = (h.http && h.http.counters) || {};
+    const restarts = h.restarts || {};
+    const playback = h.playback || {};
+    return [
+      {
+        label: "Uptime",
+        value: fmtUptime(h.uptimeSeconds),
+        sub: `${fmtNum(http.reqTotal)} requests served`,
+      },
+      {
+        label: "Restarts · 1h",
+        value: fmtNum(restarts.lastHour),
+        sub:
+          restarts.minutesSinceLast != null
+            ? `last ${restarts.minutesSinceLast}m ago`
+            : "none recently",
+      },
+      {
+        label: "File descriptors",
+        value: host.fdCount >= 0 ? fmtNum(host.fdCount) : "—",
+        sub:
+          host.fdLimit > 0
+            ? `of ${fmtNum(host.fdLimit)} · ${ratioPct(host.fdCount, host.fdLimit).toFixed(0)}%`
+            : "limit unknown",
+      },
+      {
+        label: "Memory",
+        value: `${ratioPct(host.memUsed, host.memTotal).toFixed(0)}%`,
+        sub: `${fmtBytes(host.memUsed)} / ${fmtBytes(host.memTotal)}`,
+      },
+      {
+        label: "Disk free",
+        value: host.diskTotal > 0 ? `${ratioPct(host.diskFree, host.diskTotal).toFixed(0)}%` : "—",
+        sub: `${fmtBytes(host.diskFree)} free`,
+      },
+      {
+        label: "CPU load",
+        value: (Number(host.load1) || 0).toFixed(2),
+        sub: `${fmtNum(host.numCpus)} cores`,
+      },
+      {
+        label: "HTTP 5xx",
+        value: `${(Number(h.http?.req5xxRate) || 0).toFixed(1)}%`,
+        sub: `${fmtNum(http.req5xx)} of ${fmtNum(http.reqTotal)}`,
+      },
+      {
+        label: "Playback fails",
+        value: `${(Number(playback.failureRate) || 0).toFixed(0)}%`,
+        sub: `${fmtNum(playback.windowTotal)} recent plays`,
+      },
+    ];
+  });
+
+  const sparkSpecs = createMemo(() => {
+    const samples = healthHistory();
+    const last = samples.length ? samples[samples.length - 1] : null;
+    return [
+      {
+        label: "HTTP 5xx rate",
+        tone: "red",
+        max: 5,
+        values: samples.map((s) => Number(s.req5xxRate) || 0),
+        current: last ? `${(Number(last.req5xxRate) || 0).toFixed(1)}%` : "—",
+      },
+      {
+        label: "Playback fail rate",
+        tone: "amber",
+        max: 10,
+        values: samples.map((s) => Number(s.playbackFailureRate) || 0),
+        current: last ? `${(Number(last.playbackFailureRate) || 0).toFixed(0)}%` : "—",
+      },
+      {
+        label: "FD usage",
+        tone: "blue",
+        max: 100,
+        values: samples.map((s) => ratioPct(s.fdCount, s.fdLimit)),
+        current: last ? `${ratioPct(last.fdCount, last.fdLimit).toFixed(0)}%` : "—",
+      },
+      {
+        label: "Memory usage",
+        tone: "blue",
+        max: 100,
+        values: samples.map((s) => ratioPct(s.memUsed, s.memTotal)),
+        current: last ? `${ratioPct(last.memUsed, last.memTotal).toFixed(0)}%` : "—",
+      },
+    ];
+  });
+
+  // Poll the Health tab while it's open; stop when the user navigates away.
+  createEffect(() => {
+    clearInterval(healthTimer);
+    if (tab() === "health") {
+      loadHealth(true);
+      healthTimer = setInterval(() => loadHealth(false), 20_000);
+    }
+  });
+  onCleanup(() => clearInterval(healthTimer));
+
   onMount(loadAll);
 
   return (
@@ -388,6 +618,12 @@ export default function AdminPage() {
         >
           Activity
         </button>
+        <button
+          classList={{ "admin-tab": true, "is-active": tab() === "health" }}
+          onClick={() => setTab("health")}
+        >
+          Health
+        </button>
         <span class="admin-tabnav-spacer" />
         <button
           class="admin-btn admin-refresh"
@@ -411,6 +647,16 @@ export default function AdminPage() {
       <main class="admin-main">
         <Show when={tab() === "overview"}>
           <Show when={overview()} fallback={<div class="admin-loading">Loading metrics…</div>}>
+            <Show when={health()}>
+              <button
+                class={`admin-status-pill ${statusClass(health().status)}`}
+                onClick={() => setTab("health")}
+              >
+                <span class={`admin-status-dot ${statusClass(health().status)}`} />
+                {STATUS_LABEL[health().status] || "Service health"}
+                <span class="admin-status-pill-go">View health →</span>
+              </button>
+            </Show>
             <div class="admin-kpis">
               <For each={kpis()}>
                 {(k) => (
@@ -544,6 +790,120 @@ export default function AdminPage() {
             </div>
             <ActivityFeed events={activity()} />
           </section>
+        </Show>
+
+        <Show when={tab() === "health"}>
+          <Show
+            when={health()}
+            fallback={
+              <Show
+                when={healthError() && healthStatus() === "error"}
+                fallback={<div class="admin-loading">Checking service health…</div>}
+              >
+                <div class="admin-error">{healthError()}</div>
+              </Show>
+            }
+          >
+            <section class={`admin-status ${statusClass(health().status)}`}>
+              <span class={`admin-status-dot ${statusClass(health().status)}`} />
+              <div class="admin-status-body">
+                <h2 class="admin-status-title">{STATUS_LABEL[health().status]}</h2>
+                <p class="admin-status-sub">{healthSummary(health())}</p>
+              </div>
+              <span class="admin-status-meta">uptime {fmtUptime(health().uptimeSeconds)}</span>
+            </section>
+
+            <div class="admin-kpis">
+              <For each={healthKpis()}>
+                {(k) => (
+                  <div class="admin-kpi">
+                    <span class="admin-kpi-label">{k.label}</span>
+                    <span class="admin-kpi-value">{k.value}</span>
+                    <span class="admin-kpi-sub">{k.sub}</span>
+                  </div>
+                )}
+              </For>
+            </div>
+
+            <section class="admin-panel">
+              <div class="admin-panel-head">
+                <h2 class="admin-panel-title">Checks</h2>
+                <span class="admin-panel-sub">Live · refreshes every 20s</span>
+              </div>
+              <div class="admin-checks">
+                <For each={health().checks || []}>
+                  {(c) => (
+                    <div class="admin-check">
+                      <span class={`admin-status-dot ${statusClass(c.status)}`} />
+                      <div class="admin-check-body">
+                        <div class="admin-check-label">{c.label}</div>
+                        <div class="admin-check-detail">{c.detail}</div>
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </section>
+
+            <section class="admin-panel">
+              <div class="admin-panel-head">
+                <h2 class="admin-panel-title">Last 24 hours</h2>
+                <span class="admin-panel-sub">{fmtNum(healthHistory().length)} samples</span>
+              </div>
+              <div class="admin-sparks">
+                <For each={sparkSpecs()}>
+                  {(s) => (
+                    <div class="admin-spark-card">
+                      <div class="admin-spark-head">
+                        <span class="admin-spark-label">{s.label}</span>
+                        <span class="admin-spark-value">{s.current}</span>
+                      </div>
+                      <Sparkline values={s.values} tone={s.tone} max={s.max} label={s.label} />
+                    </div>
+                  )}
+                </For>
+              </div>
+            </section>
+
+            <Show when={(health().providers?.providers || []).length}>
+              <section class="admin-panel">
+                <div class="admin-panel-head">
+                  <h2 class="admin-panel-title">Providers</h2>
+                  <span class="admin-panel-sub">Sports &amp; live stream sources</span>
+                </div>
+                <div class="admin-tablewrap">
+                  <table class="admin-table">
+                    <thead>
+                      <tr>
+                        <th>Provider</th>
+                        <th class="admin-num">OK</th>
+                        <th class="admin-num">Fail</th>
+                        <th class="admin-num">Streak</th>
+                        <th class="admin-num">Latency</th>
+                        <th>Last error</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <For each={health().providers.providers}>
+                        {(p) => (
+                          <tr>
+                            <td>{p.key}</td>
+                            <td class="admin-num">{fmtNum(p.successes)}</td>
+                            <td class="admin-num">{fmtNum(p.failures)}</td>
+                            <td class="admin-num">{fmtNum(p.consecutiveFailures)}</td>
+                            <td class="admin-num">
+                              {p.lastLatencyMs >= 0 ? `${fmtNum(p.lastLatencyMs)}ms` : "—"}
+                            </td>
+                            <td class="admin-provider-err">{p.lastError || "—"}</td>
+                          </tr>
+                        )}
+                      </For>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </Show>
+          </Show>
         </Show>
       </main>
 

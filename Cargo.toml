@@ -33,3 +33,7 @@ argon2 = "0.5"
 getrandom = "0.4"
 hmac = "0.12"
 sha2 = "0.10"
+# `system` feature only: we use System memory + load average. Disk free/total
+# and the process fd count come from libc (statvfs / getrlimit + /dev/fd), so the
+# heavier disk/network/component collectors are left off to keep the build lean.
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }

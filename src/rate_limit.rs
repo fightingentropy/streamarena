@@ -6,9 +6,10 @@ use crate::utils::now_ms;
 /// Small in-memory sliding-window rate limiter.
 ///
 /// Used to throttle authentication attempts. Keying is left to the caller:
-/// login is keyed per-email (so it survives the Caddy reverse proxy, where
-/// the peer IP is always localhost) and signup uses a single global key to cap
-/// mass account creation.
+/// login is keyed per-email and signup per-client-IP (from `X-Forwarded-For`,
+/// since behind the Caddy reverse proxy the peer IP is always localhost). A
+/// separate, generous global limiter backstops signup against mass account
+/// creation without throttling an organic surge.
 pub struct RateLimiter {
     window_ms: i64,
     max_hits: usize,

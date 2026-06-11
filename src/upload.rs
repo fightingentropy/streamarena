@@ -2027,6 +2027,7 @@ mod tests {
             upload_temp_dir: cache_dir.join("uploads"),
             local_library_path: assets_dir.join("library.json"),
             persistent_cache_db_path: cache_dir.join("resolver-cache.sqlite"),
+            persistent_users_db_path: cache_dir.join("users.sqlite"),
             host: "127.0.0.1".to_owned(),
             port: 0,
             max_upload_bytes: UPLOAD_SESSION_CHUNK_MAX_BYTES * 4,
