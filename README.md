@@ -28,7 +28,7 @@ The repository is a single full-stack app:
 - Player: custom HTML5 video UI with direct playback, remux, HLS, subtitles, live streams, and source switching.
 - Discovery: TMDB metadata, selected external embed fallbacks, and user-enabled Torrentio/Torznab plus Real-Debrid torrent resolution.
 - Local library: `assets/library.json` plus uploaded/managed videos under `assets/videos`.
-- Persistence: SQLite cache and user data in `cache/resolver-cache.sqlite`.
+- Persistence: two SQLite files — durable accounts/user data in `cache/users.sqlite`, and regenerable cache/resolver state in `cache/resolver-cache.sqlite` (the latter self-heals if corrupt; the former is never auto-wiped).
 - Production target: a Mac mini runtime tree served locally on `127.0.0.1:5173` and exposed through Caddy.
 
 Important paths:
@@ -493,7 +493,8 @@ Torznab behavior:
 
 Server-managed files:
 
-- `cache/resolver-cache.sqlite` - SQLite DB for auth, user sync, resolver/session/cache data.
+- `cache/users.sqlite` - durable SQLite DB for accounts: users, auth sessions, preferences, watch progress, continue-watching, My List, password-reset/email-verification tokens, and service-health history. Never auto-quarantined.
+- `cache/resolver-cache.sqlite` - regenerable SQLite cache: resolver/session/TMDB/probe caches. Self-heals from corruption (quarantine + rebuild). On first boot after the split, durable rows are migrated out of here into `users.sqlite`.
 - `cache/hls/` - generated HLS playlists/segments and transcode work.
 - `cache/local-torrents/` - local torrent files and direct file cache.
 - `cache/uploads/` - active upload sessions and temp files.
@@ -501,13 +502,18 @@ Server-managed files:
 - `assets/videos/` - local video files or symlinks in development.
 - `assets/images/` and `assets/icons/` - library artwork, live channel art, and app icons.
 
-SQLite stores:
+`cache/users.sqlite` (durable, never auto-wiped) stores:
 
 - Users and auth sessions.
 - User preferences.
 - Watch progress.
 - Continue watching entries.
 - My List entries.
+- Password-reset and email-verification tokens.
+- Service-health history (health samples + restart log) backing the admin dashboard.
+
+`cache/resolver-cache.sqlite` (regenerable, self-heals from corruption) stores:
+
 - TMDB response cache. General metadata defaults to a short TTL, while watched TV series details/seasons/episode metadata are kept for 30 days and refreshed in the background.
 - Resolved stream cache.
 - Movie quick-start cache.
@@ -817,7 +823,7 @@ Stale service worker:
 
 Current cleanup state:
 
-- Ignored local artifacts such as `.DS_Store`, `tmp/`, `dist/`, and `target/` are disposable and can be regenerated. `cache/resolver-cache.sqlite*` is local app state, so do not delete it unless you intentionally want to reset local auth/user/cache data.
+- Ignored local artifacts such as `.DS_Store`, `tmp/`, `dist/`, and `target/` are disposable and can be regenerated. `cache/resolver-cache.sqlite*` is regenerable cache and safe to reset, but `cache/users.sqlite*` holds accounts/user data — do not delete it unless you intentionally want to wipe local auth/user state.
 - Vite is updated to 8.x. Direct Rust dependency baselines are current for this app: Reqwest 0.13, Quick XML 0.40, Rusqlite 0.40, and Getrandom 0.4. Cargo may still report transitive crates held behind latest by upstream constraints.
 - Live HLS, live HLS resources, and Twitch stream resolving routes are protected API routes.
 - Upstream resolver/request errors are sanitized so TMDB, Torznab, Real-Debrid, live/embed, and Twitch failures do not echo secret-bearing URLs or tokens.
