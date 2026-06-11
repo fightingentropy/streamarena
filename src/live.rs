@@ -160,6 +160,59 @@ fn maybe_route_live_resources_to_worker(
     )
 }
 
+/// When the Cloudflare live-HLS Worker is configured, serve signed live
+/// playlist URLs from the Worker host instead of the zone: the zone's
+/// always-on L7 DDoS managed ruleset intermittently mints 503s for bursty
+/// `/api/live/*` playlist polling (hls.js refresh + failover retries), while
+/// the workers.dev host is unaffected. The Worker proxies the playlist from
+/// the origin — which keeps doing the upstream fetch + rewrite — and
+/// re-points the rewritten URLs at itself, so segments follow automatically.
+/// No-op when the Worker base is unset or the source is not the signed live
+/// playlist proxy.
+pub fn route_live_playback_source_via_worker(worker_base: &str, source: String) -> String {
+    let worker_base = worker_base.trim().trim_end_matches('/');
+    if worker_base.is_empty() || !source.starts_with("/api/live/hls.m3u8?") {
+        return source;
+    }
+    format!("{worker_base}{source}")
+}
+
+/// True when `uri` is a live HLS proxy request carrying a valid
+/// trusted-external-embed signature. The API auth middleware uses this to let
+/// the Cloudflare Worker's origin relays through without a browser session:
+/// the worker→origin hop can't carry cookies, and the HMAC already proves the
+/// URL was minted by this backend — the same authorization the Worker itself
+/// enforces when serving segments. Unsigned live requests (allowlisted TV
+/// channels fetched same-origin by the player) still require a session.
+pub fn is_signed_live_hls_request(live_hls_proxy_secret: &str, uri: &Uri) -> bool {
+    if uri.path() != "/api/live/hls.m3u8" && uri.path() != "/api/live/hls-resource" {
+        return false;
+    }
+    if live_hls_proxy_secret.trim().is_empty() {
+        return false;
+    }
+    let params = query_pairs(uri.query().unwrap_or_default());
+    if params
+        .get(LIVE_HLS_EXTERNAL_EMBED_PARAM)
+        .map(String::as_str)
+        != Some("1")
+    {
+        return false;
+    }
+    let (Some(input), Some(signature)) = (
+        params.get("input"),
+        params.get(LIVE_HLS_SIGNATURE_PARAM),
+    ) else {
+        return false;
+    };
+    // The signature covers the normalized input + referer exactly as the URL
+    // builder serialized them into the query, so verify over the raw values.
+    let referer = params
+        .get("referer")
+        .and_then(|value| normalize_hls_referer(value));
+    verify_live_hls_proxy_url_signature(input, referer.as_deref(), signature, live_hls_proxy_secret)
+}
+
 /// Extract the upstream segment URL (`input` query param) from the first bare
 /// `/api/live/hls-resource?…` line of a rewritten media playlist, used to derive
 /// the stream's transcode-cache key.
@@ -1458,6 +1511,61 @@ mod tests {
         assert_eq!(
             super::first_live_resource_input("#EXTM3U\nno-resources-here\n"),
             None,
+        );
+    }
+
+    #[test]
+    fn signed_live_hls_requests_bypass_session_auth_only_with_valid_signature() {
+        let secret = "test-live-hls-proxy-secret-with-enough-length";
+        let signed = build_trusted_external_embed_hls_playback_source(
+            "https://cdn.example.com/live/index.m3u8",
+            Some("https://embed.st/embed/admin/game/1"),
+            secret,
+        );
+        let uri: axum::http::Uri = signed.parse().expect("signed uri");
+        assert!(super::is_signed_live_hls_request(secret, &uri));
+        // Wrong secret, tampered input, missing signature, foreign path: all
+        // fall back to session auth.
+        assert!(!super::is_signed_live_hls_request(
+            "wrong-secret-with-enough-length",
+            &uri
+        ));
+        let tampered: axum::http::Uri = signed
+            .replace("input=https%3A%2F%2Fcdn", "input=https%3A%2F%2Fevil")
+            .parse()
+            .expect("tampered uri");
+        assert!(!super::is_signed_live_hls_request(secret, &tampered));
+        let unsigned: axum::http::Uri =
+            "/api/live/hls.m3u8?input=https%3A%2F%2Fwww.bloomberg.com%2Flive.m3u8"
+                .parse()
+                .expect("unsigned uri");
+        assert!(!super::is_signed_live_hls_request(secret, &unsigned));
+        let foreign: axum::http::Uri = "/api/user/preferences".parse().expect("foreign uri");
+        assert!(!super::is_signed_live_hls_request(secret, &foreign));
+        assert!(!super::is_signed_live_hls_request("", &uri));
+    }
+
+    #[test]
+    fn routes_signed_live_playlists_to_worker_base() {
+        let signed = "/api/live/hls.m3u8?input=https%3A%2F%2Fcdn%2Flive.m3u8&externalEmbed=1&sig=abc";
+        assert_eq!(
+            super::route_live_playback_source_via_worker(
+                "https://live.example.workers.dev/",
+                signed.to_owned(),
+            ),
+            format!("https://live.example.workers.dev{signed}"),
+        );
+        // Disabled flag and non-live sources pass through untouched.
+        assert_eq!(
+            super::route_live_playback_source_via_worker("  ", signed.to_owned()),
+            signed,
+        );
+        assert_eq!(
+            super::route_live_playback_source_via_worker(
+                "https://live.example.workers.dev",
+                "https://cdn.example.com/direct.m3u8".to_owned(),
+            ),
+            "https://cdn.example.com/direct.m3u8",
         );
     }
 

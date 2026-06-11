@@ -212,6 +212,16 @@ async fn api_auth_middleware(
     request: Request<Body>,
     next: Next,
 ) -> Result<Response<Body>, ApiError> {
+    // The Cloudflare live-HLS Worker relays signed playlist/segment requests
+    // to this origin without a browser session (cookies don't cross the
+    // worker hop); the HMAC in the URL is the authorization — only this
+    // backend can mint it. Everything else requires a session.
+    if crate::live::is_signed_live_hls_request(
+        &state.config.live_hls_proxy_secret,
+        request.uri(),
+    ) {
+        return Ok(next.run(request).await);
+    }
     auth::require_auth(&state.db, &headers).await?;
     Ok(next.run(request).await)
 }

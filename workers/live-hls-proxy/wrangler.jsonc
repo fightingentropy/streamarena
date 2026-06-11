@@ -4,8 +4,18 @@
   "main": "src/index.js",
   "compatibility_date": "2026-05-23",
   "workers_dev": true,
-  "observability": { "enabled": true }
-  // Secret (set out-of-band, never committed):
+  "observability": { "enabled": true },
+  // Public origin the playlist/viaOrigin routes relay to (the mini behind
+  // Caddy). The path+query is forwarded verbatim so signatures keep validating.
+  "vars": { "ORIGIN_BASE": "https://streamthatshit.com" }
+  // Secrets (set out-of-band, never committed):
   //   wrangler secret put LIVE_HLS_PROXY_SECRET
-  // Must equal the mini's LIVE_HLS_PROXY_SECRET so signatures validate.
+  //     Must equal the mini's LIVE_HLS_PROXY_SECRET so signatures validate.
+  //   wrangler secret put ORIGIN_DIRECT_BASE
+  //     Optional http:// base on a grey-cloud (DNS-only) hostname for the
+  //     origin IP; origin fetches then connect direct instead of re-entering
+  //     the zone edge (dodging the L7 DDoS managed ruleset, which is the whole
+  //     point — cf.resolveOverride is silently ignored on workers.dev). Kept
+  //     secret, and served over plain HTTP, so neither the public repo nor CT
+  //     logs advertise a name that resolves to the origin IP.
 }
