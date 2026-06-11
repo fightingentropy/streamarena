@@ -3311,10 +3311,19 @@ fn copy_durable_tables(connection: &Connection) -> Result<(), rusqlite::Error> {
             .map(|column| format!("\"{column}\""))
             .collect::<Vec<_>>()
             .join(", ");
+        // Child tables carry a `user_id` FK to `users`. A legacy DB can hold orphan
+        // rows whose user was deleted without the cascade firing (e.g. inserted
+        // while foreign_keys was off); copying those would trip the FK constraint,
+        // so drop them by keeping only rows with a surviving parent.
+        let parent_filter = if shared.iter().any(|column| column.eq_ignore_ascii_case("user_id")) {
+            " WHERE \"user_id\" IN (SELECT id FROM main.\"users\")"
+        } else {
+            ""
+        };
         let copied = tx.execute(
             &format!(
                 "INSERT OR IGNORE INTO main.\"{table}\" ({column_list}) \
-                 SELECT {column_list} FROM legacy.\"{table}\""
+                 SELECT {column_list} FROM legacy.\"{table}\"{parent_filter}"
             ),
             [],
         )?;
@@ -5293,8 +5302,22 @@ mod tests {
         std::env::temp_dir().join(format!("netflix-{name}-{}.sqlite", super::now_ms()))
     }
 
+    /// Per-test users DB path sitting beside the cache path, so each test gets its
+    /// own isolated `users.sqlite` (tests run in parallel).
+    fn users_db_path_for(cache_path: &Path) -> PathBuf {
+        let file = cache_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "cache.sqlite".to_owned());
+        cache_path.with_file_name(format!("users-{file}"))
+    }
+
     async fn setup_test_playback_session_db(path: &Path) -> Db {
-        let config = crate::config::Config {
+        Db::initialize(&test_config(path)).await.expect("init db")
+    }
+
+    fn test_config(path: &Path) -> crate::config::Config {
+        crate::config::Config {
             root_dir: std::env::temp_dir(),
             frontend_dir: std::env::temp_dir(),
             assets_dir: std::env::temp_dir(),
@@ -5304,6 +5327,7 @@ mod tests {
             upload_temp_dir: std::env::temp_dir(),
             local_library_path: std::env::temp_dir().join("library.json"),
             persistent_cache_db_path: path.to_path_buf(),
+            persistent_users_db_path: users_db_path_for(path),
             host: "127.0.0.1".to_owned(),
             port: 0,
             max_upload_bytes: 1,
@@ -5343,8 +5367,7 @@ mod tests {
             email_from: "noreply@streamthatshit.com".to_owned(),
             cf_account_id: String::new(),
             cf_email_api_token: String::new(),
-        };
-        Db::initialize(&config).await.expect("init db")
+        }
     }
 
     #[tokio::test]
@@ -5521,11 +5544,12 @@ mod tests {
         .expect("join integrity check")
         .expect("run integrity check");
         assert_eq!(integrity, "ok");
-        // 17 application tables + SQLite's internal `sqlite_sequence` (created by
-        // the AUTOINCREMENT column on `users`).
+        // The 7 regenerable cache tables. The durable user tables (and the
+        // `sqlite_sequence` that `users`' AUTOINCREMENT would create) now live in
+        // users.sqlite, so they are deliberately absent here.
         assert_eq!(
-            table_count, 18,
-            "rebuilt cache database should expose the full schema"
+            table_count, 7,
+            "rebuilt cache database should expose exactly the cache schema"
         );
 
         // The corrupt original was preserved alongside, not deleted, with the
@@ -5550,8 +5574,201 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_file(&path).await;
+        let _ = tokio::fs::remove_file(users_db_path_for(&path)).await;
         for backup in backups {
             let _ = tokio::fs::remove_file(backup).await;
         }
+    }
+
+    /// The core invariant this split exists to guarantee: a cache-DB corruption
+    /// self-heals (quarantine + rebuild) without touching accounts, which now live
+    /// in a separate users.sqlite that is never quarantined.
+    #[tokio::test]
+    async fn cache_corruption_preserves_user_accounts() {
+        let path = unique_temp_db_path("cache-corruption-accounts");
+        let config = test_config(&path);
+
+        // Create an account and some durable user state, then close the DB so WAL
+        // is checkpointed back into the main cache file.
+        let user_id = {
+            let db = Db::initialize(&config).await.expect("init db");
+            let user_id = db
+                .create_user(
+                    "survivor@example.com".to_owned(),
+                    "hash".to_owned(),
+                    "Survivor".to_owned(),
+                )
+                .await
+                .expect("create user");
+            db.replace_user_my_list(
+                user_id,
+                vec![json!({"itemIdentity": "tmdb:movie:1", "title": "Keep"})],
+            )
+            .await
+            .expect("seed my list");
+            user_id
+        };
+
+        // Corrupt the cache DB on disk, exactly as the 2026-06-09 boot incident
+        // did, and drop its WAL/SHM siblings so the malformed main file is opened.
+        let mut corrupt = b"SQLite format 3\0".to_vec();
+        corrupt.extend_from_slice(&[0xFFu8; 512]);
+        tokio::fs::write(&path, &corrupt)
+            .await
+            .expect("corrupt cache db");
+        let _ = tokio::fs::remove_file(PathBuf::from(format!("{}-wal", path.to_string_lossy()))).await;
+        let _ = tokio::fs::remove_file(PathBuf::from(format!("{}-shm", path.to_string_lossy()))).await;
+
+        // Re-initialize: the cache DB self-heals; users.sqlite is untouched.
+        let db = Db::initialize(&config)
+            .await
+            .expect("re-init after cache corruption");
+        assert_eq!(
+            db.user_count().await.expect("count users"),
+            1,
+            "accounts must survive a cache-DB corruption"
+        );
+        let found = db
+            .get_user_by_email("survivor@example.com".to_owned())
+            .await
+            .expect("lookup user")
+            .expect("user still exists");
+        assert_eq!(found.0, user_id);
+        assert_eq!(
+            db.get_user_my_list(user_id).await.expect("load list").len(),
+            1,
+            "durable user data must survive a cache-DB corruption"
+        );
+
+        // The corrupt cache file was quarantined (not silently deleted).
+        let stem = path.file_stem().expect("db file stem").to_string_lossy().into_owned();
+        let parent = path.parent().expect("db parent dir").to_path_buf();
+        let prefix = format!("{stem}.corrupt-");
+        let mut backups = Vec::new();
+        let mut entries = tokio::fs::read_dir(&parent).await.expect("read temp dir");
+        while let Some(entry) = entries.next_entry().await.expect("read dir entry") {
+            if entry.file_name().to_string_lossy().starts_with(prefix.as_str()) {
+                backups.push(entry.path());
+            }
+        }
+        assert!(!backups.is_empty(), "corrupt cache file should be quarantined");
+
+        let _ = tokio::fs::remove_file(&path).await;
+        let _ = tokio::fs::remove_file(users_db_path_for(&path)).await;
+        for backup in backups {
+            let _ = tokio::fs::remove_file(backup).await;
+        }
+    }
+
+    /// First boot after the split: a pre-existing single-file DB (cache + user
+    /// tables together) must have its durable rows copied into a fresh
+    /// users.sqlite, with foreign-key-linked rows surviving intact.
+    #[tokio::test]
+    async fn first_boot_migrates_durable_rows_out_of_the_legacy_combined_db() {
+        let legacy_path = unique_temp_db_path("legacy-combined");
+        let users_path = users_db_path_for(&legacy_path);
+
+        // Build a pre-split combined DB (cache + user tables in one file) and seed
+        // an account with FK-linked session, continue-watching, and my-list rows.
+        let setup = legacy_path.clone();
+        let user_id = super::task::spawn_blocking(move || {
+            super::build_cache_schema(&setup)?;
+            super::build_users_schema(&setup)?;
+            let connection = open_connection(&setup)?;
+            // Seed deliberately-messy legacy data, including an orphan session whose
+            // user was deleted without the cascade firing — so foreign_keys is off
+            // here to allow inserting it, just as the real legacy DB accumulated one.
+            connection.pragma_update(None, "foreign_keys", false)?;
+            let now = super::now_ms();
+            connection.execute(
+                "INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?)",
+                params!["legacy@example.com", "legacy-hash", "Legacy User", now, now],
+            )?;
+            let user_id = connection.last_insert_rowid();
+            connection.execute(
+                "INSERT INTO auth_sessions (token, user_id, created_at, expires_at)
+                 VALUES (?, ?, ?, ?)",
+                params!["legacy-token", user_id, now, now + 1_000_000],
+            )?;
+            // Orphan session: references a user id that does not exist.
+            connection.execute(
+                "INSERT INTO auth_sessions (token, user_id, created_at, expires_at)
+                 VALUES (?, ?, ?, ?)",
+                params!["orphan-token", user_id + 9_999, now, now + 1_000_000],
+            )?;
+            connection.execute(
+                "INSERT INTO user_my_list (user_id, item_identity, details_json, added_at)
+                 VALUES (?, ?, ?, ?)",
+                params![user_id, "tmdb:movie:9", "{\"title\":\"Kept\"}", now],
+            )?;
+            // A cache row, to prove the legacy file keeps serving as the cache DB.
+            connection.execute(
+                "INSERT INTO tmdb_response_cache (cache_key, payload_json, expires_at, updated_at)
+                 VALUES (?, ?, ?, ?)",
+                params!["legacy-key", "{}", now + 1_000_000, now],
+            )?;
+            Ok::<i64, rusqlite::Error>(user_id)
+        })
+        .await
+        .expect("join legacy seed")
+        .expect("seed legacy combined db");
+
+        // First boot: users.sqlite is absent, so the durable rows migrate over.
+        let config = test_config(&legacy_path);
+        let db = Db::initialize(&config).await.expect("init with migration");
+
+        assert_eq!(
+            db.user_count().await.expect("count users"),
+            1,
+            "the legacy account should migrate into users.sqlite"
+        );
+        let found = db
+            .get_user_by_email("legacy@example.com".to_owned())
+            .await
+            .expect("lookup migrated user")
+            .expect("migrated user exists");
+        assert_eq!(found.0, user_id);
+        assert!(
+            db.get_session("legacy-token".to_owned())
+                .await
+                .expect("lookup migrated session")
+                .is_some(),
+            "FK-linked auth session should migrate alongside its user"
+        );
+        assert!(
+            db.get_session("orphan-token".to_owned())
+                .await
+                .expect("lookup orphan session")
+                .is_none(),
+            "orphan session (no surviving user) must be dropped, not block migration"
+        );
+        assert_eq!(
+            db.get_user_my_list(user_id).await.expect("load my list").len(),
+            1,
+            "my-list rows should migrate"
+        );
+
+        // The legacy file continues to back the cache DB.
+        let cached = db
+            .get_tmdb_cache("legacy-key".to_owned())
+            .await
+            .expect("load cache row after migration");
+        assert!(cached.is_some(), "cache rows in the legacy file remain usable");
+
+        // The migration is non-destructive: the user rows are still in the legacy
+        // file as a safety net.
+        let check = legacy_path.clone();
+        let legacy_users = super::task::spawn_blocking(move || {
+            let connection = open_connection(&check)?;
+            connection.query_row("SELECT COUNT(*) FROM users", [], |row| row.get::<_, i64>(0))
+        })
+        .await
+        .expect("join legacy count")
+        .expect("count legacy users");
+        assert_eq!(legacy_users, 1, "legacy rows are left in place as a backup");
+
+        let _ = tokio::fs::remove_file(&legacy_path).await;
+        let _ = tokio::fs::remove_file(&users_path).await;
     }
 }
