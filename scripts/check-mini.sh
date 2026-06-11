@@ -45,8 +45,10 @@ node_deps_dir="${NETFLIX_NODE_DEPS_DIR:-$HOME/.local/share/netflix-node}"
 runtime_tree=$(find "$app" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | grep -vxF .env | sort | paste -sd, - || true)
 app_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/health/live || true)
 library_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/library || true)
-caddy_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1/api/library || true)
-caddy_https=$(curl -k -sS -o /dev/null -w "%{http_code}" --resolve "$PUBLIC_HOST:443:127.0.0.1" --max-time 5 "https://$PUBLIC_HOST/api/library" || true)
+# Direct-origin Caddy probes were retired: the origin is locked to Cloudflare
+# IPs, so a loopback request to Caddy is aborted (always 000). The reverse proxy
+# is verified end-to-end through the public hostname instead (see PUBLIC_URL
+# checks at the bottom of this script).
 listener=$(lsof -nP -iTCP:5173 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
 caddy_80=$(sudo lsof -nP -iTCP:80 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
 caddy_443=$(sudo lsof -nP -iTCP:443 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
@@ -133,8 +135,6 @@ printf 'runtime_tree=%s\n' "$runtime_tree"
 printf 'expected_tree=%s\n' "$expected_tree"
 printf 'app_http=%s\n' "$app_http"
 printf 'library_http=%s\n' "$library_http"
-printf 'caddy_http=%s\n' "$caddy_http"
-printf 'caddy_https=%s\n' "$caddy_https"
 printf 'listener=%s\n' "$listener"
 printf 'caddy_80=%s\n' "${caddy_80:-missing}"
 printf 'caddy_443=%s\n' "${caddy_443:-missing}"
@@ -195,8 +195,6 @@ runtime_tree=$(value_for runtime_tree)
 expected_tree=$(value_for expected_tree)
 app_http=$(value_for app_http)
 library_http=$(value_for library_http)
-caddy_http=$(value_for caddy_http)
-caddy_https=$(value_for caddy_https)
 listener=$(value_for listener)
 caddy_80=$(value_for caddy_80)
 caddy_443=$(value_for caddy_443)
@@ -244,8 +242,9 @@ ntvs_proxy_http=$(value_for ntvs_proxy_http)
 [[ "$runtime_tree" == "$expected_tree" ]] && pass "runtime tree is $runtime_tree" || bad "runtime tree is $runtime_tree, expected $expected_tree"
 [[ "$app_http" == "200" ]] && pass "mini live health returns HTTP 200" || bad "mini live health returned HTTP $app_http"
 [[ "$library_http" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "API library endpoint returns HTTP $PROTECTED_ENDPOINT_STATUS" || bad "API library endpoint returned HTTP $library_http"
-[[ "$caddy_http" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "Caddy HTTP reverse proxy returns HTTP $PROTECTED_ENDPOINT_STATUS" || bad "Caddy HTTP reverse proxy returned HTTP $caddy_http"
-[[ "$caddy_https" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "Caddy HTTPS reverse proxy returns HTTP $PROTECTED_ENDPOINT_STATUS" || bad "Caddy HTTPS reverse proxy returned HTTP $caddy_https"
+# Caddy reverse-proxy correctness is checked via the public hostname (through
+# Cloudflare) in the PUBLIC_URL section below; the origin can't be probed
+# directly now that it only accepts Cloudflare IPs.
 [[ "$listener" == "127.0.0.1:5173" ]] && pass "backend listener is localhost only" || bad "backend listener is '$listener'"
 [[ "$caddy_80" == *":80" ]] && pass "Caddy listens on port 80" || bad "Caddy port 80 listener is '$caddy_80'"
 [[ "$caddy_443" == *":443" ]] && pass "Caddy listens on port 443" || bad "Caddy port 443 listener is '$caddy_443'"
@@ -310,5 +309,11 @@ public_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_
 
 public_auth_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL/api/auth/me" || true)"
 [[ "$public_auth_status" == "401" ]] && pass "$PUBLIC_URL keeps app login active" || bad "$PUBLIC_URL app auth returned HTTP $public_auth_status"
+
+# Reverse-proxy check (replaces the retired direct-origin Caddy probes): a
+# protected route must reach the backend through Cloudflare -> Caddy and come
+# back with the auth-required status, proving the full edge path is intact.
+public_proxy_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL/api/library" || true)"
+[[ "$public_proxy_status" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "Caddy reverse-proxies protected routes via $PUBLIC_HOST (HTTP $PROTECTED_ENDPOINT_STATUS)" || bad "$PUBLIC_URL/api/library returned HTTP $public_proxy_status"
 
 exit "$fail"
