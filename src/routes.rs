@@ -233,6 +233,22 @@ fn parse_forwarded_for(header: &str) -> Option<String> {
 }
 
 fn extract_client_ip(request: &Request<Body>) -> String {
+    // When fronted by Cloudflare, `CF-Connecting-IP` is the authoritative client
+    // IP — Cloudflare sets it at the edge and it can't be forged by traffic that
+    // actually transits Cloudflare. Prefer it, then fall back to `X-Forwarded-For`
+    // (set by our own Caddy when there's no CDN), then the direct peer address.
+    // NOTE: these headers are only trustworthy because the origin sees nothing but
+    // our Caddy on loopback; once Cloudflare is in front, lock the origin's :443 to
+    // Cloudflare's IP ranges so the public can't hit Caddy directly and spoof them.
+    if let Some(ip) = request
+        .headers()
+        .get("cf-connecting-ip")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|ip| !ip.is_empty())
+    {
+        return ip.to_owned();
+    }
     if let Some(ip) = request
         .headers()
         .get("x-forwarded-for")
