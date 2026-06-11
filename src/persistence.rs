@@ -21,6 +21,11 @@ const PLAYBACK_SESSION_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const PLAYBACK_SESSION_VALIDATE_INTERVAL_MS: i64 = 90 * 1000;
 const SOURCE_HEALTH_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const MEDIA_PROBE_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+// Service-health history. Samples drive the 24h dashboard sparklines (we keep a
+// little extra so a "last 24h" view always has a full window); the restart log
+// is kept long enough to reason about flapping over a month.
+const HEALTH_SAMPLE_STALE_MS: i64 = 48 * 60 * 60 * 1000;
+const SERVICE_START_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const TMDB_RESPONSE_PERSIST_MAX_ENTRIES: i64 = 6000;
 const PLAYBACK_SESSION_PERSIST_MAX_ENTRIES: i64 = 2500;
 const RESOLVED_STREAM_PERSIST_MAX_ENTRIES: i64 = 6000;
@@ -29,10 +34,23 @@ const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 
 type Pool = std::sync::Mutex<Vec<Connection>>;
 
+/// Two physically separate SQLite files behind one handle:
+///
+/// * `cache_*` — `resolver-cache.sqlite`: regenerable cache/resolver state. A
+///   corrupt file here self-heals (quarantine + rebuild empty schema).
+/// * `users_*` — `users.sqlite`: durable accounts and user data. Kept apart so a
+///   cache-corruption quarantine can never delete accounts (the 2026-06-09
+///   incident). Never auto-quarantined.
+///
+/// Each accessor reaches into whichever store owns its tables. The only place the
+/// two meet is continue-watching reconciliation, which reads `playback_sessions`
+/// (cache) via a dedicated cache connection — never a cross-database `ATTACH`.
 #[derive(Clone)]
 pub struct Db {
-    path: Arc<PathBuf>,
-    pool: Arc<Pool>,
+    cache_path: Arc<PathBuf>,
+    cache_pool: Arc<Pool>,
+    users_path: Arc<PathBuf>,
+    users_pool: Arc<Pool>,
 }
 
 #[allow(non_snake_case)]
@@ -162,6 +180,44 @@ pub struct AdminDailyCount {
     pub signups: i64,
 }
 
+/// One 60-second service-health snapshot. Counter columns (`req*`,
+/// `playback*Total`) are cumulative-since-boot so rates can be derived as deltas
+/// between rows; the `*Rate` columns are the already-windowed values for cheap
+/// sparkline plotting. `status` is [`crate::health::Status`] as 0/1/2.
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct HealthSampleRow {
+    pub ts: i64,
+    pub uptimeSeconds: i64,
+    pub status: i64,
+    pub fdCount: i64,
+    pub fdLimit: i64,
+    pub memUsed: i64,
+    pub memTotal: i64,
+    pub load1: f64,
+    pub numCpus: i64,
+    pub diskFree: i64,
+    pub diskTotal: i64,
+    pub reqTotal: i64,
+    pub req4xx: i64,
+    pub req5xx: i64,
+    pub liveProxy5xx: i64,
+    pub req5xxRate: f64,
+    pub playbackSuccessTotal: i64,
+    pub playbackFailureTotal: i64,
+    pub playbackFailureRate: f64,
+    pub worstProviderConsecutiveFailures: i64,
+}
+
+/// One process-start record. Appended each boot so the dashboard can count
+/// restarts (and spot crash-looping) without parsing logs.
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ServiceStartRow {
+    pub startedAt: i64,
+    pub note: String,
+}
+
 #[allow(non_snake_case)]
 #[derive(Debug, Clone, Serialize)]
 pub struct AdminUserRow {
@@ -191,32 +247,44 @@ pub struct AdminActivityEvent {
 
 impl Db {
     pub async fn initialize(config: &Config) -> AppResult<Self> {
-        let path = config.persistent_cache_db_path.clone();
+        let cache_path = config.persistent_cache_db_path.clone();
+        let users_path = config.persistent_users_db_path.clone();
         let cache_dir = config.cache_dir.clone();
         tokio::fs::create_dir_all(cache_dir)
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
-        let path_for_task = path.clone();
-        task::spawn_blocking(move || init_schema(path_for_task))
+        let cache_for_task = cache_path.clone();
+        let users_for_task = users_path.clone();
+        task::spawn_blocking(move || initialize_databases(&cache_for_task, &users_for_task))
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?
             .map_err(|error| ApiError::internal(error.to_string()))?;
 
         Ok(Self {
-            path: Arc::new(path),
-            pool: Arc::new(std::sync::Mutex::new(Vec::new())),
+            cache_path: Arc::new(cache_path),
+            cache_pool: Arc::new(std::sync::Mutex::new(Vec::new())),
+            users_path: Arc::new(users_path),
+            users_pool: Arc::new(std::sync::Mutex::new(Vec::new())),
         })
     }
 
     pub async fn sweep(&self) {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
-        let _ = task::spawn_blocking(move || sweep_db(&pool, &path)).await;
+        let cache_path = self.cache_path.clone();
+        let cache_pool = self.cache_pool.clone();
+        let users_path = self.users_path.clone();
+        let users_pool = self.users_pool.clone();
+        let _ = task::spawn_blocking(move || {
+            // Each store sweeps independently; a failure in one must not skip the
+            // other, so the results are intentionally ignored here.
+            let _ = sweep_cache_db(&cache_pool, &cache_path);
+            let _ = sweep_users_db(&users_pool, &users_path);
+        })
+        .await;
     }
 
     pub async fn clear_persistent_caches(&self) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute_batch(
@@ -240,8 +308,8 @@ impl Db {
     }
 
     pub async fn persistent_counts(&self) -> AppResult<CacheCounts> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let counts = CacheCounts {
@@ -267,8 +335,8 @@ impl Db {
         media_type: String,
         tmdb_id: String,
     ) -> AppResult<Option<TitlePreference>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let media_type = normalize_title_preference_media_type(&media_type);
@@ -328,8 +396,8 @@ impl Db {
         audio_lang: String,
         subtitle_lang: String,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let media_type = normalize_title_preference_media_type(&media_type);
@@ -393,8 +461,8 @@ impl Db {
         media_type: String,
         tmdb_id: String,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let media_type = normalize_title_preference_media_type(&media_type);
@@ -413,8 +481,8 @@ impl Db {
     }
 
     pub async fn delete_playback_sessions_for_tmdb(&self, tmdb_id: String) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -434,8 +502,8 @@ impl Db {
         &self,
         tmdb_id: String,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -455,8 +523,8 @@ impl Db {
         &self,
         session_key: String,
     ) -> AppResult<Option<PlaybackSession>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || get_playback_session_inner(&pool, &path, session_key))
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?
@@ -467,8 +535,8 @@ impl Db {
         &self,
         tmdb_id: String,
     ) -> AppResult<Option<PlaybackSession>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let key = connection
@@ -500,8 +568,8 @@ impl Db {
         tmdb_id: String,
         limit: i64,
     ) -> AppResult<Vec<PlaybackSession>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let normalized_limit = limit.clamp(1, 100);
             let connection = take_connection(&pool, &path)?;
@@ -543,8 +611,8 @@ impl Db {
         health_state: String,
         last_error: String,
     ) -> AppResult<bool> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let Some(existing) = get_playback_session_inner(&pool, &path, session_key.clone())?
             else {
@@ -608,8 +676,8 @@ impl Db {
         if normalized_source_hash.is_empty() {
             return Ok(0);
         }
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
@@ -644,8 +712,8 @@ impl Db {
         &self,
         session_key: String,
     ) -> AppResult<bool> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
@@ -686,8 +754,8 @@ impl Db {
             return Ok(());
         }
 
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let normalized_audio_lang = normalize_preferred_audio_lang(&input.audio_lang);
@@ -814,8 +882,8 @@ impl Db {
         if source_key.trim().is_empty() {
             return Ok(());
         }
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let (success, failure, decode_failure, ended_early, playback_error) =
@@ -876,8 +944,8 @@ impl Db {
         if source_key.trim().is_empty() {
             return Ok(None);
         }
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
@@ -941,9 +1009,176 @@ impl Db {
         .map_err(|error: rusqlite::Error| ApiError::internal(error.to_string()))
     }
 
+    /// Lifetime success / failure totals summed across every tracked source.
+    /// Used as the cumulative playback signal the health sampler deltas over a
+    /// window. Note these reset to zero when `clear_persistent_caches` runs.
+    pub async fn source_health_totals(&self) -> AppResult<(i64, i64)> {
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let totals = connection.query_row(
+                "SELECT
+                   COALESCE(SUM(total_success_count), 0),
+                   COALESCE(SUM(total_failure_count), 0)
+                 FROM source_health_stats",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(i64, i64), rusqlite::Error>(totals)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// Append one row to the restart log. Called once at process startup.
+    pub async fn record_service_start(&self, note: String) -> AppResult<()> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "INSERT INTO service_starts (started_at, note) VALUES (?1, ?2)",
+                params![now_ms(), note.chars().take(200).collect::<String>()],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Restart records at or after `since_ms`, newest first.
+    pub async fn service_starts_since(&self, since_ms: i64) -> AppResult<Vec<ServiceStartRow>> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let mut stmt = connection.prepare(
+                "SELECT started_at, note FROM service_starts
+                 WHERE started_at >= ?1 ORDER BY started_at DESC",
+            )?;
+            let rows = stmt
+                .query_map([since_ms], |row| {
+                    Ok(ServiceStartRow {
+                        startedAt: row.get::<_, i64>(0)?,
+                        note: row.get::<_, String>(1)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            return_connection(&pool, connection);
+            Ok::<Vec<ServiceStartRow>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn insert_health_sample(&self, sample: HealthSampleRow) -> AppResult<()> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "INSERT OR REPLACE INTO health_samples (
+                   ts, uptime_seconds, status, fd_count, fd_limit, mem_used, mem_total,
+                   load1, num_cpus, disk_free, disk_total, req_total, req_4xx, req_5xx,
+                   live_proxy_5xx, req_5xx_rate, playback_success_total,
+                   playback_failure_total, playback_failure_rate,
+                   worst_provider_consecutive_failures
+                 ) VALUES (
+                   ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                   ?15, ?16, ?17, ?18, ?19, ?20
+                 )",
+                params![
+                    sample.ts,
+                    sample.uptimeSeconds,
+                    sample.status,
+                    sample.fdCount,
+                    sample.fdLimit,
+                    sample.memUsed,
+                    sample.memTotal,
+                    sample.load1,
+                    sample.numCpus,
+                    sample.diskFree,
+                    sample.diskTotal,
+                    sample.reqTotal,
+                    sample.req4xx,
+                    sample.req5xx,
+                    sample.liveProxy5xx,
+                    sample.req5xxRate,
+                    sample.playbackSuccessTotal,
+                    sample.playbackFailureTotal,
+                    sample.playbackFailureRate,
+                    sample.worstProviderConsecutiveFailures,
+                ],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Health samples at or after `since_ms`, oldest first (chart-ready order).
+    pub async fn recent_health_samples(&self, since_ms: i64) -> AppResult<Vec<HealthSampleRow>> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let mut stmt = connection.prepare(
+                "SELECT ts, uptime_seconds, status, fd_count, fd_limit, mem_used, mem_total,
+                        load1, num_cpus, disk_free, disk_total, req_total, req_4xx, req_5xx,
+                        live_proxy_5xx, req_5xx_rate, playback_success_total,
+                        playback_failure_total, playback_failure_rate,
+                        worst_provider_consecutive_failures
+                 FROM health_samples WHERE ts >= ?1 ORDER BY ts ASC",
+            )?;
+            let rows = stmt
+                .query_map([since_ms], |row| {
+                    Ok(HealthSampleRow {
+                        ts: row.get(0)?,
+                        uptimeSeconds: row.get(1)?,
+                        status: row.get(2)?,
+                        fdCount: row.get(3)?,
+                        fdLimit: row.get(4)?,
+                        memUsed: row.get(5)?,
+                        memTotal: row.get(6)?,
+                        load1: row.get(7)?,
+                        numCpus: row.get(8)?,
+                        diskFree: row.get(9)?,
+                        diskTotal: row.get(10)?,
+                        reqTotal: row.get(11)?,
+                        req4xx: row.get(12)?,
+                        req5xx: row.get(13)?,
+                        liveProxy5xx: row.get(14)?,
+                        req5xxRate: row.get(15)?,
+                        playbackSuccessTotal: row.get(16)?,
+                        playbackFailureTotal: row.get(17)?,
+                        playbackFailureRate: row.get(18)?,
+                        worstProviderConsecutiveFailures: row.get(19)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            return_connection(&pool, connection);
+            Ok::<Vec<HealthSampleRow>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
     pub async fn get_tmdb_cache(&self, cache_key: String) -> AppResult<Option<(Value, i64)>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
@@ -992,8 +1227,8 @@ impl Db {
         payload: Value,
         expires_at: i64,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -1037,8 +1272,8 @@ impl Db {
         cache_key: String,
         expires_at: i64,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -1063,8 +1298,8 @@ impl Db {
         &self,
         cache_key: String,
     ) -> AppResult<Option<(Value, i64, i64)>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
@@ -1120,8 +1355,8 @@ impl Db {
         expires_at: i64,
         next_validation_at: i64,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -1169,8 +1404,8 @@ impl Db {
         &self,
         cache_key: String,
     ) -> AppResult<Option<(Value, i64)>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
@@ -1219,8 +1454,8 @@ impl Db {
         payload: Value,
         expires_at: i64,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -1260,8 +1495,8 @@ impl Db {
     }
 
     pub async fn delete_movie_quick_start_cache(&self, cache_key: String) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -1278,8 +1513,8 @@ impl Db {
     }
 
     pub async fn get_media_probe_cache(&self, probe_key: String) -> AppResult<Option<Value>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
@@ -1323,8 +1558,8 @@ impl Db {
     }
 
     pub async fn set_media_probe_cache(&self, probe_key: String, payload: Value) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -1362,8 +1597,8 @@ impl Db {
         password_hash: String,
         display_name: String,
     ) -> AppResult<i64> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
@@ -1387,8 +1622,8 @@ impl Db {
         password_hash: String,
         display_name: String,
     ) -> AppResult<Option<i64>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
@@ -1412,8 +1647,8 @@ impl Db {
     }
 
     pub async fn user_count(&self) -> AppResult<i64> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let count = connection
@@ -1430,8 +1665,8 @@ impl Db {
         &self,
         email: String,
     ) -> AppResult<Option<(i64, String, String, String)>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
@@ -1462,8 +1697,8 @@ impl Db {
         user_id: i64,
         expires_at: i64,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
@@ -1482,8 +1717,8 @@ impl Db {
     }
 
     pub async fn get_session(&self, token: String) -> AppResult<Option<(i64, i64)>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
@@ -1502,8 +1737,8 @@ impl Db {
     }
 
     pub async fn delete_session(&self, token: String) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -1527,8 +1762,8 @@ impl Db {
         &self,
         user_id: i64,
     ) -> AppResult<Option<(i64, String, String, bool, bool)>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
@@ -1556,8 +1791,8 @@ impl Db {
     }
 
     pub async fn admin_overview(&self) -> AppResult<AdminOverview> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
@@ -1599,8 +1834,8 @@ impl Db {
     /// New sign-ups per UTC day for the last `days` days, zero-filled so the
     /// chart always has a continuous axis.
     pub async fn admin_growth(&self, days: i64) -> AppResult<Vec<AdminDailyCount>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         let days = days.clamp(1, 90);
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
@@ -1640,8 +1875,8 @@ impl Db {
         limit: i64,
         offset: i64,
     ) -> AppResult<Vec<AdminUserRow>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         let limit = limit.clamp(1, 500);
         let offset = offset.max(0);
         task::spawn_blocking(move || {
@@ -1701,8 +1936,8 @@ impl Db {
 
     /// A merged, time-sorted feed of recent sign-ins, watches, and sign-ups.
     pub async fn admin_activity(&self, limit: i64) -> AppResult<Vec<AdminActivityEvent>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         let limit = limit.clamp(1, 200);
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
@@ -1792,8 +2027,8 @@ impl Db {
         user_id: i64,
         password_hash: String,
     ) -> AppResult<usize> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let tx = connection.unchecked_transaction()?;
@@ -1814,8 +2049,8 @@ impl Db {
     }
 
     pub async fn admin_set_disabled(&self, user_id: i64, disabled: bool) -> AppResult<usize> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let tx = connection.unchecked_transaction()?;
@@ -1836,8 +2071,8 @@ impl Db {
     }
 
     pub async fn admin_set_admin(&self, user_id: i64, is_admin: bool) -> AppResult<usize> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let changed = connection.execute(
@@ -1855,8 +2090,8 @@ impl Db {
     /// Hard-delete a user. ON DELETE CASCADE removes their sessions,
     /// preferences, watch progress, continue-watching, and list rows.
     pub async fn admin_delete_user(&self, user_id: i64) -> AppResult<usize> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let changed = connection.execute("DELETE FROM users WHERE id = ?", [user_id])?;
@@ -1878,8 +2113,8 @@ impl Db {
         token_hash: String,
         expires_at: i64,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
@@ -1908,8 +2143,8 @@ impl Db {
         &self,
         token_hash: String,
     ) -> AppResult<Option<(String, i64)>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
@@ -1934,8 +2169,8 @@ impl Db {
     /// Mark a user's email as verified. Idempotent: only sets the timestamp the
     /// first time (the `email_verified_at IS NULL` guard).
     pub async fn mark_email_verified(&self, email: String, verified_at: i64) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -1962,8 +2197,8 @@ impl Db {
         token_hash: String,
         expires_at: i64,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
@@ -1992,8 +2227,8 @@ impl Db {
         &self,
         token_hash: String,
     ) -> AppResult<Option<(String, i64)>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
@@ -2022,8 +2257,8 @@ impl Db {
         email: String,
         password_hash: String,
     ) -> AppResult<usize> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let tx = connection.unchecked_transaction()?;
@@ -2050,8 +2285,8 @@ impl Db {
     /// Returns the verification timestamp for a user, or None if unverified or
     /// the user does not exist.
     pub async fn email_verified_at(&self, user_id: i64) -> AppResult<Option<i64>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
@@ -2070,8 +2305,8 @@ impl Db {
     }
 
     pub async fn get_user_preferences(&self, user_id: i64) -> AppResult<Vec<(String, String)>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let rows = {
@@ -2096,8 +2331,8 @@ impl Db {
         user_id: i64,
         pref_key: String,
     ) -> AppResult<Option<String>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let value = {
@@ -2120,8 +2355,8 @@ impl Db {
         user_id: i64,
         entries: Vec<(String, String)>,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
@@ -2147,8 +2382,8 @@ impl Db {
     }
 
     pub async fn delete_user_preference(&self, user_id: i64, pref_key: String) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -2168,8 +2403,8 @@ impl Db {
         &self,
         user_id: i64,
     ) -> AppResult<Vec<(String, f64, i64)>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let rows = {
@@ -2201,8 +2436,8 @@ impl Db {
         resume_seconds: f64,
         updated_at: i64,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -2227,8 +2462,8 @@ impl Db {
         user_id: i64,
         source_identity: String,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -2249,8 +2484,8 @@ impl Db {
         user_id: i64,
         series_id: String,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let normalized_series_id = series_id.trim().to_ascii_lowercase();
@@ -2285,8 +2520,11 @@ impl Db {
     }
 
     pub async fn get_user_continue_watching(&self, user_id: i64) -> AppResult<Vec<Value>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        // Reconciliation reads `playback_sessions`, which lives in the cache DB.
+        let cache_path = self.cache_path.clone();
+        let cache_pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let rows = {
@@ -2321,12 +2559,15 @@ impl Db {
                 })?
                 .collect::<Result<Vec<_>, _>>()?
             };
+            // Done with the users DB; reconcile reads only the cache DB below.
+            return_connection(&pool, connection);
+            let cache_connection = take_connection(&cache_pool, &cache_path)?;
             let mut entries = Vec::with_capacity(rows.len());
             for mut row in rows {
                 let (season_number, episode_number) =
                     continue_watching_target_episode(&row.source_identity, row.episode_index, None);
                 if let Some(reconciled) = reconcile_continue_watching_source_metadata(
-                    &connection,
+                    &cache_connection,
                     ContinueWatchingReconcileInput {
                         tmdb_id: &row.tmdb_id,
                         media_type: &row.media_type,
@@ -2364,7 +2605,7 @@ impl Db {
                     "updatedAt": row.updated_at,
                 }));
             }
-            return_connection(&pool, connection);
+            return_connection(&cache_pool, cache_connection);
             Ok::<Vec<Value>, rusqlite::Error>(entries)
         })
         .await
@@ -2376,8 +2617,8 @@ impl Db {
         &self,
         limit: usize,
     ) -> AppResult<Vec<TmdbTvWarmupCandidate>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         let normalized_limit = limit.clamp(1, 50) as i64;
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
@@ -2489,10 +2730,12 @@ impl Db {
     }
 
     pub async fn upsert_user_continue_watching(&self, user_id: i64, entry: Value) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        // Reconciliation reads `playback_sessions`, which lives in the cache DB.
+        let cache_path = self.cache_path.clone();
+        let cache_pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
-            let connection = take_connection(&pool, &path)?;
             let now = now_ms();
             let source_identity = entry
                 .get("sourceIdentity")
@@ -2582,8 +2825,11 @@ impl Db {
             let normalized_tmdb_id = tmdb_id.trim().to_owned();
             let (season_number, episode_number) =
                 continue_watching_target_episode(&source_identity, episode_index, Some(&entry));
-            if let Some(reconciled) = reconcile_continue_watching_source_metadata(
-                &connection,
+            // Reconcile against `playback_sessions` (cache DB) on its own
+            // connection, then switch to the users DB for the actual write.
+            let cache_connection = take_connection(&cache_pool, &cache_path)?;
+            let reconciled = reconcile_continue_watching_source_metadata(
+                &cache_connection,
                 ContinueWatchingReconcileInput {
                     tmdb_id: &normalized_tmdb_id,
                     media_type: &normalized_media_type,
@@ -2594,7 +2840,10 @@ impl Db {
                     resolver_provider: &resolver_provider,
                     source_input: &source_input,
                 },
-            )? {
+            )?;
+            return_connection(&cache_pool, cache_connection);
+            let connection = take_connection(&pool, &path)?;
+            if let Some(reconciled) = reconciled {
                 source_hash = reconciled.source_hash;
                 session_key = reconciled.session_key;
                 resolver_provider = reconciled.resolver_provider;
@@ -2722,8 +2971,8 @@ impl Db {
         user_id: i64,
         source_identity: String,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
@@ -2744,8 +2993,8 @@ impl Db {
         user_id: i64,
         series_id: String,
     ) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let normalized_series_id = series_id.trim().to_ascii_lowercase();
@@ -2790,8 +3039,8 @@ impl Db {
     }
 
     pub async fn get_user_my_list(&self, user_id: i64) -> AppResult<Vec<Value>> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let rows = {
@@ -2823,8 +3072,8 @@ impl Db {
     }
 
     pub async fn replace_user_my_list(&self, user_id: i64, entries: Vec<Value>) -> AppResult<()> {
-        let path = self.path.clone();
-        let pool = self.pool.clone();
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
@@ -2920,8 +3169,43 @@ fn get_playback_session_inner(
     Ok(row)
 }
 
-fn init_schema(path: PathBuf) -> Result<(), rusqlite::Error> {
-    match build_schema(&path) {
+/// Durable, account-bearing tables. These live in `users.sqlite` and are copied
+/// out of the legacy combined cache DB on first boot. Ordered parents-first so the
+/// `ON DELETE CASCADE` foreign keys are satisfied as rows are migrated.
+const DURABLE_TABLES: &[&str] = &[
+    "users",
+    "auth_sessions",
+    "user_preferences",
+    "user_watch_progress",
+    "user_continue_watching",
+    "user_my_list",
+    "password_reset_tokens",
+    "email_verification_tokens",
+    "health_samples",
+    "service_starts",
+];
+
+/// Bring both database files up to schema. The users DB is initialized first and,
+/// on its very first boot, seeded from the legacy combined cache DB; the cache DB
+/// is initialized last because it may self-heal (quarantine + rebuild), which must
+/// not run until any migration has already read whatever it could.
+fn initialize_databases(cache_path: &Path, users_path: &Path) -> Result<(), rusqlite::Error> {
+    let users_db_existed = users_path.exists();
+    init_users_schema(users_path)?;
+    if !users_db_existed {
+        // First boot for the split: lift durable rows out of the old single-file
+        // DB. Best-effort — a corrupt or absent legacy file is not fatal.
+        migrate_durable_tables_from_legacy(users_path, cache_path)?;
+    }
+    init_cache_schema(cache_path)?;
+    Ok(())
+}
+
+/// Initialize the regenerable cache DB, self-healing from corruption by
+/// quarantining the bad file and rebuilding an empty schema. Safe because every
+/// table here is regenerable.
+fn init_cache_schema(path: &Path) -> Result<(), rusqlite::Error> {
+    match build_cache_schema(path) {
         Ok(()) => Ok(()),
         Err(error) if is_corruption_error(&error) => {
             tracing::warn!(
@@ -2929,7 +3213,7 @@ fn init_schema(path: PathBuf) -> Result<(), rusqlite::Error> {
                 error = %error,
                 "resolver cache database is corrupt; quarantining it and rebuilding from scratch"
             );
-            if let Err(io_error) = quarantine_corrupt_db(&path) {
+            if let Err(io_error) = quarantine_corrupt_db(path) {
                 tracing::error!(
                     database = %path.display(),
                     error = %io_error,
@@ -2937,10 +3221,128 @@ fn init_schema(path: PathBuf) -> Result<(), rusqlite::Error> {
                 );
                 return Err(error);
             }
-            build_schema(&path)
+            build_cache_schema(path)
         }
         Err(error) => Err(error),
     }
+}
+
+/// Initialize the durable users DB. Unlike the cache DB, a corrupt users file is
+/// NEVER quarantined/rebuilt: that would silently delete every account (the
+/// 2026-06-09 incident this split exists to prevent). The error is surfaced so a
+/// human can recover the file from backup instead.
+fn init_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
+    build_users_schema(path)
+}
+
+/// One-time seed of `users.sqlite` from the legacy combined cache DB. Runs only on
+/// the first boot after the split (when `users.sqlite` did not yet exist) and
+/// copies every durable table via `ATTACH`. Non-destructive: the legacy rows are
+/// left in place as a safety net. Best-effort: if the legacy DB is missing or
+/// itself corrupt, nothing is migrated and boot continues (the cache DB is rebuilt
+/// separately).
+fn migrate_durable_tables_from_legacy(
+    users_path: &Path,
+    legacy_path: &Path,
+) -> Result<(), rusqlite::Error> {
+    if !legacy_path.exists() {
+        return Ok(());
+    }
+    let connection = open_connection(users_path)?;
+    // A corrupt legacy file may fail to attach outright; treat that as "nothing to
+    // migrate" rather than blocking boot.
+    let legacy = legacy_path.to_string_lossy().into_owned();
+    if connection
+        .execute("ATTACH DATABASE ?1 AS legacy", [legacy.as_str()])
+        .is_err()
+    {
+        return Ok(());
+    }
+    let result = copy_durable_tables(&connection);
+    let _ = connection.execute("DETACH DATABASE legacy", []);
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if is_corruption_error(&error) => {
+            tracing::warn!(
+                legacy = %legacy_path.display(),
+                error = %error,
+                "legacy cache database is unreadable; skipping account migration (it will be rebuilt)"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Copy every durable table from the attached `legacy` schema into `main`, inside
+/// a single transaction. Columns are matched by name (not position) so a legacy DB
+/// whose columns were appended via `ALTER` still migrates correctly, and rows are
+/// inserted with `OR IGNORE` so a re-run after a crash is harmless.
+fn copy_durable_tables(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let tx = connection.unchecked_transaction()?;
+    let mut migrated_users = 0i64;
+    for table in DURABLE_TABLES {
+        let legacy_has_table = tx
+            .query_row(
+                "SELECT 1 FROM legacy.sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+                [table],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !legacy_has_table {
+            continue;
+        }
+        let dest_columns = schema_table_columns(&tx, "main", table)?;
+        let src_columns = schema_table_columns(&tx, "legacy", table)?;
+        let shared: Vec<String> = dest_columns
+            .into_iter()
+            .filter(|column| {
+                src_columns
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(column))
+            })
+            .collect();
+        if shared.is_empty() {
+            continue;
+        }
+        let column_list = shared
+            .iter()
+            .map(|column| format!("\"{column}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let copied = tx.execute(
+            &format!(
+                "INSERT OR IGNORE INTO main.\"{table}\" ({column_list}) \
+                 SELECT {column_list} FROM legacy.\"{table}\""
+            ),
+            [],
+        )?;
+        if *table == "users" {
+            migrated_users = copied as i64;
+        }
+    }
+    tx.commit()?;
+    if migrated_users > 0 {
+        tracing::info!(
+            users = migrated_users,
+            "migrated durable account data from the legacy cache database into users.sqlite"
+        );
+    }
+    Ok(())
+}
+
+/// Column names of `schema.table` (e.g. schema = "main" or "legacy"). PRAGMA does
+/// not accept bound parameters, so the identifiers are interpolated; both are
+/// internal constants, never user input.
+fn schema_table_columns(
+    connection: &Connection,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<String>, rusqlite::Error> {
+    let mut stmt = connection.prepare(&format!("PRAGMA {schema}.table_info(\"{table}\")"))?;
+    stmt.query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()
 }
 
 /// True for SQLite errors that mean the database file itself is unusable
@@ -3006,7 +3408,9 @@ fn corrupt_backup_path(path: &Path, marker: &str) -> PathBuf {
     }
 }
 
-fn build_schema(path: &PathBuf) -> Result<(), rusqlite::Error> {
+/// Create the regenerable cache tables in `resolver-cache.sqlite`. This file is
+/// safe to discard and rebuild, so it owns nothing durable.
+fn build_cache_schema(path: &Path) -> Result<(), rusqlite::Error> {
     let connection = open_connection(path)?;
     connection.execute_batch(
         "
@@ -3087,6 +3491,20 @@ fn build_schema(path: &PathBuf) -> Result<(), rusqlite::Error> {
           PRIMARY KEY (user_id, media_type, tmdb_id)
         );
         CREATE INDEX IF NOT EXISTS idx_title_track_preferences_updated ON title_track_preferences(updated_at);
+        ",
+    )?;
+    migrate_title_preferences_schema(&connection)?;
+    Ok(())
+}
+
+/// Create the durable user/account tables in `users.sqlite`. This file is never
+/// auto-quarantined; see [`init_users_schema`].
+fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
+    let connection = open_connection(path)?;
+    connection.execute_batch(
+        "
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
         CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -3161,6 +3579,38 @@ fn build_schema(path: &PathBuf) -> Result<(), rusqlite::Error> {
           added_at INTEGER NOT NULL,
           PRIMARY KEY (user_id, item_identity)
         );
+        -- Service-health history (durable: deliberately NOT cleared by
+        -- clear_persistent_caches, and now in users.sqlite so it also survives a
+        -- cache-corruption quarantine — the restart count is most useful then).
+        CREATE TABLE IF NOT EXISTS health_samples (
+          ts INTEGER PRIMARY KEY,
+          uptime_seconds INTEGER NOT NULL DEFAULT 0,
+          status INTEGER NOT NULL DEFAULT 0,
+          fd_count INTEGER NOT NULL DEFAULT 0,
+          fd_limit INTEGER NOT NULL DEFAULT 0,
+          mem_used INTEGER NOT NULL DEFAULT 0,
+          mem_total INTEGER NOT NULL DEFAULT 0,
+          load1 REAL NOT NULL DEFAULT 0,
+          num_cpus INTEGER NOT NULL DEFAULT 0,
+          disk_free INTEGER NOT NULL DEFAULT 0,
+          disk_total INTEGER NOT NULL DEFAULT 0,
+          req_total INTEGER NOT NULL DEFAULT 0,
+          req_4xx INTEGER NOT NULL DEFAULT 0,
+          req_5xx INTEGER NOT NULL DEFAULT 0,
+          live_proxy_5xx INTEGER NOT NULL DEFAULT 0,
+          req_5xx_rate REAL NOT NULL DEFAULT 0,
+          playback_success_total INTEGER NOT NULL DEFAULT 0,
+          playback_failure_total INTEGER NOT NULL DEFAULT 0,
+          playback_failure_rate REAL NOT NULL DEFAULT 0,
+          worst_provider_consecutive_failures INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_health_samples_ts ON health_samples(ts);
+        CREATE TABLE IF NOT EXISTS service_starts (
+          id INTEGER PRIMARY KEY,
+          started_at INTEGER NOT NULL,
+          note TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_service_starts_started ON service_starts(started_at);
         ",
     )?;
     ensure_text_column(
@@ -3215,7 +3665,6 @@ fn build_schema(path: &PathBuf) -> Result<(), rusqlite::Error> {
         "is_disabled",
         "is_disabled INTEGER NOT NULL DEFAULT 0",
     )?;
-    migrate_title_preferences_schema(&connection)?;
     Ok(())
 }
 
@@ -3296,7 +3745,8 @@ fn table_column_names(
         .collect::<Result<Vec<_>, _>>()
 }
 
-fn sweep_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
+/// Evict expired/stale rows and trim oversized cache tables in the cache DB.
+fn sweep_cache_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
     let connection = take_connection(pool, path)?;
     let now = now_ms();
     let stale_threshold = now - PLAYBACK_SESSION_STALE_MS;
@@ -3328,7 +3778,6 @@ fn sweep_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
         "DELETE FROM title_track_preferences WHERE updated_at <= ?",
         [now - TITLE_PREFERENCES_STALE_MS],
     )?;
-    connection.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", [now])?;
     trim_table(
         &connection,
         "resolved_stream_cache",
@@ -3352,6 +3801,23 @@ fn sweep_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
         "playback_sessions",
         "updated_at",
         PLAYBACK_SESSION_PERSIST_MAX_ENTRIES,
+    )?;
+    return_connection(pool, connection);
+    Ok(())
+}
+
+/// Evict expired sessions and aged-out health history from the durable users DB.
+fn sweep_users_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
+    let connection = take_connection(pool, path)?;
+    let now = now_ms();
+    connection.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", [now])?;
+    connection.execute(
+        "DELETE FROM health_samples WHERE ts <= ?",
+        [now - HEALTH_SAMPLE_STALE_MS],
+    )?;
+    connection.execute(
+        "DELETE FROM service_starts WHERE started_at <= ?",
+        [now - SERVICE_START_STALE_MS],
     )?;
     return_connection(pool, connection);
     Ok(())
@@ -3413,7 +3879,10 @@ fn return_connection(_pool: &Pool, _conn: PooledConnection<'_>) {
 
 fn push_connection(pool: &Pool, conn: Connection) {
     let mut connections = pool.lock().unwrap_or_else(|e| e.into_inner());
-    if connections.len() < 4 {
+    // Retain more idle connections so a concurrent burst (e.g. a signup surge,
+    // where each request runs several queries) reuses warm connections instead
+    // of opening/closing one per call — each open is an fd + pragma round-trip.
+    if connections.len() < 16 {
         connections.push(conn);
     }
     // else drop it — pool is full
@@ -3429,7 +3898,7 @@ fn tmdb_tv_id_from_series_id(series_id: &str) -> Option<String> {
     }
 }
 
-fn open_connection(path: &PathBuf) -> Result<Connection, rusqlite::Error> {
+fn open_connection(path: &Path) -> Result<Connection, rusqlite::Error> {
     let connection = Connection::open(path)?;
     connection.busy_timeout(Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))?;
     // SQLite disables foreign keys by default, and the setting is per-connection,
@@ -4493,7 +4962,7 @@ mod tests {
 
         let stale_verified_at = super::now_ms() - 120_000;
         let stale_next_validation_at = super::now_ms() - 60_000;
-        let setup_path = db.path.clone();
+        let setup_path = db.cache_path.clone();
         super::task::spawn_blocking(move || {
             let connection = open_connection(&setup_path)?;
             connection.execute(
@@ -4692,7 +5161,7 @@ mod tests {
         .await
         .expect("persist local session");
 
-        let setup_path = db.path.clone();
+        let setup_path = db.cache_path.clone();
         super::task::spawn_blocking(move || {
             let connection = open_connection(&setup_path)?;
             connection.execute(
@@ -4767,7 +5236,7 @@ mod tests {
             "https://101-4.download.real-debrid.com/d/YJQ4MSOINGNWI/Off.Campus.S01E02.The.Practice.720p.HEVC.x265-MeGusta.mkv"
         );
 
-        let setup_path = db.path.clone();
+        let setup_path = db.users_path.clone();
         super::task::spawn_blocking(move || {
             let connection = open_connection(&setup_path)?;
             connection.execute(
@@ -4806,7 +5275,7 @@ mod tests {
     async fn applies_busy_timeout_to_sqlite_connections() {
         let path = unique_temp_db_path("busy-timeout");
         let db = setup_test_playback_session_db(&path).await;
-        let setup_path = db.path.clone();
+        let setup_path = db.cache_path.clone();
         let busy_timeout = super::task::spawn_blocking(move || {
             let connection = open_connection(&setup_path)?;
             connection.query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
@@ -4876,6 +5345,51 @@ mod tests {
             cf_email_api_token: String::new(),
         };
         Db::initialize(&config).await.expect("init db")
+    }
+
+    #[tokio::test]
+    async fn health_history_is_durable_across_cache_clear() {
+        let path = unique_temp_db_path("health-durable");
+        let db = setup_test_playback_session_db(&path).await;
+
+        db.record_service_start("test".to_owned())
+            .await
+            .expect("record start");
+        db.insert_health_sample(super::HealthSampleRow {
+            ts: super::now_ms(),
+            status: 1,
+            fdCount: 42,
+            fdLimit: 16_384,
+            ..Default::default()
+        })
+        .await
+        .expect("insert sample");
+        // A cache-table row, to prove the clear below actually clears something.
+        db.record_source_health_event("src-1".to_owned(), "success".to_owned(), String::new())
+            .await
+            .expect("record source health");
+
+        assert_eq!(db.recent_health_samples(0).await.expect("samples").len(), 1);
+        assert_eq!(db.service_starts_since(0).await.expect("starts").len(), 1);
+        assert_eq!(db.source_health_totals().await.expect("totals").0, 1);
+
+        db.clear_persistent_caches().await.expect("clear caches");
+
+        // Durable health history survives the wipe...
+        assert_eq!(
+            db.recent_health_samples(0).await.expect("samples after").len(),
+            1,
+            "health_samples must survive clear_persistent_caches"
+        );
+        assert_eq!(
+            db.service_starts_since(0).await.expect("starts after").len(),
+            1,
+            "service_starts must survive clear_persistent_caches"
+        );
+        // ...while the cache table it sits beside was cleared.
+        assert_eq!(db.source_health_totals().await.expect("totals after").0, 0);
+
+        let _ = tokio::fs::remove_file(&path).await;
     }
 
     #[tokio::test]
@@ -5007,9 +5521,11 @@ mod tests {
         .expect("join integrity check")
         .expect("run integrity check");
         assert_eq!(integrity, "ok");
+        // 17 application tables + SQLite's internal `sqlite_sequence` (created by
+        // the AUTOINCREMENT column on `users`).
         assert_eq!(
-            table_count, 15,
-            "rebuilt cache database should expose the full 15-table schema"
+            table_count, 18,
+            "rebuilt cache database should expose the full schema"
         );
 
         // The corrupt original was preserved alongside, not deleted, with the

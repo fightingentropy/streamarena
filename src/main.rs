@@ -3,6 +3,7 @@ mod config;
 mod email;
 mod error;
 mod football;
+mod health;
 mod home_bootstrap;
 mod library;
 mod live;
@@ -117,6 +118,9 @@ async fn main() -> AppResult<()> {
 
     let config = Config::load();
     let db = Db::initialize(&config).await?;
+    // Append a restart-log row so the admin Health panel can count restarts and
+    // spot crash-looping. Best-effort — never block startup on it.
+    let _ = db.record_service_start("startup".to_owned()).await;
     let mut http_client_builder = reqwest::Client::builder()
         .user_agent("netflix-rust-backend")
         .timeout(Duration::from_secs(SHARED_HTTP_CLIENT_TIMEOUT_SECONDS));
@@ -154,18 +158,27 @@ async fn main() -> AppResult<()> {
     );
     let auth_rate_limiter =
         std::sync::Arc::new(crate::rate_limit::RateLimiter::new(12, 15 * 60 * 1000));
+    // Generous global anti-abuse backstop for signups (per-IP limiting via
+    // `auth_rate_limiter` is the primary control; see `auth_signup_handler`).
+    // Set high enough never to throttle an organic signup surge — a botnet that
+    // trips this is already pathological.
+    let signup_global_rate_limiter =
+        std::sync::Arc::new(crate::rate_limit::RateLimiter::new(2_000, 15 * 60 * 1000));
     let sports_stream_rate_limiter =
         std::sync::Arc::new(crate::rate_limit::RateLimiter::new(30, 60 * 1000));
     let started_at_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or_default();
+    let http_metrics = std::sync::Arc::new(crate::health::HttpMetrics::default());
+    let host_probe = std::sync::Arc::new(crate::health::HostProbe::new());
 
     let sweep_db = db.clone();
     let sweep_uploads = upload.clone();
     let sweep_streaming = streaming.clone();
     let sweep_local_torrent = local_torrent.clone();
     let sweep_auth_rate_limiter = auth_rate_limiter.clone();
+    let sweep_signup_global_rate_limiter = signup_global_rate_limiter.clone();
     let sweep_sports_stream_rate_limiter = sports_stream_rate_limiter.clone();
     let sweep_sports_stream_resolve_cache = SportsStreamResolveCache::new(
         config.sports_resolver_max_concurrent,
@@ -183,6 +196,7 @@ async fn main() -> AppResult<()> {
             sweep_streaming.prune().await;
             sweep_local_torrent.prune_idle_locks();
             sweep_auth_rate_limiter.prune();
+            sweep_signup_global_rate_limiter.prune();
             sweep_sports_stream_rate_limiter.prune();
             sweep_sports_stream_resolve_cache.prune();
             sweep_live_audio_transcode_cache.prune();
@@ -206,12 +220,28 @@ async fn main() -> AppResult<()> {
         home_bootstrap_cache: crate::home_bootstrap::HomeBootstrapCache::new(),
         live_audio_transcode_cache,
         auth_rate_limiter,
+        signup_global_rate_limiter,
         sports_stream_rate_limiter,
         started_at_ms,
+        http_metrics,
+        host_probe,
     };
 
     state.home_bootstrap_cache.spawn_refresh(state.clone());
     state.tmdb.spawn_recent_tv_metadata_warmup();
+
+    // Service-health sampler: every 60s snapshot host + request + provider
+    // signals into the durable history that backs the admin Health tab.
+    {
+        let sampler_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                crate::routes::record_health_sample(&sampler_state).await;
+            }
+        });
+    }
 
     let app = build_router(state)
         .layer(DefaultBodyLimit::max(config.max_upload_bytes))

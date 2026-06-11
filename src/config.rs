@@ -14,7 +14,12 @@ pub struct Config {
     pub local_torrent_cache_dir: PathBuf,
     pub upload_temp_dir: PathBuf,
     pub local_library_path: PathBuf,
+    /// Regenerable cache + resolver state (resolver-cache.sqlite). Self-heals from
+    /// corruption by quarantining the file and rebuilding an empty schema.
     pub persistent_cache_db_path: PathBuf,
+    /// Durable user/account data (users.sqlite). Deliberately kept in a separate
+    /// file so a cache-corruption quarantine can never wipe accounts.
+    pub persistent_users_db_path: PathBuf,
     pub host: String,
     pub port: u16,
     pub max_upload_bytes: usize,
@@ -123,6 +128,7 @@ impl Config {
             upload_temp_dir: cache_dir.join("uploads"),
             local_library_path: assets_dir.join("library.json"),
             persistent_cache_db_path: cache_dir.join("resolver-cache.sqlite"),
+            persistent_users_db_path: cache_dir.join("users.sqlite"),
             host,
             port,
             max_upload_bytes,

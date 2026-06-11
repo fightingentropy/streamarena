@@ -63,6 +63,13 @@ impl ApiError {
         Self::new(StatusCode::TOO_MANY_REQUESTS, message)
     }
 
+    /// 503 — the server is healthy but temporarily over capacity. Used by the
+    /// auth-route load-shed middleware so a burst gets a fast, retryable answer
+    /// instead of piling up and starving the runtime.
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, message)
+    }
+
     pub fn unauthorized(message: impl Into<String>) -> Self {
         Self::new(StatusCode::UNAUTHORIZED, message)
     }

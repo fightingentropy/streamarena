@@ -174,6 +174,17 @@ const LIVE_REENCODE_MAX_CONCURRENT: usize = 3;
 // small limit instead of failing.
 static LIVE_REENCODE_SEMAPHORE: Semaphore = Semaphore::const_new(LIVE_REENCODE_MAX_CONCURRENT);
 
+// Cap the upstream live HTTP fetch (playlist + segment) tighter than the shared
+// 30s client. A dead upstream then releases its socket/fd ~3x faster, which is
+// what prevents the file-descriptor exhaustion stall seen under live load.
+const LIVE_UPSTREAM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+// Cap concurrent ffprobe probes. The probe is already time-bounded, but a
+// thundering herd of new live segments would otherwise spawn unbounded child
+// processes (fd + process pressure). Generous — normal playback never queues.
+const LIVE_PROBE_MAX_CONCURRENT: usize = 6;
+static LIVE_PROBE_SEMAPHORE: Semaphore = Semaphore::const_new(LIVE_PROBE_MAX_CONCURRENT);
+
 /// Result of running a live `.ts` segment through the transcode pipeline.
 enum LiveSegmentOutcome {
     /// Serve the upstream bytes unchanged.
@@ -267,6 +278,9 @@ async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<bool> {
     .iter()
     .map(|value| (*value).to_owned())
     .collect::<Vec<_>>();
+    // Bound concurrent probe processes; drop the probe (retry on a later segment)
+    // if the limiter is unavailable rather than blocking forever.
+    let _permit = LIVE_PROBE_SEMAPHORE.acquire().await.ok()?;
     let output = run_process_pipe(&args, bytes, LIVE_SEGMENT_PROBE_TIMEOUT_MS)
         .await
         .ok()?;
@@ -602,9 +616,9 @@ async fn fetch_live_hls_playlist_via_http(
     if let Some(referer) = referer {
         request = request.header(reqwest::header::REFERER, referer);
     }
-    let response = request
-        .send()
+    let response = timeout(LIVE_UPSTREAM_REQUEST_TIMEOUT, request.send())
         .await
+        .map_err(|_| ApiError::bad_gateway("Live HLS playlist request timed out."))?
         .map_err(|_| ApiError::bad_gateway("Live HLS playlist request failed."))?;
     if !response.status().is_success() {
         return Err(ApiError::bad_gateway(format!(
@@ -635,9 +649,9 @@ async fn fetch_live_hls_resource_via_http(
     if let Some(referer) = referer {
         request = request.header(reqwest::header::REFERER, referer);
     }
-    let response = request
-        .send()
+    let response = timeout(LIVE_UPSTREAM_REQUEST_TIMEOUT, request.send())
         .await
+        .map_err(|_| ApiError::bad_gateway("Live HLS resource request timed out."))?
         .map_err(|_| ApiError::bad_gateway("Live HLS resource request failed."))?;
     if !response.status().is_success() {
         return Err(ApiError::bad_gateway(format!(

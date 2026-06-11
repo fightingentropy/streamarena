@@ -7,10 +7,65 @@
 //! that account sign-up never breaks on an email problem.
 
 use std::fmt::Write as _;
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
 
 use crate::routes::AppState;
+
+/// Cap on concurrent outbound email sends, with a per-send timeout. Each signup
+/// spawns one send task; without a bound a slow Cloudflare endpoint would let a
+/// burst pile up (one socket + the shared client's 30s timeout each). 16 is
+/// ample for transactional email and keeps the worst case small.
+static EMAIL_CONCURRENCY: Semaphore = Semaphore::const_new(16);
+const EMAIL_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bounded, time-boxed POST to the Cloudflare email send endpoint. Acquires an
+/// [`EMAIL_CONCURRENCY`] permit, sends with a [`EMAIL_SEND_TIMEOUT`] cap, logs
+/// the outcome, and returns `true` only when Cloudflare accepted the message.
+/// `kind` is the email type for log lines (e.g. "verification").
+async fn post_cloudflare_email(
+    state: &AppState,
+    endpoint: &str,
+    payload: &serde_json::Value,
+    kind: &str,
+    to_email: &str,
+) -> bool {
+    let Ok(_permit) = EMAIL_CONCURRENCY.acquire().await else {
+        return false;
+    };
+    let send = state
+        .http_client
+        .post(endpoint)
+        .bearer_auth(&state.config.cf_email_api_token)
+        .json(payload)
+        .send();
+    match tokio::time::timeout(EMAIL_SEND_TIMEOUT, send).await {
+        Ok(Ok(response)) => {
+            let status = response.status();
+            if status.is_success() {
+                tracing::info!("sent {kind} email to {to_email}");
+                true
+            } else {
+                let body = response.text().await.unwrap_or_default();
+                tracing::error!("{kind} email to {to_email} rejected ({status}): {body}");
+                false
+            }
+        }
+        Ok(Err(error)) => {
+            tracing::error!("{kind} email to {to_email} failed: {error}");
+            false
+        }
+        Err(_elapsed) => {
+            tracing::error!(
+                "{kind} email to {to_email} timed out after {}s",
+                EMAIL_SEND_TIMEOUT.as_secs()
+            );
+            false
+        }
+    }
+}
 
 /// How long a verification link stays valid (24 hours, in milliseconds).
 pub const VERIFY_TOKEN_TTL_MS: i64 = 24 * 60 * 60 * 1000;
@@ -70,30 +125,7 @@ pub async fn send_verification_email(state: &AppState, to_email: &str, raw_token
         "html": html,
     });
 
-    match state
-        .http_client
-        .post(&endpoint)
-        .bearer_auth(&config.cf_email_api_token)
-        .json(&payload)
-        .send()
-        .await
-    {
-        Ok(response) => {
-            let status = response.status();
-            if status.is_success() {
-                tracing::info!("sent verification email to {to_email}");
-                true
-            } else {
-                let body = response.text().await.unwrap_or_default();
-                tracing::error!("verification email to {to_email} rejected ({status}): {body}");
-                false
-            }
-        }
-        Err(error) => {
-            tracing::error!("verification email to {to_email} failed: {error}");
-            false
-        }
-    }
+    post_cloudflare_email(state, &endpoint, &payload, "verification", to_email).await
 }
 
 /// Netflix-branded HTML body for the verification email (brand red `#e50914`).
@@ -148,30 +180,7 @@ pub async fn send_password_reset_email(state: &AppState, to_email: &str, raw_tok
         "html": html,
     });
 
-    match state
-        .http_client
-        .post(&endpoint)
-        .bearer_auth(&config.cf_email_api_token)
-        .json(&payload)
-        .send()
-        .await
-    {
-        Ok(response) => {
-            let status = response.status();
-            if status.is_success() {
-                tracing::info!("sent password-reset email to {to_email}");
-                true
-            } else {
-                let body = response.text().await.unwrap_or_default();
-                tracing::error!("password-reset email to {to_email} rejected ({status}): {body}");
-                false
-            }
-        }
-        Err(error) => {
-            tracing::error!("password-reset email to {to_email} failed: {error}");
-            false
-        }
-    }
+    post_cloudflare_email(state, &endpoint, &payload, "password-reset", to_email).await
 }
 
 /// Netflix-branded HTML body for the password-reset email (brand red `#e50914`).
