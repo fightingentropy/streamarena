@@ -36,7 +36,20 @@ const HLS_SEGMENT_WAIT_POLL_MS: u64 = 180;
 const REMUX_ACCURATE_SEEK_PREROLL_SECONDS: i64 = 12;
 const FFMPEG_STDERR_MAX_LINES: usize = 80;
 const FFMPEG_STDERR_MAX_BYTES: usize = 16 * 1024;
-const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v6";
+const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v7";
+
+// Cap transcoded HLS output to 720p. The origin serves from a residential upload
+// (~33 Mbps), so 720p (~2.8 Mbps) roughly doubles how many viewers fit vs 1080p
+// (~4.5 Mbps) — and since the HLS path always re-encodes, the lower resolution
+// also cuts encode CPU. The HLS_CACHE_SCHEMA_VERSION bump above invalidates the
+// old 1080p segment cache so this takes effect on deploy. NOTE: source-quality
+// remux (`-c:v copy`) playback is unaffected; capping that would force the
+// CPU-heavy re-encoding the mini can't sustain at scale.
+const HLS_MAX_WIDTH: u32 = 1280;
+const HLS_MAX_HEIGHT: u32 = 720;
+const HLS_VIDEO_BITRATE: &str = "2800k";
+const HLS_VIDEO_MAXRATE: &str = "3600k";
+const HLS_VIDEO_BUFSIZE: &str = "6000k";
 
 const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "opus", "vorbis", "flac", "alac"];
 // `mp2` (MPEG-1/2 Audio Layer II) is intentionally treated as unsafe: unlike MP3
@@ -1472,11 +1485,11 @@ fn build_hls_video_encode_config(hwaccel_mode: &str) -> VideoEncodeConfig {
                 "-c:v".to_owned(),
                 "h264_videotoolbox".to_owned(),
                 "-b:v".to_owned(),
-                "4500k".to_owned(),
+                HLS_VIDEO_BITRATE.to_owned(),
                 "-maxrate".to_owned(),
-                "5500k".to_owned(),
+                HLS_VIDEO_MAXRATE.to_owned(),
                 "-bufsize".to_owned(),
-                "9000k".to_owned(),
+                HLS_VIDEO_BUFSIZE.to_owned(),
                 "-pix_fmt".to_owned(),
                 "yuv420p".to_owned(),
                 "-profile:v".to_owned(),
@@ -1552,7 +1565,10 @@ fn build_hls_video_encode_config(hwaccel_mode: &str) -> VideoEncodeConfig {
 fn build_hls_mobile_safe_video_filter_args() -> Vec<String> {
     vec![
         "-vf".to_owned(),
-        "scale=w=min(1920\\,iw):h=min(1080\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1".to_owned(),
+        format!(
+            "scale=w=min({}\\,iw):h=min({}\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1",
+            HLS_MAX_WIDTH, HLS_MAX_HEIGHT
+        ),
     ]
 }
 
@@ -2048,8 +2064,8 @@ mod tests {
                 .position(|arg| arg == "-vf")
                 .expect("video filter argument");
             let filter = args.get(filter_index + 1).expect("video filter expression");
-            assert!(filter.contains("min(1920\\,iw)"));
-            assert!(filter.contains("min(1080\\,ih)"));
+            assert!(filter.contains(&format!("min({}\\,iw)", super::HLS_MAX_WIDTH)));
+            assert!(filter.contains(&format!("min({}\\,ih)", super::HLS_MAX_HEIGHT)));
             assert!(filter.contains("force_divisible_by=2"));
         }
     }
