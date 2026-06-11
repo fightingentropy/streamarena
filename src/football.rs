@@ -1651,10 +1651,16 @@ fn resolved_live_stream_response(
     _cache_hit: bool,
 ) -> Response<Body> {
     let playback_url_text = if resolved.playback_type == "hls" {
-        crate::live::build_sports_live_hls_playback_source(
-            resolved.playback_url.as_str(),
-            Some(resolved.player_page_url.as_str()),
-            state.config.live_hls_proxy_secret.as_str(),
+        // Serve the signed playlist from the Cloudflare Worker (when
+        // configured) so live playlist polling never crosses the zone's L7
+        // DDoS managed ruleset, which 503s it under bursty load.
+        crate::live::route_live_playback_source_via_worker(
+            &state.config.live_hls_resource_worker_base,
+            crate::live::build_sports_live_hls_playback_source(
+                resolved.playback_url.as_str(),
+                Some(resolved.player_page_url.as_str()),
+                state.config.live_hls_proxy_secret.as_str(),
+            ),
         )
     } else {
         resolved.playback_url.to_string()
