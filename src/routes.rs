@@ -2239,7 +2239,7 @@ pub async fn media_tracks_handler(
         let local_sidecar_subtitle_tracks = state
             .media
             .find_local_sidecar_subtitle_tracks(&source_input);
-        let external_subtitle_tracks = state
+        let mut external_subtitle_tracks = state
             .media
             .search_opensubtitles_tracks(
                 &subtitle_imdb_id_hint,
@@ -2249,6 +2249,25 @@ pub async fn media_tracks_handler(
                 &subtitle_filename_hint,
             )
             .await;
+        if external_subtitle_tracks.is_empty() {
+            let season_number_hint = params
+                .get("seasonNumber")
+                .and_then(|value| value.trim().parse::<i64>().ok())
+                .unwrap_or_default();
+            let episode_number_hint = params
+                .get("episodeNumber")
+                .and_then(|value| value.trim().parse::<i64>().ok())
+                .unwrap_or_default();
+            external_subtitle_tracks = state
+                .media
+                .search_stremio_addon_subtitle_tracks(
+                    &subtitle_imdb_id_hint,
+                    season_number_hint,
+                    episode_number_hint,
+                    &preferred_subtitle_lang,
+                )
+                .await;
+        }
         if !local_sidecar_subtitle_tracks.is_empty() {
             merged_tracks.subtitleTracks = merge_preferred_subtitle_tracks(
                 local_sidecar_subtitle_tracks,

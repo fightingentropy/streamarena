@@ -1180,27 +1180,31 @@ impl ResolverService {
         };
         let _active_guard = ResolverActiveGuard::new(self.resolve_metrics.clone());
         self.prune_idle_resolve_locks();
-        self.resolve_movie_inner(
-            user_id,
-            real_debrid.as_ref(),
-            local_torrent_enabled,
-            tmdb_id,
-            title_fallback,
-            year_fallback,
-            preferred_audio_lang,
-            preferred_quality,
-            preferred_subtitle_lang,
-            source_hash,
-            session_key,
-            min_seeders,
-            allowed_formats,
-            source_language,
-            source_audio_profile,
-            resolver_provider,
-            skip_external_embed,
-            refresh_resolve,
-        )
-        .await
+        let mut payload = self
+            .resolve_movie_inner(
+                user_id,
+                real_debrid.as_ref(),
+                local_torrent_enabled,
+                tmdb_id,
+                title_fallback,
+                year_fallback,
+                preferred_audio_lang,
+                preferred_quality,
+                preferred_subtitle_lang,
+                source_hash,
+                session_key,
+                min_seeders,
+                allowed_formats,
+                source_language,
+                source_audio_profile,
+                resolver_provider,
+                skip_external_embed,
+                refresh_resolve,
+            )
+            .await?;
+        self.attach_external_subtitle_tracks_to_payload(&mut payload)
+            .await;
+        Ok(payload)
     }
 
     pub async fn check_local_cache_upgrade(
@@ -1606,32 +1610,36 @@ impl ResolverService {
         };
         let _active_guard = ResolverActiveGuard::new(self.resolve_metrics.clone());
         self.prune_idle_resolve_locks();
-        self.resolve_tv_inner(
-            user_id,
-            real_debrid.as_ref(),
-            local_torrent_enabled,
-            tmdb_id,
-            title_fallback,
-            year_fallback,
-            season_number,
-            season_alias,
-            episode_number,
-            episode_alias,
-            preferred_audio_lang,
-            preferred_quality,
-            preferred_subtitle_lang,
-            preferred_container,
-            source_hash,
-            session_key,
-            min_seeders,
-            allowed_formats,
-            source_language,
-            source_audio_profile,
-            resolver_provider,
-            skip_external_embed,
-            refresh_resolve,
-        )
-        .await
+        let mut payload = self
+            .resolve_tv_inner(
+                user_id,
+                real_debrid.as_ref(),
+                local_torrent_enabled,
+                tmdb_id,
+                title_fallback,
+                year_fallback,
+                season_number,
+                season_alias,
+                episode_number,
+                episode_alias,
+                preferred_audio_lang,
+                preferred_quality,
+                preferred_subtitle_lang,
+                preferred_container,
+                source_hash,
+                session_key,
+                min_seeders,
+                allowed_formats,
+                source_language,
+                source_audio_profile,
+                resolver_provider,
+                skip_external_embed,
+                refresh_resolve,
+            )
+            .await?;
+        self.attach_external_subtitle_tracks_to_payload(&mut payload)
+            .await;
+        Ok(payload)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2245,6 +2253,85 @@ impl ResolverService {
         }
     }
 
+    /// Backfill external subtitle tracks on resolved payloads that have none.
+    ///
+    /// The external-embed pipeline builds its payload without a media probe or
+    /// subtitle search (see build_external_embed_resolved_payload_with_playable_url),
+    /// so embed playback — the most common VOD path — would otherwise always
+    /// surface an empty Subtitles menu. Reads everything it needs back out of
+    /// the payload, so it covers fresh resolves, embed-cache hits, and pinned
+    /// sources alike.
+    async fn attach_external_subtitle_tracks_to_payload(&self, payload: &mut Value) {
+        if stringify_json(payload.get("resolverProvider")) != EXTERNAL_EMBED_RESOLVER_PROVIDER {
+            return;
+        }
+        let has_subtitle_tracks = payload
+            .get("tracks")
+            .and_then(|tracks| tracks.get("subtitleTracks"))
+            .and_then(Value::as_array)
+            .map(|tracks| !tracks.is_empty())
+            .unwrap_or(false);
+        if has_subtitle_tracks {
+            return;
+        }
+        let Some(metadata) = payload.get("metadata") else {
+            return;
+        };
+        let imdb_id = stringify_json(metadata.get("imdbId"));
+        let display_title = stringify_json(metadata.get("displayTitle"));
+        let display_year = stringify_json(metadata.get("displayYear"));
+        let season_number = metadata
+            .get("seasonNumber")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let episode_number = metadata
+            .get("episodeNumber")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let filename = stringify_json(payload.get("filename"));
+        let preferred_subtitle_lang = stringify_json(
+            payload
+                .get("preferences")
+                .and_then(|preferences| preferences.get("subtitleLang")),
+        );
+
+        let mut subtitle_tracks = self
+            .media
+            .search_opensubtitles_tracks(
+                &imdb_id,
+                &display_title,
+                &display_year,
+                &preferred_subtitle_lang,
+                &filename,
+            )
+            .await;
+        if subtitle_tracks.is_empty() {
+            subtitle_tracks = self
+                .media
+                .search_stremio_addon_subtitle_tracks(
+                    &imdb_id,
+                    season_number,
+                    episode_number,
+                    &preferred_subtitle_lang,
+                )
+                .await;
+        }
+        if subtitle_tracks.is_empty() {
+            return;
+        }
+
+        let probe = MediaProbe {
+            subtitleTracks: subtitle_tracks,
+            ..MediaProbe::default()
+        };
+        let selected_subtitle_stream_index =
+            choose_subtitle_track_from_probe(&probe, &preferred_subtitle_lang)
+                .map(|track| track.streamIndex)
+                .unwrap_or(-1);
+        payload["tracks"]["subtitleTracks"] = json!(probe.subtitleTracks);
+        payload["selectedSubtitleStreamIndex"] = json!(selected_subtitle_stream_index);
+    }
+
     async fn build_resolved_response(
         &self,
         resolved: ResolvedSource,
@@ -2263,7 +2350,7 @@ impl ResolverService {
             },
         };
         let mut tracks = tracks;
-        let external_subtitle_tracks = self
+        let mut external_subtitle_tracks = self
             .media
             .search_opensubtitles_tracks(
                 &metadata.imdb_id,
@@ -2273,6 +2360,17 @@ impl ResolverService {
                 &resolved.filename,
             )
             .await;
+        if external_subtitle_tracks.is_empty() {
+            external_subtitle_tracks = self
+                .media
+                .search_stremio_addon_subtitle_tracks(
+                    &metadata.imdb_id,
+                    metadata.season_number,
+                    metadata.episode_number,
+                    &preferences.subtitle_lang,
+                )
+                .await;
+        }
         if !external_subtitle_tracks.is_empty() {
             tracks.subtitleTracks =
                 merge_preferred_subtitle_tracks(external_subtitle_tracks, tracks.subtitleTracks);

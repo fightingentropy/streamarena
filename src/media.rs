@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use url::Url;
-use url::form_urlencoded::Serializer;
+use url::form_urlencoded::{Serializer, byte_serialize};
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
@@ -27,6 +27,20 @@ const SUBTITLE_EXTRACT_TIMEOUT_MS: u64 = 3 * 60 * 1000;
 const EXTERNAL_SUBTITLE_CACHE_TTL_MS: u64 = 12 * 60 * 60 * 1000;
 const OPENSUBTITLES_API_BASE: &str = "https://api.opensubtitles.com/api/v1";
 const OPENSUBTITLES_TRACK_LIMIT: usize = 5;
+const STREMIO_OPENSUBTITLES_ADDON_BASE: &str = "https://opensubtitles-v3.strem.io";
+const STREMIO_SUBTITLE_SEARCH_TIMEOUT_SECONDS: u64 = 5;
+const STREMIO_SUBTITLE_SEARCH_CACHE_TTL_MS: u64 = 6 * 60 * 60 * 1000;
+const STREMIO_SUBTITLE_SEARCH_CACHE_MAX_ENTRIES: usize = 512;
+const STREMIO_SUBTITLE_STREAM_INDEX_BASE: i64 = 3_000_000_000;
+const STREMIO_SUBTITLE_PREFERRED_TRACK_LIMIT: usize = 3;
+const STREMIO_SUBTITLE_ENGLISH_FALLBACK_TRACK_LIMIT: usize = 2;
+// Languages eligible for the keyless addon menu, in menu order. Every entry
+// must have a real name in get_subtitle_language_display_name — unknown codes
+// would otherwise be labeled "English".
+const STREMIO_SUBTITLE_LANGUAGE_MENU: &[&str] = &[
+    "en", "es", "fr", "de", "it", "pt", "el", "sq", "tr", "ru", "ar", "pl", "nl", "ro", "ja",
+    "ko", "zh",
+];
 const LOCAL_SIDECAR_SUBTITLE_STREAM_INDEX_BASE: i64 = 1_000_000;
 const EXTERNAL_SUBTITLE_STREAM_INDEX_BASE: i64 = 2_000_000;
 const LOCAL_TORRENT_STREAM_PATH: &str = "/api/local-torrent/stream";
@@ -101,6 +115,11 @@ pub struct MediaService {
     probe_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
     subtitle_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
     external_subtitle_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    // (stored_at_ms, tracks) per "imdb|season|episode|lang" key. Resolves hit
+    // this on every playback start (including embed-cache fast hits), so the
+    // addon lookup must not cost a network round-trip each time. Empty results
+    // are cached too.
+    stremio_subtitle_cache: Arc<DashMap<String, (u64, Vec<SubtitleTrack>)>>,
 }
 
 impl MediaService {
@@ -116,6 +135,7 @@ impl MediaService {
             probe_locks: Arc::new(DashMap::new()),
             subtitle_locks: Arc::new(DashMap::new()),
             external_subtitle_locks: Arc::new(DashMap::new()),
+            stremio_subtitle_cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -433,6 +453,87 @@ impl MediaService {
             .map(|(_, track)| track)
             .take(OPENSUBTITLES_TRACK_LIMIT)
             .collect::<Vec<_>>()
+    }
+
+    /// Keyless subtitle search via the public Stremio OpenSubtitles addon.
+    ///
+    /// Used as a fallback when no OpenSubtitles API key is configured (the
+    /// keyed search returns nothing in that case). The addon matches by IMDb
+    /// id only; pass season/episode > 0 for series lookups.
+    pub async fn search_stremio_addon_subtitle_tracks(
+        &self,
+        imdb_id: &str,
+        season_number: i64,
+        episode_number: i64,
+        preferred_language: &str,
+    ) -> Vec<SubtitleTrack> {
+        let imdb_digits = imdb_id
+            .trim()
+            .strip_prefix("tt")
+            .unwrap_or(imdb_id.trim())
+            .trim();
+        if imdb_digits.is_empty() || !imdb_digits.chars().all(|ch| ch.is_ascii_digit()) {
+            return Vec::new();
+        }
+
+        let normalized_language = normalize_subtitle_preference(preferred_language);
+        let cache_key =
+            format!("{imdb_digits}|{season_number}|{episode_number}|{normalized_language}");
+        let now_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or_default();
+        if let Some(entry) = self.stremio_subtitle_cache.get(&cache_key)
+            && now_ms.saturating_sub(entry.0) < STREMIO_SUBTITLE_SEARCH_CACHE_TTL_MS
+        {
+            return entry.1.clone();
+        }
+
+        let request_url = if season_number > 0 && episode_number > 0 {
+            format!(
+                "{STREMIO_OPENSUBTITLES_ADDON_BASE}/subtitles/series/tt{imdb_digits}:{season_number}:{episode_number}.json"
+            )
+        } else {
+            format!("{STREMIO_OPENSUBTITLES_ADDON_BASE}/subtitles/movie/tt{imdb_digits}.json")
+        };
+
+        let fetch_payload = async {
+            let response = self
+                .http_client
+                .get(request_url)
+                .header(
+                    reqwest::header::USER_AGENT,
+                    self.subtitle_user_agent.clone(),
+                )
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            response.json::<Value>().await.ok()
+        };
+        let Ok(Some(payload)) = tokio::time::timeout(
+            Duration::from_secs(STREMIO_SUBTITLE_SEARCH_TIMEOUT_SECONDS),
+            fetch_payload,
+        )
+        .await
+        else {
+            // Transient failures are not cached so the next resolve retries.
+            return Vec::new();
+        };
+        let tracks = build_stremio_subtitle_tracks_from_payload(&payload, preferred_language);
+        if self.stremio_subtitle_cache.len() >= STREMIO_SUBTITLE_SEARCH_CACHE_MAX_ENTRIES {
+            self.stremio_subtitle_cache.retain(|_, (stored_at_ms, _)| {
+                now_ms.saturating_sub(*stored_at_ms) < STREMIO_SUBTITLE_SEARCH_CACHE_TTL_MS
+            });
+            if self.stremio_subtitle_cache.len() >= STREMIO_SUBTITLE_SEARCH_CACHE_MAX_ENTRIES {
+                self.stremio_subtitle_cache.clear();
+            }
+        }
+        self.stremio_subtitle_cache
+            .insert(cache_key, (now_ms, tracks.clone()));
+        tracks
     }
 
     pub fn find_local_sidecar_subtitle_tracks(&self, source_input: &str) -> Vec<SubtitleTrack> {
@@ -1446,10 +1547,120 @@ fn is_allowed_external_subtitle_download_url(download_url: &str) -> bool {
             Some(
                 hostname == "dl.opensubtitles.org"
                     || hostname == "www.opensubtitles.com"
-                    || hostname.ends_with(".opensubtitles.org"),
+                    || hostname.ends_with(".opensubtitles.org")
+                    || hostname == "strem.io"
+                    || hostname.ends_with(".strem.io"),
             )
         })
         .unwrap_or(false)
+}
+
+fn stremio_subtitle_language_menu_rank(language: &str, preferred_language: &str) -> usize {
+    if language == preferred_language {
+        return 0;
+    }
+    if language == "en" {
+        return 1;
+    }
+    STREMIO_SUBTITLE_LANGUAGE_MENU
+        .iter()
+        .position(|candidate| *candidate == language)
+        .map(|position| position + 2)
+        .unwrap_or(usize::MAX)
+}
+
+fn build_stremio_subtitle_tracks_from_payload(
+    payload: &Value,
+    preferred_language: &str,
+) -> Vec<SubtitleTrack> {
+    let normalized_preference = normalize_subtitle_preference(preferred_language);
+    let preferred = if normalized_preference.is_empty() || normalized_preference == "off" {
+        "en".to_owned()
+    } else {
+        normalized_preference
+    };
+
+    let mut seen_subtitle_ids = HashSet::new();
+    let mut per_language_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut selected: Vec<(String, i64, String)> = Vec::new();
+    for item in payload
+        .get("subtitles")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        let download_url = item
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        if !is_allowed_external_subtitle_download_url(&download_url) {
+            continue;
+        }
+        let language =
+            normalize_iso_language(item.get("lang").and_then(Value::as_str).unwrap_or_default());
+        if !STREMIO_SUBTITLE_LANGUAGE_MENU.contains(&language.as_str()) {
+            continue;
+        }
+        let subtitle_id = item
+            .get("id")
+            .and_then(|value| {
+                value
+                    .as_i64()
+                    .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<i64>().ok()))
+            })
+            .unwrap_or_default();
+        if subtitle_id <= 0 || !seen_subtitle_ids.insert(subtitle_id) {
+            continue;
+        }
+        let quota = if language == preferred {
+            STREMIO_SUBTITLE_PREFERRED_TRACK_LIMIT
+        } else if language == "en" {
+            STREMIO_SUBTITLE_ENGLISH_FALLBACK_TRACK_LIMIT
+        } else {
+            1
+        };
+        let language_count = per_language_counts.entry(language.clone()).or_insert(0);
+        if *language_count >= quota {
+            continue;
+        }
+        *language_count += 1;
+        selected.push((language, subtitle_id, download_url));
+    }
+
+    selected.sort_by_key(|(language, _, _)| stremio_subtitle_language_menu_rank(language, &preferred));
+
+    let mut label_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    selected
+        .into_iter()
+        .map(|(language, subtitle_id, download_url)| {
+            let language_label = get_subtitle_language_display_name(&language);
+            let label_count = label_counts.entry(language.clone()).or_insert(0);
+            *label_count += 1;
+            let label = if *label_count > 1 {
+                format!("{language_label} (OpenSubtitles) {label_count}")
+            } else {
+                format!("{language_label} (OpenSubtitles)")
+            };
+            SubtitleTrack {
+                streamIndex: STREMIO_SUBTITLE_STREAM_INDEX_BASE + subtitle_id,
+                language,
+                title: String::new(),
+                codec: "webvtt".to_owned(),
+                isDefault: false,
+                isTextBased: true,
+                isExternal: true,
+                label,
+                vttUrl: format!(
+                    "/api/subtitles.external.vtt?download={}",
+                    byte_serialize(download_url.as_bytes()).collect::<String>()
+                ),
+            }
+        })
+        .collect()
 }
 
 fn normalize_subtitle_match_text(value: &str) -> String {
@@ -1671,12 +1882,18 @@ fn normalize_iso_language(value: &str) -> String {
         "spa" => "es",
         "ger" | "deu" => "de",
         "ita" => "it",
-        "por" => "pt",
+        "por" | "pob" | "pb" => "pt",
         "jpn" => "ja",
         "kor" => "ko",
         "zho" | "chi" => "zh",
         "dut" | "nld" => "nl",
         "rum" | "ron" => "ro",
+        "pol" => "pl",
+        "tur" => "tr",
+        "rus" => "ru",
+        "ara" => "ar",
+        "gre" | "ell" => "el",
+        "alb" | "sqi" => "sq",
         _ => normalized.as_str(),
     };
     if alias.len() == 2 {
@@ -1703,6 +1920,8 @@ fn get_subtitle_language_display_name(value: &str) -> String {
         "tr" => "Turkish",
         "ru" => "Russian",
         "ar" => "Arabic",
+        "el" => "Greek",
+        "sq" => "Albanian",
         _ => "English",
     }
     .to_owned()
@@ -1907,12 +2126,13 @@ mod tests {
     use url::Url;
 
     use super::{
-        AudioTrack, MediaProbe, SubtitleTrack, choose_audio_track_from_probe,
-        choose_subtitle_track_from_probe, extract_sidecar_subtitle_suffix,
-        infer_sidecar_subtitle_language, is_allowed_external_subtitle_download_url,
-        is_allowed_remote_transcode_url, is_local_app_playback_url, is_local_cache_stream_input,
-        is_local_cache_stream_url, is_local_torrent_stream_input, is_local_torrent_stream_url,
-        is_path_inside_root_dir, local_cache_stream_file_path, merge_preferred_subtitle_tracks,
+        AudioTrack, MediaProbe, SubtitleTrack, build_stremio_subtitle_tracks_from_payload,
+        choose_audio_track_from_probe, choose_subtitle_track_from_probe,
+        extract_sidecar_subtitle_suffix, infer_sidecar_subtitle_language,
+        is_allowed_external_subtitle_download_url, is_allowed_remote_transcode_url,
+        is_local_app_playback_url, is_local_cache_stream_input, is_local_cache_stream_url,
+        is_local_torrent_stream_input, is_local_torrent_stream_url, is_path_inside_root_dir,
+        local_cache_stream_file_path, merge_preferred_subtitle_tracks,
         normalize_external_subtitle_download_url, normalize_subtitle_text_to_vtt,
         resolve_local_media_path,
     };
@@ -1979,12 +2199,76 @@ mod tests {
         assert!(is_allowed_external_subtitle_download_url(
             "https://dl.opensubtitles.org/en/download/file.gz"
         ));
+        assert!(is_allowed_external_subtitle_download_url(
+            "https://subs5.strem.io/en/download/subencoding-stremio-utf8/src-api/file/26958"
+        ));
         assert!(!is_allowed_external_subtitle_download_url(
             "http://dl.opensubtitles.org/en/download/file.gz"
         ));
         assert!(!is_allowed_external_subtitle_download_url(
             "https://example.com/subtitle.srt"
         ));
+        assert!(!is_allowed_external_subtitle_download_url(
+            "https://subs5.strem.io.example.com/file/26958"
+        ));
+    }
+
+    #[test]
+    fn builds_stremio_subtitle_tracks_grouped_by_language() {
+        let payload = serde_json::json!({
+            "subtitles": [
+                {"id": "101", "url": "https://subs5.strem.io/file/101", "lang": "spa"},
+                {"id": "102", "url": "https://subs5.strem.io/file/102", "lang": "eng"},
+                {"id": "103", "url": "https://subs5.strem.io/file/103", "lang": "eng"},
+                {"id": "104", "url": "https://subs5.strem.io/file/104", "lang": "eng"},
+                {"id": "105", "url": "https://subs5.strem.io/file/105", "lang": "eng"},
+                {"id": "106", "url": "https://subs5.strem.io/file/106", "lang": "pob"},
+                {"id": "107", "url": "https://subs5.strem.io/file/107", "lang": "abk"},
+                {"id": "108", "url": "https://evil.example.com/file/108", "lang": "eng"},
+                {"id": "102", "url": "https://subs5.strem.io/file/102", "lang": "eng"},
+                {"id": "109", "url": "https://subs5.strem.io/file/109", "lang": "gre"}
+            ]
+        });
+
+        let tracks = build_stremio_subtitle_tracks_from_payload(&payload, "");
+
+        // English is the implicit preference: first three eligible English
+        // entries kept, preferred quota applied, off-host and unknown-language
+        // entries dropped, duplicate ids deduped.
+        let labels = tracks
+            .iter()
+            .map(|track| track.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            vec![
+                "English (OpenSubtitles)",
+                "English (OpenSubtitles) 2",
+                "English (OpenSubtitles) 3",
+                "Spanish (OpenSubtitles)",
+                "Portuguese (OpenSubtitles)",
+                "Greek (OpenSubtitles)",
+            ]
+        );
+        assert!(tracks.iter().all(|track| track.isExternal && track.isTextBased));
+        assert_eq!(tracks[0].streamIndex, 3_000_000_000 + 102);
+        assert_eq!(
+            tracks[0].vttUrl,
+            "/api/subtitles.external.vtt?download=https%3A%2F%2Fsubs5.strem.io%2Ffile%2F102"
+        );
+        assert_eq!(tracks[3].language, "es");
+
+        // Explicit non-English preference reorders that language first and
+        // keeps English as a capped fallback.
+        let spanish_first = build_stremio_subtitle_tracks_from_payload(&payload, "es");
+        assert_eq!(spanish_first[0].language, "es");
+        assert_eq!(
+            spanish_first
+                .iter()
+                .filter(|track| track.language == "en")
+                .count(),
+            2
+        );
     }
 
     #[test]

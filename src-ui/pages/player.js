@@ -717,6 +717,14 @@ const subtitleLanguageNames = {
   ja: "Japanese",
   ko: "Korean",
   zh: "Chinese",
+  el: "Greek",
+  sq: "Albanian",
+  tr: "Turkish",
+  ru: "Russian",
+  ar: "Arabic",
+  pl: "Polish",
+  nl: "Dutch",
+  ro: "Romanian",
 };
 
 // Benchmark API is deferred to onMount (needs video ref)
