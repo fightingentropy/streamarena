@@ -182,6 +182,7 @@ pub struct ResolverService {
     resolve_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
     resolve_metrics: Arc<ResolverMetrics>,
     external_resolver_permits: Arc<Semaphore>,
+    resolved_embed_cache: ResolvedEmbedCache,
 }
 
 pub struct LocalCacheUpgradeRequest<'a> {
@@ -591,6 +592,10 @@ struct ExternalEmbedPlaybackRequest<'a> {
     allow_native_fallback: bool,
     health_scores: &'a HashMap<String, i64>,
     live_hls_proxy_secret: &'a str,
+    /// Resolved-payload cache + its key. Present only on the default (unpinned)
+    /// path; `None` on pinned-source resolves, which are never cached.
+    resolve_cache: Option<&'a ResolvedEmbedCache>,
+    cache_key: Option<&'a str>,
 }
 
 #[derive(Clone)]
@@ -674,7 +679,13 @@ impl ResolverService {
             resolve_locks: Arc::new(DashMap::new()),
             resolve_metrics: Arc::new(ResolverMetrics::default()),
             external_resolver_permits,
+            resolved_embed_cache: ResolvedEmbedCache::new(),
         }
+    }
+
+    /// Evict aged-out resolved-embed cache entries. Called from the periodic sweep.
+    pub fn prune_resolve_cache(&self) {
+        self.resolved_embed_cache.prune();
     }
 
     pub fn stats(&self) -> ResolverStats {
@@ -735,7 +746,24 @@ impl ResolverService {
         preferences: &ResolvePreferences,
         allow_native_fallback: bool,
         health_scores: &HashMap<String, i64>,
+        cache_key: Option<&str>,
     ) -> Option<Value> {
+        // A cache hit needs no resolve permit (no node subprocess / upstream work),
+        // so serve it before acquiring one — this is what lets concurrent viewers of
+        // a warm title skip the 2-permit bottleneck entirely.
+        if let Some(key) = cache_key
+            && let Some(hit) = self.resolved_embed_cache.get_fresh(key)
+        {
+            return Some(finalize_external_embed_payload(
+                metadata,
+                hit.source,
+                preferences,
+                &hit.playback_url,
+                hit.referer.as_deref(),
+                hit.embed_url,
+                &self.config.live_hls_proxy_secret,
+            ));
+        }
         let mut external_guard = self.acquire_external_resolve_permit().await.ok()?;
         let payload =
             build_external_embed_resolved_playback_payload(ExternalEmbedPlaybackRequest {
@@ -747,6 +775,8 @@ impl ResolverService {
                 allow_native_fallback,
                 health_scores,
                 live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
+                resolve_cache: Some(&self.resolved_embed_cache),
+                cache_key,
             })
             .await?;
         external_guard.mark_completed();
@@ -1114,6 +1144,7 @@ impl ResolverService {
         source_audio_profile: &str,
         resolver_provider: &str,
         skip_external_embed: bool,
+        refresh_resolve: bool,
     ) -> AppResult<Value> {
         self.resolve_metrics
             .movie_requests
@@ -1164,6 +1195,7 @@ impl ResolverService {
             source_audio_profile,
             resolver_provider,
             skip_external_embed,
+            refresh_resolve,
         )
         .await
     }
@@ -1249,6 +1281,7 @@ impl ResolverService {
         source_audio_profile: &str,
         resolver_provider: ResolverProvider,
         skip_external_embed: bool,
+        refresh_resolve: bool,
     ) -> AppResult<Value> {
         let stored_preference = self
             .db
@@ -1291,6 +1324,13 @@ impl ResolverService {
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
         let external_health_scores = self.compute_external_embed_health_scores(&metadata).await?;
+        // Bust the resolved-embed cache when the client asks for a fresh resolve
+        // (e.g. the player retrying after a playback failure), so a stale/dead
+        // upstream URL can't be re-served on the recovery path.
+        let resolve_cache_key = external_embed_resolve_cache_key(&metadata);
+        if refresh_resolve {
+            self.resolved_embed_cache.evict(&resolve_cache_key);
+        }
         let pinned_external_source =
             external_embed_source_for_source_hash(&metadata, &filters.source_hash);
         let external_embed_only = real_debrid.is_none();
@@ -1324,6 +1364,8 @@ impl ResolverService {
                     allow_native_fallback: false,
                     health_scores: &external_health_scores,
                     live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
+                    resolve_cache: None,
+                    cache_key: None,
                 })
                 .await
             {
@@ -1349,6 +1391,7 @@ impl ResolverService {
                     &preferences,
                     true,
                     &external_health_scores,
+                    Some(&resolve_cache_key),
                 )
                 .await
         {
@@ -1521,6 +1564,7 @@ impl ResolverService {
         source_audio_profile: &str,
         resolver_provider: &str,
         skip_external_embed: bool,
+        refresh_resolve: bool,
     ) -> AppResult<Value> {
         self.resolve_metrics
             .tv_requests
@@ -1581,6 +1625,7 @@ impl ResolverService {
             source_audio_profile,
             resolver_provider,
             skip_external_embed,
+            refresh_resolve,
         )
         .await
     }
@@ -1610,6 +1655,7 @@ impl ResolverService {
         source_audio_profile: &str,
         resolver_provider: ResolverProvider,
         skip_external_embed: bool,
+        refresh_resolve: bool,
     ) -> AppResult<Value> {
         let stored_preference = self
             .db
@@ -1674,6 +1720,13 @@ impl ResolverService {
             )
             .await?;
         let external_health_scores = self.compute_external_embed_health_scores(&metadata).await?;
+        // Bust the resolved-embed cache on a fresh-resolve request (e.g. player
+        // recovery after a playback failure) so a stale/dead upstream URL can't be
+        // re-served from cache.
+        let resolve_cache_key = external_embed_resolve_cache_key(&metadata);
+        if refresh_resolve {
+            self.resolved_embed_cache.evict(&resolve_cache_key);
+        }
         let pinned_external_source =
             external_embed_source_for_source_hash(&metadata, &filters.source_hash);
         let external_embed_only = real_debrid.is_none();
@@ -1707,6 +1760,8 @@ impl ResolverService {
                     allow_native_fallback: false,
                     health_scores: &external_health_scores,
                     live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
+                    resolve_cache: None,
+                    cache_key: None,
                 })
                 .await
             {
@@ -1732,6 +1787,7 @@ impl ResolverService {
                     &preferences,
                     true,
                     &external_health_scores,
+                    Some(&resolve_cache_key),
                 )
                 .await
         {
@@ -5392,9 +5448,152 @@ fn should_prefer_default_external_embed(
         )
 }
 
+/// In-memory cache of resolved external-embed playback (the expensive part: the
+/// node-subprocess resolve + provider hedge). The upstream auth token in the
+/// resolved URL is stable across resolves of the same title (a movie streams for
+/// hours on one token), so a hit can be rebuilt and served without re-resolving —
+/// making repeat plays, concurrent viewers, and (via the edge pre-warmer) even the
+/// first play of a popular title near-instant. Keyed by title identity (the result
+/// is user-agnostic). Bounded TTL stays well inside the token's validity; a playback
+/// failure busts the entry via `refreshResolve`. Set `RESOLVED_EMBED_CACHE_TTL_MS=0`
+/// to disable.
+const RESOLVED_EMBED_CACHE_MAX_ENTRIES: usize = 512;
+
+fn resolved_embed_cache_ttl_ms() -> i64 {
+    std::env::var("RESOLVED_EMBED_CACHE_TTL_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .unwrap_or(25 * 60 * 1000)
+        .max(0)
+}
+
+fn external_embed_resolve_cache_key(metadata: &ResolveMetadata) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        metadata.media_type,
+        metadata.tmdb_id.trim(),
+        metadata.season_number,
+        metadata.episode_number
+    )
+}
+
+#[derive(Clone)]
+struct CachedResolvedEmbed {
+    source: ExternalEmbedSource,
+    playback_url: String,
+    referer: Option<String>,
+    embed_url: String,
+    cached_at_ms: i64,
+}
+
+#[derive(Clone, Default)]
+pub struct ResolvedEmbedCache {
+    entries: Arc<DashMap<String, CachedResolvedEmbed>>,
+}
+
+impl ResolvedEmbedCache {
+    pub fn new() -> Self {
+        Self {
+            entries: Arc::new(DashMap::new()),
+        }
+    }
+
+    fn get_fresh(&self, key: &str) -> Option<CachedResolvedEmbed> {
+        let ttl = resolved_embed_cache_ttl_ms();
+        if ttl == 0 {
+            return None;
+        }
+        let entry = self.entries.get(key)?;
+        if now_ms() - entry.cached_at_ms > ttl {
+            return None;
+        }
+        Some(entry.clone())
+    }
+
+    fn store(&self, key: String, value: CachedResolvedEmbed) {
+        if resolved_embed_cache_ttl_ms() == 0 {
+            return;
+        }
+        self.entries.insert(key, value);
+        if self.entries.len() > RESOLVED_EMBED_CACHE_MAX_ENTRIES {
+            let now = now_ms();
+            let ttl = resolved_embed_cache_ttl_ms();
+            self.entries.retain(|_, value| now - value.cached_at_ms <= ttl);
+            if self.entries.len() > RESOLVED_EMBED_CACHE_MAX_ENTRIES {
+                self.entries.clear();
+            }
+        }
+    }
+
+    fn evict(&self, key: &str) {
+        self.entries.remove(key);
+    }
+
+    pub fn prune(&self) {
+        let now = now_ms();
+        let ttl = resolved_embed_cache_ttl_ms();
+        self.entries.retain(|_, value| now - value.cached_at_ms <= ttl);
+    }
+}
+
+/// Build the resolved-payload JSON from a (freshly-resolved or cached) winning
+/// candidate. Re-signs the proxied URL and applies the caller's current preferences,
+/// so a cache hit produces an identical-shaped payload to a fresh resolve.
+fn finalize_external_embed_payload(
+    metadata: &ResolveMetadata,
+    source: ExternalEmbedSource,
+    preferences: &ResolvePreferences,
+    upstream_playback_url: &str,
+    referer: Option<&str>,
+    embed_url: String,
+    live_hls_proxy_secret: &str,
+) -> Value {
+    let proxied_url = crate::live::build_trusted_external_embed_hls_playback_source(
+        upstream_playback_url,
+        referer,
+        live_hls_proxy_secret,
+    );
+    // For providers whose CDN serves the browser cross-origin (LordFlix:
+    // tcloud.lordflix.club playlists + *.tiktokcdn.com segments, both CORS-open with
+    // no Referer wall), hand the browser a direct-segment playlist (`&directSeg=1`)
+    // so the heavy `.ts` bytes stream straight from the source CDN — off the mini's
+    // home uplink — and keep the fully-proxied URL as a fallback the player switches
+    // to if a direct fetch fails.
+    let (playable_url, fallback_urls) = if is_external_embed_direct_segment_provider(source) {
+        (format!("{proxied_url}&directSeg=1"), vec![proxied_url])
+    } else {
+        (proxied_url, Vec::new())
+    };
+    build_external_embed_resolved_payload_with_playable_url(
+        metadata,
+        source,
+        preferences,
+        playable_url,
+        fallback_urls,
+        embed_url,
+    )
+}
+
 async fn build_external_embed_resolved_playback_payload(
     request: ExternalEmbedPlaybackRequest<'_>,
 ) -> Option<Value> {
+    // Serve a still-fresh resolved title from memory, skipping the whole
+    // node-subprocess + provider-hedge pipeline. Only the default (unpinned) path
+    // supplies a cache key; pinned-source resolves never cache.
+    if let (Some(cache), Some(key)) = (request.resolve_cache, request.cache_key)
+        && let Some(hit) = cache.get_fresh(key)
+    {
+        return Some(finalize_external_embed_payload(
+            request.metadata,
+            hit.source,
+            request.preferences,
+            &hit.playback_url,
+            hit.referer.as_deref(),
+            hit.embed_url,
+            request.live_hls_proxy_secret,
+        ));
+    }
+
     let _ = external_embed_playback_url(request.source, request.metadata, request.preferences)?;
     let candidates = external_embed_hls_candidate_sources(
         request.source,
@@ -5424,29 +5623,26 @@ async fn build_external_embed_resolved_playback_payload(
     .await?;
 
     record_external_embed_health_event(request.db, candidate, request.metadata, "success", "").await;
-    let proxied_url = crate::live::build_trusted_external_embed_hls_playback_source(
-        hls_source.playback_url.as_str(),
-        hls_source.referer.as_deref(),
-        request.live_hls_proxy_secret,
-    );
-    // For providers whose CDN serves the browser cross-origin (LordFlix:
-    // tcloud.lordflix.club playlists + *.tiktokcdn.com segments, both CORS-open with
-    // no Referer wall), hand the browser a direct-segment playlist (`&directSeg=1`)
-    // so the heavy `.ts` bytes stream straight from the source CDN — off the mini's
-    // home uplink — and keep the fully-proxied URL as a fallback the player switches
-    // to if a direct fetch fails.
-    let (playable_url, fallback_urls) = if is_external_embed_direct_segment_provider(candidate) {
-        (format!("{proxied_url}&directSeg=1"), vec![proxied_url])
-    } else {
-        (proxied_url, Vec::new())
-    };
-    Some(build_external_embed_resolved_payload_with_playable_url(
+    if let (Some(cache), Some(key)) = (request.resolve_cache, request.cache_key) {
+        cache.store(
+            key.to_owned(),
+            CachedResolvedEmbed {
+                source: candidate,
+                playback_url: hls_source.playback_url.to_string(),
+                referer: hls_source.referer.clone(),
+                embed_url: embed_url.clone(),
+                cached_at_ms: now_ms(),
+            },
+        );
+    }
+    Some(finalize_external_embed_payload(
         request.metadata,
         candidate,
         request.preferences,
-        playable_url,
-        fallback_urls,
+        hls_source.playback_url.as_str(),
+        hls_source.referer.as_deref(),
         embed_url,
+        request.live_hls_proxy_secret,
     ))
 }
 
@@ -8407,6 +8603,7 @@ mod tests {
         user_facing_real_debrid_error,
     };
     use super::race_staggered_first_success;
+    use super::{CachedResolvedEmbed, ResolvedEmbedCache, external_embed_resolve_cache_key};
 
     use std::sync::Mutex as StdMutex;
     use std::time::Duration;
@@ -8488,6 +8685,83 @@ mod tests {
             Vec::new();
         let winner = race_staggered_first_success(futures, Duration::from_millis(2_000)).await;
         assert_eq!(winner, None);
+    }
+
+    fn sample_resolve_metadata(
+        media_type: &str,
+        tmdb: &str,
+        season: i64,
+        episode: i64,
+    ) -> ResolveMetadata {
+        ResolveMetadata {
+            tmdb_id: tmdb.to_owned(),
+            imdb_id: String::new(),
+            display_title: String::new(),
+            display_year: String::new(),
+            runtime_seconds: 0,
+            season_number: season,
+            episode_number: episode,
+            episode_title: String::new(),
+            media_type: media_type.to_owned(),
+        }
+    }
+
+    #[test]
+    fn resolve_cache_key_is_stable_per_title_identity() {
+        // Movie: season/episode are 0, tmdb trimmed — matches the handler-side params.
+        assert_eq!(
+            external_embed_resolve_cache_key(&sample_resolve_metadata("movie", " 27205 ", 0, 0)),
+            "movie|27205|0|0"
+        );
+        assert_eq!(
+            external_embed_resolve_cache_key(&sample_resolve_metadata("tv", "1396", 1, 2)),
+            "tv|1396|1|2"
+        );
+    }
+
+    #[test]
+    fn resolved_embed_cache_store_get_and_evict() {
+        let cache = ResolvedEmbedCache::new();
+        let source = super::external_embed_sources()
+            .into_iter()
+            .next()
+            .expect("at least one embed source");
+        let key = "movie|27205|0|0".to_owned();
+        cache.store(
+            key.clone(),
+            CachedResolvedEmbed {
+                source,
+                playback_url: "https://up.example/p.m3u8?auth=tok".to_owned(),
+                referer: Some("https://vidlink.pro/".to_owned()),
+                embed_url: "https://vidlink.pro/movie/27205".to_owned(),
+                cached_at_ms: now_ms(),
+            },
+        );
+        let hit = cache.get_fresh(&key).expect("fresh entry");
+        assert_eq!(hit.playback_url, "https://up.example/p.m3u8?auth=tok");
+        cache.evict(&key);
+        assert!(cache.get_fresh(&key).is_none(), "evicted entry must be gone");
+    }
+
+    #[test]
+    fn resolved_embed_cache_expires_entries_past_ttl() {
+        let cache = ResolvedEmbedCache::new();
+        let source = super::external_embed_sources().into_iter().next().unwrap();
+        // Stamp the entry well past the default 25-min TTL.
+        cache.store(
+            "k".to_owned(),
+            CachedResolvedEmbed {
+                source,
+                playback_url: "u".to_owned(),
+                referer: None,
+                embed_url: "e".to_owned(),
+                cached_at_ms: now_ms() - (26 * 60 * 1000),
+            },
+        );
+        assert!(
+            cache.get_fresh("k").is_none(),
+            "entry older than the TTL must read as stale"
+        );
     }
 
     #[test]

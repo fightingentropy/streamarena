@@ -4449,6 +4449,7 @@ async function resolveTmdbSourcesAndPlay({
   requestSourceHash = "",
   resolveTimeoutMs = undefined,
   skipExternalEmbed = tmdbSkipExternalEmbed,
+  refreshResolve = false,
   startSeconds = 0,
 } = {}) {
   const activePlaybackRequestToken = applyPlayback
@@ -4485,6 +4486,7 @@ async function resolveTmdbSourcesAndPlay({
           requestSourceHash: normalizedRequestSourceHash,
           resolveTimeoutMs,
           skipExternalEmbed,
+          refreshResolve,
         },
       )
     : await resolveTmdbMovieViaBackend(tmdbId, {
@@ -4492,6 +4494,7 @@ async function resolveTmdbSourcesAndPlay({
         requestSourceHash: normalizedRequestSourceHash,
         resolveTimeoutMs,
         skipExternalEmbed,
+        refreshResolve,
       });
   const resolvedSourceHash = normalizeSourceHash(
     resolved?.sourceHash || normalizedRequestSourceHash || selectedSourceHash,
@@ -4561,7 +4564,11 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
       { includeSourceHash: false, dedupe: false },
     );
     void invalidateCurrentSession
-      .then(() => resolveTmdbSourcesAndPlay({ startSeconds: resumeAt }))
+      .then(() =>
+        // Force a fresh resolve on recovery so a stale/dead cached upstream URL is
+        // evicted server-side rather than re-served.
+        resolveTmdbSourcesAndPlay({ startSeconds: resumeAt, refreshResolve: true }),
+      )
       .catch((error) => {
         console.error("Failed to refresh TMDB playback source:", error);
         const fallbackMessage =
@@ -8827,6 +8834,7 @@ async function resolveTmdbMovieViaBackend(
     requestSourceHash = "",
     resolveTimeoutMs = undefined,
     skipExternalEmbed = false,
+    refreshResolve = false,
   } = {},
 ) {
   const buildQuery = ({
@@ -8847,6 +8855,9 @@ async function resolveTmdbMovieViaBackend(
     });
     if (skipEmbed) {
       query.set("skipExternalEmbed", "1");
+    }
+    if (refreshResolve) {
+      query.set("refreshResolve", "1");
     }
     if (preferredSubtitleLang) {
       query.set("subtitleLang", preferredSubtitleLang);
@@ -8936,6 +8947,7 @@ async function resolveTmdbTvEpisodeViaBackend(
     requestSourceHash = "",
     resolveTimeoutMs = undefined,
     skipExternalEmbed = false,
+    refreshResolve = false,
   } = {},
 ) {
   const buildQuery = (
@@ -8963,6 +8975,9 @@ async function resolveTmdbTvEpisodeViaBackend(
     });
     if (skipEmbed) {
       query.set("skipExternalEmbed", "1");
+    }
+    if (refreshResolve) {
+      query.set("refreshResolve", "1");
     }
     if (preferredSubtitleLang) {
       query.set("subtitleLang", preferredSubtitleLang);
