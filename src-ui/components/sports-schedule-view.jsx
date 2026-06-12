@@ -134,10 +134,6 @@ function isProviderLabel(value) {
   );
 }
 
-function getLocalTimeZone() {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || "Local";
-}
-
 function formatDateKey(timestamp) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     year: "numeric",
@@ -169,15 +165,6 @@ function formatTime(timestamp) {
   return new Intl.DateTimeFormat("en-GB", {
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
-  }).format(new Date(timestamp));
-}
-
-function formatClock(timestamp) {
-  return new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
     hour12: false,
   }).format(new Date(timestamp));
 }
@@ -400,9 +387,12 @@ function liveProgressWidthClass(match, now) {
   return `is-w-${Math.round(liveProgressPercent(match, now) / 5) * 5}`;
 }
 
-function renderCard(match, nowAccessor, config) {
+function renderCard(match, nowAccessor, config, railTitle) {
   const leagueLabel = getMatchDisplayLeague(match);
-  const linksLabel = `${match.linkCount} ${match.linkCount === 1 ? "link" : "links"}`;
+  // League rails already carry the league name in the rail title; only mixed
+  // rails ("Live now" / "Upcoming") need it repeated on the card itself.
+  const cardLeague = leagueLabel && leagueLabel !== railTitle ? leagueLabel : "";
+  const streamsLabel = `${match.linkCount} ${match.linkCount === 1 ? "stream" : "streams"}`;
   const live = () => isLive(match, nowAccessor());
   const playable = () => live() && match.streams.length > 0;
 
@@ -425,11 +415,13 @@ function renderCard(match, nowAccessor, config) {
         }
       >
         <span class="sports-card-art">
-          <span class="sports-card-glow" aria-hidden="true"></span>
           <span class="sports-card-watermark" aria-hidden="true">
             <svg viewBox="0 0 24 24"><path d={sportsIconPath(config.sportName)} /></svg>
           </span>
           <span class="sports-card-shade" aria-hidden="true"></span>
+          {live()
+            ? ""
+            : <><span class="sports-card-kick">{formatTime(match.startTimestamp)}</span></>}
           <span class="sports-card-badges">
             {live()
               ? <>
@@ -437,9 +429,9 @@ function renderCard(match, nowAccessor, config) {
                   <span class="sports-badge-dot" aria-hidden="true"></span>Live
                 </span>
               </>
-              : <><span class="sports-badge is-time">{formatTime(match.startTimestamp)}</span></>}
+              : ""}
             {match.linkCount
-              ? <><span class="sports-badge is-links">{linksLabel}</span></>
+              ? <><span class="sports-badge is-links">{streamsLabel}</span></>
               : ""}
           </span>
           <span class="sports-card-name">{match.title}</span>
@@ -456,15 +448,9 @@ function renderCard(match, nowAccessor, config) {
             </>
             : ""}
         </span>
-        <span class="sports-card-meta">
-          <span class="sports-card-sport">{match.sport}</span>
-          {leagueLabel
-            ? <>
-              <span class="sports-card-dot" aria-hidden="true">•</span>
-              <span class="sports-card-league">{leagueLabel}</span>
-            </>
-            : ""}
-        </span>
+        {cardLeague
+          ? <><span class="sports-card-meta">{cardLeague}</span></>
+          : ""}
       </button>
     </article>
   </>;
@@ -479,7 +465,7 @@ function renderRail(group, nowAccessor, config, bindRail) {
         <span class="sports-rail-count">{group.matches.length}</span>
       </h2>
       <div class="sports-rail-track" ref={bindRail}>
-        {group.matches.map((match) => renderCard(match, nowAccessor, config))}
+        {group.matches.map((match) => renderCard(match, nowAccessor, config, group.title))}
       </div>
     </section>
   </>;
@@ -494,7 +480,6 @@ export default function SportsScheduleView(options = {}) {
   const [errorText, setErrorText] = createSignal("");
   const [fetchedAt, setFetchedAt] = createSignal(0);
   const [now, setNow] = createSignal(Date.now());
-  const timeZone = getLocalTimeZone();
   const config = createMemo(() => SPORT_CONFIGS[selectedSport()] || SPORT_CONFIGS.football);
   let intervalId;
   let loadSequence = 0;
@@ -664,8 +649,6 @@ export default function SportsScheduleView(options = {}) {
           </span>
           <span class="sports-hero-sep" aria-hidden="true">•</span>
           <span>{selectedStats().all} scheduled</span>
-          <span class="sports-hero-sep" aria-hidden="true">•</span>
-          <span class="sports-hero-clock">{formatClock(now())} {timeZone}</span>
         </p>
       </header>
 
@@ -739,7 +722,7 @@ export default function SportsScheduleView(options = {}) {
 
       <footer class="sports-foot">
         <span class="sports-foot-stamp">
-          {fetchedAt() ? `Updated ${formatTime(fetchedAt())} • ${timeZone}` : ""}
+          {fetchedAt() ? `Updated ${formatTime(fetchedAt())}` : ""}
         </span>
         <button type="button" class="sports-refresh" onClick={loadMatches}>
           <svg viewBox="0 0 24 24" aria-hidden="true">
