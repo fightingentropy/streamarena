@@ -66,6 +66,7 @@ struct LiveHlsRequest {
     source_url: Url,
     referer: Option<String>,
     trusted_external_embed: bool,
+    direct_segments: bool,
 }
 
 struct LiveHlsPlaylistFetch {
@@ -110,6 +111,7 @@ pub async fn live_hls_handler(
         &playlist,
         live_request.referer.as_deref(),
         trusted_secret,
+        live_request.direct_segments,
     );
     let rewritten = maybe_route_live_resources_to_worker(
         &state,
@@ -563,10 +565,18 @@ fn live_hls_request_input(
     if !is_allowed_live_hls_url(&source_url) && !trusted_external_embed {
         return Err(ApiError::bad_request("Unsupported live HLS URL."));
     }
+    // Opt-in: when set (only honored for trusted embeds), the playlist rewrite
+    // leaves browser-direct-eligible CDN hosts as absolute URLs so their bytes
+    // skip the Mini's uplink. Default (and the proxied fallback URL) keep the
+    // full Mini proxy behavior. Only ever reduces Mini involvement, never the
+    // SSRF surface, so it doesn't need to be part of the signed payload.
+    let direct_segments = trusted_external_embed
+        && params.get("directSeg").map(String::as_str) == Some("1");
     Ok(LiveHlsRequest {
         source_url,
         referer,
         trusted_external_embed,
+        direct_segments,
     })
 }
 
@@ -645,6 +655,38 @@ pub fn build_sports_live_hls_playback_source(
     live_hls_proxy_secret: &str,
 ) -> String {
     build_trusted_external_embed_hls_playback_source(input, referer, live_hls_proxy_secret)
+}
+
+/// Hosts that serve the browser **cross-origin directly** — they send
+/// `Access-Control-Allow-Origin: *` and impose no Referer wall — so hls.js can
+/// fetch them straight from the source CDN with no Mini in the byte path. These
+/// are LordFlix's playlist proxy (`tcloud.lordflix.club`) and the TikTok CDN
+/// that serves its `.ts` segments (`*.tiktokcdn.com`); both were verified by
+/// probe. Leaving these direct (under the `directSeg` flag) takes the heavy
+/// segment bytes off the Mini's home uplink entirely. Conservative allow-list:
+/// any host NOT listed keeps going through the Mini proxy (the safe default).
+fn is_cors_direct_hls_host(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    host == "tcloud.lordflix.club"
+        || host == "tiktokcdn.com"
+        || host.ends_with(".tiktokcdn.com")
+}
+
+/// In direct-segment mode, return the absolute upstream URL untouched when its
+/// host is browser-direct-eligible (CORS-open, no Referer wall, and not a
+/// fingerprint-blocked host that only the Mini's curl can reach). Otherwise
+/// None → the caller proxies it through the Mini as usual.
+fn direct_hls_url_if_eligible(input: &str, direct_segments: bool) -> Option<String> {
+    if !direct_segments {
+        return None;
+    }
+    let url = Url::parse(input).ok()?;
+    let host = url.host_str()?;
+    if is_cors_direct_hls_host(host) && !is_curl_fetch_live_hls_upstream(&url) {
+        Some(input.to_owned())
+    } else {
+        None
+    }
 }
 
 fn browser_bound_live_hls_referer_header(referer: Option<&str>) -> Option<String> {
@@ -1231,6 +1273,7 @@ fn rewrite_live_hls_playlist(
     playlist: &str,
     referer: Option<&str>,
     trusted_external_embed_secret: Option<&str>,
+    direct_segments: bool,
 ) -> String {
     let lines: Vec<&str> = playlist.lines().collect();
     let is_master_playlist = lines
@@ -1246,6 +1289,7 @@ fn rewrite_live_hls_playlist(
             &lines,
             referer,
             trusted_external_embed_secret,
+            direct_segments,
         );
     }
     if is_media_playlist {
@@ -1254,6 +1298,7 @@ fn rewrite_live_hls_playlist(
             &lines,
             referer,
             trusted_external_embed_secret,
+            direct_segments,
         );
     }
     playlist.to_owned()
@@ -1329,15 +1374,18 @@ fn rewrite_live_hls_master_playlist(
     lines: &[&str],
     referer: Option<&str>,
     trusted_external_embed_secret: Option<&str>,
+    direct_segments: bool,
 ) -> String {
     // Trusted-embed streams (external-embed VOD, and sports — both signed via
     // build_trusted_external_embed_hls_playback_source) are proxied through the
     // mini's bandwidth-limited home uplink, so cap their quality ladder to 720p.
     // This is a no-op for single-quality streams (most live sports, which serve
     // one transcoded rendition); it only reshapes multi-variant ladders (VOD
-    // movie/TV embeds), exactly where the uplink relief is needed.
+    // movie/TV embeds), exactly where the uplink relief is needed. Skip the cap
+    // in direct-segment mode: those bytes stream off the source CDN, not the
+    // uplink, so the full quality ladder is free.
     let capped_storage;
-    let lines: &[&str] = if trusted_external_embed_secret.is_some() {
+    let lines: &[&str] = if trusted_external_embed_secret.is_some() && !direct_segments {
         capped_storage = cap_external_embed_master_to_720p(lines);
         &capped_storage
     } else {
@@ -1357,6 +1405,9 @@ fn rewrite_live_hls_master_playlist(
                 line,
                 referer,
                 |input, referer| {
+                    if let Some(direct) = direct_hls_url_if_eligible(input, direct_segments) {
+                        return direct;
+                    }
                     if line.starts_with("#EXT-X-MEDIA:")
                         || line.starts_with("#EXT-X-I-FRAME-STREAM-INF:")
                     {
@@ -1379,11 +1430,18 @@ fn rewrite_live_hls_master_playlist(
         }
 
         if let Some(absolute_uri) = resolve_hls_uri(base_url, line) {
-            rewritten.push(live_hls_proxy_playlist_url_with_trust(
-                &absolute_uri,
-                referer,
-                trusted_external_embed_secret,
-            ));
+            // Variant playlist URI: leave it direct when the host serves the
+            // browser cross-origin (LordFlix tcloud), so the whole variant +
+            // segment chain bypasses the Mini; otherwise proxy as usual.
+            rewritten.push(
+                direct_hls_url_if_eligible(&absolute_uri, direct_segments).unwrap_or_else(|| {
+                    live_hls_proxy_playlist_url_with_trust(
+                        &absolute_uri,
+                        referer,
+                        trusted_external_embed_secret,
+                    )
+                }),
+            );
         } else {
             rewritten.push(line.to_owned());
         }
@@ -1453,6 +1511,7 @@ fn rewrite_live_hls_media_playlist(
     lines: &[&str],
     referer: Option<&str>,
     trusted_external_embed_secret: Option<&str>,
+    direct_segments: bool,
 ) -> String {
     let is_vod_playlist = lines.iter().any(|line| {
         let line = line.trim();
@@ -1465,6 +1524,7 @@ fn rewrite_live_hls_media_playlist(
             lines,
             referer,
             trusted_external_embed_secret,
+            direct_segments,
         );
     }
 
@@ -1502,6 +1562,9 @@ fn rewrite_live_hls_media_playlist(
                     line,
                     referer,
                     |input, referer| {
+                        if let Some(direct) = direct_hls_url_if_eligible(input, direct_segments) {
+                            return direct;
+                        }
                         let referer = live_hls_resource_referer_for_url(base_url, input, referer);
                         live_hls_proxy_resource_url_with_trust(
                             input,
@@ -1516,6 +1579,9 @@ fn rewrite_live_hls_media_playlist(
                     line,
                     referer,
                     |input, referer| {
+                        if let Some(direct) = direct_hls_url_if_eligible(input, direct_segments) {
+                            return direct;
+                        }
                         let referer = live_hls_resource_referer_for_url(base_url, input, referer);
                         live_hls_proxy_resource_url_with_trust(
                             input,
@@ -1531,6 +1597,9 @@ fn rewrite_live_hls_media_playlist(
         saw_segment = true;
         let segment_uri = resolve_hls_uri(base_url, line)
             .map(|absolute_uri| {
+                if let Some(direct) = direct_hls_url_if_eligible(&absolute_uri, direct_segments) {
+                    return direct;
+                }
                 let referer = live_hls_resource_referer_for_url(base_url, &absolute_uri, referer);
                 live_hls_proxy_resource_url_with_trust(
                     &absolute_uri,
@@ -1571,6 +1640,7 @@ fn rewrite_vod_hls_media_playlist(
     lines: &[&str],
     referer: Option<&str>,
     trusted_external_embed_secret: Option<&str>,
+    direct_segments: bool,
 ) -> String {
     let mut rewritten = Vec::with_capacity(lines.len());
     for raw_line in lines {
@@ -1586,6 +1656,9 @@ fn rewrite_vod_hls_media_playlist(
                 line,
                 referer,
                 |input, referer| {
+                    if let Some(direct) = direct_hls_url_if_eligible(input, direct_segments) {
+                        return direct;
+                    }
                     let referer = live_hls_resource_referer_for_url(base_url, input, referer);
                     live_hls_proxy_resource_url_with_trust(
                         input,
@@ -1599,6 +1672,9 @@ fn rewrite_vod_hls_media_playlist(
 
         let segment_uri = resolve_hls_uri(base_url, line)
             .map(|absolute_uri| {
+                if let Some(direct) = direct_hls_url_if_eligible(&absolute_uri, direct_segments) {
+                    return direct;
+                }
                 let referer = live_hls_resource_referer_for_url(base_url, &absolute_uri, referer);
                 live_hls_proxy_resource_url_with_trust(
                     &absolute_uri,
@@ -2120,7 +2196,7 @@ mod tests {
             .parse()
             .expect("base url");
         let playlist = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nchild/main.m3u8\n";
-        let rewritten = rewrite_live_hls_playlist(&base, playlist, None, None);
+        let rewritten = rewrite_live_hls_playlist(&base, playlist, None, None, false);
 
         assert!(rewritten.contains("/api/live/hls.m3u8?input="));
         assert!(rewritten.contains("child%2Fmain.m3u8"));
@@ -2132,7 +2208,7 @@ mod tests {
             .parse()
             .expect("base url");
         let playlist = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio1\",URI=\"08_1080-30.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1\n07_1080-30.m3u8\n";
-        let rewritten = rewrite_live_hls_playlist(&base, playlist, None, None);
+        let rewritten = rewrite_live_hls_playlist(&base, playlist, None, None, false);
 
         assert!(rewritten.contains("/api/live/hls.m3u8?input="));
         assert!(rewritten.contains("08_1080-30.m3u8"));
@@ -2151,6 +2227,7 @@ mod tests {
             playlist,
             Some("https://vixsrc.to/api/tv/273240/1/1"),
             None,
+            false,
         );
 
         assert!(rewritten.contains("NAME=\"Italian\",DEFAULT=NO,AUTOSELECT=NO"));
@@ -2168,6 +2245,7 @@ mod tests {
             playlist,
             Some("https://helpless.click/e/player"),
             None,
+            false,
         );
 
         assert!(rewritten.contains("/api/live/hls-resource?input="));
@@ -2186,6 +2264,7 @@ mod tests {
             playlist,
             Some("https://vidlink.pro/tv/1396/1/1"),
             Some("test-live-hls-proxy-secret-with-enough-length"),
+            false,
         );
         let key_line = rewritten
             .lines()
@@ -2211,6 +2290,7 @@ mod tests {
             playlist,
             Some("https://player.videasy.to/movie/1"),
             None,
+            false,
         );
 
         assert!(rewritten.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
@@ -2336,6 +2416,61 @@ mod tests {
         let no_res = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4500000\n/v/index.m3u8";
         let lines: Vec<&str> = no_res.lines().collect();
         assert_eq!(super::cap_external_embed_master_to_720p(&lines).join("\n"), no_res);
+    }
+
+    #[test]
+    fn cors_direct_hls_host_allow_list() {
+        assert!(super::is_cors_direct_hls_host("tcloud.lordflix.club"));
+        assert!(super::is_cors_direct_hls_host("p16-sg.tiktokcdn.com"));
+        assert!(super::is_cors_direct_hls_host("TikTokCDN.com"));
+        // Not on the allow-list: keep proxying through the mini.
+        assert!(!super::is_cors_direct_hls_host("storm.vodvidl.site"));
+        assert!(!super::is_cors_direct_hls_host("lordflix.club"));
+        assert!(!super::is_cors_direct_hls_host("evil-tiktokcdn.com"));
+    }
+
+    #[test]
+    fn direct_segments_leaves_cors_direct_hosts_direct_and_proxies_the_rest() {
+        let base: url::Url = "https://tcloud.lordflix.club/tcloud?u=abc".parse().unwrap();
+        // VOD media playlist: one CORS-direct (tiktokcdn) segment + one other-host segment.
+        let playlist = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:4.0,\n\
+https://p16-sg.tiktokcdn.com/a/seg-1.ts\n#EXTINF:4.0,\n\
+https://other.example.net/seg-2.ts\n#EXT-X-ENDLIST\n";
+        let secret = Some("test-live-hls-proxy-secret-with-enough-length");
+
+        // directSeg ON: tiktokcdn segment stays direct, the other is proxied.
+        let direct =
+            rewrite_live_hls_playlist(&base, playlist, Some("https://lordflix.club/"), secret, true);
+        assert!(
+            direct.contains("https://p16-sg.tiktokcdn.com/a/seg-1.ts"),
+            "tiktokcdn segment must be left direct"
+        );
+        assert!(
+            direct.contains("/api/live/hls-resource?input="),
+            "non-CORS host must still be proxied"
+        );
+        assert!(
+            !direct.contains("input=https%3A%2F%2Fp16-sg"),
+            "tiktokcdn segment must NOT be wrapped in the mini proxy"
+        );
+
+        // directSeg OFF (the fallback URL): everything proxied — today's behavior.
+        let proxied = rewrite_live_hls_playlist(
+            &base,
+            playlist,
+            Some("https://lordflix.club/"),
+            secret,
+            false,
+        );
+        assert!(
+            !proxied.contains("https://p16-sg.tiktokcdn.com/a/seg-1.ts"),
+            "with directSeg off the tiktokcdn segment is proxied, not direct"
+        );
+        assert_eq!(
+            proxied.matches("/api/live/hls-resource?input=").count(),
+            2,
+            "both segments proxied through the mini"
+        );
     }
 
     #[test]

@@ -5433,16 +5433,29 @@ async fn build_external_embed_resolved_playback_payload(
         };
         record_external_embed_health_event(request.db, candidate, request.metadata, "success", "")
             .await;
-        let playable_url = crate::live::build_trusted_external_embed_hls_playback_source(
+        let proxied_url = crate::live::build_trusted_external_embed_hls_playback_source(
             hls_source.playback_url.as_str(),
             hls_source.referer.as_deref(),
             request.live_hls_proxy_secret,
         );
+        // For providers whose CDN serves the browser cross-origin (LordFlix:
+        // tcloud.lordflix.club playlists + *.tiktokcdn.com segments, both
+        // CORS-open with no Referer wall), hand the browser a direct-segment
+        // playlist (`&directSeg=1`) so the heavy `.ts` bytes stream straight from
+        // the source CDN — off the mini's home uplink — and keep the fully-proxied
+        // URL as a fallback the player switches to if a direct fetch fails.
+        let (playable_url, fallback_urls) =
+            if is_external_embed_direct_segment_provider(candidate) {
+                (format!("{proxied_url}&directSeg=1"), vec![proxied_url])
+            } else {
+                (proxied_url, Vec::new())
+            };
         return Some(build_external_embed_resolved_payload_with_playable_url(
             request.metadata,
             candidate,
             request.preferences,
             playable_url,
+            fallback_urls,
             embed_url,
         ));
     }
@@ -5513,16 +5526,38 @@ async fn record_external_embed_health_event(
         .await;
 }
 
+fn is_external_embed_direct_segment_provider(source: ExternalEmbedSource) -> bool {
+    // Providers whose segment/playlist CDNs serve the browser cross-origin
+    // (CORS `*`, no Referer wall) — verified by probe — so the player COULD fetch
+    // them directly off the source CDN, bypassing the mini's uplink. The mini-side
+    // plumbing (`directSeg` + `is_cors_direct_hls_host`) is wired and unit-tested.
+    //
+    // DISABLED pending playback fix: browser verification (2026-06-12) showed
+    // LordFlix's tiktokcdn segments are PNG-prefixed TS (120-byte PNG header
+    // before the 0x47 sync); hls.js timed out on startup on the direct path even
+    // though CORS + byte delivery worked. Re-enable once the direct path plays
+    // (likely needs the player to skip the PNG prefix, which today only the mini
+    // proxy is positioned to strip). Opt-in env keeps the resolver side dark.
+    if std::env::var("EXTERNAL_EMBED_DIRECT_SEGMENTS")
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false)
+    {
+        return matches!(source.provider.id, "lordflix");
+    }
+    let _ = source;
+    false
+}
+
 fn build_external_embed_resolved_payload_with_playable_url(
     metadata: &ResolveMetadata,
     source: ExternalEmbedSource,
     preferences: &ResolvePreferences,
     playable_url: String,
+    fallback_urls: Vec<String>,
     source_input: String,
 ) -> Value {
     let source_hash = external_embed_source_hash(source, metadata);
     let filename = external_embed_source_filename(source);
-    let fallback_urls = Vec::new();
     let resolved = ResolvedSource {
         playable_url: playable_url.clone(),
         fallback_urls: fallback_urls.clone(),
