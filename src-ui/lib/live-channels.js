@@ -70,7 +70,7 @@ export const TOP_NEWS_STREAM_URL =
 export const LIVE_CHANNELS = Object.freeze([
   {
     id: "bloomberg-tv-us",
-    title: "Bloomberg TV US",
+    title: "Bloomberg TV",
     source: BLOOMBERG_US_STREAM_URL,
     defaultStreamId: "default",
     streams: [
