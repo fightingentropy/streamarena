@@ -1259,12 +1259,90 @@ fn rewrite_live_hls_playlist(
     playlist.to_owned()
 }
 
+/// Parse the height (e.g. 1080) from an `#EXT-X-STREAM-INF`/`#EXT-X-I-FRAME-STREAM-INF`
+/// line's `RESOLUTION=WIDTHxHEIGHT` attribute. Returns None when absent/unparseable.
+fn stream_inf_resolution_height(line: &str) -> Option<u32> {
+    let upper = line.to_ascii_uppercase();
+    let start = upper.find("RESOLUTION=")? + "RESOLUTION=".len();
+    let value = upper[start..]
+        .split([',', ' ', '\t'])
+        .next()
+        .unwrap_or_default();
+    let (_width, height) = value.split_once('X')?;
+    height.trim().parse::<u32>().ok()
+}
+
+/// Cap an external-embed master playlist to <= 720p by dropping taller variant
+/// renditions (and their following URI line). External-embed VOD is proxied
+/// through the mini's home uplink, so a 1080p ladder (~4.5 Mbps/viewer) starves
+/// the uplink under concurrent load; 720p (~1.8 Mbps) roughly doubles the
+/// concurrent-viewer headroom. Never strips every variant: if no rendition is
+/// <= 720p (or none declare a resolution), the playlist is returned unchanged.
+fn cap_external_embed_master_to_720p<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+    const MAX_HEIGHT: u32 = 720;
+    let has_keepable = lines
+        .iter()
+        .filter(|line| {
+            let t = line.trim_start();
+            t.starts_with("#EXT-X-STREAM-INF")
+        })
+        .any(|line| stream_inf_resolution_height(line).is_none_or(|height| height <= MAX_HEIGHT));
+    if !has_keepable {
+        return lines.to_vec();
+    }
+    let mut out = Vec::with_capacity(lines.len());
+    let mut drop_next_uri = false;
+    for &line in lines {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("#EXT-X-STREAM-INF") {
+            if stream_inf_resolution_height(line).is_some_and(|height| height > MAX_HEIGHT) {
+                drop_next_uri = true; // also drop the URI line that follows it
+                continue;
+            }
+            drop_next_uri = false;
+            out.push(line);
+            continue;
+        }
+        if trimmed.starts_with("#EXT-X-I-FRAME-STREAM-INF") {
+            // The URI is inline in the attribute list, so dropping the line suffices.
+            if stream_inf_resolution_height(line).is_some_and(|height| height > MAX_HEIGHT) {
+                continue;
+            }
+            out.push(line);
+            continue;
+        }
+        if drop_next_uri {
+            drop_next_uri = false;
+            // The variant URI is the first non-comment, non-blank line after the
+            // dropped STREAM-INF; defensively keep anything else.
+            if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                continue;
+            }
+        }
+        out.push(line);
+    }
+    out
+}
+
 fn rewrite_live_hls_master_playlist(
     base_url: &Url,
     lines: &[&str],
     referer: Option<&str>,
     trusted_external_embed_secret: Option<&str>,
 ) -> String {
+    // Trusted-embed streams (external-embed VOD, and sports — both signed via
+    // build_trusted_external_embed_hls_playback_source) are proxied through the
+    // mini's bandwidth-limited home uplink, so cap their quality ladder to 720p.
+    // This is a no-op for single-quality streams (most live sports, which serve
+    // one transcoded rendition); it only reshapes multi-variant ladders (VOD
+    // movie/TV embeds), exactly where the uplink relief is needed.
+    let capped_storage;
+    let lines: &[&str] = if trusted_external_embed_secret.is_some() {
+        capped_storage = cap_external_embed_master_to_720p(lines);
+        &capped_storage
+    } else {
+        lines
+    };
     let mut rewritten = Vec::with_capacity(lines.len());
     for raw_line in lines {
         let line = raw_line.trim_end();
@@ -2205,6 +2283,59 @@ mod tests {
             (403, Some("text/html; charset=UTF-8".to_owned())),
         );
         assert_eq!(super::parse_curl_response_headers("garbage"), (0, None));
+    }
+
+    #[test]
+    fn parses_stream_inf_resolution_height() {
+        assert_eq!(
+            super::stream_inf_resolution_height(
+                "#EXT-X-STREAM-INF:BANDWIDTH=4500000,RESOLUTION=1920x1080"
+            ),
+            Some(1080)
+        );
+        assert_eq!(
+            super::stream_inf_resolution_height(
+                "#EXT-X-STREAM-INF:RESOLUTION=1280x720,CODECS=\"avc1\""
+            ),
+            Some(720)
+        );
+        // No RESOLUTION attribute -> unknown.
+        assert_eq!(
+            super::stream_inf_resolution_height("#EXT-X-STREAM-INF:BANDWIDTH=800000"),
+            None
+        );
+    }
+
+    #[test]
+    fn caps_external_embed_master_to_720p() {
+        let master = "#EXTM3U\n\
+#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=4500000,RESOLUTION=1920x1080\n\
+/1080/index.m3u8\n\
+#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=1800000,RESOLUTION=1280x720\n\
+/720/index.m3u8\n\
+#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=720000,RESOLUTION=640x360\n\
+/360/index.m3u8";
+        let lines: Vec<&str> = master.lines().collect();
+        let capped = super::cap_external_embed_master_to_720p(&lines).join("\n");
+        assert!(!capped.contains("1920x1080"), "1080p variant must be dropped");
+        assert!(!capped.contains("/1080/index.m3u8"), "1080p URI must be dropped");
+        assert!(capped.contains("1280x720") && capped.contains("/720/index.m3u8"));
+        assert!(capped.contains("640x360") && capped.contains("/360/index.m3u8"));
+    }
+
+    #[test]
+    fn cap_keeps_master_when_no_rendition_is_720p_or_lower() {
+        // Only a 1080p rendition: dropping it would empty the master, so keep it.
+        let master = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=4500000,RESOLUTION=1920x1080\n\
+/1080/index.m3u8";
+        let lines: Vec<&str> = master.lines().collect();
+        let capped = super::cap_external_embed_master_to_720p(&lines).join("\n");
+        assert!(capped.contains("/1080/index.m3u8"));
+        // No declared resolutions -> unchanged.
+        let no_res = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4500000\n/v/index.m3u8";
+        let lines: Vec<&str> = no_res.lines().collect();
+        assert_eq!(super::cap_external_embed_master_to_720p(&lines).join("\n"), no_res);
     }
 
     #[test]

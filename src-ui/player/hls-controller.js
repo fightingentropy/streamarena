@@ -202,6 +202,15 @@ export function createHlsPlaybackController({
           const hls = new HlsConstructor({
             backBufferLength: 90,
             maxBufferLength: 60,
+            // Conservative ABR start: external-embed VOD and live are proxied
+            // through the mini's bandwidth-limited home uplink, so begin at the
+            // lowest rendition (fast, reliable startup even under uplink
+            // contention) and let ABR ramp up to higher quality once it measures
+            // real throughput. -1 keeps the start level auto-selected from this
+            // low estimate rather than pinned to a fixed index.
+            startLevel: -1,
+            abrEwmaDefaultEstimate: 700000,
+            testBandwidth: true,
             autoStartLoad: hlsStartPosition < 0,
             startPosition: hlsStartPosition,
             ...(liveHlsReferer
