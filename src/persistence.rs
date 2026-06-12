@@ -292,6 +292,7 @@ impl Db {
                 DELETE FROM resolved_stream_cache;
                 DELETE FROM movie_quick_start_cache;
                 DELETE FROM tmdb_response_cache;
+                DELETE FROM home_bootstrap_cache;
                 DELETE FROM playback_sessions;
                 DELETE FROM source_health_stats;
                 DELETE FROM media_probe_cache;
@@ -1284,6 +1285,64 @@ impl Db {
                   AND expires_at < ?
                 ",
                 params![expires_at, now_ms(), cache_key, expires_at],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn get_home_bootstrap_cache(&self) -> AppResult<Option<(Value, i64)>> {
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let row = connection
+                .query_row(
+                    "SELECT payload_json, refreshed_at FROM home_bootstrap_cache WHERE id = 1",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()?;
+            return_connection(&pool, connection);
+            let Some((payload_json, refreshed_at)) = row else {
+                return Ok(None);
+            };
+            let parsed = serde_json::from_str::<Value>(&payload_json).unwrap_or(Value::Null);
+            if parsed.is_null() {
+                return Ok(None);
+            }
+            Ok(Some((parsed, refreshed_at)))
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error: rusqlite::Error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn set_home_bootstrap_cache(
+        &self,
+        payload: Value,
+        refreshed_at: i64,
+    ) -> AppResult<()> {
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "
+                INSERT INTO home_bootstrap_cache (id, payload_json, refreshed_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  payload_json = excluded.payload_json,
+                  refreshed_at = excluded.refreshed_at
+                ",
+                params![
+                    serde_json::to_string(&payload).unwrap_or_else(|_| "null".to_owned()),
+                    refreshed_at,
+                ],
             )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
@@ -3451,6 +3510,11 @@ fn build_cache_schema(path: &Path) -> Result<(), rusqlite::Error> {
         );
         CREATE INDEX IF NOT EXISTS idx_tmdb_response_cache_expires ON tmdb_response_cache(expires_at);
         CREATE INDEX IF NOT EXISTS idx_tmdb_response_cache_updated ON tmdb_response_cache(updated_at);
+        CREATE TABLE IF NOT EXISTS home_bootstrap_cache (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          payload_json TEXT NOT NULL,
+          refreshed_at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS playback_sessions (
           session_key TEXT PRIMARY KEY,
           tmdb_id TEXT NOT NULL,
@@ -5545,11 +5609,11 @@ mod tests {
         .expect("join integrity check")
         .expect("run integrity check");
         assert_eq!(integrity, "ok");
-        // The 7 regenerable cache tables. The durable user tables (and the
+        // The 8 regenerable cache tables. The durable user tables (and the
         // `sqlite_sequence` that `users`' AUTOINCREMENT would create) now live in
         // users.sqlite, so they are deliberately absent here.
         assert_eq!(
-            table_count, 7,
+            table_count, 8,
             "rebuilt cache database should expose exactly the cache schema"
         );
 

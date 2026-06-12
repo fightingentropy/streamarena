@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
+use tracing::warn;
 
 use crate::error::AppResult;
 use crate::library::read_local_library;
@@ -83,6 +84,13 @@ impl HomeBootstrapCache {
             return cached;
         }
 
+        if let Some(restored) = self.restore_persisted(&state).await {
+            if self.should_refresh_cached(&restored).await {
+                self.spawn_refresh(state);
+            }
+            return restored;
+        }
+
         self.spawn_refresh(state);
         default_home_bootstrap()
     }
@@ -94,15 +102,50 @@ impl HomeBootstrapCache {
 
         let cache = self.clone();
         tokio::spawn(async move {
-            let result = build_home_bootstrap(&state, true).await;
+            let previous = match cache.cached_payload().await {
+                Some(payload) if !is_warming_payload(&payload) => Some(payload),
+                _ => state
+                    .db
+                    .get_home_bootstrap_cache()
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|(payload, _)| payload),
+            };
+            let result = build_home_bootstrap(&state, true, previous.as_ref()).await;
             if let Ok(payload) = result {
-                cache.store_payload(payload).await;
+                cache.store_payload(payload.clone()).await;
+                if let Err(error) = state.db.set_home_bootstrap_cache(payload, now_ms()).await {
+                    warn!(
+                        "failed to persist home bootstrap cache: {}",
+                        error.message().unwrap_or("write failed")
+                    );
+                }
             }
             cache
                 .inner
                 .refresh_in_flight
                 .store(false, Ordering::Release);
         });
+    }
+
+    /// Reload the last persisted payload after a restart so the first visitor
+    /// gets real rails instead of the "warming" placeholder.
+    async fn restore_persisted(&self, state: &AppState) -> Option<Value> {
+        let (payload, refreshed_at_ms) = state.db.get_home_bootstrap_cache().await.ok().flatten()?;
+        if is_warming_payload(&payload) {
+            return None;
+        }
+        let mut cached = self.inner.cached.write().await;
+        if let Some(existing) = cached.as_ref() {
+            // A refresh finished while the db was being read; prefer its payload.
+            return Some(existing.payload.clone());
+        }
+        *cached = Some(CachedHomeBootstrap {
+            payload: payload.clone(),
+            refreshed_at_ms,
+        });
+        Some(payload)
     }
 
     async fn cached_payload(&self) -> Option<Value> {
@@ -140,7 +183,11 @@ fn is_stale(refreshed_at_ms: i64) -> bool {
     now_ms().saturating_sub(refreshed_at_ms) >= HOME_BOOTSTRAP_REFRESH_AFTER_MS
 }
 
-pub async fn build_home_bootstrap(state: &AppState, include_library: bool) -> AppResult<Value> {
+pub async fn build_home_bootstrap(
+    state: &AppState,
+    include_library: bool,
+    previous: Option<&Value>,
+) -> AppResult<Value> {
     let today = today_utc_date();
     let movie_popular_params = movie_discover_params(
         "popularity.desc",
@@ -222,37 +269,42 @@ pub async fn build_home_bootstrap(state: &AppState, include_library: bool) -> Ap
     };
     let movie_genres = movie_genres.unwrap_or_else(|_| json!({ "genres": [] }));
     let tv_genres = tv_genres.unwrap_or_else(|_| json!({ "genres": [] }));
-    let empty_results = || json!({ "results": [] });
-    let movie_popular = movie_popular.unwrap_or_else(|_| empty_results());
-    let movie_acclaimed = movie_acclaimed.unwrap_or_else(|_| empty_results());
-    let movie_popular_payload =
-        tmdb_list_payload_with_quality(movie_popular, "movie", MOVIE_POPULAR_QUALITY);
-    let movie_crowd_payload = tmdb_list_payload_with_quality(
-        movie_crowd.unwrap_or_else(|_| empty_results()),
+    let movie_popular_payload = rail_payload_or_previous(
+        movie_popular,
+        "movie",
+        MOVIE_POPULAR_QUALITY,
+        previous,
+        "popular",
+    );
+    let movie_crowd_payload = rail_payload_or_previous(
+        movie_crowd,
         "movie",
         MOVIE_CROWD_QUALITY,
+        previous,
+        "crowdPleasers",
     );
-    let movie_acclaimed_payload =
-        tmdb_list_payload_with_quality(movie_acclaimed, "movie", MOVIE_ACCLAIMED_QUALITY);
-    let tv_binge_payload = tmdb_list_payload_with_quality(
-        tv_binge.unwrap_or_else(|_| empty_results()),
-        "tv",
-        TV_BINGE_QUALITY,
+    let movie_acclaimed_payload = rail_payload_or_previous(
+        movie_acclaimed,
+        "movie",
+        MOVIE_ACCLAIMED_QUALITY,
+        previous,
+        "criticallyAcclaimed",
     );
-    let tv_popular_payload = tmdb_list_payload_with_quality(
-        tv_popular.unwrap_or_else(|_| empty_results()),
-        "tv",
-        TV_POPULAR_QUALITY,
-    );
-    let tv_acclaimed_payload = tmdb_list_payload_with_quality(
-        tv_acclaimed.unwrap_or_else(|_| empty_results()),
+    let tv_binge_payload =
+        rail_payload_or_previous(tv_binge, "tv", TV_BINGE_QUALITY, previous, "bingeworthy");
+    let tv_popular_payload =
+        rail_payload_or_previous(tv_popular, "tv", TV_POPULAR_QUALITY, previous, "topSeries");
+    let tv_acclaimed_payload = rail_payload_or_previous(
+        tv_acclaimed,
         "tv",
         TV_ACCLAIMED_QUALITY,
+        previous,
+        "nowPlaying",
     );
 
     Ok(json!({
         "imageBase": "https://image.tmdb.org/t/p",
-        "genres": merge_genres(&movie_genres, &tv_genres),
+        "genres": genres_or_previous(merge_genres(&movie_genres, &tv_genres), previous),
         "popular": movie_popular_payload.clone(),
         "bingeworthy": tv_binge_payload,
         "crowdPleasers": movie_crowd_payload,
@@ -342,6 +394,48 @@ fn tv_discover_params(
     );
     params.insert("first_air_date.lte".to_owned(), today.to_owned());
     params
+}
+
+/// Build a rail from a TMDB fetch result, keeping the previous payload's rail when
+/// the fetch failed or quality-filtering left it empty — a flaky TMDB moment during
+/// a refresh must not blank a rail users could already see.
+fn rail_payload_or_previous(
+    result: AppResult<Value>,
+    media_type: &str,
+    quality: TmdbRailQuality,
+    previous: Option<&Value>,
+    rail_key: &str,
+) -> Value {
+    let fresh = match result {
+        Ok(payload) => tmdb_list_payload_with_quality(payload, media_type, quality),
+        Err(_) => json!({ "results": [] }),
+    };
+    if !rail_is_empty(&fresh) {
+        return fresh;
+    }
+    previous
+        .and_then(|payload| payload.get(rail_key))
+        .filter(|rail| !rail_is_empty(rail))
+        .cloned()
+        .unwrap_or(fresh)
+}
+
+fn rail_is_empty(rail: &Value) -> bool {
+    rail.get("results")
+        .and_then(Value::as_array)
+        .is_none_or(|results| results.is_empty())
+}
+
+fn genres_or_previous(merged: Value, previous: Option<&Value>) -> Value {
+    if merged.as_array().is_some_and(|genres| !genres.is_empty()) {
+        return merged;
+    }
+    previous
+        .and_then(|payload| payload.get("genres"))
+        .and_then(Value::as_array)
+        .filter(|genres| !genres.is_empty())
+        .map(|genres| Value::Array(genres.clone()))
+        .unwrap_or(merged)
 }
 
 fn tmdb_list_payload_with_quality(
@@ -531,9 +625,10 @@ fn civil_from_unix_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        MOVIE_POPULAR_QUALITY, bootstrap_data_tag, inject_bootstrap_into_html,
-        tmdb_list_payload_with_quality, utc_date_from_unix_days,
+        MOVIE_POPULAR_QUALITY, bootstrap_data_tag, genres_or_previous, inject_bootstrap_into_html,
+        rail_payload_or_previous, tmdb_list_payload_with_quality, utc_date_from_unix_days,
     };
+    use crate::error::ApiError;
     use serde_json::json;
 
     #[test]
@@ -612,5 +707,93 @@ mod tests {
         assert_eq!(utc_date_from_unix_days(0), "1970-01-01");
         assert_eq!(utc_date_from_unix_days(10_957), "2000-01-01");
         assert_eq!(utc_date_from_unix_days(20_600), "2026-05-27");
+    }
+
+    fn previous_payload() -> serde_json::Value {
+        json!({
+            "popular": { "results": [{ "id": 7, "title": "Last Good" }] },
+            "genres": [{ "id": 28, "name": "Action" }],
+        })
+    }
+
+    #[test]
+    fn rail_keeps_previous_when_fetch_fails() {
+        let previous = previous_payload();
+        let rail = rail_payload_or_previous(
+            Err(ApiError::internal("tmdb down")),
+            "movie",
+            MOVIE_POPULAR_QUALITY,
+            Some(&previous),
+            "popular",
+        );
+        assert_eq!(rail["results"][0]["title"], "Last Good");
+    }
+
+    #[test]
+    fn rail_keeps_previous_when_quality_filter_empties_results() {
+        let previous = previous_payload();
+        let low_signal = json!({
+            "results": [{
+                "id": 9,
+                "title": "Too Few Votes",
+                "release_date": "2024-03-01",
+                "backdrop_path": "/art.jpg",
+                "vote_average": 9.0,
+                "vote_count": 10
+            }]
+        });
+        let rail = rail_payload_or_previous(
+            Ok(low_signal),
+            "movie",
+            MOVIE_POPULAR_QUALITY,
+            Some(&previous),
+            "popular",
+        );
+        assert_eq!(rail["results"][0]["title"], "Last Good");
+    }
+
+    #[test]
+    fn rail_prefers_fresh_results_over_previous() {
+        let previous = previous_payload();
+        let fresh = json!({
+            "results": [{
+                "id": 11,
+                "title": "Fresh Hit",
+                "release_date": "2024-03-01",
+                "backdrop_path": "/art.jpg",
+                "vote_average": 7.5,
+                "vote_count": 5000
+            }]
+        });
+        let rail = rail_payload_or_previous(
+            Ok(fresh),
+            "movie",
+            MOVIE_POPULAR_QUALITY,
+            Some(&previous),
+            "popular",
+        );
+        assert_eq!(rail["results"][0]["title"], "Fresh Hit");
+    }
+
+    #[test]
+    fn empty_rail_stays_empty_without_previous() {
+        let rail = rail_payload_or_previous(
+            Err(ApiError::internal("tmdb down")),
+            "movie",
+            MOVIE_POPULAR_QUALITY,
+            None,
+            "popular",
+        );
+        assert!(rail["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn genres_fall_back_to_previous_only_when_merged_is_empty() {
+        let previous = previous_payload();
+        let kept = genres_or_previous(json!([]), Some(&previous));
+        assert_eq!(kept[0]["name"], "Action");
+
+        let fresh = genres_or_previous(json!([{ "id": 35, "name": "Comedy" }]), Some(&previous));
+        assert_eq!(fresh[0]["name"], "Comedy");
     }
 }
