@@ -1,3 +1,61 @@
+// Some external-embed CDNs (e.g. LordFlix's tiktokcdn segments) disguise each
+// `.ts` as a PNG: a short real PNG header (magic `89 50 4E 47 0D 0A 1A 0A`) is
+// prepended before the MPEG-TS payload, served as `content-type: image/png`, so
+// naive filters see an image. hls.js times out trying to demux past the prefix.
+// Strip it back to the first MPEG-TS sync byte (0x47 with 188-byte periodicity)
+// before the demuxer sees the fragment. Pure passthrough for clean segments
+// (the 4-byte magic check rejects non-PNG immediately), so it's safe to apply to
+// every HLS fragment globally.
+function stripPngPrefixedTsSegment(data) {
+  if (!(data instanceof ArrayBuffer) || data.byteLength < 8) {
+    return data;
+  }
+  const bytes = new Uint8Array(data);
+  if (
+    bytes[0] !== 0x89 ||
+    bytes[1] !== 0x50 ||
+    bytes[2] !== 0x4e ||
+    bytes[3] !== 0x47
+  ) {
+    return data; // not PNG-prefixed — leave untouched
+  }
+  const limit = Math.min(bytes.length - 376, 65536);
+  for (let i = 0; i < limit; i += 1) {
+    if (
+      bytes[i] === 0x47 &&
+      bytes[i + 188] === 0x47 &&
+      bytes[i + 376] === 0x47
+    ) {
+      return i === 0 ? data : data.slice(i);
+    }
+  }
+  return data; // PNG header but no TS sync found — pass through unchanged
+}
+
+// Wrap hls.js's default fragment loader so each downloaded segment is run through
+// the PNG-prefix stripper before hls.js demuxes it. Only the fragment loader is
+// overridden (playlists/keys are unaffected).
+function createPngPrefixStrippingLoader(HlsConstructor) {
+  const BaseLoader = HlsConstructor?.DefaultConfig?.loader;
+  if (typeof BaseLoader !== "function") {
+    return null;
+  }
+  return class PngPrefixStrippingFragmentLoader extends BaseLoader {
+    load(context, config, callbacks) {
+      const originalOnSuccess = callbacks.onSuccess;
+      if (typeof originalOnSuccess === "function") {
+        callbacks.onSuccess = (response, stats, ctx, networkDetails) => {
+          if (response && response.data instanceof ArrayBuffer) {
+            response.data = stripPngPrefixedTsSegment(response.data);
+          }
+          originalOnSuccess(response, stats, ctx, networkDetails);
+        };
+      }
+      super.load(context, config, callbacks);
+    }
+  };
+}
+
 export function createHlsPlaybackController({
   getVideo = () => null,
   getLastRequestedAbsolutePlaybackSource = () => "",
@@ -199,9 +257,13 @@ export function createHlsPlaybackController({
             60000,
           );
           const liveHlsReferer = String(getLiveHlsReferer() || "").trim();
+          const pngStrippingLoader =
+            createPngPrefixStrippingLoader(HlsConstructor);
           const hls = new HlsConstructor({
             backBufferLength: 90,
             maxBufferLength: 60,
+            // Strip PNG-disguised `.ts` prefixes (some embed CDNs) before demux.
+            ...(pngStrippingLoader ? { fLoader: pngStrippingLoader } : {}),
             // Conservative ABR start: external-embed VOD and live are proxied
             // through the mini's bandwidth-limited home uplink, so begin at the
             // lowest rendition (fast, reliable startup even under uplink

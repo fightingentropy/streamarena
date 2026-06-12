@@ -5532,20 +5532,18 @@ fn is_external_embed_direct_segment_provider(source: ExternalEmbedSource) -> boo
     // them directly off the source CDN, bypassing the mini's uplink. The mini-side
     // plumbing (`directSeg` + `is_cors_direct_hls_host`) is wired and unit-tested.
     //
-    // DISABLED pending playback fix: browser verification (2026-06-12) showed
-    // LordFlix's tiktokcdn segments are PNG-prefixed TS (120-byte PNG header
-    // before the 0x47 sync); hls.js timed out on startup on the direct path even
-    // though CORS + byte delivery worked. Re-enable once the direct path plays
-    // (likely needs the player to skip the PNG prefix, which today only the mini
-    // proxy is positioned to strip). Opt-in env keeps the resolver side dark.
+    // VERIFIED LIVE 2026-06-12 (Chrome): LordFlix plays direct with segments
+    // fetched straight from p16-sg.tiktokcdn.com (off the mini uplink); the
+    // player's PNG-prefix-stripping hls.js loader (hls-controller.js) handles the
+    // PNG-disguised TS, and the fully-proxied fallback covers a direct fetch that
+    // fails. Default ON; `EXTERNAL_EMBED_DIRECT_SEGMENTS=0` is a kill switch.
     if std::env::var("EXTERNAL_EMBED_DIRECT_SEGMENTS")
-        .map(|value| value.trim() == "1")
+        .map(|value| value.trim() == "0")
         .unwrap_or(false)
     {
-        return matches!(source.provider.id, "lordflix");
+        return false;
     }
-    let _ = source;
-    false
+    matches!(source.provider.id, "lordflix")
 }
 
 fn build_external_embed_resolved_payload_with_playable_url(
