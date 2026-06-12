@@ -164,10 +164,12 @@ export function renderPlayerShell({
                     aria-expanded="false"
                   >
                     <svg class="bottom-server-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M4 7h12"></path>
-                      <path d="M4 12h9"></path>
-                      <path d="M4 17h12"></path>
-                      <path d="M18 10.5 21.5 12 18 13.5z"></path>
+                      <rect x="3.25" y="3.75" width="17.5" height="7" rx="1.8"></rect>
+                      <rect x="3.25" y="13.25" width="17.5" height="7" rx="1.8"></rect>
+                      <path d="M6.8 7.25h.01"></path>
+                      <path d="M6.8 16.75h.01"></path>
+                      <path d="M13.5 7.25h3.7"></path>
+                      <path d="M13.5 16.75h3.7"></path>
                     </svg>
                   </button>
                   <div
@@ -452,10 +454,12 @@ export function renderPlayerShell({
                     aria-expanded="false"
                   >
                     <svg class="hls-quality-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M4 6.5h16v11H4z"></path>
-                      <path d="M8 15v-3"></path>
-                      <path d="M12 15V9"></path>
-                      <path d="M16 15v-5"></path>
+                      <rect x="2.75" y="5.25" width="18.5" height="13.5" rx="3"></rect>
+                      <path d="M7 9.1v5.8"></path>
+                      <path d="M10.6 9.1v5.8"></path>
+                      <path d="M7 12h3.6"></path>
+                      <path d="M13.3 9.1v5.8"></path>
+                      <path d="M13.3 9.1h0.9a2.9 2.9 0 0 1 0 5.8h-0.9"></path>
                     </svg>
                   </button>
                   <div
