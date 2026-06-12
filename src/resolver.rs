@@ -3851,7 +3851,7 @@ impl ResolverService {
             }
             let provider_key = external_embed_provider_health_key(source);
             if let Some(stats) = self.db.get_source_health_stats(provider_key).await? {
-                score += compute_external_embed_rank_health_score(&stats);
+                score += compute_external_embed_provider_rank_health_score(&stats);
             }
             scores.insert(source_hash, score);
         }
@@ -7021,6 +7021,24 @@ fn compute_external_embed_rank_health_score(stats: &SourceHealthStats) -> i64 {
     }
 }
 
+/// Provider-level (cross-title aggregate) health is a weaker signal than per-title
+/// health and must only nudge ordering WITHIN a tier — never bury a higher-tier
+/// provider that merely has a spotty catalog. Per-title (`source_hash`) health,
+/// which stays uncapped, already demotes the specific titles a provider fails. So
+/// clamp the provider aggregate to ±the positive cap, EXCEPT when the provider is
+/// broadly DEAD (the uncapped AVOID penalty, only reached with zero successes),
+/// which should still sink it across tiers.
+fn compute_external_embed_provider_rank_health_score(stats: &SourceHealthStats) -> i64 {
+    let score = compute_source_health_score(stats);
+    if score <= SOURCE_HEALTH_AVOID_SCORE {
+        return score;
+    }
+    score.clamp(
+        -EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP,
+        EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP,
+    )
+}
+
 fn stream_quality_target(value: &str) -> i64 {
     match value {
         "2160p" => 2160,
@@ -8605,7 +8623,10 @@ mod tests {
         user_facing_real_debrid_error,
     };
     use super::race_staggered_first_success;
-    use super::{CachedResolvedEmbed, ResolvedEmbedCache, external_embed_resolve_cache_key};
+    use super::{
+        CachedResolvedEmbed, ResolvedEmbedCache, compute_external_embed_provider_rank_health_score,
+        external_embed_resolve_cache_key,
+    };
 
     use std::sync::Mutex as StdMutex;
     use std::time::Duration;
@@ -8706,6 +8727,45 @@ mod tests {
             episode_title: String::new(),
             media_type: media_type.to_owned(),
         }
+    }
+
+    #[test]
+    fn provider_rank_health_caps_spotty_but_sinks_dead_providers() {
+        // Spotty catalog (the real LordFlix aggregate: many wins, some fails) must be
+        // clamped within-tier so it can't bury a higher base tier — per-title health
+        // handles the specific titles it fails.
+        let spotty = SourceHealthStats {
+            success_count: 46,
+            failure_count: 17,
+            decode_failure_count: 0,
+            ended_early_count: 0,
+            playback_error_count: 17,
+        };
+        let score = compute_external_embed_provider_rank_health_score(&spotty);
+        assert!(score.abs() <= 75, "spotty provider should clamp within-tier: {score}");
+
+        // A strongly-reliable provider clamps to the +cap.
+        let strong = SourceHealthStats {
+            success_count: 275,
+            failure_count: 4,
+            decode_failure_count: 0,
+            ended_early_count: 0,
+            playback_error_count: 0,
+        };
+        assert_eq!(compute_external_embed_provider_rank_health_score(&strong), 75);
+
+        // A broadly DEAD provider (zero successes) keeps the uncapped avoid penalty.
+        let dead = SourceHealthStats {
+            success_count: 0,
+            failure_count: 5,
+            decode_failure_count: 0,
+            ended_early_count: 0,
+            playback_error_count: 5,
+        };
+        assert!(
+            compute_external_embed_provider_rank_health_score(&dead) <= SOURCE_HEALTH_AVOID_SCORE,
+            "dead provider must stay sunk across tiers"
+        );
     }
 
     #[test]
