@@ -2694,13 +2694,12 @@ fn extract_ntvs_script_candidate_urls(html: &str, base_url: &Url) -> Vec<Url> {
     }
 
     for value in values {
-        if let Some(url) = resolve_ntvs_candidate_url(base_url, &value) {
-            if is_supported_ntvs_wrapper_embed_url(&url)
+        if let Some(url) = resolve_ntvs_candidate_url(base_url, &value)
+            && (is_supported_ntvs_wrapper_embed_url(&url)
                 || is_supported_ntvs_embed_url(&url)
-                || is_supported_ntvs_hesgoaler_player_url(&url)
-            {
-                candidates.push(url);
-            }
+                || is_supported_ntvs_hesgoaler_player_url(&url))
+        {
+            candidates.push(url);
         }
     }
     candidates
@@ -2794,14 +2793,15 @@ fn resolve_ntvs_candidate_url(base_url: &Url, value: &str) -> Option<Url> {
     }
 
     if let Ok(url) = Url::parse(trimmed) {
-        if let Some(host) = url.host_str().map(|host| host.to_ascii_lowercase()) {
-            if is_ntvs_host(&host) {
-                if let Some(hesgoaler_url) =
-                    resolve_ntvs_hesgoaler_player_url(&format!("{}{}", url.path(), url.query().map(|query| format!("?{query}")).unwrap_or_default()))
-                {
-                    return Some(hesgoaler_url);
-                }
-            }
+        if let Some(host) = url.host_str().map(|host| host.to_ascii_lowercase())
+            && is_ntvs_host(&host)
+            && let Some(hesgoaler_url) = resolve_ntvs_hesgoaler_player_url(&format!(
+                "{}{}",
+                url.path(),
+                url.query().map(|query| format!("?{query}")).unwrap_or_default()
+            ))
+        {
+            return Some(hesgoaler_url);
         }
         if is_supported_ntvs_wrapper_embed_url(&url)
             || is_supported_ntvs_embed_url(&url)
