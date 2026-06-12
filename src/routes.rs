@@ -1805,6 +1805,12 @@ pub async fn resolve_movie_handler(
         let normalized = value.trim();
         normalized == "1" || normalized.eq_ignore_ascii_case("true")
     });
+    // Set by the player when re-resolving after a playback failure: bypass + evict
+    // any cached resolved source so a stale/dead upstream URL can't be re-served.
+    let refresh_resolve = params.get("refreshResolve").is_some_and(|value| {
+        let normalized = value.trim();
+        normalized == "1" || normalized.eq_ignore_ascii_case("true")
+    });
     let user = auth::require_auth(&state.db, &headers).await?;
     let real_debrid_api_key = real_debrid_api_key_for_user(&state.db, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
@@ -1858,6 +1864,7 @@ pub async fn resolve_movie_handler(
                 .map(String::as_str)
                 .unwrap_or_default(),
             skip_external_embed,
+            refresh_resolve,
         )
         .await?;
     Ok(json_response(payload))
@@ -1943,6 +1950,12 @@ pub async fn resolve_tv_handler(
         let normalized = value.trim();
         normalized == "1" || normalized.eq_ignore_ascii_case("true")
     });
+    // Set by the player when re-resolving after a playback failure: bypass + evict
+    // any cached resolved source so a stale/dead upstream URL can't be re-served.
+    let refresh_resolve = params.get("refreshResolve").is_some_and(|value| {
+        let normalized = value.trim();
+        normalized == "1" || normalized.eq_ignore_ascii_case("true")
+    });
     let user = auth::require_auth(&state.db, &headers).await?;
     let real_debrid_api_key = real_debrid_api_key_for_user(&state.db, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
@@ -2013,6 +2026,7 @@ pub async fn resolve_tv_handler(
                 .map(String::as_str)
                 .unwrap_or_default(),
             skip_external_embed,
+            refresh_resolve,
         )
         .await?;
     Ok(json_response(payload))

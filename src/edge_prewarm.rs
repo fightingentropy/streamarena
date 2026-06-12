@@ -165,6 +165,7 @@ async fn prewarm_movie(state: &AppState, tmdb_id: &str) {
             "",
             "auto",
             false,
+            false,
         )
         .await
     {

@@ -150,6 +150,7 @@ async fn main() -> AppResult<()> {
         media.clone(),
         local_torrent.clone(),
     );
+    let sweep_resolver = resolver.clone();
     let streaming = StreamingService::new(config.clone(), runtime.clone(), media.clone());
     let upload = UploadService::new(
         config.clone(),
@@ -204,6 +205,7 @@ async fn main() -> AppResult<()> {
             sweep_sports_stream_resolve_cache.prune();
             sweep_live_audio_transcode_cache.prune();
             sweep_live_hls_playlist_cache.prune();
+            sweep_resolver.prune_resolve_cache();
         }
     });
 
