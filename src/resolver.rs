@@ -5404,18 +5404,20 @@ fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) -> bool {
 fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 {
     // This table is the de-facto reliability tier for the Server menu and the
     // auto-pick/fallback order (it dominates external_embed_source_rank_score).
-    // Reliable native-HLS providers that serve playlists AND segments
-    // server-side (VidRock, LordFlix share the same working tiktokcdn pipeline)
-    // rank above the flaky ones: VidLink's CDN (storm.vodvidl.site) and VixSrc
-    // (vixsrc.to + vix-content.net) both gate on TLS fingerprint (served via
-    // curl, a little slower), and Icefy's upstream rate-limits. Tier gaps are
-    // kept > the +150 positive-health cap so health
-    // only reorders within a tier (or demotes an actively-failing provider via
-    // the uncapped -6000 penalty), never lifts a flaky provider above a
-    // reliable one on a transient good streak.
+    // LordFlix ranks first: it's the one provider whose segments stream to the
+    // browser directly off its CDN (tiktokcdn, CORS-open) — completely off the
+    // mini's bandwidth-limited home uplink — so when it has a title it's both the
+    // fastest and the cheapest for our uplink-constrained origin. VidRock shares the
+    // same tiktokcdn pipeline server-side; both rank above the flaky ones: VidLink's
+    // CDN (storm.vodvidl.site) and VixSrc (vixsrc.to + vix-content.net) both gate on
+    // TLS fingerprint (served via curl, a little slower), and Icefy's upstream
+    // rate-limits. The LordFlix->VidRock gap (200) exceeds the +150 positive-health
+    // cap, so a transient VidRock good streak can't lift it above LordFlix; only a
+    // genuine per-title LordFlix failure (the uncapped -6000 penalty) demotes it, at
+    // which point the staggered hedge races the next provider in immediately.
     match source.provider.id {
+        "lordflix" => 1_600,
         "vidrock" => 1_400,
-        "lordflix" => 1_250,
         "notorrent" => 1_100,
         "vidlink" => 950,
         "vixsrc" => 800,
@@ -8795,34 +8797,40 @@ mod tests {
         let health_scores = HashMap::new();
         let sources = build_external_embed_source_summaries(&metadata, &health_scores);
 
-        // VidRock and LordFlix (reliable native HLS) lead the list; the flaky
-        // providers (VidLink/VixSrc/Icefy) are demoted behind them, and the
-        // VidEasy variants still trail.
+        // LordFlix (off-uplink direct-play) leads, then VidRock — both reliable
+        // native HLS — ahead of the flaky providers (VidLink/VixSrc/Icefy), with the
+        // VidEasy variants trailing.
         assert_eq!(sources.len(), 14);
-        assert_eq!(sources[0].primary, "VidRock");
+        assert_eq!(sources[0].primary, "LordFlix");
         assert_eq!(sources[0].provider, "LivNet");
-        assert_eq!(sources[0].filename, "VidRock embed");
+        assert_eq!(sources[0].filename, "LordFlix embed");
         assert_eq!(sources[0].qualityLabel, "1080p");
         assert_eq!(sources[0].container, "hls");
-        assert_eq!(sources[0].releaseGroup, "Native HLS");
+        assert_eq!(sources[0].releaseGroup, "Multi-server native HLS");
         assert_eq!(
             normalize_source_hash(&sources[0].sourceHash),
             sources[0].sourceHash
         );
 
-        let source = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
+        // sources[0] is LordFlix (off-uplink direct-play, the top tier).
+        let lordflix = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
             .expect("matching external provider");
-        assert_eq!(source.provider.id, "vidrock");
-        assert_eq!(source.server.map(|server| server.id), None);
+        assert_eq!(lordflix.provider.id, "lordflix");
+        assert_eq!(lordflix.server.map(|server| server.id), None);
+        assert!(external_embed_url(lordflix, &metadata).is_some_and(|url| !url.is_empty()));
         assert_eq!(
-            external_embed_url(source, &metadata).unwrap(),
-            "https://vidrock.net/movie/1368166"
-        );
-        assert_eq!(
-            external_embed_source_hash(source, &metadata),
+            external_embed_source_hash(lordflix, &metadata),
             sources[0].sourceHash
         );
-        assert_eq!(sources[1].primary, "LordFlix");
+        // sources[1] is VidRock, whose embed URL is a stable, simple template.
+        let vidrock = external_embed_source_for_source_hash(&metadata, &sources[1].sourceHash)
+            .expect("matching vidrock provider");
+        assert_eq!(vidrock.provider.id, "vidrock");
+        assert_eq!(
+            external_embed_url(vidrock, &metadata).unwrap(),
+            "https://vidrock.net/movie/1368166"
+        );
+        assert_eq!(sources[1].primary, "VidRock");
         assert_eq!(sources[2].primary, "NoTorrent");
         assert_eq!(sources[3].primary, "VidLink");
         assert_eq!(sources[4].primary, "VixSrc");
@@ -8890,9 +8898,9 @@ mod tests {
 
         let tv_sources = build_external_embed_source_summaries(&tv_metadata, &health_scores);
         assert_eq!(tv_sources.len(), 14);
-        assert_eq!(tv_sources[0].primary, "VidRock");
+        assert_eq!(tv_sources[0].primary, "LordFlix");
         assert_eq!(tv_sources[0].provider, "LivNet");
-        assert_eq!(tv_sources[1].primary, "LordFlix");
+        assert_eq!(tv_sources[1].primary, "VidRock");
         assert_eq!(tv_sources[2].primary, "NoTorrent");
     }
 
@@ -8902,13 +8910,13 @@ mod tests {
         let health_scores = HashMap::new();
         let source =
             default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-        assert_eq!(source.provider.id, "vidrock");
+        assert_eq!(source.provider.id, "lordflix");
         assert_eq!(source.server.map(|server| server.id), None);
 
         let tv_metadata = sample_tv_metadata();
         let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
             .expect("default tv embed source");
-        assert_eq!(tv_source.provider.id, "vidrock");
+        assert_eq!(tv_source.provider.id, "lordflix");
         assert_eq!(tv_source.server.map(|server| server.id), None);
 
         let filters = ResolveFilters {
@@ -8932,7 +8940,7 @@ mod tests {
         let health_scores = HashMap::new();
         let source =
             default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-        assert_eq!(source.provider.id, "vidrock");
+        assert_eq!(source.provider.id, "lordflix");
         assert_eq!(source.server.map(|server| server.id), None);
 
         let candidates =
@@ -8950,8 +8958,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(source_ids.first(), Some(&("vidrock", "default")));
-        assert_eq!(source_ids.get(1), Some(&("lordflix", "default")));
+        assert_eq!(source_ids.first(), Some(&("lordflix", "default")));
+        assert_eq!(source_ids.get(1), Some(&("vidrock", "default")));
         assert_eq!(source_ids.get(2), Some(&("notorrent", "default")));
         assert_eq!(source_ids.get(3), Some(&("vidlink", "default")));
         assert_eq!(source_ids.get(4), Some(&("vixsrc", "default")));
@@ -8977,8 +8985,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(tv_source_ids.first(), Some(&("vidrock", "default")));
-        assert_eq!(tv_source_ids.get(1), Some(&("lordflix", "default")));
+        assert_eq!(tv_source_ids.first(), Some(&("lordflix", "default")));
+        assert_eq!(tv_source_ids.get(1), Some(&("vidrock", "default")));
         assert_eq!(tv_source_ids.get(2), Some(&("notorrent", "default")));
         assert_eq!(tv_source_ids.get(3), Some(&("vidlink", "default")));
         assert_eq!(tv_source_ids.get(4), Some(&("vixsrc", "default")));
@@ -9038,17 +9046,17 @@ mod tests {
         let metadata = sample_movie_metadata();
         let mut health_scores = HashMap::new();
         for source in external_embed_sources() {
-            if source.provider.id == "vidrock" {
+            if source.provider.id == "lordflix" {
                 continue;
             }
             health_scores.insert(external_embed_source_hash(source, &metadata), 150);
         }
 
-        // A max positive-health streak on every other (incl. flaky) provider
-        // still can't lift one above the reliable VidRock tier (gap > +150).
+        // A max positive-health streak on every other (incl. VidRock) provider still
+        // can't lift one above the un-boosted top LordFlix tier (gap 200 > +150).
         let source =
             default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-        assert_eq!(source.provider.id, "vidrock");
+        assert_eq!(source.provider.id, "lordflix");
         assert_eq!(source.server.map(|server| server.id), None);
 
         let capped = compute_external_embed_rank_health_score(&SourceHealthStats {
