@@ -187,6 +187,8 @@ async fn main() -> AppResult<()> {
     let sports_stream_resolve_cache = sweep_sports_stream_resolve_cache.clone();
     let live_audio_transcode_cache = crate::live::LiveAudioTranscodeCache::new();
     let sweep_live_audio_transcode_cache = live_audio_transcode_cache.clone();
+    let live_hls_playlist_cache = crate::live::LiveHlsPlaylistCache::new();
+    let sweep_live_hls_playlist_cache = live_hls_playlist_cache.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
@@ -200,6 +202,7 @@ async fn main() -> AppResult<()> {
             sweep_sports_stream_rate_limiter.prune();
             sweep_sports_stream_resolve_cache.prune();
             sweep_live_audio_transcode_cache.prune();
+            sweep_live_hls_playlist_cache.prune();
         }
     });
 
@@ -219,6 +222,7 @@ async fn main() -> AppResult<()> {
         sports_provider_health: SportsProviderHealth::new(),
         home_bootstrap_cache: crate::home_bootstrap::HomeBootstrapCache::new(),
         live_audio_transcode_cache,
+        live_hls_playlist_cache,
         auth_rate_limiter,
         signup_global_rate_limiter,
         sports_stream_rate_limiter,

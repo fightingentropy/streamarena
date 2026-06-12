@@ -5467,11 +5467,66 @@ function getNextPlayableEpisode() {
   return { episode: nextEp, index: nextIndex };
 }
 
+// Tracks which next-episode resolve we've already warmed so the prefetch fires at
+// most once per upcoming episode.
+let prefetchedNextEpisodeKey = "";
+
+// Fire-and-forget warm-up of the next episode's resolve while the auto-play card is
+// showing. The next episode is a full page reload that re-resolves from cold; by
+// warming the server-side provider-health + upstream TLS/session state ahead of
+// time (the benchmark showed this alone makes the next resolve ~3x faster), the
+// reload's own resolve lands warm. Discards the result and swallows errors — this
+// only nudges server state and never touches the current playback. Skipped for
+// non-TMDB (uploaded) series, which don't use the backend resolver.
+function prefetchNextEpisodeResolve(next) {
+  if (!next || !isTmdbResolvedPlayback || !isTmdbTvPlayback) {
+    return;
+  }
+  const nextTmdbId = String(activeSeries?.tmdbId || tmdbId || "").trim();
+  if (!nextTmdbId) {
+    return;
+  }
+  const nextSeason = Math.max(
+    1,
+    Math.floor(Number(next.episode?.seasonNumber || seasonNumber || 1)),
+  );
+  const nextEpisode = Math.max(
+    1,
+    Math.floor(Number(next.episode?.episodeNumber || next.index + 1)),
+  );
+  const prefetchKey = `${nextTmdbId}:${nextSeason}:${nextEpisode}`;
+  if (prefetchKey === prefetchedNextEpisodeKey) {
+    return;
+  }
+  prefetchedNextEpisodeKey = prefetchKey;
+  const query = new URLSearchParams({
+    tmdbId: nextTmdbId,
+    title: String(activeSeries?.title || title || "Title"),
+    seasonNumber: String(nextSeason),
+    episodeNumber: String(nextEpisode),
+    audioLang: "auto",
+    quality: "auto",
+    resolverProvider: "auto",
+  });
+  if (activeSeries?.year) {
+    query.set("year", String(activeSeries.year));
+  }
+  try {
+    void fetch(`/api/resolve/tv?${query.toString()}`, {
+      credentials: "include",
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    // Ignore — the warm-up is best-effort.
+  }
+}
+
 function showAutoPlayCard() {
   const next = getNextPlayableEpisode();
   if (!next || !autoPlayOverlay || autoPlayCancelled) {
     return;
   }
+  prefetchNextEpisodeResolve(next);
 
   const nextLabel = getSeriesEpisodeLabel(
     next.index,

@@ -70,6 +70,7 @@ pub struct AppState {
     pub sports_provider_health: SportsProviderHealth,
     pub home_bootstrap_cache: home_bootstrap::HomeBootstrapCache,
     pub live_audio_transcode_cache: crate::live::LiveAudioTranscodeCache,
+    pub live_hls_playlist_cache: crate::live::LiveHlsPlaylistCache,
     pub auth_rate_limiter: std::sync::Arc<crate::rate_limit::RateLimiter>,
     /// Generous global anti-abuse backstop for signups. Per-IP limiting (via
     /// `auth_rate_limiter`) protects against single-source floods; this caps the

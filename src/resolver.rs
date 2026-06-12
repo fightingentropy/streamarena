@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::Arc;
@@ -11,6 +12,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use dashmap::DashMap;
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use regex::Regex;
@@ -86,6 +89,13 @@ const EXTERNAL_EMBED_SERVER_ENV: &str = "EXTERNAL_EMBED_SERVER";
 const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS: u64 = 26_000;
 const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS";
 const EXTERNAL_EMBED_DIRECT_RESOLVE_TIMEOUT_MS: u64 = 4_500;
+/// Staggered-hedge delay for the external-embed candidate walk: the top-ranked
+/// candidate runs alone first, and only if it hasn't resolved within this window is
+/// the next candidate raced in parallel. Kept comfortably above a healthy resolve
+/// (~0.5–1.5s) so the common fast path never spawns a redundant attempt — the hedge
+/// only fires for a slow/hung provider, collapsing the cold worst case from
+/// sum-of-dead-providers to roughly best-working-provider + one stagger.
+const EXTERNAL_EMBED_HEDGE_STAGGER_MS: u64 = 2_000;
 const EXTERNAL_EMBED_PROVIDER_HEALTH_KEY_PREFIX: &str = "external-embed-provider:";
 const EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP: i64 = 75;
 const EXTERNAL_EMBED_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36";
@@ -5394,33 +5404,86 @@ async fn build_external_embed_resolved_playback_payload(
     );
     let hls_deadline_ms = now_ms() + external_embed_hls_total_timeout_ms() as i64;
 
-    for candidate in candidates {
-        let remaining_ms = hls_deadline_ms - now_ms();
-        if remaining_ms < 1_000 {
-            break;
-        }
-        let Some(embed_url) =
-            external_embed_playback_url(candidate, request.metadata, request.preferences)
-        else {
-            continue;
-        };
-        let hls_timeout_ms = external_embed_source_resolve_timeout_ms(candidate)
-            .min(remaining_ms as u64)
-            .max(1_000);
-        let hls_result = timeout(
-            Duration::from_millis(remaining_ms as u64),
-            resolve_external_embed_hls_playback_source(
-                request.client,
-                candidate,
-                &embed_url,
-                request.metadata,
-                hls_timeout_ms,
-            ),
-        )
-        .await
-        .ok()
-        .flatten();
-        let Some(hls_source) = hls_result else {
+    // Resolve candidates with an adaptive staggered hedge instead of a strict
+    // sequential walk: the top-ranked candidate runs first; the next is raced in
+    // parallel the moment the current one either fails or stalls past the stagger.
+    // First success wins and the rest are dropped (their in-flight node/curl
+    // subprocesses are killed on drop). Each attempt records its own failure health
+    // event internally; the winner's success is recorded here so a losing-but-
+    // successful racer can never double-count.
+    let attempts = candidates
+        .into_iter()
+        .map(|candidate| {
+            resolve_external_embed_candidate_attempt(&request, candidate, hls_deadline_ms)
+        })
+        .collect::<Vec<_>>();
+    let (_index, (candidate, hls_source, embed_url)) = race_staggered_first_success(
+        attempts,
+        Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+    )
+    .await?;
+
+    record_external_embed_health_event(request.db, candidate, request.metadata, "success", "").await;
+    let proxied_url = crate::live::build_trusted_external_embed_hls_playback_source(
+        hls_source.playback_url.as_str(),
+        hls_source.referer.as_deref(),
+        request.live_hls_proxy_secret,
+    );
+    // For providers whose CDN serves the browser cross-origin (LordFlix:
+    // tcloud.lordflix.club playlists + *.tiktokcdn.com segments, both CORS-open with
+    // no Referer wall), hand the browser a direct-segment playlist (`&directSeg=1`)
+    // so the heavy `.ts` bytes stream straight from the source CDN — off the mini's
+    // home uplink — and keep the fully-proxied URL as a fallback the player switches
+    // to if a direct fetch fails.
+    let (playable_url, fallback_urls) = if is_external_embed_direct_segment_provider(candidate) {
+        (format!("{proxied_url}&directSeg=1"), vec![proxied_url])
+    } else {
+        (proxied_url, Vec::new())
+    };
+    Some(build_external_embed_resolved_payload_with_playable_url(
+        request.metadata,
+        candidate,
+        request.preferences,
+        playable_url,
+        fallback_urls,
+        embed_url,
+    ))
+}
+
+/// One candidate's HLS resolve attempt. Returns the resolved source on success;
+/// returns `None` after recording a `playback_error` health event on failure or
+/// timeout, or immediately if the shared deadline is already spent. Kept side-effect
+/// free except for the failure-event record so the hedge driver can decide the
+/// winner and record success exactly once.
+async fn resolve_external_embed_candidate_attempt<'a>(
+    request: &ExternalEmbedPlaybackRequest<'a>,
+    candidate: ExternalEmbedSource,
+    hls_deadline_ms: i64,
+) -> Option<(ExternalEmbedSource, ExternalEmbedHlsPlaybackSource, String)> {
+    let remaining_ms = hls_deadline_ms - now_ms();
+    if remaining_ms < 1_000 {
+        return None;
+    }
+    let embed_url = external_embed_playback_url(candidate, request.metadata, request.preferences)?;
+    let hls_timeout_ms = external_embed_source_resolve_timeout_ms(candidate)
+        .min(remaining_ms as u64)
+        .max(1_000);
+    let hls_result = timeout(
+        Duration::from_millis(remaining_ms as u64),
+        resolve_external_embed_hls_playback_source(
+            request.client,
+            candidate,
+            &embed_url,
+            request.metadata,
+            hls_timeout_ms,
+        ),
+    )
+    .await
+    .ok()
+    .flatten();
+    match hls_result {
+        Some(hls_source) => Some((candidate, hls_source, embed_url)),
+        None => {
             record_external_embed_health_event(
                 request.db,
                 candidate,
@@ -5429,38 +5492,68 @@ async fn build_external_embed_resolved_playback_payload(
                 "Native HLS resolver failed.",
             )
             .await;
-            continue;
-        };
-        record_external_embed_health_event(request.db, candidate, request.metadata, "success", "")
-            .await;
-        let proxied_url = crate::live::build_trusted_external_embed_hls_playback_source(
-            hls_source.playback_url.as_str(),
-            hls_source.referer.as_deref(),
-            request.live_hls_proxy_secret,
-        );
-        // For providers whose CDN serves the browser cross-origin (LordFlix:
-        // tcloud.lordflix.club playlists + *.tiktokcdn.com segments, both
-        // CORS-open with no Referer wall), hand the browser a direct-segment
-        // playlist (`&directSeg=1`) so the heavy `.ts` bytes stream straight from
-        // the source CDN — off the mini's home uplink — and keep the fully-proxied
-        // URL as a fallback the player switches to if a direct fetch fails.
-        let (playable_url, fallback_urls) =
-            if is_external_embed_direct_segment_provider(candidate) {
-                (format!("{proxied_url}&directSeg=1"), vec![proxied_url])
-            } else {
-                (proxied_url, Vec::new())
-            };
-        return Some(build_external_embed_resolved_payload_with_playable_url(
-            request.metadata,
-            candidate,
-            request.preferences,
-            playable_url,
-            fallback_urls,
-            embed_url,
-        ));
+            None
+        }
     }
+}
 
-    None
+/// Drive a set of lazily-constructed attempt futures with an adaptive staggered
+/// hedge and return the first success (with its index). The first future starts
+/// immediately; each subsequent future is launched as soon as the previous attempt
+/// resolves to `None` (fast failure) OR the `stagger` elapses with attempts still in
+/// flight (slow/hung). Returns `None` only when every attempt yields `None`. Futures
+/// are not started until pushed, so the common case (the first attempt succeeds
+/// before the stagger) never runs a redundant attempt.
+async fn race_staggered_first_success<Fut, T>(
+    futures: Vec<Fut>,
+    stagger: Duration,
+) -> Option<(usize, T)>
+where
+    Fut: Future<Output = Option<T>>,
+{
+    let mut remaining = futures.into_iter().enumerate();
+    let mut in_flight = FuturesUnordered::new();
+    match remaining.next() {
+        Some((index, fut)) => in_flight.push(tag_future_index(index, fut)),
+        None => return None,
+    }
+    loop {
+        if in_flight.is_empty() {
+            match remaining.next() {
+                Some((index, fut)) => in_flight.push(tag_future_index(index, fut)),
+                None => return None,
+            }
+        }
+        let stagger_timer = sleep(stagger);
+        tokio::select! {
+            biased;
+            completed = in_flight.next(), if !in_flight.is_empty() => {
+                match completed {
+                    Some((index, Some(value))) => return Some((index, value)),
+                    // Fast failure: launch the next candidate immediately.
+                    Some((_index, None)) => {
+                        if let Some((index, fut)) = remaining.next() {
+                            in_flight.push(tag_future_index(index, fut));
+                        }
+                    }
+                    None => {}
+                }
+            }
+            // Current attempt(s) still pending past the stagger: hedge with the next.
+            _ = stagger_timer => {
+                if let Some((index, fut)) = remaining.next() {
+                    in_flight.push(tag_future_index(index, fut));
+                }
+            }
+        }
+    }
+}
+
+async fn tag_future_index<Fut, T>(index: usize, fut: Fut) -> (usize, Option<T>)
+where
+    Fut: Future<Output = Option<T>>,
+{
+    (index, fut.await)
 }
 
 fn external_embed_hls_candidate_sources(
@@ -8314,6 +8407,89 @@ mod tests {
         should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
         user_facing_real_debrid_error,
     };
+    use super::race_staggered_first_success;
+
+    use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
+
+    /// Build an attempt future that records when it actually starts running (so a
+    /// test can assert the hedge never launches a redundant attempt), sleeps for
+    /// `delay`, then yields `result`.
+    fn hedge_attempt(
+        started: Arc<StdMutex<Vec<usize>>>,
+        index: usize,
+        delay: Duration,
+        result: Option<&'static str>,
+    ) -> impl std::future::Future<Output = Option<&'static str>> {
+        async move {
+            started.lock().unwrap().push(index);
+            tokio::time::sleep(delay).await;
+            result
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hedge_returns_first_success_without_starting_redundant_attempts() {
+        let started = Arc::new(StdMutex::new(Vec::new()));
+        let futures = vec![
+            hedge_attempt(started.clone(), 0, Duration::from_millis(500), Some("a")),
+            hedge_attempt(started.clone(), 1, Duration::from_millis(100), Some("b")),
+        ];
+        let winner = race_staggered_first_success(futures, Duration::from_millis(2_000)).await;
+        // Candidate 0 succeeds at 500ms, well within the 2s stagger, so candidate 1
+        // is never started.
+        assert_eq!(winner, Some((0, "a")));
+        assert_eq!(*started.lock().unwrap(), vec![0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hedge_launches_next_immediately_on_fast_failure() {
+        let started = Arc::new(StdMutex::new(Vec::new()));
+        let futures = vec![
+            hedge_attempt(started.clone(), 0, Duration::from_millis(100), None),
+            hedge_attempt(started.clone(), 1, Duration::from_millis(100), Some("b")),
+        ];
+        let winner = race_staggered_first_success(futures, Duration::from_millis(2_000)).await;
+        // Candidate 0 fails at 100ms; candidate 1 starts then, not after the 2s
+        // stagger, and wins.
+        assert_eq!(winner, Some((1, "b")));
+        assert_eq!(*started.lock().unwrap(), vec![0, 1]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hedge_races_next_when_current_stalls_past_stagger() {
+        let started = Arc::new(StdMutex::new(Vec::new()));
+        let futures = vec![
+            hedge_attempt(started.clone(), 0, Duration::from_millis(10_000), Some("slow")),
+            hedge_attempt(started.clone(), 1, Duration::from_millis(500), Some("fast")),
+        ];
+        let winner = race_staggered_first_success(futures, Duration::from_millis(2_000)).await;
+        // Candidate 0 stalls; candidate 1 is hedged in at 2s and resolves first.
+        assert_eq!(winner, Some((1, "fast")));
+        assert_eq!(*started.lock().unwrap(), vec![0, 1]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hedge_returns_none_when_all_attempts_fail() {
+        let started = Arc::new(StdMutex::new(Vec::new()));
+        let futures = vec![
+            hedge_attempt(started.clone(), 0, Duration::from_millis(100), None),
+            hedge_attempt(started.clone(), 1, Duration::from_millis(100), None),
+            hedge_attempt(started.clone(), 2, Duration::from_millis(100), None),
+        ];
+        let winner: Option<(usize, &'static str)> =
+            race_staggered_first_success(futures, Duration::from_millis(2_000)).await;
+        assert_eq!(winner, None);
+        assert_eq!(*started.lock().unwrap(), vec![0, 1, 2]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hedge_handles_empty_candidate_set() {
+        let futures: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = Option<&'static str>>>>> =
+            Vec::new();
+        let winner = race_staggered_first_success(futures, Duration::from_millis(2_000)).await;
+        assert_eq!(winner, None);
+    }
 
     #[test]
     fn normalizes_source_hashes() {

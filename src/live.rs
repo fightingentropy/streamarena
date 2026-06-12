@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{Method, Response, Uri};
+use axum::http::{HeaderMap, Method, Response, Uri};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dashmap::DashMap;
@@ -95,20 +95,31 @@ enum LiveHlsRequestKind {
 pub async fn live_hls_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     uri: Uri,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
     let live_request = live_hls_request_input(&state, &uri, LiveHlsRequestKind::Playlist)?;
+    let cache_key = live_hls_playlist_cache_key(&live_request);
+
+    // Serve an already-rewritten immutable playlist from memory: skips the cold
+    // ~5 s upstream fetch and the per-request rewrite + ~2000x HMAC sign for repeat
+    // loads, seeks, quality switches, and concurrent viewers of the same resolve.
+    if let Some(cached) = state.live_hls_playlist_cache.get_fresh(&cache_key) {
+        return live_hls_playlist_response(&headers, &cached, "public, max-age=300");
+    }
+
     let fetched = fetch_live_hls_playlist_upstream(&state, &live_request).await?;
-    let playlist = fetched.body;
+    let immutable =
+        live_request.trusted_external_embed && live_hls_playlist_is_immutable(&fetched.body);
     let trusted_secret = live_request
         .trusted_external_embed
         .then_some(state.config.live_hls_proxy_secret.as_str());
     let rewritten = rewrite_live_hls_playlist(
         &fetched.final_url,
-        &playlist,
+        &fetched.body,
         live_request.referer.as_deref(),
         trusted_secret,
         live_request.direct_segments,
@@ -119,15 +130,14 @@ pub async fn live_hls_handler(
         live_request.trusted_external_embed,
     );
 
-    Response::builder()
-        .status(200)
-        .header(
-            "content-type",
-            "application/vnd.apple.mpegurl; charset=utf-8",
-        )
-        .header("cache-control", "no-store")
-        .body(Body::from(rewritten))
-        .map_err(|error| ApiError::internal(error.to_string()))
+    let cache_control = if immutable {
+        let body: Arc<str> = Arc::from(rewritten.as_str());
+        state.live_hls_playlist_cache.store(cache_key, body);
+        "public, max-age=300"
+    } else {
+        "no-store"
+    };
+    live_hls_playlist_response(&headers, &rewritten, cache_control)
 }
 
 /// When the Cloudflare live-segment Worker is configured and this stream is
@@ -249,6 +259,33 @@ pub async fn live_hls_resource_handler(
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
     let live_request = live_hls_request_input(&state, &uri, LiveHlsRequestKind::Resource)?;
+    // VOD external-embed segments are immutable (the playlist rewriter tags them
+    // with `vod=1`, outside the signature), so the browser and Cloudflare may cache
+    // them. Live sports / unknown segments stay `no-store`.
+    let is_vod_segment = live_request.trusted_external_embed
+        && query_pairs(uri.query().unwrap_or_default())
+            .get("vod")
+            .map(String::as_str)
+            == Some("1");
+    let cache_control = if is_vod_segment {
+        "public, max-age=3600"
+    } else {
+        "no-store"
+    };
+
+    // Streaming fast-path: a non-`.ts` segment fetched over plain HTTP (not the
+    // curl-fingerprint path, not a transcode candidate) is streamed straight to the
+    // client, so TTFB is the first upstream chunk rather than the whole multi-MB
+    // segment download. `.ts` segments, curl-fetched hosts, and any upstream that
+    // turns out to be mpeg-ts fall through to the buffered (transcode-capable) path.
+    if !is_curl_fetch_live_hls_upstream(&live_request.source_url)
+        && !url_path_is_mpegts(&live_request.source_url)
+        && let Some(response) =
+            stream_live_hls_resource_via_http(&state, &live_request, cache_control).await?
+    {
+        return Ok(response);
+    }
+
     let fetched = fetch_live_hls_resource_upstream(&state, &live_request).await?;
     let mut content_type = fetched.content_type;
     let mut bytes = fetched.bytes;
@@ -273,8 +310,65 @@ pub async fn live_hls_resource_handler(
     Response::builder()
         .status(200)
         .header("content-type", content_type)
-        .header("cache-control", "no-store")
+        .header("cache-control", cache_control)
         .body(Body::from(bytes))
+        .map_err(|error| ApiError::internal(error.to_string()))
+}
+
+fn url_path_is_mpegts(url: &Url) -> bool {
+    url.path().to_ascii_lowercase().ends_with(".ts")
+}
+
+/// Stream a live HLS segment over plain HTTP without buffering the whole body in
+/// memory. Returns `Ok(None)` when the upstream turns out to be an mpeg-ts segment
+/// (a possible transcode candidate) so the caller falls back to the buffered path.
+/// Only ever called for non-`.ts`, non-curl URLs.
+async fn stream_live_hls_resource_via_http(
+    state: &AppState,
+    live_request: &LiveHlsRequest,
+    cache_control: &str,
+) -> AppResult<Option<Response<Body>>> {
+    let referer = browser_bound_live_hls_referer_header(live_request.referer.as_deref());
+    let mut request = state
+        .http_client
+        .get(live_request.source_url.clone())
+        .header(reqwest::header::USER_AGENT, LIVE_HLS_BROWSER_USER_AGENT)
+        .header(reqwest::header::ACCEPT, "*/*")
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+    if let Some(referer) = referer.as_deref() {
+        request = request.header(reqwest::header::REFERER, referer);
+    }
+    let response = timeout(LIVE_UPSTREAM_REQUEST_TIMEOUT, request.send())
+        .await
+        .map_err(|_| ApiError::bad_gateway("Live HLS resource request timed out."))?
+        .map_err(|_| ApiError::bad_gateway("Live HLS resource request failed."))?;
+    if !response.status().is_success() {
+        return Err(ApiError::bad_gateway(format!(
+            "Live HLS resource request failed with status {}.",
+            response.status()
+        )));
+    }
+    let final_url = response.url().clone();
+    ensure_allowed_live_hls_final_url(&final_url, live_request, LiveHlsRequestKind::Resource)?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    // Unexpectedly an mpeg-ts segment: it may need transcoding, which requires the
+    // full body — fall back to the buffered path (re-fetches, but this is rare for a
+    // non-`.ts` URL).
+    if content_type.to_ascii_lowercase().contains("mp2t") {
+        return Ok(None);
+    }
+    let body = Body::from_stream(response.bytes_stream());
+    Response::builder()
+        .status(200)
+        .header("content-type", content_type)
+        .header("cache-control", cache_control)
+        .body(body)
+        .map(Some)
         .map_err(|error| ApiError::internal(error.to_string()))
 }
 
@@ -373,6 +467,158 @@ impl LiveAudioTranscodeCache {
             self.entries.clear();
         }
     }
+}
+
+// External-embed VOD playlists are immutable for the life of their signed upstream
+// URL (the `input` query param carries the source's auth token), so the expensive
+// upstream fetch + rewrite + ~2000x HMAC sign can be served from memory for repeat
+// loads, seeks, quality switches, and concurrent viewers of the same resolve. Keyed
+// by the upstream URL + referer + flags so a fresh resolve (new auth token) always
+// misses and re-fetches. Only immutable playlists (master + VOD media) are cached;
+// rolling live playlists are never stored. Capped tight because each VOD body is
+// ~2 MB.
+const LIVE_HLS_PLAYLIST_CACHE_TTL_MS: i64 = 120_000;
+const LIVE_HLS_PLAYLIST_CACHE_MAX_ENTRIES: usize = 24;
+/// Don't bother gzipping tiny playlists (master playlists are ~2 KB); the win is on
+/// the ~2 MB VOD media manifests, which compress >10x.
+const LIVE_HLS_GZIP_MIN_BYTES: usize = 4 * 1024;
+
+#[derive(Clone)]
+struct CachedLivePlaylist {
+    body: Arc<str>,
+    stored_at_ms: i64,
+}
+
+/// In-memory cache of fully-rewritten, immutable live HLS playlists (external-embed
+/// VOD master + media manifests). See the comment above the constants for the
+/// invalidation reasoning.
+#[derive(Clone, Default)]
+pub struct LiveHlsPlaylistCache {
+    entries: Arc<DashMap<String, CachedLivePlaylist>>,
+}
+
+impl LiveHlsPlaylistCache {
+    pub fn new() -> Self {
+        Self {
+            entries: Arc::new(DashMap::new()),
+        }
+    }
+
+    fn get_fresh(&self, key: &str) -> Option<Arc<str>> {
+        let entry = self.entries.get(key)?;
+        if now_ms() - entry.stored_at_ms > LIVE_HLS_PLAYLIST_CACHE_TTL_MS {
+            return None;
+        }
+        Some(entry.body.clone())
+    }
+
+    fn store(&self, key: String, body: Arc<str>) {
+        self.entries.insert(
+            key,
+            CachedLivePlaylist {
+                body,
+                stored_at_ms: now_ms(),
+            },
+        );
+        if self.entries.len() > LIVE_HLS_PLAYLIST_CACHE_MAX_ENTRIES {
+            let now = now_ms();
+            self.entries
+                .retain(|_, value| now - value.stored_at_ms <= LIVE_HLS_PLAYLIST_CACHE_TTL_MS);
+            if self.entries.len() > LIVE_HLS_PLAYLIST_CACHE_MAX_ENTRIES {
+                self.entries.clear();
+            }
+        }
+    }
+
+    pub fn prune(&self) {
+        let now = now_ms();
+        self.entries
+            .retain(|_, value| now - value.stored_at_ms <= LIVE_HLS_PLAYLIST_CACHE_TTL_MS);
+    }
+}
+
+/// Cache key for a rewritten playlist: the upstream URL plus everything that changes
+/// the rewrite output. The upstream URL embeds the source's auth token, so a new
+/// resolve naturally produces a new key.
+fn live_hls_playlist_cache_key(live_request: &LiveHlsRequest) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        live_request.source_url.as_str(),
+        live_request.referer.as_deref().unwrap_or_default(),
+        live_request.trusted_external_embed as u8,
+        live_request.direct_segments as u8,
+    )
+}
+
+/// True when a playlist is safe to cache + mark publicly cacheable: a master
+/// (variant list, stable) or a VOD media playlist (carries ENDLIST / PLAYLIST-TYPE:VOD).
+/// A live/rolling media playlist (segments but no VOD marker) returns false so it is
+/// always re-fetched and served `no-store`.
+fn live_hls_playlist_is_immutable(playlist: &str) -> bool {
+    let mut is_master = false;
+    let mut is_media = false;
+    let mut is_vod = false;
+    for line in playlist.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#EXT-X-STREAM-INF") {
+            is_master = true;
+        } else if trimmed.starts_with("#EXTINF") {
+            is_media = true;
+        } else if trimmed.eq_ignore_ascii_case("#EXT-X-ENDLIST")
+            || trimmed.eq_ignore_ascii_case("#EXT-X-PLAYLIST-TYPE:VOD")
+        {
+            is_vod = true;
+        }
+    }
+    is_master || (is_media && is_vod)
+}
+
+fn client_accepts_gzip(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_ascii_lowercase().contains("gzip"))
+        .unwrap_or(false)
+}
+
+fn gzip_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(data).ok()?;
+    encoder.finish().ok()
+}
+
+/// Build the playlist HTTP response, gzipping when the client accepts it and the body
+/// is large enough to be worth it. `cache_control` is `public, max-age=…` for
+/// immutable VOD/master playlists (so the browser and Cloudflare can cache them) and
+/// `no-store` for rolling live playlists.
+fn live_hls_playlist_response(
+    headers: &HeaderMap,
+    body: &str,
+    cache_control: &str,
+) -> AppResult<Response<Body>> {
+    let builder = Response::builder()
+        .status(200)
+        .header(
+            "content-type",
+            "application/vnd.apple.mpegurl; charset=utf-8",
+        )
+        .header("cache-control", cache_control)
+        .header("vary", "Accept-Encoding");
+    if client_accepts_gzip(headers)
+        && body.len() >= LIVE_HLS_GZIP_MIN_BYTES
+        && let Some(compressed) = gzip_bytes(body.as_bytes())
+    {
+        return builder
+            .header("content-encoding", "gzip")
+            .body(Body::from(compressed))
+            .map_err(|error| ApiError::internal(error.to_string()));
+    }
+    builder
+        .body(Body::from(body.to_owned()))
+        .map_err(|error| ApiError::internal(error.to_string()))
 }
 
 fn is_live_ts_segment(url: &Url, content_type: &str) -> bool {
@@ -1660,11 +1906,11 @@ fn rewrite_vod_hls_media_playlist(
                         return direct;
                     }
                     let referer = live_hls_resource_referer_for_url(base_url, input, referer);
-                    live_hls_proxy_resource_url_with_trust(
+                    tag_vod_resource_url(live_hls_proxy_resource_url_with_trust(
                         input,
                         referer,
                         trusted_external_embed_secret,
-                    )
+                    ))
                 },
             ));
             continue;
@@ -1676,16 +1922,28 @@ fn rewrite_vod_hls_media_playlist(
                     return direct;
                 }
                 let referer = live_hls_resource_referer_for_url(base_url, &absolute_uri, referer);
-                live_hls_proxy_resource_url_with_trust(
+                tag_vod_resource_url(live_hls_proxy_resource_url_with_trust(
                     &absolute_uri,
                     referer,
                     trusted_external_embed_secret,
-                )
+                ))
             })
             .unwrap_or_else(|| line.to_owned());
         rewritten.push(segment_uri);
     }
     rewritten.join("\n")
+}
+
+/// Tag a proxied VOD segment/resource URL with `vod=1` (outside the HMAC, exactly
+/// like `directSeg`) so the resource handler knows the bytes are immutable and may be
+/// served with a cacheable `Cache-Control`. Direct (off-uplink) URLs and any
+/// non-proxy URL are returned unchanged.
+fn tag_vod_resource_url(url: String) -> String {
+    if url.starts_with("/api/live/hls-resource") {
+        format!("{url}&vod=1")
+    } else {
+        url
+    }
 }
 
 fn live_hls_resource_referer_for_url<'a>(
@@ -2299,6 +2557,70 @@ mod tests {
         assert!(rewritten.contains("seg-1.ts"));
         assert!(rewritten.contains("seg-9.ts"));
         assert!(!rewritten.contains("#EXT-X-START:TIME-OFFSET=-18"));
+    }
+
+    #[test]
+    fn vod_media_playlist_tags_proxied_segments_for_caching() {
+        let base: url::Url = "https://storm.vodvidl.site/proxy/abc/720/index.m3u8"
+            .parse()
+            .expect("base url");
+        let secret = "test-live-hls-proxy-secret-with-enough-length";
+        let playlist =
+            "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:4.0,\nseg-1.ts\n#EXT-X-ENDLIST\n";
+        let rewritten = rewrite_live_hls_playlist(
+            &base,
+            playlist,
+            Some("https://vidlink.pro/movie/1"),
+            Some(secret),
+            false,
+        );
+        // Every proxied segment line carries `vod=1` so the resource handler can mark
+        // the bytes publicly cacheable; the signature still gates the request.
+        for line in rewritten.lines() {
+            if line.starts_with("/api/live/hls-resource") {
+                assert!(line.contains("&vod=1"), "segment not tagged vod: {line}");
+                assert!(line.contains("&sig="), "segment lost its signature: {line}");
+            }
+        }
+        assert!(rewritten.contains("&vod=1"));
+    }
+
+    #[test]
+    fn classifies_immutable_vs_rolling_playlists() {
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720\nv720.m3u8\n";
+        let vod = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:4.0,\nseg-1.ts\n#EXT-X-ENDLIST\n";
+        let vod_endlist_only = "#EXTM3U\n#EXTINF:4.0,\nseg-1.ts\n#EXT-X-ENDLIST\n";
+        let live = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:42\n#EXTINF:4.0,\nseg-42.ts\n";
+
+        assert!(super::live_hls_playlist_is_immutable(master));
+        assert!(super::live_hls_playlist_is_immutable(vod));
+        assert!(super::live_hls_playlist_is_immutable(vod_endlist_only));
+        assert!(!super::live_hls_playlist_is_immutable(live));
+    }
+
+    #[test]
+    fn tag_vod_resource_url_only_tags_proxy_urls() {
+        assert_eq!(
+            super::tag_vod_resource_url("/api/live/hls-resource?input=x&sig=y".to_owned()),
+            "/api/live/hls-resource?input=x&sig=y&vod=1"
+        );
+        // Direct off-uplink CDN URLs are left untouched.
+        assert_eq!(
+            super::tag_vod_resource_url("https://cdn.example.com/seg-1.ts".to_owned()),
+            "https://cdn.example.com/seg-1.ts"
+        );
+    }
+
+    #[test]
+    fn gzip_roundtrips_playlist_bytes() {
+        let body = "#EXTM3U\n".to_owned() + &"/api/live/hls-resource?input=x&sig=y\n".repeat(500);
+        let compressed = super::gzip_bytes(body.as_bytes()).expect("gzip");
+        assert!(compressed.len() < body.len() / 5, "expected >5x compression");
+        use std::io::Read;
+        let mut decoder = flate2::read::GzDecoder::new(compressed.as_slice());
+        let mut restored = String::new();
+        decoder.read_to_string(&mut restored).expect("gunzip");
+        assert_eq!(restored, body);
     }
 
     #[test]
