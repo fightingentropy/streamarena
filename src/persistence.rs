@@ -3109,7 +3109,7 @@ impl Db {
 
 fn get_playback_session_inner(
     pool: &Pool,
-    path: &PathBuf,
+    path: &Path,
     session_key: String,
 ) -> Result<Option<PlaybackSession>, rusqlite::Error> {
     let connection = take_connection(pool, path)?;
@@ -3755,7 +3755,7 @@ fn table_column_names(
 }
 
 /// Evict expired/stale rows and trim oversized cache tables in the cache DB.
-fn sweep_cache_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
+fn sweep_cache_db(pool: &Pool, path: &Path) -> Result<(), rusqlite::Error> {
     let connection = take_connection(pool, path)?;
     let now = now_ms();
     let stale_threshold = now - PLAYBACK_SESSION_STALE_MS;
@@ -3816,7 +3816,7 @@ fn sweep_cache_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
 }
 
 /// Evict expired sessions and aged-out health history from the durable users DB.
-fn sweep_users_db(pool: &Pool, path: &PathBuf) -> Result<(), rusqlite::Error> {
+fn sweep_users_db(pool: &Pool, path: &Path) -> Result<(), rusqlite::Error> {
     let connection = take_connection(pool, path)?;
     let now = now_ms();
     connection.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", [now])?;
@@ -3863,7 +3863,7 @@ impl Drop for PooledConnection<'_> {
 
 fn take_connection<'a>(
     pool: &'a Pool,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<PooledConnection<'a>, rusqlite::Error> {
     let conn = {
         let mut connections = pool.lock().unwrap_or_else(|e| e.into_inner());

@@ -1068,10 +1068,10 @@ pub(crate) fn parse_curl_response_headers(headers: &str) -> (u16, Option<String>
             if let Some(code) = rest.split_whitespace().nth(1).and_then(|c| c.parse::<u16>().ok()) {
                 status = code;
             }
-        } else if let Some((name, value)) = trimmed.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("content-type") {
-                content_type = Some(value.trim().to_owned());
-            }
+        } else if let Some((name, value)) = trimmed.split_once(':')
+            && name.trim().eq_ignore_ascii_case("content-type")
+        {
+            content_type = Some(value.trim().to_owned());
         }
     }
     (status, content_type)
