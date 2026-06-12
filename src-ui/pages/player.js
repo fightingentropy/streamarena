@@ -2727,6 +2727,15 @@ function syncSourceSelectionState() {
   });
 }
 
+const SOURCE_OPTION_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <rect x="3.25" y="3.75" width="17.5" height="7" rx="1.8"></rect>
+  <rect x="3.25" y="13.25" width="17.5" height="7" rx="1.8"></rect>
+  <path d="M6.8 7.25h.01"></path>
+  <path d="M6.8 16.75h.01"></path>
+  <path d="M13.5 7.25h3.7"></path>
+  <path d="M13.5 16.75h3.7"></path>
+</svg>`;
+
 function renderSourceOptionButtons() {
   if (!(sourceOptionsContainer instanceof HTMLElement)) {
     return;
@@ -2790,9 +2799,18 @@ function renderSourceOptionButtons() {
       sourceHash === selectedSourceHash ? "true" : "false",
     );
 
+    const iconBadge = document.createElement("span");
+    iconBadge.className = "source-option-icon";
+    iconBadge.setAttribute("aria-hidden", "true");
+    iconBadge.innerHTML = SOURCE_OPTION_ICON_SVG;
+
+    const textWrap = document.createElement("span");
+    textWrap.className = "source-option-text";
+
     const nameLine = document.createElement("span");
     nameLine.className = "source-option-name";
     nameLine.textContent = getSourceDisplayName(option);
+    textWrap.appendChild(nameLine);
 
     const hintText = getSourceDisplayHint(option);
     const metaText = getSourceDisplayMeta(option);
@@ -2801,17 +2819,17 @@ function renderSourceOptionButtons() {
       const hintLine = document.createElement("span");
       hintLine.className = "source-option-hint";
       hintLine.textContent = hintText;
-      sourceOptionButton.appendChild(hintLine);
+      textWrap.appendChild(hintLine);
     }
 
     if (metaText) {
       const metaLine = document.createElement("span");
       metaLine.className = "source-option-meta";
       metaLine.textContent = metaText;
-      sourceOptionButton.appendChild(metaLine);
+      textWrap.appendChild(metaLine);
     }
 
-    sourceOptionButton.prepend(nameLine);
+    sourceOptionButton.append(iconBadge, textWrap);
     fragment.appendChild(sourceOptionButton);
     displayedSources.push(option);
   }
