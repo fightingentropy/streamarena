@@ -80,6 +80,16 @@ export function createHlsPlaybackController({
   let selectedQualityLevel = -1;
   let activeQualityLevel = -1;
 
+  // Eagerly start downloading the hls.js chunk (~163 KB) the moment the player
+  // mounts so it lands in parallel with the auth/init/resolve phase instead of
+  // adding its own round trip after the source resolves (it was previously first
+  // imported inside play(), i.e. only after resolve returned). Skipped on browsers
+  // with native HLS (Safari), which never load hls.js. Errors are swallowed — play()
+  // re-requests the constructor and surfaces any real failure then.
+  if (hasHlsJsPlaybackSupport() && !hasNativeHlsPlaybackSupport()) {
+    void loadHlsConstructor().catch(() => {});
+  }
+
   function normalizeQualityLevel(level = {}, index = 0) {
     const attrs = level.attrs || {};
     const width = Number(level.width || attrs.RESOLUTION?.width || 0);

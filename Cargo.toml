@@ -37,3 +37,8 @@ sha2 = "0.10"
 # and the process fd count come from libc (statvfs / getrlimit + /dev/fd), so the
 # heavier disk/network/component collectors are left off to keep the build lean.
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+
+[dev-dependencies]
+# `test-util` enables tokio's paused-time test clock (`start_paused`) so the
+# staggered-hedge resolver tests run deterministically without real sleeps.
+tokio = { version = "1", features = ["full", "test-util"] }
