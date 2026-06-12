@@ -177,7 +177,7 @@ fn maybe_route_live_resources_to_worker(
         state
             .live_audio_transcode_cache
             .get_fresh(&live_audio_stream_key(&first_input)),
-        Some(decision) if !decision.needs_transcode
+        Some(decision) if !decision.needs_processing()
     );
     if !browser_safe {
         return rewritten;
@@ -429,10 +429,25 @@ enum LiveSegmentOutcome {
 
 #[derive(Clone, Copy)]
 struct LiveTranscodeDecision {
-    needs_transcode: bool,
+    /// The audio codec is not browser-decodable (anything but AAC/MP3), so the
+    /// segment must be fully re-encoded.
+    audio_needs_transcode: bool,
+    /// The segment carries data/SCTE-35/subtitle PIDs that break hls.js's
+    /// transmux. With browser-safe audio these only need a remux that drops
+    /// the extra streams — never decoding the video, which matters for feeds
+    /// (e.g. Bloomberg) whose corrupt caption SEI breaks ffmpeg's re-encode.
+    has_data_streams: bool,
     /// Video height probed from the rendition, used to pick the re-encode
     /// bitrate. None when the probe could not determine it.
     video_height: Option<u32>,
+}
+
+impl LiveTranscodeDecision {
+    /// The segment cannot be served as-is; the mini must run ffmpeg on it
+    /// (re-encode or remux), so e.g. the Cloudflare Worker can't serve it.
+    fn needs_processing(self) -> bool {
+        self.audio_needs_transcode || self.has_data_streams
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -656,13 +671,13 @@ fn audio_codec_needs_live_transcode(codec: &str) -> bool {
     !codec.is_empty() && codec != "aac" && codec != "mp3"
 }
 
-/// Decide whether a live `.ts` segment must be re-encoded to play in the browser.
+/// Decide whether a live `.ts` segment must be processed to play in the browser.
 /// Returns None if the probe failed (so the caller can retry on a later segment).
-/// A segment needs transcoding when it has audio the browser can't decode
-/// (anything but AAC/MP3) OR carries a data/SCTE-35/subtitle stream — Bloomberg's
-/// feed embeds SCTE-35 ad markers that trip hls.js's transmux; the re-encode maps
-/// only video+audio, dropping those streams. Also captures the rendition's video
-/// height so the re-encode bitrate can match the source quality.
+/// Audio the browser can't decode (anything but AAC/MP3) forces a full
+/// re-encode; data/SCTE-35/subtitle streams (Bloomberg's ad markers) trip
+/// hls.js's transmux but with browser-safe audio only need a copy-remux that
+/// drops those PIDs. Also captures the rendition's video height so the
+/// re-encode bitrate can match the source quality.
 async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<LiveTranscodeDecision> {
     let args = [
         "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height",
@@ -679,7 +694,8 @@ async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<LiveTransc
         .ok()?;
     let text = String::from_utf8_lossy(&output);
     let mut saw_stream = false;
-    let mut needs_transcode = false;
+    let mut audio_needs_transcode = false;
+    let mut has_data_streams = false;
     let mut video_height = None;
     for line in text.lines() {
         let tokens: Vec<String> = line
@@ -696,7 +712,7 @@ async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<LiveTransc
             .iter()
             .any(|token| matches!(token.as_str(), "data" | "subtitle" | "scte_35" | "timed_id3"))
         {
-            needs_transcode = true;
+            has_data_streams = true;
         }
         // The video stream's line carries "<codec>,video,<width>,<height>".
         if tokens.iter().any(|token| token == "video") {
@@ -716,12 +732,13 @@ async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<LiveTransc
                 .cloned()
                 .unwrap_or_default();
             if audio_codec_needs_live_transcode(&codec) {
-                needs_transcode = true;
+                audio_needs_transcode = true;
             }
         }
     }
     saw_stream.then_some(LiveTranscodeDecision {
-        needs_transcode,
+        audio_needs_transcode,
+        has_data_streams,
         video_height,
     })
 }
@@ -752,7 +769,10 @@ async fn transcode_live_segment_to_browser_safe(
     // re-encoded segments concatenate cleanly in the player's live timeline.
     // `-maxrate`/`-bufsize` are required on top of `-b:v`: videotoolbox's rate
     // control never converges within a short live segment and overshoots the
-    // average target ~2x without a hard ceiling.
+    // average target ~2x without a hard ceiling. `-a53cc 0` stops the encoder
+    // from re-embedding closed-caption SEI side data: feeds with corrupt
+    // caption SEI (Bloomberg) make that copy fail mid-segment, truncating the
+    // output ("Unexpected end of SEI NAL Unit parsing type").
     let max_rate = video_bitrate.to_owned();
     let buf_size = video_bitrate
         .strip_suffix('k')
@@ -760,14 +780,37 @@ async fn transcode_live_segment_to_browser_safe(
         .map_or_else(|| video_bitrate.to_owned(), |kbps| format!("{}k", kbps * 2));
     let args = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-copyts", "-i", "-", "-map", "0:v:0?",
-        "-map", "0:a:0?", "-c:v", video_encoder, "-b:v", video_bitrate, "-maxrate", &max_rate,
-        "-bufsize", &buf_size, "-c:a", "aac", "-b:a", "160k", "-muxpreload", "0", "-muxdelay",
-        "0", "-f", "mpegts", "-",
+        "-map", "0:a:0?", "-c:v", video_encoder, "-a53cc", "0", "-b:v", video_bitrate, "-maxrate",
+        &max_rate, "-bufsize", &buf_size, "-c:a", "aac", "-b:a", "160k", "-muxpreload", "0",
+        "-muxdelay", "0", "-f", "mpegts", "-",
     ]
     .iter()
     .map(|value| (*value).to_owned())
     .collect::<Vec<_>>();
     // Limit concurrent encodes to avoid overloading the hardware encoder.
+    let _permit = LIVE_REENCODE_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|error| error.to_string())?;
+    run_process_pipe(&args, bytes, LIVE_SEGMENT_TRANSCODE_TIMEOUT_MS).await
+}
+
+/// Strip data/SCTE-35/subtitle PIDs by remuxing video+audio with codec copy.
+/// Used when the audio is already browser-decodable, so the only problem is the
+/// extra streams tripping hls.js's transmux. Never decodes the video: feeds
+/// with corrupt SEI / slice errors (Bloomberg embeds glitchy A53 caption SEI)
+/// re-encode into truncated or damaged segments, while a packet copy preserves
+/// the full segment and the browser's decoder tolerates the bitstream as-is.
+async fn remux_live_segment_strip_data(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let args = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-copyts", "-i", "-", "-map", "0:v:0?",
+        "-map", "0:a:0?", "-c", "copy", "-muxpreload", "0", "-muxdelay", "0", "-f", "mpegts", "-",
+    ]
+    .iter()
+    .map(|value| (*value).to_owned())
+    .collect::<Vec<_>>();
+    // A remux is cheap, but bound it with the same limiter as re-encodes so a
+    // segment burst can't spawn unbounded ffmpeg processes.
     let _permit = LIVE_REENCODE_SEMAPHORE
         .acquire()
         .await
@@ -804,14 +847,20 @@ async fn process_live_segment(state: &AppState, url: &Url, bytes: &[u8]) -> Live
             None => return LiveSegmentOutcome::Passthrough,
         },
     };
-    if !decision.needs_transcode {
+    if !decision.needs_processing() {
         return LiveSegmentOutcome::Passthrough;
     }
-    let capabilities = state.runtime.get_ffmpeg_capabilities(false).await;
-    let video_encoder = live_segment_video_encoder(&capabilities);
-    let video_bitrate = live_segment_video_bitrate_for_height(decision.video_height);
-    match transcode_live_segment_to_browser_safe(bytes.to_vec(), video_encoder, video_bitrate).await
-    {
+    let processed = if decision.audio_needs_transcode {
+        let capabilities = state.runtime.get_ffmpeg_capabilities(false).await;
+        let video_encoder = live_segment_video_encoder(&capabilities);
+        let video_bitrate = live_segment_video_bitrate_for_height(decision.video_height);
+        transcode_live_segment_to_browser_safe(bytes.to_vec(), video_encoder, video_bitrate).await
+    } else {
+        // Browser-safe codecs, only data/subtitle PIDs to drop: copy the
+        // packets instead of re-encoding.
+        remux_live_segment_strip_data(bytes.to_vec()).await
+    };
+    match processed {
         Ok(output) if !output.is_empty() => LiveSegmentOutcome::Transcoded(output),
         // The stream needs re-encoding but it failed/produced nothing. Serving the
         // original would play a broken (e.g. SCTE-35 / MP2) segment, so signal the
