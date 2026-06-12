@@ -10,8 +10,11 @@ export const BBC_NEWS_ROKU_STREAM_URL =
   "https://jmp2.uk/rok-6183f9f73a64394cf3c55690605af2a7.m3u8";
 export const SKY_NEWS_STREAM_URL =
   "https://linear417-gb-hls1-prd-ak.cdn.skycdp.com/100e/Content/HLS_001_1080_30/Live/channel(skynews)/index_1080-30.m3u8";
-export const ERT1_STREAM_URL =
-  "https://ert-ucdn.broadpeak-aas.com/bpk-tv/ERT1/default/index.m3u8";
+// ERT1's stream (bpk-tv/ERT1) became Greece-only in June 2026 — the CDN
+// returns 403 "Content blocked by security policy" from non-GR IPs. ERT World
+// (bpk-tv/ERTCosmos) is ERT's international feed and stays available abroad.
+export const ERT_WORLD_STREAM_URL =
+  "https://ert-ucdn.broadpeak-aas.com/bpk-tv/ERTCosmos/default/index.m3u8";
 export const MEGA_NEWS_STREAM_URL =
   "https://c98db5952cb54b358365984178fb898a.msvdn.net/live/S99841657/NU0xOarAMJ5X/playlist.m3u8";
 export const ANT1_STREAM_URL =
@@ -141,15 +144,17 @@ export const LIVE_CHANNELS = Object.freeze([
     quality: "1080p HLS",
   },
   {
+    // Keeps the legacy "ert1" ids so saved /watch URLs and continue-watching
+    // state keep resolving to this channel.
     id: "ert1",
-    title: "ERT1",
-    source: ERT1_STREAM_URL,
+    title: "ERT World",
+    source: ERT_WORLD_STREAM_URL,
     defaultStreamId: "ert1-main",
     streams: [
       {
         id: "ert1-main",
-        label: "ERT1 HD",
-        source: ERT1_STREAM_URL,
+        label: "ERT World HD",
+        source: ERT_WORLD_STREAM_URL,
         quality: "1080p HLS",
       },
     ],
