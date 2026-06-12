@@ -6270,24 +6270,23 @@ async fn resolve_lordflix_server_hls_playback_source(
         return None;
     }
     let dec_result = dec_response.result?;
-    if dec_result.error.as_deref().unwrap_or("").trim().len() > 0 {
+    if !dec_result.error.as_deref().unwrap_or("").trim().is_empty() {
         return None;
     }
 
     for stream in dec_result.stream {
         if stream.r#type.trim().eq_ignore_ascii_case("hls") {
             let playlist = stream.playlist.trim();
-            if !playlist.is_empty() {
-                if let Some(source) = validate_external_embed_hls_playlist(
+            if !playlist.is_empty()
+                && let Some(source) = validate_external_embed_hls_playlist(
                     client,
                     playlist,
                     Some(LORDFLIX_REFERER),
                     timeout_ms,
                 )
                 .await
-                {
-                    return Some(source);
-                }
+            {
+                return Some(source);
             }
         }
     }

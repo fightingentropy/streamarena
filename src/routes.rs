@@ -2608,10 +2608,10 @@ async fn auth_login_handler(
         return Err(ApiError::unauthorized("Invalid email or password."));
     }
 
-    if let Some((_, _, _, _, is_disabled)) = state.db.get_auth_user(user_id).await? {
-        if is_disabled {
-            return Err(ApiError::forbidden("This account has been disabled."));
-        }
+    if let Some((_, _, _, _, is_disabled)) = state.db.get_auth_user(user_id).await?
+        && is_disabled
+    {
+        return Err(ApiError::forbidden("This account has been disabled."));
     }
 
     let token = auth::generate_session_token();
