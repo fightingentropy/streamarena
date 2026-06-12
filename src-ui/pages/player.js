@@ -41,6 +41,7 @@ import {
   renderLiveStreamOptions as renderLiveStreamOptionsDom,
   shouldShowLiveStreamControls as shouldShowLiveStreamControlsForState,
   syncLiveStreamControls as syncLiveStreamControlsDom,
+  SOURCE_OPTION_ICON_SVG,
 } from "../player/live-streams.js";
 import { createHlsPlaybackController } from "../player/hls-controller.js";
 import { createHlsQualityControls } from "../player/hls-quality-controls.js";
@@ -2726,15 +2727,6 @@ function syncSourceSelectionState() {
     );
   });
 }
-
-const SOURCE_OPTION_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-  <rect x="3.25" y="3.75" width="17.5" height="7" rx="1.8"></rect>
-  <rect x="3.25" y="13.25" width="17.5" height="7" rx="1.8"></rect>
-  <path d="M6.8 7.25h.01"></path>
-  <path d="M6.8 16.75h.01"></path>
-  <path d="M13.5 7.25h3.7"></path>
-  <path d="M13.5 16.75h3.7"></path>
-</svg>`;
 
 function renderSourceOptionButtons() {
   if (!(sourceOptionsContainer instanceof HTMLElement)) {
