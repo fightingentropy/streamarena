@@ -1411,7 +1411,7 @@ body {
     max-height: min(34vh, 260px);
     padding: 0 16px;
     margin: 0;
-    gap: 4px;
+    gap: 8px;
 }
 
 .source-popover-options.source-options {
@@ -1428,24 +1428,86 @@ body {
     gap: 4px;
 }
 
-.live-stream-option {
+/* Card layout matching .audio-option.source-option so the live stream menu
+   reads like the VOD server menu: icon tile left, checkmark on the right. */
+.audio-option.live-stream-option {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-height: 58px;
-    padding: 10px 12px 10px 42px;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+    min-width: 0;
+    min-height: 72px;
+    padding: 12px 44px 12px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.04);
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
     font-size: 1rem;
 }
 
-.live-stream-option::before {
-    left: 11px;
-    font-size: 1.2rem;
+.audio-option.live-stream-option:hover,
+.audio-option.live-stream-option:focus-visible {
+    border-color: rgba(255, 255, 255, 0.24);
+    background: rgba(255, 255, 255, 0.075);
+}
+
+.audio-option.live-stream-option[aria-selected="true"] {
+    border-color: rgba(229, 9, 20, 0.72);
+    background:
+        linear-gradient(90deg, rgba(229, 9, 20, 0.24), transparent 42%),
+        rgba(255, 255, 255, 0.08);
+    box-shadow:
+        inset 0 0 0 1px rgba(229, 9, 20, 0.22),
+        0 12px 34px rgba(0, 0, 0, 0.22);
+}
+
+.audio-option.live-stream-option::before {
+    left: auto;
+    right: 16px;
+    font-size: 1.18rem;
+}
+
+.live-stream-option-icon {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    height: 46px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(245, 245, 245, 0.85);
+    transition:
+        color 140ms ease,
+        border-color 140ms ease,
+        background-color 140ms ease;
+}
+
+.live-stream-option-icon svg {
+    width: 24px;
+    height: 24px;
+}
+
+.audio-option.live-stream-option[aria-selected="true"] .live-stream-option-icon {
+    border-color: rgba(229, 9, 20, 0.6);
+    background: rgba(229, 9, 20, 0.2);
+    color: #fff;
+}
+
+.live-stream-option-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
 }
 
 .live-stream-option-name,
 .live-stream-option-meta {
     display: block;
-    width: 100%;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

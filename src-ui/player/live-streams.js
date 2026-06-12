@@ -1,5 +1,16 @@
 import { isHlsPlaybackSource } from "./hls-playback.js";
 
+/// Server-rack glyph shared by the VOD server menu and the live stream menu so
+/// "pick a source" reads the same everywhere in the player.
+export const SOURCE_OPTION_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <rect x="3.25" y="3.75" width="17.5" height="7" rx="1.8"></rect>
+  <rect x="3.25" y="13.25" width="17.5" height="7" rx="1.8"></rect>
+  <path d="M6.8 7.25h.01"></path>
+  <path d="M6.8 16.75h.01"></path>
+  <path d="M13.5 7.25h3.7"></path>
+  <path d="M13.5 16.75h3.7"></path>
+</svg>`;
+
 function slugify(value) {
   return String(value || "")
     .trim()
@@ -293,10 +304,18 @@ export function renderLiveStreamOptions(
       }
     }
 
+    const iconBadge = document.createElement("span");
+    iconBadge.className = "live-stream-option-icon";
+    iconBadge.setAttribute("aria-hidden", "true");
+    iconBadge.innerHTML = SOURCE_OPTION_ICON_SVG;
+
+    const textWrap = document.createElement("span");
+    textWrap.className = "live-stream-option-text";
+
     const name = document.createElement("span");
     name.className = "live-stream-option-name";
     name.textContent = option.label;
-    button.appendChild(name);
+    textWrap.appendChild(name);
 
     const metaParts = [];
     if (option.quality) {
@@ -309,9 +328,10 @@ export function renderLiveStreamOptions(
       const meta = document.createElement("span");
       meta.className = "live-stream-option-meta";
       meta.textContent = metaParts.join(" / ");
-      button.appendChild(meta);
+      textWrap.appendChild(meta);
     }
 
+    button.append(iconBadge, textWrap);
     liveStreamOptionsContainer.appendChild(button);
   });
 }
