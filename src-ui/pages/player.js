@@ -9563,6 +9563,11 @@ async function initPlaybackSource() {
     hasSeriesEpisodeControls =
       isEpisodeListPlayback() && Boolean(seriesEpisodes.length > 1);
   }
+  // Playback identity is settled; reveal identity-gated controls together
+  // instead of letting each pop in as resolution/playback progresses.
+  setEpisodeLabel(title, episode);
+  syncSeriesControls();
+  syncTmdbSourceControls();
   if (_isCleanUrl && _watchPath?.slug && params.toString()) {
     saveWatchParams(_watchPath.slug, params.toString(), {
       tmdbId,
