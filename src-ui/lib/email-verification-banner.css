@@ -13,6 +13,9 @@
   bottom: 24px;
   transform: translateX(-50%);
   z-index: 9000;
+  /* `left: 50%` + auto width shrink-wraps into the right half of the viewport,
+   * so an explicit width is required for the centering transform to work. */
+  width: max-content;
   max-width: min(640px, calc(100vw - 32px));
   background: #1f1f1f;
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -56,3 +59,13 @@
 .email-verify-banner__btn--primary:disabled { opacity: 0.6; cursor: default; }
 .email-verify-banner__btn--ghost { background: transparent; color: var(--muted, #c9c9c9); }
 .email-verify-banner__btn--ghost:hover { color: var(--text, #f6f6f6); }
+
+@media (max-width: 480px) {
+  .email-verify-banner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    width: calc(100vw - 32px);
+  }
+  .email-verify-banner__actions { justify-content: flex-end; }
+}
