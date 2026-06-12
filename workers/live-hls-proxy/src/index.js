@@ -58,6 +58,13 @@ const SEGMENT_CACHE_TTL_SECONDS = 20;
 // cache hints are inert on workers.dev today; they matter if this Worker ever
 // moves onto a zone route, and they are harmless meanwhile.)
 const PLAYLIST_CACHE_TTL_SECONDS = 2;
+// VOD external-embed masters (carried with `directSeg=1`) are immutable for the
+// stream token's life (~25 min) — unlike live, they never mutate. Cache the
+// worker->origin subrequest for them long enough that a cold burst of player
+// polls collapses onto one origin fetch plus fast cached replays, instead of N
+// concurrent slow invocations that the workers.dev edge starts 503ing. Matches
+// the origin's declared `Cache-Control: max-age=300` for these playlists.
+const VOD_PLAYLIST_CACHE_TTL_SECONDS = 300;
 
 const encoder = new TextEncoder();
 
@@ -240,12 +247,20 @@ async function handlePlaylist(request, url, env) {
   const authorized = await authorizeSignedRequest(url, env);
   if (authorized instanceof Response) return authorized;
 
+  // `directSeg=1` marks an immutable VOD master (see VOD_PLAYLIST_CACHE_TTL_*):
+  // cache its origin subrequest long, and hint it as publicly cacheable. Live
+  // playlists keep the tiny TTL and stay no-store.
+  const immutableVod = url.searchParams.get("directSeg") === "1";
+  const playlistTtl = immutableVod
+    ? VOD_PLAYLIST_CACHE_TTL_SECONDS
+    : PLAYLIST_CACHE_TTL_SECONDS;
+
   const originFetch = fetchFromOrigin(
     env,
     "/api/live/hls.m3u8",
     url.search,
     request.headers,
-    PLAYLIST_CACHE_TTL_SECONDS,
+    playlistTtl,
   );
   if (!originFetch) return deny(503, "origin not configured");
 
@@ -272,7 +287,9 @@ async function handlePlaylist(request, url, env) {
     status: 200,
     headers: {
       "content-type": "application/vnd.apple.mpegurl; charset=utf-8",
-      "cache-control": "no-store",
+      "cache-control": immutableVod
+        ? `public, max-age=${VOD_PLAYLIST_CACHE_TTL_SECONDS}`
+        : "no-store",
       "Access-Control-Allow-Origin": "*",
       "X-Live-Proxy": "cf-worker",
       "X-Live-Proxy-Mode": "playlist",
