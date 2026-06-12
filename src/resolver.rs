@@ -592,6 +592,7 @@ struct ExternalEmbedPlaybackRequest<'a> {
     allow_native_fallback: bool,
     health_scores: &'a HashMap<String, i64>,
     live_hls_proxy_secret: &'a str,
+    live_hls_worker_base: &'a str,
     /// Resolved-payload cache + its key. Present only on the default (unpinned)
     /// path; `None` on pinned-source resolves, which are never cached.
     resolve_cache: Option<&'a ResolvedEmbedCache>,
@@ -762,6 +763,7 @@ impl ResolverService {
                 hit.referer.as_deref(),
                 hit.embed_url,
                 &self.config.live_hls_proxy_secret,
+                &self.config.live_hls_resource_worker_base,
             ));
         }
         let mut external_guard = self.acquire_external_resolve_permit().await.ok()?;
@@ -775,6 +777,7 @@ impl ResolverService {
                 allow_native_fallback,
                 health_scores,
                 live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
+                live_hls_worker_base: &self.config.live_hls_resource_worker_base,
                 resolve_cache: Some(&self.resolved_embed_cache),
                 cache_key,
             })
@@ -1364,6 +1367,7 @@ impl ResolverService {
                     allow_native_fallback: false,
                     health_scores: &external_health_scores,
                     live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
+                    live_hls_worker_base: &self.config.live_hls_resource_worker_base,
                     resolve_cache: None,
                     cache_key: None,
                 })
@@ -1760,6 +1764,7 @@ impl ResolverService {
                     allow_native_fallback: false,
                     health_scores: &external_health_scores,
                     live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
+                    live_hls_worker_base: &self.config.live_hls_resource_worker_base,
                     resolve_cache: None,
                     cache_key: None,
                 })
@@ -5549,6 +5554,7 @@ fn finalize_external_embed_payload(
     referer: Option<&str>,
     embed_url: String,
     live_hls_proxy_secret: &str,
+    live_hls_worker_base: &str,
 ) -> Value {
     let proxied_url = crate::live::build_trusted_external_embed_hls_playback_source(
         upstream_playback_url,
@@ -5561,11 +5567,34 @@ fn finalize_external_embed_payload(
     // so the heavy `.ts` bytes stream straight from the source CDN — off the mini's
     // home uplink — and keep the fully-proxied URL as a fallback the player switches
     // to if a direct fetch fails.
-    let (playable_url, fallback_urls) = if is_external_embed_direct_segment_provider(source) {
-        (format!("{proxied_url}&directSeg=1"), vec![proxied_url])
-    } else {
-        (proxied_url, Vec::new())
+    //
+    // Playlist URLs are routed via the Cloudflare Worker when configured, for the
+    // same reason live/sports playlists are (2026-06-12 Interstellar incident): the
+    // zone's always-on L7 DDoS ruleset intermittently swallows bursty `/api/live/*`
+    // requests at the edge — the origin never sees them — and the player burns its
+    // 20s-per-source fail-fast budget before recovering. workers.dev is outside the
+    // zone, so the Worker hop dodges that layer entirely. The zone-routed URL stays
+    // last in the queue as a worker-outage fallback.
+    let route_via_worker = |url: String| {
+        crate::live::route_live_playback_source_via_worker(live_hls_worker_base, url)
     };
+    let mut candidates = if is_external_embed_direct_segment_provider(source) {
+        let direct_url = format!("{proxied_url}&directSeg=1");
+        vec![
+            route_via_worker(direct_url.clone()),
+            route_via_worker(proxied_url.clone()),
+            direct_url,
+            proxied_url,
+        ]
+    } else {
+        vec![route_via_worker(proxied_url.clone()), proxied_url]
+    };
+    // With no worker base configured the routed and zone URLs are identical;
+    // dedupe so the player's source queue keeps its pre-worker shape.
+    let mut seen = std::collections::HashSet::new();
+    candidates.retain(|url| seen.insert(url.clone()));
+    let playable_url = candidates.remove(0);
+    let fallback_urls = candidates;
     build_external_embed_resolved_payload_with_playable_url(
         metadata,
         source,
@@ -5593,6 +5622,7 @@ async fn build_external_embed_resolved_playback_payload(
             hit.referer.as_deref(),
             hit.embed_url,
             request.live_hls_proxy_secret,
+            request.live_hls_worker_base,
         ));
     }
 
@@ -5645,6 +5675,7 @@ async fn build_external_embed_resolved_playback_payload(
         hls_source.referer.as_deref(),
         embed_url,
         request.live_hls_proxy_secret,
+        request.live_hls_worker_base,
     ))
 }
 
@@ -8627,6 +8658,7 @@ mod tests {
         CachedResolvedEmbed, ResolvedEmbedCache, compute_external_embed_provider_rank_health_score,
         external_embed_resolve_cache_key,
     };
+    use super::finalize_external_embed_payload;
 
     use std::sync::Mutex as StdMutex;
     use std::time::Duration;
@@ -8992,6 +9024,98 @@ mod tests {
             &filters,
             ResolverProvider::LocalTorrent
         ));
+    }
+
+    #[test]
+    fn external_embed_payload_routes_playlists_via_worker_when_configured() {
+        let metadata = sample_movie_metadata();
+        let health_scores = HashMap::new();
+        let preferences = ResolvePreferences {
+            audio_lang: "en".to_owned(),
+            subtitle_lang: String::new(),
+            quality: "auto".to_owned(),
+        };
+        let lordflix =
+            default_external_embed_source(&metadata, &health_scores).expect("default source");
+        assert_eq!(lordflix.provider.id, "lordflix");
+
+        // Worker configured + direct-segment provider: worker URLs lead, the
+        // zone-routed URLs stay as worker-outage fallbacks.
+        let payload = finalize_external_embed_payload(
+            &metadata,
+            lordflix,
+            &preferences,
+            "https://tcloud.lordflix.club/tcloud?u=abc",
+            Some("https://lordflix.org/"),
+            "https://lordflix.org/embed".to_owned(),
+            "test-secret",
+            "https://live-proxy.example.workers.dev",
+        );
+        let playable = payload["playableUrl"].as_str().expect("playable url");
+        let fallbacks: Vec<&str> = payload["fallbackUrls"]
+            .as_array()
+            .expect("fallback urls")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
+        assert!(playable.starts_with(
+            "https://live-proxy.example.workers.dev/api/live/hls.m3u8?"
+        ));
+        assert!(playable.ends_with("&directSeg=1"));
+        assert_eq!(fallbacks.len(), 3);
+        assert!(fallbacks[0].starts_with(
+            "https://live-proxy.example.workers.dev/api/live/hls.m3u8?"
+        ));
+        assert!(!fallbacks[0].contains("directSeg"));
+        assert!(fallbacks[1].starts_with("/api/live/hls.m3u8?"));
+        assert!(fallbacks[1].ends_with("&directSeg=1"));
+        assert!(fallbacks[2].starts_with("/api/live/hls.m3u8?"));
+        assert!(!fallbacks[2].contains("directSeg"));
+
+        // No worker configured: the legacy zone-only queue shape is preserved.
+        let zone_payload = finalize_external_embed_payload(
+            &metadata,
+            lordflix,
+            &preferences,
+            "https://tcloud.lordflix.club/tcloud?u=abc",
+            Some("https://lordflix.org/"),
+            "https://lordflix.org/embed".to_owned(),
+            "test-secret",
+            "",
+        );
+        let zone_playable = zone_payload["playableUrl"].as_str().expect("playable url");
+        let zone_fallbacks = zone_payload["fallbackUrls"].as_array().expect("fallbacks");
+        assert!(zone_playable.starts_with("/api/live/hls.m3u8?"));
+        assert!(zone_playable.ends_with("&directSeg=1"));
+        assert_eq!(zone_fallbacks.len(), 1);
+
+        // Worker configured + relay-only provider: worker playlist first, zone second.
+        let vidrock = external_embed_sources()
+            .into_iter()
+            .find(|source| source.provider.id == "vidrock" && source.server.is_none())
+            .expect("vidrock source");
+        let relay_payload = finalize_external_embed_payload(
+            &metadata,
+            vidrock,
+            &preferences,
+            "https://cdn.vidrock.example/stream.m3u8",
+            None,
+            "https://vidrock.example/embed".to_owned(),
+            "test-secret",
+            "https://live-proxy.example.workers.dev",
+        );
+        let relay_playable = relay_payload["playableUrl"].as_str().expect("playable url");
+        let relay_fallbacks: Vec<&str> = relay_payload["fallbackUrls"]
+            .as_array()
+            .expect("fallback urls")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
+        assert!(relay_playable.starts_with(
+            "https://live-proxy.example.workers.dev/api/live/hls.m3u8?"
+        ));
+        assert_eq!(relay_fallbacks.len(), 1);
+        assert!(relay_fallbacks[0].starts_with("/api/live/hls.m3u8?"));
     }
 
     #[test]

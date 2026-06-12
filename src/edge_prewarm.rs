@@ -177,13 +177,20 @@ async fn prewarm_movie(state: &AppState, tmdb_id: &str) {
         return;
     };
     // Only the proxied external-embed path benefits — direct/off-uplink and local
-    // sources don't transit the edge cache we're warming.
-    if !playable.starts_with("/api/live/hls.m3u8") {
+    // sources don't transit the caches we're warming. The playable URL is either
+    // zone-relative or Worker-absolute (route_live_playback_source_via_worker);
+    // warm whichever the player will actually fetch.
+    if !is_live_proxy_playlist_url(playable) {
         return;
     }
 
     let origin = state.config.app_origin.trim_end_matches('/');
-    let Some(master) = warm_fetch_text(state, &join_origin(origin, playable)).await else {
+    let master_url = if playable.starts_with("/") {
+        join_origin(origin, playable)
+    } else {
+        playable.to_owned()
+    };
+    let Some(master) = warm_fetch_text(state, &master_url).await else {
         return;
     };
     let Some(variant_line) = first_playlist_uri(&master) else {
@@ -226,12 +233,24 @@ fn playlist_segment_uris(playlist: &str) -> Vec<String> {
         .collect()
 }
 
+/// True for our live-proxy playlist URLs in either form: zone-relative
+/// (`/api/live/hls.m3u8?…`) or Worker-absolute
+/// (`https://<worker>/api/live/hls.m3u8?…`).
+fn is_live_proxy_playlist_url(url: &str) -> bool {
+    url.starts_with("/api/live/hls.m3u8")
+        || (url.starts_with("https://") && url.contains("/api/live/hls.m3u8?"))
+}
+
 /// Build an absolute warm-fetch URL for a playlist line, but only for our own
-/// proxied `/api/live/*` paths — absolute off-uplink CDN URLs (e.g. LordFlix direct)
-/// don't traverse our edge and are left alone.
+/// proxied `/api/live/*` paths — zone-relative (joined onto the public origin) or
+/// Worker-absolute (the Worker re-points rewritten lines at itself; fetched as-is).
+/// Absolute off-uplink CDN URLs (e.g. LordFlix direct segments) don't traverse the
+/// caches we're warming and are left alone.
 fn origin_segment_url(origin: &str, line: &str) -> Option<String> {
     if line.starts_with("/api/live/") {
         Some(join_origin(origin, line))
+    } else if line.starts_with("https://") && line.contains("/api/live/") {
+        Some(line.to_owned())
     } else {
         None
     }
@@ -332,10 +351,33 @@ mod tests {
             origin_segment_url(origin, "/api/live/hls-resource?input=s1&sig=a").as_deref(),
             Some("https://streamthatshit.com/api/live/hls-resource?input=s1&sig=a")
         );
+        // Worker-absolute live-proxy URLs are warmed as-is.
+        assert_eq!(
+            origin_segment_url(
+                origin,
+                "https://live-proxy.example.workers.dev/api/live/hls-resource?input=s1&sig=a&viaOrigin=1"
+            )
+            .as_deref(),
+            Some(
+                "https://live-proxy.example.workers.dev/api/live/hls-resource?input=s1&sig=a&viaOrigin=1"
+            )
+        );
         // Off-uplink absolute CDN URLs (LordFlix direct etc.) are not warmed via origin.
         assert_eq!(
             origin_segment_url(origin, "https://p16-sg.tiktokcdn.com/seg-1.ts"),
             None
         );
+    }
+
+    #[test]
+    fn playlist_url_check_accepts_zone_and_worker_forms() {
+        assert!(is_live_proxy_playlist_url("/api/live/hls.m3u8?input=a&sig=b"));
+        assert!(is_live_proxy_playlist_url(
+            "https://live-proxy.example.workers.dev/api/live/hls.m3u8?input=a&sig=b"
+        ));
+        assert!(!is_live_proxy_playlist_url(
+            "https://cdn.example.com/master.m3u8"
+        ));
+        assert!(!is_live_proxy_playlist_url("/api/stream?file=movie.mp4"));
     }
 }
