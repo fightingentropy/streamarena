@@ -189,13 +189,32 @@ export function createHlsPlaybackController({
       return false;
     }
 
-    const hlsStartPosition =
-      hlsMeta?.input && requestedStartSeconds > 0 ? requestedStartSeconds : -1;
+    // Honor the resume offset for every VOD HLS source, not just local
+    // transcoder masters: external-embed streams (VixSrc, LordFlix, ...) have
+    // no `input` param, and seeking the <video> element from outside races
+    // hls.js's async attachMedia (the MSE attach resets currentTime to 0).
+    // Live playback never passes a start offset, so it always stays at -1.
+    const hlsStartPosition = requestedStartSeconds > 0 ? requestedStartSeconds : -1;
 
     if (hasNativeHlsPlaybackSupport()) {
       resetQualityLevels();
       video.setAttribute("src", absoluteSource);
       video.load();
+      if (hlsStartPosition >= 0) {
+        const applyNativeHlsStartPosition = () => {
+          if (getLastRequestedAbsolutePlaybackSource() !== absoluteSource) {
+            return;
+          }
+          try {
+            video.currentTime = hlsStartPosition;
+          } catch {
+            // Keep the stream's default start if the seek is rejected.
+          }
+        };
+        video.addEventListener("loadedmetadata", applyNativeHlsStartPosition, {
+          once: true,
+        });
+      }
 
       const onNativeHlsError = () => {
         video.removeEventListener("error", onNativeHlsError);
