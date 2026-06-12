@@ -1,4 +1,8 @@
 export const BLOOMBERG_US_STREAM_URL =
+  "https://www.bloomberg.com/media-manifest/streams/us.m3u8";
+export const BLOOMBERG_EU_STREAM_URL =
+  "https://www.bloomberg.com/media-manifest/streams/eu.m3u8";
+export const BLOOMBERG_US_PHOENIX_HD_STREAM_URL =
   "https://liveprodusphoenixeast.global.ssl.fastly.net/USPhx-HD/index.m3u8";
 export const BBC_NEWS_STREAM_URL =
   "https://vs-hls-push-ww-live.akamaized.net/x=4/i=urn:bbc:pips:service:bbc_news_channel_hd/mobile_wifi_main_hd_abr_v2.m3u8";
@@ -74,13 +78,25 @@ export const LIVE_CHANNELS = Object.freeze([
         id: "default",
         label: "Bloomberg TV US",
         source: BLOOMBERG_US_STREAM_URL,
-        quality: "HLS",
+        quality: "720p HLS",
+      },
+      {
+        id: "europe",
+        label: "Bloomberg TV+ Europe",
+        source: BLOOMBERG_EU_STREAM_URL,
+        quality: "720p HLS",
+      },
+      {
+        id: "us-phoenix-hd",
+        label: "Bloomberg US 1080p",
+        source: BLOOMBERG_US_PHOENIX_HD_STREAM_URL,
+        quality: "1080p HLS",
       },
     ],
     artwork: LIVE_CHANNEL_ARTWORK.bloomberg,
     genre: "Business",
     region: "US",
-    quality: "HLS",
+    quality: "720p HLS + 1080p option",
   },
   {
     id: "bbc-news",

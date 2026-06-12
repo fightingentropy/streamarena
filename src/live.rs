@@ -25,6 +25,8 @@ use crate::routes::AppState;
 use crate::utils::now_ms;
 
 const LIVE_HLS_EDGE_SEGMENT_COUNT: usize = 8;
+const LIVE_HLS_START_OFFSET_SECONDS: f64 = 18.0;
+const LIVE_HLS_START_OFFSET_MIN_SECONDS: f64 = 2.0;
 const LIVE_HLS_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const LIVE_HLS_BROWSER_FETCH_SCRIPT: &str = "scripts/fetch-browser-live-hls.mjs";
 const LIVE_HLS_BROWSER_FETCH_RUNTIME_SCRIPT: &str = "bin/fetch-browser-live-hls.mjs";
@@ -37,6 +39,8 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "liveproduseast.global.ssl.fastly.net",
     "liveprodusphoenixeast.global.ssl.fastly.net",
     "liveprodusphoenixeast.akamaized.net",
+    "liveprodeuwest.global.ssl.fastly.net",
+    "liveprodeuwest.akamaized.net",
     "vs-hls-push-ww-live.akamaized.net",
     "jmp2.uk",
     "www.bloomberg.com",
@@ -169,9 +173,12 @@ fn maybe_route_live_resources_to_worker(
     if is_curl_fetch_live_hls_upstream(&first_input) {
         return rewritten;
     }
-    let browser_safe =
-        state.live_audio_transcode_cache.get_fresh(&live_audio_stream_key(&first_input))
-            == Some(false);
+    let browser_safe = matches!(
+        state
+            .live_audio_transcode_cache
+            .get_fresh(&live_audio_stream_key(&first_input)),
+        Some(decision) if !decision.needs_transcode
+    );
     if !browser_safe {
         return rewritten;
     }
@@ -421,14 +428,23 @@ enum LiveSegmentOutcome {
 }
 
 #[derive(Clone, Copy)]
-struct LiveAudioDecision {
+struct LiveTranscodeDecision {
     needs_transcode: bool,
+    /// Video height probed from the rendition, used to pick the re-encode
+    /// bitrate. None when the probe could not determine it.
+    video_height: Option<u32>,
+}
+
+#[derive(Clone, Copy)]
+struct LiveAudioDecision {
+    decision: LiveTranscodeDecision,
     decided_at_ms: i64,
 }
 
-/// Per-stream cache of "does this live stream's audio need transcoding to AAC".
-/// Keyed by upstream host + first path segment (the channel), so the audio codec
-/// is probed once per channel instead of on every segment.
+/// Per-rendition cache of "does this live stream need transcoding to play in
+/// the browser" plus the rendition's probed video height. Keyed by upstream
+/// host + segment parent directory (the rendition), so each quality level is
+/// probed once instead of on every segment.
 #[derive(Clone, Default)]
 pub struct LiveAudioTranscodeCache {
     entries: Arc<DashMap<String, LiveAudioDecision>>,
@@ -441,19 +457,19 @@ impl LiveAudioTranscodeCache {
         }
     }
 
-    fn get_fresh(&self, key: &str) -> Option<bool> {
+    fn get_fresh(&self, key: &str) -> Option<LiveTranscodeDecision> {
         let entry = self.entries.get(key)?;
         if now_ms() - entry.decided_at_ms > LIVE_AUDIO_TRANSCODE_DECISION_TTL_MS {
             return None;
         }
-        Some(entry.needs_transcode)
+        Some(entry.decision)
     }
 
-    fn record(&self, key: String, needs_transcode: bool) {
+    fn record(&self, key: String, decision: LiveTranscodeDecision) {
         self.entries.insert(
             key,
             LiveAudioDecision {
-                needs_transcode,
+                decision,
                 decided_at_ms: now_ms(),
             },
         );
@@ -628,11 +644,11 @@ fn is_live_ts_segment(url: &Url, content_type: &str) -> bool {
 
 fn live_audio_stream_key(url: &Url) -> String {
     let host = url.host_str().unwrap_or_default();
-    let first_segment = url
-        .path_segments()
-        .and_then(|mut segments| segments.next())
-        .unwrap_or_default();
-    format!("{host}/{first_segment}")
+    // Key by the segment's parent directory so each rendition (quality level)
+    // gets its own probe: codec needs are usually shared across renditions but
+    // the probed video height — which picks the re-encode bitrate — is not.
+    let rendition_dir = url.path().rsplit_once('/').map_or("", |(dir, _)| dir);
+    format!("{host}{rendition_dir}")
 }
 
 fn audio_codec_needs_live_transcode(codec: &str) -> bool {
@@ -645,11 +661,12 @@ fn audio_codec_needs_live_transcode(codec: &str) -> bool {
 /// A segment needs transcoding when it has audio the browser can't decode
 /// (anything but AAC/MP3) OR carries a data/SCTE-35/subtitle stream — Bloomberg's
 /// feed embeds SCTE-35 ad markers that trip hls.js's transmux; the re-encode maps
-/// only video+audio, dropping those streams.
-async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<bool> {
+/// only video+audio, dropping those streams. Also captures the rendition's video
+/// height so the re-encode bitrate can match the source quality.
+async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<LiveTranscodeDecision> {
     let args = [
-        "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name", "-of",
-        "csv=p=0", "-i", "-",
+        "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height",
+        "-of", "csv=p=0", "-i", "-",
     ]
     .iter()
     .map(|value| (*value).to_owned())
@@ -663,6 +680,7 @@ async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<bool> {
     let text = String::from_utf8_lossy(&output);
     let mut saw_stream = false;
     let mut needs_transcode = false;
+    let mut video_height = None;
     for line in text.lines() {
         let tokens: Vec<String> = line
             .split(',')
@@ -680,6 +698,16 @@ async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<bool> {
         {
             needs_transcode = true;
         }
+        // The video stream's line carries "<codec>,video,<width>,<height>".
+        if tokens.iter().any(|token| token == "video") {
+            let dimensions: Vec<u32> = tokens
+                .iter()
+                .filter_map(|token| token.parse::<u32>().ok())
+                .collect();
+            if let [.., height] = dimensions[..] {
+                video_height = Some(height);
+            }
+        }
         // Non-AAC/MP3 audio is not decodable through MSE.
         if tokens.iter().any(|token| token == "audio") {
             let codec = tokens
@@ -692,12 +720,29 @@ async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<bool> {
             }
         }
     }
-    saw_stream.then_some(needs_transcode)
+    saw_stream.then_some(LiveTranscodeDecision {
+        needs_transcode,
+        video_height,
+    })
+}
+
+/// Pick the re-encode bitrate from the rendition's probed height. A fixed high
+/// bitrate would inflate low renditions (Bloomberg's 400 kbps tier re-encoded at
+/// 6 Mbps = ~15x the advertised BANDWIDTH), saturating the uplink and breaking
+/// the player's ABR throughput estimates. Unknown height keeps the old ceiling.
+fn live_segment_video_bitrate_for_height(video_height: Option<u32>) -> &'static str {
+    match video_height {
+        Some(height) if height <= 360 => "1000k",
+        Some(height) if height <= 540 => "1800k",
+        Some(height) if height <= 720 => "3500k",
+        _ => LIVE_SEGMENT_VIDEO_BITRATE,
+    }
 }
 
 async fn transcode_live_segment_to_browser_safe(
     bytes: Vec<u8>,
     video_encoder: &str,
+    video_bitrate: &str,
 ) -> Result<Vec<u8>, String> {
     // Re-encode both video and audio to browser-decodable codecs. Copying the
     // video is NOT enough: some upstreams (e.g. NTVS/hesgoaler Nova Sports) ship
@@ -705,10 +750,19 @@ async fn transcode_live_segment_to_browser_safe(
     // (PIPELINE_ERROR_DECODE), whether the segment is copied or re-muxed — only a
     // fresh encode plays reliably. `-copyts` keeps live timestamps aligned so the
     // re-encoded segments concatenate cleanly in the player's live timeline.
+    // `-maxrate`/`-bufsize` are required on top of `-b:v`: videotoolbox's rate
+    // control never converges within a short live segment and overshoots the
+    // average target ~2x without a hard ceiling.
+    let max_rate = video_bitrate.to_owned();
+    let buf_size = video_bitrate
+        .strip_suffix('k')
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or_else(|| video_bitrate.to_owned(), |kbps| format!("{}k", kbps * 2));
     let args = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-copyts", "-i", "-", "-map", "0:v:0?",
-        "-map", "0:a:0?", "-c:v", video_encoder, "-b:v", LIVE_SEGMENT_VIDEO_BITRATE, "-c:a", "aac",
-        "-b:a", "160k", "-muxpreload", "0", "-muxdelay", "0", "-f", "mpegts", "-",
+        "-map", "0:a:0?", "-c:v", video_encoder, "-b:v", video_bitrate, "-maxrate", &max_rate,
+        "-bufsize", &buf_size, "-c:a", "aac", "-b:a", "160k", "-muxpreload", "0", "-muxdelay",
+        "0", "-f", "mpegts", "-",
     ]
     .iter()
     .map(|value| (*value).to_owned())
@@ -739,7 +793,7 @@ async fn process_live_segment(state: &AppState, url: &Url, bytes: &[u8]) -> Live
         return LiveSegmentOutcome::Passthrough;
     }
     let key = live_audio_stream_key(url);
-    let needs_transcode = match state.live_audio_transcode_cache.get_fresh(&key) {
+    let decision = match state.live_audio_transcode_cache.get_fresh(&key) {
         Some(decision) => decision,
         None => match probe_live_segment_needs_transcode(bytes.to_vec()).await {
             Some(decision) => {
@@ -750,12 +804,14 @@ async fn process_live_segment(state: &AppState, url: &Url, bytes: &[u8]) -> Live
             None => return LiveSegmentOutcome::Passthrough,
         },
     };
-    if !needs_transcode {
+    if !decision.needs_transcode {
         return LiveSegmentOutcome::Passthrough;
     }
     let capabilities = state.runtime.get_ffmpeg_capabilities(false).await;
     let video_encoder = live_segment_video_encoder(&capabilities);
-    match transcode_live_segment_to_browser_safe(bytes.to_vec(), video_encoder).await {
+    let video_bitrate = live_segment_video_bitrate_for_height(decision.video_height);
+    match transcode_live_segment_to_browser_safe(bytes.to_vec(), video_encoder, video_bitrate).await
+    {
         Ok(output) if !output.is_empty() => LiveSegmentOutcome::Transcoded(output),
         // The stream needs re-encoding but it failed/produced nothing. Serving the
         // original would play a broken (e.g. SCTE-35 / MP2) segment, so signal the
@@ -1776,7 +1832,9 @@ fn rewrite_live_hls_media_playlist(
 
     let mut header = Vec::new();
     let mut pending_block = Vec::new();
+    let mut pending_duration = 0.0_f64;
     let mut segment_blocks: Vec<Vec<String>> = Vec::new();
+    let mut segment_durations: Vec<f64> = Vec::new();
     let mut original_media_sequence = 0_i64;
     let mut saw_segment = false;
 
@@ -1796,6 +1854,13 @@ fn rewrite_live_hls_media_playlist(
         }
 
         if line.starts_with('#') {
+            if let Some(value) = line.strip_prefix("#EXTINF:") {
+                pending_duration = value
+                    .split(',')
+                    .next()
+                    .and_then(|duration| duration.trim().parse::<f64>().ok())
+                    .unwrap_or_default();
+            }
             if !saw_segment
                 && !line.starts_with("#EXTINF")
                 && !line.starts_with("#EXT-X-KEY")
@@ -1856,6 +1921,7 @@ fn rewrite_live_hls_media_playlist(
             .unwrap_or_else(|| line.to_owned());
         pending_block.push(segment_uri);
         segment_blocks.push(std::mem::take(&mut pending_block));
+        segment_durations.push(std::mem::take(&mut pending_duration));
     }
 
     if segment_blocks.is_empty() {
@@ -1865,11 +1931,25 @@ fn rewrite_live_hls_media_playlist(
     if !header.iter().any(|line| line == "#EXTM3U") {
         header.insert(0, "#EXTM3U".to_owned());
     }
-    header.push("#EXT-X-START:TIME-OFFSET=-18,PRECISE=NO".to_owned());
 
     let dropped_segments = segment_blocks
         .len()
         .saturating_sub(LIVE_HLS_EDGE_SEGMENT_COUNT);
+
+    // Start behind the live edge for buffer headroom, but never before the
+    // window we actually serve: short-window streams (e.g. Bloomberg's 2 s
+    // segments, ~10 s window) would otherwise get a start position that can
+    // never be satisfied and hls.js stalls forever waiting for it. Capping at
+    // half the kept window keeps the start fragment safely inside the window
+    // even after it slides during startup.
+    let kept_window_seconds: f64 = segment_durations.iter().skip(dropped_segments).sum();
+    let start_offset_seconds =
+        LIVE_HLS_START_OFFSET_SECONDS.min(kept_window_seconds / 2.0);
+    if start_offset_seconds >= LIVE_HLS_START_OFFSET_MIN_SECONDS {
+        header.push(format!(
+            "#EXT-X-START:TIME-OFFSET=-{start_offset_seconds:.3},PRECISE=NO"
+        ));
+    }
     let next_media_sequence = original_media_sequence + dropped_segments as i64;
     let kept_blocks = segment_blocks.into_iter().skip(dropped_segments);
 
@@ -2225,11 +2305,26 @@ mod tests {
         let b: url::Url =
             "https://lovely.lovetier.bz/NOVASPORTS1/tracks-v1a1/seg-2.ts?token=xyz".parse().unwrap();
         assert_eq!(live_audio_stream_key(&a), live_audio_stream_key(&b));
-        assert_eq!(live_audio_stream_key(&a), "lovely.lovetier.bz/NOVASPORTS1");
+        assert_eq!(
+            live_audio_stream_key(&a),
+            "lovely.lovetier.bz/NOVASPORTS1/tracks-v1a1"
+        );
 
         let other: url::Url =
             "https://lovely.lovetier.bz/NOVASPORTS2/tracks-v1a1/seg-1.ts".parse().unwrap();
         assert_ne!(live_audio_stream_key(&a), live_audio_stream_key(&other));
+
+        // Renditions of the same channel probe independently: the probed video
+        // height (and thus re-encode bitrate) differs per quality level.
+        let hd: url::Url =
+            "https://liveprodusphoenixeast.global.ssl.fastly.net/USPhx-HD/Channel-1/Source-BP-07-01/1.ts"
+                .parse()
+                .unwrap();
+        let sd: url::Url =
+            "https://liveprodusphoenixeast.global.ssl.fastly.net/USPhx-HD/Channel-1/Source-BP-07-07/1.ts"
+                .parse()
+                .unwrap();
+        assert_ne!(live_audio_stream_key(&hd), live_audio_stream_key(&sd));
     }
 
     #[test]
@@ -2253,6 +2348,9 @@ mod tests {
         let bloomberg_akamai_variant: url::Url = "https://liveproduseast.akamaized.net/us/Channel-USTV-AWS-virginia-2/Source-USTV-10000-1-slxdlg-BP-HD-7-oQALjcQ9CJcP_live.m3u8"
             .parse()
             .expect("bloomberg akamai variant url");
+        let bloomberg_eu_variant: url::Url = "https://liveprodeuwest.global.ssl.fastly.net/eu1/Channel-EUTVqvs-AWS-ireland-2/Source-EUTVqvs-10000-1-sknn1p-BP-HD-4-KZVY3t6YToC2_live.m3u8"
+            .parse()
+            .expect("bloomberg eu variant url");
         let sky_news: url::Url = "https://linear417-gb-hls1-prd-ak.cdn.skycdp.com/100e/Content/HLS_001_1080_30/Live/channel(skynews)/index_1080-30.m3u8"
             .parse()
             .expect("sky news url");
@@ -2326,6 +2424,7 @@ mod tests {
         assert!(is_allowed_live_hls_url(&allowed));
         assert!(is_allowed_live_hls_url(&bloomberg_variant));
         assert!(is_allowed_live_hls_url(&bloomberg_akamai_variant));
+        assert!(is_allowed_live_hls_url(&bloomberg_eu_variant));
         assert!(is_allowed_live_hls_url(&sky_news));
         assert!(is_allowed_live_hls_url(&ert1));
         assert!(is_allowed_live_hls_url(&mega_news));
@@ -2509,6 +2608,35 @@ mod tests {
         assert!(rewritten.contains("/api/live/hls-resource?input="));
         assert!(rewritten.contains("seg-1.ts"));
         assert!(rewritten.contains("referer=https%3A%2F%2Fhelpless.click%2Fe%2Fplayer"));
+    }
+
+    #[test]
+    fn live_playlist_start_offset_clamps_to_short_windows() {
+        let base: url::Url = "https://liveprodusphoenixeast.global.ssl.fastly.net/USPhx-HD/index.m3u8"
+            .parse()
+            .expect("base url");
+
+        // Long window (8 x 6 s = 48 s): the full 18 s offset fits.
+        let long_window = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n".to_owned()
+            + &(1..=8)
+                .map(|n| format!("#EXTINF:6.0,\nseg-{n}.ts\n"))
+                .collect::<String>();
+        let rewritten = rewrite_live_hls_playlist(&base, &long_window, None, None, false);
+        assert!(rewritten.contains("#EXT-X-START:TIME-OFFSET=-18.000,PRECISE=NO"));
+
+        // Short window (5 x 2 s = 10 s, Bloomberg-shaped): clamp to half the
+        // window so the start position stays inside the served segments.
+        let short_window = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n".to_owned()
+            + &(1..=5)
+                .map(|n| format!("#EXTINF:2.002,\nseg-{n}.ts\n"))
+                .collect::<String>();
+        let rewritten = rewrite_live_hls_playlist(&base, &short_window, None, None, false);
+        assert!(rewritten.contains("#EXT-X-START:TIME-OFFSET=-5.005,PRECISE=NO"));
+
+        // Tiny window (one 2 s segment): omit the tag and let the player pick.
+        let tiny_window = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:2.0,\nseg-1.ts\n";
+        let rewritten = rewrite_live_hls_playlist(&base, tiny_window, None, None, false);
+        assert!(!rewritten.contains("#EXT-X-START"));
     }
 
     #[test]
