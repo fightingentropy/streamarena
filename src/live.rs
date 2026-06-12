@@ -145,12 +145,21 @@ fn maybe_route_live_resources_to_worker(
     if worker_base.is_empty() || !trusted_external_embed {
         return rewritten;
     }
-    let browser_safe = first_live_resource_input(&rewritten)
+    let Some(first_input) = first_live_resource_input(&rewritten)
         .as_deref()
         .and_then(|input| Url::parse(input).ok())
-        .map(|url| live_audio_stream_key(&url))
-        .and_then(|key| state.live_audio_transcode_cache.get_fresh(&key))
-        == Some(false);
+    else {
+        return rewritten;
+    };
+    // Curl-fingerprint hosts (e.g. VidLink/storm) must be fetched by the mini
+    // over curl; the Worker's Cloudflare-IP egress is blocked even harder, so
+    // never route their segments to the Worker.
+    if is_curl_fetch_live_hls_upstream(&first_input) {
+        return rewritten;
+    }
+    let browser_safe =
+        state.live_audio_transcode_cache.get_fresh(&live_audio_stream_key(&first_input))
+            == Some(false);
     if !browser_safe {
         return rewritten;
     }
@@ -290,6 +299,19 @@ const LIVE_UPSTREAM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::
 // processes (fd + process pressure). Generous — normal playback never queues.
 const LIVE_PROBE_MAX_CONCURRENT: usize = 6;
 static LIVE_PROBE_SEMAPHORE: Semaphore = Semaphore::const_new(LIVE_PROBE_MAX_CONCURRENT);
+
+// Some live HLS CDNs (VidLink's storm.vodvidl.site) gate on the client's TLS
+// fingerprint via Cloudflare bot-management: the shared rustls reqwest client
+// is flagged as a bot and gets 403, while the macOS system curl (SecureTransport
+// TLS) with a browser UA passes. For those hosts we fetch the playlist AND every
+// segment through curl. Pin the system binary (SecureTransport, the fingerprint
+// that passes) — a Homebrew curl could link a different TLS stack.
+const LIVE_HLS_CURL_BIN: &str = "/usr/bin/curl";
+const LIVE_HLS_CURL_TIMEOUT_SECONDS: u64 = 12;
+// Bound concurrent curl children the same way as the probe/encode pools so a
+// burst of segment requests can't spawn unbounded processes.
+const LIVE_CURL_MAX_CONCURRENT: usize = 8;
+static LIVE_CURL_SEMAPHORE: Semaphore = Semaphore::const_new(LIVE_CURL_MAX_CONCURRENT);
 
 /// Result of running a live `.ts` segment through the transcode pipeline.
 enum LiveSegmentOutcome {
@@ -589,6 +611,34 @@ pub fn is_browser_bound_live_hls_upstream(url: &Url) -> bool {
         || host.ends_with(".strmd.top")
 }
 
+/// Hosts that gate on the client's TLS/HTTP2 fingerprint (Cloudflare bot
+/// management): the shared rustls reqwest client is flagged and 403/502s, while
+/// the system curl (SecureTransport) with a browser UA passes. These are the
+/// VidLink CDN proxy hosts (storm.vodvidl.site) and VixSrc (vixsrc.to playlists +
+/// vix-content.net segment CDN). storm re-serves the master playlist, every
+/// variant playlist, AND every `.ts` segment under its own `/proxy/...` path;
+/// vixsrc.to serves the master/variant playlists, audio-subtitle renditions, and
+/// the AES key, while the encrypted `.ts` segments live on the `vix-content.net`
+/// edge CDN (`sc-u5-01.vix-content.net`, etc.) — all rustls-blocked, all curl-
+/// passable. The Cloudflare Worker is NOT a usable bypass here — its Cloudflare-IP
+/// egress is blocked even harder (CF-to-CF) — and per-segment Playwright is far
+/// too expensive for a VOD with hundreds of segments, so curl is the fix. (The
+/// resolve-time API/embed/playlist fetches for vixsrc.to use a matching curl path
+/// in resolver.rs; see `is_curl_fetch_external_embed_host`.)
+pub fn is_curl_fetch_live_hls_upstream(url: &Url) -> bool {
+    let Some(host) = url.host_str().map(|value| value.to_ascii_lowercase()) else {
+        return false;
+    };
+    host == "storm.vodvidl.site"
+        || host.ends_with(".vodvidl.site")
+        || host == "typhoontigertribe.net"
+        || host.ends_with(".typhoontigertribe.net")
+        || host == "vixsrc.to"
+        || host.ends_with(".vixsrc.to")
+        || host == "vix-content.net"
+        || host.ends_with(".vix-content.net")
+}
+
 pub fn build_sports_live_hls_playback_source(
     input: &str,
     referer: Option<&str>,
@@ -647,6 +697,9 @@ async fn fetch_live_hls_playlist_upstream(
     state: &AppState,
     live_request: &LiveHlsRequest,
 ) -> AppResult<LiveHlsPlaylistFetch> {
+    if is_curl_fetch_live_hls_upstream(&live_request.source_url) {
+        return fetch_live_hls_playlist_via_curl(live_request).await;
+    }
     let referer_header = browser_bound_live_hls_referer_header(live_request.referer.as_deref());
     match fetch_live_hls_playlist_via_http(state, live_request, referer_header.as_deref()).await {
         Ok(fetched) => return Ok(fetched),
@@ -663,6 +716,9 @@ async fn fetch_live_hls_resource_upstream(
     state: &AppState,
     live_request: &LiveHlsRequest,
 ) -> AppResult<LiveHlsResourceFetch> {
+    if is_curl_fetch_live_hls_upstream(&live_request.source_url) {
+        return fetch_live_hls_resource_via_curl(live_request).await;
+    }
     let referer_header = browser_bound_live_hls_referer_header(live_request.referer.as_deref());
     match fetch_live_hls_resource_via_http(state, live_request, referer_header.as_deref()).await {
         Ok(fetched) => return Ok(fetched),
@@ -703,6 +759,146 @@ fn should_retry_live_hls_with_browser_fetch(
     error
         .message()
         .is_some_and(|message| message.contains("403"))
+}
+
+struct LiveHlsCurlResponse {
+    status: u16,
+    content_type: Option<String>,
+    bytes: Vec<u8>,
+}
+
+/// Parse the HTTP status code and Content-Type from a `curl -D` header dump
+/// (sent to stderr by our invocation). We do not follow redirects, so there is
+/// exactly one header block; take the last status/content-type defensively.
+pub(crate) fn parse_curl_response_headers(headers: &str) -> (u16, Option<String>) {
+    let mut status = 0u16;
+    let mut content_type = None;
+    for line in headers.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("HTTP/") {
+            // "HTTP/2 200" or "HTTP/1.1 200 OK" -> the token after the version.
+            if let Some(code) = rest.split_whitespace().nth(1).and_then(|c| c.parse::<u16>().ok()) {
+                status = code;
+            }
+        } else if let Some((name, value)) = trimmed.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("content-type") {
+                content_type = Some(value.trim().to_owned());
+            }
+        }
+    }
+    (status, content_type)
+}
+
+/// Fetch a live HLS URL over the macOS system curl (SecureTransport TLS) rather
+/// than the shared rustls reqwest client, for hosts that block rustls's TLS
+/// fingerprint (see `is_curl_fetch_live_hls_upstream`). Sends a browser UA and
+/// the player Referer. Does NOT follow redirects: the SSRF guard depends on the
+/// final host equalling the already-allow-listed request host, so a redirect
+/// must not silently retarget. Headers go to stderr (`-D /dev/stderr`) so the
+/// body stays clean on stdout.
+async fn fetch_live_hls_via_curl(
+    url: &Url,
+    referer: Option<&str>,
+    accept: &str,
+) -> AppResult<LiveHlsCurlResponse> {
+    let _permit = LIVE_CURL_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    let mut command = Command::new(LIVE_HLS_CURL_BIN);
+    command
+        .arg("-sS")
+        .arg("--max-time")
+        .arg(LIVE_HLS_CURL_TIMEOUT_SECONDS.to_string())
+        .arg("-A")
+        .arg(LIVE_HLS_BROWSER_USER_AGENT)
+        .arg("-H")
+        .arg(format!("Accept: {accept}"))
+        .arg("-H")
+        .arg("Accept-Language: en-US,en;q=0.9")
+        .arg("-D")
+        .arg("/dev/stderr")
+        .arg(url.as_str())
+        .kill_on_drop(true);
+    if let Some(referer) = referer {
+        command.arg("-H").arg(format!("Referer: {referer}"));
+    }
+    let output = timeout(
+        Duration::from_secs(LIVE_HLS_CURL_TIMEOUT_SECONDS + 4),
+        command.output(),
+    )
+    .await
+    .map_err(|_| ApiError::bad_gateway("Live HLS curl fetch timed out."))?
+    .map_err(|error| ApiError::bad_gateway(format!("Live HLS curl fetch failed: {error}")))?;
+    // curl exits non-zero only on transport errors (DNS, connect, timeout);
+    // an HTTP 4xx/5xx still exits 0, so the HTTP status is parsed by the caller.
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(ApiError::bad_gateway(format!(
+            "Live HLS curl fetch failed ({}).",
+            detail.lines().last().unwrap_or("").trim()
+        )));
+    }
+    let headers = String::from_utf8_lossy(&output.stderr);
+    let (status, content_type) = parse_curl_response_headers(&headers);
+    Ok(LiveHlsCurlResponse {
+        status,
+        content_type,
+        bytes: output.stdout,
+    })
+}
+
+async fn fetch_live_hls_playlist_via_curl(
+    live_request: &LiveHlsRequest,
+) -> AppResult<LiveHlsPlaylistFetch> {
+    let referer = browser_bound_live_hls_referer_header(live_request.referer.as_deref());
+    let response = fetch_live_hls_via_curl(
+        &live_request.source_url,
+        referer.as_deref(),
+        "application/vnd.apple.mpegurl, application/x-mpegURL, */*",
+    )
+    .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(ApiError::bad_gateway(format!(
+            "Live HLS playlist request failed with status {}.",
+            response.status
+        )));
+    }
+    // No redirects are followed, so the final host equals the validated source.
+    ensure_allowed_live_hls_final_url(
+        &live_request.source_url,
+        live_request,
+        LiveHlsRequestKind::Playlist,
+    )?;
+    Ok(LiveHlsPlaylistFetch {
+        final_url: live_request.source_url.clone(),
+        body: String::from_utf8_lossy(&response.bytes).into_owned(),
+    })
+}
+
+async fn fetch_live_hls_resource_via_curl(
+    live_request: &LiveHlsRequest,
+) -> AppResult<LiveHlsResourceFetch> {
+    let referer = browser_bound_live_hls_referer_header(live_request.referer.as_deref());
+    let response =
+        fetch_live_hls_via_curl(&live_request.source_url, referer.as_deref(), "*/*").await?;
+    if !(200..300).contains(&response.status) {
+        return Err(ApiError::bad_gateway(format!(
+            "Live HLS resource request failed with status {}.",
+            response.status
+        )));
+    }
+    ensure_allowed_live_hls_final_url(
+        &live_request.source_url,
+        live_request,
+        LiveHlsRequestKind::Resource,
+    )?;
+    Ok(LiveHlsResourceFetch {
+        content_type: response
+            .content_type
+            .unwrap_or_else(|| "application/octet-stream".to_owned()),
+        bytes: response.bytes,
+    })
 }
 
 async fn fetch_live_hls_playlist_via_http(
@@ -1970,6 +2166,45 @@ mod tests {
             secret
         )
         .starts_with("/api/live/hls.m3u8?"));
+    }
+
+    #[test]
+    fn curl_fetch_hosts_cover_vidlink_cdn_but_not_others() {
+        let storm: url::Url = "https://storm.vodvidl.site/proxy/wiwii/abc/playlist.m3u8?auth=x"
+            .parse()
+            .unwrap();
+        let storm_sub: url::Url = "https://edge.vodvidl.site/proxy/abc/seg-1.ts".parse().unwrap();
+        let typhoon: url::Url = "https://typhoontigertribe.net/example/index.m3u8".parse().unwrap();
+        let vixsrc: url::Url = "https://vixsrc.to/playlist/231752?token=x&expires=1".parse().unwrap();
+        let vixcdn: url::Url =
+            "https://sc-u5-01.vix-content.net/hls/10/3/1f/uuid/video/480p/0000-0500.ts?token=x"
+                .parse()
+                .unwrap();
+        let strmd: url::Url =
+            "https://lb10.strmd.st/secure/token/rtmp/stream/id/1/playlist.m3u8".parse().unwrap();
+        let bloomberg: url::Url = "https://www.bloomberg.com/live.m3u8".parse().unwrap();
+
+        assert!(super::is_curl_fetch_live_hls_upstream(&storm));
+        assert!(super::is_curl_fetch_live_hls_upstream(&storm_sub));
+        assert!(super::is_curl_fetch_live_hls_upstream(&typhoon));
+        assert!(super::is_curl_fetch_live_hls_upstream(&vixsrc));
+        assert!(super::is_curl_fetch_live_hls_upstream(&vixcdn));
+        // strmd is browser-bound (Playwright), NOT curl-fingerprint; keep them disjoint.
+        assert!(!super::is_curl_fetch_live_hls_upstream(&strmd));
+        assert!(super::is_browser_bound_live_hls_upstream(&strmd));
+        assert!(!super::is_curl_fetch_live_hls_upstream(&bloomberg));
+    }
+
+    #[test]
+    fn parses_curl_response_headers() {
+        let h2 = "HTTP/2 200 \r\ncontent-type: video/mp2t\r\ncontent-length: 851640\r\n\r\n";
+        assert_eq!(super::parse_curl_response_headers(h2), (200, Some("video/mp2t".to_owned())));
+        let h1 = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/html; charset=UTF-8\r\n";
+        assert_eq!(
+            super::parse_curl_response_headers(h1),
+            (403, Some("text/html; charset=UTF-8".to_owned())),
+        );
+        assert_eq!(super::parse_curl_response_headers("garbage"), (0, None));
     }
 
     #[test]

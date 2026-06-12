@@ -430,8 +430,18 @@ const LORDFLIX_ENC_DEC_API: &str = "https://enc-dec.app/api";
 const LORDFLIX_REFERER: &str = "https://lordflix.org/";
 const LORDFLIX_SERVERS: &[&str] = &["Phoenix", "Rio", "Ativa"];
 const NOTORRENT_API_BASE: &str = "https://addon-osvh.onrender.com";
-const ICEFY_HLS_RETRY_ATTEMPTS: usize = 3;
+// Icefy proxies to play.xpass.top, which intermittently returns 429 for ~10s
+// windows; Icefy then 500s. Retry enough (with linear backoff: 0/0.9/1.8/2.7/3.6s)
+// to outlast a typical burst instead of giving up at ~2.7s. Paired with the
+// full resolve budget in external_embed_source_resolve_timeout_ms.
+const ICEFY_HLS_RETRY_ATTEMPTS: usize = 5;
 const ICEFY_HLS_RETRY_DELAY_MS: u64 = 900;
+// VixSrc's api/embed/playlist hosts (vixsrc.to + vix-content.net) fingerprint-
+// block the rustls client; the real fix is the curl transport (see
+// is_curl_fetch_external_embed_host). This light retry only rides over the
+// occasional transient blip on top of that. The parsing itself is correct.
+const VIXSRC_HLS_RETRY_ATTEMPTS: usize = 2;
+const VIXSRC_HLS_RETRY_DELAY_MS: u64 = 700;
 
 const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
     ExternalEmbedProvider {
@@ -5326,14 +5336,25 @@ fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) -> bool {
 }
 
 fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 {
+    // This table is the de-facto reliability tier for the Server menu and the
+    // auto-pick/fallback order (it dominates external_embed_source_rank_score).
+    // Reliable native-HLS providers that serve playlists AND segments
+    // server-side (VidRock, LordFlix share the same working tiktokcdn pipeline)
+    // rank above the flaky ones: VidLink's CDN (storm.vodvidl.site) and VixSrc
+    // (vixsrc.to + vix-content.net) both gate on TLS fingerprint (served via
+    // curl, a little slower), and Icefy's upstream rate-limits. Tier gaps are
+    // kept > the +150 positive-health cap so health
+    // only reorders within a tier (or demotes an actively-failing provider via
+    // the uncapped -6000 penalty), never lifts a flaky provider above a
+    // reliable one on a transient good streak.
     match source.provider.id {
-        "vidlink" => 1_350,
-        "vidrock" => 1_200,
-        "notorrent" => 1_150,
-        "vixsrc" => 1_100,
-        "lordflix" => 1_050,
-        "videasy" if source.server.is_none() => 1_000,
-        "icefy" => 700,
+        "vidrock" => 1_400,
+        "lordflix" => 1_250,
+        "notorrent" => 1_100,
+        "vidlink" => 950,
+        "vixsrc" => 800,
+        "videasy" if source.server.is_none() => 700,
+        "icefy" => 500,
         "videasy" => 150,
         _ => 0,
     }
@@ -5450,7 +5471,13 @@ fn external_embed_hls_candidate_sources(
 
 fn external_embed_source_resolve_timeout_ms(source: ExternalEmbedSource) -> u64 {
     match source.provider.id {
-        "videasy" | "vidlink" => external_embed_hls_resolve_timeout_ms(),
+        // These providers need multiple sequential round-trips or a retry loop
+        // (videasy/vidlink browser resolve; icefy retries past its upstream's
+        // intermittent 429s; vixsrc does api -> embed page -> playlist), so they
+        // get the full budget instead of the tight direct-resolve clamp that was
+        // cutting their retries off mid-flight. They are ranked last, so the
+        // wider budget only spends leftover time, never starves a better source.
+        "videasy" | "vidlink" | "icefy" | "vixsrc" => external_embed_hls_resolve_timeout_ms(),
         _ => external_embed_hls_resolve_timeout_ms().min(EXTERNAL_EMBED_DIRECT_RESOLVE_TIMEOUT_MS),
     }
 }
@@ -5837,6 +5864,27 @@ async fn resolve_vixsrc_hls_playback_source(
     api_url: &str,
     timeout_ms: u64,
 ) -> Option<ExternalEmbedHlsPlaybackSource> {
+    for attempt in 0..VIXSRC_HLS_RETRY_ATTEMPTS {
+        if attempt > 0 {
+            sleep(Duration::from_millis(
+                VIXSRC_HLS_RETRY_DELAY_MS.saturating_mul(attempt as u64),
+            ))
+            .await;
+        }
+        if let Some(source) =
+            resolve_vixsrc_hls_playback_source_once(client, api_url, timeout_ms).await
+        {
+            return Some(source);
+        }
+    }
+    None
+}
+
+async fn resolve_vixsrc_hls_playback_source_once(
+    client: &reqwest::Client,
+    api_url: &str,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
     let response = fetch_external_json::<VixSrcApiResponse>(
         client,
         api_url,
@@ -6210,6 +6258,75 @@ async fn post_external_json<T: DeserializeOwned>(
     response.json::<T>().await.ok()
 }
 
+/// macOS system curl (SecureTransport TLS) used for resolve-time fetches to
+/// hosts that fingerprint-block the shared rustls reqwest client. Same root
+/// cause and binary as the live-HLS curl path; kept as a separate resolver-side
+/// list because these are the resolve-time API/embed/playlist hosts. Playback of
+/// the resolved stream is proxied through `/api/live/*`, which fingerprint-
+/// bypasses via `crate::live::is_curl_fetch_live_hls_upstream` (the two host
+/// lists must stay in sync for any host whose playback proxies through the mini).
+const RESOLVER_CURL_BIN: &str = "/usr/bin/curl";
+const RESOLVER_CURL_MAX_CONCURRENT: usize = 6;
+static RESOLVER_CURL_SEMAPHORE: Semaphore = Semaphore::const_new(RESOLVER_CURL_MAX_CONCURRENT);
+
+/// Hosts whose resolve-time HTTP(S) must go over the system curl instead of the
+/// rustls reqwest client (Cloudflare TLS/HTTP2-fingerprint block: rustls 403/410s,
+/// curl + browser UA passes). vixsrc.to gates its `/api/*`, `/embed/*`, and
+/// `/playlist/*` endpoints this way.
+fn is_curl_fetch_external_embed_host(host: &str) -> bool {
+    let host = host.trim().to_ascii_lowercase();
+    host == "vixsrc.to" || host.ends_with(".vixsrc.to")
+}
+
+struct ResolverCurlResponse {
+    status: u16,
+    body: Vec<u8>,
+}
+
+/// GET `url` over the system curl with a browser UA. Does NOT follow redirects:
+/// like the live-HLS curl path, the SSRF guard relies on the final host equalling
+/// the already-validated request host, so a redirect must not silently retarget.
+async fn fetch_external_via_curl(
+    url: &Url,
+    referer: Option<&str>,
+    accept: &str,
+) -> Option<ResolverCurlResponse> {
+    let _permit = RESOLVER_CURL_SEMAPHORE.acquire().await.ok()?;
+    let mut command = Command::new(RESOLVER_CURL_BIN);
+    command
+        .arg("-sS")
+        .arg("--max-time")
+        .arg("12")
+        .arg("-A")
+        .arg(EXTERNAL_EMBED_USER_AGENT)
+        .arg("-H")
+        .arg(format!("Accept: {accept}"))
+        .arg("-H")
+        .arg("Accept-Language: en-US,en;q=0.9")
+        .arg("-D")
+        .arg("/dev/stderr")
+        .arg(url.as_str())
+        .kill_on_drop(true);
+    if let Some(referer) = referer {
+        command.arg("-H").arg(format!("Referer: {referer}"));
+    }
+    let output = timeout(Duration::from_secs(16), command.output())
+        .await
+        .ok()?
+        .ok()?;
+    // curl exits non-zero only on transport errors; an HTTP 4xx/5xx still exits 0
+    // and the status is parsed from the dumped headers by the caller.
+    if !output.status.success() {
+        return None;
+    }
+    let headers = String::from_utf8_lossy(&output.stderr);
+    let (status, _content_type) = crate::live::parse_curl_response_headers(&headers);
+    Some(ResolverCurlResponse {
+        status,
+        body: output.stdout,
+    })
+}
+
 async fn fetch_external_json<T: DeserializeOwned>(
     client: &reqwest::Client,
     url: &str,
@@ -6236,6 +6353,18 @@ async fn fetch_external_text(
     let host = url.host_str()?.to_ascii_lowercase();
     if !is_public_external_embed_hls_hostname(&host) {
         return None;
+    }
+    // Fingerprint-blocked hosts (e.g. vixsrc.to) reject the rustls client; route
+    // their resolve-time fetches over the system curl (SecureTransport) instead.
+    if is_curl_fetch_external_embed_host(&host) {
+        let referer = referer.and_then(normalize_external_embed_hls_referer);
+        let response =
+            fetch_external_via_curl(&url, referer.as_deref(), "application/json, text/plain, */*")
+                .await?;
+        if !(200..300).contains(&response.status) {
+            return None;
+        }
+        return Some(String::from_utf8_lossy(&response.body).into_owned());
     }
     let mut request = client
         .get(url)
@@ -6271,6 +6400,32 @@ async fn validate_external_embed_hls_playlist(
     if !is_supported_external_embed_validated_playlist_url(&playback_url) {
         return None;
     }
+    let referer = referer.and_then(normalize_external_embed_hls_referer);
+    // Fingerprint-blocked hosts (e.g. vixsrc.to) reject the rustls client; fetch
+    // the playlist for validation over the system curl. No redirects are followed,
+    // so the final URL equals the already-validated playback URL.
+    if playback_url
+        .host_str()
+        .is_some_and(is_curl_fetch_external_embed_host)
+    {
+        let response = fetch_external_via_curl(
+            &playback_url,
+            referer.as_deref(),
+            "application/vnd.apple.mpegurl, application/x-mpegURL, */*",
+        )
+        .await?;
+        if !(200..300).contains(&response.status) {
+            return None;
+        }
+        let playlist = String::from_utf8_lossy(&response.body);
+        if !playlist.trim_start().starts_with("#EXTM3U") {
+            return None;
+        }
+        return Some(ExternalEmbedHlsPlaybackSource {
+            playback_url,
+            referer,
+        });
+    }
     let mut request = client
         .get(playback_url)
         .header(header::USER_AGENT, EXTERNAL_EMBED_USER_AGENT)
@@ -6279,7 +6434,6 @@ async fn validate_external_embed_hls_playlist(
             "application/vnd.apple.mpegurl, application/x-mpegURL, */*",
         )
         .header(header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
-    let referer = referer.and_then(normalize_external_embed_hls_referer);
     if let Some(referer) = referer.as_deref() {
         request = request.header(header::REFERER, referer);
     }
@@ -8138,20 +8292,37 @@ mod tests {
     }
 
     #[test]
+    fn curl_fetch_external_embed_host_covers_vixsrc_only() {
+        assert!(super::is_curl_fetch_external_embed_host("vixsrc.to"));
+        assert!(super::is_curl_fetch_external_embed_host("VixSrc.TO"));
+        assert!(super::is_curl_fetch_external_embed_host("cdn.vixsrc.to"));
+        // Other external-embed providers keep using the rustls client.
+        assert!(!super::is_curl_fetch_external_embed_host("streams.icefy.top"));
+        assert!(!super::is_curl_fetch_external_embed_host("vidrock.net"));
+        assert!(!super::is_curl_fetch_external_embed_host("notvixsrc.to.evil.com"));
+        // Resolve-side host list must agree with the playback-side curl matcher
+        // so a host that resolves over curl also has its proxied playback fetched
+        // over curl (and is never routed to the Worker).
+        let playlist: url::Url = "https://vixsrc.to/playlist/231752?token=x".parse().unwrap();
+        assert!(crate::live::is_curl_fetch_live_hls_upstream(&playlist));
+    }
+
+    #[test]
     fn external_embed_sources_use_stable_hashes_and_hls_urls() {
         let metadata = sample_movie_metadata();
         let health_scores = HashMap::new();
         let sources = build_external_embed_source_summaries(&metadata, &health_scores);
 
-        // VidLink is the neutral default native HLS source, with fast native
-        // API providers and VidEasy variants still available behind it.
+        // VidRock and LordFlix (reliable native HLS) lead the list; the flaky
+        // providers (VidLink/VixSrc/Icefy) are demoted behind them, and the
+        // VidEasy variants still trail.
         assert_eq!(sources.len(), 14);
-        assert_eq!(sources[0].primary, "VidLink");
+        assert_eq!(sources[0].primary, "VidRock");
         assert_eq!(sources[0].provider, "LivNet");
-        assert_eq!(sources[0].filename, "VidLink embed");
-        assert_eq!(sources[0].qualityLabel, "HLS");
+        assert_eq!(sources[0].filename, "VidRock embed");
+        assert_eq!(sources[0].qualityLabel, "1080p");
         assert_eq!(sources[0].container, "hls");
-        assert_eq!(sources[0].releaseGroup, "");
+        assert_eq!(sources[0].releaseGroup, "Native HLS");
         assert_eq!(
             normalize_source_hash(&sources[0].sourceHash),
             sources[0].sourceHash
@@ -8159,20 +8330,20 @@ mod tests {
 
         let source = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
             .expect("matching external provider");
-        assert_eq!(source.provider.id, "vidlink");
+        assert_eq!(source.provider.id, "vidrock");
         assert_eq!(source.server.map(|server| server.id), None);
         assert_eq!(
             external_embed_url(source, &metadata).unwrap(),
-            "https://vidlink.pro/movie/1368166"
+            "https://vidrock.net/movie/1368166"
         );
         assert_eq!(
             external_embed_source_hash(source, &metadata),
             sources[0].sourceHash
         );
-        assert_eq!(sources[1].primary, "VidRock");
+        assert_eq!(sources[1].primary, "LordFlix");
         assert_eq!(sources[2].primary, "NoTorrent");
-        assert_eq!(sources[3].primary, "VixSrc");
-        assert_eq!(sources[4].primary, "LordFlix");
+        assert_eq!(sources[3].primary, "VidLink");
+        assert_eq!(sources[4].primary, "VixSrc");
         assert_eq!(sources[5].primary, "VidEasy");
         assert_eq!(sources[5].provider, "LivNet");
         assert_eq!(sources[5].filename, "VidEasy embed");
@@ -8237,9 +8408,9 @@ mod tests {
 
         let tv_sources = build_external_embed_source_summaries(&tv_metadata, &health_scores);
         assert_eq!(tv_sources.len(), 14);
-        assert_eq!(tv_sources[0].primary, "VidLink");
+        assert_eq!(tv_sources[0].primary, "VidRock");
         assert_eq!(tv_sources[0].provider, "LivNet");
-        assert_eq!(tv_sources[1].primary, "VidRock");
+        assert_eq!(tv_sources[1].primary, "LordFlix");
         assert_eq!(tv_sources[2].primary, "NoTorrent");
     }
 
@@ -8249,13 +8420,13 @@ mod tests {
         let health_scores = HashMap::new();
         let source =
             default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-        assert_eq!(source.provider.id, "vidlink");
+        assert_eq!(source.provider.id, "vidrock");
         assert_eq!(source.server.map(|server| server.id), None);
 
         let tv_metadata = sample_tv_metadata();
         let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
             .expect("default tv embed source");
-        assert_eq!(tv_source.provider.id, "vidlink");
+        assert_eq!(tv_source.provider.id, "vidrock");
         assert_eq!(tv_source.server.map(|server| server.id), None);
 
         let filters = ResolveFilters {
@@ -8279,7 +8450,7 @@ mod tests {
         let health_scores = HashMap::new();
         let source =
             default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-        assert_eq!(source.provider.id, "vidlink");
+        assert_eq!(source.provider.id, "vidrock");
         assert_eq!(source.server.map(|server| server.id), None);
 
         let candidates =
@@ -8297,11 +8468,11 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(source_ids.first(), Some(&("vidlink", "default")));
-        assert_eq!(source_ids.get(1), Some(&("vidrock", "default")));
+        assert_eq!(source_ids.first(), Some(&("vidrock", "default")));
+        assert_eq!(source_ids.get(1), Some(&("lordflix", "default")));
         assert_eq!(source_ids.get(2), Some(&("notorrent", "default")));
-        assert_eq!(source_ids.get(3), Some(&("vixsrc", "default")));
-        assert_eq!(source_ids.get(4), Some(&("lordflix", "default")));
+        assert_eq!(source_ids.get(3), Some(&("vidlink", "default")));
+        assert_eq!(source_ids.get(4), Some(&("vixsrc", "default")));
         assert_eq!(source_ids.get(5), Some(&("videasy", "default")));
         assert_eq!(source_ids.get(6), Some(&("videasy", "YORU")));
         assert_eq!(source_ids.len(), 7);
@@ -8324,11 +8495,11 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(tv_source_ids.first(), Some(&("vidlink", "default")));
-        assert_eq!(tv_source_ids.get(1), Some(&("vidrock", "default")));
+        assert_eq!(tv_source_ids.first(), Some(&("vidrock", "default")));
+        assert_eq!(tv_source_ids.get(1), Some(&("lordflix", "default")));
         assert_eq!(tv_source_ids.get(2), Some(&("notorrent", "default")));
-        assert_eq!(tv_source_ids.get(3), Some(&("vixsrc", "default")));
-        assert_eq!(tv_source_ids.get(4), Some(&("lordflix", "default")));
+        assert_eq!(tv_source_ids.get(3), Some(&("vidlink", "default")));
+        assert_eq!(tv_source_ids.get(4), Some(&("vixsrc", "default")));
         assert_eq!(tv_source_ids.get(5), Some(&("videasy", "default")));
         assert_eq!(tv_source_ids.get(6), Some(&("videasy", "YORU")));
         assert_eq!(tv_source_ids.len(), 7);
@@ -8381,19 +8552,21 @@ mod tests {
     }
 
     #[test]
-    fn external_embed_positive_health_does_not_override_vidlink_baseline() {
+    fn external_embed_positive_health_does_not_override_reliable_baseline() {
         let metadata = sample_movie_metadata();
         let mut health_scores = HashMap::new();
         for source in external_embed_sources() {
-            if source.provider.id == "vidlink" {
+            if source.provider.id == "vidrock" {
                 continue;
             }
             health_scores.insert(external_embed_source_hash(source, &metadata), 150);
         }
 
+        // A max positive-health streak on every other (incl. flaky) provider
+        // still can't lift one above the reliable VidRock tier (gap > +150).
         let source =
             default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-        assert_eq!(source.provider.id, "vidlink");
+        assert_eq!(source.provider.id, "vidrock");
         assert_eq!(source.server.map(|server| server.id), None);
 
         let capped = compute_external_embed_rank_health_score(&SourceHealthStats {
