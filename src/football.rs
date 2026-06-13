@@ -64,6 +64,12 @@ const NTVS_DEFAULT_DURATION_MINUTES: i64 = 180;
 const NTVS_EMBED_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-ntvs-hls.mjs";
 const NTVS_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-ntvs-hls.mjs";
 const NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
+// Fast path: a minimal-browser resolver (stub page + the site's lock.js WASM
+// recipe) that skips bundle-jw.js/clappr/ads. Tried first; the full-page
+// resolver above is the fallback. Shorter budget so a miss falls back quickly.
+const NTVS_EMBED_MIN_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-embed-min.mjs";
+const NTVS_EMBED_MIN_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-embed-min.mjs";
+const NTVS_EMBED_MIN_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 12;
 const SPORTS_HTTP_PROXY_ENV: &str = "SPORTS_HTTP_PROXY";
 const SPORTS_HTTP_CLIENT_TIMEOUT_SECONDS: u64 = 30;
 const MAX_LIVE_STREAM_CANDIDATES: usize = 12;
@@ -2143,26 +2149,62 @@ async fn resolve_ntvs_player_hls_url(state: &AppState, player_url: &Url) -> Opti
 }
 
 async fn resolve_ntvs_embed_st_hls_url(embed_url: &Url) -> Option<(Url, Url)> {
-    let script_path = ntvs_embed_hls_resolver_script_path();
-    if matches!(
-        script_path.trim().to_ascii_lowercase().as_str(),
-        "0" | "false" | "off" | "disabled"
-    ) {
-        return None;
+    // Fast path: minimal-browser resolver (stub page + the site's lock.js WASM
+    // recipe — no bundle-jw.js/clappr/ads). Short budget; falls back on miss.
+    let min_script = ntvs_embed_min_hls_resolver_script_path();
+    if !is_disabled_resolver_script(&min_script) {
+        if let Some(resolved) = run_ntvs_embed_resolver_script(
+            &min_script,
+            embed_url,
+            NTVS_EMBED_MIN_HLS_RESOLVE_TIMEOUT_SECONDS,
+        )
+        .await
+        {
+            return Some(resolved);
+        }
     }
 
+    // Fallback: full-page Playwright resolver.
+    let script_path = ntvs_embed_hls_resolver_script_path();
+    if is_disabled_resolver_script(&script_path) {
+        return None;
+    }
+    run_ntvs_embed_resolver_script(
+        &script_path,
+        embed_url,
+        NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS,
+    )
+    .await
+}
+
+fn is_disabled_resolver_script(script_path: &str) -> bool {
+    matches!(
+        script_path.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "off" | "disabled"
+    )
+}
+
+async fn run_ntvs_embed_resolver_script(
+    script_path: &str,
+    embed_url: &Url,
+    inner_timeout_seconds: u64,
+) -> Option<(Url, Url)> {
     let mut command = Command::new("node");
     command
         .arg(script_path)
         .arg(embed_url.as_str())
         .env(
             "NTVS_HLS_RESOLVE_TIMEOUT_MS",
-            (NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS * 1000).to_string(),
+            (inner_timeout_seconds * 1000).to_string(),
+        )
+        .env(
+            "EMBED_MIN_RESOLVE_TIMEOUT_MS",
+            (inner_timeout_seconds * 1000).to_string(),
         )
         .kill_on_drop(true);
 
     let output = timeout(
-        Duration::from_secs(NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS + 4),
+        Duration::from_secs(inner_timeout_seconds + 4),
         command.output(),
     )
     .await
@@ -2302,6 +2344,22 @@ fn ntvs_embed_hls_resolver_script_path() -> String {
     }
 
     NTVS_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT.to_owned()
+}
+
+fn ntvs_embed_min_hls_resolver_script_path() -> String {
+    if let Some(value) = std::env::var("NTVS_EMBED_MIN_HLS_RESOLVER_SCRIPT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+
+    if Path::new(NTVS_EMBED_MIN_HLS_RESOLVER_SCRIPT).is_file() {
+        return NTVS_EMBED_MIN_HLS_RESOLVER_SCRIPT.to_owned();
+    }
+
+    NTVS_EMBED_MIN_HLS_RESOLVER_RUNTIME_SCRIPT.to_owned()
 }
 
 fn sports_live_stream_source_candidates(
