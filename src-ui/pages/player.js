@@ -6501,7 +6501,7 @@ function parseLiveIframePlaybackSource(source) {
   }
 }
 
-async function resolveLivePlaybackSource(source) {
+async function resolveLivePlaybackSource(source, { preflight = false } = {}) {
   const normalizedSource = normalizePlaybackSourceValue(source);
   if (!normalizedSource) {
     throw new Error("Missing live stream source.");
@@ -6520,6 +6520,11 @@ async function resolveLivePlaybackSource(source) {
   const fallbackSources = getLiveEmbedFallbackSources(normalizedSource);
   if (fallbackSources.length > 0) {
     query.set("fallbackUrls", JSON.stringify(fallbackSources));
+    // First-watch only: resolve the candidates concurrently so a dead primary
+    // doesn't gate the working source behind it (the backend re-orders to it).
+    if (preflight) {
+      query.set("preflight", "1");
+    }
   }
   const payload = await requestJson(
     `/api/${liveEmbedResolver}/stream?${query.toString()}`,
@@ -9774,7 +9779,9 @@ async function initPlaybackSource() {
       rebuildTrackOptionButtons();
       showResolver("Loading live stream...");
       try {
-        const playbackSource = await resolveLivePlaybackSource(src);
+        const playbackSource = await resolveLivePlaybackSource(src, {
+          preflight: true,
+        });
         setVideoSource(playbackSource);
         hideResolver();
         await tryPlay();

@@ -75,6 +75,9 @@ const SPORTS_HTTP_CLIENT_TIMEOUT_SECONDS: u64 = 30;
 const MAX_LIVE_STREAM_CANDIDATES: usize = 12;
 const STREAMED_SOURCE_PREFLIGHT_MAX_CONCURRENT: usize = 8;
 const STREAMED_SOURCE_PREFLIGHT_TIMEOUT_SECONDS: u64 = 6;
+// Max candidate sources resolved at once during a first-watch preflight. Bounds
+// concurrent (potentially browser-backed) resolves so it can't overload the box.
+const SPORTS_PREFLIGHT_MAX_CONCURRENT: usize = 4;
 const SPORTS_STREAM_RESOLVE_CACHE_TTL_MS: i64 = 60 * 1000;
 /// How long a failed resolve is remembered. Without this, a dead source re-runs
 /// its full resolver script (up to ~24s) on every player failover cycle and for
@@ -212,6 +215,11 @@ pub struct ResolveFootballStreamQuery {
     url: String,
     #[serde(default, rename = "fallbackUrls")]
     fallback_urls: Option<String>,
+    // When truthy, resolve the candidate sources concurrently (first working one
+    // wins) instead of sequentially — used for the initial "first watch" pick so
+    // a dead primary source doesn't gate the working one behind it.
+    #[serde(default)]
+    preflight: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1569,21 +1577,41 @@ async fn sports_stream_resolve_response(
 ) -> AppResult<Response<Body>> {
     let candidates =
         sports_live_stream_source_candidates(&query.url, query.fallback_urls.as_deref())?;
+    let preflight = query
+        .preflight
+        .as_deref()
+        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"));
+    let concurrency = if preflight {
+        SPORTS_PREFLIGHT_MAX_CONCURRENT
+    } else {
+        1
+    };
+
+    // Resolve candidates with bounded concurrency. concurrency == 1 reproduces
+    // the old sequential behaviour (primary, then each fallback); a higher cap
+    // (first-watch preflight) races them so a dead primary doesn't gate a working
+    // source behind it. Returning on the first HLS result drops the stream and
+    // cancels the in-flight resolves.
+    let mut resolved_stream = stream::iter(candidates.iter().cloned().enumerate().map(
+        |(candidate_index, source_url)| async move {
+            let provider = sports_stream_provider_id(&source_url).unwrap_or("unknown");
+            let result = if is_supported_streamed_stream_url(&source_url) {
+                resolve_cached_streamed_live_stream(state, &source_url, candidate_index).await
+            } else if is_supported_matchstream_stream_url(&source_url) {
+                resolve_cached_matchstream_live_stream(state, &source_url, candidate_index).await
+            } else if is_supported_ntvs_stream_url(&source_url) {
+                resolve_cached_ntvs_live_stream(state, &source_url, candidate_index).await
+            } else {
+                Err(ApiError::bad_request("Unsupported sports live stream URL."))
+            };
+            (source_url, provider, result)
+        },
+    ))
+    .buffer_unordered(concurrency);
+
     let mut errors = Vec::new();
-
-    for (candidate_index, source_url) in candidates.iter().enumerate() {
-        let provider = sports_stream_provider_id(source_url).unwrap_or("unknown");
-        let resolved_result = if is_supported_streamed_stream_url(source_url) {
-            resolve_cached_streamed_live_stream(state, source_url, candidate_index).await
-        } else if is_supported_matchstream_stream_url(source_url) {
-            resolve_cached_matchstream_live_stream(state, source_url, candidate_index).await
-        } else if is_supported_ntvs_stream_url(source_url) {
-            resolve_cached_ntvs_live_stream(state, source_url, candidate_index).await
-        } else {
-            Err(ApiError::bad_request("Unsupported sports live stream URL."))
-        };
-
-        match resolved_result {
+    while let Some((source_url, provider, result)) = resolved_stream.next().await {
+        match result {
             Ok(resolved) if resolved.playback_type == "hls" => {
                 return Ok(resolved_live_stream_response(state, resolved, provider, false));
             }
