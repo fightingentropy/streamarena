@@ -39,6 +39,7 @@ import { LIVE_CHANNEL_PLAYBACK_FALLBACKS } from "../lib/live-channels.js";
 import {
   deriveLiveStreamStateFromParams,
   getLivePlaybackSource,
+  hideStaleLiveResolverWhilePlaying as hideStaleLiveResolverWhilePlayingForState,
   getSelectedLiveStreamOption as getSelectedLiveStreamOptionFromState,
   normalizeBrowserBoundLiveHlsReferer,
   normalizePlaybackSourceValue,
@@ -11004,6 +11005,7 @@ trackListener(video, "playing", () => {
   clearStreamStallRecovery();
   clearLiveStartupHealthWatch({ resetRequest: true });
   rememberLiveStreamSuccess(getSelectedLiveStreamOption(), "playing");
+  hideStaleLiveResolverWhilePlayingForState({ isLivePlayback, resolverOverlay, liveAutoFallbackInFlight, hideResolver });
   hideSeekLoadingIndicator();
   startLiveVisualHealthWatch();
   if (!applyInitialResumeIfReady()) {
@@ -11017,6 +11019,7 @@ trackListener(video, "timeupdate", () => {
     clearStreamStallRecovery();
     clearLiveStartupHealthWatch({ resetRequest: true });
     rememberLiveStreamSuccess(getSelectedLiveStreamOption(), "timeupdate");
+    hideStaleLiveResolverWhilePlayingForState({ isLivePlayback, resolverOverlay, liveAutoFallbackInFlight, hideResolver });
   }
   if (!applyInitialResumeIfReady()) {
     scheduleInitialResumeRetry();

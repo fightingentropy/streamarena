@@ -335,3 +335,22 @@ export function renderLiveStreamOptions(
     liveStreamOptionsContainer.appendChild(button);
   });
 }
+
+// A live "stalled / trying another source" status overlay is stale once playback
+// is advancing again — a late stall-recovery timer or a brief hiccup can paint it
+// over a stream that has since recovered. Clear it, unless a real fallback is
+// mid-switch (it owns the status) or the overlay is an actionable error.
+export function hideStaleLiveResolverWhilePlaying({
+  isLivePlayback,
+  resolverOverlay,
+  liveAutoFallbackInFlight,
+  hideResolver,
+}) {
+  if (!isLivePlayback || !resolverOverlay || resolverOverlay.hidden) {
+    return;
+  }
+  if (liveAutoFallbackInFlight || resolverOverlay.classList.contains("has-actions")) {
+    return;
+  }
+  hideResolver();
+}
