@@ -130,7 +130,11 @@ const LIVE_VISUAL_HEALTH_SAMPLE_HEIGHT = 18;
 const LIVE_VISUAL_HEALTH_MAX_BLANK_SAMPLES = 4;
 const LIVE_VISUAL_HEALTH_MAX_AVG_LUMA = 8;
 const LIVE_VISUAL_HEALTH_MIN_BRIGHT_PIXEL_RATIO = 0.012;
-const LIVE_STARTUP_HEALTH_TIMEOUT_MS = 12000;
+// If a live source has not started playing within this window, give up on it
+// and fail over to the next source. Matches the backend's 10s upstream proxy
+// timeout (LIVE_UPSTREAM_REQUEST_TIMEOUT in live.rs) so a stalled origin is
+// abandoned at ~10s instead of buffering through HLS.js retries.
+const LIVE_STARTUP_HEALTH_TIMEOUT_MS = 10000;
 const LIVE_FAILED_STREAM_CACHE_TTL_MS = 5 * 60 * 1000;
 const LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-failed-streams:";
 const LIVE_WORKING_STREAM_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
