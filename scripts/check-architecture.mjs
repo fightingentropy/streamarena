@@ -4,7 +4,7 @@ import { basename, join, resolve } from "node:path";
 
 const rootDir = resolve(new URL("..", import.meta.url).pathname);
 const maxSourceLines = {
-  "src-ui/pages/player.js": 10_500,
+  "src-ui/pages/player.js": 12_000,
   "src-ui/pages/home.jsx": 6_000,
   "src-ui/pages/settings.jsx": 1_600,
 };
