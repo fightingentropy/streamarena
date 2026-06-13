@@ -2055,6 +2055,16 @@ async fn resolve_verified_ntvs_live_stream_uncached(
 }
 
 async fn resolve_streamed_embed_hls_url(embed_url: &Url) -> Option<Url> {
+    // Fast path: the shared minimal-browser resolver (stub page + lock.js recipe;
+    // it handles embedsports.top -> strmd.top just like embed.st -> strmd.st).
+    let min_script = ntvs_embed_min_hls_resolver_script_path();
+    if !is_disabled_resolver_script(&min_script) {
+        if let Some(playback_url) = run_streamed_embed_min_resolver(&min_script, embed_url).await {
+            return Some(playback_url);
+        }
+    }
+
+    // Fallback: full-page Streamed resolver.
     let script_path = streamed_embed_hls_resolver_script_path();
     if matches!(
         script_path.trim().to_ascii_lowercase().as_str(),
@@ -2084,6 +2094,36 @@ async fn resolve_streamed_embed_hls_url(embed_url: &Url) -> Option<Url> {
         return None;
     }
 
+    let resolver_output =
+        serde_json::from_slice::<StreamedHlsResolverOutput>(&output.stdout).ok()?;
+    let playback_url = Url::parse(resolver_output.playback_url.trim()).ok()?;
+    is_supported_streamed_hls_url(&playback_url).then_some(playback_url)
+}
+
+async fn run_streamed_embed_min_resolver(script_path: &str, embed_url: &Url) -> Option<Url> {
+    let mut command = Command::new("node");
+    command
+        .arg(script_path)
+        .arg(embed_url.as_str())
+        .env(
+            "EMBED_MIN_RESOLVE_TIMEOUT_MS",
+            (NTVS_EMBED_MIN_HLS_RESOLVE_TIMEOUT_SECONDS * 1000).to_string(),
+        )
+        .kill_on_drop(true);
+
+    let output = timeout(
+        Duration::from_secs(NTVS_EMBED_MIN_HLS_RESOLVE_TIMEOUT_SECONDS + 4),
+        command.output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    // resolve-embed-min.mjs emits {playbackUrl, playerPage, referer}; we only
+    // need the playback URL here (the Streamed caller supplies the referer).
     let resolver_output =
         serde_json::from_slice::<StreamedHlsResolverOutput>(&output.stdout).ok()?;
     let playback_url = Url::parse(resolver_output.playback_url.trim()).ok()?;
