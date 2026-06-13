@@ -32,11 +32,15 @@ const LIVE_CHANNEL_ARTWORK = Object.freeze({
   topNews: "assets/images/live-thumbs/top-news.jpg",
 });
 
-const NOVASPORTS_CHANNEL_BASE_URL =
-  "https://ntvs.cx/channel-hesgoales";
+// ntvs.cx retired its hesgoales/"Falcon" channels in June 2026 — the
+// /channel-hesgoales/NOVASPORTS-N wrapper now 302-redirects to /channels, so
+// the resolver lands on the channel list and finds no embed. Point straight at
+// hesgoaler.com, the upstream the wrapper used to proxy: the sports resolver
+// already supports hesgoaler.com/stream.php (token POST → lovetier.bz HLS).
+const NOVASPORTS_CHANNEL_BASE_URL = "https://hesgoaler.com/stream.php";
 
 export function novasportsChannelUrl(channelNumber) {
-  return `${NOVASPORTS_CHANNEL_BASE_URL}/NOVASPORTS-${channelNumber}`;
+  return `${NOVASPORTS_CHANNEL_BASE_URL}?ch=NOVASPORTS${channelNumber}`;
 }
 
 export const NOVASPORTS_STREAM_URL = novasportsChannelUrl(1);

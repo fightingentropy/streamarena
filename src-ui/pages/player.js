@@ -5977,7 +5977,10 @@ function normalizeLiveStreamPreferenceProvider(streamOption = {}) {
       host === "ntv.cx" ||
       host === "www.ntv.cx" ||
       host === "embed.st" ||
-      host === "www.embed.st"
+      host === "www.embed.st" ||
+      host === "hesgoaler.com" ||
+      host.endsWith(".hesgoaler.com") ||
+      host.endsWith(".lovetier.bz")
     ) {
       return "ntvs";
     }
