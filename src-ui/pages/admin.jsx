@@ -829,6 +829,21 @@ export default function AdminPage() {
                         </span>
                       </div>
                       <p class="admin-feedback-message">{item.message}</p>
+                      <Show when={item.hasImage}>
+                        <a
+                          class="admin-feedback-image-link"
+                          href={`/api/admin/feedback/${item.id}/image`}
+                          target="_blank"
+                          rel="noopener"
+                        >
+                          <img
+                            class="admin-feedback-image"
+                            src={`/api/admin/feedback/${item.id}/image`}
+                            alt="Feedback attachment"
+                            loading="lazy"
+                          />
+                        </a>
+                      </Show>
                     </li>
                   )}
                 </For>
