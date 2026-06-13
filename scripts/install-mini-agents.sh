@@ -124,6 +124,53 @@ log() {
   chmod 600 "$log_file"
 }
 
+# On a sustained hang (process up but not answering /api/health/live) capture a
+# fully symbolicated thread-stack sample of the backend BEFORE the watchdog kills
+# it, so a freeze leaves a real trace instead of just "http=000". The 2026-06-13
+# idle freeze (whole tokio runtime wedged ~222s at 0.1 load/core) was undiagnosable
+# precisely because nothing dumped the stacks. Fires once per streak (penultimate
+# strike) and is bounded so a wedged profiler can never delay or abort the restart.
+capture_hang_stack() {
+  local pid hang_dir stamp out ctx spid kpid
+  pid="$(pgrep -f "$backend_pattern" 2>/dev/null | head -1 || true)"
+  if [[ -z "$pid" ]]; then
+    log "hang-capture skipped reason=no_backend_pid"
+    return 0
+  fi
+  hang_dir="$state_dir/hangdumps"
+  mkdir -p "$hang_dir"
+  chmod 700 "$hang_dir"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  out="$hang_dir/hang-$stamp-pid$pid.sample.txt"
+  ctx="$hang_dir/hang-$stamp-pid$pid.context.txt"
+  # Cheap, always-works context first: per-thread states, open-fd count, VM pressure.
+  {
+    printf '# hang capture %s pid=%s streak=%ss\n' "$(timestamp)" "$pid" "${streak_seconds:-0}"
+    printf '## ps -M (per-thread):\n'
+    ps -M "$pid" 2>/dev/null || true
+    printf '## open fds: '
+    lsof -p "$pid" 2>/dev/null | wc -l | tr -d ' '
+    printf '\n## vm_stat:\n'
+    vm_stat 2>/dev/null | head -10 || true
+  } > "$ctx" 2>/dev/null || true
+  chmod 600 "$ctx" 2>/dev/null || true
+  # The prize: a 3s thread-stack sample of the hung process. Backgrounded with a
+  # 30s hard kill so a stuck profiler cannot hold the watchdog run-lock.
+  sample "$pid" 3 -fullPaths -file "$out" >/dev/null 2>&1 &
+  spid=$!
+  ( sleep 30; kill -TERM "$spid" 2>/dev/null || true ) >/dev/null 2>&1 &
+  kpid=$!
+  wait "$spid" 2>/dev/null || true
+  kill -TERM "$kpid" 2>/dev/null || true
+  wait "$kpid" 2>/dev/null || true
+  chmod 600 "$out" 2>/dev/null || true
+  log "hang-capture wrote pid=$pid sample=$out"
+  # Keep only the most recent ~20 incidents (2 files each) so dumps can't fill disk.
+  ( ls -1t "$hang_dir"/hang-*.txt 2>/dev/null || true ) | sed -n '41,$p' | while IFS= read -r old; do
+    rm -f "$old"
+  done
+}
+
 # Failure state is "<count> <first_failure_epoch>" so a streak can be measured in real
 # wall-clock time, not just a raw count that overlapping probes could inflate.
 read_failures() {
@@ -267,6 +314,14 @@ fi
 record_failures "$count" "$first_epoch"
 streak_seconds=$((now_epoch - first_epoch))
 log "FAIL url=$url $probe failures=$count threshold=$failure_threshold streak=${streak_seconds}s min_streak=${min_streak_seconds}s"
+
+# Penultimate strike: the backend is hung but not yet restarted — grab a stack
+# trace now (once per streak) so the next freeze is diagnosable from a real dump
+# rather than reconstructed from gaps. Guarded to threshold>=3 so a misconfigured
+# low threshold can't spam captures on a momentary blip.
+if [[ "$failure_threshold" -ge 3 && "$count" -eq $((failure_threshold - 1)) ]]; then
+  capture_hang_stack
+fi
 
 # Restart only on a sustained outage: enough strikes AND spanning real wall-clock,
 # so a brief/transient HTTP 000 blip can no longer force a restart.
