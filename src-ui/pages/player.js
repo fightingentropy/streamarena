@@ -38,6 +38,7 @@ import {
 import { LIVE_CHANNEL_PLAYBACK_FALLBACKS } from "../lib/live-channels.js";
 import {
   deriveLiveStreamStateFromParams,
+  createBoundedRetryController,
   getLivePlaybackSource,
   hideStaleLiveResolverWhilePlaying as hideStaleLiveResolverWhilePlayingForState,
   getSelectedLiveStreamOption as getSelectedLiveStreamOptionFromState,
@@ -124,7 +125,7 @@ const LIVE_EDGE_REJOIN_TOLERANCE_SECONDS = 2.5;
 const LIVE_EMBED_FALLBACK_SOURCE_LIMIT = 5;
 const LIVE_IFRAME_SOURCE_PREFIX = "live-iframe:";
 const LIVE_IFRAME_ALLOW_POLICY = "autoplay; fullscreen; picture-in-picture; encrypted-media";
-const LIVE_VISUAL_HEALTH_GRACE_MS = 12000;
+const LIVE_VISUAL_HEALTH_GRACE_MS = 8000;
 const LIVE_VISUAL_HEALTH_INTERVAL_MS = 2000;
 const LIVE_VISUAL_HEALTH_SAMPLE_WIDTH = 32;
 const LIVE_VISUAL_HEALTH_SAMPLE_HEIGHT = 18;
@@ -135,6 +136,11 @@ const LIVE_VISUAL_HEALTH_MIN_BRIGHT_PIXEL_RATIO = 0.012;
 // and fail over to the next source. Kept short so a dead/stalled source is
 // abandoned quickly instead of making the viewer wait (or click through).
 const LIVE_STARTUP_HEALTH_TIMEOUT_MS = 6000;
+// When auto-failover has tried every source without success, keep retrying the
+// whole set on this cadence (bounded by max cycles) instead of giving up — so
+// the viewer never has to click "Retry" while a source is still coming online.
+const LIVE_FALLBACK_RETRY_DELAY_MS = 6000;
+const LIVE_FALLBACK_RETRY_MAX_CYCLES = 3;
 const LIVE_FAILED_STREAM_CACHE_TTL_MS = 5 * 60 * 1000;
 const LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-failed-streams:";
 const LIVE_WORKING_STREAM_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -255,6 +261,10 @@ let liveStartupHealthTimeout = null;
 let liveStartupWatchArmed = false;
 let liveAutoFallbackInFlight = false;
 let liveAutoFallbackAttemptedStreamIds = new Set();
+const liveFallbackRetry = createBoundedRetryController({
+  maxCycles: LIVE_FALLBACK_RETRY_MAX_CYCLES,
+  delayMs: LIVE_FALLBACK_RETRY_DELAY_MS,
+});
 let liveFailedStreamCacheKey = "";
 let liveFailedStreamStatuses = new Map();
 let liveWorkingStreamCacheKey = "";
@@ -6288,6 +6298,8 @@ function rememberLiveStreamSuccess(
   if (!isLivePlayback || liveStreamOptions.length <= 1) {
     return;
   }
+  // A source is playing — stop any pending failover retry and reset its budget.
+  liveFallbackRetry.reset();
   const streamId = String(streamOption?.id || "").trim();
   const source = normalizePlaybackSourceValue(streamOption?.source);
   if (!streamId || !source) {
@@ -6757,7 +6769,7 @@ function getOrderedLiveFallbackOptions({ includeCachedFailures = false } = {}) {
     (option) => option.id === selectedLiveStreamId,
   );
   const startIndex = selectedIndex >= 0 ? selectedIndex + 1 : 0;
-  return [
+  const ordered = [
     ...liveStreamOptions.slice(startIndex),
     ...liveStreamOptions.slice(0, Math.max(0, startIndex)),
   ].filter(
@@ -6767,6 +6779,16 @@ function getOrderedLiveFallbackOptions({ includeCachedFailures = false } = {}) {
       !liveAutoFallbackAttemptedStreamIds.has(option.id) &&
       (includeCachedFailures || !isLiveStreamRecentlyFailed(option)),
   );
+
+  // Prefer a source we've already confirmed working for this event.
+  const working = getRememberedWorkingLiveStreamOption();
+  const workingIndex = working
+    ? ordered.findIndex((option) => option.id === working.id)
+    : -1;
+  if (workingIndex > 0) {
+    ordered.unshift(ordered.splice(workingIndex, 1)[0]);
+  }
+  return ordered;
 }
 
 async function switchToLiveStreamOption(
@@ -6864,12 +6886,31 @@ async function attemptAutomaticLiveStreamFallback(
     }
   }
 
-  showResolverError(
-    "No alternate live streams worked for this event.",
-    "No alternate live streams worked for this event.",
-    { showRetry: true },
-  );
+  scheduleLiveFallbackRetry(message);
   return false;
+}
+
+function scheduleLiveFallbackRetry(message) {
+  const queued = liveFallbackRetry.schedule(
+    () => {
+      if (!isLivePlayback || video.paused || document.visibilityState === "hidden") {
+        return;
+      }
+      // Give every source (including recently-failed ones) a fresh chance.
+      resetLiveAutoFallbackAttempts();
+      void attemptAutomaticLiveStreamFallback(message);
+    },
+    () => {
+      showResolverError(
+        "No alternate live streams worked for this event.",
+        "No alternate live streams worked for this event.",
+        { showRetry: true },
+      );
+    },
+  );
+  if (queued) {
+    showResolver("Still searching for a working source…", { showStatus: true });
+  }
 }
 
 function checkLiveVisualHealth() {
@@ -11065,6 +11106,7 @@ trackListener(video, "pause", () => {
 });
 trackListener(video, "pause", () => {
   clearStreamStallRecovery();
+  liveFallbackRetry.cancel();
   clearLiveVisualHealthWatch({ resetSamples: true });
   if (!liveStartupWatchArmed || hasLivePlaybackStarted()) {
     clearLiveStartupHealthWatch({ resetRequest: true });

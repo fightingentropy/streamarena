@@ -354,3 +354,46 @@ export function hideStaleLiveResolverWhilePlaying({
   }
   hideResolver();
 }
+
+// Bounded auto-retry controller for live failover: keep re-attempting (instead
+// of giving up) until a source plays or `maxCycles` is reached, with a fixed
+// delay between attempts. setTimeoutFn/clearTimeoutFn are injectable for tests.
+export function createBoundedRetryController({
+  maxCycles = 3,
+  delayMs = 6000,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+} = {}) {
+  let timer = null;
+  let cycles = 0;
+  const cancel = () => {
+    if (timer !== null) {
+      clearTimeoutFn(timer);
+      timer = null;
+    }
+  };
+  return {
+    cancel,
+    reset() {
+      cancel();
+      cycles = 0;
+    },
+    cyclesUsed: () => cycles,
+    pending: () => timer !== null,
+    // Schedule onRetry() after delayMs (up to maxCycles times); once the cap is
+    // hit, call onExhausted() instead. Returns true if a retry was queued.
+    schedule(onRetry, onExhausted) {
+      cancel();
+      if (cycles >= maxCycles) {
+        onExhausted();
+        return false;
+      }
+      cycles += 1;
+      timer = setTimeoutFn(() => {
+        timer = null;
+        onRetry();
+      }, delayMs);
+      return true;
+    },
+  };
+}
