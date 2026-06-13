@@ -3310,6 +3310,100 @@ body.is-search-mode #myListRow {
     border-color: rgba(255, 255, 255, 0.5);
 }
 
+.feedback-attach {
+    margin-top: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.feedback-file-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.feedback-attach-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    padding: 0 14px;
+    border-radius: 6px;
+    border: 1px dashed rgba(255, 255, 255, 0.28);
+    background: transparent;
+    color: rgba(255, 255, 255, 0.78);
+    font-family: inherit;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.feedback-attach-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.5);
+    color: var(--text);
+}
+
+.feedback-attach-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.feedback-attach-btn svg {
+    width: 17px;
+    height: 17px;
+}
+
+.feedback-thumb {
+    position: relative;
+    width: 72px;
+    height: 72px;
+}
+
+.feedback-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    display: block;
+}
+
+.feedback-thumb-remove {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: #1a1a1a;
+    color: #fff;
+    cursor: pointer;
+}
+
+.feedback-thumb-remove:hover:not(:disabled) {
+    background: var(--netflix-red);
+    border-color: transparent;
+}
+
+.feedback-thumb-remove svg {
+    width: 13px;
+    height: 13px;
+}
+
 .feedback-error {
     margin-top: 10px;
     color: #ff6b6b;

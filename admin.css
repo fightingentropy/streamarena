@@ -852,6 +852,18 @@ a:focus-visible {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.admin-feedback-image-link {
+  display: inline-block;
+  margin-top: 10px;
+  line-height: 0;
+}
+.admin-feedback-image {
+  max-width: 320px;
+  max-height: 240px;
+  border-radius: var(--admin-radius-sm);
+  border: 1px solid var(--admin-line-soft);
+  object-fit: contain;
+}
 
 @media (max-width: 720px) {
   .admin-whoami {

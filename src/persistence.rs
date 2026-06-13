@@ -252,6 +252,7 @@ pub struct FeedbackRow {
     pub email: String,
     pub displayName: String,
     pub message: String,
+    pub hasImage: bool,
     pub createdAt: i64,
 }
 
@@ -1098,15 +1099,17 @@ impl Db {
         email: String,
         display_name: String,
         message: String,
+        image_data: Option<Vec<u8>>,
+        image_mime: String,
     ) -> AppResult<()> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
-                "INSERT INTO feedback (user_id, email, display_name, message, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![user_id, email, display_name, message, now_ms()],
+                "INSERT INTO feedback (user_id, email, display_name, message, image_data, image_mime, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![user_id, email, display_name, message, image_data, image_mime, now_ms()],
             )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
@@ -1117,7 +1120,9 @@ impl Db {
         Ok(())
     }
 
-    /// Feedback messages, newest first, for the admin dashboard.
+    /// Feedback messages, newest first, for the admin dashboard. The attached
+    /// image (if any) is not included here — only a `hasImage` flag — so the
+    /// list stays light; the bytes are fetched lazily via `feedback_image`.
     pub async fn admin_feedback(&self, limit: i64) -> AppResult<Vec<FeedbackRow>> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
@@ -1125,7 +1130,7 @@ impl Db {
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let mut stmt = connection.prepare(
-                "SELECT id, email, display_name, message, created_at
+                "SELECT id, email, display_name, message, image_data IS NOT NULL, created_at
                  FROM feedback ORDER BY created_at DESC LIMIT ?1",
             )?;
             let rows = stmt
@@ -1135,13 +1140,43 @@ impl Db {
                         email: row.get::<_, String>(1)?,
                         displayName: row.get::<_, String>(2)?,
                         message: row.get::<_, String>(3)?,
-                        createdAt: row.get::<_, i64>(4)?,
+                        hasImage: row.get::<_, bool>(4)?,
+                        createdAt: row.get::<_, i64>(5)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
             return_connection(&pool, connection);
             Ok::<Vec<FeedbackRow>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// The image attached to a feedback row, as `(bytes, mime)`. Returns `None`
+    /// when the row doesn't exist or has no attachment.
+    pub async fn feedback_image(&self, id: i64) -> AppResult<Option<(Vec<u8>, String)>> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let result = connection
+                .query_row(
+                    "SELECT image_data, image_mime FROM feedback WHERE id = ?1",
+                    [id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<Vec<u8>>>(0)?,
+                            row.get::<_, String>(1)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            return_connection(&pool, connection);
+            Ok::<Option<(Vec<u8>, String)>, rusqlite::Error>(
+                result.and_then(|(data, mime)| data.map(|bytes| (bytes, mime))),
+            )
         })
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
@@ -3762,10 +3797,21 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
           email TEXT NOT NULL DEFAULT '',
           display_name TEXT NOT NULL DEFAULT '',
           message TEXT NOT NULL,
+          image_data BLOB,
+          image_mime TEXT NOT NULL DEFAULT '',
           created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
         ",
+    )?;
+    // Feedback image attachments were added after the table first shipped, so
+    // back-fill the columns on databases that already have a `feedback` table.
+    ensure_text_column(&connection, "feedback", "image_data", "image_data BLOB")?;
+    ensure_text_column(
+        &connection,
+        "feedback",
+        "image_mime",
+        "image_mime TEXT NOT NULL DEFAULT ''",
     )?;
     ensure_text_column(
         &connection,

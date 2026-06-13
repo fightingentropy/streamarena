@@ -428,6 +428,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/admin/activity", get(admin_activity_handler))
         .route("/api/admin/feedback", get(admin_feedback_handler))
         .route(
+            "/api/admin/feedback/{id}/image",
+            get(admin_feedback_image_handler),
+        )
+        .route(
             "/api/admin/users/reset-password",
             any(admin_reset_password_handler),
         )
@@ -552,6 +556,31 @@ async fn admin_feedback_handler(
     let rows = state.db.admin_feedback(limit).await?;
     let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({ "feedback": value })))
+}
+
+/// Serve the image attached to a feedback row (admin-only). Streams the stored
+/// bytes with their original content type.
+async fn admin_feedback_image_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let (bytes, mime) = state
+        .db
+        .feedback_image(id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("No image attached to that feedback."))?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, mime)
+        .header(axum::http::header::CACHE_CONTROL, "private, max-age=300")
+        .body(Body::from(bytes))
+        .map_err(|_| ApiError::internal("Failed to build image response."))
 }
 
 async fn admin_reset_password_handler(
@@ -3685,11 +3714,64 @@ async fn feedback_submit_handler(
     }
     // Cap length so a single submission can't bloat the DB.
     let message = message.chars().take(4000).collect::<String>();
+    // Optional screenshot, sent as a `data:image/...;base64,…` URL. The client
+    // downscales before upload; we still validate + size-cap server-side.
+    let (image_data, image_mime) = match payload.get("image").and_then(Value::as_str) {
+        Some(raw) if !raw.trim().is_empty() => {
+            let (bytes, mime) = decode_data_url_image(raw.trim())?;
+            (Some(bytes), mime)
+        }
+        _ => (None, String::new()),
+    };
     state
         .db
-        .insert_feedback(user.id, user.email.clone(), user.display_name.clone(), message)
+        .insert_feedback(
+            user.id,
+            user.email.clone(),
+            user.display_name.clone(),
+            message,
+            image_data,
+            image_mime,
+        )
         .await?;
     Ok(json_response(json!({ "ok": true })))
+}
+
+/// Decoded feedback attachments are capped well under the 4 MiB JSON body limit
+/// (which already bounds the base64-inflated payload); this is a safety net.
+const FEEDBACK_IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+/// Parse a `data:<mime>;base64,<data>` image URL into `(bytes, mime)`. The mime
+/// is restricted to a raster-image allowlist — notably this rejects SVG, which
+/// can carry script and would otherwise be served back inline to the admin.
+fn decode_data_url_image(raw: &str) -> AppResult<(Vec<u8>, String)> {
+    use base64::Engine as _;
+    const ALLOWED: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+    let rest = raw
+        .strip_prefix("data:")
+        .ok_or_else(|| ApiError::bad_request("Attachment must be a data URL."))?;
+    let (mime, b64) = rest
+        .split_once(";base64,")
+        .ok_or_else(|| ApiError::bad_request("Attachment must be base64-encoded."))?;
+    let mime = mime
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if !ALLOWED.contains(&mime.as_str()) {
+        return Err(ApiError::bad_request("Unsupported image type."));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map_err(|_| ApiError::bad_request("Attachment is not valid base64."))?;
+    if bytes.is_empty() {
+        return Err(ApiError::bad_request("Attachment is empty."));
+    }
+    if bytes.len() > FEEDBACK_IMAGE_MAX_BYTES {
+        return Err(ApiError::payload_too_large("Attachment is too large."));
+    }
+    Ok((bytes, mime))
 }
 
 fn query_pairs(query: &str) -> BTreeMap<String, String> {
