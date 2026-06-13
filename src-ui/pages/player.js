@@ -6837,8 +6837,10 @@ async function attemptAutomaticLiveStreamFallback(
   clearLiveVisualHealthWatch({ resetSamples: true });
   clearLiveStartupHealthWatch({ resetRequest: true });
   let recovered = false;
+  // Fresh sources first, then retry recently-failed ones (often transient) before giving up.
+  const nextOption = () => getOrderedLiveFallbackOptions()[0] || getOrderedLiveFallbackOptions({ includeCachedFailures: true })[0] || null;
   try {
-    let nextStream = getOrderedLiveFallbackOptions()[0] || null;
+    let nextStream = nextOption();
     while (nextStream) {
       try {
         showResolver(message, { showStatus: true });
@@ -6852,7 +6854,7 @@ async function attemptAutomaticLiveStreamFallback(
       } catch {
         liveAutoFallbackAttemptedStreamIds.add(nextStream.id);
         rememberLiveStreamFailure(nextStream, message);
-        nextStream = getOrderedLiveFallbackOptions()[0] || null;
+        nextStream = nextOption();
       }
     }
   } finally {
