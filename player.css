@@ -1967,6 +1967,95 @@ body {
     outline-offset: 0;
 }
 
+/* Subtitle delay nudge — sits beneath the subtitle language list and shifts
+   cues earlier/later when an external track drifts against the video. */
+.subtitle-sync {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.subtitle-sync-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 28px;
+}
+
+.subtitle-sync-label {
+    font-size: 0.95rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgba(245, 245, 245, 0.72);
+}
+
+.subtitle-sync-reset {
+    border: 0;
+    background: transparent;
+    color: var(--ui-accent);
+    font-family: inherit;
+    font-size: 0.92rem;
+    font-weight: 600;
+    padding: 4px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color 140ms ease;
+}
+
+.subtitle-sync-reset:hover,
+.subtitle-sync-reset:focus-visible {
+    outline: none;
+    color: #fff;
+}
+
+.subtitle-sync-reset[hidden] {
+    display: none;
+}
+
+.subtitle-sync-controls {
+    margin-top: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.subtitle-sync-btn {
+    flex: 0 0 auto;
+    width: 52px;
+    height: 46px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: rgba(0, 0, 0, 0.28);
+    color: #fff;
+    font-family: inherit;
+    font-size: 1.7rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition:
+        background-color 140ms ease,
+        border-color 140ms ease;
+}
+
+.subtitle-sync-btn:hover,
+.subtitle-sync-btn:focus-visible {
+    outline: none;
+    background: var(--ui-accent);
+    border-color: var(--ui-accent);
+}
+
+.subtitle-sync-value {
+    flex: 1 1 auto;
+    text-align: center;
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 920px) {
     /* --- Controls panel: full-screen overlay --- */
     .controls-panel {
