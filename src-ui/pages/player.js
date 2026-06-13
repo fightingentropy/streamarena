@@ -1,6 +1,10 @@
 import { onMount, onCleanup } from "solid-js";
 import { parseWebVttCues } from "../player/subtitles.js";
 import {
+  SUBTITLE_OFFSET_STEP_MS,
+  createSubtitleOffsetController,
+} from "../player/subtitle-offset.js";
+import {
   DEFAULT_EPISODE_THUMBNAIL,
   STATIC_SERIES_LIBRARY,
   mergeSeriesLibraries,
@@ -87,6 +91,7 @@ export default function PlayerPage() {
   let autoPlayCountdownText, autoPlayProgressRing, autoPlayBtn, autoPlayCancel;
   let toggleAudio, audioControl, audioMenu, audioOptionsContainer, subtitleOptionsContainer;
   let audioStatusBadge, subtitlePanel, audioTabSubtitles, audioTabSources;
+  let subtitleSyncValue, subtitleSyncEarlier, subtitleSyncLater, subtitleSyncReset;
   let sourcePanel, sourceOptionsContainer, sourceOptionDetails, episodeLabel;
   let subtitleOverlay, resolverOverlay, resolverStatus, resolverLoader;
   let resolverTitle, resolverDetail, resolverCountdown;
@@ -199,6 +204,7 @@ let customSubtitleCueCursor = 0;
 let customSubtitleLoadToken = 0;
 let subtitleRafId = 0;
 let lastRenderedSubtitleCueIndex = -1;
+const subtitleOffset = createSubtitleOffsetController();
 let resolvedTrackPreferenceAudio = "auto";
 let preferredSubtitleLang = "";
 let audioOptions = [];
@@ -2397,6 +2403,9 @@ function renderCustomSubtitleOverlay() {
   if (!Number.isFinite(currentTimeSeconds) || currentTimeSeconds < 0) {
     return;
   }
+  // Honour the viewer's subtitle delay: a positive offset makes cues appear
+  // later, so we look them up against an earlier-shifted clock.
+  const lookupSeconds = currentTimeSeconds - subtitleOffset.getOffsetSeconds();
 
   // Fast path: check if cursor still matches.
   let cueIndex =
@@ -2406,8 +2415,8 @@ function renderCustomSubtitleOverlay() {
       : -1;
   if (
     cueIndex >= 0 &&
-    currentTimeSeconds >= customSubtitleCues[cueIndex].startSeconds &&
-    currentTimeSeconds <= customSubtitleCues[cueIndex].endSeconds
+    lookupSeconds >= customSubtitleCues[cueIndex].startSeconds &&
+    lookupSeconds <= customSubtitleCues[cueIndex].endSeconds
   ) {
     if (lastRenderedSubtitleCueIndex !== cueIndex) {
       lastRenderedSubtitleCueIndex = cueIndex;
@@ -2420,8 +2429,8 @@ function renderCustomSubtitleOverlay() {
   const nextIndex = (customSubtitleCueCursor || 0) + 1;
   if (
     nextIndex < customSubtitleCues.length &&
-    currentTimeSeconds >= customSubtitleCues[nextIndex].startSeconds &&
-    currentTimeSeconds <= customSubtitleCues[nextIndex].endSeconds
+    lookupSeconds >= customSubtitleCues[nextIndex].startSeconds &&
+    lookupSeconds <= customSubtitleCues[nextIndex].endSeconds
   ) {
     customSubtitleCueCursor = nextIndex;
     if (lastRenderedSubtitleCueIndex !== nextIndex) {
@@ -2432,7 +2441,7 @@ function renderCustomSubtitleOverlay() {
   }
 
   // Binary search for arbitrary position (seek, skip, etc.).
-  cueIndex = findSubtitleCueAtTime(customSubtitleCues, currentTimeSeconds);
+  cueIndex = findSubtitleCueAtTime(customSubtitleCues, lookupSeconds);
   if (cueIndex >= 0) {
     customSubtitleCueCursor = cueIndex;
     if (lastRenderedSubtitleCueIndex !== cueIndex) {
@@ -2535,6 +2544,8 @@ function applyPreferredSourceAudioSync(sourceHash = selectedSourceHash) {
   preferredAudioSyncMs = normalizedHash
     ? getStoredSourceAudioSyncMs(normalizedHash)
     : 0;
+  // Subtitle delay is also stored per source, so load it on the same hook.
+  subtitleOffset.applyForSource(normalizedHash);
 }
 
 // getSourceDisplayName, getSourceDisplayHint, getSourceDisplayMeta — imported from ./src-ui/player/sources.js
@@ -3172,6 +3183,8 @@ function refreshActiveSubtitlePlacement() {
   if (activeTrack) {
     nudgeSubtitleTrackPlacementUp(activeTrack);
   }
+  // Re-apply the subtitle delay to native cues whenever tracks (re)load.
+  subtitleOffset.applyToNativeTracks(video.textTracks);
 }
 
 function showSubtitleTrackElement(trackElement) {
@@ -7082,6 +7095,13 @@ function syncAudioState() {
     option.setAttribute("aria-selected", isSelected ? "true" : "false");
   });
 
+  if (subtitleSyncValue) {
+    subtitleSyncValue.textContent = subtitleOffset.getLabel();
+  }
+  if (subtitleSyncReset) {
+    subtitleSyncReset.hidden = subtitleOffset.getOffsetMs() === 0;
+  }
+
   syncSourceSelectionState();
   renderSelectedSourceDetails();
   syncTmdbSourceControls();
@@ -7142,6 +7162,28 @@ async function adjustSourceAudioSync(deltaMs = 0) {
   }
   hideResolver();
   syncAudioState();
+}
+
+function refreshSubtitleOffsetApplication() {
+  // Force the overlay to re-pick the active cue at the new offset, and shift
+  // any native cues to match. Covers the paused case, where the RAF loop is
+  // stopped and would not otherwise re-render.
+  lastRenderedSubtitleCueIndex = -1;
+  subtitleOffset.applyToNativeTracks(video.textTracks);
+  renderCustomSubtitleOverlay();
+  syncAudioState();
+}
+
+function adjustSubtitleOffset(deltaMs = 0) {
+  if (subtitleOffset.adjust(deltaMs, selectedSourceHash)) {
+    refreshSubtitleOffsetApplication();
+  }
+}
+
+function resetSubtitleOffset() {
+  if (subtitleOffset.reset(selectedSourceHash)) {
+    refreshSubtitleOffsetApplication();
+  }
 }
 
 function getTimelineDurationSeconds() {
@@ -10517,6 +10559,22 @@ if (subtitleOptionsContainer) trackListener(subtitleOptionsContainer, "click", a
   closeAudioPopover();
 });
 
+if (subtitleSyncEarlier) {
+  trackListener(subtitleSyncEarlier, "click", () => {
+    adjustSubtitleOffset(-SUBTITLE_OFFSET_STEP_MS);
+  });
+}
+if (subtitleSyncLater) {
+  trackListener(subtitleSyncLater, "click", () => {
+    adjustSubtitleOffset(SUBTITLE_OFFSET_STEP_MS);
+  });
+}
+if (subtitleSyncReset) {
+  trackListener(subtitleSyncReset, "click", () => {
+    resetSubtitleOffset();
+  });
+}
+
 async function handleSourceOptionSelection(nextSourceHash) {
   const normalizedNextSourceHash = normalizeSourceHash(nextSourceHash);
 
@@ -11407,6 +11465,10 @@ trackListener(window, "storage", (event) => {
       subtitleOptionsContainer: (el) => { subtitleOptionsContainer = el; },
       subtitleOverlay: (el) => { subtitleOverlay = el; },
       subtitlePanel: (el) => { subtitlePanel = el; },
+      subtitleSyncEarlier: (el) => { subtitleSyncEarlier = el; },
+      subtitleSyncLater: (el) => { subtitleSyncLater = el; },
+      subtitleSyncReset: (el) => { subtitleSyncReset = el; },
+      subtitleSyncValue: (el) => { subtitleSyncValue = el; },
       toggleAudio: (el) => { toggleAudio = el; },
       toggleEpisodes: (el) => { toggleEpisodes = el; },
       toggleFullscreen: (el) => { toggleFullscreen = el; },

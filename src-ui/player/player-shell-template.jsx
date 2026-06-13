@@ -432,6 +432,56 @@ export function renderPlayerShell({
                               Off
                             </button>
                           </div>
+                          <div
+                            class="subtitle-sync"
+                            role="group"
+                            aria-label="Subtitle delay"
+                          >
+                            <div class="subtitle-sync-head">
+                              <span class="subtitle-sync-label">
+                                Subtitle delay
+                              </span>
+                              <button
+                                id="subtitleSyncReset"
+                                ref={refs.subtitleSyncReset}
+                                class="subtitle-sync-reset"
+                                type="button"
+                                hidden
+                              >
+                                Reset
+                              </button>
+                            </div>
+                            <div class="subtitle-sync-controls">
+                              <button
+                                id="subtitleSyncEarlier"
+                                ref={refs.subtitleSyncEarlier}
+                                class="subtitle-sync-btn"
+                                type="button"
+                                aria-label="Show subtitles earlier"
+                                title="Show subtitles earlier"
+                              >
+                                −
+                              </button>
+                              <span
+                                id="subtitleSyncValue"
+                                ref={refs.subtitleSyncValue}
+                                class="subtitle-sync-value"
+                                aria-live="polite"
+                              >
+                                0s
+                              </span>
+                              <button
+                                id="subtitleSyncLater"
+                                ref={refs.subtitleSyncLater}
+                                class="subtitle-sync-btn"
+                                type="button"
+                                aria-label="Delay subtitles (show later)"
+                                title="Delay subtitles (show later)"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
                         </section>
                       </section>
                     </div>
