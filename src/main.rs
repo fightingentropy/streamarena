@@ -1,6 +1,5 @@
 mod auth;
 mod config;
-mod edge_prewarm;
 mod email;
 mod error;
 mod football;
@@ -236,9 +235,6 @@ async fn main() -> AppResult<()> {
 
     state.home_bootstrap_cache.spawn_refresh(state.clone());
     state.tmdb.spawn_recent_tv_metadata_warmup();
-    // Keep the most popular titles' first segments warm in the Cloudflare edge so
-    // even a first-ever play is an edge HIT instead of an uplink-bound cold MISS.
-    crate::edge_prewarm::spawn_edge_prewarm(state.clone());
 
     // Service-health sampler: every 60s snapshot host + request + provider
     // signals into the durable history that backs the admin Health tab.

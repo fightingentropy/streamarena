@@ -5557,9 +5557,8 @@ fn should_prefer_default_external_embed(
 /// node-subprocess resolve + provider hedge). The upstream auth token in the
 /// resolved URL is stable across resolves of the same title (a movie streams for
 /// hours on one token), so a hit can be rebuilt and served without re-resolving —
-/// making repeat plays, concurrent viewers, and (via the edge pre-warmer) even the
-/// first play of a popular title near-instant. Keyed by title identity (the result
-/// is user-agnostic). Bounded TTL stays well inside the token's validity; a playback
+/// making repeat plays and concurrent viewers near-instant. Keyed by title
+/// identity (the result is user-agnostic). Bounded TTL stays well inside the token's validity; a playback
 /// failure busts the entry via `refreshResolve`. Set `RESOLVED_EMBED_CACHE_TTL_MS=0`
 /// to disable.
 const RESOLVED_EMBED_CACHE_MAX_ENTRIES: usize = 512;
