@@ -245,6 +245,16 @@ pub struct AdminActivityEvent {
     pub detail: String,
 }
 
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize)]
+pub struct FeedbackRow {
+    pub id: i64,
+    pub email: String,
+    pub displayName: String,
+    pub message: String,
+    pub createdAt: i64,
+}
+
 impl Db {
     pub async fn initialize(config: &Config) -> AppResult<Self> {
         let cache_path = config.persistent_cache_db_path.clone();
@@ -1074,6 +1084,64 @@ impl Db {
             drop(stmt);
             return_connection(&pool, connection);
             Ok::<Vec<ServiceStartRow>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// Store a user-submitted feedback message. `email`/`display_name` are
+    /// snapshotted so the row stays attributable if the account is later deleted.
+    pub async fn insert_feedback(
+        &self,
+        user_id: i64,
+        email: String,
+        display_name: String,
+        message: String,
+    ) -> AppResult<()> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "INSERT INTO feedback (user_id, email, display_name, message, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![user_id, email, display_name, message, now_ms()],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Feedback messages, newest first, for the admin dashboard.
+    pub async fn admin_feedback(&self, limit: i64) -> AppResult<Vec<FeedbackRow>> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        let limit = limit.clamp(1, 500);
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let mut stmt = connection.prepare(
+                "SELECT id, email, display_name, message, created_at
+                 FROM feedback ORDER BY created_at DESC LIMIT ?1",
+            )?;
+            let rows = stmt
+                .query_map([limit], |row| {
+                    Ok(FeedbackRow {
+                        id: row.get::<_, i64>(0)?,
+                        email: row.get::<_, String>(1)?,
+                        displayName: row.get::<_, String>(2)?,
+                        message: row.get::<_, String>(3)?,
+                        createdAt: row.get::<_, i64>(4)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            return_connection(&pool, connection);
+            Ok::<Vec<FeedbackRow>, rusqlite::Error>(rows)
         })
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
@@ -3242,6 +3310,7 @@ const DURABLE_TABLES: &[&str] = &[
     "email_verification_tokens",
     "health_samples",
     "service_starts",
+    "feedback",
 ];
 
 /// Bring both database files up to schema. The users DB is initialized first and,
@@ -3684,6 +3753,18 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
           note TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_service_starts_started ON service_starts(started_at);
+        -- User-submitted feedback (durable: visible in the admin dashboard). The
+        -- email/display_name are snapshotted at submit time so a row stays
+        -- attributable even if the account is later deleted (user_id -> NULL).
+        CREATE TABLE IF NOT EXISTS feedback (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          email TEXT NOT NULL DEFAULT '',
+          display_name TEXT NOT NULL DEFAULT '',
+          message TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
         ",
     )?;
     ensure_text_column(

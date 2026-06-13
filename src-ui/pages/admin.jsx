@@ -290,6 +290,7 @@ export default function AdminPage() {
   const [overview, setOverview] = createSignal(null);
   const [growth, setGrowth] = createSignal([]);
   const [activity, setActivity] = createSignal([]);
+  const [feedback, setFeedback] = createSignal([]);
   const [users, setUsers] = createSignal([]);
   const [search, setSearch] = createSignal("");
   const [status, setStatus] = createSignal("loading");
@@ -326,14 +327,16 @@ export default function AdminPage() {
     setStatus("loading");
     setError("");
     try {
-      const [ov, gr, ac] = await Promise.all([
+      const [ov, gr, ac, fb] = await Promise.all([
         getJson("/api/admin/overview"),
         getJson("/api/admin/growth?days=30"),
         getJson("/api/admin/activity?limit=40"),
+        getJson("/api/admin/feedback?limit=200"),
       ]);
       setOverview(ov);
       setGrowth(gr.days || []);
       setActivity(ac.events || []);
+      setFeedback(fb.feedback || []);
       await loadUsers();
       setStatus("ready");
       // Populate the at-a-glance status pill on the overview without blocking
@@ -619,6 +622,15 @@ export default function AdminPage() {
           Activity
         </button>
         <button
+          classList={{ "admin-tab": true, "is-active": tab() === "feedback" }}
+          onClick={() => setTab("feedback")}
+        >
+          Feedback
+          <Show when={feedback().length}>
+            <span class="admin-tab-count">{fmtNum(feedback().length)}</span>
+          </Show>
+        </button>
+        <button
           classList={{ "admin-tab": true, "is-active": tab() === "health" }}
           onClick={() => setTab("health")}
         >
@@ -789,6 +801,39 @@ export default function AdminPage() {
               <span class="admin-panel-sub">Recent sign-ins, watches &amp; sign-ups</span>
             </div>
             <ActivityFeed events={activity()} />
+          </section>
+        </Show>
+
+        <Show when={tab() === "feedback"}>
+          <section class="admin-panel">
+            <div class="admin-panel-head">
+              <h2 class="admin-panel-title">User feedback</h2>
+              <span class="admin-panel-sub">{fmtNum(feedback().length)} message{feedback().length === 1 ? "" : "s"}</span>
+            </div>
+            <Show
+              when={feedback().length}
+              fallback={<div class="admin-empty">No feedback yet.</div>}
+            >
+              <ul class="admin-feedback-list">
+                <For each={feedback()}>
+                  {(item) => (
+                    <li class="admin-feedback-item">
+                      <div class="admin-feedback-head">
+                        <strong class="admin-feedback-author">
+                          {item.displayName || item.email || "Anonymous"}
+                        </strong>
+                        <span class="admin-feedback-meta">
+                          {item.email}
+                          <Show when={item.email && item.createdAt}> · </Show>
+                          {relTime(item.createdAt)}
+                        </span>
+                      </div>
+                      <p class="admin-feedback-message">{item.message}</p>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
           </section>
         </Show>
 

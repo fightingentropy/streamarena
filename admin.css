@@ -802,6 +802,57 @@ a:focus-visible {
   font-size: 0.82rem;
 }
 
+/* ── Feedback ──────────────────────────────────────────── */
+.admin-tab-count {
+  margin-left: 7px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+.admin-tab.is-active .admin-tab-count {
+  background: rgba(0, 0, 0, 0.25);
+}
+.admin-feedback-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.admin-feedback-item {
+  padding: 14px 16px;
+  border: 1px solid var(--admin-line-soft);
+  border-radius: var(--admin-radius-sm);
+  background: var(--admin-surface-2);
+}
+.admin-feedback-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin-bottom: 7px;
+}
+.admin-feedback-author {
+  font-size: 0.92rem;
+  color: var(--admin-text);
+}
+.admin-feedback-meta {
+  color: var(--admin-muted-soft);
+  font-size: 0.8rem;
+}
+.admin-feedback-message {
+  margin: 0;
+  color: var(--admin-muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 720px) {
   .admin-whoami {
     display: none;

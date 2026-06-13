@@ -8,6 +8,7 @@ import {
   getStoredAvatarImagePreference,
 } from "../shared.js";
 import LiveChannelsView from "../components/live-channels-view.jsx";
+import FeedbackNav from "../components/feedback-nav.jsx";
 import { signOut } from "../lib/auth.js";
 import { liveNavClass, sportsNavClass } from "../lib/browse-nav.js";
 import { bindTopNavScrollState } from "../lib/top-nav-scroll.js";
@@ -95,6 +96,7 @@ export default function LivePage() {
               <a href="/live" class={liveNavClass("live")}>Live</a>
               <a href="/sports" class={sportsNavClass("")}>Sports</a>
               <a href="/#myListRow" class="optional">My List</a>
+              <FeedbackNav />
             </nav>
           </div>
           <div class="nav-right">

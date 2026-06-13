@@ -413,6 +413,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/user/my-list", any(user_my_list_handler))
         .route("/api/user/sync", any(user_sync_handler))
+        .route("/api/feedback", any(feedback_submit_handler))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             api_auth_middleware,
@@ -425,6 +426,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/admin/growth", get(admin_growth_handler))
         .route("/api/admin/users", get(admin_users_handler))
         .route("/api/admin/activity", get(admin_activity_handler))
+        .route("/api/admin/feedback", get(admin_feedback_handler))
         .route(
             "/api/admin/users/reset-password",
             any(admin_reset_password_handler),
@@ -534,6 +536,22 @@ async fn admin_activity_handler(
     let rows = state.db.admin_activity(limit).await?;
     let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({ "events": value })))
+}
+
+async fn admin_feedback_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let limit = admin_query_i64(&uri, "limit", 100);
+    let rows = state.db.admin_feedback(limit).await?;
+    let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(json_response(json!({ "feedback": value })))
 }
 
 async fn admin_reset_password_handler(
@@ -3639,6 +3657,38 @@ async fn user_sync_handler(
             .await?;
     }
 
+    Ok(json_response(json!({ "ok": true })))
+}
+
+/// Store a feedback message from the signed-in user. Surfaced in the admin
+/// dashboard via `GET /api/admin/feedback`.
+async fn feedback_submit_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
+    }
+    let user = auth::require_auth(&state.db, &headers).await?;
+    let payload = parse_json_body(request).await?;
+    let message = payload
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if message.is_empty() {
+        return Err(ApiError::bad_request("Feedback message is required."));
+    }
+    // Cap length so a single submission can't bloat the DB.
+    let message = message.chars().take(4000).collect::<String>();
+    state
+        .db
+        .insert_feedback(user.id, user.email.clone(), user.display_name.clone(), message)
+        .await?;
     Ok(json_response(json!({ "ok": true })))
 }
 

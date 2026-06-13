@@ -46,6 +46,7 @@ import {
   removeContinueWatchingEntry,
 } from "../lib/continue-watching.js";
 import { liveNavClass, sportsNavLinkClass } from "../lib/browse-nav.js";
+import FeedbackNav from "../components/feedback-nav.jsx";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -4956,6 +4957,7 @@ export default function HomePage() {
             <a href="/live" class={liveNavClass(activeView() === "live" ? "live" : "")} onClick={handleLiveNavClick}>Live</a>
             <a href="/sports" class={sportsNavLinkClass("")}>Sports</a>
             <a href="#" id="navMyList" class="optional" onClick={handleMyListNavClick}>My List</a>
+            <FeedbackNav />
           </nav>
         </div>
         <div class="nav-right">
