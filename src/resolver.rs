@@ -441,6 +441,20 @@ const LORDFLIX_ENC_DEC_API: &str = "https://enc-dec.app/api";
 const LORDFLIX_REFERER: &str = "https://lordflix.org/";
 const LORDFLIX_SERVERS: &[&str] = &["Phoenix", "Rio", "Ativa"];
 const NOTORRENT_API_BASE: &str = "https://addon-osvh.onrender.com";
+// Meridian + Gallic are aether's (a P-Stream fork) open resolve endpoints. They
+// scrape obscure origins server-side (Meridian -> cdn.neuronix.sbs, Gallic ->
+// senpai-stream.club) and hand back the stream wrapped in their own m3u8 proxy.
+// We call them ONLY to resolve (cheap, then cached by ResolvedEmbedCache), unwrap
+// the real origin URL + its Origin/Referer, and stream it through our own
+// /api/live proxy — so aether carries the title->origin lookup, never the playback
+// bandwidth. The Referer is mandatory; the endpoints Cloudflare-403 without it.
+// Ranked last (lowest availability tier) so they only fire when our own sources
+// miss a title, keeping both load on and dependency upon aether's edge minimal.
+const MERIDIAN_API_BASE: &str = "https://meridian.aether.bar";
+const GALLIC_API_BASE: &str = "https://gallic.aether.bar";
+const AETHER_EMBED_REFERER: &str = "https://aether.bar/";
+// The wrapper aether returns the upstream stream in: .../m3u8-proxy?url=<enc>&headers=<enc>
+const AETHER_PROXY_URL_MARKER: &str = "m3u8-proxy?url=";
 // Icefy proxies to play.xpass.top, which intermittently returns 429 for ~10s
 // windows; Icefy then 500s. Retry enough (with linear backoff: 0/0.9/1.8/2.7/3.6s)
 // to outlast a typical burst instead of giving up at ~2.7s. Paired with the
@@ -489,6 +503,16 @@ const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
         id: "icefy",
         label: "Icefy",
         priority: 6,
+    },
+    ExternalEmbedProvider {
+        id: "meridian",
+        label: "Meridian",
+        priority: 7,
+    },
+    ExternalEmbedProvider {
+        id: "gallic",
+        label: "Gallic",
+        priority: 8,
     },
 ];
 
@@ -5479,7 +5503,9 @@ fn is_default_external_embed_hls_fallback_source(source: ExternalEmbedSource) ->
             .map(|server| server.id == "YORU")
             .unwrap_or(true),
         "vidlink" => source.server.is_none(),
-        "vidrock" | "notorrent" | "vixsrc" | "lordflix" => source.server.is_none(),
+        "vidrock" | "notorrent" | "vixsrc" | "lordflix" | "meridian" | "gallic" => {
+            source.server.is_none()
+        }
         _ => false,
     }
 }
@@ -5500,7 +5526,15 @@ fn is_external_embed_source_healthy_enough_for_fallback(
 fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) -> bool {
     matches!(
         source.provider.id,
-        "videasy" | "vidlink" | "icefy" | "vidrock" | "vixsrc" | "lordflix" | "notorrent"
+        "videasy"
+            | "vidlink"
+            | "icefy"
+            | "vidrock"
+            | "vixsrc"
+            | "lordflix"
+            | "notorrent"
+            | "meridian"
+            | "gallic"
     )
 }
 
@@ -5526,6 +5560,10 @@ fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 
         "vixsrc" => 800,
         "videasy" if source.server.is_none() => 700,
         "icefy" => 500,
+        // Aether-backed; deliberately the lowest real tier — a cached third-party
+        // fallback that only fires when every first-party source misses the title.
+        "gallic" => 450,
+        "meridian" => 400,
         "videasy" => 150,
         _ => 0,
     }
@@ -5537,6 +5575,9 @@ fn external_embed_source_quality_score(source: ExternalEmbedSource) -> i64 {
         "vidlink" | "vidrock" | "notorrent" | "vixsrc" | "lordflix" => 400,
         "videasy" if source.server.is_none() => 400,
         "icefy" => 350,
+        // Gallic upstream advertises up to 2160p; Meridian ~1080p.
+        "gallic" => 400,
+        "meridian" => 350,
         "videasy" => 300,
         _ => 0,
     }
@@ -5909,7 +5950,11 @@ fn external_embed_source_resolve_timeout_ms(source: ExternalEmbedSource) -> u64 
         // get the full budget instead of the tight direct-resolve clamp that was
         // cutting their retries off mid-flight. They are ranked last, so the
         // wider budget only spends leftover time, never starves a better source.
-        "videasy" | "vidlink" | "icefy" | "vixsrc" => external_embed_hls_resolve_timeout_ms(),
+        // meridian/gallic make two sequential round-trips (aether resolve -> unwrap
+        // origin -> validate the upstream playlist), so they get the full budget too.
+        "videasy" | "vidlink" | "icefy" | "vixsrc" | "meridian" | "gallic" => {
+            external_embed_hls_resolve_timeout_ms()
+        }
         _ => external_embed_hls_resolve_timeout_ms().min(EXTERNAL_EMBED_DIRECT_RESOLVE_TIMEOUT_MS),
     }
 }
@@ -6062,6 +6107,13 @@ fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -
                 ))
             }
         }
+        ("meridian", "movie") => Some(format!("{MERIDIAN_API_BASE}/movie/{tmdb_id}")),
+        ("meridian", "tv") => Some(format!(
+            "{MERIDIAN_API_BASE}/show/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
+        // Gallic's upstream (senpai-stream.club) is movie-only.
+        ("gallic", "movie") => Some(format!("{GALLIC_API_BASE}/movie/{tmdb_id}")),
         _ => None,
     }
 }
@@ -6122,7 +6174,7 @@ fn external_embed_source_priority(source: ExternalEmbedSource, _metadata: &Resol
     }
     if matches!(
         source.provider.id,
-        "vidrock" | "notorrent" | "vixsrc" | "lordflix" | "icefy"
+        "vidrock" | "notorrent" | "vixsrc" | "lordflix" | "icefy" | "meridian" | "gallic"
     ) && source.server.is_none()
     {
         return source.provider.priority;
@@ -6158,9 +6210,12 @@ fn external_embed_source_provider_label(source: ExternalEmbedSource) -> &'static
 }
 
 fn external_embed_source_quality_label(source: ExternalEmbedSource) -> &'static str {
+    if source.provider.id == "gallic" {
+        return "4K";
+    }
     if matches!(
         source.provider.id,
-        "icefy" | "vidrock" | "vixsrc" | "lordflix" | "notorrent"
+        "icefy" | "vidrock" | "vixsrc" | "lordflix" | "notorrent" | "meridian"
     ) {
         return "1080p";
     }
@@ -6177,6 +6232,8 @@ fn external_embed_source_detail_label(source: ExternalEmbedSource) -> &'static s
         "vixsrc" => return "Native HLS, alternate audio",
         "lordflix" => return "Multi-server native HLS",
         "notorrent" => return "Stremio addon HLS",
+        "meridian" => return "Native HLS, TV + movies",
+        "gallic" => return "Native HLS, up to 4K",
         _ => {}
     }
     source
@@ -6226,6 +6283,9 @@ async fn resolve_external_embed_hls_playback_source(
         }
         "notorrent" => {
             return resolve_notorrent_hls_playback_source(client, metadata, timeout_ms).await;
+        }
+        "meridian" | "gallic" => {
+            return resolve_aether_proxy_hls_playback_source(client, embed_url, timeout_ms).await;
         }
         _ => {}
     }
@@ -6385,6 +6445,56 @@ async fn resolve_vixsrc_hls_playback_source_once(
         timeout_ms,
     )
     .await
+}
+
+/// Resolve a Meridian/Gallic title through aether's open endpoint, then unwrap the
+/// real upstream so playback rides our own `/api/live` proxy rather than aether's edge.
+///
+/// aether returns the stream double-wrapped: a JSON body containing
+/// `https://<edge>/m3u8-proxy?url=<percent-encoded upstream playlist>&headers=<percent-
+/// encoded {"Origin":..,"Referer":..}>`. We pull the upstream URL + its Referer back
+/// out and validate it directly — the upstream answers our rustls client with that
+/// Referer (verified for cdn.neuronix.sbs and senpai-stream.club) — so aether only
+/// ever serves the cheap, cacheable lookup, never the segments.
+async fn resolve_aether_proxy_hls_playback_source(
+    client: &reqwest::Client,
+    embed_url: &str,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    let body =
+        fetch_external_text(client, embed_url, Some(AETHER_EMBED_REFERER), timeout_ms).await?;
+    let (upstream_url, referer) = extract_aether_proxied_origin(&body)?;
+    validate_external_embed_hls_playlist(client, &upstream_url, referer.as_deref(), timeout_ms).await
+}
+
+/// Pull the real upstream URL (and its Referer) out of aether's
+/// `m3u8-proxy?url=..&headers=..` wrapper. The upstream URL is percent-encoded, so
+/// its own `?`/`&` never collide with the wrapper's `&headers=` separator. Returns
+/// `None` when the body isn't a recognizable wrapper (missing title, CF challenge).
+fn extract_aether_proxied_origin(body: &str) -> Option<(String, Option<String>)> {
+    let marker_at = body.find(AETHER_PROXY_URL_MARKER)?;
+    let after = &body[marker_at + AETHER_PROXY_URL_MARKER.len()..];
+    // The wrapper lives inside a JSON string, so it ends at the first quote/backslash.
+    let wrapper: String = after
+        .chars()
+        .take_while(|&c| c != '"' && c != '\\')
+        .collect();
+    let mut parts = wrapper.splitn(2, "&headers=");
+    let upstream_url = percent_decode_lossy(parts.next()?);
+    if !upstream_url.starts_with("https://") {
+        return None;
+    }
+    let referer = parts
+        .next()
+        .map(percent_decode_lossy)
+        .and_then(|headers| serde_json::from_str::<HashMap<String, String>>(&headers).ok())
+        .and_then(|headers| {
+            headers
+                .get("Referer")
+                .or_else(|| headers.get("Origin"))
+                .cloned()
+        });
+    Some((upstream_url, referer))
 }
 
 async fn resolve_vidrock_hls_playback_source(
@@ -8723,7 +8833,8 @@ mod tests {
     use crate::error::ApiError;
 
     use super::{
-        DiscoveryBehaviorHints, DiscoveryStream, PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR,
+        DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, ExternalEmbedSource,
+        PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR,
         ResolveFilters, ResolveMetadata, ResolvePreferences, ResolvedSource, ResolverExternalGuard,
         ResolverMetrics, ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters,
         SourceHealthStats, build_external_embed_source_summaries, build_movie_resolve_lock_key,
@@ -8734,8 +8845,10 @@ mod tests {
         compute_external_embed_rank_health_score, compute_source_health_score,
         compute_torrentio_cache_deadlines, default_external_embed_source,
         does_filename_likely_match_movie, external_embed_hls_candidate_sources,
-        external_embed_source_for_source_hash, external_embed_source_hash, external_embed_sources,
-        external_embed_url, extract_info_hash_from_magnet, is_external_embed_hls_capable_source,
+        external_embed_source_for_source_hash, external_embed_source_hash,
+        external_embed_source_rank_score, external_embed_sources, external_embed_url,
+        extract_aether_proxied_origin, extract_info_hash_from_magnet,
+        is_default_external_embed_hls_fallback_source, is_external_embed_hls_capable_source,
         is_persistent_source_resolve_error, is_public_external_embed_hls_hostname,
         is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
         normalize_allowed_formats, normalize_resolved_source_for_software_decode,
@@ -8897,6 +9010,81 @@ mod tests {
         );
     }
 
+    fn external_embed_provider(id: &str) -> ExternalEmbedSource {
+        ExternalEmbedSource {
+            provider: *EXTERNAL_EMBED_PROVIDERS
+                .iter()
+                .find(|provider| provider.id == id)
+                .expect("known provider"),
+            server: None,
+        }
+    }
+
+    #[test]
+    fn meridian_and_gallic_are_hls_capable_low_tier_fallbacks() {
+        let movie = sample_resolve_metadata("movie", "872585", 0, 0);
+        let meridian = external_embed_provider("meridian");
+        let gallic = external_embed_provider("gallic");
+
+        for source in [meridian, gallic] {
+            assert!(is_external_embed_hls_capable_source(source));
+            assert!(is_default_external_embed_hls_fallback_source(source));
+        }
+
+        // Deliberately ranked below every first-party source (Icefy is the lowest of
+        // those) so they only fire when our own providers miss the title.
+        let health = HashMap::new();
+        let icefy_rank = external_embed_source_rank_score(external_embed_provider("icefy"), &movie, &health);
+        assert!(external_embed_source_rank_score(meridian, &movie, &health) < icefy_rank);
+        assert!(external_embed_source_rank_score(gallic, &movie, &health) < icefy_rank);
+    }
+
+    #[test]
+    fn meridian_builds_movie_and_tv_urls_gallic_is_movie_only() {
+        let movie = sample_resolve_metadata("movie", "872585", 0, 0);
+        let tv = sample_resolve_metadata("tv", "1399", 1, 1);
+        let meridian = external_embed_provider("meridian");
+        let gallic = external_embed_provider("gallic");
+
+        assert_eq!(
+            external_embed_url(meridian, &movie).as_deref(),
+            Some("https://meridian.aether.bar/movie/872585")
+        );
+        assert_eq!(
+            external_embed_url(meridian, &tv).as_deref(),
+            Some("https://meridian.aether.bar/show/1399/1/1")
+        );
+        assert_eq!(
+            external_embed_url(gallic, &movie).as_deref(),
+            Some("https://gallic.aether.bar/movie/872585")
+        );
+        // Gallic's upstream (senpai-stream.club) is movie-only, so no TV candidate.
+        assert_eq!(external_embed_url(gallic, &tv), None);
+    }
+
+    #[test]
+    fn extracts_upstream_origin_and_referer_from_aether_wrapper() {
+        // Meridian-shaped body (top-level `url`, Origin + Referer headers).
+        let meridian_body = r#"{"title":"Oppenheimer","url":"https://yield.aether.bar/m3u8-proxy?url=https%3A%2F%2Fcdn.neuronix.sbs%2Fsegment%2Fabc%2F%3Ftoken1%3D11%26token3%3D22&headers=%7B%22Origin%22%3A%22https%3A%2F%2Fcdn.neuronix.sbs%22%2C%22Referer%22%3A%22https%3A%2F%2Fcdn.neuronix.sbs%2F%22%7D","subtitles":[]}"#;
+        let (url, referer) =
+            extract_aether_proxied_origin(meridian_body).expect("meridian wrapper unwraps");
+        assert_eq!(url, "https://cdn.neuronix.sbs/segment/abc/?token1=11&token3=22");
+        assert_eq!(referer.as_deref(), Some("https://cdn.neuronix.sbs/"));
+
+        // Gallic-shaped body (nested `source.stream_url`, Referer only).
+        let gallic_body = r#"{"source":{"stream_url":"https://field.aether.bar/m3u8-proxy?url=https%3A%2F%2Fzebi.senpai-stream.club%2Fmovie%2F872585%2Fpremium-x%2Fmaster.m3u8&headers=%7B%22Referer%22%3A%22https%3A%2F%2Fzebi.senpai-stream.club%2F%22%7D","format":"m3u8"}}"#;
+        let (g_url, g_ref) =
+            extract_aether_proxied_origin(gallic_body).expect("gallic wrapper unwraps");
+        assert_eq!(
+            g_url,
+            "https://zebi.senpai-stream.club/movie/872585/premium-x/master.m3u8"
+        );
+        assert_eq!(g_ref.as_deref(), Some("https://zebi.senpai-stream.club/"));
+
+        // A non-wrapper body (Cloudflare challenge / missing title) yields nothing.
+        assert!(extract_aether_proxied_origin("<!DOCTYPE html><html>denied</html>").is_none());
+    }
+
     #[test]
     fn resolve_cache_key_is_stable_per_title_identity() {
         // Movie: season/episode are 0, tmdb trimmed — matches the handler-side params.
@@ -8988,8 +9176,8 @@ mod tests {
 
         // LordFlix (off-uplink direct-play) leads, then VidRock — both reliable
         // native HLS — ahead of the flaky providers (VidLink/VixSrc/Icefy), with the
-        // VidEasy variants trailing.
-        assert_eq!(sources.len(), 14);
+        // aether-backed Meridian/Gallic fallbacks and the VidEasy variants trailing.
+        assert_eq!(sources.len(), 16);
         assert_eq!(sources[0].primary, "LordFlix");
         assert_eq!(sources[0].provider, "LivNet");
         assert_eq!(sources[0].filename, "LordFlix embed");
@@ -9053,6 +9241,21 @@ mod tests {
         assert_eq!(lordflix_summary.provider, "LivNet");
         assert_eq!(lordflix_summary.releaseGroup, "Multi-server native HLS");
 
+        // The aether-backed fallbacks appear (movie): Gallic advertises 4K, Meridian 1080p.
+        let gallic_summary = sources
+            .iter()
+            .find(|source| source.primary == "Gallic")
+            .expect("gallic source summary");
+        assert_eq!(gallic_summary.provider, "LivNet");
+        assert_eq!(gallic_summary.qualityLabel, "4K");
+        assert_eq!(gallic_summary.releaseGroup, "Native HLS, up to 4K");
+        let meridian_summary = sources
+            .iter()
+            .find(|source| source.primary == "Meridian")
+            .expect("meridian source summary");
+        assert_eq!(meridian_summary.qualityLabel, "1080p");
+        assert_eq!(meridian_summary.releaseGroup, "Native HLS, TV + movies");
+
         let neon_source = sources
             .iter()
             .find(|source| source.primary == "Neon")
@@ -9085,8 +9288,11 @@ mod tests {
             "https://vidlink.pro/tv/76331/1/1"
         );
 
+        // TV gains only Meridian (Gallic's upstream is movie-only), so 15 not 16.
         let tv_sources = build_external_embed_source_summaries(&tv_metadata, &health_scores);
-        assert_eq!(tv_sources.len(), 14);
+        assert_eq!(tv_sources.len(), 15);
+        assert!(tv_sources.iter().any(|source| source.primary == "Meridian"));
+        assert!(!tv_sources.iter().any(|source| source.primary == "Gallic"));
         assert_eq!(tv_sources[0].primary, "LordFlix");
         assert_eq!(tv_sources[0].provider, "LivNet");
         assert_eq!(tv_sources[1].primary, "VidRock");
@@ -9245,8 +9451,12 @@ mod tests {
         assert_eq!(source_ids.get(3), Some(&("vidlink", "default")));
         assert_eq!(source_ids.get(4), Some(&("vixsrc", "default")));
         assert_eq!(source_ids.get(5), Some(&("videasy", "default")));
-        assert_eq!(source_ids.get(6), Some(&("videasy", "YORU")));
-        assert_eq!(source_ids.len(), 7);
+        // aether fallbacks slot in below every primary source, above the flaky
+        // VidEasy server-variants; Gallic (movie) outranks Meridian.
+        assert_eq!(source_ids.get(6), Some(&("gallic", "default")));
+        assert_eq!(source_ids.get(7), Some(&("meridian", "default")));
+        assert_eq!(source_ids.get(8), Some(&("videasy", "YORU")));
+        assert_eq!(source_ids.len(), 9);
 
         let tv_metadata = sample_tv_metadata();
         let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
@@ -9272,8 +9482,10 @@ mod tests {
         assert_eq!(tv_source_ids.get(3), Some(&("vidlink", "default")));
         assert_eq!(tv_source_ids.get(4), Some(&("vixsrc", "default")));
         assert_eq!(tv_source_ids.get(5), Some(&("videasy", "default")));
-        assert_eq!(tv_source_ids.get(6), Some(&("videasy", "YORU")));
-        assert_eq!(tv_source_ids.len(), 7);
+        // TV: only Meridian (Gallic's upstream is movie-only) sits above the variants.
+        assert_eq!(tv_source_ids.get(6), Some(&("meridian", "default")));
+        assert_eq!(tv_source_ids.get(7), Some(&("videasy", "YORU")));
+        assert_eq!(tv_source_ids.len(), 8);
 
         let neon_source = external_embed_sources()
             .into_iter()
