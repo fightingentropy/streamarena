@@ -83,6 +83,7 @@ export default function AdminPage() {
   const [growthAll, setGrowthAll] = createSignal([]);
   const [activity, setActivity] = createSignal([]);
   const [feedback, setFeedback] = createSignal([]);
+  const [topLive, setTopLive] = createSignal([]);
   const [users, setUsers] = createSignal([]);
   const [search, setSearch] = createSignal("");
   const [userSort, setUserSort] = createSignal({ key: "createdAt", dir: "desc" });
@@ -129,16 +130,18 @@ export default function AdminPage() {
     setStatus("loading");
     setError("");
     try {
-      const [ov, gr, ac, fb] = await Promise.all([
+      const [ov, gr, ac, fb, lt] = await Promise.all([
         getJson("/api/admin/overview"),
         getJson("/api/admin/growth?days=90"),
         getJson("/api/admin/activity?limit=120"),
         getJson("/api/admin/feedback?limit=200"),
+        getJson("/api/admin/live-top?days=7"),
       ]);
       setOverview(ov);
       setGrowthAll(gr.days || []);
       setActivity(ac.events || []);
       setFeedback(fb.feedback || []);
+      setTopLive(lt.streams || []);
       await loadUsers();
       setStatus("ready");
       setLastSync(Date.now());
@@ -155,14 +158,16 @@ export default function AdminPage() {
   // only, never the users table (would clobber an in-progress search).
   async function refreshLive() {
     try {
-      const [ov, gr, ac] = await Promise.all([
+      const [ov, gr, ac, lt] = await Promise.all([
         getJson("/api/admin/overview"),
         getJson("/api/admin/growth?days=90"),
         getJson("/api/admin/activity?limit=120"),
+        getJson("/api/admin/live-top?days=7"),
       ]);
       setOverview(ov);
       setGrowthAll(gr.days || []);
       setActivity(ac.events || []);
+      setTopLive(lt.streams || []);
       setLastSync(Date.now());
       getJson("/api/admin/health").then(setHealth).catch(() => {});
     } catch {
@@ -386,14 +391,24 @@ export default function AdminPage() {
   });
 
   const activityByKind = createMemo(() => {
-    const tones = { login: "blue", watch: "red", signup: "green" };
-    const labels = { login: "Logins", watch: "Watches", signup: "Sign-ups" };
+    const tones = { login: "blue", watch: "red", signup: "green", live: "violet" };
+    const labels = { login: "Logins", watch: "Watches", signup: "Sign-ups", live: "Live" };
     const counts = {};
     for (const e of activity()) counts[e.kind] = (counts[e.kind] || 0) + 1;
-    return ["login", "watch", "signup"]
+    return ["login", "watch", "live", "signup"]
       .filter((k) => counts[k])
       .map((k) => ({ key: k, label: labels[k], value: counts[k], tone: tones[k] }));
   });
+
+  const topLiveBars = createMemo(() =>
+    topLive().map((s, i) => ({
+      rank: i + 1,
+      label: s.title,
+      value: s.plays,
+      sub: `${fmtNum(s.viewers)} viewer${s.viewers === 1 ? "" : "s"} · ${s.category || "live"}`,
+      tone: s.category === "sports" ? "red" : "cyan",
+    })),
+  );
 
   const topUsers = createMemo(() =>
     [...users()]
@@ -975,14 +990,14 @@ export default function AdminPage() {
 
         {/* ── Activity ─────────────────────────────────────────────── */}
         <Show when={tab() === "activity"}>
+          <section class="admin-panel">
+            <div class="admin-panel-head">
+              <h2 class="admin-panel-title">Activity by hour</h2>
+              <span class="admin-panel-sub">When your users are active (last {fmtNum(activity().length)} events)</span>
+            </div>
+            <Heatmap cells={activityByHour()} tone="blue" />
+          </section>
           <div class="admin-grid-2">
-            <section class="admin-panel">
-              <div class="admin-panel-head">
-                <h2 class="admin-panel-title">Activity by hour</h2>
-                <span class="admin-panel-sub">Last {fmtNum(activity().length)} events</span>
-              </div>
-              <Heatmap cells={activityByHour()} tone="blue" />
-            </section>
             <section class="admin-panel">
               <div class="admin-panel-head">
                 <h2 class="admin-panel-title">Breakdown</h2>
@@ -995,11 +1010,23 @@ export default function AdminPage() {
                 label="Activity by type"
               />
             </section>
+            <section class="admin-panel">
+              <div class="admin-panel-head">
+                <h2 class="admin-panel-title">Top live streams</h2>
+                <span class="admin-panel-sub">Sports &amp; channels · last 7 days</span>
+              </div>
+              <Show
+                when={topLiveBars().length}
+                fallback={<div class="admin-empty">No live views recorded yet.</div>}
+              >
+                <HBars items={topLiveBars()} />
+              </Show>
+            </section>
           </div>
           <section class="admin-panel">
             <div class="admin-panel-head">
               <h2 class="admin-panel-title">Activity feed</h2>
-              <span class="admin-panel-sub">Recent sign-ins, watches &amp; sign-ups</span>
+              <span class="admin-panel-sub">Sign-ins, watches, live &amp; sign-ups</span>
             </div>
             <ActivityFeed events={activity()} />
           </section>

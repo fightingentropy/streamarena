@@ -1065,6 +1065,9 @@ a:focus-visible {
 .admin-feed-dot.is-signup {
   background: var(--admin-green);
 }
+.admin-feed-dot.is-live {
+  background: var(--admin-violet);
+}
 .admin-feed-body {
   display: flex;
   flex-direction: column;

@@ -1668,6 +1668,50 @@ function syncContinueWatchingEntryToServer(resumeSeconds, { keepalive = false } 
   }).catch(() => {});
 }
 
+// Live playback has no resume position, so it never lands in continue-watching.
+// Instead, once a live source is genuinely playing, log a single lightweight
+// "watched live" event (deduped by title for 10 minutes so source failover and
+// the resume-flush timer don't spam it) for the admin activity feed + top-live
+// panel. Never let this interfere with playback.
+let lastLiveWatchKey = "";
+let lastLiveWatchAt = 0;
+const LIVE_WATCH_DEDUPE_MS = 10 * 60 * 1000;
+
+function maybeRecordLiveWatch() {
+  try {
+    const cleanTitle = String(title || "").trim();
+    if (!cleanTitle) {
+      return;
+    }
+    const nativePlaying =
+      video && !video.paused && (Number(video.currentTime) || 0) > 1;
+    const iframePlaying = liveIframePlaybackStartedAtMs > 0;
+    if (!nativePlaying && !iframePlaying) {
+      return;
+    }
+    const now = Date.now();
+    if (
+      cleanTitle === lastLiveWatchKey &&
+      now - lastLiveWatchAt < LIVE_WATCH_DEDUPE_MS
+    ) {
+      return;
+    }
+    lastLiveWatchKey = cleanTitle;
+    lastLiveWatchAt = now;
+    fetch("/api/user/live-watch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: cleanTitle,
+        category: shouldResolveLiveEmbedSource ? "sports" : "channel",
+        sourceIdentity: String(sourceIdentity || ""),
+      }),
+    }).catch(() => {});
+  } catch {
+    // Activity logging is best-effort.
+  }
+}
+
 function removeContinueWatchingEntry() {
   const normalizedSource = String(sourceIdentity || "").trim();
   if (!normalizedSource) {
@@ -7918,6 +7962,7 @@ function syncSeekState() {
 
 function persistResumeTime(force = false) {
   if (isLivePlayback) {
+    maybeRecordLiveWatch();
     return;
   }
 

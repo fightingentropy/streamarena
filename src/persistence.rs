@@ -256,6 +256,18 @@ pub struct FeedbackRow {
     pub createdAt: i64,
 }
 
+/// One row of the admin "top live streams" panel: a live title aggregated over
+/// the lookback window.
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminLiveStreamRow {
+    pub title: String,
+    pub category: String,
+    pub plays: i64,
+    pub viewers: i64,
+    pub lastAt: i64,
+}
+
 impl Db {
     pub async fn initialize(config: &Config) -> AppResult<Self> {
         let cache_path = config.persistent_cache_db_path.clone();
@@ -2171,11 +2183,107 @@ impl Db {
                     .collect::<Result<Vec<_>, _>>()?;
                 events.extend(rows);
             }
+            {
+                let mut stmt = connection.prepare(
+                    "SELECT l.created_at, u.username, u.display_name, l.title
+                     FROM live_watch_events l JOIN users u ON u.id = l.user_id
+                     ORDER BY l.created_at DESC LIMIT ?1",
+                )?;
+                let rows = stmt
+                    .query_map([limit], |row| {
+                        Ok(AdminActivityEvent {
+                            kind: "live".to_owned(),
+                            ts: row.get::<_, i64>(0)?,
+                            email: row.get::<_, String>(1)?,
+                            displayName: row.get::<_, String>(2)?,
+                            title: row.get::<_, String>(3)?,
+                            detail: "Watched live".to_owned(),
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                events.extend(rows);
+            }
 
             return_connection(&pool, connection);
             events.sort_by(|a, b| b.ts.cmp(&a.ts));
             events.truncate(limit as usize);
             Ok::<Vec<AdminActivityEvent>, rusqlite::Error>(events)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// Append one live-watch event (sports / live channel). Best-effort retention:
+    /// prune rows older than 60 days on each insert so the table stays small.
+    pub async fn record_live_watch(
+        &self,
+        user_id: i64,
+        title: String,
+        category: String,
+        source_identity: String,
+    ) -> AppResult<()> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            connection.execute(
+                "INSERT INTO live_watch_events (user_id, title, category, source_identity, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![user_id, title, category, source_identity, now],
+            )?;
+            let _ = connection.execute(
+                "DELETE FROM live_watch_events WHERE created_at < ?1",
+                params![now - 60 * 24 * 60 * 60 * 1000i64],
+            );
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// Most-watched live titles over the last `days`, ranked by play count.
+    pub async fn admin_top_live_streams(
+        &self,
+        days: i64,
+        limit: i64,
+    ) -> AppResult<Vec<AdminLiveStreamRow>> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        let days = days.clamp(1, 90);
+        let limit = limit.clamp(1, 50);
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let since = now_ms() - days * 24 * 60 * 60 * 1000;
+            let mut stmt = connection.prepare(
+                "SELECT title,
+                        MAX(category) AS category,
+                        COUNT(*) AS plays,
+                        COUNT(DISTINCT user_id) AS viewers,
+                        MAX(created_at) AS last_at
+                 FROM live_watch_events
+                 WHERE created_at >= ?1 AND title <> ''
+                 GROUP BY title
+                 ORDER BY plays DESC, last_at DESC
+                 LIMIT ?2",
+            )?;
+            let rows = stmt
+                .query_map(params![since, limit], |row| {
+                    Ok(AdminLiveStreamRow {
+                        title: row.get::<_, String>(0)?,
+                        category: row.get::<_, String>(1)?,
+                        plays: row.get::<_, i64>(2)?,
+                        viewers: row.get::<_, i64>(3)?,
+                        lastAt: row.get::<_, i64>(4)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            return_connection(&pool, connection);
+            Ok::<Vec<AdminLiveStreamRow>, rusqlite::Error>(rows)
         })
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
@@ -3346,6 +3454,7 @@ const DURABLE_TABLES: &[&str] = &[
     "health_samples",
     "service_starts",
     "feedback",
+    "live_watch_events",
 ];
 
 /// Bring both database files up to schema. The users DB is initialized first and,
@@ -3802,6 +3911,19 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
           created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
+        -- Live-watch events (durable: powers the admin activity feed + top-live
+        -- panel). VOD resume lives in user_continue_watching; live playback has no
+        -- resume position, so the player logs a lightweight event here instead.
+        CREATE TABLE IF NOT EXISTS live_watch_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          title TEXT NOT NULL DEFAULT '',
+          category TEXT NOT NULL DEFAULT '',
+          source_identity TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_watch_created ON live_watch_events(created_at);
+        CREATE INDEX IF NOT EXISTS idx_live_watch_user ON live_watch_events(user_id);
         ",
     )?;
     // Feedback image attachments were added after the table first shipped, so

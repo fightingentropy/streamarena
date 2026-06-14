@@ -86,6 +86,7 @@ export function feedText(event) {
   if (event.kind === "login") return "signed in";
   if (event.kind === "signup") return "created an account";
   if (event.kind === "watch") return "watched";
+  if (event.kind === "live") return "watched live";
   return event.detail || "";
 }
 

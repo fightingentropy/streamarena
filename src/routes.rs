@@ -412,6 +412,7 @@ pub fn build_router(state: AppState) -> Router {
             any(user_continue_watching_handler),
         )
         .route("/api/user/my-list", any(user_my_list_handler))
+        .route("/api/user/live-watch", any(user_live_watch_handler))
         .route("/api/user/sync", any(user_sync_handler))
         .route("/api/feedback", any(feedback_submit_handler))
         .route_layer(middleware::from_fn_with_state(
@@ -426,6 +427,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/admin/growth", get(admin_growth_handler))
         .route("/api/admin/users", get(admin_users_handler))
         .route("/api/admin/activity", get(admin_activity_handler))
+        .route("/api/admin/live-top", get(admin_live_top_handler))
         .route("/api/admin/feedback", get(admin_feedback_handler))
         .route(
             "/api/admin/feedback/{id}/image",
@@ -540,6 +542,22 @@ async fn admin_activity_handler(
     let rows = state.db.admin_activity(limit).await?;
     let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({ "events": value })))
+}
+
+async fn admin_live_top_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let days = admin_query_i64(&uri, "days", 7);
+    let rows = state.db.admin_top_live_streams(days, 12).await?;
+    let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(json_response(json!({ "streams": value })))
 }
 
 async fn admin_feedback_handler(
@@ -3503,6 +3521,52 @@ async fn user_continue_watching_handler(
             "Method not allowed. Use GET, PUT, or DELETE.",
         )),
     }
+}
+
+/// Log a live-watch event (sports / live channel). Live playback has no resume
+/// position so it never lands in continue-watching; this records it for the admin
+/// activity feed + top-live panel. The player dedupes per session.
+async fn user_live_watch_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    let user = auth::require_auth(&state.db, &headers).await?;
+    let payload = parse_json_body(request).await?;
+    let title: String = payload
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(200)
+        .collect();
+    if title.is_empty() {
+        return Err(ApiError::bad_request("title is required."));
+    }
+    let category: String = payload
+        .get("category")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .chars()
+        .take(40)
+        .collect();
+    let source_identity: String = payload
+        .get("sourceIdentity")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .chars()
+        .take(300)
+        .collect();
+    state
+        .db
+        .record_live_watch(user.id, title, category, source_identity)
+        .await?;
+    Ok(json_response(json!({ "ok": true })))
 }
 
 async fn user_my_list_handler(
