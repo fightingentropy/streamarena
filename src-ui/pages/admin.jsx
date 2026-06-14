@@ -9,40 +9,39 @@ import {
 } from "solid-js";
 
 import { signOut } from "../lib/auth.js";
-
-const numberFormat = new Intl.NumberFormat();
-
-function fmtNum(value) {
-  return numberFormat.format(Number(value) || 0);
-}
-
-function fmtDate(ms) {
-  if (!ms) return "—";
-  try {
-    return new Date(ms).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return "—";
-  }
-}
-
-function relTime(ms) {
-  if (!ms) return "";
-  const diff = Date.now() - ms;
-  if (diff < 60_000) return "just now";
-  const min = Math.floor(diff / 60_000);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 30) return `${day}d ago`;
-  const mo = Math.floor(day / 30);
-  if (mo < 12) return `${mo}mo ago`;
-  return `${Math.floor(mo / 12)}y ago`;
-}
+import {
+  DonutChart,
+  Gauge,
+  HBars,
+  Heatmap,
+  StatusRibbon,
+  TrendChart,
+} from "../admin/charts.jsx";
+import {
+  ActivityFeed,
+  clockTime,
+  fmtBytes,
+  fmtDate,
+  fmtNum,
+  fmtPct,
+  fmtUptime,
+  HEALTH_METRICS,
+  healthSummary,
+  hourLabel,
+  KpiCard,
+  monthDay,
+  movingAverage,
+  ratioPct,
+  relTime,
+  Segmented,
+  SkeletonKpis,
+  StatTile,
+  STATUS_LABEL,
+  statusClass,
+  sum,
+  Toggle,
+  Unauthorized,
+} from "../admin/widgets.jsx";
 
 async function getJson(url) {
   const response = await fetch(url, { cache: "no-store" });
@@ -72,213 +71,6 @@ async function postJson(url, body) {
   return data;
 }
 
-function feedText(event) {
-  if (event.kind === "login") return "signed in";
-  if (event.kind === "signup") return "created an account";
-  if (event.kind === "watch") return "watched";
-  return event.detail || "";
-}
-
-// SVG bar chart. Geometry uses presentation attributes (CSP-safe — no inline
-// `style`), fills come from admin.css. All values are accessors so the chart
-// re-renders reactively when `props.data` arrives.
-function GrowthChart(props) {
-  const W = 740;
-  const H = 200;
-  const padX = 10;
-  const padTop = 18;
-  const padBottom = 28;
-  const innerH = H - padTop - padBottom;
-  const data = () => props.data || [];
-  const max = () => Math.max(1, ...data().map((d) => d.signups));
-  const slot = () => (W - padX * 2) / Math.max(1, data().length);
-  const barW = () => Math.max(2, slot() * 0.62);
-  return (
-    <Show
-      when={data().length}
-      fallback={<div class="admin-chart-empty">No sign-up data yet.</div>}
-    >
-      <svg
-        class="admin-chart"
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
-        role="img"
-        aria-label="New sign-ups per day"
-      >
-        <line
-          class="admin-chart-axis"
-          x1={padX}
-          y1={H - padBottom}
-          x2={W - padX}
-          y2={H - padBottom}
-        />
-        <For each={data()}>
-          {(d, i) => {
-            const h = () =>
-              d.signups > 0 ? Math.max(2, Math.round((d.signups / max()) * innerH)) : 0;
-            const x = () => padX + i() * slot() + (slot() - barW()) / 2;
-            const y = () => H - padBottom - h();
-            return (
-              <rect
-                class="admin-chart-bar"
-                x={x()}
-                y={y()}
-                width={barW()}
-                height={h()}
-                rx="2"
-              >
-                <title>{`${d.date}: ${d.signups} sign-up${d.signups === 1 ? "" : "s"}`}</title>
-              </rect>
-            );
-          }}
-        </For>
-      </svg>
-    </Show>
-  );
-}
-
-const STATUS_LABEL = {
-  green: "All systems smooth",
-  amber: "Running degraded",
-  red: "Service issues",
-};
-
-// Map a backend status ("green"/"amber"/"red") to the CSS state class shared by
-// the status card, dots, and pill.
-function statusClass(status) {
-  if (status === "red") return "is-down";
-  if (status === "amber") return "is-warn";
-  return "is-ok";
-}
-
-// One-line summary for the status card: the failing checks' details, or a
-// reassuring all-clear.
-function healthSummary(h) {
-  if (!h) return "";
-  const bad = (h.checks || []).filter((c) => c.status !== "green");
-  if (!bad.length) return "All checks passing.";
-  return bad.map((c) => c.detail).join(" · ");
-}
-
-function fmtBytes(n) {
-  const v = Number(n) || 0;
-  if (v <= 0) return "—";
-  const gb = v / 1e9;
-  if (gb >= 1) return `${gb.toFixed(gb >= 10 ? 0 : 1)} GB`;
-  return `${(v / 1e6).toFixed(0)} MB`;
-}
-
-function fmtUptime(seconds) {
-  const s = Math.max(0, Number(seconds) || 0);
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-
-function ratioPct(part, whole) {
-  const w = Number(whole) || 0;
-  if (w <= 0) return 0;
-  return ((Number(part) || 0) / w) * 100;
-}
-
-// CSP-safe sparkline (same approach as GrowthChart): geometry via presentation
-// attributes, colors via CSS classes — no inline `style`. `preserveAspectRatio`
-// stretches it to the card; `non-scaling-stroke` (in admin.css) keeps the line
-// crisp. `max` is a floor so an all-zero series doesn't amplify noise.
-function Sparkline(props) {
-  const W = 240;
-  const H = 48;
-  const pad = 3;
-  const values = () => props.values || [];
-  const max = () => Math.max(props.max || 0, 1, ...values());
-  const stepX = () => (W - pad * 2) / Math.max(1, values().length - 1);
-  const linePoints = () =>
-    values()
-      .map((v, i) => {
-        const x = pad + i * stepX();
-        const y = H - pad - (Math.max(0, v) / max()) * (H - pad * 2);
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
-      })
-      .join(" ");
-  const areaPoints = () => {
-    const line = linePoints();
-    if (!line) return "";
-    const lastX = pad + (values().length - 1) * stepX();
-    return `${pad.toFixed(1)},${H - pad} ${line} ${lastX.toFixed(1)},${H - pad}`;
-  };
-  const toneClass = () =>
-    props.tone === "red" ? "is-red" : props.tone === "amber" ? "is-amber" : "";
-  return (
-    <Show
-      when={values().length > 1}
-      fallback={<div class="admin-spark-empty">collecting…</div>}
-    >
-      <svg
-        class={`admin-spark ${toneClass()}`}
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
-        role="img"
-        aria-label={props.label || "trend"}
-      >
-        <polygon class="admin-spark-fill" points={areaPoints()} />
-        <polyline class="admin-spark-line" points={linePoints()} />
-      </svg>
-    </Show>
-  );
-}
-
-function ActivityFeed(props) {
-  return (
-    <Show
-      when={(props.events || []).length}
-      fallback={<div class="admin-empty">No recent activity.</div>}
-    >
-      <ul class="admin-feed">
-        <For each={props.events}>
-          {(event) => (
-            <li class="admin-feed-item">
-              <span class={`admin-feed-dot is-${event.kind}`} />
-              <div class="admin-feed-body">
-                <span class="admin-feed-main">
-                  <strong>{event.displayName || event.email}</strong> {feedText(event)}
-                  <Show when={event.title}>
-                    {" "}
-                    <span class="admin-feed-titletext">{event.title}</span>
-                  </Show>
-                </span>
-                <span class="admin-feed-meta">
-                  {event.email} · {relTime(event.ts)}
-                </span>
-              </div>
-            </li>
-          )}
-        </For>
-      </ul>
-    </Show>
-  );
-}
-
-function Unauthorized(props) {
-  return (
-    <div class="admin-denied">
-      <div class="admin-denied-card">
-        <span class="admin-brand-mark">NETFLIX</span>
-        <h1>Admin access required</h1>
-        <p>
-          {props.email
-            ? `${props.email} isn’t an admin account.`
-            : "Sign in with an admin account to continue."}
-        </p>
-        <a class="admin-cta" href="/">
-          Back to Netflix
-        </a>
-      </div>
-    </div>
-  );
-}
 
 export default function AdminPage() {
   const currentUser = window.__currentUser || {};
@@ -288,11 +80,12 @@ export default function AdminPage() {
 
   const [tab, setTab] = createSignal("overview");
   const [overview, setOverview] = createSignal(null);
-  const [growth, setGrowth] = createSignal([]);
+  const [growthAll, setGrowthAll] = createSignal([]);
   const [activity, setActivity] = createSignal([]);
   const [feedback, setFeedback] = createSignal([]);
   const [users, setUsers] = createSignal([]);
   const [search, setSearch] = createSignal("");
+  const [userSort, setUserSort] = createSignal({ key: "createdAt", dir: "desc" });
   const [status, setStatus] = createSignal("loading");
   const [error, setError] = createSignal("");
   const [flash, setFlash] = createSignal(null);
@@ -304,9 +97,18 @@ export default function AdminPage() {
   const [healthStatus, setHealthStatus] = createSignal("idle");
   const [healthError, setHealthError] = createSignal("");
 
+  // Overview interactivity.
+  const [growthRange, setGrowthRange] = createSignal(30);
+  const [growthMode, setGrowthMode] = createSignal("area");
+  const [signupFocus, setSignupFocus] = createSignal(null);
+  const [autoRefresh, setAutoRefresh] = createSignal(true);
+  const [lastSync, setLastSync] = createSignal(0);
+  const [healthMetric, setHealthMetric] = createSignal("req5xx");
+
   let searchTimer;
   let flashTimer;
   let healthTimer;
+  let overviewTimer;
 
   function showFlash(text, isError = false) {
     setFlash({ text, isError });
@@ -329,24 +131,42 @@ export default function AdminPage() {
     try {
       const [ov, gr, ac, fb] = await Promise.all([
         getJson("/api/admin/overview"),
-        getJson("/api/admin/growth?days=30"),
-        getJson("/api/admin/activity?limit=40"),
+        getJson("/api/admin/growth?days=90"),
+        getJson("/api/admin/activity?limit=120"),
         getJson("/api/admin/feedback?limit=200"),
       ]);
       setOverview(ov);
-      setGrowth(gr.days || []);
+      setGrowthAll(gr.days || []);
       setActivity(ac.events || []);
       setFeedback(fb.feedback || []);
       await loadUsers();
       setStatus("ready");
-      // Populate the at-a-glance status pill on the overview without blocking
-      // the main load; the Health tab does the full fetch + 20s polling.
+      setLastSync(Date.now());
       getJson("/api/admin/health")
         .then(setHealth)
         .catch(() => {});
     } catch (e) {
       setError(e.message || "Unknown error");
       setStatus("error");
+    }
+  }
+
+  // Lightweight live refresh used by the auto-refresh timer: the dashboard data
+  // only, never the users table (would clobber an in-progress search).
+  async function refreshLive() {
+    try {
+      const [ov, gr, ac] = await Promise.all([
+        getJson("/api/admin/overview"),
+        getJson("/api/admin/growth?days=90"),
+        getJson("/api/admin/activity?limit=120"),
+      ]);
+      setOverview(ov);
+      setGrowthAll(gr.days || []);
+      setActivity(ac.events || []);
+      setLastSync(Date.now());
+      getJson("/api/admin/health").then(setHealth).catch(() => {});
+    } catch {
+      /* transient; the next tick will retry */
     }
   }
 
@@ -367,12 +187,11 @@ export default function AdminPage() {
     }
   }
 
-  // Refresh the data that an action can change, without the full-page spinner.
   async function refreshAfterAction() {
     try {
       const [ov, ac] = await Promise.all([
         getJson("/api/admin/overview"),
-        getJson("/api/admin/activity?limit=40"),
+        getJson("/api/admin/activity?limit=120"),
       ]);
       setOverview(ov);
       setActivity(ac.events || []);
@@ -388,6 +207,14 @@ export default function AdminPage() {
     searchTimer = setTimeout(() => {
       loadUsers().catch((e) => showFlash(e.message, true));
     }, 250);
+  }
+
+  function toggleSort(key) {
+    setUserSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key === "name" ? "asc" : "desc" },
+    );
   }
 
   function openPwModal(user) {
@@ -463,116 +290,281 @@ export default function AdminPage() {
     }
   }
 
-  const kpis = createMemo(() => {
+  // ── Derived overview data ─────────────────────────────────────────────────
+  const daily = createMemo(() => growthAll().map((d) => Number(d.signups) || 0));
+
+  const trendStats = createMemo(() => {
+    const a = daily();
+    const n = a.length;
+    const lastN = (k) => sum(a.slice(Math.max(0, n - k)));
+    const prevN = (k) => sum(a.slice(Math.max(0, n - 2 * k), Math.max(0, n - k)));
+    const pct = (cur, prev) => (prev > 0 ? ((cur - prev) / prev) * 100 : cur > 0 ? 100 : 0);
+    const today = a[n - 1] || 0;
+    const yest = a[n - 2] || 0;
+    const l7 = lastN(7);
+    const l30 = lastN(30);
+    return {
+      today,
+      deltaToday: today - yest,
+      l7,
+      d7: pct(l7, prevN(7)),
+      l30,
+      d30: pct(l30, prevN(30)),
+    };
+  });
+
+  // Real total-users-over-time line: anchor at the current total and subtract
+  // each day's sign-ups walking backwards.
+  const totalSpark = createMemo(() => {
+    const ov = overview();
+    if (!ov) return [];
+    const a = daily();
+    let running = ov.totalUsers;
+    const out = new Array(a.length);
+    for (let i = a.length - 1; i >= 0; i--) {
+      out[i] = running;
+      running -= a[i];
+    }
+    return out.slice(-30);
+  });
+
+  const chartData = createMemo(() => {
+    const all = growthAll();
+    const r = Math.min(all.length, growthRange());
+    return all.slice(-r).map((d) => ({ label: d.date, value: Number(d.signups) || 0 }));
+  });
+
+  const chartOverlay = createMemo(() => {
+    if (growthRange() < 14) return null; // 7-day average isn't meaningful at 7d.
+    const ma = movingAverage(daily(), 7);
+    const r = Math.min(ma.length, growthRange());
+    return ma.slice(-r);
+  });
+
+  const signupSummary = createMemo(() => {
+    const d = chartData();
+    return {
+      total: sum(d.map((x) => x.value)),
+      peak: Math.max(0, ...d.map((x) => x.value)),
+    };
+  });
+
+  const composition = createMemo(() => {
+    const o = overview();
+    if (!o) return [];
+    const verified = Number(o.verifiedUsers) || 0;
+    const unverified = Math.max(0, (Number(o.totalUsers) || 0) - verified);
+    return [
+      { label: "Verified", value: verified, tone: "green" },
+      { label: "Unverified", value: unverified, tone: "amber" },
+    ];
+  });
+
+  const engagement = createMemo(() => {
     const o = overview();
     if (!o) return [];
     return [
-      { label: "Total users", value: o.totalUsers, sub: `${fmtNum(o.verifiedUsers)} email-verified` },
-      { label: "New · 24h", value: o.newUsers24h, sub: `${fmtNum(o.newUsers7d)} in last 7 days` },
-      { label: "New · 30d", value: o.newUsers30d, sub: "rolling month" },
-      { label: "Active now", value: o.activeUsers, sub: `${fmtNum(o.activeSessions)} live sessions` },
-      { label: "Admins", value: o.adminUsers, sub: `${fmtNum(o.disabledUsers)} disabled` },
+      { label: "Continue watching", value: o.continueWatchingItems, tone: "red" },
+      { label: "My List", value: o.myListItems, tone: "violet" },
+      { label: "Watch progress", value: o.watchProgressItems, tone: "cyan" },
+      { label: "Active sessions", value: o.activeSessions, tone: "green" },
+    ];
+  });
+
+  const activityByHour = createMemo(() => {
+    const counts = new Array(24).fill(0);
+    for (const e of activity()) {
+      const d = new Date(e.ts);
+      if (!Number.isNaN(d.getTime())) counts[d.getHours()] += 1;
+    }
+    return counts.map((v, h) => ({
+      label: hourLabel(h),
+      value: v,
+      tick: h % 6 === 0,
+      title: `${hourLabel(h)} – ${v} event${v === 1 ? "" : "s"}`,
+    }));
+  });
+
+  const activityByKind = createMemo(() => {
+    const tones = { login: "blue", watch: "red", signup: "green" };
+    const labels = { login: "Logins", watch: "Watches", signup: "Sign-ups" };
+    const counts = {};
+    for (const e of activity()) counts[e.kind] = (counts[e.kind] || 0) + 1;
+    return ["login", "watch", "signup"]
+      .filter((k) => counts[k])
+      .map((k) => ({ key: k, label: labels[k], value: counts[k], tone: tones[k] }));
+  });
+
+  const topUsers = createMemo(() =>
+    [...users()]
+      .map((u) => ({ u, score: (u.continueWatchingCount || 0) + (u.myListCount || 0) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 8)
+      .map((x, i) => ({
+        rank: i + 1,
+        label: x.u.displayName || x.u.email,
+        value: x.score,
+        sub: `${fmtNum(x.u.continueWatchingCount)} watching · ${fmtNum(x.u.myListCount)} in list`,
+        tone: "violet",
+      })),
+  );
+
+  const sortedUsers = createMemo(() => {
+    const { key, dir } = userSort();
+    const mul = dir === "asc" ? 1 : -1;
+    const score = (u) => (u.continueWatchingCount || 0) + (u.myListCount || 0);
+    const val = (u) => {
+      switch (key) {
+        case "name":
+          return (u.displayName || u.email || "").toLowerCase();
+        case "sessions":
+          return u.sessionCount || 0;
+        case "engagement":
+          return score(u);
+        case "lastActive":
+          return u.lastActiveAt || 0;
+        default:
+          return u.createdAt || 0;
+      }
+    };
+    return [...users()].sort((a, b) => {
+      const av = val(a);
+      const bv = val(b);
+      if (av < bv) return -1 * mul;
+      if (av > bv) return 1 * mul;
+      return 0;
+    });
+  });
+
+  const usersSummary = createMemo(() => {
+    const list = users();
+    return {
+      shown: list.length,
+      verified: list.filter((u) => u.emailVerifiedAt).length,
+      admins: list.filter((u) => u.isAdmin).length,
+      disabled: list.filter((u) => u.isDisabled).length,
+    };
+  });
+
+  // ── Derived health data ───────────────────────────────────────────────────
+  const gauges = createMemo(() => {
+    const h = health();
+    if (!h) return [];
+    const host = h.host || {};
+    return [
       {
-        label: "Continue watching",
-        value: o.continueWatchingItems,
-        sub: `${fmtNum(o.myListItems)} My-List items`,
+        label: "Memory",
+        value: ratioPct(host.memUsed, host.memTotal),
+        sub: `${fmtBytes(host.memUsed)} / ${fmtBytes(host.memTotal)}`,
+      },
+      {
+        label: "Disk used",
+        value: host.diskTotal > 0 ? 100 - ratioPct(host.diskFree, host.diskTotal) : 0,
+        sub: `${fmtBytes(host.diskFree)} free`,
+      },
+      {
+        label: "File descriptors",
+        value: host.fdLimit > 0 ? ratioPct(host.fdCount, host.fdLimit) : 0,
+        sub:
+          host.fdCount >= 0 ? `${fmtNum(host.fdCount)} / ${fmtNum(host.fdLimit)}` : "unknown",
+      },
+      {
+        label: "CPU load",
+        value: host.numCpus > 0 ? Math.min(100, ((Number(host.load1) || 0) / host.numCpus) * 100) : 0,
+        display: (Number(host.load1) || 0).toFixed(2),
+        sub: `${fmtNum(host.numCpus)} cores`,
       },
     ];
   });
 
-  const healthKpis = createMemo(() => {
+  const healthStats = createMemo(() => {
     const h = health();
     if (!h) return [];
-    const host = h.host || {};
     const http = (h.http && h.http.counters) || {};
     const restarts = h.restarts || {};
     const playback = h.playback || {};
     return [
+      { label: "Uptime", value: fmtUptime(h.uptimeSeconds), tone: "green" },
+      { label: "Requests served", value: fmtNum(http.reqTotal), tone: "blue" },
       {
-        label: "Uptime",
-        value: fmtUptime(h.uptimeSeconds),
-        sub: `${fmtNum(http.reqTotal)} requests served`,
-      },
-      {
-        label: "Restarts · 1h",
-        value: fmtNum(restarts.lastHour),
-        sub:
-          restarts.minutesSinceLast != null
-            ? `last ${restarts.minutesSinceLast}m ago`
-            : "none recently",
-      },
-      {
-        label: "File descriptors",
-        value: host.fdCount >= 0 ? fmtNum(host.fdCount) : "—",
-        sub:
-          host.fdLimit > 0
-            ? `of ${fmtNum(host.fdLimit)} · ${ratioPct(host.fdCount, host.fdLimit).toFixed(0)}%`
-            : "limit unknown",
-      },
-      {
-        label: "Memory",
-        value: `${ratioPct(host.memUsed, host.memTotal).toFixed(0)}%`,
-        sub: `${fmtBytes(host.memUsed)} / ${fmtBytes(host.memTotal)}`,
-      },
-      {
-        label: "Disk free",
-        value: host.diskTotal > 0 ? `${ratioPct(host.diskFree, host.diskTotal).toFixed(0)}%` : "—",
-        sub: `${fmtBytes(host.diskFree)} free`,
-      },
-      {
-        label: "CPU load",
-        value: (Number(host.load1) || 0).toFixed(2),
-        sub: `${fmtNum(host.numCpus)} cores`,
-      },
-      {
-        label: "HTTP 5xx",
+        label: "HTTP 5xx rate",
         value: `${(Number(h.http?.req5xxRate) || 0).toFixed(1)}%`,
+        tone: "red",
         sub: `${fmtNum(http.req5xx)} of ${fmtNum(http.reqTotal)}`,
       },
       {
         label: "Playback fails",
         value: `${(Number(playback.failureRate) || 0).toFixed(0)}%`,
+        tone: "amber",
         sub: `${fmtNum(playback.windowTotal)} recent plays`,
       },
+      {
+        label: "Restarts · 1h",
+        value: fmtNum(restarts.lastHour),
+        tone: "violet",
+        sub:
+          restarts.minutesSinceLast != null
+            ? `last ${restarts.minutesSinceLast}m ago`
+            : "none recently",
+      },
     ];
   });
 
-  const sparkSpecs = createMemo(() => {
-    const samples = healthHistory();
-    const last = samples.length ? samples[samples.length - 1] : null;
+  const activeMetric = createMemo(
+    () => HEALTH_METRICS.find((m) => m.key === healthMetric()) || HEALTH_METRICS[0],
+  );
+
+  const healthTimeline = createMemo(() => {
+    const m = activeMetric();
+    return healthHistory().map((s) => ({ label: clockTime(s.ts), value: m.get(s) }));
+  });
+
+  const requestMix = createMemo(() => {
+    const c = (health() && health().http && health().http.counters) || {};
+    const total = Number(c.reqTotal) || 0;
+    const c4 = Number(c.req4xx) || 0;
+    const c5 = Number(c.req5xx) || 0;
+    const ok = Math.max(0, total - c4 - c5);
+    return {
+      total,
+      segments: [
+        { label: "2xx · 3xx", value: ok, tone: "green" },
+        { label: "4xx", value: c4, tone: "amber" },
+        { label: "5xx", value: c5, tone: "red" },
+      ],
+    };
+  });
+
+  const streaming = createMemo(() => {
+    const s = (health() && health().streaming) || {};
+    const remux = s.remux || {};
+    const hls = s.hls || {};
+    const cacheTotal = (Number(hls.segmentCacheHits) || 0) + (Number(hls.segmentCacheMisses) || 0);
+    return {
+      remux,
+      hls,
+      cacheTotal,
+      cacheHitRate: cacheTotal ? (Number(hls.segmentCacheHits) || 0) / cacheTotal * 100 : 0,
+    };
+  });
+
+  const resolver = createMemo(() => (health() && health().resolver) || {});
+  const resolverOutcomes = createMemo(() => {
+    const r = resolver();
     return [
-      {
-        label: "HTTP 5xx rate",
-        tone: "red",
-        max: 5,
-        values: samples.map((s) => Number(s.req5xxRate) || 0),
-        current: last ? `${(Number(last.req5xxRate) || 0).toFixed(1)}%` : "—",
-      },
-      {
-        label: "Playback fail rate",
-        tone: "amber",
-        max: 10,
-        values: samples.map((s) => Number(s.playbackFailureRate) || 0),
-        current: last ? `${(Number(last.playbackFailureRate) || 0).toFixed(0)}%` : "—",
-      },
-      {
-        label: "FD usage",
-        tone: "blue",
-        max: 100,
-        values: samples.map((s) => ratioPct(s.fdCount, s.fdLimit)),
-        current: last ? `${ratioPct(last.fdCount, last.fdLimit).toFixed(0)}%` : "—",
-      },
-      {
-        label: "Memory usage",
-        tone: "blue",
-        max: 100,
-        values: samples.map((s) => ratioPct(s.memUsed, s.memTotal)),
-        current: last ? `${ratioPct(last.memUsed, last.memTotal).toFixed(0)}%` : "—",
-      },
+      { label: "Completed", value: Number(r.externalCompleted) || 0, tone: "green" },
+      { label: "Failed", value: Number(r.externalFailed) || 0, tone: "red" },
+      { label: "Rejected", value: Number(r.externalRejected) || 0, tone: "amber" },
     ];
   });
 
-  // Poll the Health tab while it's open; stop when the user navigates away.
+  const providers = createMemo(() => {
+    const list = (health() && health().providers && health().providers.providers) || [];
+    return [...list].sort((a, b) => (b.consecutiveFailures || 0) - (a.consecutiveFailures || 0));
+  });
+
+  // Poll the Health tab while it's open.
   createEffect(() => {
     clearInterval(healthTimer);
     if (tab() === "health") {
@@ -582,7 +574,24 @@ export default function AdminPage() {
   });
   onCleanup(() => clearInterval(healthTimer));
 
+  // Auto-refresh the dashboard data (not the Health tab — it self-polls).
+  createEffect(() => {
+    clearInterval(overviewTimer);
+    if (autoRefresh() && tab() !== "health") {
+      overviewTimer = setInterval(() => {
+        if (document.visibilityState !== "hidden") refreshLive();
+      }, 30_000);
+    }
+  });
+  onCleanup(() => clearInterval(overviewTimer));
+
   onMount(loadAll);
+
+  const sortIndicator = (key) => {
+    const s = userSort();
+    if (s.key !== key) return "";
+    return s.dir === "asc" ? " ↑" : " ↓";
+  };
 
   return (
     <div class="admin-shell">
@@ -603,40 +612,31 @@ export default function AdminPage() {
       </header>
 
       <nav class="admin-tabnav">
-        <button
-          classList={{ "admin-tab": true, "is-active": tab() === "overview" }}
-          onClick={() => setTab("overview")}
+        <For
+          each={[
+            { key: "overview", label: "Overview" },
+            { key: "users", label: "Users" },
+            { key: "activity", label: "Activity" },
+            { key: "feedback", label: "Feedback" },
+            { key: "health", label: "Health" },
+          ]}
         >
-          Overview
-        </button>
-        <button
-          classList={{ "admin-tab": true, "is-active": tab() === "users" }}
-          onClick={() => setTab("users")}
-        >
-          Users
-        </button>
-        <button
-          classList={{ "admin-tab": true, "is-active": tab() === "activity" }}
-          onClick={() => setTab("activity")}
-        >
-          Activity
-        </button>
-        <button
-          classList={{ "admin-tab": true, "is-active": tab() === "feedback" }}
-          onClick={() => setTab("feedback")}
-        >
-          Feedback
-          <Show when={feedback().length}>
-            <span class="admin-tab-count">{fmtNum(feedback().length)}</span>
-          </Show>
-        </button>
-        <button
-          classList={{ "admin-tab": true, "is-active": tab() === "health" }}
-          onClick={() => setTab("health")}
-        >
-          Health
-        </button>
+          {(t) => (
+            <button
+              classList={{ "admin-tab": true, "is-active": tab() === t.key }}
+              onClick={() => setTab(t.key)}
+            >
+              {t.label}
+              <Show when={t.key === "feedback" && feedback().length}>
+                <span class="admin-tab-count">{fmtNum(feedback().length)}</span>
+              </Show>
+            </button>
+          )}
+        </For>
         <span class="admin-tabnav-spacer" />
+        <Show when={tab() !== "health"}>
+          <Toggle checked={autoRefresh()} onChange={setAutoRefresh} label="Live" />
+        </Show>
         <button
           class="admin-btn admin-refresh"
           onClick={() => loadAll()}
@@ -657,50 +657,211 @@ export default function AdminPage() {
       </Show>
 
       <main class="admin-main">
+        {/* ── Overview ─────────────────────────────────────────────── */}
         <Show when={tab() === "overview"}>
-          <Show when={overview()} fallback={<div class="admin-loading">Loading metrics…</div>}>
-            <Show when={health()}>
-              <button
-                class={`admin-status-pill ${statusClass(health().status)}`}
-                onClick={() => setTab("health")}
-              >
-                <span class={`admin-status-dot ${statusClass(health().status)}`} />
-                {STATUS_LABEL[health().status] || "Service health"}
-                <span class="admin-status-pill-go">View health →</span>
-              </button>
-            </Show>
+          <Show when={overview()} fallback={<SkeletonKpis />}>
+            <div class="admin-overview-bar">
+              <Show when={health()}>
+                <button
+                  class={`admin-status-pill ${statusClass(health().status)}`}
+                  onClick={() => setTab("health")}
+                >
+                  <span class={`admin-status-dot ${statusClass(health().status)}`} />
+                  {STATUS_LABEL[health().status] || "Service health"}
+                  <span class="admin-status-pill-go">View health →</span>
+                </button>
+              </Show>
+              <span class="admin-overview-spacer" />
+              <span class="admin-synced">
+                <Show when={autoRefresh()}>
+                  <span class="admin-live-dot" />
+                </Show>
+                Updated {clockTime(lastSync())}
+              </span>
+            </div>
+
             <div class="admin-kpis">
-              <For each={kpis()}>
-                {(k) => (
-                  <div class="admin-kpi">
-                    <span class="admin-kpi-label">{k.label}</span>
-                    <span class="admin-kpi-value">{fmtNum(k.value)}</span>
-                    <span class="admin-kpi-sub">{k.sub}</span>
-                  </div>
-                )}
-              </For>
+              <KpiCard
+                tone="blue"
+                label="Total users"
+                value={overview().totalUsers}
+                trend={{ delta: trendStats().l7, label: "7d" }}
+                spark={totalSpark()}
+              />
+              <KpiCard
+                tone="green"
+                label="New · 24h"
+                value={overview().newUsers24h}
+                trend={{ delta: trendStats().deltaToday, label: "vs yest" }}
+                spark={daily().slice(-14)}
+              />
+              <KpiCard
+                tone="violet"
+                label="New · 7d"
+                value={trendStats().l7}
+                trend={{ delta: trendStats().d7, pct: true, label: "vs prev" }}
+                spark={daily().slice(-14)}
+              />
+              <KpiCard
+                tone="cyan"
+                label="New · 30d"
+                value={overview().newUsers30d}
+                trend={{ delta: trendStats().d30, pct: true, label: "vs prev" }}
+                spark={daily().slice(-30)}
+              />
+              <KpiCard
+                tone="amber"
+                label="Active now"
+                value={overview().activeUsers}
+                sub={`${fmtNum(overview().activeSessions)} live sessions`}
+              />
+              <KpiCard
+                tone="pink"
+                label="Email verified"
+                value={overview().verifiedUsers}
+                sub={`${fmtPct(overview().verifiedUsers, overview().totalUsers)} of all users`}
+              />
             </div>
 
             <section class="admin-panel">
               <div class="admin-panel-head">
-                <h2 class="admin-panel-title">New sign-ups</h2>
-                <span class="admin-panel-sub">Last 30 days</span>
+                <div>
+                  <h2 class="admin-panel-title">New sign-ups</h2>
+                  <span class="admin-panel-sub">
+                    <Show
+                      when={signupFocus()}
+                      fallback={
+                        <>
+                          {fmtNum(signupSummary().total)} total · peak {fmtNum(signupSummary().peak)}/day
+                        </>
+                      }
+                    >
+                      <strong class="admin-readout-val">{fmtNum(signupFocus().value)}</strong> sign-ups
+                      on {monthDay(signupFocus().label)}
+                    </Show>
+                  </span>
+                </div>
+                <div class="admin-panel-controls">
+                  <Segmented
+                    value={growthMode()}
+                    onChange={setGrowthMode}
+                    options={[
+                      { value: "area", label: "Area" },
+                      { value: "bars", label: "Bars" },
+                    ]}
+                  />
+                  <Segmented
+                    value={growthRange()}
+                    onChange={setGrowthRange}
+                    options={[
+                      { value: 7, label: "7d" },
+                      { value: 30, label: "30d" },
+                      { value: 90, label: "90d" },
+                    ]}
+                  />
+                </div>
               </div>
-              <GrowthChart data={growth()} />
+              <TrendChart
+                data={chartData()}
+                overlay={chartOverlay()}
+                mode={growthMode()}
+                tone="red"
+                xFormat={monthDay}
+                onFocus={setSignupFocus}
+                label="New sign-ups per day"
+              />
+              <Show when={chartOverlay()}>
+                <div class="admin-chart-legend">
+                  <span class="admin-chart-legend-item">
+                    <span class="admin-legend-swatch t-red" /> Daily sign-ups
+                  </span>
+                  <span class="admin-chart-legend-item">
+                    <span class="admin-legend-swatch is-dashed" /> 7-day average
+                  </span>
+                </div>
+              </Show>
             </section>
+
+            <div class="admin-grid-2">
+              <section class="admin-panel">
+                <div class="admin-panel-head">
+                  <h2 class="admin-panel-title">User base</h2>
+                  <span class="admin-panel-sub">Verification mix</span>
+                </div>
+                <DonutChart
+                  segments={composition()}
+                  centerValue={fmtNum(overview().totalUsers)}
+                  centerLabel="users"
+                  label="User verification mix"
+                />
+                <div class="admin-meta-row">
+                  <span class="admin-meta-chip">
+                    <span class="admin-meta-dot t-red" /> {fmtNum(overview().adminUsers)} admins
+                  </span>
+                  <span class="admin-meta-chip">
+                    <span class="admin-meta-dot t-amber" /> {fmtNum(overview().disabledUsers)} disabled
+                  </span>
+                </div>
+              </section>
+
+              <section class="admin-panel">
+                <div class="admin-panel-head">
+                  <h2 class="admin-panel-title">Engagement</h2>
+                  <span class="admin-panel-sub">Saved &amp; in-progress items</span>
+                </div>
+                <HBars items={engagement()} />
+              </section>
+            </div>
 
             <section class="admin-panel">
               <div class="admin-panel-head">
-                <h2 class="admin-panel-title">Latest activity</h2>
-                <button class="admin-link-btn" onClick={() => setTab("activity")}>
-                  View all
-                </button>
+                <div>
+                  <h2 class="admin-panel-title">Activity by hour</h2>
+                  <span class="admin-panel-sub">When your users are active (last {fmtNum(activity().length)} events)</span>
+                </div>
+                <div class="admin-kindchips">
+                  <For each={activityByKind()}>
+                    {(k) => (
+                      <span class="admin-meta-chip">
+                        <span class={`admin-meta-dot t-${k.tone}`} /> {fmtNum(k.value)} {k.label.toLowerCase()}
+                      </span>
+                    )}
+                  </For>
+                </div>
               </div>
-              <ActivityFeed events={activity().slice(0, 8)} />
+              <Heatmap cells={activityByHour()} tone="blue" />
             </section>
+
+            <div class="admin-grid-2">
+              <section class="admin-panel">
+                <div class="admin-panel-head">
+                  <h2 class="admin-panel-title">Most engaged users</h2>
+                  <button class="admin-link-btn" onClick={() => setTab("users")}>
+                    All users
+                  </button>
+                </div>
+                <Show
+                  when={topUsers().length}
+                  fallback={<div class="admin-empty">No engagement data yet.</div>}
+                >
+                  <HBars items={topUsers()} />
+                </Show>
+              </section>
+
+              <section class="admin-panel">
+                <div class="admin-panel-head">
+                  <h2 class="admin-panel-title">Latest activity</h2>
+                  <button class="admin-link-btn" onClick={() => setTab("activity")}>
+                    View all
+                  </button>
+                </div>
+                <ActivityFeed events={activity().slice(0, 8)} />
+              </section>
+            </div>
           </Show>
         </Show>
 
+        {/* ── Users ────────────────────────────────────────────────── */}
         <Show when={tab() === "users"}>
           <div class="admin-toolbar">
             <input
@@ -710,22 +871,39 @@ export default function AdminPage() {
               value={search()}
               onInput={(e) => onSearchInput(e.currentTarget.value)}
             />
-            <span class="admin-count">{users().length} shown</span>
+            <div class="admin-toolbar-stats">
+              <span class="admin-count">{fmtNum(usersSummary().shown)} shown</span>
+              <span class="admin-count-sep">·</span>
+              <span class="admin-count">{fmtNum(usersSummary().verified)} verified</span>
+              <span class="admin-count-sep">·</span>
+              <span class="admin-count">{fmtNum(usersSummary().admins)} admins</span>
+            </div>
           </div>
           <div class="admin-tablewrap">
             <table class="admin-table">
               <thead>
                 <tr>
-                  <th>User</th>
-                  <th>Joined</th>
+                  <th class="admin-sortable" onClick={() => toggleSort("name")}>
+                    User{sortIndicator("name")}
+                  </th>
+                  <th class="admin-sortable" onClick={() => toggleSort("createdAt")}>
+                    Joined{sortIndicator("createdAt")}
+                  </th>
                   <th>Status</th>
-                  <th class="admin-num">Sessions</th>
-                  <th>Last active</th>
+                  <th class="admin-num admin-sortable" onClick={() => toggleSort("sessions")}>
+                    Sessions{sortIndicator("sessions")}
+                  </th>
+                  <th class="admin-sortable" onClick={() => toggleSort("engagement")}>
+                    Engagement{sortIndicator("engagement")}
+                  </th>
+                  <th class="admin-sortable" onClick={() => toggleSort("lastActive")}>
+                    Last active{sortIndicator("lastActive")}
+                  </th>
                   <th class="admin-actions-col">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                <For each={users()}>
+                <For each={sortedUsers()}>
                   {(u) => (
                     <tr classList={{ "is-disabled": u.isDisabled }}>
                       <td>
@@ -751,27 +929,28 @@ export default function AdminPage() {
                           </Show>
                         </div>
                       </td>
-                      <td class="admin-num">{u.sessionCount}</td>
+                      <td class="admin-num">{fmtNum(u.sessionCount)}</td>
+                      <td>
+                        <div class="admin-engage-cell">
+                          <span class="admin-engage-num">
+                            {fmtNum((u.continueWatchingCount || 0) + (u.myListCount || 0))}
+                          </span>
+                          <span class="admin-engage-detail">
+                            {fmtNum(u.continueWatchingCount)} watching · {fmtNum(u.myListCount)} list
+                          </span>
+                        </div>
+                      </td>
                       <td>{u.lastActiveAt ? relTime(u.lastActiveAt) : "—"}</td>
                       <td>
                         <div class="admin-row-actions">
-                          <button
-                            class="admin-btn admin-btn-sm"
-                            onClick={() => openPwModal(u)}
-                          >
+                          <button class="admin-btn admin-btn-sm" onClick={() => openPwModal(u)}>
                             Reset
                           </button>
                           <Show when={u.id !== currentUser.id}>
-                            <button
-                              class="admin-btn admin-btn-sm"
-                              onClick={() => toggleDisabled(u)}
-                            >
+                            <button class="admin-btn admin-btn-sm" onClick={() => toggleDisabled(u)}>
                               {u.isDisabled ? "Enable" : "Disable"}
                             </button>
-                            <button
-                              class="admin-btn admin-btn-sm"
-                              onClick={() => toggleAdmin(u)}
-                            >
+                            <button class="admin-btn admin-btn-sm" onClick={() => toggleAdmin(u)}>
                               {u.isAdmin ? "Unadmin" : "Make admin"}
                             </button>
                             <button
@@ -794,7 +973,29 @@ export default function AdminPage() {
           </Show>
         </Show>
 
+        {/* ── Activity ─────────────────────────────────────────────── */}
         <Show when={tab() === "activity"}>
+          <div class="admin-grid-2">
+            <section class="admin-panel">
+              <div class="admin-panel-head">
+                <h2 class="admin-panel-title">Activity by hour</h2>
+                <span class="admin-panel-sub">Last {fmtNum(activity().length)} events</span>
+              </div>
+              <Heatmap cells={activityByHour()} tone="blue" />
+            </section>
+            <section class="admin-panel">
+              <div class="admin-panel-head">
+                <h2 class="admin-panel-title">Breakdown</h2>
+                <span class="admin-panel-sub">By type</span>
+              </div>
+              <DonutChart
+                segments={activityByKind()}
+                centerValue={fmtNum(activity().length)}
+                centerLabel="events"
+                label="Activity by type"
+              />
+            </section>
+          </div>
           <section class="admin-panel">
             <div class="admin-panel-head">
               <h2 class="admin-panel-title">Activity feed</h2>
@@ -804,11 +1005,14 @@ export default function AdminPage() {
           </section>
         </Show>
 
+        {/* ── Feedback ─────────────────────────────────────────────── */}
         <Show when={tab() === "feedback"}>
           <section class="admin-panel">
             <div class="admin-panel-head">
               <h2 class="admin-panel-title">User feedback</h2>
-              <span class="admin-panel-sub">{fmtNum(feedback().length)} message{feedback().length === 1 ? "" : "s"}</span>
+              <span class="admin-panel-sub">
+                {fmtNum(feedback().length)} message{feedback().length === 1 ? "" : "s"}
+              </span>
             </div>
             <Show
               when={feedback().length}
@@ -852,6 +1056,7 @@ export default function AdminPage() {
           </section>
         </Show>
 
+        {/* ── Health ───────────────────────────────────────────────── */}
         <Show when={tab() === "health"}>
           <Show
             when={health()}
@@ -870,62 +1075,139 @@ export default function AdminPage() {
                 <h2 class="admin-status-title">{STATUS_LABEL[health().status]}</h2>
                 <p class="admin-status-sub">{healthSummary(health())}</p>
               </div>
-              <span class="admin-status-meta">uptime {fmtUptime(health().uptimeSeconds)}</span>
+              <span class="admin-status-meta">
+                <span class="admin-live-dot" />
+                uptime {fmtUptime(health().uptimeSeconds)} · refreshes every 20s
+              </span>
             </section>
 
-            <div class="admin-kpis">
-              <For each={healthKpis()}>
-                {(k) => (
-                  <div class="admin-kpi">
-                    <span class="admin-kpi-label">{k.label}</span>
-                    <span class="admin-kpi-value">{k.value}</span>
-                    <span class="admin-kpi-sub">{k.sub}</span>
-                  </div>
+            <div class="admin-gauges">
+              <For each={gauges()}>
+                {(g) => (
+                  <Gauge
+                    label={g.label}
+                    value={g.value}
+                    display={g.display}
+                    sub={g.sub}
+                  />
                 )}
+              </For>
+            </div>
+
+            <div class="admin-stats-row">
+              <For each={healthStats()}>
+                {(s) => <StatTile label={s.label} value={s.value} sub={s.sub} tone={s.tone} />}
               </For>
             </div>
 
             <section class="admin-panel">
               <div class="admin-panel-head">
-                <h2 class="admin-panel-title">Checks</h2>
-                <span class="admin-panel-sub">Live · refreshes every 20s</span>
+                <h2 class="admin-panel-title">24-hour uptime</h2>
+                <span class="admin-panel-sub">{fmtNum(healthHistory().length)} samples</span>
               </div>
-              <div class="admin-checks">
-                <For each={health().checks || []}>
-                  {(c) => (
-                    <div class="admin-check">
-                      <span class={`admin-status-dot ${statusClass(c.status)}`} />
-                      <div class="admin-check-body">
-                        <div class="admin-check-label">{c.label}</div>
-                        <div class="admin-check-detail">{c.detail}</div>
-                      </div>
-                    </div>
-                  )}
-                </For>
+              <StatusRibbon samples={healthHistory()} timeFormat={clockTime} />
+              <div class="admin-ribbon-legend">
+                <span class="admin-chart-legend-item"><span class="admin-legend-swatch is-ok" /> Healthy</span>
+                <span class="admin-chart-legend-item"><span class="admin-legend-swatch is-warn" /> Degraded</span>
+                <span class="admin-chart-legend-item"><span class="admin-legend-swatch is-down" /> Issues</span>
               </div>
             </section>
 
             <section class="admin-panel">
               <div class="admin-panel-head">
-                <h2 class="admin-panel-title">Last 24 hours</h2>
-                <span class="admin-panel-sub">{fmtNum(healthHistory().length)} samples</span>
+                <div>
+                  <h2 class="admin-panel-title">Metrics · last 24h</h2>
+                  <span class="admin-panel-sub">{activeMetric().label}</span>
+                </div>
+                <Segmented
+                  value={healthMetric()}
+                  onChange={setHealthMetric}
+                  options={HEALTH_METRICS.map((m) => ({ value: m.key, label: m.label }))}
+                />
               </div>
-              <div class="admin-sparks">
-                <For each={sparkSpecs()}>
-                  {(s) => (
-                    <div class="admin-spark-card">
-                      <div class="admin-spark-head">
-                        <span class="admin-spark-label">{s.label}</span>
-                        <span class="admin-spark-value">{s.current}</span>
+              <TrendChart
+                data={healthTimeline()}
+                mode="area"
+                tone={activeMetric().tone}
+                format={(v) => `${v.toFixed(activeMetric().unit ? 1 : 2)}${activeMetric().unit}`}
+                label={`${activeMetric().label} over 24 hours`}
+              />
+            </section>
+
+            <div class="admin-grid-2">
+              <section class="admin-panel">
+                <div class="admin-panel-head">
+                  <h2 class="admin-panel-title">Request mix</h2>
+                  <span class="admin-panel-sub">{fmtNum(requestMix().total)} total</span>
+                </div>
+                <DonutChart
+                  segments={requestMix().segments}
+                  centerValue={fmtNum(requestMix().total)}
+                  centerLabel="requests"
+                  label="HTTP request mix"
+                />
+              </section>
+
+              <section class="admin-panel">
+                <div class="admin-panel-head">
+                  <h2 class="admin-panel-title">Checks</h2>
+                  <span class="admin-panel-sub">Live status checks</span>
+                </div>
+                <div class="admin-checks">
+                  <For each={health().checks || []}>
+                    {(c) => (
+                      <div class="admin-check">
+                        <span class={`admin-status-dot ${statusClass(c.status)}`} />
+                        <div class="admin-check-body">
+                          <div class="admin-check-label">{c.label}</div>
+                          <div class="admin-check-detail">{c.detail}</div>
+                        </div>
                       </div>
-                      <Sparkline values={s.values} tone={s.tone} max={s.max} label={s.label} />
-                    </div>
-                  )}
-                </For>
+                    )}
+                  </For>
+                </div>
+              </section>
+            </div>
+
+            <section class="admin-panel">
+              <div class="admin-panel-head">
+                <h2 class="admin-panel-title">Streaming pipeline</h2>
+                <span class="admin-panel-sub">Remux &amp; HLS transcode workers</span>
+              </div>
+              <div class="admin-stats-row">
+                <StatTile label="Remux active" value={fmtNum(streaming().remux.active)} tone="blue" sub={`${fmtNum(streaming().remux.maxConcurrent)} max`} />
+                <StatTile label="Remux done" value={fmtNum(streaming().remux.completed)} tone="green" sub={`${fmtNum(streaming().remux.failed)} failed`} />
+                <StatTile label="Transcodes active" value={fmtNum(streaming().hls.activeTranscodes)} tone="violet" sub={`${fmtNum(streaming().hls.maxTranscodeJobs)} max`} />
+                <StatTile label="Transcodes done" value={fmtNum(streaming().hls.transcodeCompleted)} tone="green" sub={`${fmtNum(streaming().hls.transcodeFailed)} failed`} />
+                <StatTile label="Segment cache" value={`${streaming().cacheHitRate.toFixed(0)}%`} tone="cyan" sub={`${fmtNum(streaming().cacheTotal)} lookups`} />
+                <StatTile label="On-demand renders" value={fmtNum(streaming().hls.onDemandRenders)} tone="amber" sub={`${fmtNum(streaming().hls.segmentRenderFailed)} failed`} />
               </div>
             </section>
 
-            <Show when={(health().providers?.providers || []).length}>
+            <section class="admin-panel">
+              <div class="admin-panel-head">
+                <h2 class="admin-panel-title">Resolver</h2>
+                <span class="admin-panel-sub">Source resolution &amp; external lookups</span>
+              </div>
+              <div class="admin-grid-2">
+                <div class="admin-stats-row admin-stats-grid">
+                  <StatTile label="Movie requests" value={fmtNum(resolver().movieRequests)} tone="red" />
+                  <StatTile label="TV requests" value={fmtNum(resolver().tvRequests)} tone="violet" />
+                  <StatTile label="External active" value={fmtNum(resolver().externalActive)} tone="blue" sub={`${fmtNum(resolver().maxExternalConcurrent)} max`} />
+                  <StatTile label="Coalesced waits" value={fmtNum(resolver().coalescedWaits)} tone="cyan" />
+                </div>
+                <Show when={resolverOutcomes().some((o) => o.value > 0)} fallback={<div class="admin-empty">No external lookups yet.</div>}>
+                  <DonutChart
+                    segments={resolverOutcomes()}
+                    centerValue={fmtNum(sum(resolverOutcomes().map((o) => o.value)))}
+                    centerLabel="lookups"
+                    label="External resolve outcomes"
+                  />
+                </Show>
+              </div>
+            </section>
+
+            <Show when={providers().length}>
               <section class="admin-panel">
                 <div class="admin-panel-head">
                   <h2 class="admin-panel-title">Providers</h2>
@@ -936,6 +1218,7 @@ export default function AdminPage() {
                     <thead>
                       <tr>
                         <th>Provider</th>
+                        <th>Health</th>
                         <th class="admin-num">OK</th>
                         <th class="admin-num">Fail</th>
                         <th class="admin-num">Streak</th>
@@ -944,19 +1227,38 @@ export default function AdminPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      <For each={health().providers.providers}>
-                        {(p) => (
-                          <tr>
-                            <td>{p.key}</td>
-                            <td class="admin-num">{fmtNum(p.successes)}</td>
-                            <td class="admin-num">{fmtNum(p.failures)}</td>
-                            <td class="admin-num">{fmtNum(p.consecutiveFailures)}</td>
-                            <td class="admin-num">
-                              {p.lastLatencyMs >= 0 ? `${fmtNum(p.lastLatencyMs)}ms` : "—"}
-                            </td>
-                            <td class="admin-provider-err">{p.lastError || "—"}</td>
-                          </tr>
-                        )}
+                      <For each={providers()}>
+                        {(p) => {
+                          const total = (p.successes || 0) + (p.failures || 0);
+                          const rate = total ? (p.successes / total) * 100 : 100;
+                          const tone = p.consecutiveFailures >= 3 ? "red" : rate < 80 ? "amber" : "green";
+                          return (
+                            <tr>
+                              <td class="admin-provider-name">{p.key}</td>
+                              <td>
+                                <div class="admin-health-bar">
+                                  <div class={`admin-health-fillwrap t-${tone}`}>
+                                    <svg class="admin-hbar-svg" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true">
+                                      <rect class="admin-hbar-fill" x="0" y="0" height="6" rx="3" width={Math.max(1, rate)} />
+                                    </svg>
+                                  </div>
+                                  <span class="admin-health-pct">{rate.toFixed(0)}%</span>
+                                </div>
+                              </td>
+                              <td class="admin-num">{fmtNum(p.successes)}</td>
+                              <td class="admin-num">{fmtNum(p.failures)}</td>
+                              <td class="admin-num">
+                                <span classList={{ "admin-streak-bad": p.consecutiveFailures >= 3 }}>
+                                  {fmtNum(p.consecutiveFailures)}
+                                </span>
+                              </td>
+                              <td class="admin-num">
+                                {p.lastLatencyMs >= 0 ? `${fmtNum(p.lastLatencyMs)}ms` : "—"}
+                              </td>
+                              <td class="admin-provider-err">{p.lastError || "—"}</td>
+                            </tr>
+                          );
+                        }}
                       </For>
                     </tbody>
                   </table>
