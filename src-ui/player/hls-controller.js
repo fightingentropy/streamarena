@@ -285,7 +285,6 @@ export function createHlsPlaybackController({
             30000,
             60000,
           );
-          const liveHlsReferer = String(getLiveHlsReferer() || "").trim();
           const pngStrippingLoader =
             createPngPrefixStrippingLoader(HlsConstructor);
           const hls = new HlsConstructor({
@@ -304,13 +303,6 @@ export function createHlsPlaybackController({
             testBandwidth: true,
             autoStartLoad: hlsStartPosition < 0,
             startPosition: hlsStartPosition,
-            ...(liveHlsReferer
-              ? {
-                  xhrSetup: (xhr) => {
-                    xhr.setRequestHeader("Referer", liveHlsReferer);
-                  },
-                }
-              : {}),
             ...(failFastNetworkErrors
               ? {
                   manifestLoadPolicy: fastFailurePlaylistLoadPolicy,
