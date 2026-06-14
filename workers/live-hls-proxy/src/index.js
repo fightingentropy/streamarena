@@ -179,23 +179,98 @@ async function authorizeSignedRequest(url, env) {
   return { target, referer };
 }
 
-// Fetch `path` + raw query from the origin (the mini, behind Caddy). With
-// ORIGIN_DIRECT_BASE set (grey-cloud hostname), the connection goes straight
-// to the origin IP instead of re-entering the zone's edge — which is the
-// whole point: the zone's L7 DDoS managed ruleset never sees live traffic.
-function fetchFromOrigin(env, path, search, requestHeaders, cacheTtl) {
-  const base = ((env.ORIGIN_DIRECT_BASE || env.ORIGIN_BASE || "").trim()).replace(/\/+$/, "");
-  if (!base) return null;
+// One GET to a specific origin base. Path+query is forwarded verbatim so the
+// backend's HMAC signature keeps validating.
+function originSubrequest(base, path, search, requestHeaders, cacheTtl, signal) {
   const originUrl = `${base}${path}${search}`;
-  const cf = {
-    cacheTtl,
-    cacheEverything: true,
-    cacheKey: originUrl,
-  };
   const headers = { Accept: "*/*", "X-Live-Worker-Origin-Fetch": "1" };
   const range = requestHeaders.get("Range");
   if (range) headers["Range"] = range;
-  return fetch(originUrl, { method: "GET", headers, cf });
+  const init = {
+    method: "GET",
+    headers,
+    cf: { cacheTtl, cacheEverything: true, cacheKey: originUrl },
+  };
+  if (signal) init.signal = signal;
+  return fetch(originUrl, init);
+}
+
+// How long the grey-cloud direct leg gets before we also reach for the zone
+// edge. A healthy direct origin answers in well under this; it only bites when
+// the direct leg is degraded — e.g. the home router's port-forward for the
+// grey-cloud origin gets dropped on a reboot, so Cloudflare's ~15s origin
+// connect timeout would otherwise stall every playlist fetch for ~20s.
+const ORIGIN_DIRECT_SOFT_DEADLINE_MS = 2500;
+// After the direct leg misses the deadline (or errors), skip it for this long
+// so we don't re-pay the deadline on every request while it stays down. One
+// request re-probes once the cooldown lapses, so recovery is automatic. This is
+// best-effort, per-isolate state — safe to lose; it only tunes latency.
+const ORIGIN_DIRECT_COOLDOWN_MS = 30000;
+let directOriginTrippedUntil = 0;
+
+// Fetch `path` + raw query from the origin (the mini, behind Caddy). With
+// ORIGIN_DIRECT_BASE set (grey-cloud hostname), the connection goes straight
+// to the origin IP instead of re-entering the zone's edge — which is the whole
+// point: the zone's L7 DDoS managed ruleset never sees live traffic.
+//
+// Resilience: when both the direct (grey) base and the edge ORIGIN_BASE are
+// configured, the direct leg is preferred but bounded by a soft deadline. If it
+// is slow (a degraded port-forward) or returns 5xx, the edge base serves the
+// request instead — so a broken direct leg costs ~2.5s once (then nothing,
+// while the breaker is open), not ~20s on every fetch. A healthy direct leg
+// wins long before the deadline, keeping the edge (and its DDoS ruleset) out of
+// the path in normal operation.
+function fetchFromOrigin(env, path, search, requestHeaders, cacheTtl) {
+  const direct = (env.ORIGIN_DIRECT_BASE || "").trim().replace(/\/+$/, "");
+  const edge = (env.ORIGIN_BASE || "").trim().replace(/\/+$/, "");
+  const primary = direct || edge;
+  if (!primary) return null;
+
+  // No distinct fallback to lean on: original single-origin behaviour.
+  if (!direct || !edge || direct === edge) {
+    return originSubrequest(primary, path, search, requestHeaders, cacheTtl);
+  }
+  // Direct leg is in cooldown after recent failures: skip straight to the edge.
+  if (Date.now() < directOriginTrippedUntil) {
+    return originSubrequest(edge, path, search, requestHeaders, cacheTtl);
+  }
+
+  return (async () => {
+    const controller = new AbortController();
+    let deadlineTimer;
+    const softDeadline = new Promise((resolve) => {
+      deadlineTimer = setTimeout(() => resolve("slow"), ORIGIN_DIRECT_SOFT_DEADLINE_MS);
+    });
+    const directAttempt = originSubrequest(
+      direct,
+      path,
+      search,
+      requestHeaders,
+      cacheTtl,
+      controller.signal,
+    )
+      .then((response) => ({ response }))
+      .catch((error) => ({ error }));
+
+    const settled = await Promise.race([directAttempt, softDeadline]);
+    clearTimeout(deadlineTimer);
+
+    if (settled !== "slow") {
+      // Direct answered in time. Trust any non-5xx (incl. signed 4xx denials,
+      // which the edge would mirror); only 5xx earns the edge retry.
+      if (settled.response && settled.response.status < 500) {
+        directOriginTrippedUntil = 0; // healthy — keep the breaker closed
+        return settled.response;
+      }
+      directOriginTrippedUntil = Date.now() + ORIGIN_DIRECT_COOLDOWN_MS;
+      return originSubrequest(edge, path, search, requestHeaders, cacheTtl);
+    }
+
+    // Direct missed the deadline — trip the breaker, drop it, serve from edge.
+    directOriginTrippedUntil = Date.now() + ORIGIN_DIRECT_COOLDOWN_MS;
+    controller.abort();
+    return originSubrequest(edge, path, search, requestHeaders, cacheTtl);
+  })();
 }
 
 // Re-point the origin's rewritten playlist at this Worker. The mini emits
