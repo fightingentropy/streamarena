@@ -426,6 +426,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/admin/overview", get(admin_overview_handler))
         .route("/api/admin/growth", get(admin_growth_handler))
         .route("/api/admin/users", get(admin_users_handler))
+        .route("/api/admin/users/detail", get(admin_user_detail_handler))
         .route("/api/admin/activity", get(admin_activity_handler))
         .route("/api/admin/live-top", get(admin_live_top_handler))
         .route("/api/admin/feedback", get(admin_feedback_handler))
@@ -526,6 +527,30 @@ async fn admin_users_handler(
     let rows = state.db.admin_users(search, limit, offset).await?;
     let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({ "users": value })))
+}
+
+async fn admin_user_detail_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let user_id = admin_query_i64(&uri, "id", 0);
+    if user_id <= 0 {
+        return Err(ApiError::bad_request("A numeric id query parameter is required."));
+    }
+    let detail = state
+        .db
+        .admin_user_detail(user_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("User not found."))?;
+    let value =
+        serde_json::to_value(detail).map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(json_response(value))
 }
 
 async fn admin_activity_handler(

@@ -17,6 +17,7 @@ import {
   StatusRibbon,
   TrendChart,
 } from "../admin/charts.jsx";
+import { UserDetailDrawer } from "../admin/user-detail.jsx";
 import {
   ActivityFeed,
   clockTime,
@@ -93,6 +94,10 @@ export default function AdminPage() {
   const [pwTarget, setPwTarget] = createSignal(null);
   const [pwValue, setPwValue] = createSignal("");
   const [pwError, setPwError] = createSignal("");
+  const [detailUser, setDetailUser] = createSignal(null);
+  const [detail, setDetail] = createSignal(null);
+  const [detailStatus, setDetailStatus] = createSignal("idle");
+  const [detailError, setDetailError] = createSignal("");
   const [health, setHealth] = createSignal(null);
   const [healthHistory, setHealthHistory] = createSignal([]);
   const [healthStatus, setHealthStatus] = createSignal("idle");
@@ -228,6 +233,66 @@ export default function AdminPage() {
     setPwError("");
   }
 
+  // ── User drill-down drawer ───────────────────────────────────────────────
+  async function openUser(user) {
+    if (!user) return;
+    setDetailUser(user);
+    setDetail(null);
+    setDetailError("");
+    setDetailStatus("loading");
+    try {
+      const data = await getJson(`/api/admin/users/detail?id=${user.id}`);
+      setDetail(data);
+      setDetailStatus("ready");
+    } catch (e) {
+      setDetailError(e.message || "Failed to load this user.");
+      setDetailStatus("error");
+    }
+  }
+
+  function closeUser() {
+    setDetailUser(null);
+    setDetail(null);
+    setDetailStatus("idle");
+  }
+
+  // Re-fetch the open drawer after an action so its header + stats stay current.
+  async function reloadDetail() {
+    const user = detailUser();
+    if (!user) return;
+    try {
+      const data = await getJson(`/api/admin/users/detail?id=${user.id}`);
+      setDetail(data);
+    } catch {
+      /* keep the stale detail; the flash already reported any failure */
+    }
+  }
+
+  function drawerReset() {
+    const user = detailUser();
+    if (user) openPwModal(user);
+  }
+
+  async function drawerToggleDisabled() {
+    const user = detailUser();
+    if (!user) return;
+    await toggleDisabled(user);
+    await reloadDetail();
+  }
+
+  async function drawerToggleAdmin() {
+    const user = detailUser();
+    if (!user) return;
+    await toggleAdmin(user);
+    await reloadDetail();
+  }
+
+  async function drawerDelete() {
+    const user = detailUser();
+    if (!user) return;
+    if (await deleteUser(user)) closeUser();
+  }
+
   async function submitPassword() {
     const target = pwTarget();
     if (!target) return;
@@ -285,13 +350,15 @@ export default function AdminPage() {
         `Permanently delete ${user.email}? This removes their account and all of their data.`,
       )
     )
-      return;
+      return false;
     try {
       await postJson("/api/admin/users/delete", { userId: user.id });
       showFlash(`${user.email} deleted.`);
       await refreshAfterAction();
+      return true;
     } catch (e) {
       showFlash(e.message, true);
+      return false;
     }
   }
 
@@ -421,7 +488,8 @@ export default function AdminPage() {
         label: x.u.displayName || x.u.email,
         value: x.score,
         sub: `${fmtNum(x.u.continueWatchingCount)} watching · ${fmtNum(x.u.myListCount)} in list`,
-        tone: "violet",
+        tone: "blue",
+        user: x.u,
       })),
   );
 
@@ -600,6 +668,21 @@ export default function AdminPage() {
   });
   onCleanup(() => clearInterval(overviewTimer));
 
+  // Esc closes the user drawer (and falls through to the reset modal if open).
+  function onKeyDown(event) {
+    if (event.key !== "Escape") return;
+    if (pwTarget()) return; // the modal handles its own Esc
+    if (detailUser()) closeUser();
+  }
+  onMount(() => document.addEventListener("keydown", onKeyDown));
+  onCleanup(() => document.removeEventListener("keydown", onKeyDown));
+
+  // Lock the page behind the drawer so the drawer scrolls on its own.
+  createEffect(() => {
+    document.body.classList.toggle("admin-noscroll", Boolean(detailUser()));
+  });
+  onCleanup(() => document.body.classList.remove("admin-noscroll"));
+
   onMount(loadAll);
 
   const sortIndicator = (key) => {
@@ -697,41 +780,34 @@ export default function AdminPage() {
 
             <div class="admin-kpis">
               <KpiCard
-                tone="blue"
+                tone="green"
+                label="Active now"
+                value={overview().activeUsers}
+                sub={`${fmtNum(overview().activeSessions)} live session${overview().activeSessions === 1 ? "" : "s"}`}
+              />
+              <KpiCard
+                tone="steel"
                 label="Total users"
                 value={overview().totalUsers}
                 trend={{ delta: trendStats().l7, label: "7d" }}
                 spark={totalSpark()}
               />
               <KpiCard
-                tone="green"
+                tone="steel"
                 label="New · 24h"
                 value={overview().newUsers24h}
                 trend={{ delta: trendStats().deltaToday, label: "vs yest" }}
                 spark={daily().slice(-14)}
               />
               <KpiCard
-                tone="violet"
+                tone="steel"
                 label="New · 7d"
                 value={trendStats().l7}
                 trend={{ delta: trendStats().d7, pct: true, label: "vs prev" }}
-                spark={daily().slice(-14)}
-              />
-              <KpiCard
-                tone="cyan"
-                label="New · 30d"
-                value={overview().newUsers30d}
-                trend={{ delta: trendStats().d30, pct: true, label: "vs prev" }}
                 spark={daily().slice(-30)}
               />
               <KpiCard
-                tone="amber"
-                label="Active now"
-                value={overview().activeUsers}
-                sub={`${fmtNum(overview().activeSessions)} live sessions`}
-              />
-              <KpiCard
-                tone="pink"
+                tone="green"
                 label="Email verified"
                 value={overview().verifiedUsers}
                 sub={`${fmtPct(overview().verifiedUsers, overview().totalUsers)} of all users`}
@@ -780,7 +856,7 @@ export default function AdminPage() {
                 data={chartData()}
                 overlay={chartOverlay()}
                 mode={growthMode()}
-                tone="red"
+                tone="steel"
                 xFormat={monthDay}
                 onFocus={setSignupFocus}
                 label="New sign-ups per day"
@@ -788,7 +864,7 @@ export default function AdminPage() {
               <Show when={chartOverlay()}>
                 <div class="admin-chart-legend">
                   <span class="admin-chart-legend-item">
-                    <span class="admin-legend-swatch t-red" /> Daily sign-ups
+                    <span class="admin-legend-swatch t-steel" /> Daily sign-ups
                   </span>
                   <span class="admin-chart-legend-item">
                     <span class="admin-legend-swatch is-dashed" /> 7-day average
@@ -798,6 +874,44 @@ export default function AdminPage() {
             </section>
 
             <div class="admin-grid-2">
+              <section class="admin-panel">
+                <div class="admin-panel-head">
+                  <h2 class="admin-panel-title">What’s being watched</h2>
+                  <span class="admin-panel-sub">Live &amp; sports · last 7 days</span>
+                </div>
+                <Show
+                  when={topLiveBars().length}
+                  fallback={<div class="admin-empty">No live views recorded yet.</div>}
+                >
+                  <HBars items={topLiveBars()} />
+                </Show>
+              </section>
+
+              <section class="admin-panel">
+                <div class="admin-panel-head">
+                  <h2 class="admin-panel-title">Engagement</h2>
+                  <span class="admin-panel-sub">Saved &amp; in-progress items</span>
+                </div>
+                <HBars items={engagement()} />
+              </section>
+            </div>
+
+            <div class="admin-grid-2">
+              <section class="admin-panel">
+                <div class="admin-panel-head">
+                  <h2 class="admin-panel-title">Most engaged users</h2>
+                  <button class="admin-link-btn" onClick={() => setTab("users")}>
+                    All users
+                  </button>
+                </div>
+                <Show
+                  when={topUsers().length}
+                  fallback={<div class="admin-empty">No engagement data yet.</div>}
+                >
+                  <HBars items={topUsers()} onSelect={(it) => openUser(it.user)} />
+                </Show>
+              </section>
+
               <section class="admin-panel">
                 <div class="admin-panel-head">
                   <h2 class="admin-panel-title">User base</h2>
@@ -818,14 +932,6 @@ export default function AdminPage() {
                   </span>
                 </div>
               </section>
-
-              <section class="admin-panel">
-                <div class="admin-panel-head">
-                  <h2 class="admin-panel-title">Engagement</h2>
-                  <span class="admin-panel-sub">Saved &amp; in-progress items</span>
-                </div>
-                <HBars items={engagement()} />
-              </section>
             </div>
 
             <section class="admin-panel">
@@ -844,35 +950,18 @@ export default function AdminPage() {
                   </For>
                 </div>
               </div>
-              <Heatmap cells={activityByHour()} tone="blue" />
+              <Heatmap cells={activityByHour()} tone="steel" />
             </section>
 
-            <div class="admin-grid-2">
-              <section class="admin-panel">
-                <div class="admin-panel-head">
-                  <h2 class="admin-panel-title">Most engaged users</h2>
-                  <button class="admin-link-btn" onClick={() => setTab("users")}>
-                    All users
-                  </button>
-                </div>
-                <Show
-                  when={topUsers().length}
-                  fallback={<div class="admin-empty">No engagement data yet.</div>}
-                >
-                  <HBars items={topUsers()} />
-                </Show>
-              </section>
-
-              <section class="admin-panel">
-                <div class="admin-panel-head">
-                  <h2 class="admin-panel-title">Latest activity</h2>
-                  <button class="admin-link-btn" onClick={() => setTab("activity")}>
-                    View all
-                  </button>
-                </div>
-                <ActivityFeed events={activity().slice(0, 8)} />
-              </section>
-            </div>
+            <section class="admin-panel">
+              <div class="admin-panel-head">
+                <h2 class="admin-panel-title">Latest activity</h2>
+                <button class="admin-link-btn" onClick={() => setTab("activity")}>
+                  View all
+                </button>
+              </div>
+              <ActivityFeed events={activity().slice(0, 10)} />
+            </section>
           </Show>
         </Show>
 
@@ -914,13 +1003,20 @@ export default function AdminPage() {
                   <th class="admin-sortable" onClick={() => toggleSort("lastActive")}>
                     Last active{sortIndicator("lastActive")}
                   </th>
-                  <th class="admin-actions-col">Actions</th>
+                  <th class="admin-chevron-col" aria-hidden="true"></th>
                 </tr>
               </thead>
               <tbody>
                 <For each={sortedUsers()}>
                   {(u) => (
-                    <tr classList={{ "is-disabled": u.isDisabled }}>
+                    <tr
+                      class="admin-rowlink"
+                      classList={{
+                        "is-disabled": u.isDisabled,
+                        "is-open": detailUser()?.id === u.id,
+                      }}
+                      onClick={() => openUser(u)}
+                    >
                       <td>
                         <div class="admin-user-cell">
                           <span class="admin-user-name">{u.displayName || "—"}</span>
@@ -956,26 +1052,8 @@ export default function AdminPage() {
                         </div>
                       </td>
                       <td>{u.lastActiveAt ? relTime(u.lastActiveAt) : "—"}</td>
-                      <td>
-                        <div class="admin-row-actions">
-                          <button class="admin-btn admin-btn-sm" onClick={() => openPwModal(u)}>
-                            Reset
-                          </button>
-                          <Show when={u.id !== currentUser.id}>
-                            <button class="admin-btn admin-btn-sm" onClick={() => toggleDisabled(u)}>
-                              {u.isDisabled ? "Enable" : "Disable"}
-                            </button>
-                            <button class="admin-btn admin-btn-sm" onClick={() => toggleAdmin(u)}>
-                              {u.isAdmin ? "Unadmin" : "Make admin"}
-                            </button>
-                            <button
-                              class="admin-btn admin-btn-sm is-danger"
-                              onClick={() => deleteUser(u)}
-                            >
-                              Delete
-                            </button>
-                          </Show>
-                        </div>
+                      <td class="admin-chevron-col" aria-hidden="true">
+                        <span class="admin-chevron">›</span>
                       </td>
                     </tr>
                   )}
@@ -1295,6 +1373,21 @@ export default function AdminPage() {
           </Show>
         </Show>
       </main>
+
+      <Show when={detailUser()}>
+        <UserDetailDrawer
+          user={detailUser()}
+          detail={detail()}
+          status={detailStatus()}
+          error={detailError()}
+          isSelf={detailUser()?.id === currentUser.id}
+          onClose={closeUser}
+          onResetPassword={drawerReset}
+          onToggleDisabled={drawerToggleDisabled}
+          onToggleAdmin={drawerToggleAdmin}
+          onDelete={drawerDelete}
+        />
+      </Show>
 
       <Show when={pwTarget()}>
         <div class="admin-modal-overlay" onClick={() => setPwTarget(null)}>

@@ -456,12 +456,17 @@ export function HBars(props) {
     return m > 0 ? m : 1;
   });
   const valueFmt = (v) => (props.format ? props.format(v) : fmt(v));
+  const selectable = () => typeof props.onSelect === "function";
   return (
     <Show when={items().length} fallback={<div class="admin-chart-empty">No data yet.</div>}>
       <ul class="admin-hbars">
         <For each={items()}>
           {(it) => (
-            <li class="admin-hbar">
+            <li
+              class="admin-hbar"
+              classList={{ "is-selectable": selectable() }}
+              onClick={selectable() ? () => props.onSelect(it) : undefined}
+            >
               <div class="admin-hbar-top">
                 <span class="admin-hbar-label" title={it.label}>
                   <Show when={it.rank != null}>

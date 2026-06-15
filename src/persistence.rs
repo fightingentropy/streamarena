@@ -268,6 +268,72 @@ pub struct AdminLiveStreamRow {
     pub lastAt: i64,
 }
 
+// ── Per-user detail (admin drill-down) ──────────────────────────────────────
+// The shape behind `/api/admin/users/detail`: a user's profile plus their
+// recent watch history, live views, saved list, and sign-ins. The frontend
+// derives viewing-session spans from the union of these timestamps, so we
+// return the raw events rather than a pre-bucketed summary.
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminWatchItem {
+    pub title: String,
+    pub episode: String,
+    pub mediaType: String,
+    pub year: String,
+    pub seriesId: String,
+    pub resumeSeconds: f64,
+    pub updatedAt: i64,
+    pub thumb: String,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminLiveItem {
+    pub title: String,
+    pub category: String,
+    pub createdAt: i64,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminSessionItem {
+    pub createdAt: i64,
+    pub expiresAt: i64,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminListItem {
+    pub title: String,
+    pub mediaType: String,
+    pub year: String,
+    pub addedAt: i64,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminUserDetail {
+    pub id: i64,
+    pub email: String,
+    pub displayName: String,
+    pub createdAt: i64,
+    pub updatedAt: i64,
+    pub emailVerifiedAt: Option<i64>,
+    pub isAdmin: bool,
+    pub isDisabled: bool,
+    pub lastActiveAt: Option<i64>,
+    pub continueWatchingCount: i64,
+    pub myListCount: i64,
+    pub watchProgressCount: i64,
+    pub liveWatchCount: i64,
+    pub sessionCount: i64,
+    pub watches: Vec<AdminWatchItem>,
+    pub live: Vec<AdminLiveItem>,
+    pub myList: Vec<AdminListItem>,
+    pub sessions: Vec<AdminSessionItem>,
+}
+
 impl Db {
     pub async fn initialize(config: &Config) -> AppResult<Self> {
         let cache_path = config.persistent_cache_db_path.clone();
@@ -2284,6 +2350,168 @@ impl Db {
             drop(stmt);
             return_connection(&pool, connection);
             Ok::<Vec<AdminLiveStreamRow>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// A single user's full profile + recent activity for the admin drill-down.
+    /// Returns `Ok(None)` if no such user. Lists are capped (newest first); the
+    /// scalar counts are over the full tables so the drawer can show totals even
+    /// when the lists are truncated.
+    pub async fn admin_user_detail(&self, user_id: i64) -> AppResult<Option<AdminUserDetail>> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+
+            let base = connection
+                .query_row(
+                    "SELECT id, username, display_name, created_at, updated_at,
+                            email_verified_at, is_admin, is_disabled
+                     FROM users WHERE id = ?",
+                    [user_id],
+                    |row| {
+                        Ok(AdminUserDetail {
+                            id: row.get::<_, i64>(0)?,
+                            email: row.get::<_, String>(1)?,
+                            displayName: row.get::<_, String>(2)?,
+                            createdAt: row.get::<_, i64>(3)?,
+                            updatedAt: row.get::<_, i64>(4)?,
+                            emailVerifiedAt: row.get::<_, Option<i64>>(5)?,
+                            isAdmin: row.get::<_, i64>(6)? != 0,
+                            isDisabled: row.get::<_, i64>(7)? != 0,
+                            lastActiveAt: None,
+                            continueWatchingCount: 0,
+                            myListCount: 0,
+                            watchProgressCount: 0,
+                            liveWatchCount: 0,
+                            sessionCount: 0,
+                            watches: Vec::new(),
+                            live: Vec::new(),
+                            myList: Vec::new(),
+                            sessions: Vec::new(),
+                        })
+                    },
+                )
+                .optional()?;
+            let mut detail = match base {
+                Some(detail) => detail,
+                None => {
+                    return_connection(&pool, connection);
+                    return Ok::<Option<AdminUserDetail>, rusqlite::Error>(None);
+                }
+            };
+
+            let count = |sql: &str| connection.query_row(sql, [user_id], |row| row.get::<_, i64>(0));
+            detail.continueWatchingCount =
+                count("SELECT COUNT(*) FROM user_continue_watching WHERE user_id = ?")?;
+            detail.myListCount = count("SELECT COUNT(*) FROM user_my_list WHERE user_id = ?")?;
+            detail.watchProgressCount =
+                count("SELECT COUNT(*) FROM user_watch_progress WHERE user_id = ?")?;
+            detail.liveWatchCount =
+                count("SELECT COUNT(*) FROM live_watch_events WHERE user_id = ?")?;
+            detail.sessionCount = connection.query_row(
+                "SELECT COUNT(*) FROM auth_sessions WHERE user_id = ?1 AND expires_at > ?2",
+                params![user_id, now],
+                |row| row.get::<_, i64>(0),
+            )?;
+            detail.lastActiveAt = connection.query_row(
+                "SELECT MAX(t) FROM (
+                   SELECT MAX(updated_at) AS t FROM user_continue_watching WHERE user_id = ?1
+                   UNION ALL SELECT MAX(updated_at) FROM user_watch_progress WHERE user_id = ?1
+                   UNION ALL SELECT MAX(created_at) FROM live_watch_events WHERE user_id = ?1
+                   UNION ALL SELECT MAX(created_at) FROM auth_sessions WHERE user_id = ?1
+                 )",
+                [user_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )?;
+
+            {
+                let mut stmt = connection.prepare(
+                    "SELECT title, episode, media_type, year, series_id, resume_seconds, updated_at, thumb
+                     FROM user_continue_watching WHERE user_id = ?1
+                     ORDER BY updated_at DESC LIMIT 60",
+                )?;
+                detail.watches = stmt
+                    .query_map([user_id], |row| {
+                        Ok(AdminWatchItem {
+                            title: row.get::<_, String>(0)?,
+                            episode: row.get::<_, String>(1)?,
+                            mediaType: row.get::<_, String>(2)?,
+                            year: row.get::<_, String>(3)?,
+                            seriesId: row.get::<_, String>(4)?,
+                            resumeSeconds: row.get::<_, f64>(5)?,
+                            updatedAt: row.get::<_, i64>(6)?,
+                            thumb: row.get::<_, String>(7)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            {
+                let mut stmt = connection.prepare(
+                    "SELECT title, category, created_at FROM live_watch_events
+                     WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 60",
+                )?;
+                detail.live = stmt
+                    .query_map([user_id], |row| {
+                        Ok(AdminLiveItem {
+                            title: row.get::<_, String>(0)?,
+                            category: row.get::<_, String>(1)?,
+                            createdAt: row.get::<_, i64>(2)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            {
+                let mut stmt = connection.prepare(
+                    "SELECT created_at, expires_at FROM auth_sessions
+                     WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 80",
+                )?;
+                detail.sessions = stmt
+                    .query_map([user_id], |row| {
+                        Ok(AdminSessionItem {
+                            createdAt: row.get::<_, i64>(0)?,
+                            expiresAt: row.get::<_, i64>(1)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            {
+                let mut stmt = connection.prepare(
+                    "SELECT details_json, added_at FROM user_my_list
+                     WHERE user_id = ?1 ORDER BY added_at DESC LIMIT 60",
+                )?;
+                let rows = stmt
+                    .query_map([user_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                detail.myList = rows
+                    .into_iter()
+                    .map(|(details_json, added_at)| {
+                        let details = serde_json::from_str::<Value>(&details_json)
+                            .unwrap_or_else(|_| json!({}));
+                        let pick = |keys: &[&str]| {
+                            keys.iter()
+                                .find_map(|key| details.get(*key).and_then(Value::as_str))
+                                .unwrap_or_default()
+                                .to_owned()
+                        };
+                        AdminListItem {
+                            title: pick(&["title", "name", "originalTitle"]),
+                            mediaType: pick(&["mediaType", "media_type"]),
+                            year: pick(&["year", "releaseYear"]),
+                            addedAt: added_at,
+                        }
+                    })
+                    .collect();
+            }
+
+            return_connection(&pool, connection);
+            Ok::<Option<AdminUserDetail>, rusqlite::Error>(Some(detail))
         })
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?

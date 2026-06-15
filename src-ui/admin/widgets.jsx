@@ -72,6 +72,59 @@ export function relTime(ms) {
   return `${Math.floor(mo / 12)}y ago`;
 }
 
+// Clock-style elapsed time from seconds: "1:23:45" or "4:12". For resume
+// positions (how far into a title someone got).
+export function fmtClock(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+
+// Human duration from seconds: "2d 3h", "1h 23m", "12m", "<1m".
+export function fmtDuration(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  if (s < 60) return s <= 0 ? "—" : "<1m";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+  const d = Math.floor(h / 24);
+  return h % 24 ? `${d}d ${h % 24}h` : `${d}d`;
+}
+
+// Group a list of activity timestamps (ms) into viewing sessions, splitting on
+// idle gaps longer than `gapMs` (default 30 min). Returns newest-first sessions
+// with their span and the number of events that fell inside. This is how the
+// drill-down infers "how long a session was" — we don't track explicit session
+// ends, so consecutive activity within the gap window counts as one sitting.
+export function sessionize(timestamps, gapMs = 30 * 60 * 1000) {
+  const ts = (timestamps || [])
+    .map((t) => Number(t) || 0)
+    .filter((t) => t > 0)
+    .sort((a, b) => a - b);
+  if (!ts.length) return [];
+  const sessions = [];
+  let start = ts[0];
+  let end = ts[0];
+  let count = 1;
+  for (let i = 1; i < ts.length; i += 1) {
+    if (ts[i] - end <= gapMs) {
+      end = ts[i];
+      count += 1;
+    } else {
+      sessions.push({ start, end, count });
+      start = ts[i];
+      end = ts[i];
+      count = 1;
+    }
+  }
+  sessions.push({ start, end, count });
+  return sessions.reverse();
+}
+
 export const sum = (arr) => arr.reduce((acc, v) => acc + (Number(v) || 0), 0);
 
 export function movingAverage(arr, window) {
