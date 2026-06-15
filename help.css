@@ -1,0 +1,386 @@
+/* StreamArena Help Center — light theme, modeled on a typical help-center
+   layout. Self-contained: the /help page does not load the app's style.css. */
+
+:root {
+  --help-red: #e50914;
+  --help-ink: #1a1a1a;
+  --help-muted: #6b6b6b;
+  --help-line: #e6e6e6;
+  --help-bg: #ffffff;
+  --help-hero-top: #eaf1f8;
+  --help-font:
+    "Netflix Sans", "Helvetica Neue", "Segoe UI", Roboto, Ubuntu, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--help-bg);
+  color: var(--help-ink);
+  font-family: var(--help-font);
+  -webkit-font-smoothing: antialiased;
+}
+
+.help-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── Brand wordmark (style.css isn't loaded here, so define it locally) ─── */
+.help-page .brand-wordmark-arc {
+  display: block;
+  height: auto;
+  overflow: visible;
+}
+
+.help-page .brand-wordmark-arc text {
+  fill: var(--help-red);
+  font-family: var(--help-font);
+  font-weight: 800;
+  letter-spacing: -1px;
+}
+
+.brand-wordmark-arc--help {
+  width: 132px;
+}
+
+/* ─── Header ─── */
+.help-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: saturate(180%) blur(8px);
+  border-bottom: 1px solid var(--help-line);
+}
+
+.help-header-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.help-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-decoration: none;
+  color: var(--help-ink);
+}
+
+.help-brand-divider {
+  width: 1px;
+  height: 26px;
+  background: var(--help-line);
+}
+
+.help-brand-label {
+  font-size: 1.15rem;
+  font-weight: 500;
+  color: #2a2a2a;
+}
+
+.help-back {
+  color: var(--help-muted);
+  text-decoration: none;
+  font-size: 0.92rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.help-back:hover {
+  color: var(--help-red);
+}
+
+/* ─── Hero / search ─── */
+.help-hero {
+  background: linear-gradient(180deg, var(--help-hero-top) 0%, #ffffff 70%);
+  padding: 72px 24px 56px;
+  text-align: center;
+}
+
+.help-hero h1 {
+  margin: 0 0 28px;
+  font-size: clamp(2rem, 4vw, 3rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.help-search {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 760px;
+  margin: 0 auto;
+  background: #fff;
+  border: 1px solid #cfd6de;
+  border-radius: 10px;
+  padding: 0 16px;
+  box-shadow: 0 6px 20px rgba(20, 30, 50, 0.06);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.help-search:focus-within {
+  border-color: var(--help-red);
+  box-shadow: 0 0 0 3px rgba(229, 9, 20, 0.15);
+}
+
+.help-search-icon {
+  width: 22px;
+  height: 22px;
+  color: var(--help-muted);
+  flex: 0 0 auto;
+}
+
+.help-search input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 1.1rem;
+  padding: 18px 0;
+  color: var(--help-ink);
+}
+
+.help-recommended {
+  margin: 18px auto 0;
+  max-width: 760px;
+  font-size: 0.95rem;
+  color: var(--help-muted);
+  line-height: 1.6;
+}
+
+.help-recommended > span {
+  font-weight: 600;
+  color: #3a3a3a;
+}
+
+.help-reco-link {
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--help-red);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.help-reco-link:hover {
+  color: #b20710;
+}
+
+/* ─── Body / topics ─── */
+.help-body {
+  flex: 1;
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 48px 24px 64px;
+}
+
+.help-section-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0 0 24px;
+  text-align: center;
+}
+
+.help-query {
+  color: var(--help-red);
+}
+
+.help-empty {
+  text-align: center;
+  color: var(--help-muted);
+  font-size: 1.05rem;
+}
+
+.help-topics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 40px;
+}
+
+.help-topic {
+  border-top: 2px solid var(--help-ink);
+  padding-top: 6px;
+}
+
+.help-topic-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin: 14px 0 4px;
+}
+
+.help-topic-title svg {
+  width: 22px;
+  height: 22px;
+  color: var(--help-red);
+  flex: 0 0 auto;
+}
+
+.help-articles {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.help-article {
+  border-bottom: 1px solid var(--help-line);
+}
+
+.help-article-q {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--help-ink);
+  padding: 16px 4px;
+}
+
+.help-article-q:hover {
+  color: var(--help-red);
+}
+
+.help-article-topic {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--help-muted);
+  margin-top: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.help-chevron {
+  flex: 0 0 auto;
+  font-size: 1.5rem;
+  font-weight: 300;
+  line-height: 1;
+  color: var(--help-muted);
+  transition: transform 180ms ease;
+}
+
+.help-article.is-open .help-chevron {
+  transform: rotate(45deg);
+  color: var(--help-red);
+}
+
+.help-article-a {
+  margin: 0;
+  padding: 0 4px 18px;
+  color: #444;
+  font-size: 0.98rem;
+  line-height: 1.6;
+  max-width: 64ch;
+}
+
+.help-articles--results .help-article-q {
+  font-size: 1.05rem;
+}
+
+/* ─── CTA ─── */
+.help-cta {
+  margin-top: 56px;
+  text-align: center;
+  background: #f6f8fb;
+  border: 1px solid var(--help-line);
+  border-radius: 14px;
+  padding: 40px 24px;
+}
+
+.help-cta h2 {
+  margin: 0 0 8px;
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.help-cta p {
+  margin: 0 auto 20px;
+  max-width: 52ch;
+  color: var(--help-muted);
+  line-height: 1.6;
+}
+
+.help-cta-btn {
+  display: inline-block;
+  background: var(--help-red);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 700;
+  padding: 12px 24px;
+  border-radius: 8px;
+  transition: background 150ms ease;
+}
+
+.help-cta-btn:hover {
+  background: #b20710;
+}
+
+/* ─── Footer ─── */
+.help-footer {
+  border-top: 1px solid var(--help-line);
+  padding: 28px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: var(--help-muted);
+  font-size: 0.88rem;
+}
+
+.help-footer .brand-wordmark-arc--help {
+  width: 104px;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 720px) {
+  .help-topics {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .help-hero {
+    padding: 48px 18px 40px;
+  }
+
+  .help-search input {
+    font-size: 1rem;
+    padding: 15px 0;
+  }
+
+  .help-header-inner {
+    padding: 12px 16px;
+  }
+
+  .help-brand-label {
+    font-size: 1rem;
+  }
+}

@@ -78,9 +78,15 @@ async function checkViteShape() {
 async function checkEntrypoints() {
   const entriesDir = join(rootDir, "src-ui/entries");
   const files = (await readdir(entriesDir)).filter((name) => name.endsWith(".js")).sort();
-  // Pages reachable while logged out (the login screen, and the password-reset
-  // link emailed to signed-out users) mount via mountPublicPage.
-  const publicPages = new Set(["login.js", "reset-password.js"]);
+  // Pages reachable while logged out (the login screen, the password-reset
+  // link emailed to signed-out users, and the help/legal pages) mount via
+  // mountPublicPage.
+  const publicPages = new Set([
+    "login.js",
+    "reset-password.js",
+    "help.js",
+    "legal.js",
+  ]);
   // admin.js needs an *admin* session, not just any authenticated one, so it
   // gates itself against /api/auth/me and redirects rather than using the
   // generic authenticated-page helper.

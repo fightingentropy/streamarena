@@ -14,6 +14,9 @@ const pages = {
   live: resolve(__dirname, "live.html"),
   sports: resolve(__dirname, "sports.html"),
   admin: resolve(__dirname, "admin.html"),
+  help: resolve(__dirname, "help.html"),
+  privacy: resolve(__dirname, "privacy.html"),
+  terms: resolve(__dirname, "terms.html"),
   "reset-password": resolve(__dirname, "reset-password.html"),
 };
 
@@ -45,6 +48,15 @@ export default defineConfig({
           } else if (req.url === "/admin" || req.url?.startsWith("/admin?")) {
             const [, query] = req.url.split("?");
             req.url = `/admin.html${query ? `?${query}` : ""}`;
+          } else if (req.url === "/help" || req.url?.startsWith("/help?")) {
+            const [, query] = req.url.split("?");
+            req.url = `/help.html${query ? `?${query}` : ""}`;
+          } else if (req.url === "/privacy" || req.url?.startsWith("/privacy?") || req.url?.startsWith("/privacy#")) {
+            const [, query] = req.url.split("?");
+            req.url = `/privacy.html${query ? `?${query}` : ""}`;
+          } else if (req.url === "/terms" || req.url?.startsWith("/terms?")) {
+            const [, query] = req.url.split("?");
+            req.url = `/terms.html${query ? `?${query}` : ""}`;
           } else if (
             req.url === "/reset-password" ||
             req.url?.startsWith("/reset-password/") ||

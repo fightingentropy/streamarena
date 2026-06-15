@@ -612,7 +612,7 @@ export default function AdminPage() {
     <div class="admin-shell">
       <header class="admin-header">
         <div class="admin-brand">
-          <span class="admin-brand-mark">NETFLIX</span>
+          <span class="admin-brand-mark">StreamArena</span>
           <span class="admin-brand-tag">Admin</span>
         </div>
         <div class="admin-header-right">

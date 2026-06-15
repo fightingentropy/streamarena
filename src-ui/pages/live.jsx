@@ -9,6 +9,7 @@ import {
 } from "../shared.js";
 import LiveChannelsView from "../components/live-channels-view.jsx";
 import FeedbackNav from "../components/feedback-nav.jsx";
+import BrandWordmark from "../components/brand-wordmark.jsx";
 import { signOut } from "../lib/auth.js";
 import { liveNavClass, sportsNavClass } from "../lib/browse-nav.js";
 import { bindTopNavScrollState } from "../lib/top-nav-scroll.js";
@@ -85,11 +86,7 @@ export default function LivePage() {
         <header class="top-nav">
           <div class="nav-left">
             <a href="/" class="nav-logo" aria-label="Go to homepage">
-              <img
-                src="assets/icons/netflix-logo-clean.png"
-                class="logo-wordmark-image"
-                alt="Netflix"
-              />
+              <BrandWordmark class="brand-wordmark-arc--nav" />
             </a>
             <nav>
               <a href="/">Home</a>
@@ -166,7 +163,7 @@ export default function LivePage() {
                   </span>
                   <span>Account</span>
                 </a>
-                <a class="account-menu-item account-menu-link" href="https://help.netflix.com/" target="_blank" rel="noreferrer" role="menuitem">
+                <a class="account-menu-item account-menu-link" href="/help" role="menuitem">
                   <span class="account-menu-icon" aria-hidden="true">
                     <svg viewBox="0 0 48 48">
                       <circle cx="24" cy="24" r="19"></circle>
@@ -181,7 +178,7 @@ export default function LivePage() {
                   type="button"
                   role="menuitem"
                   onClick={handleSignOut}
-                >Sign out of Netflix</button>
+                >Sign out of StreamArena</button>
               </div>
             </div>
           </div>

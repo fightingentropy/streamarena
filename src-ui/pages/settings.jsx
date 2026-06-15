@@ -490,11 +490,7 @@ export default function SettingsPage() {
 
     <header class="settings-topbar">
       <a class="settings-wordmark-link" href="/" aria-label="Back to browse">
-        <img
-          src="assets/icons/netflix-logo-clean.png"
-          alt="Netflix"
-          class="settings-wordmark"
-        />
+        <span class="brand-wordmark settings-wordmark">StreamArena</span>
       </a>
       <a class="settings-profile-control" href="/" aria-label="Back to browse">
         <span

@@ -405,10 +405,10 @@ function renderCard(match, nowAccessor, config, railTitle) {
         onClick={() => {
           if (playable()) openSportsPlayer(match, config);
         }}
-        aria-label={playable() ? `Play ${match.title} in Netflix` : match.title}
+        aria-label={playable() ? `Play ${match.title} in StreamArena` : match.title}
         title={
           playable()
-            ? "Play in Netflix"
+            ? "Play in StreamArena"
             : live()
               ? "No stream available yet"
               : "Available when live"

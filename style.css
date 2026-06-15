@@ -335,6 +335,36 @@
     margin-bottom: 12px;
 }
 
+.home-page .brand-wordmark--hero {
+    display: block;
+    font-size: clamp(1rem, 1.3vw, 1.2rem);
+    margin-bottom: 12px;
+}
+
+/* Arched wordmark (flat top, bottom bows up), mimicking the Netflix logo curve.
+   Used in both the nav and the hero; size via the modifier classes below. */
+.home-page .brand-wordmark-arc {
+    display: block;
+    height: auto;
+    overflow: visible;
+}
+
+.home-page .brand-wordmark-arc text {
+    fill: var(--netflix-red);
+    font-family: var(--font-netflix-sans);
+    font-weight: 800;
+    letter-spacing: -1px;
+}
+
+.home-page .brand-wordmark-arc--hero {
+    width: clamp(134px, 14vw, 176px);
+    margin-bottom: 8px;
+}
+
+.home-page .brand-wordmark-arc--nav {
+    width: clamp(100px, 12.5vw, 123px);
+}
+
 .home-page .hero-content {
     position: absolute;
     z-index: 6;
@@ -1082,6 +1112,24 @@ body.modal-open {
     width: 96px;
     height: auto;
     display: block;
+}
+
+/* Text brand wordmark (replaces the logo image) */
+.brand-wordmark {
+    font-family: var(--font-netflix-sans);
+    font-weight: 800;
+    color: var(--netflix-red);
+    letter-spacing: -0.02em;
+    line-height: 1;
+    white-space: nowrap;
+    text-decoration: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.brand-wordmark--nav {
+    display: inline-block;
+    font-size: clamp(1.05rem, 1.55vw, 1.35rem);
 }
 
 .top-nav nav {

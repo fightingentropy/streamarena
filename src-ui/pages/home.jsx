@@ -47,6 +47,7 @@ import {
 } from "../lib/continue-watching.js";
 import { liveNavClass, sportsNavLinkClass } from "../lib/browse-nav.js";
 import FeedbackNav from "../components/feedback-nav.jsx";
+import BrandWordmark from "../components/brand-wordmark.jsx";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -4946,11 +4947,7 @@ export default function HomePage() {
       <header class="top-nav">
         <div class="nav-left">
           <a href="/" class="nav-logo" aria-label="Go to homepage">
-            <img
-              src="assets/icons/netflix-logo-clean.png"
-              class="logo-wordmark-image"
-              alt="Netflix"
-            />
+            <BrandWordmark class="brand-wordmark-arc--nav" />
           </a>
           <nav>
             <a href="/" class={activeView() === "home" ? "is-active" : ""} onClick={handleHomeNavClick}>Home</a>
@@ -5073,7 +5070,7 @@ export default function HomePage() {
                 </span>
                 <span>Account</span>
               </a>
-              <a class="account-menu-item account-menu-link" href="https://help.netflix.com/" target="_blank" rel="noreferrer" role="menuitem">
+              <a class="account-menu-item account-menu-link" href="/help" role="menuitem">
                 <span class="account-menu-icon" aria-hidden="true">
                   <svg viewBox="0 0 48 48">
                     <circle cx="24" cy="24" r="19"></circle>
@@ -5089,7 +5086,7 @@ export default function HomePage() {
                 type="button"
                 role="menuitem"
                 onClick={handleSignOut}
-              >Sign out of Netflix</button>
+              >Sign out of StreamArena</button>
             </div>
           </div>
         </div>
@@ -5226,11 +5223,7 @@ export default function HomePage() {
           class={`hero-content${featuredHeroReady() ? "" : " is-loading"}`}
           aria-labelledby="heroTitle"
         >
-          <img
-            src="assets/icons/netflix-logo-clean.png"
-            class="featured-logo-mark"
-            alt="Netflix"
-          />
+          <BrandWordmark class="brand-wordmark-arc--hero" />
           <h1
             id="heroTitle"
             class="hero-title-stacked"
@@ -5412,7 +5405,7 @@ export default function HomePage() {
 
     <footer
       class="member-footer home-member-footer"
-      aria-label="Netflix footer"
+      aria-label="StreamArena footer"
       hidden={activeView() !== "home"}
     >
       <div class="member-footer-social">
@@ -5438,22 +5431,12 @@ export default function HomePage() {
         </span>
       </div>
       <ul class="member-footer-links">
-        <li><span>Audio Description</span></li>
-        <li><span>Help Centre</span></li>
-        <li><span>Gift Cards</span></li>
-        <li><span>Media Centre</span></li>
-        <li><span>Investor Relations</span></li>
-        <li><span>Jobs</span></li>
-        <li><span>Terms of Use</span></li>
-        <li><span>Privacy</span></li>
-        <li><span>Legal Notices</span></li>
-        <li><span>Cookie Preferences</span></li>
-        <li><span>Corporate Information</span></li>
-        <li><span>Contact Us</span></li>
-        <li><span>Speed Test</span></li>
-        <li><span>Only on Netflix</span></li>
+        <li><a href="/help">Help Center</a></li>
+        <li><a href="/privacy">Privacy Policy</a></li>
+        <li><a href="/terms">Terms of Use</a></li>
+        <li><a href="/privacy#cookies">Cookie Preferences</a></li>
       </ul>
-      <p class="member-footer-copyright">&copy; 1997-2026 Netflix, Inc.</p>
+      <p class="member-footer-copyright">&copy; 2026 StreamArena</p>
     </footer>
 
     <div

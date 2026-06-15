@@ -320,7 +320,7 @@ export function Unauthorized(props) {
   return (
     <div class="admin-denied">
       <div class="admin-denied-card">
-        <span class="admin-brand-mark">NETFLIX</span>
+        <span class="admin-brand-mark">StreamArena</span>
         <h1>Admin access required</h1>
         <p>
           {props.email
@@ -328,7 +328,7 @@ export function Unauthorized(props) {
             : "Sign in with an admin account to continue."}
         </p>
         <a class="admin-cta" href="/">
-          Back to Netflix
+          Back to StreamArena
         </a>
       </div>
     </div>

@@ -1,0 +1,73 @@
+/* StreamArena legal pages (/privacy, /terms). Loads alongside help.css, which
+   provides the light theme, header, brand wordmark, and footer styling. This
+   file only adds the document body (prose) and the cross-link footer. */
+
+.legal-body {
+  flex: 1;
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 56px 24px 72px;
+}
+
+.legal-body h1 {
+  margin: 0 0 6px;
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.legal-updated {
+  margin: 0 0 32px;
+  color: var(--help-muted);
+  font-size: 0.92rem;
+}
+
+.legal-intro {
+  margin: 0 0 36px;
+  font-size: 1.1rem;
+  line-height: 1.7;
+  color: #2a2a2a;
+}
+
+.legal-body section {
+  margin-bottom: 28px;
+  scroll-margin-top: 90px;
+}
+
+.legal-body h2 {
+  margin: 0 0 8px;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.legal-body p {
+  margin: 0;
+  color: #3f3f3f;
+  font-size: 1.02rem;
+  line-height: 1.7;
+}
+
+.legal-footer {
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+}
+
+.legal-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px 24px;
+}
+
+.legal-footer-links a {
+  color: var(--help-muted);
+  text-decoration: none;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.legal-footer-links a:hover {
+  color: var(--help-red);
+}
