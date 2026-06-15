@@ -2511,6 +2511,10 @@ export default function HomePage() {
     });
   }
 
+  // Netflix waits for a brief lingering hover before expanding the preview, so a
+  // pointer merely sweeping across a row never triggers the popup.
+  const CARD_HOVER_INTENT_DELAY = 400;
+
   function showCardHover(card) {
     if (!(card instanceof HTMLElement)) {
       return;
@@ -2554,13 +2558,35 @@ export default function HomePage() {
     prepareCardTouchSurfaces(card);
     card.dataset.interactionsBound = "true";
 
-    card.addEventListener("pointerenter", (event) => {
-      if (shouldUseCardHover(event)) {
-        showCardHover(card);
+    let pointerInside = false;
+    let hoverIntentTimer = null;
+    const clearHoverIntent = () => {
+      if (hoverIntentTimer !== null) {
+        window.clearTimeout(hoverIntentTimer);
+        hoverIntentTimer = null;
       }
+    };
+
+    card.addEventListener("pointerenter", (event) => {
+      if (!shouldUseCardHover(event)) {
+        return;
+      }
+      pointerInside = true;
+      clearHoverIntent();
+      hoverIntentTimer = window.setTimeout(() => {
+        hoverIntentTimer = null;
+        if (pointerInside) {
+          showCardHover(card);
+        }
+      }, CARD_HOVER_INTENT_DELAY);
     });
-    card.addEventListener("pointerleave", () => hideCardHover(card));
+    card.addEventListener("pointerleave", () => {
+      pointerInside = false;
+      clearHoverIntent();
+      hideCardHover(card);
+    });
     card.addEventListener("focusin", () => {
+      clearHoverIntent();
       if (shouldUseCardHover()) {
         showCardHover(card);
       }
