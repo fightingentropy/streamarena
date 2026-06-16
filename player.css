@@ -6,8 +6,7 @@
     --ui-line: rgba(245, 245, 245, 0.42);
     --ui-buffered: rgba(245, 245, 245, 0.72);
     --ui-accent: #e50914;
-    --font-netflix-sans:
-        "Netflix Sans",
+    --font-brand-sans:
         "Helvetica Neue",
         "Segoe UI",
         Roboto,
@@ -34,7 +33,7 @@ body {
     height: 100%;
     background: var(--player-bg);
     color: var(--ui-white);
-    font-family: var(--font-netflix-sans);
+    font-family: var(--font-brand-sans);
 }
 
 .player-shell {
@@ -188,7 +187,7 @@ body {
     display: none !important;
 }
 
-.seek-netflix-spinner {
+.seek-brand-spinner {
     width: 42px;
     height: 42px;
     border-radius: 999px;
@@ -2116,7 +2115,7 @@ body {
         gap: 32px;
     }
 
-    /* Reorder: Rewind | Play | Forward (Netflix style) */
+    /* Reorder: Rewind | Play | Forward */
     #togglePlay { order: 1; }
     #rewind10   { order: 0; }
     #forward10  { order: 2; }

@@ -4,7 +4,7 @@
 
 ### Product
 
-Single full-stack Netflix-style streaming app: Rust/Axum backend (port **5173**) + SolidJS/Vite MPA. Two SQLite files: durable accounts/user data in `cache/users.sqlite` (never auto-wiped), regenerable cache in `cache/resolver-cache.sqlite` (self-heals from corruption). No Docker in-repo. See `README.md` for architecture and API surface.
+Single full-stack streaming app: Rust/Axum backend (port **5173**) + SolidJS/Vite MPA. Two SQLite files: durable accounts/user data in `cache/users.sqlite` (never auto-wiped), regenerable cache in `cache/resolver-cache.sqlite` (self-heals from corruption). No Docker in-repo. See `README.md` for architecture and API surface.
 
 ### Toolchain (first-time / VM notes)
 

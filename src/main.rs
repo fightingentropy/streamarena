@@ -122,7 +122,7 @@ async fn main() -> AppResult<()> {
     // spot crash-looping. Best-effort — never block startup on it.
     let _ = db.record_service_start("startup".to_owned()).await;
     let mut http_client_builder = reqwest::Client::builder()
-        .user_agent("netflix-rust-backend")
+        .user_agent("streamarena-backend")
         .timeout(Duration::from_secs(SHARED_HTTP_CLIENT_TIMEOUT_SECONDS));
     if let Some(proxy_url) = env::var("OUTBOUND_HTTP_PROXY")
         .ok()

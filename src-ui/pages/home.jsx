@@ -55,15 +55,15 @@ import BrandWordmark from "../components/brand-wordmark.jsx";
 const SEARCH_DEBOUNCE_MS = 280;
 const SEARCH_MIN_QUERY_LENGTH = 2;
 const SEARCH_RESULTS_LIMIT = 40;
-const STALE_HERO_PREVIEW_MUTED_PREF_KEY = "netflix-hero-trailer-muted-v2";
+const STALE_HERO_PREVIEW_MUTED_PREF_KEY = "streamarena-hero-trailer-muted-v2";
 const HERO_PREVIEW_ENTER_VISIBLE_RATIO = 0.3;
 const HERO_PREVIEW_LEAVE_VISIBLE_RATIO = 0.08;
 const FEATURED_HERO_ROTATION_MS = 24 * 60 * 60 * 1000;
 const FEATURED_HERO_CAROUSEL_MS = 20000;
-const FEATURED_HERO_STORAGE_KEY = "netflix-featured-hero-v2";
+const FEATURED_HERO_STORAGE_KEY = "streamarena-featured-hero-v2";
 const FEATURED_HERO_CANDIDATE_LIMIT = 10;
 const BLOCKED_FEATURED_HERO_TITLE_KEYS = new Set(["your heart will be broken"]);
-const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
+const MY_LIST_STORAGE_KEY = "streamarena-my-list-v1";
 const POPULAR_TITLES_LIMIT = 14;
 const BROWSE_RAIL_LIMIT = 14;
 const TOP_TEN_RAIL_LIMIT = 10;
@@ -2511,7 +2511,7 @@ export default function HomePage() {
     });
   }
 
-  // Netflix waits for a brief lingering hover before expanding the preview, so a
+  // Wait for a brief lingering hover before expanding the preview, so a
   // pointer merely sweeping across a row never triggers the popup.
   const CARD_HOVER_INTENT_DELAY = 400;
 

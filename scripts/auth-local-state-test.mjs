@@ -20,9 +20,9 @@ Object.defineProperty(globalThis, "window", {
 });
 Object.defineProperty(globalThis, "localStorage", {
   value: makeStorage([
-    ["netflix-resume:movie", "42"],
-    ["netflix-real-debrid-api-key", "secret"],
-    ["netflix-profile-avatar-image", "data:image/png;base64,AAAA"],
+    ["streamarena-resume:movie", "42"],
+    ["streamarena-real-debrid-api-key", "secret"],
+    ["streamarena-profile-avatar-image", "data:image/png;base64,AAAA"],
     ["other-app-key", "keep"],
   ]),
   configurable: true,
@@ -30,7 +30,7 @@ Object.defineProperty(globalThis, "localStorage", {
 Object.defineProperty(globalThis, "sessionStorage", {
   value: makeStorage([
     ["watch:movie", "src=secret"],
-    ["netflix-session-cache", "secret"],
+    ["streamarena-session-cache", "secret"],
     ["other-session-key", "keep"],
   ]),
   configurable: true,

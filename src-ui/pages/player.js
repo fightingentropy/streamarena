@@ -142,10 +142,10 @@ const LIVE_STARTUP_HEALTH_TIMEOUT_MS = 6000;
 const LIVE_FALLBACK_RETRY_DELAY_MS = 6000;
 const LIVE_FALLBACK_RETRY_MAX_CYCLES = 3;
 const LIVE_FAILED_STREAM_CACHE_TTL_MS = 5 * 60 * 1000;
-const LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-failed-streams:";
+const LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX = "streamarena-live-failed-streams:";
 const LIVE_WORKING_STREAM_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-const LIVE_WORKING_STREAM_CACHE_STORAGE_PREFIX = "netflix-live-working-stream:";
-const LIVE_SOURCE_PREFERENCE_STORAGE_KEY = "netflix-live-source-preferences";
+const LIVE_WORKING_STREAM_CACHE_STORAGE_PREFIX = "streamarena-live-working-stream:";
+const LIVE_SOURCE_PREFERENCE_STORAGE_KEY = "streamarena-live-source-preferences";
 const LIVE_SOURCE_PREFERENCE_TTL_MS = 24 * 60 * 60 * 1000;
 const MANUAL_SOURCE_SWITCH_TIMEOUT_MS = 6000;
 
@@ -680,14 +680,14 @@ let isTmdbTvPlayback = Boolean(
   !hasExplicitSource && tmdbId && mediaType === "tv",
 );
 let isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
-const AUDIO_LANG_PREF_KEY_PREFIX = "netflix-audio-lang:movie:";
-const SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:movie:";
-const SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:movie:";
-const TV_SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:tv:";
-const TV_SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:tv:";
-const LOCAL_SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:local:";
-const LOCAL_SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:local:";
-const SOURCE_AUDIO_SYNC_PREF_KEY_PREFIX = "netflix-source-audio-sync:";
+const AUDIO_LANG_PREF_KEY_PREFIX = "streamarena-audio-lang:movie:";
+const SUBTITLE_LANG_PREF_KEY_PREFIX = "streamarena-subtitle-lang:movie:";
+const SUBTITLE_STREAM_PREF_KEY_PREFIX = "streamarena-subtitle-stream:movie:";
+const TV_SUBTITLE_LANG_PREF_KEY_PREFIX = "streamarena-subtitle-lang:tv:";
+const TV_SUBTITLE_STREAM_PREF_KEY_PREFIX = "streamarena-subtitle-stream:tv:";
+const LOCAL_SUBTITLE_LANG_PREF_KEY_PREFIX = "streamarena-subtitle-lang:local:";
+const LOCAL_SUBTITLE_STREAM_PREF_KEY_PREFIX = "streamarena-subtitle-stream:local:";
+const SOURCE_AUDIO_SYNC_PREF_KEY_PREFIX = "streamarena-source-audio-sync:";
 const DEFAULT_SOURCE_RESULTS_LIMIT = 5;
 const SOURCE_FETCH_BATCH_LIMIT = 20;
 const supportedQualityPreferences = new Set(["auto", "2160p", "1080p", "720p"]);
@@ -711,7 +711,7 @@ const INITIAL_RESUME_TOLERANCE_SECONDS = 2;
 const RESUME_CLEAR_AT_END_THRESHOLD_SECONDS = 8;
 const LOCAL_CACHE_UPGRADE_POLL_MS = 20_000;
 const LOCAL_CACHE_UPGRADE_INITIAL_DELAY_MS = 8_000;
-const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
+const CONTINUE_WATCHING_META_KEY = "streamarena-continue-watching-meta";
 const SUBTITLE_LINE_FROM_BOTTOM = -4;
 const SUBTITLE_FALLBACK_LINE_PERCENT = 80;
 const SUBTITLE_CUE_SIZE_PERCENT = 88;
@@ -1147,8 +1147,8 @@ let sourceIdentity = isSeriesPlayback
 prepareLiveFailureCacheForCurrentEvent();
 selectRememberedWorkingLiveStreamIfNeeded();
 selectFirstFreshLiveStreamIfNeeded();
-let resumeStorageKey = `netflix-resume:${sourceIdentity}`;
-const speedStorageKey = "netflix-playback-speed";
+let resumeStorageKey = `streamarena-resume:${sourceIdentity}`;
+const speedStorageKey = "streamarena-playback-speed";
 let resumeTime = 0;
 let lastPersistedResumeTime = 0;
 let lastPersistedResumeAt = 0;
@@ -5222,7 +5222,7 @@ function getStoredSeriesEpisodeResumeSeconds(index) {
 
   try {
     const storedValue = Number(
-      localStorage.getItem(`netflix-resume:${episodeSourceIdentity}`),
+      localStorage.getItem(`streamarena-resume:${episodeSourceIdentity}`),
     );
     return Number.isFinite(storedValue) && storedValue > 0 ? storedValue : 0;
   } catch {
@@ -9727,7 +9727,7 @@ async function initPlaybackSource() {
   prepareLiveFailureCacheForCurrentEvent();
   selectRememberedWorkingLiveStreamIfNeeded();
   selectFirstFreshLiveStreamIfNeeded();
-  resumeStorageKey = `netflix-resume:${sourceIdentity}`;
+  resumeStorageKey = `streamarena-resume:${sourceIdentity}`;
   if (isTmdbResolvedPlayback) {
     await loadUserRealDebridPlaybackSettings();
   }
@@ -10059,7 +10059,7 @@ async function initPlaybackSource() {
         getPreferredRemuxVideoMode: () => preferredRemuxVideoMode,
         getPreferredAudioSyncMs: () => preferredAudioSyncMs,
       });
-      window.__NETFLIX_PLAYBACK_BENCHMARK__ = playbackBenchmark;
+      window.__STREAMARENA_PLAYBACK_BENCHMARK__ = playbackBenchmark;
     }
 
     // Deferred to after initPlaybackSource resolves (needs series library)
@@ -11481,8 +11481,8 @@ trackListener(window, "storage", (event) => {
     window.clearTimeout(unavailableEpisodeResolverHideTimeout);
     window.clearTimeout(audioDecodeRecoveryResetTimeout);
     window.clearTimeout(subtitleRestoreAfterSourceChangeTimeout);
-    if (window.__NETFLIX_PLAYBACK_BENCHMARK__) {
-      delete window.__NETFLIX_PLAYBACK_BENCHMARK__;
+    if (window.__STREAMARENA_PLAYBACK_BENCHMARK__) {
+      delete window.__STREAMARENA_PLAYBACK_BENCHMARK__;
     }
     clearControlsHideTimer();
     clearSingleClickPlaybackToggle();

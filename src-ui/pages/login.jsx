@@ -5,11 +5,11 @@ import { createSignal, onMount, Show } from "solid-js";
 async function migrateLocalStorageToServer() {
   const preferences = {};
   const PREF_KEYS = [
-    "netflix-default-audio-lang",
-    "netflix-subtitle-color-pref",
-    "netflix-profile-avatar-style",
-    "netflix-profile-avatar-mode",
-    "netflix-profile-avatar-image",
+    "streamarena-default-audio-lang",
+    "streamarena-subtitle-color-pref",
+    "streamarena-profile-avatar-style",
+    "streamarena-profile-avatar-mode",
+    "streamarena-profile-avatar-image",
   ];
   for (const key of PREF_KEYS) {
     const val = localStorage.getItem(key);
@@ -19,7 +19,7 @@ async function migrateLocalStorageToServer() {
   const watchProgress = [];
   const continueWatching = [];
   try {
-    const metaRaw = localStorage.getItem("netflix-continue-watching-meta");
+    const metaRaw = localStorage.getItem("streamarena-continue-watching-meta");
     if (metaRaw) {
       const parsed = JSON.parse(metaRaw);
       const entries = Array.isArray(parsed)
@@ -31,7 +31,7 @@ async function migrateLocalStorageToServer() {
             resumeSeconds:
               Number(entry?.resumeSeconds ?? entry) > 0
                 ? Number(entry?.resumeSeconds ?? entry)
-                : Number(localStorage.getItem(`netflix-resume:${sourceIdentity}`) || 0),
+                : Number(localStorage.getItem(`streamarena-resume:${sourceIdentity}`) || 0),
           }));
       continueWatching.push(
         ...entries.filter((entry) => String(entry?.sourceIdentity || "").trim()),
@@ -41,8 +41,8 @@ async function migrateLocalStorageToServer() {
 
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
-    if (key?.startsWith("netflix-resume:")) {
-      const id = key.slice("netflix-resume:".length);
+    if (key?.startsWith("streamarena-resume:")) {
+      const id = key.slice("streamarena-resume:".length);
       const val = Number(localStorage.getItem(key));
       if (id && Number.isFinite(val) && val > 0) {
         watchProgress.push({
@@ -56,7 +56,7 @@ async function migrateLocalStorageToServer() {
 
   let myList = [];
   try {
-    myList = JSON.parse(localStorage.getItem("netflix-my-list-v1") || "[]");
+    myList = JSON.parse(localStorage.getItem("streamarena-my-list-v1") || "[]");
   } catch {}
 
   const hasData =
@@ -187,7 +187,7 @@ export default function LoginPage() {
     <main class="login-page">
       <div class="login-card">
         <a href="/" class="login-logo">
-          <img src="/assets/icons/netflix-n.svg" alt="Netflix" />
+          <img src="/assets/icons/streamarena-mark.svg" alt="StreamArena" />
         </a>
         <h1>{forgot() ? "Reset password" : isSignUp() ? "Create Account" : "Sign In"}</h1>
         <form class="login-form" onSubmit={forgot() ? handleForgot : handleSubmit}>

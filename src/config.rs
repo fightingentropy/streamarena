@@ -60,9 +60,9 @@ pub struct Config {
     /// bandwidth is served from Cloudflare instead of the mini's home uplink.
     /// Empty = disabled (mini serves segments, as before).
     pub live_hls_resource_worker_base: String,
-    /// Public origin used to build email verification links (e.g. https://streamthatshit.com).
+    /// Public origin used to build email verification links (e.g. https://streamarena.xyz).
     pub app_origin: String,
-    /// From address for transactional email (e.g. noreply@streamthatshit.com).
+    /// From address for transactional email (e.g. noreply@streamarena.xyz).
     pub email_from: String,
     /// Cloudflare account id that owns the Email Sending domain.
     pub cf_account_id: String,
@@ -199,7 +199,7 @@ impl Config {
                 .trim()
                 .to_owned(),
             opensubtitles_user_agent: env::var("OPENSUBTITLES_USER_AGENT")
-                .unwrap_or_else(|_| "netflix-rust-backend v1.0.0".to_owned())
+                .unwrap_or_else(|_| "streamarena-backend v1.0.0".to_owned())
                 .trim()
                 .to_owned(),
             session_cookie_secure: normalize_bool_flag(
@@ -225,12 +225,12 @@ impl Config {
                 .trim_end_matches('/')
                 .to_owned(),
             app_origin: env::var("APP_ORIGIN")
-                .unwrap_or_else(|_| "https://streamthatshit.com".to_owned())
+                .unwrap_or_else(|_| "https://streamarena.xyz".to_owned())
                 .trim()
                 .trim_end_matches('/')
                 .to_owned(),
             email_from: env::var("EMAIL_FROM")
-                .unwrap_or_else(|_| "noreply@streamthatshit.com".to_owned())
+                .unwrap_or_else(|_| "noreply@streamarena.xyz".to_owned())
                 .trim()
                 .to_owned(),
             cf_account_id: env::var("CF_ACCOUNT_ID")

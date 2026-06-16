@@ -265,7 +265,7 @@ mod tests {
         // millisecond; the atomic sequence guarantees each parallel test gets a
         // distinct file (and thus an isolated users.sqlite via test_config).
         let seq = TEST_DB_SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("netflix-auth-test-{}-{seq}.sqlite", now_ms()))
+        std::env::temp_dir().join(format!("streamarena-auth-test-{}-{seq}.sqlite", now_ms()))
     }
 
     /// Minimal `Config` whose only load-bearing fields are the two database

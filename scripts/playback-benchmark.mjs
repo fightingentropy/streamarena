@@ -937,7 +937,7 @@ async function runStrategy(browser, baseUrl, strategy, sourceInput, options, pro
   await context.addInitScript(({ remuxVideoMode }) => {
     try {
       localStorage.clear();
-      localStorage.setItem("netflix-remux-video-mode", remuxVideoMode);
+      localStorage.setItem("streamarena-remux-video-mode", remuxVideoMode);
     } catch {
       // Ignore storage issues in restrictive browser contexts.
     }
@@ -1010,13 +1010,13 @@ async function runStrategy(browser, baseUrl, strategy, sourceInput, options, pro
 
     await page.waitForFunction(
       () =>
-        Boolean(window.__NETFLIX_PLAYBACK_BENCHMARK__?.getSnapshot),
+        Boolean(window.__STREAMARENA_PLAYBACK_BENCHMARK__?.getSnapshot),
       undefined,
       { timeout: options.timeoutMs },
     );
 
     const startupSnapshot = await page.evaluate((timeoutMs) => {
-      return window.__NETFLIX_PLAYBACK_BENCHMARK__.waitForPlayback({
+      return window.__STREAMARENA_PLAYBACK_BENCHMARK__.waitForPlayback({
         timeoutMs,
         minCurrentTime: 1.25,
       });
@@ -1028,18 +1028,18 @@ async function runStrategy(browser, baseUrl, strategy, sourceInput, options, pro
     }
 
     const preSteadySnapshot = await page.evaluate(() =>
-      window.__NETFLIX_PLAYBACK_BENCHMARK__.getSnapshot(),
+      window.__STREAMARENA_PLAYBACK_BENCHMARK__.getSnapshot(),
     );
     const preSteadyNetworkSnapshot = readNetworkSnapshot();
     await delay(options.measureMs);
     const steadySnapshot = await page.evaluate(() =>
-      window.__NETFLIX_PLAYBACK_BENCHMARK__.getSnapshot(),
+      window.__STREAMARENA_PLAYBACK_BENCHMARK__.getSnapshot(),
     );
     const steadyNetworkSnapshot = readNetworkSnapshot();
 
     const pauseResumeResult = await page.evaluate(
       ({ pauseDurationMs, timeoutMs }) =>
-        window.__NETFLIX_PLAYBACK_BENCHMARK__.measurePauseResume({
+        window.__STREAMARENA_PLAYBACK_BENCHMARK__.measurePauseResume({
           pauseDurationMs,
           timeoutMs,
           playbackAdvanceSeconds: 0.35,
@@ -1051,12 +1051,12 @@ async function runStrategy(browser, baseUrl, strategy, sourceInput, options, pro
     );
 
     const snapshotAfterResume = await page.evaluate(() =>
-      window.__NETFLIX_PLAYBACK_BENCHMARK__.getSnapshot(),
+      window.__STREAMARENA_PLAYBACK_BENCHMARK__.getSnapshot(),
     );
     const seekTargetSeconds = pickSeekTarget(snapshotAfterResume, probePayload);
     const seekResult = await page.evaluate(
       ({ targetSeconds, timeoutMs }) =>
-        window.__NETFLIX_PLAYBACK_BENCHMARK__.measureSeek({
+        window.__STREAMARENA_PLAYBACK_BENCHMARK__.measureSeek({
           targetSeconds,
           timeoutMs,
           playbackAdvanceSeconds: 0.35,
@@ -1068,7 +1068,7 @@ async function runStrategy(browser, baseUrl, strategy, sourceInput, options, pro
     );
 
     const finalSnapshot = await page.evaluate(() =>
-      window.__NETFLIX_PLAYBACK_BENCHMARK__.getSnapshot(),
+      window.__STREAMARENA_PLAYBACK_BENCHMARK__.getSnapshot(),
     );
     const finalNetworkSnapshot = readNetworkSnapshot();
 

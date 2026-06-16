@@ -5,7 +5,7 @@ MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
 REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/netflix}"
 CADDY_VERSION="${CADDY_VERSION:-2.11.3}"
-PUBLIC_HOSTS="${PUBLIC_HOSTS:-streamthatshit.com,www.streamthatshit.com}"
+PUBLIC_HOSTS="${PUBLIC_HOSTS:-streamarena.xyz,www.streamarena.xyz}"
 TLS_MODE="${TLS_MODE:-auto}"
 
 usage() {
@@ -27,7 +27,7 @@ Environment:
   SSH_KEY                      Default: ~/.ssh/id_ed25519_codex_m4mini
   REMOTE_APP                   Default: /Users/hermes/Developer/netflix
   CADDY_VERSION                Default: 2.11.3
-  PUBLIC_HOSTS                 Default: streamthatshit.com,www.streamthatshit.com
+  PUBLIC_HOSTS                 Default: streamarena.xyz,www.streamarena.xyz
   TLS_MODE                     Default: auto
 USAGE
 }

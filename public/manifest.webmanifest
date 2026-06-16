@@ -1,6 +1,6 @@
 {
-  "name": "Netflix",
-  "short_name": "Netflix",
+  "name": "StreamArena",
+  "short_name": "StreamArena",
   "description": "A private streaming app for saved movies, series, and live channels.",
   "id": "/",
   "start_url": "/",
@@ -12,24 +12,24 @@
   "categories": ["entertainment", "video"],
   "icons": [
     {
-      "src": "/assets/icons/netflix-app-icon-180.png",
+      "src": "/assets/icons/streamarena-app-icon-180.png",
       "sizes": "180x180",
       "type": "image/png"
     },
     {
-      "src": "/assets/icons/netflix-app-icon-192.png",
+      "src": "/assets/icons/streamarena-app-icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/assets/icons/netflix-app-icon-512.png",
+      "src": "/assets/icons/streamarena-app-icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/assets/icons/netflix-maskable-icon-512.png",
+      "src": "/assets/icons/streamarena-maskable-icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
@@ -37,11 +37,11 @@
   ],
   "screenshots": [
     {
-      "src": "/assets/icons/netflix-app-icon-512.png",
+      "src": "/assets/icons/streamarena-app-icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "form_factor": "narrow",
-      "label": "Netflix home"
+      "label": "StreamArena home"
     }
   ],
   "shortcuts": [
@@ -51,7 +51,7 @@
       "url": "/live",
       "icons": [
         {
-          "src": "/assets/icons/netflix-app-icon-192.png",
+          "src": "/assets/icons/streamarena-app-icon-192.png",
           "sizes": "192x192",
           "type": "image/png"
         }

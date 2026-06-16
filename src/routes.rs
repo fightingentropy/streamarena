@@ -84,8 +84,8 @@ pub struct AppState {
 }
 
 const JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
-const REAL_DEBRID_API_KEY_PREF_KEY: &str = "netflix-real-debrid-api-key";
-const LOCAL_TORRENT_ENABLED_PREF_KEY: &str = "netflix-local-torrent-enabled";
+const REAL_DEBRID_API_KEY_PREF_KEY: &str = "streamarena-real-debrid-api-key";
+const LOCAL_TORRENT_ENABLED_PREF_KEY: &str = "streamarena-local-torrent-enabled";
 const USER_PREF_MAX_ENTRIES: usize = 200;
 const USER_PREF_KEY_MAX_BYTES: usize = 128;
 const USER_PREF_VALUE_MAX_BYTES: usize = 2_000_000;

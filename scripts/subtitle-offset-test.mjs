@@ -69,7 +69,7 @@ assert("ctrl: adjust returns true", ctrl.adjust(SUBTITLE_OFFSET_STEP_MS, hash), 
 assert("ctrl: offset accumulated", ctrl.getOffsetMs(), 250);
 assert("ctrl: offset seconds", ctrl.getOffsetSeconds(), 0.25);
 assert("ctrl: label reflects offset", ctrl.getLabel(), "+0.25s");
-assert("ctrl: persisted to storage", storage.getItem(`netflix-source-subtitle-offset:${hash}`), "250");
+assert("ctrl: persisted to storage", storage.getItem(`streamarena-source-subtitle-offset:${hash}`), "250");
 
 ctrl.adjust(SUBTITLE_OFFSET_STEP_MS, hash);
 assert("ctrl: second adjust accumulates", ctrl.getOffsetMs(), 500);
@@ -86,7 +86,7 @@ assert("ctrl2: adjust at limit returns false", ctrl2.adjust(SUBTITLE_OFFSET_STEP
 // Reset clears value and persistence.
 assert("ctrl2: reset returns true", ctrl2.reset(hash), true);
 assert("ctrl2: reset to zero", ctrl2.getOffsetMs(), 0);
-assert("ctrl2: storage cleared", storage.getItem(`netflix-source-subtitle-offset:${hash}`), null);
+assert("ctrl2: storage cleared", storage.getItem(`streamarena-source-subtitle-offset:${hash}`), null);
 assert("ctrl2: reset again returns false", ctrl2.reset(hash), false);
 
 // --- applyToNativeTracks: shift + idempotency + restore ---

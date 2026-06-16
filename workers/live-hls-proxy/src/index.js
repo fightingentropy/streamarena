@@ -11,7 +11,7 @@
 //
 // 2. Playlist fronting (added after the 2026-06-11 incident): Cloudflare's
 //    always-on L7 DDoS managed ruleset intermittently mints 503s for bursty
-//    `/api/live/*` playlist polling on the streamthatshit.com zone (hls.js
+//    `/api/live/*` playlist polling on the streamarena.xyz zone (hls.js
 //    refresh + failover retries), while requests to this workers.dev host pass
 //    untouched. So signed live playlist URLs now point here; this Worker
 //    fetches the *rewritten* playlist from the origin (the mini keeps doing
@@ -38,14 +38,14 @@
 // HMAC-SHA256 over: CONTEXT 0x00 input 0x00 referer, base64url (no pad).
 //
 // Config: env.LIVE_HLS_PROXY_SECRET (secret, must equal the mini's),
-// env.ORIGIN_BASE (var, e.g. https://streamthatshit.com), and optional
-// env.ORIGIN_DIRECT_BASE (secret, e.g. http://<random-label>.streamthatshit.com
+// env.ORIGIN_BASE (var, e.g. https://streamarena.xyz), and optional
+// env.ORIGIN_DIRECT_BASE (secret, e.g. http://<random-label>.streamarena.xyz
 // — a grey-cloud record; kept secret so the public repo doesn't advertise the
 // name, and plain HTTP so no certificate ever lands the name in CT logs. The
 // leg carries signed URLs for short-lived public streams, so plaintext is an
 // accepted trade-off for keeping the origin IP unpublished).
 
-const SIGNATURE_CONTEXT = "netflix-live-hls-v1";
+const SIGNATURE_CONTEXT = "streamarena-live-hls-v1";
 const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 // Segments are immutable for their short live lifetime; a brief edge cache is

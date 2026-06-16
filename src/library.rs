@@ -489,7 +489,7 @@ mod tests {
     use crate::error::ApiError;
 
     fn unique_temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("netflix-library-{name}-{}.json", super::now_ms()))
+        std::env::temp_dir().join(format!("streamarena-library-{name}-{}.json", super::now_ms()))
     }
 
     #[test]

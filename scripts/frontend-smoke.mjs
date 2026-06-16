@@ -612,9 +612,9 @@ async function runSmoke() {
       if (pageSpec.expectServerContinueWatchingTruth) {
         await context.addInitScript(() => {
           const staleSource = "tmdb:movie:999999";
-          localStorage.setItem(`netflix-resume:${staleSource}`, "120");
+          localStorage.setItem(`streamarena-resume:${staleSource}`, "120");
           localStorage.setItem(
-            "netflix-continue-watching-meta",
+            "streamarena-continue-watching-meta",
             JSON.stringify({
               [staleSource]: {
                 sourceIdentity: staleSource,
@@ -768,15 +768,15 @@ async function runSmoke() {
       if (pageSpec.expectServerContinueWatchingTruth) {
         await page.waitForFunction(
           () =>
-            !localStorage.getItem("netflix-resume:tmdb:movie:999999") &&
-            !(localStorage.getItem("netflix-continue-watching-meta") || "").includes("Ghost Movie"),
+            !localStorage.getItem("streamarena-resume:tmdb:movie:999999") &&
+            !(localStorage.getItem("streamarena-continue-watching-meta") || "").includes("Ghost Movie"),
           null,
           { timeout: 8_000 },
         );
         const staleState = await page.evaluate(() => ({
           rowText: document.querySelector("#continueCards")?.textContent || "",
-          resume: localStorage.getItem("netflix-resume:tmdb:movie:999999"),
-          meta: localStorage.getItem("netflix-continue-watching-meta") || "",
+          resume: localStorage.getItem("streamarena-resume:tmdb:movie:999999"),
+          meta: localStorage.getItem("streamarena-continue-watching-meta") || "",
         }));
         if (
           /Ghost Movie/.test(staleState.rowText) ||

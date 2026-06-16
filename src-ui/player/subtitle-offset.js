@@ -22,7 +22,7 @@ import { normalizeSourceHash } from "./sources.js";
 export const SUBTITLE_OFFSET_STEP_MS = 250;
 const SUBTITLE_OFFSET_MIN_MS = -30000;
 const SUBTITLE_OFFSET_MAX_MS = 30000;
-const STORAGE_KEY_PREFIX = "netflix-source-subtitle-offset:";
+const STORAGE_KEY_PREFIX = "streamarena-source-subtitle-offset:";
 
 // Properties stashed on a native cue so repeated applications stay idempotent:
 // the original (unshifted) timing is captured once, then every application

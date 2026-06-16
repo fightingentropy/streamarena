@@ -2,11 +2,10 @@
     --bg: #141414;
     --text: #f6f6f6;
     --muted: #c9c9c9;
-    --netflix-red: #e50914;
+    --brand-red: #e50914;
     --glass: rgba(10, 10, 10, 0.38);
     --card-bg: rgba(20, 20, 20, 0.72);
-    --font-netflix-sans:
-        "Netflix Sans",
+    --font-brand-sans:
         "Helvetica Neue",
         "Segoe UI",
         Roboto,
@@ -24,7 +23,7 @@
 
 /* Home landing page */
 .page.home-page {
-    --nflx-header-height: 88px;
+    --app-header-height: 88px;
     --home-side-padding: 4%;
     --home-card-width: calc((100% - 128px) / 5);
     min-height: auto;
@@ -34,7 +33,7 @@
 }
 
 .home-page .top-nav {
-    height: calc(var(--nflx-header-height) + env(safe-area-inset-top));
+    height: calc(var(--app-header-height) + env(safe-area-inset-top));
     padding: env(safe-area-inset-top) clamp(28px, 3.5vw, 70px) 0;
     background-color: transparent;
     background-image: linear-gradient(
@@ -341,7 +340,7 @@
     margin-bottom: 12px;
 }
 
-/* Arched wordmark (flat top, bottom bows up), mimicking the Netflix logo curve.
+/* Arched wordmark (flat top, bottom bows up).
    Used in both the nav and the hero; size via the modifier classes below. */
 .home-page .brand-wordmark-arc {
     display: block;
@@ -350,8 +349,8 @@
 }
 
 .home-page .brand-wordmark-arc text {
-    fill: var(--netflix-red);
-    font-family: var(--font-netflix-sans);
+    fill: var(--brand-red);
+    font-family: var(--font-brand-sans);
     font-weight: 800;
     letter-spacing: -1px;
 }
@@ -870,7 +869,7 @@ body.is-search-mode .home-member-footer {
 @media (max-width: 959px) {
     .page.home-page {
         --home-side-padding: 4%;
-        --nflx-header-height: 64px;
+        --app-header-height: 64px;
     }
 
     .featured-hero {
@@ -905,7 +904,7 @@ body.is-search-mode .home-member-footer {
 @media (max-width: 620px) {
     .page.home-page {
         --home-side-padding: 4%;
-        --nflx-header-height: 58px;
+        --app-header-height: 58px;
     }
 
     .home-page .top-nav {
@@ -1013,7 +1012,7 @@ html,
 body {
     margin: 0;
     min-height: 100%;
-    font-family: var(--font-netflix-sans);
+    font-family: var(--font-brand-sans);
     background: var(--bg);
     color: var(--text);
     overflow-x: hidden;
@@ -1116,9 +1115,9 @@ body.modal-open {
 
 /* Text brand wordmark (replaces the logo image) */
 .brand-wordmark {
-    font-family: var(--font-netflix-sans);
+    font-family: var(--font-brand-sans);
     font-weight: 800;
-    color: var(--netflix-red);
+    color: var(--brand-red);
     letter-spacing: -0.02em;
     line-height: 1;
     white-space: nowrap;
@@ -1147,7 +1146,7 @@ body.modal-open {
     border-radius: 999px;
     text-decoration: none;
     color: rgba(255, 255, 255, 0.68);
-    font-family: var(--font-netflix-sans);
+    font-family: var(--font-brand-sans);
     font-size: 16px;
     line-height: 1;
     font-weight: 400;
@@ -1524,8 +1523,8 @@ body.modal-open {
 
 .brand-mark {
     margin: 0;
-    color: var(--netflix-red);
-    font-family: var(--font-netflix-sans);
+    color: var(--brand-red);
+    font-family: var(--font-brand-sans);
     font-size: 3.1rem;
     letter-spacing: 0.04em;
 }
@@ -1544,7 +1543,7 @@ body.modal-open {
     text-wrap: balance;
     letter-spacing: -0.02em;
     line-height: 0.86;
-    font-family: var(--font-netflix-sans);
+    font-family: var(--font-brand-sans);
     font-size: clamp(2.45rem, 5vw, 5.4rem);
     font-weight: 600;
 }
@@ -1657,7 +1656,7 @@ body.modal-open {
 
 .subtitle em {
     display: block;
-    font-family: var(--font-netflix-sans);
+    font-family: var(--font-brand-sans);
     font-style: italic;
     font-weight: 600;
     margin-top: 6px;
@@ -2044,11 +2043,11 @@ body.is-search-mode #myListRow {
 }
 
 .continue-row .card-base .progress::-webkit-progress-value {
-    background: var(--netflix-red);
+    background: var(--brand-red);
 }
 
 .continue-row .card-base .progress::-moz-progress-bar {
-    background: var(--netflix-red);
+    background: var(--brand-red);
 }
 
 .card-hover-progress {
@@ -2078,12 +2077,12 @@ body.is-search-mode #myListRow {
 
 .continue-row .card-hover-progress .progress::-webkit-progress-value {
     border-radius: 2px;
-    background: var(--netflix-red);
+    background: var(--brand-red);
 }
 
 .continue-row .card-hover-progress .progress::-moz-progress-bar {
     border-radius: 2px;
-    background: var(--netflix-red);
+    background: var(--brand-red);
 }
 
 .continue-row .card-hover-progress .progress-time {
@@ -3288,7 +3287,7 @@ body.is-search-mode #myListRow {
     border: 1px solid rgba(255, 255, 255, 0.1);
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
     color: var(--text);
-    font-family: var(--font-netflix-sans);
+    font-family: var(--font-brand-sans);
     animation: feedback-modal-in 180ms cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 
@@ -3443,7 +3442,7 @@ body.is-search-mode #myListRow {
 }
 
 .feedback-thumb-remove:hover:not(:disabled) {
-    background: var(--netflix-red);
+    background: var(--brand-red);
     border-color: transparent;
 }
 
@@ -3485,7 +3484,7 @@ body.is-search-mode #myListRow {
 
 .feedback-btn.is-primary {
     border-color: transparent;
-    background: var(--netflix-red);
+    background: var(--brand-red);
     color: #fff;
 }
 

@@ -5,13 +5,13 @@ import {
 import { AUDIO_LANG_PREF_KEY_PREFIX } from "./preferences.js";
 
 export { CONTINUE_WATCHING_META_KEY };
-export const RESUME_STORAGE_PREFIX = "netflix-resume:";
+export const RESUME_STORAGE_PREFIX = "streamarena-resume:";
 export const DEFAULT_LOCAL_THUMBNAIL = "assets/images/thumbnail.jpg";
 
-const SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:movie:";
-const SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:movie:";
-const TV_SUBTITLE_LANG_PREF_KEY_PREFIX = "netflix-subtitle-lang:tv:";
-const TV_SUBTITLE_STREAM_PREF_KEY_PREFIX = "netflix-subtitle-stream:tv:";
+const SUBTITLE_LANG_PREF_KEY_PREFIX = "streamarena-subtitle-lang:movie:";
+const SUBTITLE_STREAM_PREF_KEY_PREFIX = "streamarena-subtitle-stream:movie:";
+const TV_SUBTITLE_LANG_PREF_KEY_PREFIX = "streamarena-subtitle-lang:tv:";
+const TV_SUBTITLE_STREAM_PREF_KEY_PREFIX = "streamarena-subtitle-stream:tv:";
 const PRIDE_PREJUDICE_SOURCE =
   "assets/videos/Pride.Prejudice.2005.2160p.4K.WEB.x265.10bit.AAC5.1-[YTS.MX].mp4";
 const PRIDE_PREJUDICE_THUMBNAIL = "assets/images/pride-prejudice-thumb.jpg";

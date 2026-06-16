@@ -33,7 +33,7 @@ const LIVE_HLS_BROWSER_FETCH_RUNTIME_SCRIPT: &str = "bin/fetch-browser-live-hls.
 const LIVE_HLS_BROWSER_FETCH_TIMEOUT_SECONDS: u64 = 26;
 const LIVE_HLS_EXTERNAL_EMBED_PARAM: &str = "externalEmbed";
 const LIVE_HLS_SIGNATURE_PARAM: &str = "sig";
-const LIVE_HLS_SIGNATURE_CONTEXT: &[u8] = b"netflix-live-hls-v1";
+const LIVE_HLS_SIGNATURE_CONTEXT: &[u8] = b"streamarena-live-hls-v1";
 const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "liveproduseast.akamaized.net",
     "liveproduseast.global.ssl.fastly.net",
@@ -2310,13 +2310,14 @@ mod tests {
     fn live_hls_signature_matches_cross_checked_vector() {
         // Cross-checked against an independent HMAC-SHA256 (Web Crypto / Node) so
         // the Cloudflare live-proxy Worker validates the exact signatures the
-        // backend produces. Changing this output breaks Worker verification.
+        // backend produces. Vector is over the `streamarena-live-hls-v1` context;
+        // changing this output breaks Worker verification (keep them in lockstep).
         let sig = super::sign_live_hls_proxy_url(
             "https://www.bloomberg.com/parity-probe.ts",
             Some("https://example.test/"),
             "paritytest12345",
         );
-        assert_eq!(sig, "cxrB-f12ka967rfMS41UeX4azDD4cso-lAwbwwX90Qs");
+        assert_eq!(sig, "zoJlTowAUjhQNC1aGCKvmX0rziTW70fGqJlhU7IGdfw");
     }
 
     #[test]

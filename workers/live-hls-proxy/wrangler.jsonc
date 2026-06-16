@@ -7,7 +7,7 @@
   "observability": { "enabled": true },
   // Public origin the playlist/viaOrigin routes relay to (the mini behind
   // Caddy). The path+query is forwarded verbatim so signatures keep validating.
-  "vars": { "ORIGIN_BASE": "https://streamthatshit.com" }
+  "vars": { "ORIGIN_BASE": "https://streamarena.xyz" }
   // Secrets (set out-of-band, never committed):
   //   wrangler secret put LIVE_HLS_PROXY_SECRET
   //     Must equal the mini's LIVE_HLS_PROXY_SECRET so signatures validate.

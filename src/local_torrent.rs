@@ -119,7 +119,7 @@ struct CacheDirEntry {
 impl LocalTorrentService {
     pub fn new(config: Config, db: Db, http_client: reqwest::Client) -> Self {
         let download_client = reqwest::Client::builder()
-            .user_agent("netflix-rust-backend")
+            .user_agent("streamarena-backend")
             .connect_timeout(Duration::from_secs(30))
             .build()
             .unwrap_or(http_client);

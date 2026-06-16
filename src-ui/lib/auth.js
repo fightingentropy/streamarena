@@ -31,22 +31,22 @@ export async function getCurrentUser() {
   return null;
 }
 
-const RESUME_STORAGE_PREFIX = "netflix-resume:";
-const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
-const MY_LIST_STORAGE_KEY = "netflix-my-list-v1";
-const APP_LOCAL_STORAGE_PREFIX = "netflix-";
+const RESUME_STORAGE_PREFIX = "streamarena-resume:";
+const CONTINUE_WATCHING_META_KEY = "streamarena-continue-watching-meta";
+const MY_LIST_STORAGE_KEY = "streamarena-my-list-v1";
+const APP_LOCAL_STORAGE_PREFIX = "streamarena-";
 const WATCH_SESSION_STORAGE_PREFIX = "watch:";
-export const SERVER_HYDRATED_EVENT = "netflix:server-hydrated";
+export const SERVER_HYDRATED_EVENT = "streamarena:server-hydrated";
 const DEPRECATED_BROWSER_PREF_KEYS = new Set([
-  "netflix-hero-trailer-muted-v2",
-  "netflix-stream-quality-pref",
-  "netflix-source-filter-allowed-formats",
-  "netflix-source-filter-results-limit",
-  "netflix-source-filter-min-seeders",
-  "netflix-source-filter-language",
-  "netflix-source-filter-audio-profile",
-  "netflix-resolver-provider",
-  "netflix-remux-video-mode",
+  "streamarena-hero-trailer-muted-v2",
+  "streamarena-stream-quality-pref",
+  "streamarena-source-filter-allowed-formats",
+  "streamarena-source-filter-results-limit",
+  "streamarena-source-filter-min-seeders",
+  "streamarena-source-filter-language",
+  "streamarena-source-filter-audio-profile",
+  "streamarena-resolver-provider",
+  "streamarena-remux-video-mode",
 ]);
 
 function removeStorageKeys(storage, shouldRemove) {

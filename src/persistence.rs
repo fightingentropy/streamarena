@@ -4215,6 +4215,20 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
         "is_disabled",
         "is_disabled INTEGER NOT NULL DEFAULT 0",
     )?;
+    // Rebrand: stored preference keys used a legacy "netflix-" prefix (the same
+    // strings the browser uses, uploaded on login and written back on hydrate).
+    // Rename them suffix-preserving to "streamarena-" so the client-side
+    // localStorage migration stays consistent and a hydrate never re-injects a
+    // "netflix-" key. `UPDATE OR IGNORE` + DELETE is idempotent and skips any row
+    // whose "streamarena-" twin already exists (composite PK is user_id+pref_key).
+    connection.execute_batch(
+        "
+        UPDATE OR IGNORE user_preferences
+          SET pref_key = 'streamarena-' || substr(pref_key, 9)
+          WHERE pref_key LIKE 'netflix-%';
+        DELETE FROM user_preferences WHERE pref_key LIKE 'netflix-%';
+        ",
+    )?;
     Ok(())
 }
 
@@ -5840,7 +5854,7 @@ mod tests {
     }
 
     fn unique_temp_db_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("netflix-{name}-{}.sqlite", super::now_ms()))
+        std::env::temp_dir().join(format!("streamarena-{name}-{}.sqlite", super::now_ms()))
     }
 
     /// Per-test users DB path sitting beside the cache path, so each test gets its
@@ -5905,8 +5919,8 @@ mod tests {
             signup_invite_code: String::new(),
             live_hls_proxy_secret: "test-live-hls-proxy-secret-with-enough-length".to_owned(),
             live_hls_resource_worker_base: String::new(),
-            app_origin: "https://streamthatshit.com".to_owned(),
-            email_from: "noreply@streamthatshit.com".to_owned(),
+            app_origin: "https://streamarena.xyz".to_owned(),
+            email_from: "noreply@streamarena.xyz".to_owned(),
             cf_account_id: String::new(),
             cf_email_api_token: String::new(),
         }

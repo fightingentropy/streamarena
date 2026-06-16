@@ -1,5 +1,5 @@
 // Bump CACHE_PREFIX when shell assets change so clients pick up updates.
-const CACHE_PREFIX = "netflix-pwa-v25";
+const CACHE_PREFIX = "streamarena-pwa-v26";
 const SHELL_CACHE = `${CACHE_PREFIX}:shell`;
 const PAGE_CACHE = `${CACHE_PREFIX}:pages`;
 const API_CACHE = `${CACHE_PREFIX}:api`;
@@ -32,12 +32,11 @@ const APP_SHELL_URLS = [
   "/manifest.webmanifest",
   ARTWORK_FALLBACK_URL,
   "/assets/images/thumbnail-top10-h.jpg",
-  "/assets/icons/netflix-n.svg",
-  "/assets/icons/netflix-logo-clean.png",
-  "/assets/icons/netflix-app-icon-180.png",
-  "/assets/icons/netflix-app-icon-192.png",
-  "/assets/icons/netflix-app-icon-512.png",
-  "/assets/icons/netflix-maskable-icon-512.png",
+  "/assets/icons/streamarena-mark.svg",
+  "/assets/icons/streamarena-app-icon-180.png",
+  "/assets/icons/streamarena-app-icon-192.png",
+  "/assets/icons/streamarena-app-icon-512.png",
+  "/assets/icons/streamarena-maskable-icon-512.png",
 ];
 
 const TMDB_IMAGE_HOSTS = new Set(["image.tmdb.org"]);

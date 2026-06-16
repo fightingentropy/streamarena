@@ -3,8 +3,8 @@ set -euo pipefail
 
 MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
-ZONE_NAME="${ZONE_NAME:-streamthatshit.com}"
-PUBLIC_HOSTS="${PUBLIC_HOSTS:-streamthatshit.com,www.streamthatshit.com}"
+ZONE_NAME="${ZONE_NAME:-streamarena.xyz}"
+PUBLIC_HOSTS="${PUBLIC_HOSTS:-streamarena.xyz,www.streamarena.xyz}"
 PROXIED="${PROXIED:-false}"
 TTL="${TTL:-60}"
 PUBLIC_IP="${PUBLIC_IP:-}"
@@ -19,8 +19,8 @@ The token must have Zone.DNS edit access for the zone.
 Environment:
   CF_API_TOKEN  Required Cloudflare API token with Zone.DNS edit permission.
   CF_ZONE_ID    Optional. If omitted, the script resolves it from ZONE_NAME.
-  ZONE_NAME     Default: streamthatshit.com
-  PUBLIC_HOSTS  Default: streamthatshit.com,www.streamthatshit.com
+  ZONE_NAME     Default: streamarena.xyz
+  PUBLIC_HOSTS  Default: streamarena.xyz,www.streamarena.xyz
   PUBLIC_IP     Optional. If omitted, read from the Mac mini.
   PROXIED       Default: false
   TTL           Default: 60

@@ -1,6 +1,6 @@
-# Netflix App
+# StreamArena
 
-A private Netflix-style streaming app backed by a Rust/Axum server and a multi-page SolidJS/Vite frontend.
+A private streaming app backed by a Rust/Axum server and a multi-page SolidJS/Vite frontend.
 
 The app serves local library titles, resolves remote movie and TV sources, plays live channels, shows live sports schedules, tracks per-user progress, and deploys to an always-on Mac mini behind Caddy.
 
@@ -179,7 +179,7 @@ Home and browsing:
 - Details modal with metadata, cast, playback launch, and My List actions.
 - Continue watching entries enriched from local library and server state.
 - My List stored locally and synced to `/api/user/my-list`.
-- Library editor mode via `netflix-library-edit-mode`, with edit/delete support for local movies and series entries.
+- Library editor mode via `streamarena-library-edit-mode`, with edit/delete support for local movies and series entries.
 - `/live` can be opened as a full page or as an in-home live view.
 - `/sports` is linked from navigation.
 
@@ -524,35 +524,39 @@ Server-managed files:
 
 Browser localStorage keys currently used:
 
-- `netflix-default-audio-lang`
-- `netflix-subtitle-color-pref`
-- `netflix-profile-avatar-style`
-- `netflix-profile-avatar-mode`
-- `netflix-profile-avatar-image`
-- `netflix-library-edit-mode`
-- `netflix-audio-lang:movie:<tmdbId>`
-- `netflix-subtitle-lang:movie:<tmdbId>`
-- `netflix-subtitle-stream:movie:<tmdbId>`
-- `netflix-subtitle-lang:local:<source>`
-- `netflix-subtitle-stream:local:<source>`
-- `netflix-source-audio-sync:<sourceHash>`
-- `netflix-playback-speed`
-- `netflix-resume:<sourceIdentity>`
-- `netflix-continue-watching-meta`
-- `netflix-my-list-v1`
-- `netflix-watch-params:<slug>`
-- `netflix-featured-hero-v2`
+- `streamarena-default-audio-lang`
+- `streamarena-subtitle-color-pref`
+- `streamarena-profile-avatar-style`
+- `streamarena-profile-avatar-mode`
+- `streamarena-profile-avatar-image`
+- `streamarena-library-edit-mode`
+- `streamarena-audio-lang:movie:<tmdbId>`
+- `streamarena-subtitle-lang:movie:<tmdbId>`
+- `streamarena-subtitle-stream:movie:<tmdbId>`
+- `streamarena-subtitle-lang:local:<source>`
+- `streamarena-subtitle-stream:local:<source>`
+- `streamarena-source-audio-sync:<sourceHash>`
+- `streamarena-playback-speed`
+- `streamarena-resume:<sourceIdentity>`
+- `streamarena-continue-watching-meta`
+- `streamarena-my-list-v1`
+- `streamarena-watch-params:<slug>`
+- `streamarena-featured-hero-v2`
+
+Legacy `netflix-*` keys from before the rebrand are migrated to the
+`streamarena-*` namespace once per browser (see `src-ui/lib/storage-migration.js`),
+so existing users keep their resume positions, My List, and settings.
 
 Deprecated keys intentionally pruned by the current app:
 
-- `netflix-hero-trailer-muted-v2`
-- `netflix-source-filter-allowed-formats`
-- `netflix-source-filter-results-limit`
-- `netflix-source-filter-min-seeders`
-- `netflix-source-filter-language`
-- `netflix-source-filter-audio-profile`
-- `netflix-resolver-provider`
-- `netflix-remux-video-mode`
+- `streamarena-hero-trailer-muted-v2`
+- `streamarena-source-filter-allowed-formats`
+- `streamarena-source-filter-results-limit`
+- `streamarena-source-filter-min-seeders`
+- `streamarena-source-filter-language`
+- `streamarena-source-filter-audio-profile`
+- `streamarena-resolver-provider`
+- `streamarena-remux-video-mode`
 
 ## Scripts
 
@@ -609,7 +613,7 @@ Server machine:
 
 - Host: `hermes@m4mini.local`.
 - Runtime path: `/Users/hermes/Developer/netflix`.
-- Public hosts: `streamthatshit.com` and `www.streamthatshit.com`.
+- Public hosts: `streamarena.xyz` and `www.streamarena.xyz`.
 - Ingress: Cloudflare DNS-only A records -> home public IP -> router TCP 80/443 -> Mac mini.
 - Reverse proxy: Caddy on ports 80 and 443.
 - Backend listener: `127.0.0.1:5173`.
@@ -649,7 +653,7 @@ ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
   'curl -sS --proxy http://127.0.0.1:40000 -o /dev/null -w "%{http_code}\n" --max-time 12 https://streamed.pk/api/matches/football'
 
 curl -sS --max-time 60 \
-  'https://streamthatshit.com/api/sports/stream?url=https%3A%2F%2Fstreamed.pk%2Fapi%2Fstream%2Fadmin%2Fppv-crystal-palace-vs-rayo-vallecano' \
+  'https://streamarena.xyz/api/sports/stream?url=https%3A%2F%2Fstreamed.pk%2Fapi%2Fstream%2Fadmin%2Fppv-crystal-palace-vs-rayo-vallecano' \
   | python3 -m json.tool
 ```
 
@@ -708,7 +712,7 @@ ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
 ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
   'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 5 http://127.0.0.1:5173/api/library'
 
-curl -sSI --max-time 10 https://streamthatshit.com | sed -n '1,8p'
+curl -sSI --max-time 10 https://streamarena.xyz | sed -n '1,8p'
 ```
 
 Expected results:

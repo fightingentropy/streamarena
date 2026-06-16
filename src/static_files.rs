@@ -378,7 +378,7 @@ mod tests {
             "/assets/videos/movie.mp4"
         ));
         assert!(!should_require_auth_for_static_path(
-            "/assets/icons/netflix-n.svg"
+            "/assets/icons/streamarena-mark.svg"
         ));
         assert!(!should_require_auth_for_static_path(
             "/assets/images/poster.jpg"

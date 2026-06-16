@@ -108,7 +108,7 @@ pub async fn send_verification_email(state: &AppState, to_email: &str, raw_token
     // mangled by quoted-printable email encoding, corrupting the link.
     let link = format!("{}/api/auth/verify/{}", config.app_origin, raw_token);
     let text = format!(
-        "Welcome to Netflix.\n\nConfirm your email address by opening this link:\n{link}\n\n\
+        "Welcome to StreamArena.\n\nConfirm your email address by opening this link:\n{link}\n\n\
          This link expires in 24 hours. If you did not create this account, you can ignore this email."
     );
     let html = verification_email_html(&link);
@@ -128,11 +128,11 @@ pub async fn send_verification_email(state: &AppState, to_email: &str, raw_token
     post_cloudflare_email(state, &endpoint, &payload, "verification", to_email).await
 }
 
-/// Netflix-branded HTML body for the verification email (brand red `#e50914`).
+/// StreamArena-branded HTML body for the verification email (brand red `#e50914`).
 fn verification_email_html(link: &str) -> String {
     format!(
         r#"<div style="font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#ffffff;background:#141414">
-  <div style="font-size:28px;font-weight:800;color:#e50914;letter-spacing:-0.5px;margin:0 0 24px">NETFLIX</div>
+  <div style="font-size:28px;font-weight:800;color:#e50914;letter-spacing:-0.5px;margin:0 0 24px">StreamArena</div>
   <h1 style="font-size:22px;margin:0 0 12px;color:#ffffff">Confirm your email</h1>
   <p style="margin:0 0 24px;line-height:1.5;color:#b3b3b3">Welcome! Tap the button below to verify your email address and finish setting up your account.</p>
   <p style="margin:0 0 28px"><a href="{link}" style="display:inline-block;background:#e50914;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:4px;font-weight:600">Verify email</a></p>
@@ -163,7 +163,7 @@ pub async fn send_password_reset_email(state: &AppState, to_email: &str, raw_tok
     // endpoint. Path-based token to avoid quoted-printable query mangling.
     let link = format!("{}/reset-password/{}", config.app_origin, raw_token);
     let text = format!(
-        "Reset your Netflix password.\n\nOpen this link to choose a new password:\n{link}\n\n\
+        "Reset your StreamArena password.\n\nOpen this link to choose a new password:\n{link}\n\n\
          This link expires in 1 hour. If you did not request a password reset, you can ignore this email."
     );
     let html = password_reset_email_html(&link);
@@ -183,11 +183,11 @@ pub async fn send_password_reset_email(state: &AppState, to_email: &str, raw_tok
     post_cloudflare_email(state, &endpoint, &payload, "password-reset", to_email).await
 }
 
-/// Netflix-branded HTML body for the password-reset email (brand red `#e50914`).
+/// StreamArena-branded HTML body for the password-reset email (brand red `#e50914`).
 fn password_reset_email_html(link: &str) -> String {
     format!(
         r#"<div style="font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#ffffff;background:#141414">
-  <div style="font-size:28px;font-weight:800;color:#e50914;letter-spacing:-0.5px;margin:0 0 24px">NETFLIX</div>
+  <div style="font-size:28px;font-weight:800;color:#e50914;letter-spacing:-0.5px;margin:0 0 24px">StreamArena</div>
   <h1 style="font-size:22px;margin:0 0 12px;color:#ffffff">Reset your password</h1>
   <p style="margin:0 0 24px;line-height:1.5;color:#b3b3b3">We received a request to reset your password. Tap the button below to choose a new one.</p>
   <p style="margin:0 0 28px"><a href="{link}" style="display:inline-block;background:#e50914;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:4px;font-weight:600">Reset password</a></p>
@@ -216,8 +216,8 @@ mod tests {
 
     #[test]
     fn verification_html_embeds_link_and_brand_color() {
-        let html = verification_email_html("https://streamthatshit.com/api/auth/verify/deadbeef");
-        assert!(html.contains("https://streamthatshit.com/api/auth/verify/deadbeef"));
+        let html = verification_email_html("https://streamarena.xyz/api/auth/verify/deadbeef");
+        assert!(html.contains("https://streamarena.xyz/api/auth/verify/deadbeef"));
         assert!(html.contains("#e50914"));
     }
 }

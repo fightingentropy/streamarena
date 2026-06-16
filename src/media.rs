@@ -2187,8 +2187,8 @@ mod tests {
             signup_invite_code: String::new(),
             live_hls_proxy_secret: "test-live-hls-proxy-secret-with-enough-length".to_owned(),
             live_hls_resource_worker_base: String::new(),
-            app_origin: "https://streamthatshit.com".to_owned(),
-            email_from: "noreply@streamthatshit.com".to_owned(),
+            app_origin: "https://streamarena.xyz".to_owned(),
+            email_from: "noreply@streamarena.xyz".to_owned(),
             cf_account_id: String::new(),
             cf_email_api_token: String::new(),
         }
@@ -2460,8 +2460,8 @@ mod tests {
             .expect("time")
             .as_nanos();
         let temp_dir = std::env::temp_dir();
-        let root = temp_dir.join(format!("netflix-media-root-{unique}"));
-        let outside = temp_dir.join(format!("netflix-media-outside-{unique}"));
+        let root = temp_dir.join(format!("streamarena-media-root-{unique}"));
+        let outside = temp_dir.join(format!("streamarena-media-outside-{unique}"));
         fs::create_dir_all(&root).expect("root dir");
         fs::create_dir_all(&outside).expect("outside dir");
         let inside_file = root.join("video.mp4");
@@ -2493,7 +2493,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("netflix-media-allowed-{unique}"));
+        let root = std::env::temp_dir().join(format!("streamarena-media-allowed-{unique}"));
         let videos_dir = root.join("assets").join("videos");
         fs::create_dir_all(&videos_dir).expect("videos dir");
         fs::write(videos_dir.join("movie.mp4"), b"movie").expect("movie file");
@@ -2559,8 +2559,8 @@ mod tests {
             signup_invite_code: String::new(),
             live_hls_proxy_secret: "test-live-hls-proxy-secret-with-enough-length".to_owned(),
             live_hls_resource_worker_base: String::new(),
-            app_origin: "https://streamthatshit.com".to_owned(),
-            email_from: "noreply@streamthatshit.com".to_owned(),
+            app_origin: "https://streamarena.xyz".to_owned(),
+            email_from: "noreply@streamarena.xyz".to_owned(),
             cf_account_id: String::new(),
             cf_email_api_token: String::new(),
         };

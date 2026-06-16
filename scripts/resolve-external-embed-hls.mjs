@@ -77,7 +77,7 @@ const rawProxy = String(
 const backendPlaylistUserAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36";
 const videasyFavoriteProviderKey = "videasy-favorite-provider";
-const vidlinkAssetCacheDir = join(tmpdir(), "netflix-vidlink-native");
+const vidlinkAssetCacheDir = join(tmpdir(), "streamarena-vidlink-native");
 const configuredVidlinkAssetCacheTtlMs = Number(
   process.env.VIDLINK_NATIVE_ASSET_CACHE_TTL_MS || 2 * 60 * 60 * 1000,
 );

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="StreamArena">
+  <rect width="512" height="512" rx="116" fill="#141414" />
+  <circle cx="256" cy="256" r="176" fill="none" stroke="#e50914" stroke-width="30" />
+  <path d="M222 188 L222 324 L334 256 Z" fill="#e50914" stroke="#e50914" stroke-width="24" stroke-linejoin="round" stroke-linecap="round" />
+</svg>

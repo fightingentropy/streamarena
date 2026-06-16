@@ -185,7 +185,7 @@ fn build_twitch_hls_url(channel: &str, token: &TwitchPlaybackAccessToken) -> App
         .append_pair("allow_spectre", "false")
         .append_pair("fast_bread", "true")
         .append_pair("p", &timestamp)
-        .append_pair("play_session_id", &format!("netflix-{timestamp}"))
+        .append_pair("play_session_id", &format!("streamarena-{timestamp}"))
         .append_pair("player_backend", "mediaplayer")
         .append_pair("playlist_include_framerate", "true")
         .append_pair("reassignments_supported", "true")

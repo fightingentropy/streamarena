@@ -8,13 +8,13 @@ export function mountPage(Page, options = {}) {
 
 function registerServiceWorker() {
   if (
-    window.__netflixServiceWorkerRegistered ||
+    window.__streamArenaServiceWorkerRegistered ||
     !("serviceWorker" in navigator) ||
     !isServiceWorkerSafeOrigin()
   ) {
     return;
   }
-  window.__netflixServiceWorkerRegistered = true;
+  window.__streamArenaServiceWorkerRegistered = true;
   navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
 }
 

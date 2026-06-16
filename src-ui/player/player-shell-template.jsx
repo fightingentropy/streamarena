@@ -661,7 +661,7 @@ export function renderPlayerShell({
           aria-live="polite"
           aria-label="Loading video"
         >
-          <span class="seek-netflix-spinner" aria-hidden="true"></span>
+          <span class="seek-brand-spinner" aria-hidden="true"></span>
         </div>
         <div class="resolver-card" role="status" aria-live="polite">
           <h2
@@ -715,7 +715,7 @@ export function renderPlayerShell({
           aria-live="polite"
           aria-label="Seeking"
         >
-          <span class="seek-netflix-spinner" aria-hidden="true"></span>
+          <span class="seek-brand-spinner" aria-hidden="true"></span>
         </div>
       </div>
     </main>

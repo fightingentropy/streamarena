@@ -229,14 +229,14 @@ async function convertFileToAvatarImage(file) {
 
 function clearDeprecatedSourcePreferenceStorage() {
   const deprecatedKeys = [
-    "netflix-stream-quality-pref",
-    "netflix-source-filter-allowed-formats",
-    "netflix-source-filter-results-limit",
-    "netflix-source-filter-min-seeders",
-    "netflix-source-filter-language",
-    "netflix-source-filter-audio-profile",
-    "netflix-resolver-provider",
-    "netflix-remux-video-mode",
+    "streamarena-stream-quality-pref",
+    "streamarena-source-filter-allowed-formats",
+    "streamarena-source-filter-results-limit",
+    "streamarena-source-filter-min-seeders",
+    "streamarena-source-filter-language",
+    "streamarena-source-filter-audio-profile",
+    "streamarena-resolver-provider",
+    "streamarena-remux-video-mode",
   ];
   try { deprecatedKeys.forEach((key) => localStorage.removeItem(key)); }
   catch {}

@@ -61,7 +61,7 @@ export default function ResetPasswordPage() {
     <main class="login-page">
       <div class="login-card">
         <a href="/" class="login-logo">
-          <img src="/assets/icons/netflix-n.svg" alt="Netflix" />
+          <img src="/assets/icons/streamarena-mark.svg" alt="StreamArena" />
         </a>
         <h1>Reset password</h1>
         <Show

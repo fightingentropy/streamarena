@@ -1,4 +1,4 @@
-const DEFAULT_HLS_QUALITY_PREFERENCE_STORAGE_KEY = "netflix-hls-quality-pref";
+const DEFAULT_HLS_QUALITY_PREFERENCE_STORAGE_KEY = "streamarena-hls-quality-pref";
 
 export function normalizeHlsQualityPreference(value) {
   const normalized = String(value || "")

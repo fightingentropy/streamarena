@@ -8,9 +8,9 @@
 export const DEFAULT_STREAM_QUALITY_PREFERENCE = "1080p";
 export const DEFAULT_SUBTITLE_COLOR = "#b8bcc3";
 
-export const AUDIO_LANG_PREF_KEY_PREFIX = "netflix-audio-lang:movie:";
-export const DEFAULT_AUDIO_LANGUAGE_PREF_KEY = "netflix-default-audio-lang";
-export const SUBTITLE_COLOR_PREF_KEY = "netflix-subtitle-color-pref";
+export const AUDIO_LANG_PREF_KEY_PREFIX = "streamarena-audio-lang:movie:";
+export const DEFAULT_AUDIO_LANGUAGE_PREF_KEY = "streamarena-default-audio-lang";
+export const SUBTITLE_COLOR_PREF_KEY = "streamarena-subtitle-color-pref";
 
 export const supportedAudioLangs = new Set([
   "auto",

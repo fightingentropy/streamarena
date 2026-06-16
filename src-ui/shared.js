@@ -3,10 +3,10 @@
 // ---------------------------------------------------------------------------
 
 // --- Preference key constants ---
-export const PROFILE_AVATAR_STYLE_PREF_KEY = "netflix-profile-avatar-style";
-export const PROFILE_AVATAR_MODE_PREF_KEY = "netflix-profile-avatar-mode";
-export const PROFILE_AVATAR_IMAGE_PREF_KEY = "netflix-profile-avatar-image";
-export const LIBRARY_EDIT_MODE_PREF_KEY = "netflix-library-edit-mode";
+export const PROFILE_AVATAR_STYLE_PREF_KEY = "streamarena-profile-avatar-style";
+export const PROFILE_AVATAR_MODE_PREF_KEY = "streamarena-profile-avatar-mode";
+export const PROFILE_AVATAR_IMAGE_PREF_KEY = "streamarena-profile-avatar-image";
+export const LIBRARY_EDIT_MODE_PREF_KEY = "streamarena-library-edit-mode";
 
 // --- Avatar styles ---
 export const supportedAvatarStyles = new Set([
@@ -86,7 +86,7 @@ export function getStoredAvatarImagePreference() {
 export const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 
 // --- Continue-watching metadata ---
-export const CONTINUE_WATCHING_META_KEY = "netflix-continue-watching-meta";
+export const CONTINUE_WATCHING_META_KEY = "streamarena-continue-watching-meta";
 
 export function readContinueWatchingMetaMap() {
   try {

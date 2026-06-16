@@ -12,7 +12,6 @@
   --muted-soft: #555555;
   --danger: #ff8a7a;
   --font-sans:
-    "Netflix Sans",
     "Helvetica Neue",
     "Segoe UI",
     Roboto,
@@ -104,7 +103,7 @@ a:focus-visible {
 }
 
 .login-logo img {
-  width: 32px;
+  width: 52px;
   height: 52px;
   object-fit: contain;
 }

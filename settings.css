@@ -10,13 +10,12 @@
   --text: #111111;
   --muted: #525252;
   --muted-soft: #747474;
-  --netflix-red: #e50914;
+  --brand-red: #e50914;
   --focus: #1f73e8;
   --success: #0f8a47;
   --warning: #8a6400;
   --danger: #b42318;
   --font-sans:
-    "Netflix Sans",
     "Helvetica Neue",
     "Segoe UI",
     Roboto,
@@ -104,7 +103,7 @@ a:focus-visible {
 .settings-wordmark {
   font-family: var(--font-sans);
   font-weight: 800;
-  color: var(--netflix-red);
+  color: var(--brand-red);
   letter-spacing: -0.02em;
   line-height: 1;
   white-space: nowrap;
@@ -172,7 +171,7 @@ a:focus-visible {
 }
 
 .settings-back-link:hover {
-  color: var(--netflix-red);
+  color: var(--brand-red);
 }
 
 .settings-back-arrow {

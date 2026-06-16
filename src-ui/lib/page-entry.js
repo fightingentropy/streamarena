@@ -1,6 +1,8 @@
 import { hydrateFromServer } from "./auth.js";
 import { initEmailVerificationBanner } from "./email-verification-banner.js";
+import { initMovedBanner } from "./moved-banner.js";
 import { mountPage } from "./mount-page.js";
+import { migrateLegacyStorageKeys } from "./storage-migration.js";
 
 async function loadPageComponent(loadPage) {
   const pageModule = typeof loadPage === "function" ? await loadPage() : loadPage;
@@ -8,6 +10,9 @@ async function loadPageComponent(loadPage) {
 }
 
 export async function mountAuthenticatedPage(loadPage, options = {}) {
+  // Rebrand storage migration must run before any page module loads and reads
+  // its keys, and before hydrateFromServer writes them back.
+  migrateLegacyStorageKeys();
   // Download the page module and check auth in parallel for speed, but do not
   // mount protected UI (or run its data fetches) until auth is confirmed.
   const componentPromise = loadPageComponent(loadPage);
@@ -25,8 +30,12 @@ export async function mountAuthenticatedPage(loadPage, options = {}) {
 
   void hydrateFromServer();
   initEmailVerificationBanner(user);
+  // Appended after render so it sits over the mounted app as a fixed overlay.
+  initMovedBanner();
 }
 
 export async function mountPublicPage(loadPage, options = {}) {
+  migrateLegacyStorageKeys();
   mountPage(await loadPageComponent(loadPage), options);
+  initMovedBanner();
 }

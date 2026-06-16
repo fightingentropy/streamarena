@@ -1,5 +1,5 @@
 const SESSION_PREFIX = "watch:";
-const LOCAL_PREFIX = "netflix-watch-params:";
+const LOCAL_PREFIX = "streamarena-watch-params:";
 const WATCH_PATH_PATTERN = /^\/watch(?:\/|$)/;
 
 export function slugifyTitle(title) {

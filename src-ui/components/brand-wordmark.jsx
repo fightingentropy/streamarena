@@ -1,5 +1,5 @@
 // Arched brand wordmark: flat top edge, the baseline bowing up in the middle
-// with the outer letters slightly taller (Netflix-logo style). Shared by the
+// with the outer letters slightly taller. Shared by the
 // top-nav and the hero on the browse pages so they stay identical.
 //
 // The arch is COMPUTED from the word below — to rebrand, change WORD only.

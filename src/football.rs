@@ -948,7 +948,7 @@ fn sports_http_client(state: &AppState) -> AppResult<reqwest::Client> {
     let proxy = reqwest::Proxy::all(&proxy_url)
         .map_err(|error| ApiError::internal(format!("Invalid {SPORTS_HTTP_PROXY_ENV}: {error}")))?;
     reqwest::Client::builder()
-        .user_agent("netflix-rust-backend")
+        .user_agent("streamarena-backend")
         .timeout(Duration::from_secs(SPORTS_HTTP_CLIENT_TIMEOUT_SECONDS))
         .proxy(proxy)
         .build()

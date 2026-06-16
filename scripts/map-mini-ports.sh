@@ -167,7 +167,7 @@ def add_mapping(control_url, service_type, local_ip, port):
       <NewInternalPort>{port}</NewInternalPort>
       <NewInternalClient>{local_ip}</NewInternalClient>
       <NewEnabled>1</NewEnabled>
-      <NewPortMappingDescription>Netflix Caddy {port}</NewPortMappingDescription>
+      <NewPortMappingDescription>StreamArena Caddy {port}</NewPortMappingDescription>
       <NewLeaseDuration>0</NewLeaseDuration>"""
     soap(control_url, service_type, "AddPortMapping", body)
     print(f"port={port} status=added internal={local_ip}:{port}")

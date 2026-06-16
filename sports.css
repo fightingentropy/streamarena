@@ -1,5 +1,5 @@
-/* Sports page — Netflix-style rails of event cards on black.
-   Inherits --nflx-header-height / --home-side-padding / design tokens from the
+/* Sports page — rails of event cards on black.
+   Inherits --app-header-height / --home-side-padding / design tokens from the
    shared .home-page shell (style.css).
    Color language: red is reserved for live semantics (badge, dot, progress);
    every selected control (genre, date, filter) is solid white like the rest
@@ -29,7 +29,7 @@ body.sports-route .page {
     --sports-card-width: clamp(200px, 19vw, 300px);
     min-height: 100dvh;
     padding:
-        calc(var(--nflx-header-height, 88px) + 28px + env(safe-area-inset-top))
+        calc(var(--app-header-height, 88px) + 28px + env(safe-area-inset-top))
         0
         calc(60px + env(safe-area-inset-bottom));
     color: var(--text);
@@ -43,7 +43,7 @@ body.sports-route .page {
 
 .sports-hero-eyebrow {
     margin: 0;
-    color: var(--netflix-red);
+    color: var(--brand-red);
     font-size: 0.78rem;
     font-weight: 700;
     letter-spacing: 0.2em;
@@ -81,7 +81,7 @@ body.sports-route .page {
     width: 7px;
     height: 7px;
     border-radius: 999px;
-    background: var(--netflix-red);
+    background: var(--brand-red);
     box-shadow: 0 0 0 3px rgba(229, 9, 20, 0.18);
     animation: sports-pulse 1.6s ease-in-out infinite;
 }
@@ -239,7 +239,7 @@ body.sports-route .page {
     height: 18px;
     padding: 0 5px;
     border-radius: 999px;
-    background: var(--netflix-red);
+    background: var(--brand-red);
     color: #fff;
     font-size: 0.72rem;
     font-weight: 700;
@@ -278,7 +278,7 @@ body.sports-route .page {
     width: 8px;
     height: 8px;
     border-radius: 999px;
-    background: var(--netflix-red);
+    background: var(--brand-red);
     box-shadow: 0 0 0 3px rgba(229, 9, 20, 0.2);
     animation: sports-pulse 1.6s ease-in-out infinite;
 }
@@ -488,7 +488,7 @@ body.sports-route .page {
 }
 
 .sports-badge.is-live {
-    background: var(--netflix-red);
+    background: var(--brand-red);
     color: #fff;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -577,7 +577,7 @@ body.sports-route .page {
     display: block;
     width: 0;
     height: 100%;
-    background: var(--netflix-red);
+    background: var(--brand-red);
 }
 
 /* Live progress width, snapped to 5% steps. Driven by liveProgressWidthClass()
@@ -647,7 +647,7 @@ body.sports-route .page {
     padding: 0 20px;
     border: 0;
     border-radius: 4px;
-    background: var(--netflix-red);
+    background: var(--brand-red);
     color: #fff;
     font: inherit;
     font-weight: 700;
@@ -728,7 +728,7 @@ body.sports-route .page {
     .sports-main {
         --sports-card-width: clamp(180px, 38vw, 240px);
         padding:
-            calc(var(--nflx-header-height, 64px) + 24px + env(safe-area-inset-top))
+            calc(var(--app-header-height, 64px) + 24px + env(safe-area-inset-top))
             0
             46px;
     }
@@ -769,7 +769,7 @@ body.sports-route .page {
         --gutter: 18px;
         --sports-card-width: 74vw;
         padding:
-            calc(var(--nflx-header-height, 58px) + 18px + env(safe-area-inset-top))
+            calc(var(--app-header-height, 58px) + 18px + env(safe-area-inset-top))
             0
             34px;
     }
