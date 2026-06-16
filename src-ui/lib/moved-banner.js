@@ -1,7 +1,8 @@
-// "We've moved" notice, shown only when the app is served from the legacy
-// domain (streamthatshit.com). It points users at the new home, streamarena.xyz,
-// and reassures them their account carries over — both hosts are the same
-// backend and the same account database, so the email + password are identical.
+// Legacy-domain "we moved" interstitial. When the app is served from the old
+// domain (streamthatshit.com) we do NOT boot the streaming UI at all — we
+// replace the page with a full-screen "we moved to streamarena.xyz" notice and
+// signal the page-entry hook to stop. Both hosts are the same backend and the
+// same account database, so the email + password carry over unchanged.
 //
 // Framework-free so it runs from the shared page-entry hook on every page.
 // Styling lives in the sibling stylesheet, which Vite bundles into the page's
@@ -12,7 +13,6 @@ import "./moved-banner.css";
 const LEGACY_HOST = "streamthatshit.com";
 const NEW_HOST = "streamarena.xyz";
 const NEW_ORIGIN = "https://streamarena.xyz";
-const DISMISS_KEY = "streamarena-moved-banner-dismissed";
 
 function isLegacyHost() {
   let host;
@@ -29,58 +29,53 @@ function newSiteUrl() {
   return `${NEW_ORIGIN}${pathname}${search}${hash}`;
 }
 
-function isDismissed() {
-  try {
-    return window.localStorage.getItem(DISMISS_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
+function buildNotice() {
+  const page = document.createElement("div");
+  page.className = "moved-page";
+  page.setAttribute("role", "region");
+  page.setAttribute("aria-label", "Site moved notice");
 
-export function initMovedBanner() {
-  if (!isLegacyHost() || isDismissed()) return;
-  if (document.querySelector(".moved-banner")) return;
+  const card = document.createElement("div");
+  card.className = "moved-page__card";
 
-  const banner = document.createElement("div");
-  banner.className = "moved-banner";
-  banner.setAttribute("role", "region");
-  banner.setAttribute("aria-label", "Site moved notice");
+  const brand = document.createElement("div");
+  brand.className = "moved-page__brand";
+  brand.textContent = "StreamArena";
 
-  const body = document.createElement("div");
-  body.className = "moved-banner__body";
-  const title = document.createElement("p");
-  title.className = "moved-banner__title";
-  title.textContent = "StreamArena has a new address";
+  const title = document.createElement("h1");
+  title.className = "moved-page__title";
+  title.textContent = "We've moved";
+
   const text = document.createElement("p");
-  text.className = "moved-banner__text";
-  text.textContent = `We've moved to ${NEW_HOST}. Sign in there with the same email and password — your account, watchlist, and history are all there.`;
-  body.append(title, text);
+  text.className = "moved-page__text";
+  text.textContent = `StreamArena now lives at ${NEW_HOST}. Sign in there with the same email and password — your account, watchlist, and history are all there.`;
 
-  const actions = document.createElement("div");
-  actions.className = "moved-banner__actions";
   const go = document.createElement("a");
-  go.className = "moved-banner__btn";
+  go.className = "moved-page__btn";
   go.href = newSiteUrl();
   go.textContent = `Go to ${NEW_HOST}`;
-  const dismiss = document.createElement("button");
-  dismiss.type = "button";
-  dismiss.className = "moved-banner__dismiss";
-  dismiss.setAttribute("aria-label", "Dismiss");
-  dismiss.textContent = "×";
-  actions.append(go, dismiss);
 
-  banner.append(body, actions);
+  card.append(brand, title, text, go);
+  page.append(card);
+  return page;
+}
+
+// If we're on the legacy host, take over the whole page with the moved notice
+// and return `true` so the caller skips mounting the app (no auth fetch, no
+// data fetches, no streaming). Returns `false` on the live domain — the caller
+// proceeds normally.
+export function renderLegacyMovedNotice() {
+  if (!isLegacyHost()) return false;
 
   const mount = () => {
-    if (document.body) document.body.appendChild(banner);
+    try {
+      document.title = `StreamArena has moved to ${NEW_HOST}`;
+    } catch {}
+    document.documentElement.classList.add("moved-page-active");
+    if (document.querySelector(".moved-page")) return;
+    document.body.replaceChildren(buildNotice());
   };
   if (document.body) mount();
   else document.addEventListener("DOMContentLoaded", mount, { once: true });
-
-  dismiss.addEventListener("click", () => {
-    banner.remove();
-    try {
-      window.localStorage.setItem(DISMISS_KEY, "1");
-    } catch {}
-  });
+  return true;
 }

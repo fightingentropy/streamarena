@@ -1,6 +1,6 @@
 import { hydrateFromServer } from "./auth.js";
 import { initEmailVerificationBanner } from "./email-verification-banner.js";
-import { initMovedBanner } from "./moved-banner.js";
+import { renderLegacyMovedNotice } from "./moved-banner.js";
 import { mountPage } from "./mount-page.js";
 import { migrateLegacyStorageKeys } from "./storage-migration.js";
 
@@ -10,6 +10,9 @@ async function loadPageComponent(loadPage) {
 }
 
 export async function mountAuthenticatedPage(loadPage, options = {}) {
+  // Legacy domain (streamthatshit.com): show only the "we moved" notice — do
+  // not boot the app, hit /api/auth/me, or stream anything.
+  if (renderLegacyMovedNotice()) return;
   // Rebrand storage migration must run before any page module loads and reads
   // its keys, and before hydrateFromServer writes them back.
   migrateLegacyStorageKeys();
@@ -30,12 +33,10 @@ export async function mountAuthenticatedPage(loadPage, options = {}) {
 
   void hydrateFromServer();
   initEmailVerificationBanner(user);
-  // Appended after render so it sits over the mounted app as a fixed overlay.
-  initMovedBanner();
 }
 
 export async function mountPublicPage(loadPage, options = {}) {
+  if (renderLegacyMovedNotice()) return;
   migrateLegacyStorageKeys();
   mountPage(await loadPageComponent(loadPage), options);
-  initMovedBanner();
 }

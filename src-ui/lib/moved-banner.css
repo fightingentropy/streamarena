@@ -1,18 +1,23 @@
-/* Legacy-domain "we moved to streamarena.xyz" banner. Fixed overlay so it works
-   on every page without depending on per-page layout. Brand tokens carry
+/* Legacy-domain "we moved to streamarena.xyz" full-page interstitial. Shown
+   instead of the app when served from the old domain. Brand tokens carry
    fallbacks because public pages (e.g. login) don't load the full style.css. */
-.moved-banner {
+html.moved-page-active,
+html.moved-page-active body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #0b0b0b;
+}
+
+.moved-page {
   position: fixed;
-  inset: 0 0 auto 0;
-  z-index: 10000;
+  inset: 0;
+  z-index: 2147483647;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px 24px;
-  flex-wrap: wrap;
-  padding: 12px 20px;
-  background: #0b0b0b;
-  border-bottom: 2px solid var(--brand-red, #e50914);
+  padding: 24px;
+  background: radial-gradient(circle at 50% 0%, #1a1a1a 0%, #0b0b0b 60%);
   color: #ffffff;
   font-family: var(
     --font-brand-sans,
@@ -22,59 +27,47 @@
     Roboto,
     sans-serif
   );
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
 }
 
-.moved-banner__body {
-  min-width: 0;
+.moved-page__card {
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
 }
 
-.moved-banner__title {
-  margin: 0;
-  font-size: 14px;
+.moved-page__brand {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--brand-red, #e50914);
+  margin: 0 0 28px;
+}
+
+.moved-page__title {
+  font-size: 26px;
   font-weight: 700;
-  letter-spacing: -0.2px;
+  letter-spacing: -0.3px;
+  margin: 0 0 12px;
 }
 
-.moved-banner__text {
-  margin: 2px 0 0;
-  font-size: 12.5px;
-  line-height: 1.4;
+.moved-page__text {
+  font-size: 15px;
+  line-height: 1.55;
   color: #b3b3b3;
+  margin: 0 0 28px;
 }
 
-.moved-banner__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.moved-banner__btn {
+.moved-page__btn {
   display: inline-block;
   background: var(--brand-red, #e50914);
   color: #ffffff;
   text-decoration: none;
-  padding: 8px 16px;
+  padding: 13px 26px;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
-  white-space: nowrap;
 }
 
-.moved-banner__btn:hover {
+.moved-page__btn:hover {
   filter: brightness(1.08);
-}
-
-.moved-banner__dismiss {
-  background: transparent;
-  border: 0;
-  color: #b3b3b3;
-  font-size: 22px;
-  line-height: 1;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-
-.moved-banner__dismiss:hover {
-  color: #ffffff;
 }
