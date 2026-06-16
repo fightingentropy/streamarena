@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP="${REMOTE_APP:-/Users/hermes/Developer/netflix}"
+APP="${REMOTE_APP:-/Users/hermes/Developer/streamarena}"
 DB="$APP/cache/resolver-cache.sqlite"
 BASE="http://127.0.0.1:5173"
 NTVS_URL="https://ntvs.cx/channel-hesgoales/NOVASPORTS-1"

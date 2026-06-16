@@ -1,5 +1,5 @@
 [package]
-name = "netflix-rust-backend"
+name = "streamarena-backend"
 version = "0.1.0"
 edition = "2024"
 

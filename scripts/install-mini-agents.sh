@@ -3,7 +3,7 @@ set -euo pipefail
 
 MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
-REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/netflix}"
+REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/streamarena}"
 DISK_MAX_PERCENT="${DISK_MAX_PERCENT:-90}"
 DISK_MIN_FREE_GB="${DISK_MIN_FREE_GB:-50}"
 WATCHDOG_URL="${WATCHDOG_URL:-http://127.0.0.1:5173/api/health/live}"
@@ -16,7 +16,7 @@ ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$MINI_HOST" \
 set -euo pipefail
 
 uid="$(id -u)"
-state_dir="$HOME/.local/state/netflix"
+state_dir="$HOME/.local/state/streamarena"
 bin_dir="$HOME/.local/bin"
 agents_dir="$HOME/Library/LaunchAgents"
 mkdir -p "$state_dir" "$bin_dir" "$agents_dir"
@@ -29,11 +29,11 @@ rm -f \
   "$REMOTE_APP/assets/hero-previews.json"
 rm -rf "$REMOTE_APP/assets/videos/hero-previews"
 
-cat > "$bin_dir/netflix-rotate-logs" <<'SCRIPT'
+cat > "$bin_dir/streamarena-rotate-logs" <<'SCRIPT'
 #!/bin/bash
 set -euo pipefail
 
-log_dir="/Users/hermes/.local/state/netflix"
+log_dir="/Users/hermes/.local/state/streamarena"
 keep=7
 max_bytes=$((5 * 1024 * 1024))
 force="${1:-}"
@@ -57,12 +57,12 @@ for name in backend.log backend.err.log caddy.log caddy.err.log caddy-access.log
 done
 SCRIPT
 
-cat > "$bin_dir/netflix-disk-monitor" <<'SCRIPT'
+cat > "$bin_dir/streamarena-disk-monitor" <<'SCRIPT'
 #!/bin/bash
 set -euo pipefail
 
 app="__REMOTE_APP__"
-state_dir="/Users/hermes/.local/state/netflix"
+state_dir="/Users/hermes/.local/state/streamarena"
 log_file="$state_dir/disk-monitor.log"
 max_percent="__DISK_MAX_PERCENT__"
 min_free_gb="__DISK_MIN_FREE_GB__"
@@ -89,9 +89,9 @@ sed -i '' \
   -e "s|__REMOTE_APP__|$REMOTE_APP|g" \
   -e "s|__DISK_MAX_PERCENT__|$DISK_MAX_PERCENT|g" \
   -e "s|__DISK_MIN_FREE_GB__|$DISK_MIN_FREE_GB|g" \
-  "$bin_dir/netflix-disk-monitor"
+  "$bin_dir/streamarena-disk-monitor"
 
-cat > "$bin_dir/netflix-watchdog" <<'SCRIPT'
+cat > "$bin_dir/streamarena-watchdog" <<'SCRIPT'
 #!/bin/bash
 set -euo pipefail
 
@@ -104,13 +104,13 @@ failure_threshold="__WATCHDOG_FAILURE_THRESHOLD__"
 # on a momentary blip. Assumes the 60s StartInterval in the watchdog plist below.
 min_streak_seconds=$(( (failure_threshold - 1) * 45 ))
 app="__REMOTE_APP__"
-launcher="/Users/hermes/.local/bin/netflix-run-backend"
-state_dir="/Users/hermes/.local/state/netflix"
+launcher="/Users/hermes/.local/bin/streamarena-run-backend"
+state_dir="/Users/hermes/.local/state/streamarena"
 log_file="$state_dir/watchdog.log"
 fail_file="$state_dir/watchdog.failures"
 run_lock="$state_dir/watchdog.run.lock"
-backend_pattern="$app/bin/netflix-rust-backend"
-launchd_label="com.fightingentropy.netflix-app"
+backend_pattern="$app/bin/streamarena-backend"
+launchd_label="com.fightingentropy.streamarena-app"
 
 mkdir -p "$state_dir"
 chmod 700 "$state_dir"
@@ -334,23 +334,23 @@ sed -i '' \
   -e "s|__WATCHDOG_URL__|$WATCHDOG_URL|g" \
   -e "s|__WATCHDOG_TIMEOUT_SECONDS__|$WATCHDOG_TIMEOUT_SECONDS|g" \
   -e "s|__WATCHDOG_FAILURE_THRESHOLD__|$WATCHDOG_FAILURE_THRESHOLD|g" \
-  "$bin_dir/netflix-watchdog"
+  "$bin_dir/streamarena-watchdog"
 
-chmod 700 "$bin_dir/netflix-rotate-logs" "$bin_dir/netflix-disk-monitor" "$bin_dir/netflix-watchdog"
-bash -n "$bin_dir/netflix-rotate-logs"
-bash -n "$bin_dir/netflix-disk-monitor"
-bash -n "$bin_dir/netflix-watchdog"
+chmod 700 "$bin_dir/streamarena-rotate-logs" "$bin_dir/streamarena-disk-monitor" "$bin_dir/streamarena-watchdog"
+bash -n "$bin_dir/streamarena-rotate-logs"
+bash -n "$bin_dir/streamarena-disk-monitor"
+bash -n "$bin_dir/streamarena-watchdog"
 
-cat > "$agents_dir/com.fightingentropy.netflix-log-rotation.plist" <<'PLIST'
+cat > "$agents_dir/com.fightingentropy.streamarena-log-rotation.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.fightingentropy.netflix-log-rotation</string>
+  <string>com.fightingentropy.streamarena-log-rotation</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/hermes/.local/bin/netflix-rotate-logs</string>
+    <string>/Users/hermes/.local/bin/streamarena-rotate-logs</string>
   </array>
   <key>StartCalendarInterval</key>
   <dict>
@@ -360,66 +360,66 @@ cat > "$agents_dir/com.fightingentropy.netflix-log-rotation.plist" <<'PLIST'
     <integer>17</integer>
   </dict>
   <key>StandardOutPath</key>
-  <string>/Users/hermes/.local/state/netflix/log-rotation.launchd.log</string>
+  <string>/Users/hermes/.local/state/streamarena/log-rotation.launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/hermes/.local/state/netflix/log-rotation.launchd.err.log</string>
+  <string>/Users/hermes/.local/state/streamarena/log-rotation.launchd.err.log</string>
 </dict>
 </plist>
 PLIST
 
-cat > "$agents_dir/com.fightingentropy.netflix-disk-monitor.plist" <<'PLIST'
+cat > "$agents_dir/com.fightingentropy.streamarena-disk-monitor.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.fightingentropy.netflix-disk-monitor</string>
+  <string>com.fightingentropy.streamarena-disk-monitor</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/hermes/.local/bin/netflix-disk-monitor</string>
+    <string>/Users/hermes/.local/bin/streamarena-disk-monitor</string>
   </array>
   <key>StartInterval</key>
   <integer>3600</integer>
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/Users/hermes/.local/state/netflix/disk-monitor.launchd.log</string>
+  <string>/Users/hermes/.local/state/streamarena/disk-monitor.launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/hermes/.local/state/netflix/disk-monitor.launchd.err.log</string>
+  <string>/Users/hermes/.local/state/streamarena/disk-monitor.launchd.err.log</string>
 </dict>
 </plist>
 PLIST
 
-chmod 600 "$agents_dir/com.fightingentropy.netflix-log-rotation.plist" "$agents_dir/com.fightingentropy.netflix-disk-monitor.plist"
+chmod 600 "$agents_dir/com.fightingentropy.streamarena-log-rotation.plist" "$agents_dir/com.fightingentropy.streamarena-disk-monitor.plist"
 
-cat > "$agents_dir/com.fightingentropy.netflix-watchdog.plist" <<PLIST
+cat > "$agents_dir/com.fightingentropy.streamarena-watchdog.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.fightingentropy.netflix-watchdog</string>
+  <string>com.fightingentropy.streamarena-watchdog</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/hermes/.local/bin/netflix-watchdog</string>
+    <string>/Users/hermes/.local/bin/streamarena-watchdog</string>
   </array>
   <key>StartInterval</key>
   <integer>$WATCHDOG_INTERVAL_SECONDS</integer>
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/Users/hermes/.local/state/netflix/watchdog.launchd.log</string>
+  <string>/Users/hermes/.local/state/streamarena/watchdog.launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/hermes/.local/state/netflix/watchdog.launchd.err.log</string>
+  <string>/Users/hermes/.local/state/streamarena/watchdog.launchd.err.log</string>
 </dict>
 </plist>
 PLIST
 
-chmod 600 "$agents_dir/com.fightingentropy.netflix-watchdog.plist"
+chmod 600 "$agents_dir/com.fightingentropy.streamarena-watchdog.plist"
 
 # Remove the old cron-based rotation now that launchd owns it.
 tmp_cron="$(mktemp)"
-crontab -l 2>/dev/null | grep -v 'netflix-rotate-logs' > "$tmp_cron" || true
+crontab -l 2>/dev/null | grep -v 'streamarena-rotate-logs' > "$tmp_cron" || true
 if [[ -s "$tmp_cron" ]]; then
   crontab "$tmp_cron"
 else
@@ -435,21 +435,21 @@ load_agent() {
   launchctl enable "gui/$uid/$label" 2>/dev/null || true
 }
 
-load_agent "com.fightingentropy.netflix-log-rotation" "$agents_dir/com.fightingentropy.netflix-log-rotation.plist"
-load_agent "com.fightingentropy.netflix-disk-monitor" "$agents_dir/com.fightingentropy.netflix-disk-monitor.plist"
-load_agent "com.fightingentropy.netflix-watchdog" "$agents_dir/com.fightingentropy.netflix-watchdog.plist"
-launchctl kickstart -k "gui/$uid/com.fightingentropy.netflix-disk-monitor" 2>/dev/null || true
-launchctl kickstart -k "gui/$uid/com.fightingentropy.netflix-watchdog" 2>/dev/null || true
+load_agent "com.fightingentropy.streamarena-log-rotation" "$agents_dir/com.fightingentropy.streamarena-log-rotation.plist"
+load_agent "com.fightingentropy.streamarena-disk-monitor" "$agents_dir/com.fightingentropy.streamarena-disk-monitor.plist"
+load_agent "com.fightingentropy.streamarena-watchdog" "$agents_dir/com.fightingentropy.streamarena-watchdog.plist"
+launchctl kickstart -k "gui/$uid/com.fightingentropy.streamarena-disk-monitor" 2>/dev/null || true
+launchctl kickstart -k "gui/$uid/com.fightingentropy.streamarena-watchdog" 2>/dev/null || true
 
-"$bin_dir/netflix-disk-monitor"
-"$bin_dir/netflix-watchdog"
+"$bin_dir/streamarena-disk-monitor"
+"$bin_dir/streamarena-watchdog"
 
 printf 'installed_agents=ok\n'
-launchctl print "gui/$uid/com.fightingentropy.netflix-log-rotation" 2>/dev/null | awk '/state =|path =|program =/ {print}'
-launchctl print "gui/$uid/com.fightingentropy.netflix-disk-monitor" 2>/dev/null | awk '/state =|path =|program =|last exit code =/ {print}'
-launchctl print "gui/$uid/com.fightingentropy.netflix-watchdog" 2>/dev/null | awk '/state =|path =|program =|last exit code =/ {print}'
+launchctl print "gui/$uid/com.fightingentropy.streamarena-log-rotation" 2>/dev/null | awk '/state =|path =|program =/ {print}'
+launchctl print "gui/$uid/com.fightingentropy.streamarena-disk-monitor" 2>/dev/null | awk '/state =|path =|program =|last exit code =/ {print}'
+launchctl print "gui/$uid/com.fightingentropy.streamarena-watchdog" 2>/dev/null | awk '/state =|path =|program =|last exit code =/ {print}'
 printf 'crontab_leftover='
-crontab -l 2>/dev/null | grep -c 'netflix-rotate-logs' || true
+crontab -l 2>/dev/null | grep -c 'streamarena-rotate-logs' || true
 printf 'disk_log_tail=\n'
 tail -5 "$state_dir/disk-monitor.log"
 printf 'watchdog_log_tail=\n'

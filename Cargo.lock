@@ -1762,42 +1762,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "netflix-rust-backend"
-version = "0.1.0"
-dependencies = [
- "aes",
- "argon2",
- "axum",
- "base64",
- "cbc",
- "dashmap",
- "dotenvy",
- "encoding_rs",
- "flate2",
- "futures-util",
- "getrandom 0.4.2",
- "hmac",
- "libc",
- "librqbit",
- "mime_guess",
- "multer",
- "quick-xml 0.40.1",
- "regex",
- "reqwest 0.13.4",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "sysinfo",
- "tokio",
- "tokio-util",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
 name = "network-interface"
 version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2808,6 +2772,42 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "streamarena-backend"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "argon2",
+ "axum",
+ "base64",
+ "cbc",
+ "dashmap",
+ "dotenvy",
+ "encoding_rs",
+ "flate2",
+ "futures-util",
+ "getrandom 0.4.2",
+ "hmac",
+ "libc",
+ "librqbit",
+ "mime_guess",
+ "multer",
+ "quick-xml 0.40.1",
+ "regex",
+ "reqwest 0.13.4",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tokio",
+ "tokio-util",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
 
 [[package]]
 name = "strsim"

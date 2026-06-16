@@ -3,7 +3,7 @@ set -euo pipefail
 
 MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
-REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/netflix}"
+REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/streamarena}"
 CADDY_VERSION="${CADDY_VERSION:-2.11.3}"
 PUBLIC_HOSTS="${PUBLIC_HOSTS:-streamarena.xyz,www.streamarena.xyz}"
 TLS_MODE="${TLS_MODE:-auto}"
@@ -14,9 +14,9 @@ Usage: scripts/install-mini-server.sh [options]
 
 Installs/updates the Mac mini production server stack:
   - /usr/local/bin/caddy
-  - /Users/hermes/.local/bin/netflix-run-backend
-  - /Library/LaunchDaemons/com.fightingentropy.netflix-app.plist
-  - /Library/LaunchDaemons/com.fightingentropy.netflix-caddy.plist
+  - /Users/hermes/.local/bin/streamarena-run-backend
+  - /Library/LaunchDaemons/com.fightingentropy.streamarena-app.plist
+  - /Library/LaunchDaemons/com.fightingentropy.streamarena-caddy.plist
 
 Options:
   --tls-mode <mode>            auto or internal. Default: auto.
@@ -25,7 +25,7 @@ Options:
 Environment:
   MINI_HOST                    Default: hermes@m4mini.local
   SSH_KEY                      Default: ~/.ssh/id_ed25519_codex_m4mini
-  REMOTE_APP                   Default: /Users/hermes/Developer/netflix
+  REMOTE_APP                   Default: /Users/hermes/Developer/streamarena
   CADDY_VERSION                Default: 2.11.3
   PUBLIC_HOSTS                 Default: streamarena.xyz,www.streamarena.xyz
   TLS_MODE                     Default: auto
@@ -55,21 +55,21 @@ ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$MINI_HOST" \
   "REMOTE_APP='$REMOTE_APP' CADDY_VERSION='$CADDY_VERSION' PUBLIC_HOSTS='$PUBLIC_HOSTS' TLS_MODE='$TLS_MODE' bash -s" <<'REMOTE'
 set -euo pipefail
 
-state_dir="$HOME/.local/state/netflix"
+state_dir="$HOME/.local/state/streamarena"
 bin_dir="$HOME/.local/bin"
 caddy_config_dir="$HOME/.config/caddy"
-caddy_data_dir="/var/db/netflix-caddy"
+caddy_data_dir="/var/db/streamarena-caddy"
 caddy_log_dir="$state_dir"
-app_plist="/Library/LaunchDaemons/com.fightingentropy.netflix-app.plist"
-caddy_plist="/Library/LaunchDaemons/com.fightingentropy.netflix-caddy.plist"
-sysctl_plist="/Library/LaunchDaemons/com.fightingentropy.netflix-sysctl.plist"
+app_plist="/Library/LaunchDaemons/com.fightingentropy.streamarena-app.plist"
+caddy_plist="/Library/LaunchDaemons/com.fightingentropy.streamarena-caddy.plist"
+sysctl_plist="/Library/LaunchDaemons/com.fightingentropy.streamarena-sysctl.plist"
 caddy_bin="/usr/local/bin/caddy"
 
 mkdir -p "$state_dir" "$bin_dir" "$caddy_config_dir"
 chmod 700 "$state_dir" "$bin_dir" "$caddy_config_dir"
 
-if [[ ! -x "$REMOTE_APP/bin/netflix-rust-backend" ]]; then
-  echo "Missing backend binary: $REMOTE_APP/bin/netflix-rust-backend" >&2
+if [[ ! -x "$REMOTE_APP/bin/streamarena-backend" ]]; then
+  echo "Missing backend binary: $REMOTE_APP/bin/streamarena-backend" >&2
   exit 1
 fi
 
@@ -97,16 +97,16 @@ case "$TLS_MODE" in
     ;;
 esac
 
-cat > "$bin_dir/netflix-run-backend" <<'SCRIPT'
+cat > "$bin_dir/streamarena-run-backend" <<'SCRIPT'
 #!/bin/bash
 set -uo pipefail
 
 export PATH="/Users/hermes/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-export NETFLIX_ENV_FILE="${NETFLIX_ENV_FILE:-/Users/hermes/.config/netflix/env}"
+export STREAMARENA_ENV_FILE="${STREAMARENA_ENV_FILE:-/Users/hermes/.config/streamarena/env}"
 export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
-cd /Users/hermes/Developer/netflix
+cd /Users/hermes/Developer/streamarena
 
-if [[ -f "$NETFLIX_ENV_FILE" ]]; then
+if [[ -f "$STREAMARENA_ENV_FILE" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"
     [[ -z "${line//[[:space:]]/}" || "$line" == \#* || "$line" != *=* ]] && continue
@@ -122,17 +122,17 @@ if [[ -f "$NETFLIX_ENV_FILE" ]]; then
     fi
 
     export "$key=$value"
-  done < "$NETFLIX_ENV_FILE"
+  done < "$STREAMARENA_ENV_FILE"
 fi
 
-printf '%s backend starting binary=/Users/hermes/Developer/netflix/bin/netflix-rust-backend\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
-/Users/hermes/Developer/netflix/bin/netflix-rust-backend
+printf '%s backend starting binary=/Users/hermes/Developer/streamarena/bin/streamarena-backend\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
+/Users/hermes/Developer/streamarena/bin/streamarena-backend
 status=$?
 printf '%s backend exited status=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" >&2
 exit "$status"
 SCRIPT
-chmod 700 "$bin_dir/netflix-run-backend"
-bash -n "$bin_dir/netflix-run-backend"
+chmod 700 "$bin_dir/streamarena-run-backend"
+bash -n "$bin_dir/streamarena-run-backend"
 
 host_blocks=""
 IFS=',' read -r -a hosts <<< "$PUBLIC_HOSTS"
@@ -162,7 +162,7 @@ cat > "$tmp_caddy_config" <<CADDY
   auto_https disable_redirects
 }
 
-(netflix_proxy) {
+(streamarena_proxy) {
   encode zstd gzip
   reverse_proxy 127.0.0.1:5173 {
     lb_try_duration 30s
@@ -178,12 +178,12 @@ cat > "$tmp_caddy_config" <<CADDY
 }
 
 http:// {
-  import netflix_proxy
+  import streamarena_proxy
 }
 
 $host_blocks {
 $tls_line
-  import netflix_proxy
+  import streamarena_proxy
 }
 CADDY
 "$caddy_bin" fmt --overwrite "$tmp_caddy_config"
@@ -201,13 +201,13 @@ cat > "$tmp_app_plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.fightingentropy.netflix-app</string>
+  <string>com.fightingentropy.streamarena-app</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/hermes/.local/bin/netflix-run-backend</string>
+    <string>/Users/hermes/.local/bin/streamarena-run-backend</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/hermes/Developer/netflix</string>
+  <string>/Users/hermes/Developer/streamarena</string>
   <key>UserName</key>
   <string>hermes</string>
   <key>GroupName</key>
@@ -219,9 +219,9 @@ cat > "$tmp_app_plist" <<PLIST
   <key>ThrottleInterval</key>
   <integer>10</integer>
   <key>StandardOutPath</key>
-  <string>/Users/hermes/.local/state/netflix/backend.log</string>
+  <string>/Users/hermes/.local/state/streamarena/backend.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/hermes/.local/state/netflix/backend.err.log</string>
+  <string>/Users/hermes/.local/state/streamarena/backend.err.log</string>
 </dict>
 </plist>
 PLIST
@@ -233,7 +233,7 @@ cat > "$tmp_caddy_plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.fightingentropy.netflix-caddy</string>
+  <string>com.fightingentropy.streamarena-caddy</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/caddy</string>
@@ -246,11 +246,11 @@ cat > "$tmp_caddy_plist" <<PLIST
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>/var/db/netflix-caddy</string>
+    <string>/var/db/streamarena-caddy</string>
     <key>XDG_CONFIG_HOME</key>
-    <string>/var/db/netflix-caddy/config</string>
+    <string>/var/db/streamarena-caddy/config</string>
     <key>XDG_DATA_HOME</key>
-    <string>/var/db/netflix-caddy</string>
+    <string>/var/db/streamarena-caddy</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -259,9 +259,9 @@ cat > "$tmp_caddy_plist" <<PLIST
   <key>ThrottleInterval</key>
   <integer>10</integer>
   <key>StandardOutPath</key>
-  <string>/Users/hermes/.local/state/netflix/caddy.log</string>
+  <string>/Users/hermes/.local/state/streamarena/caddy.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/hermes/.local/state/netflix/caddy.err.log</string>
+  <string>/Users/hermes/.local/state/streamarena/caddy.err.log</string>
 </dict>
 </plist>
 PLIST
@@ -276,7 +276,7 @@ cat > "$tmp_sysctl_plist" <<'PLIST'
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.fightingentropy.netflix-sysctl</string>
+  <string>com.fightingentropy.streamarena-sysctl</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/sbin/sysctl</string>
@@ -300,12 +300,12 @@ sudo launchctl bootout system "$sysctl_plist" 2>/dev/null || true
 sudo launchctl bootstrap system "$app_plist"
 sudo launchctl bootstrap system "$caddy_plist"
 sudo launchctl bootstrap system "$sysctl_plist"
-sudo launchctl enable system/com.fightingentropy.netflix-app 2>/dev/null || true
-sudo launchctl enable system/com.fightingentropy.netflix-caddy 2>/dev/null || true
-sudo launchctl enable system/com.fightingentropy.netflix-sysctl 2>/dev/null || true
-sudo launchctl kickstart -k system/com.fightingentropy.netflix-app
-sudo launchctl kickstart -k system/com.fightingentropy.netflix-caddy
-sudo launchctl kickstart system/com.fightingentropy.netflix-sysctl
+sudo launchctl enable system/com.fightingentropy.streamarena-app 2>/dev/null || true
+sudo launchctl enable system/com.fightingentropy.streamarena-caddy 2>/dev/null || true
+sudo launchctl enable system/com.fightingentropy.streamarena-sysctl 2>/dev/null || true
+sudo launchctl kickstart -k system/com.fightingentropy.streamarena-app
+sudo launchctl kickstart -k system/com.fightingentropy.streamarena-caddy
+sudo launchctl kickstart system/com.fightingentropy.streamarena-sysctl
 
 sleep 2
 backend_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/library || true)
@@ -317,8 +317,8 @@ printf 'caddy_http=%s\n' "$caddy_http"
 printf 'caddy_https=%s\n' "$caddy_https"
 printf 'caddy_version='
 "$caddy_bin" version | awk '{print $1}'
-launchctl print system/com.fightingentropy.netflix-app 2>/dev/null | awk '/state =|pid =|runs =|last exit code =|path =/ {print}'
-launchctl print system/com.fightingentropy.netflix-caddy 2>/dev/null | awk '/state =|pid =|runs =|last exit code =|path =/ {print}'
+launchctl print system/com.fightingentropy.streamarena-app 2>/dev/null | awk '/state =|pid =|runs =|last exit code =|path =/ {print}'
+launchctl print system/com.fightingentropy.streamarena-caddy 2>/dev/null | awk '/state =|pid =|runs =|last exit code =|path =/ {print}'
 
 case "$backend_http" in 200|401) ;; *) exit 1 ;; esac
 case "$caddy_http" in 200|401) ;; *) exit 1 ;; esac

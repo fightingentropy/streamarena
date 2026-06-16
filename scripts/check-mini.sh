@@ -3,7 +3,7 @@ set -euo pipefail
 
 MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
-REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/netflix}"
+REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/streamarena}"
 PUBLIC_URL="${PUBLIC_URL:-https://streamarena.xyz}"
 PUBLIC_HOST="${PUBLIC_HOST:-streamarena.xyz}"
 MAX_DISK_PERCENT="${MAX_DISK_PERCENT:-90}"
@@ -35,9 +35,9 @@ set -euo pipefail
 app="$REMOTE_APP"
 expected_tree="assets,bin,cache,dist"
 caddy_bin="/usr/local/bin/caddy"
-tunnel_plist="/Library/LaunchDaemons/com.cloudflare.cloudflared.netflix.plist"
+tunnel_plist="/Library/LaunchDaemons/com.cloudflare.cloudflared.streamarena.plist"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-node_deps_dir="${NETFLIX_NODE_DEPS_DIR:-$HOME/.local/share/netflix-node}"
+node_deps_dir="${STREAMARENA_NODE_DEPS_DIR:-$HOME/.local/share/streamarena-node}"
 
 # A 600-permissioned .env in the app dir is a supported config source (the
 # backend loads it via dotenvy); exclude it from the structure check and verify
@@ -52,34 +52,34 @@ library_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0
 listener=$(lsof -nP -iTCP:5173 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
 caddy_80=$(sudo lsof -nP -iTCP:80 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
 caddy_443=$(sudo lsof -nP -iTCP:443 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
-app_pid=$(pgrep -f "$app/bin/netflix-rust-backend" | head -1 || true)
+app_pid=$(pgrep -f "$app/bin/streamarena-backend" | head -1 || true)
 caddy_pid=$(pgrep -x caddy | head -1 || true)
-tunnel_pid=$(pgrep -f "cloudflared tunnel run netflix" | head -1 || true)
+tunnel_pid=$(pgrep -f "cloudflared tunnel run streamarena" | head -1 || true)
 tunnel_daemon=$(test -e "$tunnel_plist" && echo yes || echo no)
 caddy_version=$("$caddy_bin" version 2>/dev/null | awk '{print $1}' || true)
 asset_files=$(find "$app/assets" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
 video_files=$(find "$app/assets/videos" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
 asset_symlinks=$(find "$app/assets" -type l 2>/dev/null | wc -l | tr -d ' ' || true)
-env_mode=$(stat -f '%Lp' "$HOME/.config/netflix/env" 2>/dev/null || echo missing)
+env_mode=$(stat -f '%Lp' "$HOME/.config/streamarena/env" 2>/dev/null || echo missing)
 env_in_app=$(test -e "$app/.env" && echo yes || echo no)
 app_env_mode=$(stat -f '%Lp' "$app/.env" 2>/dev/null || echo none)
 sports_http_proxy=$(
-  awk -F= '/^SPORTS_HTTP_PROXY=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/netflix/env" 2>/dev/null || true
+  awk -F= '/^SPORTS_HTTP_PROXY=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true
 )
 sports_proxy_matches_expected=$([[ "$sports_http_proxy" == "$SPORTS_PROXY_EXPECTED" ]] && echo yes || echo no)
-app_daemon=$(test -f "/Library/LaunchDaemons/com.fightingentropy.netflix-app.plist" && echo yes || echo no)
-caddy_daemon=$(test -f "/Library/LaunchDaemons/com.fightingentropy.netflix-caddy.plist" && echo yes || echo no)
-app_launch_state=$(launchctl print "system/com.fightingentropy.netflix-app" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
-caddy_launch_state=$(launchctl print "system/com.fightingentropy.netflix-caddy" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
-app_runs=$(launchctl print "system/com.fightingentropy.netflix-app" 2>/dev/null | awk -F= '/runs =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
-caddy_runs=$(launchctl print "system/com.fightingentropy.netflix-caddy" 2>/dev/null | awk -F= '/runs =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
-log_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.netflix-log-rotation.plist" && echo yes || echo no)
-disk_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.netflix-disk-monitor.plist" && echo yes || echo no)
-watchdog_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.netflix-watchdog.plist" && echo yes || echo no)
-watchdog_helper=$(test -x "$HOME/.local/bin/netflix-watchdog" && echo yes || echo no)
-watchdog_log=$(test -f "$HOME/.local/state/netflix/watchdog.log" && echo yes || echo no)
-watchdog_launch_state=$(launchctl print "gui/$(id -u)/com.fightingentropy.netflix-watchdog" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
-cron_leftover=$(crontab -l 2>/dev/null | grep -c 'netflix-rotate-logs' || true)
+app_daemon=$(test -f "/Library/LaunchDaemons/com.fightingentropy.streamarena-app.plist" && echo yes || echo no)
+caddy_daemon=$(test -f "/Library/LaunchDaemons/com.fightingentropy.streamarena-caddy.plist" && echo yes || echo no)
+app_launch_state=$(launchctl print "system/com.fightingentropy.streamarena-app" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
+caddy_launch_state=$(launchctl print "system/com.fightingentropy.streamarena-caddy" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
+app_runs=$(launchctl print "system/com.fightingentropy.streamarena-app" 2>/dev/null | awk -F= '/runs =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
+caddy_runs=$(launchctl print "system/com.fightingentropy.streamarena-caddy" 2>/dev/null | awk -F= '/runs =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
+log_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.streamarena-log-rotation.plist" && echo yes || echo no)
+disk_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.streamarena-disk-monitor.plist" && echo yes || echo no)
+watchdog_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.streamarena-watchdog.plist" && echo yes || echo no)
+watchdog_helper=$(test -x "$HOME/.local/bin/streamarena-watchdog" && echo yes || echo no)
+watchdog_log=$(test -f "$HOME/.local/state/streamarena/watchdog.log" && echo yes || echo no)
+watchdog_launch_state=$(launchctl print "gui/$(id -u)/com.fightingentropy.streamarena-watchdog" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
+cron_leftover=$(crontab -l 2>/dev/null | grep -c 'streamarena-rotate-logs' || true)
 
 df_line=$(df -Pk "$app" | awk 'NR == 2 {print $4 " " $5}')
 available_kb=${df_line%% *}
@@ -94,16 +94,16 @@ ntvs_hls_resolver=$(test -f "$app/bin/resolve-ntvs-hls.mjs" && echo yes || echo 
 node_bin=$(command -v node || true)
 bun_bin=$(command -v bun || true)
 playwright_module=$(
-  NETFLIX_NODE_DEPS_DIR="$node_deps_dir" node -e 'require.resolve("playwright", { paths: [process.env.NETFLIX_NODE_DEPS_DIR] }); process.stdout.write("yes")' 2>/dev/null || echo no
+  STREAMARENA_NODE_DEPS_DIR="$node_deps_dir" node -e 'require.resolve("playwright", { paths: [process.env.STREAMARENA_NODE_DEPS_DIR] }); process.stdout.write("yes")' 2>/dev/null || echo no
 )
 libsodium_module=$(
-  NETFLIX_NODE_DEPS_DIR="$node_deps_dir" node -e 'require.resolve("libsodium-wrappers", { paths: [process.env.NETFLIX_NODE_DEPS_DIR] }); process.stdout.write("yes")' 2>/dev/null || echo no
+  STREAMARENA_NODE_DEPS_DIR="$node_deps_dir" node -e 'require.resolve("libsodium-wrappers", { paths: [process.env.STREAMARENA_NODE_DEPS_DIR] }); process.stdout.write("yes")' 2>/dev/null || echo no
 )
 playwright_chromium=$(
-  NETFLIX_NODE_DEPS_DIR="$node_deps_dir" node <<'NODE' 2>/dev/null || echo no
+  STREAMARENA_NODE_DEPS_DIR="$node_deps_dir" node <<'NODE' 2>/dev/null || echo no
 const fs = require("fs");
 const playwrightPath = require.resolve("playwright", {
-  paths: [process.env.NETFLIX_NODE_DEPS_DIR],
+  paths: [process.env.STREAMARENA_NODE_DEPS_DIR],
 });
 const { chromium } = require(playwrightPath);
 process.stdout.write(fs.existsSync(chromium.executablePath()) ? "yes" : "no");

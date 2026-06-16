@@ -140,7 +140,7 @@ External movie/TV embed stack:
 - Selectable sources include VidLink, VidRock, NoTorrent, VixSrc, LordFlix, Icefy, the VidEasy default source, and VidEasy server sources Yoru, Neon, Cypher, Sage, Breach, Vyse, and Raze, with original/alternate audio hints shown in the player server menu. Selected movie/TV external sources must resolve to native HLS; the resolver does not hand off to the provider iframe.
 - VidEasy embeds are built from `https://player.videasy.to/movie/...` or `/tv/...`; the legacy `player.videasy.net` redirect is still accepted by the resolver. Extracted HLS playlists are accepted on public HTTPS hosts discovered by the trusted resolver.
 - VidLink embeds are built from `https://vidlink.pro/movie/...` or `/tv/...`; extracted HLS playlist hosts include `storm.vodvidl.site` and `typhoontigertribe.net`.
-- VidLink HLS resolves through a native Node/WASM token path first, with Playwright kept as a fallback. VidEasy HLS still resolves through Playwright. The mini deploy copies `scripts/resolve-external-embed-hls.mjs` to `bin/resolve-external-embed-hls.mjs` and keeps resolver Node dependencies under `~/.local/share/netflix-node` outside the app runtime tree. Icefy, VidRock, NoTorrent, VixSrc, and LordFlix are resolved by backend API adapters. All native providers must return a public HTTPS playlist that validates as `#EXTM3U`; the backend signs those proxy URLs before playback.
+- VidLink HLS resolves through a native Node/WASM token path first, with Playwright kept as a fallback. VidEasy HLS still resolves through Playwright. The mini deploy copies `scripts/resolve-external-embed-hls.mjs` to `bin/resolve-external-embed-hls.mjs` and keeps resolver Node dependencies under `~/.local/share/streamarena-node` outside the app runtime tree. Icefy, VidRock, NoTorrent, VixSrc, and LordFlix are resolved by backend API adapters. All native providers must return a public HTTPS playlist that validates as `#EXTM3U`; the backend signs those proxy URLs before playback.
 - Native external HLS playback is proxied through protected `/api/live/hls.m3u8` and `/api/live/hls-resource` so playlist child URLs, segment URLs, and required referers stay under backend control.
 - Iframe-only movie/TV providers are intentionally excluded so playback stays inside the app's own controls.
 - Older/failed and iframe-only providers such as VidKing, 2Embed, VidSrc, VidNest, AutoEmbed, SuperEmbed, Embed.su, and MoviesAPI are intentionally not part of the current stack.
@@ -604,7 +604,7 @@ Internal resolver helpers:
 
 Development machine:
 
-- Checkout: `/Users/erlinhoxha/Developer/netflix`.
+- Checkout: `/Users/erlinhoxha/Developer/streamarena`.
 - Source of truth is the git checkout.
 - Large media should not be committed.
 - `assets/videos` should contain symlinks or local-only files in development.
@@ -612,7 +612,7 @@ Development machine:
 Server machine:
 
 - Host: `hermes@m4mini.local`.
-- Runtime path: `/Users/hermes/Developer/netflix`.
+- Runtime path: `/Users/hermes/Developer/streamarena`.
 - Public hosts: `streamarena.xyz` and `www.streamarena.xyz`.
 - Ingress: Cloudflare DNS-only A records -> home public IP -> router TCP 80/443 -> Mac mini.
 - Reverse proxy: Caddy on ports 80 and 443.
@@ -624,7 +624,7 @@ Server machine:
   - `dist`
 
 The server deploy is intentionally not a git checkout. It should not contain `.git`, source folders, `node_modules`, `target`, `Cargo.toml`, `package.json`, or `.env`.
-Resolver Node dependencies live outside this tree at `~/.local/share/netflix-node`.
+Resolver Node dependencies live outside this tree at `~/.local/share/streamarena-node`.
 
 Sports proxy/WARP:
 
@@ -632,7 +632,7 @@ Sports proxy/WARP:
 - WARP CLI: `/usr/local/bin/warp-cli`.
 - Expected WARP status: `Connected`.
 - Expected WARP mode: `WarpProxy on port 40000`.
-- Server env file: `/Users/hermes/.config/netflix/env`.
+- Server env file: `/Users/hermes/.config/streamarena/env`.
 - Required sports env: `SPORTS_HTTP_PROXY=http://127.0.0.1:40000`.
 - Existing full-backend proxy env may also point at the same listener: `OUTBOUND_HTTP_PROXY=http://127.0.0.1:40000`.
 - Streamed may fail directly from the ISP path; the expected healthy path is through WARP's local proxy.
@@ -659,43 +659,43 @@ curl -sS --max-time 60 \
 
 LaunchDaemons:
 
-- App: `/Library/LaunchDaemons/com.fightingentropy.netflix-app.plist`
-- Caddy: `/Library/LaunchDaemons/com.fightingentropy.netflix-caddy.plist`
+- App: `/Library/LaunchDaemons/com.fightingentropy.streamarena-app.plist`
+- Caddy: `/Library/LaunchDaemons/com.fightingentropy.streamarena-caddy.plist`
 
 Backend daemon:
 
-- Working directory: `/Users/hermes/Developer/netflix`
-- Binary: `/Users/hermes/Developer/netflix/bin/netflix-rust-backend`
-- Runner: `/Users/hermes/.local/bin/netflix-run-backend`
+- Working directory: `/Users/hermes/Developer/streamarena`
+- Binary: `/Users/hermes/Developer/streamarena/bin/streamarena-backend`
+- Runner: `/Users/hermes/.local/bin/streamarena-run-backend`
 
 Caddy daemon:
 
 - Binary: `/usr/local/bin/caddy`
 - Config: `/Users/hermes/.config/caddy/Caddyfile`
 - TLS: Caddy-managed public certs by default
-- Data dir: `/var/db/netflix-caddy`
+- Data dir: `/var/db/streamarena-caddy`
 
 Secrets:
 
-- Env file: `/Users/hermes/.config/netflix/env`
+- Env file: `/Users/hermes/.config/streamarena/env`
 - Required permissions: `600`
-- Do not put server secrets back into `/Users/hermes/Developer/netflix/.env`.
+- Do not put server secrets back into `/Users/hermes/Developer/streamarena/.env`.
 
 Logs:
 
-- Backend stdout: `/Users/hermes/.local/state/netflix/backend.log`
-- Backend stderr: `/Users/hermes/.local/state/netflix/backend.err.log`
-- Caddy stdout: `/Users/hermes/.local/state/netflix/caddy.log`
-- Caddy stderr: `/Users/hermes/.local/state/netflix/caddy.err.log`
-- Caddy access log: `/Users/hermes/.local/state/netflix/caddy-access.log`
-- Disk monitor log: `/Users/hermes/.local/state/netflix/disk-monitor.log`
-- Watchdog log: `/Users/hermes/.local/state/netflix/watchdog.log`
+- Backend stdout: `/Users/hermes/.local/state/streamarena/backend.log`
+- Backend stderr: `/Users/hermes/.local/state/streamarena/backend.err.log`
+- Caddy stdout: `/Users/hermes/.local/state/streamarena/caddy.log`
+- Caddy stderr: `/Users/hermes/.local/state/streamarena/caddy.err.log`
+- Caddy access log: `/Users/hermes/.local/state/streamarena/caddy-access.log`
+- Disk monitor log: `/Users/hermes/.local/state/streamarena/disk-monitor.log`
+- Watchdog log: `/Users/hermes/.local/state/streamarena/watchdog.log`
 
 Maintenance LaunchAgents:
 
-- Log rotation: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-log-rotation.plist`
-- Disk monitor: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-disk-monitor.plist`
-- Watchdog: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-watchdog.plist`
+- Log rotation: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-log-rotation.plist`
+- Disk monitor: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-disk-monitor.plist`
+- Watchdog: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-watchdog.plist`
 
 Current maintenance defaults:
 
@@ -738,16 +738,16 @@ Deploying assets:
 Backups:
 
 ```bash
-bun run mini:backup -- /Volumes/Backup/netflix-mini
-bun run mini:backup -- --config-only ~/Backups/netflix-mini-config
+bun run mini:backup -- /Volumes/Backup/streamarena-mini
+bun run mini:backup -- --config-only ~/Backups/streamarena-mini-config
 ```
 
 Full backups include runtime assets, binary, cache, dist, secrets/config, helper scripts, and launchd plists. The script maintains a `latest` symlink and uses `rsync --link-dest` when possible.
 
 Restore outline:
 
-1. Copy `runtime/{assets,bin,cache,dist}` from backup to `/Users/hermes/Developer/netflix`.
-2. Restore `config/env` to `/Users/hermes/.config/netflix/env` and set permissions to `600`.
+1. Copy `runtime/{assets,bin,cache,dist}` from backup to `/Users/hermes/Developer/streamarena`.
+2. Restore `config/env` to `/Users/hermes/.config/streamarena/env` and set permissions to `600`.
 3. Restore Caddy config to `/Users/hermes/.config/caddy`.
 4. Restore helper scripts to `/Users/hermes/.local/bin` and make them executable.
 5. Run `bun run mini:install-server`.

@@ -312,7 +312,7 @@ async function startServer(port, { reuseServer = false } = {}) {
       PORT: String(port),
       RUST_LOG:
         process.env.RUST_LOG ||
-        "netflix_rust_backend=warn,tower_http=warn",
+        "streamarena_backend=warn,tower_http=warn",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

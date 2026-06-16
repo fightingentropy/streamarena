@@ -9,8 +9,8 @@ async function loadPlaywright() {
   } catch (error) {
     const fallbackDirs = [
       process.env.PLAYWRIGHT_NODE_MODULES,
-      process.env.NETFLIX_NODE_DEPS_DIR,
-      process.env.HOME ? join(process.env.HOME, ".local/share/netflix-node") : "",
+      process.env.STREAMARENA_NODE_DEPS_DIR,
+      process.env.HOME ? join(process.env.HOME, ".local/share/streamarena-node") : "",
     ].filter(Boolean);
 
     for (const dir of fallbackDirs) {

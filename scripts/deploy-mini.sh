@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
-REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/netflix}"
+REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/streamarena}"
 PLAYWRIGHT_VERSION="${PLAYWRIGHT_VERSION:-^1.54.2}"
 LIBSODIUM_WRAPPERS_VERSION="${LIBSODIUM_WRAPPERS_VERSION:-^0.8.4}"
 
@@ -42,7 +42,7 @@ Options:
 Environment:
   MINI_HOST            Default: hermes@m4mini.local
   SSH_KEY              Default: ~/.ssh/id_ed25519_codex_m4mini
-  REMOTE_APP           Default: /Users/hermes/Developer/netflix
+  REMOTE_APP           Default: /Users/hermes/Developer/streamarena
   PLAYWRIGHT_VERSION   Default: ^1.54.2
   LIBSODIUM_WRAPPERS_VERSION
                        Default: ^0.8.4
@@ -87,7 +87,7 @@ done
 SSH_BASE=(ssh -i "$SSH_KEY" -o BatchMode=yes)
 RSYNC_SSH="ssh -i $SSH_KEY -o BatchMode=yes"
 
-BACKEND_BIN="target/release/netflix-rust-backend"
+BACKEND_BIN="target/release/streamarena-backend"
 
 # Fail if any path in $@ is newer than the reference artifact. Uses `find
 # -newer ... -print -quit`, which behaves identically on BSD/macOS and GNU find
@@ -135,8 +135,8 @@ fi
 
 rsync -a --delete -e "$RSYNC_SSH" dist/ "$MINI_HOST:$REMOTE_APP/dist/"
 
-rsync -a -e "$RSYNC_SSH" target/release/netflix-rust-backend "$MINI_HOST:$REMOTE_APP/bin/netflix-rust-backend.new"
-"${SSH_BASE[@]}" "$MINI_HOST" "chmod 755 '$REMOTE_APP/bin/netflix-rust-backend.new' && mv '$REMOTE_APP/bin/netflix-rust-backend.new' '$REMOTE_APP/bin/netflix-rust-backend'"
+rsync -a -e "$RSYNC_SSH" target/release/streamarena-backend "$MINI_HOST:$REMOTE_APP/bin/streamarena-backend.new"
+"${SSH_BASE[@]}" "$MINI_HOST" "chmod 755 '$REMOTE_APP/bin/streamarena-backend.new' && mv '$REMOTE_APP/bin/streamarena-backend.new' '$REMOTE_APP/bin/streamarena-backend'"
 rsync -a -e "$RSYNC_SSH" scripts/resolve-external-embed-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-external-embed-hls.mjs"
 rsync -a -e "$RSYNC_SSH" scripts/resolve-streamed-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-streamed-hls.mjs"
 rsync -a -e "$RSYNC_SSH" scripts/resolve-matchstream-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-matchstream-hls.mjs"
@@ -153,7 +153,7 @@ rsync -a --delete -e "$RSYNC_SSH" assets/icons/ "$MINI_HOST:$REMOTE_APP/assets/i
 set -euo pipefail
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-deps_dir="${NETFLIX_NODE_DEPS_DIR:-$HOME/.local/share/netflix-node}"
+deps_dir="${STREAMARENA_NODE_DEPS_DIR:-$HOME/.local/share/streamarena-node}"
 node_bin="${NODE_BIN:-$(command -v node || true)}"
 bun_bin="${BUN_BIN:-$(command -v bun || true)}"
 if [[ -z "$node_bin" || -z "$bun_bin" ]]; then
@@ -171,18 +171,18 @@ if [[ ! -f "$deps_dir/package.json" ]]; then
 JSON
 fi
 
-if ! NETFLIX_NODE_DEPS_DIR="$deps_dir" "$node_bin" -e 'require.resolve("playwright", { paths: [process.env.NETFLIX_NODE_DEPS_DIR] })' >/dev/null 2>&1; then
+if ! STREAMARENA_NODE_DEPS_DIR="$deps_dir" "$node_bin" -e 'require.resolve("playwright", { paths: [process.env.STREAMARENA_NODE_DEPS_DIR] })' >/dev/null 2>&1; then
   (cd "$deps_dir" && "$bun_bin" add --dev "playwright@$PLAYWRIGHT_VERSION")
 fi
 
-if ! NETFLIX_NODE_DEPS_DIR="$deps_dir" "$node_bin" -e 'require.resolve("libsodium-wrappers", { paths: [process.env.NETFLIX_NODE_DEPS_DIR] })' >/dev/null 2>&1; then
+if ! STREAMARENA_NODE_DEPS_DIR="$deps_dir" "$node_bin" -e 'require.resolve("libsodium-wrappers", { paths: [process.env.STREAMARENA_NODE_DEPS_DIR] })' >/dev/null 2>&1; then
   (cd "$deps_dir" && "$bun_bin" add "libsodium-wrappers@$LIBSODIUM_WRAPPERS_VERSION")
 fi
 
-if ! NETFLIX_NODE_DEPS_DIR="$deps_dir" "$node_bin" >/dev/null 2>&1 <<'NODE'
+if ! STREAMARENA_NODE_DEPS_DIR="$deps_dir" "$node_bin" >/dev/null 2>&1 <<'NODE'
 const fs = require("fs");
 const playwrightPath = require.resolve("playwright", {
-  paths: [process.env.NETFLIX_NODE_DEPS_DIR],
+  paths: [process.env.STREAMARENA_NODE_DEPS_DIR],
 });
 const { chromium } = require(playwrightPath);
 process.exit(fs.existsSync(chromium.executablePath()) ? 0 : 1);
@@ -208,7 +208,7 @@ if [[ "${#VIDEOS[@]}" -gt 0 ]]; then
 fi
 
 if [[ "$RESTART" -eq 1 ]]; then
-  "${SSH_BASE[@]}" "$MINI_HOST" "pkill -TERM -f '$REMOTE_APP/bin/netflix-rust-backend' || true"
+  "${SSH_BASE[@]}" "$MINI_HOST" "pkill -TERM -f '$REMOTE_APP/bin/streamarena-backend' || true"
   sleep 4
 fi
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
-REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/netflix}"
+REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/streamarena}"
 INCLUDE_RUNTIME=1
 
 usage() {
@@ -14,8 +14,8 @@ Creates a timestamped Mac mini server backup. Use an external drive or another
 large volume for full backups because assets are about 153G.
 
 Backed up by default:
-  - /Users/hermes/Developer/netflix/{assets,bin,cache,dist}
-  - /Users/hermes/.config/netflix/env
+  - /Users/hermes/Developer/streamarena/{assets,bin,cache,dist}
+  - /Users/hermes/.config/streamarena/env
   - /Users/hermes/.config/caddy config
   - /Users/hermes/.local/bin server helper scripts
   - LaunchDaemon and LaunchAgent plists for the app/Caddy/maintenance jobs
@@ -97,17 +97,17 @@ if [[ "$INCLUDE_RUNTIME" -eq 1 ]]; then
 fi
 
 mkdir -p "$snapshot/config" "$snapshot/caddy" "$snapshot/local-bin" "$snapshot/plists"
-rsync_remote "/Users/hermes/.config/netflix/env" "$snapshot/config/env"
+rsync_remote "/Users/hermes/.config/streamarena/env" "$snapshot/config/env"
 rsync -a --exclude='*.log' --exclude='*.err.log' -e "$RSYNC_SSH" "$MINI_HOST:/Users/hermes/.config/caddy/" "$snapshot/caddy/"
-rsync_remote "/Users/hermes/.local/bin/netflix-run-backend" "$snapshot/local-bin/netflix-run-backend"
-rsync_remote "/Users/hermes/.local/bin/netflix-rotate-logs" "$snapshot/local-bin/netflix-rotate-logs"
-rsync_remote "/Users/hermes/.local/bin/netflix-disk-monitor" "$snapshot/local-bin/netflix-disk-monitor"
-rsync_remote "/Users/hermes/.local/bin/netflix-watchdog" "$snapshot/local-bin/netflix-watchdog"
-rsync_remote "/Library/LaunchDaemons/com.fightingentropy.netflix-app.plist" "$snapshot/plists/com.fightingentropy.netflix-app.plist"
-rsync_remote "/Library/LaunchDaemons/com.fightingentropy.netflix-caddy.plist" "$snapshot/plists/com.fightingentropy.netflix-caddy.plist"
-rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-log-rotation.plist" "$snapshot/plists/com.fightingentropy.netflix-log-rotation.plist"
-rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-disk-monitor.plist" "$snapshot/plists/com.fightingentropy.netflix-disk-monitor.plist"
-rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.netflix-watchdog.plist" "$snapshot/plists/com.fightingentropy.netflix-watchdog.plist"
+rsync_remote "/Users/hermes/.local/bin/streamarena-run-backend" "$snapshot/local-bin/streamarena-run-backend"
+rsync_remote "/Users/hermes/.local/bin/streamarena-rotate-logs" "$snapshot/local-bin/streamarena-rotate-logs"
+rsync_remote "/Users/hermes/.local/bin/streamarena-disk-monitor" "$snapshot/local-bin/streamarena-disk-monitor"
+rsync_remote "/Users/hermes/.local/bin/streamarena-watchdog" "$snapshot/local-bin/streamarena-watchdog"
+rsync_remote "/Library/LaunchDaemons/com.fightingentropy.streamarena-app.plist" "$snapshot/plists/com.fightingentropy.streamarena-app.plist"
+rsync_remote "/Library/LaunchDaemons/com.fightingentropy.streamarena-caddy.plist" "$snapshot/plists/com.fightingentropy.streamarena-caddy.plist"
+rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-log-rotation.plist" "$snapshot/plists/com.fightingentropy.streamarena-log-rotation.plist"
+rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-disk-monitor.plist" "$snapshot/plists/com.fightingentropy.streamarena-disk-monitor.plist"
+rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-watchdog.plist" "$snapshot/plists/com.fightingentropy.streamarena-watchdog.plist"
 
 "${SSH_BASE[@]}" "$MINI_HOST" "REMOTE_APP='$REMOTE_APP' bash -s" > "$snapshot/manifest.txt" <<'REMOTE'
 set -euo pipefail
