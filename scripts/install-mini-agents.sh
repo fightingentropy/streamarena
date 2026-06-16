@@ -21,13 +21,6 @@ bin_dir="$HOME/.local/bin"
 agents_dir="$HOME/Library/LaunchAgents"
 mkdir -p "$state_dir" "$bin_dir" "$agents_dir"
 chmod 700 "$state_dir" "$bin_dir" "$agents_dir"
-launchctl bootout "gui/$uid" "$agents_dir/com.fightingentropy.netflix-hero-previews.plist" 2>/dev/null || true
-rm -f \
-  "$agents_dir/com.fightingentropy.netflix-hero-previews.plist" \
-  "$bin_dir/netflix-refresh-hero-previews" \
-  "$REMOTE_APP/bin/netflix-refresh-hero-previews.py" \
-  "$REMOTE_APP/assets/hero-previews.json"
-rm -rf "$REMOTE_APP/assets/videos/hero-previews"
 
 cat > "$bin_dir/streamarena-rotate-logs" <<'SCRIPT'
 #!/bin/bash
