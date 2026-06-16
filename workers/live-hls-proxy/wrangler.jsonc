@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "netflix-live-hls-proxy",
+  "name": "streamarena-live-hls-proxy",
   "main": "src/index.js",
   "compatibility_date": "2026-05-23",
   "workers_dev": true,
