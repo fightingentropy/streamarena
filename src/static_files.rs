@@ -40,13 +40,23 @@ pub async fn serve_static(
     let injects_home_bootstrap = could_inject_home_bootstrap(uri.path());
     let requires_auth = should_require_auth_for_static_path(uri.path())
         || should_require_auth_for_static_file(&state.config.root_dir, &file_path);
-    let authenticated = if injects_home_bootstrap || requires_auth {
+    // Every page shell except the sign-in, password-reset, and offline pages is
+    // private: a logged-out visitor sees nothing about the app — not even the
+    // homepage. Assets (JS/CSS/images/fonts) stay public so the sign-in page can
+    // load and so we don't leak any user-specific data through them.
+    let is_protected_page = is_protected_html_page(&file_path);
+    let authenticated = if injects_home_bootstrap || requires_auth || is_protected_page {
         auth::require_auth(&state.db, &headers).await.is_ok()
     } else {
         false
     };
     if requires_auth && !authenticated {
         return Err(ApiError::unauthorized("Not authenticated."));
+    }
+    // A logged-out request for a protected page is bounced to the sign-in page
+    // rather than rendering any app chrome.
+    if is_protected_page && !authenticated {
+        return Ok(redirect_to_login());
     }
     let file = File::open(&file_path)
         .await
@@ -276,6 +286,41 @@ fn could_inject_home_bootstrap(pathname: &str) -> bool {
     pathname == "/" || pathname == "/index.html" || pathname.ends_with("/index.html")
 }
 
+/// HTML page shells are private by default. Only the sign-in, password-reset,
+/// and offline fallback pages render for a logged-out visitor; every other page
+/// (home, browse, player, settings, admin, help, legal, …) requires a session.
+/// Decided on the resolved file, so clean routes (`/`, `/watch/…`, `/settings`)
+/// are covered too. Non-HTML files are never page shells.
+fn is_protected_html_page(file_path: &Path) -> bool {
+    let is_html = file_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html"));
+    if !is_html {
+        return false;
+    }
+    let name = file_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !matches!(
+        name.as_str(),
+        "login.html" | "reset-password.html" | "offline.html"
+    )
+}
+
+/// 302 to the sign-in page, uncached so a later authenticated load isn't shadowed
+/// by a stale redirect in any cache between us and the browser.
+fn redirect_to_login() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::FOUND)
+        .header(axum::http::header::LOCATION, "/login.html")
+        .header(CACHE_CONTROL, CACHE_NO_STORE)
+        .body(Body::empty())
+        .expect("login redirect response")
+}
+
 fn should_require_auth_for_static_path(pathname: &str) -> bool {
     pathname == "/assets/library.json" || pathname.starts_with("/assets/videos/")
 }
@@ -317,9 +362,41 @@ mod tests {
 
     use super::{
         CACHE_IMMUTABLE, CACHE_NO_STORE, CACHE_STATIC_ASSET, cache_control_for_path,
-        should_require_auth_for_static_file, should_require_auth_for_static_path,
+        is_protected_html_page, should_require_auth_for_static_file,
+        should_require_auth_for_static_path,
     };
     use super::{CACHE_VIDEO_ASSET, parse_range, resolve_local_path};
+
+    #[test]
+    fn gates_app_pages_but_not_sign_in_reset_offline_or_assets() {
+        // App page shells require a session.
+        assert!(is_protected_html_page(Path::new("/app/dist/index.html")));
+        assert!(is_protected_html_page(Path::new("/app/dist/settings.html")));
+        assert!(is_protected_html_page(Path::new("/app/dist/player.html")));
+        assert!(is_protected_html_page(Path::new("/app/dist/admin.html")));
+        assert!(is_protected_html_page(Path::new("/app/dist/help.html")));
+        assert!(is_protected_html_page(Path::new("/app/dist/privacy.html")));
+        // The pages a logged-out visitor must still reach stay public.
+        assert!(!is_protected_html_page(Path::new("/app/dist/login.html")));
+        assert!(!is_protected_html_page(Path::new(
+            "/app/dist/reset-password.html"
+        )));
+        assert!(!is_protected_html_page(Path::new("/app/dist/offline.html")));
+        // Assets are never page shells, so they remain public (the sign-in page
+        // needs its JS/CSS/icons).
+        assert!(!is_protected_html_page(Path::new(
+            "/app/dist/ui-assets/login-abc123.js"
+        )));
+        assert!(!is_protected_html_page(Path::new(
+            "/app/dist/ui-assets/style-abc123.css"
+        )));
+        assert!(!is_protected_html_page(Path::new(
+            "/app/assets/icons/streamarena-mark.svg"
+        )));
+        assert!(!is_protected_html_page(Path::new(
+            "/app/dist/manifest.webmanifest"
+        )));
+    }
 
     #[test]
     fn maps_clean_route_to_html() {

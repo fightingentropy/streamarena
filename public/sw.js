@@ -1,5 +1,5 @@
 // Bump CACHE_PREFIX when shell assets change so clients pick up updates.
-const CACHE_PREFIX = "streamarena-pwa-v26";
+const CACHE_PREFIX = "streamarena-pwa-v27";
 const SHELL_CACHE = `${CACHE_PREFIX}:shell`;
 const PAGE_CACHE = `${CACHE_PREFIX}:pages`;
 const API_CACHE = `${CACHE_PREFIX}:api`;
