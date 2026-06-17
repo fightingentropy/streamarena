@@ -301,8 +301,8 @@ async fn auth_throttle_middleware(
     }
 }
 
-/// The decommissioned legacy domain. Traffic for it (and any subdomain) is
-/// served nothing — see `legacy_host_gate`.
+/// The decommissioned legacy domain. The user-facing site (the apex and `www`)
+/// is served nothing — see `legacy_host_gate`.
 const LEGACY_HOST: &str = "streamthatshit.com";
 
 /// The host the client asked for, lowercased and without a trailing dot or port.
@@ -324,8 +324,12 @@ fn effective_request_host(headers: &HeaderMap) -> Option<String> {
     (!host.is_empty()).then_some(host)
 }
 
+/// Only the user-facing legacy site — the apex and `www` — is taken down. Other
+/// subdomains are deliberately NOT matched: the live-HLS Worker reaches this
+/// origin over a grey-cloud `*.streamthatshit.com` hostname, and 410-ing that
+/// hop would break live streaming on the live domain.
 fn is_legacy_host(host: &str) -> bool {
-    host == LEGACY_HOST || host.ends_with(&format!(".{LEGACY_HOST}"))
+    host == LEGACY_HOST || host == "www.streamthatshit.com"
 }
 
 /// The old domain (streamthatshit.com) is taken down: serve nothing for it.
@@ -4574,6 +4578,12 @@ mod tests {
         assert!(super::is_legacy_host(&host("streamthatshit.com:443").unwrap()));
         assert!(super::is_legacy_host(&host("streamthatshit.com.").unwrap()));
         assert!(super::is_legacy_host(&host("www.streamthatshit.com").unwrap()));
+        // The live-HLS Worker reaches this origin over a grey-cloud
+        // *.streamthatshit.com subdomain; gating it would break live streaming,
+        // so only the apex + www are treated as the (taken-down) legacy site.
+        assert!(!super::is_legacy_host(
+            &host("d-ef60944f0f0c.streamthatshit.com").unwrap()
+        ));
         // The live domain (and anything else) is never treated as legacy.
         assert!(!super::is_legacy_host(&host("streamarena.xyz").unwrap()));
         assert!(!super::is_legacy_host(&host("www.streamarena.xyz").unwrap()));
