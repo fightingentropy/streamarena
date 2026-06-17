@@ -304,8 +304,13 @@ fi
 
 [[ "$public_ip" != "missing" && -n "$public_ip" ]] && pass "mini public IP is $public_ip" || bad "mini public IP could not be resolved"
 
+# The app is private: an anonymous request for the homepage must redirect to the
+# sign-in page rather than render anything, and that sign-in page must load.
 public_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL" || true)"
-[[ "$public_status" == "200" ]] && pass "$PUBLIC_URL returns app HTTP 200" || bad "$PUBLIC_URL returned HTTP $public_status"
+[[ "$public_status" == "302" ]] && pass "$PUBLIC_URL gates anonymous visitors (HTTP 302 to login)" || bad "$PUBLIC_URL returned HTTP $public_status (expected 302 redirect to login)"
+
+public_login_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL/login.html" || true)"
+[[ "$public_login_status" == "200" ]] && pass "$PUBLIC_URL/login.html is reachable (HTTP 200)" || bad "$PUBLIC_URL/login.html returned HTTP $public_login_status"
 
 public_auth_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL/api/auth/me" || true)"
 [[ "$public_auth_status" == "401" ]] && pass "$PUBLIC_URL keeps app login active" || bad "$PUBLIC_URL app auth returned HTTP $public_auth_status"
