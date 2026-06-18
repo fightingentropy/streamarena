@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="StreamArena">
+  <defs>
+    <mask id="sa-play">
+      <rect width="512" height="512" fill="white" />
+      <path d="M210 270 L210 394 L346 332 Z" fill="black" stroke="black" stroke-width="22" stroke-linejoin="round" stroke-linecap="round" />
+    </mask>
+  </defs>
+  <g stroke="#e50914" stroke-width="32" stroke-linecap="round" fill="none">
+    <line x1="96" y1="40" x2="304" y2="176" />
+    <line x1="416" y1="40" x2="208" y2="176" />
+  </g>
+  <rect x="40" y="176" width="432" height="312" rx="52" fill="#e50914" mask="url(#sa-play)" />
+</svg>
