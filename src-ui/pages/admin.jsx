@@ -72,12 +72,106 @@ async function postJson(url, body) {
   return data;
 }
 
+// Outline glyphs for the sidebar nav. Stroke-based (Lucide-style) and coloured
+// with `currentColor`, so the active/hover state on the link themes the icon —
+// CSP-safe (presentation attributes only, no inline style).
+const NAV_ICONS = {
+  overview: (
+    <>
+      <rect x="3" y="3" width="7.5" height="8" rx="1.6" />
+      <rect x="13.5" y="3" width="7.5" height="5" rx="1.6" />
+      <rect x="13.5" y="12.5" width="7.5" height="8.5" rx="1.6" />
+      <rect x="3" y="14.5" width="7.5" height="6.5" rx="1.6" />
+    </>
+  ),
+  users: (
+    <>
+      <path d="M16 19v-1.4a3.6 3.6 0 0 0-3.6-3.6H7.6A3.6 3.6 0 0 0 4 17.6V19" />
+      <circle cx="10" cy="8" r="3.4" />
+      <path d="M20 19v-1.4a3.6 3.6 0 0 0-2.7-3.5" />
+      <path d="M15.5 4.6a3.4 3.4 0 0 1 0 6.6" />
+    </>
+  ),
+  activity: <path d="M22 12h-4l-3 8-4-16-3 8H2" />,
+  feedback: <path d="M20 14.4a2 2 0 0 1-2 2H8l-4 3.4V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z" />,
+  health: (
+    <>
+      <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.29 1.51 4.04 3 5.5l7 7Z" />
+      <path d="M3.22 12H9.5l.5-1 2 4.5 2-7 1.5 3.5h4.78" />
+    </>
+  ),
+};
+
+function NavIcon(props) {
+  return (
+    <svg
+      class="admin-side-icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      {NAV_ICONS[props.name]}
+    </svg>
+  );
+}
+
+// The StreamArena play-mark (same geometry as the favicon) for the sidebar.
+function BrandMark() {
+  return (
+    <svg class="admin-side-logo" viewBox="0 0 512 512" aria-hidden="true">
+      <defs>
+        <mask id="admin-brand-play">
+          <rect width="512" height="512" fill="white" />
+          <path
+            d="M210 270 L210 394 L346 332 Z"
+            fill="black"
+            stroke="black"
+            stroke-width="22"
+            stroke-linejoin="round"
+            stroke-linecap="round"
+          />
+        </mask>
+      </defs>
+      <g stroke="#e50914" stroke-width="32" stroke-linecap="round" fill="none">
+        <line x1="96" y1="40" x2="304" y2="176" />
+        <line x1="416" y1="40" x2="208" y2="176" />
+      </g>
+      <rect x="40" y="176" width="432" height="312" rx="52" fill="#e50914" mask="url(#admin-brand-play)" />
+    </svg>
+  );
+}
+
+const NAV = [
+  { key: "overview", label: "Overview", icon: "overview" },
+  { key: "users", label: "Users", icon: "users" },
+  { key: "activity", label: "Activity", icon: "activity" },
+  { key: "feedback", label: "Feedback", icon: "feedback" },
+  { key: "health", label: "Health", icon: "health" },
+];
+
+// Title + one-line subtitle shown in the content top bar per section.
+const PAGE_META = {
+  overview: { title: "Overview", sub: "Your platform at a glance" },
+  users: { title: "Users", sub: "Accounts, access & engagement" },
+  activity: { title: "Activity", sub: "Sign-ins, watches & live across StreamArena" },
+  feedback: { title: "Feedback", sub: "Messages from your users" },
+  health: { title: "Service health", sub: "Live infrastructure & streaming pipeline" },
+};
 
 export default function AdminPage() {
   const currentUser = window.__currentUser || {};
   if (!currentUser.isAdmin) {
     return <Unauthorized email={currentUser.email} />;
   }
+
+  const accountInitial = (currentUser.displayName || currentUser.email || "A")
+    .trim()
+    .charAt(0)
+    .toUpperCase();
 
   const [tab, setTab] = createSignal("overview");
   const [overview, setOverview] = createSignal(null);
@@ -692,92 +786,106 @@ export default function AdminPage() {
   };
 
   return (
-    <div class="admin-shell">
-      <header class="admin-header">
-        <div class="admin-brand">
-          <span class="admin-brand-mark">StreamArena</span>
-          <span class="admin-brand-tag">Admin</span>
-        </div>
-        <div class="admin-header-right">
-          <span class="admin-whoami">{currentUser.email}</span>
-          <a class="admin-link" href="/">
-            View site
-          </a>
-          <button class="admin-btn" onClick={() => signOut()}>
-            Sign out
-          </button>
-        </div>
-      </header>
+    <div class="admin-layout">
+      <aside class="admin-sidebar">
+        <a class="admin-side-brand" href="/" title="Back to StreamArena">
+          <BrandMark />
+          <span class="admin-side-brandtext">
+            <span class="admin-side-brandname">StreamArena</span>
+            <span class="admin-side-brandtag">Admin console</span>
+          </span>
+        </a>
 
-      <nav class="admin-tabnav">
-        <For
-          each={[
-            { key: "overview", label: "Overview" },
-            { key: "users", label: "Users" },
-            { key: "activity", label: "Activity" },
-            { key: "feedback", label: "Feedback" },
-            { key: "health", label: "Health" },
-          ]}
-        >
-          {(t) => (
+        <nav class="admin-side-nav" aria-label="Admin sections">
+          <For each={NAV}>
+            {(t) => (
+              <button
+                type="button"
+                classList={{ "admin-side-link": true, "is-active": tab() === t.key }}
+                onClick={() => setTab(t.key)}
+              >
+                <NavIcon name={t.icon} />
+                <span class="admin-side-label">{t.label}</span>
+                <Show when={t.key === "feedback" && feedback().length}>
+                  <span class="admin-side-badge">{fmtNum(feedback().length)}</span>
+                </Show>
+              </button>
+            )}
+          </For>
+        </nav>
+
+        <div class="admin-side-foot">
+          <Show when={health()}>
             <button
-              classList={{ "admin-tab": true, "is-active": tab() === t.key }}
-              onClick={() => setTab(t.key)}
+              type="button"
+              classList={{ "admin-side-status": true, [statusClass(health().status)]: true }}
+              onClick={() => setTab("health")}
+              title="View service health"
             >
-              {t.label}
-              <Show when={t.key === "feedback" && feedback().length}>
-                <span class="admin-tab-count">{fmtNum(feedback().length)}</span>
-              </Show>
+              <span classList={{ "admin-status-dot": true, [statusClass(health().status)]: true }} />
+              <span class="admin-side-status-text">
+                {STATUS_LABEL[health().status] || "Service health"}
+              </span>
             </button>
-          )}
-        </For>
-        <span class="admin-tabnav-spacer" />
-        <Show when={tab() !== "health"}>
-          <Toggle checked={autoRefresh()} onChange={setAutoRefresh} label="Live" />
-        </Show>
-        <button
-          class="admin-btn admin-refresh"
-          onClick={() => loadAll()}
-          disabled={status() === "loading"}
-        >
-          Refresh
-        </button>
-      </nav>
-
-      <Show when={flash()}>
-        <div classList={{ "admin-flash": true, "is-error": flash().isError }}>
-          {flash().text}
+          </Show>
+          <div class="admin-side-account">
+            <span class="admin-avatar admin-avatar-sm">{accountInitial}</span>
+            <span class="admin-side-accountid">
+              <span class="admin-side-accountname">{currentUser.displayName || "Admin"}</span>
+              <span class="admin-side-accountmail">{currentUser.email}</span>
+            </span>
+          </div>
+          <div class="admin-side-links">
+            <a class="admin-side-ghost" href="/">
+              View site
+            </a>
+            <button class="admin-side-ghost" type="button" onClick={() => signOut()}>
+              Sign out
+            </button>
+          </div>
         </div>
-      </Show>
+      </aside>
 
-      <Show when={status() === "error"}>
-        <div class="admin-error">Couldn’t load the dashboard: {error()}</div>
-      </Show>
-
-      <main class="admin-main">
-        {/* ── Overview ─────────────────────────────────────────────── */}
-        <Show when={tab() === "overview"}>
-          <Show when={overview()} fallback={<SkeletonKpis />}>
-            <div class="admin-overview-bar">
-              <Show when={health()}>
-                <button
-                  class={`admin-status-pill ${statusClass(health().status)}`}
-                  onClick={() => setTab("health")}
-                >
-                  <span class={`admin-status-dot ${statusClass(health().status)}`} />
-                  {STATUS_LABEL[health().status] || "Service health"}
-                  <span class="admin-status-pill-go">View health →</span>
-                </button>
-              </Show>
-              <span class="admin-overview-spacer" />
+      <div class="admin-content">
+        <header class="admin-topbar">
+          <div class="admin-topbar-titles">
+            <h1 class="admin-topbar-title">{PAGE_META[tab()].title}</h1>
+            <p class="admin-topbar-sub">{PAGE_META[tab()].sub}</p>
+          </div>
+          <div class="admin-topbar-actions">
+            <Show when={tab() !== "health"}>
               <span class="admin-synced">
                 <Show when={autoRefresh()}>
                   <span class="admin-live-dot" />
                 </Show>
                 Updated {clockTime(lastSync())}
               </span>
-            </div>
+              <Toggle checked={autoRefresh()} onChange={setAutoRefresh} label="Live" />
+            </Show>
+            <button
+              class="admin-btn admin-refresh"
+              onClick={() => loadAll()}
+              disabled={status() === "loading"}
+            >
+              Refresh
+            </button>
+          </div>
+        </header>
 
+        <Show when={flash()}>
+          <div classList={{ "admin-flash": true, "is-error": flash().isError }}>
+            {flash().text}
+          </div>
+        </Show>
+
+        <Show when={status() === "error"}>
+          <div class="admin-error">Couldn’t load the dashboard: {error()}</div>
+        </Show>
+
+        <main class="admin-main">
+        {/* ── Overview ─────────────────────────────────────────────── */}
+        <Show when={tab() === "overview"}>
+          <Show when={overview()} fallback={<SkeletonKpis />}>
             <div class="admin-kpis">
               <KpiCard
                 tone="green"
@@ -1372,7 +1480,8 @@ export default function AdminPage() {
             </Show>
           </Show>
         </Show>
-      </main>
+        </main>
+      </div>
 
       <Show when={detailUser()}>
         <UserDetailDrawer

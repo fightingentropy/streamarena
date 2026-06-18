@@ -1,17 +1,26 @@
 :root {
-  --admin-bg: #0a0a0b;
-  --admin-surface: #161618;
-  --admin-surface-2: #1e1e22;
-  --admin-surface-3: #26262b;
-  --admin-line: #2c2c31;
-  --admin-line-soft: #232327;
-  --admin-text: #f1f1f3;
-  --admin-muted: #989aa3;
-  --admin-muted-soft: #6c6e78;
+  /* Railway-flavoured dark canvas: a near-black base with surfaces that sit
+     only a hair above it, and HAIRLINE borders (white at low alpha) that read
+     the same on every surface. Restraint over contrast. */
+  --admin-bg: #08080a;
+  --admin-bg-2: #0c0c0f;
+  --admin-surface: #101013;
+  --admin-surface-2: #16161a;
+  --admin-surface-3: #1d1d22;
+  --admin-line: rgba(255, 255, 255, 0.1);
+  --admin-line-soft: rgba(255, 255, 255, 0.06);
+  --admin-line-strong: rgba(255, 255, 255, 0.16);
+  --admin-text: #f3f3f5;
+  --admin-muted: #9a9aa6;
+  --admin-muted-soft: #66666f;
   /* Brand red — reserved for the wordmark and primary CTAs only, never for
      decoration. Everything else uses the muted, cohesive data palette below. */
   --admin-red: #e50914;
   --admin-red-bright: #cf5b62;
+  /* Iris — the structural UI accent (active nav, focus, selection). Distinct
+     from the brand red and from the data palette; used for chrome, not data. */
+  --admin-accent: #8b7ff0;
+  --admin-accent-soft: rgba(139, 127, 240, 0.14);
   --admin-green: #5fa07d;
   --admin-amber: #c39a57;
   --admin-blue: #7090b2;
@@ -19,10 +28,14 @@
   --admin-violet: #8f86b0;
   --admin-cyan: #639aa1;
   --admin-pink: #b3829e;
-  --admin-radius: 14px;
-  --admin-radius-sm: 9px;
+  --admin-radius: 12px;
+  --admin-radius-sm: 8px;
+  --admin-sidebar-w: 252px;
   --admin-font:
     "Helvetica Neue", "Segoe UI", Roboto, Ubuntu, sans-serif;
+  --admin-mono:
+    "SF Mono", "JetBrains Mono", "Roboto Mono", ui-monospace, Menlo,
+    Consolas, monospace;
 }
 
 * {
@@ -41,13 +54,11 @@ html,
 body.admin-body {
   margin: 0;
   min-height: 100%;
-  background:
-    radial-gradient(1100px 560px at 100% -12%, rgba(255, 255, 255, 0.03), transparent 62%),
-    var(--admin-bg);
-  background-attachment: fixed;
+  background: var(--admin-bg);
   color: var(--admin-text);
   font-family: var(--admin-font);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   line-height: 1.5;
 }
 
@@ -66,7 +77,7 @@ a {
 button:focus-visible,
 input:focus-visible,
 a:focus-visible {
-  outline: 2px solid var(--admin-blue);
+  outline: 2px solid var(--admin-accent);
   outline-offset: 2px;
 }
 
@@ -84,110 +95,275 @@ a:focus-visible {
 .t-pink { color: var(--admin-pink); }
 .t-muted { color: var(--admin-muted); }
 
-/* ── Shell ─────────────────────────────────────────────── */
-.admin-shell {
-  width: min(100%, 1280px);
-  margin: 0 auto;
-  padding: 0 clamp(16px, 4vw, 40px) 90px;
+/* ── Layout: persistent sidebar + content column ───────── */
+.admin-layout {
+  display: flex;
+  align-items: stretch;
+  min-height: 100dvh;
 }
 
-.admin-header {
+.admin-sidebar {
   position: sticky;
   top: 0;
   z-index: 30;
+  flex: 0 0 var(--admin-sidebar-w);
+  width: var(--admin-sidebar-w);
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 14px 16px;
+  background: var(--admin-bg-2);
+  border-right: 1px solid var(--admin-line-soft);
+}
+
+.admin-side-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 10px 16px;
+  text-decoration: none;
+  border-radius: var(--admin-radius-sm);
+}
+.admin-side-logo {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+}
+.admin-side-brandtext {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+}
+.admin-side-brandname {
+  color: var(--admin-text);
+  font-weight: 750;
+  font-size: 0.98rem;
+  letter-spacing: -0.01em;
+}
+.admin-side-brandtag {
+  color: var(--admin-muted-soft);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+}
+
+.admin-side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+.admin-side-link {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: var(--admin-radius-sm);
+  background: transparent;
+  color: var(--admin-muted);
+  font-size: 0.9rem;
+  font-weight: 550;
+  text-align: left;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.admin-side-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  opacity: 0.9;
+}
+.admin-side-label {
+  flex: 1;
+}
+.admin-side-link:hover {
+  background: var(--admin-surface-2);
+  color: var(--admin-text);
+}
+.admin-side-link.is-active {
+  background: var(--admin-surface-3);
+  color: #fff;
+}
+.admin-side-link.is-active::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 18px;
+  border-radius: 0 3px 3px 0;
+  background: var(--admin-accent);
+}
+.admin-side-link.is-active .admin-side-icon {
+  opacity: 1;
+  color: var(--admin-accent);
+}
+.admin-side-badge {
+  flex: 0 0 auto;
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-line-soft);
+  color: var(--admin-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.admin-side-link.is-active .admin-side-badge {
+  background: var(--admin-accent-soft);
+  border-color: transparent;
+  color: #cfc7ff;
+}
+
+/* Sidebar footer: global health pill + account + quick links. */
+.admin-side-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--admin-line-soft);
+}
+.admin-side-status {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--admin-line-soft);
+  border-radius: var(--admin-radius-sm);
+  background: var(--admin-surface);
+  color: var(--admin-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+.admin-side-status:hover {
+  background: var(--admin-surface-2);
+  border-color: var(--admin-line);
+}
+.admin-side-status .admin-status-dot {
+  width: 8px;
+  height: 8px;
+}
+.admin-side-status-text {
+  color: var(--admin-text);
+}
+.admin-side-account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  min-width: 0;
+}
+.admin-side-accountid {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+.admin-side-accountname {
+  color: var(--admin-text);
+  font-size: 0.84rem;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-side-accountmail {
+  color: var(--admin-muted-soft);
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-side-links {
+  display: flex;
+  gap: 8px;
+}
+.admin-side-ghost {
+  flex: 1;
+  appearance: none;
+  border: 1px solid var(--admin-line-soft);
+  background: transparent;
+  color: var(--admin-muted);
+  padding: 7px 10px;
+  border-radius: var(--admin-radius-sm);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+.admin-side-ghost:hover {
+  background: var(--admin-surface-2);
+  color: var(--admin-text);
+  border-color: var(--admin-line);
+}
+
+/* ── Content column ────────────────────────────────────── */
+.admin-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 clamp(18px, 3.2vw, 40px) 96px;
+}
+.admin-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  height: 68px;
-  margin-bottom: 18px;
-  background: rgba(10, 10, 11, 0.82);
-  backdrop-filter: blur(16px);
+  min-height: 76px;
+  padding: 16px 0;
+  margin-bottom: 24px;
+  background: color-mix(in srgb, var(--admin-bg) 78%, transparent);
+  backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--admin-line-soft);
 }
-
-.admin-brand {
+.admin-topbar-titles {
+  min-width: 0;
+}
+.admin-topbar-title {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.admin-topbar-sub {
+  margin: 3px 0 0;
+  color: var(--admin-muted);
+  font-size: 0.86rem;
+}
+.admin-topbar-actions {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
 }
 
+/* `.admin-brand-mark` is still used by the access-denied screen. */
 .admin-brand-mark {
   color: var(--admin-red);
   font-weight: 800;
   font-size: 1.3rem;
   letter-spacing: -0.01em;
-}
-
-.admin-brand-tag {
-  color: var(--admin-muted);
-  font-size: 0.82rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-}
-
-.admin-header-right {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.admin-whoami {
-  color: var(--admin-muted);
-  font-size: 0.85rem;
-  max-width: 230px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.admin-link {
-  color: var(--admin-muted);
-  font-size: 0.85rem;
-  text-decoration: none;
-}
-.admin-link:hover {
-  color: var(--admin-text);
-}
-
-/* ── Tabs ──────────────────────────────────────────────── */
-.admin-tabnav {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 22px;
-  flex-wrap: wrap;
-}
-
-.admin-tabnav-spacer {
-  flex: 1;
-}
-
-.admin-tab {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--admin-muted);
-  padding: 9px 14px;
-  border-radius: 999px;
-  font-size: 0.92rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    color 0.15s ease;
-}
-.admin-tab:hover {
-  color: var(--admin-text);
-  background: var(--admin-surface);
-}
-.admin-tab.is-active {
-  color: #fff;
-  background: var(--admin-surface-3);
-  box-shadow:
-    inset 0 0 0 1px #3a3a42,
-    0 4px 16px -12px rgba(0, 0, 0, 0.9);
 }
 
 /* ── Buttons ───────────────────────────────────────────── */
@@ -208,7 +384,7 @@ a:focus-visible {
 }
 .admin-btn:hover {
   background: var(--admin-surface-3);
-  border-color: #3a3a41;
+  border-color: var(--admin-line-strong);
 }
 .admin-btn:disabled {
   opacity: 0.5;
@@ -355,23 +531,15 @@ a:focus-visible {
   color: var(--admin-muted);
 }
 
-/* ── Overview top bar ──────────────────────────────────── */
-.admin-overview-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 18px;
-  flex-wrap: wrap;
-}
-.admin-overview-spacer {
-  flex: 1;
-}
+/* ── Synced indicator (top bar) ────────────────────────── */
 .admin-synced {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: var(--admin-muted);
-  font-size: 0.82rem;
+  color: var(--admin-muted-soft);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .admin-live-dot {
   display: inline-block;
@@ -403,29 +571,28 @@ a:focus-visible {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   padding: 16px 18px;
-  background: linear-gradient(180deg, var(--admin-surface), #121214);
+  background: var(--admin-surface);
   border: 1px solid var(--admin-line-soft);
   border-radius: var(--admin-radius);
-  box-shadow: 0 10px 26px -20px rgba(0, 0, 0, 0.8);
   animation: admin-rise 0.42s cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  transition: border-color 0.18s ease, background 0.18s ease;
 }
 .admin-kpi::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 0;
-  bottom: 0;
+  top: 14px;
+  bottom: 14px;
   width: 3px;
+  border-radius: 0 3px 3px 0;
   background: currentColor;
-  opacity: 0.55;
+  opacity: 0.85;
 }
 .admin-kpi:hover {
-  transform: translateY(-3px);
   border-color: var(--admin-line);
-  box-shadow: 0 16px 34px -20px rgba(0, 0, 0, 0.9);
+  background: var(--admin-surface-2);
 }
 .admin-kpi.is-skeleton::before {
   display: none;
@@ -438,10 +605,10 @@ a:focus-visible {
 }
 .admin-kpi-label {
   color: var(--admin-muted);
-  font-size: 0.74rem;
-  font-weight: 700;
+  font-size: 0.73rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.07em;
 }
 .admin-kpi-mid {
   display: flex;
@@ -452,9 +619,9 @@ a:focus-visible {
 .admin-kpi-value {
   color: var(--admin-text);
   font-size: 2rem;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.025em;
   font-variant-numeric: tabular-nums;
 }
 .admin-kpi-spark {
@@ -525,28 +692,30 @@ a:focus-visible {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   padding: 14px 16px;
   background: var(--admin-surface-2);
   border: 1px solid var(--admin-line-soft);
-  border-radius: 11px;
+  border-radius: 10px;
   animation: admin-rise 0.4s cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
 }
 .admin-stat::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 0;
-  bottom: 0;
+  top: 12px;
+  bottom: 12px;
   width: 3px;
+  border-radius: 0 3px 3px 0;
   background: currentColor;
-  opacity: 0.5;
+  opacity: 0.8;
 }
 .admin-stat-value {
   color: var(--admin-text);
-  font-size: 1.5rem;
-  font-weight: 800;
+  font-size: 1.45rem;
+  font-weight: 700;
   line-height: 1.1;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
 .admin-stat-label {
@@ -561,12 +730,11 @@ a:focus-visible {
 
 /* ── Panels ────────────────────────────────────────────── */
 .admin-panel {
-  background: linear-gradient(180deg, var(--admin-surface), #131316);
+  background: var(--admin-surface);
   border: 1px solid var(--admin-line-soft);
   border-radius: var(--admin-radius);
-  padding: 20px;
+  padding: 22px;
   margin-bottom: 20px;
-  box-shadow: 0 10px 30px -24px rgba(0, 0, 0, 0.9);
   animation: admin-rise 0.42s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 .admin-panel-head {
@@ -574,12 +742,13 @@ a:focus-visible {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 .admin-panel-title {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 1rem;
   font-weight: 700;
+  letter-spacing: -0.01em;
 }
 .admin-panel-sub {
   color: var(--admin-muted);
@@ -1454,41 +1623,6 @@ a:focus-visible {
   }
 }
 
-/* Compact pill on the overview. */
-.admin-status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  padding: 8px 14px;
-  border: 1px solid var(--admin-line);
-  border-left-width: 3px;
-  border-left-color: var(--admin-green);
-  border-radius: 999px;
-  background: var(--admin-surface);
-  color: var(--admin-text);
-  font-size: 0.88rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-.admin-status-pill:hover {
-  background: var(--admin-surface-2);
-}
-.admin-status-pill.is-warn {
-  border-left-color: var(--admin-amber);
-}
-.admin-status-pill.is-down {
-  border-left-color: var(--admin-red);
-}
-.admin-status-pill .admin-status-dot {
-  width: 9px;
-  height: 9px;
-}
-.admin-status-pill-go {
-  color: var(--admin-muted);
-  font-weight: 600;
-}
-
 /* Per-check breakdown. */
 .admin-checks {
   display: grid;
@@ -1560,18 +1694,6 @@ a:focus-visible {
 }
 
 /* ── Feedback ──────────────────────────────────────────── */
-.admin-tab-count {
-  margin-left: 7px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.16);
-  font-size: 0.72rem;
-  font-weight: 700;
-  line-height: 1.5;
-}
-.admin-tab.is-active .admin-tab-count {
-  background: rgba(0, 0, 0, 0.25);
-}
 .admin-feedback-list {
   list-style: none;
   margin: 0;
@@ -1965,15 +2087,92 @@ a:focus-visible {
   }
 }
 
-@media (max-width: 860px) {
+@media (max-width: 1080px) {
   .admin-grid-2 {
     grid-template-columns: 1fr;
   }
 }
 
-@media (max-width: 720px) {
-  .admin-whoami {
+/* Collapse the sidebar into a sticky horizontal top bar on narrow screens. */
+@media (max-width: 960px) {
+  .admin-layout {
+    flex-direction: column;
+  }
+  .admin-sidebar {
+    flex: none;
+    width: 100%;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    padding: 10px clamp(12px, 4vw, 20px);
+    border-right: 0;
+    border-bottom: 1px solid var(--admin-line-soft);
+    background: color-mix(in srgb, var(--admin-bg-2) 88%, transparent);
+    backdrop-filter: blur(14px);
+  }
+  .admin-side-brand {
+    padding: 0;
+    flex: 0 0 auto;
+  }
+  .admin-side-brandtext {
     display: none;
+  }
+  .admin-side-nav {
+    flex: 1;
+    flex-direction: row;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .admin-side-nav::-webkit-scrollbar {
+    display: none;
+  }
+  .admin-side-link {
+    width: auto;
+    white-space: nowrap;
+  }
+  .admin-side-link.is-active::before {
+    display: none;
+  }
+  .admin-side-foot {
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding-top: 0;
+    border-top: 0;
+  }
+  .admin-side-status,
+  .admin-side-account {
+    display: none;
+  }
+  .admin-content {
+    padding: 0 clamp(14px, 4vw, 24px) 72px;
+  }
+  .admin-topbar {
+    min-height: 64px;
+    margin-bottom: 18px;
+  }
+  .admin-topbar-title {
+    font-size: 1.25rem;
+  }
+}
+
+@media (max-width: 620px) {
+  /* Icon-only nav so all five fit without horizontal scroll; the active
+     section is still named by the top-bar title. */
+  .admin-side-label {
+    display: none;
+  }
+  .admin-side-link {
+    padding: 9px;
+  }
+  .admin-side-links a.admin-side-ghost {
+    display: none;
+  }
+  .admin-topbar {
+    flex-wrap: wrap;
   }
   .admin-kpi-value {
     font-size: 1.7rem;
@@ -1990,9 +2189,9 @@ a:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .admin-shell *,
-  .admin-shell *::before,
-  .admin-shell *::after {
+  .admin-layout *,
+  .admin-layout *::before,
+  .admin-layout *::after {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
   }

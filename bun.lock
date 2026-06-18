@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "netflix-app",
+      "name": "streamarena-app",
       "dependencies": {
         "hls.js": "^1.6.16",
         "libsodium-wrappers": "^0.8.4",
