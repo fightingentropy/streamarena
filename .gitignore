@@ -9,6 +9,10 @@ node_modules/
 dist/
 target/
 
+# Local-only admin design preview (renders the real UI with mocked API data)
+admin-preview.html
+src-ui/entries/admin-preview.js
+
 # Env files
 .env
 .env.*
