@@ -301,55 +301,6 @@ async fn auth_throttle_middleware(
     }
 }
 
-/// The decommissioned legacy domain. The user-facing site (the apex and `www`)
-/// is served nothing — see `legacy_host_gate`.
-const LEGACY_HOST: &str = "streamthatshit.com";
-
-/// The host the client asked for, lowercased and without a trailing dot or port.
-/// Prefers the `Host` header — our Caddy forwards the real one and the origin
-/// only accepts loopback/Cloudflare traffic, so it can't be spoofed from
-/// outside — and falls back to `X-Forwarded-Host`.
-fn effective_request_host(headers: &HeaderMap) -> Option<String> {
-    let raw = headers
-        .get(axum::http::header::HOST)
-        .or_else(|| headers.get("x-forwarded-host"))
-        .and_then(|value| value.to_str().ok())?;
-    let first = raw.split(',').next().unwrap_or(raw).trim();
-    // Strip a `:port` suffix without mangling an IPv6 literal like `[::1]`.
-    let host = match first.rsplit_once(':') {
-        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
-        _ => first,
-    };
-    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    (!host.is_empty()).then_some(host)
-}
-
-/// Only the user-facing legacy site — the apex and `www` — is taken down. Other
-/// subdomains are deliberately NOT matched: the live-HLS Worker reaches this
-/// origin over a grey-cloud `*.streamthatshit.com` hostname, and 410-ing that
-/// hop would break live streaming on the live domain.
-fn is_legacy_host(host: &str) -> bool {
-    host == LEGACY_HOST || host == "www.streamthatshit.com"
-}
-
-/// The old domain (streamthatshit.com) is taken down: serve nothing for it.
-/// Every request to that host — page, asset, or API — gets an empty `410 Gone`,
-/// so nothing renders there and search engines drop it. Runs as the outermost
-/// layer so it short-circuits before routing, auth, or static-file handling.
-async fn legacy_host_gate(request: Request<Body>, next: Next) -> Response<Body> {
-    if effective_request_host(request.headers())
-        .as_deref()
-        .is_some_and(is_legacy_host)
-    {
-        return Response::builder()
-            .status(StatusCode::GONE)
-            .header("cache-control", "no-store")
-            .body(Body::empty())
-            .expect("gone response");
-    }
-    next.run(request).await
-}
-
 pub fn build_router(state: AppState) -> Router {
     let public_api = Router::new()
         .route("/api/health/live", any(health_live_handler))
@@ -514,8 +465,6 @@ pub fn build_router(state: AppState) -> Router {
             state,
             security_headers_middleware,
         ))
-        // Outermost: short-circuit the dead legacy domain before any other work.
-        .layer(middleware::from_fn(legacy_host_gate))
 }
 
 fn admin_query_param(uri: &Uri, key: &str) -> Option<String> {
@@ -4563,36 +4512,6 @@ mod tests {
         // Blank/empty header yields None so the caller falls back to the peer IP.
         assert_eq!(super::parse_forwarded_for(""), None);
         assert_eq!(super::parse_forwarded_for("   "), None);
-    }
-
-    #[test]
-    fn legacy_host_detection_matches_old_domain_only() {
-        let host = |value: &str| {
-            let mut headers = HeaderMap::new();
-            headers.insert(HOST, HeaderValue::from_str(value).unwrap());
-            super::effective_request_host(&headers)
-        };
-        // Old domain, with case/port/trailing-dot/subdomain variations.
-        assert_eq!(host("streamthatshit.com").as_deref(), Some("streamthatshit.com"));
-        assert!(super::is_legacy_host(&host("StreamThatShit.com").unwrap()));
-        assert!(super::is_legacy_host(&host("streamthatshit.com:443").unwrap()));
-        assert!(super::is_legacy_host(&host("streamthatshit.com.").unwrap()));
-        assert!(super::is_legacy_host(&host("www.streamthatshit.com").unwrap()));
-        // The live-HLS Worker reaches this origin over a grey-cloud
-        // *.streamthatshit.com subdomain; gating it would break live streaming,
-        // so only the apex + www are treated as the (taken-down) legacy site.
-        assert!(!super::is_legacy_host(
-            &host("d-ef60944f0f0c.streamthatshit.com").unwrap()
-        ));
-        // The live domain (and anything else) is never treated as legacy.
-        assert!(!super::is_legacy_host(&host("streamarena.xyz").unwrap()));
-        assert!(!super::is_legacy_host(&host("www.streamarena.xyz").unwrap()));
-        // A lookalike that merely contains the string must not match.
-        assert!(!super::is_legacy_host(&host("notstreamthatshit.com").unwrap()));
-        // X-Forwarded-Host is the fallback when Host is absent.
-        let mut forwarded = HeaderMap::new();
-        forwarded.insert("x-forwarded-host", HeaderValue::from_static("streamthatshit.com"));
-        assert!(super::is_legacy_host(&super::effective_request_host(&forwarded).unwrap()));
     }
 
     #[test]
