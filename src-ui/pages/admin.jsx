@@ -1183,7 +1183,7 @@ export default function AdminPage() {
             </div>
             <Heatmap cells={activityByHour()} tone="blue" />
           </section>
-          <div class="admin-grid-2">
+          <div class="admin-grid-2 admin-grid-tight">
             <section class="admin-panel">
               <div class="admin-panel-head">
                 <h2 class="admin-panel-title">Breakdown</h2>
@@ -1196,7 +1196,7 @@ export default function AdminPage() {
                 label="Activity by type"
               />
             </section>
-            <section class="admin-panel">
+            <section class="admin-panel admin-panel-scroll">
               <div class="admin-panel-head">
                 <h2 class="admin-panel-title">Top live streams</h2>
                 <span class="admin-panel-sub">Sports &amp; channels · last 7 days</span>

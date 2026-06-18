@@ -779,6 +779,30 @@ a:focus-visible {
   margin-bottom: 0;
 }
 
+/* Compact two-up row: size each panel to its own content instead of stretching
+   both to the taller one, and let a long list scroll inside its panel rather
+   than push everything below it far down the page. */
+.admin-grid-tight {
+  align-items: start;
+}
+.admin-panel-scroll .admin-hbars {
+  max-height: 196px; /* ~the donut beside it, so the row stays balanced */
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--admin-line-strong) transparent;
+}
+.admin-panel-scroll .admin-hbars::-webkit-scrollbar {
+  width: 8px;
+}
+.admin-panel-scroll .admin-hbars::-webkit-scrollbar-thumb {
+  background: var(--admin-line-strong);
+  border-radius: 6px;
+}
+.admin-panel-scroll .admin-hbars::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 /* ── TrendChart ────────────────────────────────────────── */
 .admin-trend-host {
   width: 100%;
