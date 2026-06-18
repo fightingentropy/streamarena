@@ -5249,7 +5249,6 @@ export default function HomePage() {
           class={`hero-content${featuredHeroReady() ? "" : " is-loading"}`}
           aria-labelledby="heroTitle"
         >
-          <BrandWordmark class="brand-wordmark-arc--hero" />
           <h1
             id="heroTitle"
             class="hero-title-stacked"
