@@ -110,12 +110,8 @@ export function SportsView() {
 
   return (
     <View style={{ flex: 1 }}>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ paddingHorizontal: 16, gap: 8, paddingVertical: 12 }}
-        style={{ flexGrow: 0 }}
-      >
+      {/* Wrap the sport chips so every sport stays visible (no horizontal cut-off). */}
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingVertical: 12 }}>
         {SPORTS.map((s) => {
           const active = s.id === sport;
           return (
@@ -128,7 +124,7 @@ export function SportsView() {
                 borderColor: active ? colors.accent : colors.line,
                 borderWidth: 1,
                 borderRadius: 9999,
-                paddingHorizontal: 16,
+                paddingHorizontal: 14,
                 paddingVertical: 8,
               }}
             >
@@ -136,7 +132,7 @@ export function SportsView() {
             </PressableScale>
           );
         })}
-      </ScrollView>
+      </View>
 
       {loading && live.length === 0 && upcoming.length === 0 ? (
         <View style={{ paddingTop: 60 }}>
