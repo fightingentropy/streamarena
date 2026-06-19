@@ -148,6 +148,14 @@ const LIVE_WORKING_STREAM_CACHE_STORAGE_PREFIX = "streamarena-live-working-strea
 const LIVE_SOURCE_PREFERENCE_STORAGE_KEY = "streamarena-live-source-preferences";
 const LIVE_SOURCE_PREFERENCE_TTL_MS = 24 * 60 * 60 * 1000;
 const MANUAL_SOURCE_SWITCH_TIMEOUT_MS = 6000;
+// After a manual source switch we keep the previous (working) stream on standby and
+// only roll back to it if the newly selected source never comes online. "Never comes
+// online" must mean *no forward progress* — not merely "still buffering" — because a
+// far seek into a freshly spun-up transcode legitimately needs several seconds before
+// it can surface playable data. The restore watchdog re-checks on this cadence and
+// reverts only after this many consecutive checks with zero progress.
+const MANUAL_SOURCE_SWITCH_PROGRESS_INTERVAL_MS = 3000;
+const MANUAL_SOURCE_SWITCH_NO_PROGRESS_LIMIT = 4;
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
@@ -362,6 +370,7 @@ const hlsPlaybackController = createHlsPlaybackController({
     hlsQualityControls.pickPreferredQualityLevel(levels),
   onQualityLevelsChanged: (state) => hlsQualityControls.handleLevelsChanged(state),
   getLiveHlsReferer: () => activeLiveHlsReferer,
+  onSourceLoadProgress: () => noteManualSourceSwitchProgress(),
 });
 
 // ─── Watch URL support: reproducible /watch?... plus legacy /watch/<slug> ───
@@ -4043,14 +4052,80 @@ function clearManualSourceSwitchRestore() {
   pendingManualSourceSwitchRestore = null;
 }
 
+function captureManualSourceSwitchProgress() {
+  let bufferedEnd = 0;
+  const buffered = video?.buffered;
+  if (buffered && buffered.length > 0) {
+    try {
+      bufferedEnd = buffered.end(buffered.length - 1);
+    } catch {
+      // buffered ranges can throw if queried mid-update; treat as no data.
+    }
+  }
+  return {
+    readyState: Number(video?.readyState || 0),
+    bufferedEnd: Number.isFinite(bufferedEnd) ? bufferedEnd : 0,
+    currentTime: Number(video?.currentTime || 0),
+  };
+}
+
+// HLS "manifest parsed"/"fragment buffered" (and any other loading signal) call this
+// to prove the freshly selected source is alive and still working. A far seek into a
+// cold transcode can take many seconds to surface playable data, so it's *progress*,
+// not a fixed wall-clock, that keeps the restore from firing on a perfectly good
+// source.
+function noteManualSourceSwitchProgress() {
+  if (pendingManualSourceSwitchRestore) {
+    pendingManualSourceSwitchRestore.sawLoadProgress = true;
+  }
+}
+
+function manualSourceSwitchMadeProgress(restoreState) {
+  const now = captureManualSourceSwitchProgress();
+  const prev = restoreState.progressSignature || {
+    readyState: 0,
+    bufferedEnd: 0,
+    currentTime: 0,
+  };
+  restoreState.progressSignature = now;
+  const advanced =
+    Boolean(restoreState.sawLoadProgress) ||
+    now.readyState > prev.readyState ||
+    now.bufferedEnd > prev.bufferedEnd + 0.01 ||
+    Math.abs(now.currentTime - prev.currentTime) > 0.01;
+  restoreState.sawLoadProgress = false;
+  return advanced;
+}
+
+function scheduleManualSourceSwitchRestoreCheck(restoreState) {
+  if (pendingManualSourceSwitchTimeout) {
+    window.clearTimeout(pendingManualSourceSwitchTimeout);
+  }
+  pendingManualSourceSwitchTimeout = window.setTimeout(() => {
+    if (pendingManualSourceSwitchRestore !== restoreState) {
+      return;
+    }
+    if (manualSourceSwitchMadeProgress(restoreState)) {
+      restoreState.noProgressTicks = 0;
+      scheduleManualSourceSwitchRestoreCheck(restoreState);
+      return;
+    }
+    restoreState.noProgressTicks = (restoreState.noProgressTicks || 0) + 1;
+    if (restoreState.noProgressTicks < MANUAL_SOURCE_SWITCH_NO_PROGRESS_LIMIT) {
+      scheduleManualSourceSwitchRestoreCheck(restoreState);
+      return;
+    }
+    void restoreManualSourceSwitchPlayback("Source startup timed out.");
+  }, MANUAL_SOURCE_SWITCH_PROGRESS_INTERVAL_MS);
+}
+
 function armManualSourceSwitchRestoreTimeout(restoreState) {
   clearManualSourceSwitchRestore();
   pendingManualSourceSwitchRestore = restoreState;
-  pendingManualSourceSwitchTimeout = window.setTimeout(() => {
-    if (pendingManualSourceSwitchRestore === restoreState) {
-      void restoreManualSourceSwitchPlayback("Source startup timed out.");
-    }
-  }, MANUAL_SOURCE_SWITCH_TIMEOUT_MS);
+  restoreState.progressSignature = captureManualSourceSwitchProgress();
+  restoreState.noProgressTicks = 0;
+  restoreState.sawLoadProgress = false;
+  scheduleManualSourceSwitchRestoreCheck(restoreState);
 }
 
 function isManualSourceSwitchPending() {
@@ -8346,14 +8421,12 @@ function schedulePlaybackRecovery(
   message = "",
   { delayMs = null, resetAttempts = false } = {},
 ) {
-  if (pendingManualSourceSwitchRestore) {
-    void restoreManualSourceSwitchPlayback(
-      message || "Selected source could not start.",
-    );
-    return true;
-  }
-
-  if (isManualSourceSwitchRequestActive()) {
+  // A manually selected source is still establishing (resolving, fetching its
+  // playlist, or buffering a far-seek segment on a cold transcode). Buffering is not a
+  // startup failure, so don't roll back to the previous source here: the restore
+  // watchdog reverts only after sustained no-progress, and a genuine media/HLS error
+  // reverts via the error path (handlePlaybackErrorRecovery).
+  if (pendingManualSourceSwitchRestore || isManualSourceSwitchRequestActive()) {
     return true;
   }
 
@@ -11100,6 +11173,12 @@ trackListener(video, "seeked", () => {
   if (video.paused || video.readyState >= 2) {
     hideSeekLoadingIndicator();
   }
+});
+trackListener(video, "loadeddata", () => {
+  // Decodable data for the freshly selected source confirms the switch even when a
+  // far seek means playback hasn't started yet — without this the restore watchdog
+  // could still roll back a source that actually loaded fine.
+  completeManualSourceSwitchIfActive();
 });
 trackListener(video, "canplay", () => {
   completeManualSourceSwitchIfActive();

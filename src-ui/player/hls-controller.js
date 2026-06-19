@@ -72,6 +72,7 @@ export function createHlsPlaybackController({
   getPreferredQualityLevel = () => -1,
   onQualityLevelsChanged = () => {},
   getLiveHlsReferer = () => "",
+  onSourceLoadProgress = () => {},
 } = {}) {
   let activeHlsController = null;
   let hlsConstructorPromise = null;
@@ -369,6 +370,10 @@ export function createHlsPlaybackController({
           });
           hls.on(HlsConstructor.Events.MANIFEST_PARSED, () => {
             if (activeHlsController === hls) {
+              // The playlist parsed: the source responded and is real. This lands well
+              // before the first (possibly far-seek) segment, so it's the earliest
+              // proof a freshly selected source is alive.
+              onSourceLoadProgress();
               qualityLevels = Array.isArray(hls.levels)
                 ? hls.levels.map(normalizeQualityLevel)
                 : [];
@@ -382,6 +387,14 @@ export function createHlsPlaybackController({
                 hls.startLoad(hlsStartPosition);
               }
               void tryPlay();
+            }
+          });
+          hls.on(HlsConstructor.Events.FRAG_BUFFERED, () => {
+            if (activeHlsController === hls) {
+              // Each appended segment is forward progress — keeps a slow-but-working
+              // source (e.g. a cold transcode buffering a far seek) from being treated
+              // as a failed startup.
+              onSourceLoadProgress();
             }
           });
           hls.on(HlsConstructor.Events.LEVEL_SWITCHED, (_event, data = {}) => {
