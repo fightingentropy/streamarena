@@ -349,6 +349,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/twitch/stream", get(twitch_stream_resolve_handler))
         .route("/api/live/hls.m3u8", any(live_hls_handler))
         .route("/api/live/hls-resource", any(live_hls_resource_handler))
+        .route(
+            "/api/live/channel-overrides",
+            get(live_channel_overrides_handler),
+        )
         .route("/api/football/stream", get(football_stream_resolve_handler))
         .route(
             "/api/basketball/stream",
@@ -449,6 +453,12 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/admin/health/history",
             get(admin_health_history_handler),
+        )
+        .route("/api/admin/providers", get(admin_providers_handler))
+        .route("/api/admin/providers/set", any(admin_provider_set_handler))
+        .route(
+            "/api/admin/providers/test",
+            any(admin_provider_test_handler),
         );
 
     Router::new()
@@ -971,6 +981,177 @@ async fn admin_health_history_handler(
     let value =
         serde_json::to_value(samples).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({ "hours": hours, "samples": value })))
+}
+
+/// Provider catalog for the admin Providers dashboard: every backend-resolved
+/// source (sports APIs, embed providers, infra origins) with its compiled default
+/// and current effective value, plus the live-channel override map the frontend
+/// merges over its compiled channel list.
+async fn admin_providers_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let providers = crate::provider_registry::catalog(&state.config);
+    let providers_value =
+        serde_json::to_value(providers).map_err(|error| ApiError::internal(error.to_string()))?;
+    let live_overrides: std::collections::BTreeMap<String, String> =
+        crate::provider_registry::live_overrides().into_iter().collect();
+    let live_value = serde_json::to_value(live_overrides)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(json_response(json!({
+        "providers": providers_value,
+        "liveOverrides": live_value,
+    })))
+}
+
+/// Set or clear a single provider override. URL providers take an http(s) URL (an
+/// empty value resets to the default); embed providers take a "0"/"1" enable flag.
+async fn admin_provider_set_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let payload = parse_json_body(request).await?;
+    let key = payload
+        .get("key")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    if key.is_empty() {
+        return Err(ApiError::bad_request("key is required."));
+    }
+    let kind = crate::provider_registry::classify_writable(&key)
+        .ok_or_else(|| ApiError::bad_request("That provider can't be edited."))?;
+    let raw_value = payload
+        .get("value")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    // Normalise to the stored value. Empty string means "clear the override".
+    let value = match kind {
+        crate::provider_registry::WriteKind::Url => {
+            if raw_value.is_empty() {
+                String::new()
+            } else {
+                let parsed = url::Url::parse(&raw_value)
+                    .map_err(|_| ApiError::bad_request("Enter a valid URL."))?;
+                if !matches!(parsed.scheme(), "http" | "https") {
+                    return Err(ApiError::bad_request(
+                        "URL must start with http:// or https://.",
+                    ));
+                }
+                raw_value
+            }
+        }
+        // Enabled is the default, so re-enabling just clears the override row.
+        crate::provider_registry::WriteKind::Toggle => match raw_value.as_str() {
+            "0" => "0".to_owned(),
+            "1" | "" => String::new(),
+            _ => return Err(ApiError::bad_request("Toggle value must be 0 or 1.")),
+        },
+    };
+    if value.is_empty() {
+        state.db.delete_provider_override(key.clone()).await?;
+    } else {
+        state
+            .db
+            .set_provider_override(key.clone(), value.clone())
+            .await?;
+    }
+    crate::provider_registry::set(&key, &value);
+    Ok(json_response(
+        json!({ "ok": true, "key": key, "value": value }),
+    ))
+}
+
+/// Reachability probe for a provider URL. Admin-only. Uses a browser-ish UA and a
+/// short timeout — many stream hosts 403 a bare client or geo-gate, so a non-2xx
+/// here is a hint, not proof the stream is dead in-app.
+async fn admin_provider_test_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let payload = parse_json_body(request).await?;
+    let url = payload
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let valid = url::Url::parse(&url)
+        .ok()
+        .is_some_and(|parsed| matches!(parsed.scheme(), "http" | "https"));
+    if !valid {
+        return Err(ApiError::bad_request("Enter a valid http(s) URL to test."));
+    }
+    let started = std::time::Instant::now();
+    let outcome = state
+        .http_client
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0")
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await;
+    let latency_ms = started.elapsed().as_millis() as i64;
+    let body = match outcome {
+        Ok(response) => {
+            let status = response.status();
+            json!({
+                "ok": status.is_success() || status.is_redirection(),
+                "status": status.as_u16(),
+                "latencyMs": latency_ms,
+                "error": Value::Null,
+            })
+        }
+        Err(error) => {
+            let reason = if error.is_timeout() {
+                "Timed out".to_owned()
+            } else if error.is_connect() {
+                "Connection failed".to_owned()
+            } else {
+                error.to_string()
+            };
+            json!({ "ok": false, "status": 0, "latencyMs": latency_ms, "error": reason })
+        }
+    };
+    Ok(json_response(body))
+}
+
+/// Live-channel URL overrides for the signed-in frontend. The live page / player
+/// merge these over the compiled channel list so an admin swap takes effect
+/// without a redeploy. Login-gated (not admin) since any viewer plays these.
+async fn live_channel_overrides_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    auth::require_auth(&state.db, &headers).await?;
+    let overrides: std::collections::BTreeMap<String, String> =
+        crate::provider_registry::live_overrides().into_iter().collect();
+    let value =
+        serde_json::to_value(overrides).map_err(|error| ApiError::internal(error.to_string()))?;
+    Ok(json_response(json!({ "overrides": value })))
 }
 
 pub async fn debug_cache(
@@ -2865,7 +3046,11 @@ async fn auth_verify_handler(
             }
         }
     };
-    redirect_response(&format!("{}/?verified={}", state.config.app_origin, outcome))
+    let app_origin = crate::provider_registry::resolve(
+        crate::provider_registry::keys::INFRA_APP_ORIGIN,
+        &state.config.app_origin,
+    );
+    redirect_response(&format!("{}/?verified={}", app_origin, outcome))
 }
 
 /// Re-sends the verification email for the signed-in user. Rate-limited and

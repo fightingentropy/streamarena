@@ -106,7 +106,11 @@ pub async fn send_verification_email(state: &AppState, to_email: &str, raw_token
 
     // Path-based token (not a query param): a raw token in a query string can be
     // mangled by quoted-printable email encoding, corrupting the link.
-    let link = format!("{}/api/auth/verify/{}", config.app_origin, raw_token);
+    let app_origin = crate::provider_registry::resolve(
+        crate::provider_registry::keys::INFRA_APP_ORIGIN,
+        &config.app_origin,
+    );
+    let link = format!("{}/api/auth/verify/{}", app_origin, raw_token);
     let text = format!(
         "Welcome to StreamArena.\n\nConfirm your email address by opening this link:\n{link}\n\n\
          This link expires in 24 hours. If you did not create this account, you can ignore this email."
@@ -161,7 +165,11 @@ pub async fn send_password_reset_email(state: &AppState, to_email: &str, raw_tok
 
     // Links to the reset page (where the user picks a new password), not an API
     // endpoint. Path-based token to avoid quoted-printable query mangling.
-    let link = format!("{}/reset-password/{}", config.app_origin, raw_token);
+    let app_origin = crate::provider_registry::resolve(
+        crate::provider_registry::keys::INFRA_APP_ORIGIN,
+        &config.app_origin,
+    );
+    let link = format!("{}/reset-password/{}", app_origin, raw_token);
     let text = format!(
         "Reset your StreamArena password.\n\nOpen this link to choose a new password:\n{link}\n\n\
          This link expires in 1 hour. If you did not request a password reset, you can ignore this email."

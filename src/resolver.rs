@@ -3614,8 +3614,12 @@ impl ResolverService {
     }
 
     async fn fetch_torrentio_streams(&self, path: &str) -> AppResult<Vec<DiscoveryStream>> {
-        let url = format!("{}{}", self.config.torrentio_base_url, path);
-        let cache_key = build_torrentio_stream_cache_key(&self.config.torrentio_base_url, path);
+        let torrentio_base = crate::provider_registry::resolve(
+            crate::provider_registry::keys::INFRA_TORRENTIO,
+            &self.config.torrentio_base_url,
+        );
+        let url = format!("{}{}", torrentio_base, path);
+        let cache_key = build_torrentio_stream_cache_key(&torrentio_base, path);
         let cached = self.db.get_resolved_stream_cache(cache_key.clone()).await?;
         let now = now_ms();
         if let Some((payload, _, next_validation_at)) = cached.as_ref()
@@ -6145,6 +6149,11 @@ fn external_embed_source_hash(source: ExternalEmbedSource, metadata: &ResolveMet
 fn external_embed_sources() -> Vec<ExternalEmbedSource> {
     let mut sources = Vec::new();
     for provider in EXTERNAL_EMBED_PROVIDERS.iter().copied() {
+        // Admin can disable a flaky embed provider from the Providers dashboard
+        // without a redeploy; a disabled provider contributes no sources.
+        if !crate::provider_registry::embed_enabled(provider.id) {
+            continue;
+        }
         for server in external_embed_servers_for_provider(provider) {
             sources.push(ExternalEmbedSource {
                 provider,

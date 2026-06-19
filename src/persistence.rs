@@ -2897,6 +2897,69 @@ impl Db {
         Ok(())
     }
 
+    /// All admin provider-URL overrides as (key, value). Loaded into the
+    /// `provider_registry` at startup; see also the admin Providers dashboard.
+    pub async fn get_provider_overrides(&self) -> AppResult<Vec<(String, String)>> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let rows = {
+                let mut stmt = connection
+                    .prepare("SELECT provider_key, override_value FROM provider_overrides")?;
+                stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            };
+            return_connection(&pool, connection);
+            Ok::<Vec<(String, String)>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn set_provider_override(&self, key: String, value: String) -> AppResult<()> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "INSERT INTO provider_overrides (provider_key, override_value, updated_at)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(provider_key) DO UPDATE SET
+                   override_value = excluded.override_value,
+                   updated_at = excluded.updated_at",
+                params![key, value, now_ms()],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn delete_provider_override(&self, key: String) -> AppResult<()> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "DELETE FROM provider_overrides WHERE provider_key = ?",
+                params![key],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
     pub async fn get_user_watch_progress(
         &self,
         user_id: i64,
@@ -4057,6 +4120,11 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
           pref_value TEXT NOT NULL DEFAULT '',
           updated_at INTEGER NOT NULL,
           PRIMARY KEY (user_id, pref_key)
+        );
+        CREATE TABLE IF NOT EXISTS provider_overrides (
+          provider_key TEXT PRIMARY KEY,
+          override_value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS user_watch_progress (
           user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

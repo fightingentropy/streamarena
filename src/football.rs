@@ -18,6 +18,7 @@ use tokio::time::timeout;
 use url::Url;
 
 use crate::error::{ApiError, AppResult, json_response};
+use crate::provider_registry;
 use crate::routes::AppState;
 use crate::utils::now_ms;
 
@@ -40,9 +41,10 @@ const MATCHSTREAM_BASEBALL_CACHE_KEY: &str = "matchstream:baseball";
 const MATCHSTREAM_AMERICAN_FOOTBALL_CACHE_KEY: &str = "matchstream:american-football";
 const MATCHSTREAM_CRICKET_CACHE_KEY: &str = "matchstream:cricket";
 const NTVS_FOOTBALL_CACHE_KEY: &str = "ntvs:football";
-const STREAMED_MATCHES_BASE_URL: &str = "https://streamed.pk/api/matches";
-const STREAMED_FOOTBALL_MATCHES_URL: &str = "https://streamed.pk/api/matches/football";
-const STREAMED_BASKETBALL_MATCHES_URL: &str = "https://streamed.pk/api/matches/basketball";
+pub(crate) const STREAMED_MATCHES_BASE_URL: &str = "https://streamed.pk/api/matches";
+pub(crate) const STREAMED_FOOTBALL_MATCHES_URL: &str = "https://streamed.pk/api/matches/football";
+pub(crate) const STREAMED_BASKETBALL_MATCHES_URL: &str =
+    "https://streamed.pk/api/matches/basketball";
 const STREAMED_REFERER: &str = "https://streamed.pk/";
 const STREAMED_DEFAULT_DURATION_MINUTES: i64 = 180;
 const STREAMED_USER_AGENT: &str = "Mozilla/5.0";
@@ -53,10 +55,10 @@ const STREAMED_EMBED_REFERER: &str = "https://embedsports.top/";
 const MATCHSTREAM_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-matchstream-hls.mjs";
 const MATCHSTREAM_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-matchstream-hls.mjs";
 const MATCHSTREAM_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
-const MATCHSTREAM_WEBMASTER_URL: &str = "https://matchstream.do/webmaster";
-const MATCHSTREAM_VIEWER_URL: &str = "https://matchstream.do/viewer";
+pub(crate) const MATCHSTREAM_WEBMASTER_URL: &str = "https://matchstream.do/webmaster";
+pub(crate) const MATCHSTREAM_VIEWER_URL: &str = "https://matchstream.do/viewer";
 const MATCHSTREAM_DEFAULT_DURATION_MINUTES: i64 = 180;
-const NTVS_SEARCH_URL: &str = "https://ntvs.cx/api/search";
+pub(crate) const NTVS_SEARCH_URL: &str = "https://ntvs.cx/api/search";
 const NTVS_REFERER: &str = "https://ntvs.cx/";
 const NTVS_DEFAULT_SERVER: &str = "kobra";
 const NTVS_FOOTBALL_SEARCH_QUERY: &str = "football";
@@ -1048,9 +1050,22 @@ async fn fetch_streamed_sport_matches_payload(
 
 fn streamed_matches_url(streamed_category: &str) -> String {
     match streamed_category {
-        "football" => STREAMED_FOOTBALL_MATCHES_URL.to_owned(),
-        "basketball" => STREAMED_BASKETBALL_MATCHES_URL.to_owned(),
-        _ => format!("{STREAMED_MATCHES_BASE_URL}/{streamed_category}"),
+        "football" => provider_registry::resolve(
+            provider_registry::keys::SPORTS_STREAMED_FOOTBALL,
+            STREAMED_FOOTBALL_MATCHES_URL,
+        ),
+        "basketball" => provider_registry::resolve(
+            provider_registry::keys::SPORTS_STREAMED_BASKETBALL,
+            STREAMED_BASKETBALL_MATCHES_URL,
+        ),
+        _ => format!(
+            "{}/{}",
+            provider_registry::resolve(
+                provider_registry::keys::SPORTS_STREAMED_MATCHES,
+                STREAMED_MATCHES_BASE_URL,
+            ),
+            streamed_category
+        ),
     }
 }
 
@@ -1245,7 +1260,13 @@ async fn fetch_matchstream_sport_matches_payload(
     let response = sports_http_client(state)?
         .get(&source_url)
         .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
-        .header(reqwest::header::REFERER, MATCHSTREAM_WEBMASTER_URL)
+        .header(
+            reqwest::header::REFERER,
+            provider_registry::resolve(
+                provider_registry::keys::SPORTS_MATCHSTREAM_WEBMASTER,
+                MATCHSTREAM_WEBMASTER_URL,
+            ),
+        )
         .send()
         .await
         .map_err(|error| {
@@ -1286,7 +1307,14 @@ async fn fetch_matchstream_sport_matches_payload(
 }
 
 fn matchstream_viewer_url(sport_name: &str) -> String {
-    let mut url = Url::parse(MATCHSTREAM_VIEWER_URL).expect("valid MatchStream viewer URL");
+    let base = provider_registry::resolve(
+        provider_registry::keys::SPORTS_MATCHSTREAM_VIEWER,
+        MATCHSTREAM_VIEWER_URL,
+    );
+    // Fall back to the compiled default if an admin saved a malformed override.
+    let mut url = Url::parse(&base)
+        .or_else(|_| Url::parse(MATCHSTREAM_VIEWER_URL))
+        .expect("valid MatchStream viewer URL");
     url.query_pairs_mut().append_pair("sport", sport_name);
     url.to_string()
 }
@@ -1357,7 +1385,10 @@ fn build_matchstream_sport_matches_payload(
 
     (
         json!({
-            "source": MATCHSTREAM_WEBMASTER_URL,
+            "source": provider_registry::resolve(
+                provider_registry::keys::SPORTS_MATCHSTREAM_WEBMASTER,
+                MATCHSTREAM_WEBMASTER_URL,
+            ),
             "sourceFetchUrl": source_url,
             "sourceProvider": MATCHSTREAM_SOURCE_ID,
             "sport": default_sport_name,
@@ -1462,7 +1493,14 @@ async fn fetch_ntvs_sport_matches_payload(
 }
 
 fn ntvs_search_url(query: &str, server: &str) -> String {
-    let mut url = Url::parse(NTVS_SEARCH_URL).expect("valid NTVS search URL");
+    let base = provider_registry::resolve(
+        provider_registry::keys::SPORTS_NTVS_SEARCH,
+        NTVS_SEARCH_URL,
+    );
+    // Fall back to the compiled default if an admin saved a malformed override.
+    let mut url = Url::parse(&base)
+        .or_else(|_| Url::parse(NTVS_SEARCH_URL))
+        .expect("valid NTVS search URL");
     url.query_pairs_mut()
         .append_pair("q", query)
         .append_pair("server", server);
