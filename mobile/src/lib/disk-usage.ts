@@ -1,6 +1,7 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { getOfflineAccountScope } from "@/store/offline";
 import { readAllDownloadedRecords } from "@/lib/offline-db";
+import { toAbsoluteOfflinePath } from "@/lib/offline-paths";
 
 // Storage accounting for the Downloads / Storage screens. RN has no
 // navigator.storage.estimate(), so this sums the actual on-disk size of every
@@ -41,11 +42,16 @@ async function sumDownloadedBytes(accountScope: string): Promise<number> {
   const rows = await readAllDownloadedRecords(accountScope).catch(() => []);
   const paths: (string | null)[] = [];
   for (const row of rows) {
-    paths.push(row.videoPath, row.posterPath, row.backdropPath);
+    // Stored paths are container-relative; resolve against the live documentDirectory.
+    paths.push(
+      toAbsoluteOfflinePath(row.videoPath),
+      toAbsoluteOfflinePath(row.posterPath),
+      toAbsoluteOfflinePath(row.backdropPath),
+    );
     if (row.subtitlePaths) {
       try {
         const subs = JSON.parse(row.subtitlePaths) as Record<string, string>;
-        for (const p of Object.values(subs)) paths.push(p);
+        for (const p of Object.values(subs)) paths.push(toAbsoluteOfflinePath(p));
       } catch {}
     }
   }
