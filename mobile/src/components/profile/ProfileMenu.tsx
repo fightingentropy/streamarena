@@ -21,8 +21,8 @@ function MenuItem({ icon, label, onPress }: { icon: ReactNode; label: string; on
   );
 }
 
-// Left slide-in profile drawer, opened by the top-right avatar. Mounted once at the
-// root so it overlays every screen. Swipe left or tap the backdrop to close.
+// Right slide-in profile drawer, anchored under the top-right avatar. Mounted once at
+// the root so it overlays every screen. Swipe right or tap the backdrop to close.
 export function ProfileMenu() {
   const open = useUiStore((s) => s.profileMenuOpen);
   const close = useUiStore((s) => s.closeProfileMenu);
@@ -56,18 +56,18 @@ export function ProfileMenu() {
 
   const backdropStyle = useAnimatedStyle(() => ({ opacity: progress.value }));
   const panelStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: -panelW * (1 - progress.value) + dragX.value }],
+    transform: [{ translateX: panelW * (1 - progress.value) + dragX.value }],
   }));
 
   const pan = Gesture.Pan()
     .activeOffsetX([-15, 15])
     .onUpdate((e) => {
       "worklet";
-      dragX.value = Math.min(0, e.translationX);
+      dragX.value = Math.max(0, e.translationX);
     })
     .onEnd((e) => {
       "worklet";
-      if (e.translationX < -80 || e.velocityX < -800) runOnJS(close)();
+      if (e.translationX > 80 || e.velocityX > 800) runOnJS(close)();
       else dragX.value = withTiming(0, { duration: 180, easing: Easing.out(Easing.quad) });
     });
 
@@ -97,7 +97,7 @@ export function ProfileMenu() {
           style={[
             {
               position: "absolute",
-              left: 0,
+              right: 0,
               top: 0,
               bottom: 0,
               width: panelW,
