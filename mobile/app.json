@@ -13,6 +13,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "xyz.streamarena.app",
       "infoPlist": {
+        "CFBundleDisplayName": "Netflix",
         "UIBackgroundModes": ["audio", "fetch"],
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true

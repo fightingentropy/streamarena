@@ -50,7 +50,7 @@ export default function HomeScreen() {
   const isEmpty = !showSkeleton && !hero && rails.length === 0;
 
   const wordmark = (
-    <Text style={{ color: colors.accent, fontSize: 17, fontWeight: "900", letterSpacing: 0.5 }}>STREAMARENA</Text>
+    <Text style={{ color: colors.accent, fontSize: 17, fontWeight: "900", letterSpacing: 0.5 }}>NETFLIX</Text>
   );
 
   return (

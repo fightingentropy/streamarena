@@ -39,7 +39,7 @@ export default function RegisterScreen() {
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
         <View className="flex-1 justify-center px-6" style={{ gap: 14 }}>
           <Text className="text-4xl font-extrabold tracking-tight" style={{ color: colors.accent }}>
-            STREAMARENA
+            NETFLIX
           </Text>
           <Text className="mb-1 text-2xl font-bold" style={{ color: colors.foreground }}>
             Create account
