@@ -3923,8 +3923,14 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
       hlsPlaybackController.destroy();
       const fallbackMessage =
         String(message || "").trim() || "HLS playback failed.";
-      if (isCurrentTmdbExternalEmbedSource()) {
-        // Let queued embed fallbacks run before escalating to torrent resolution.
+      if (
+        isCurrentTmdbExternalEmbedSource() &&
+        !hasQueuedTmdbSourceFallback()
+      ) {
+        // Only demote (and drop the menu selection) once this source has no
+        // mirror fallbacks left. While queued mirrors remain we stay on the same
+        // source -- recovery hops to the next mirror and keeps its tick. Demoting
+        // here lets recovery escalate to torrent resolution.
         demoteCurrentExternalEmbedSourceForRecovery(fallbackMessage);
       }
       if (isLivePlayback && liveStreamOptions.length > 1) {
@@ -4614,6 +4620,16 @@ async function resolveTmdbSourcesAndPlay({
   });
 }
 
+// A single source can expose several mirror URLs (e.g. LordFlix's Phoenix/Rio/
+// Ativa servers) under one menu entry; `tmdbSourceQueue` holds them in priority
+// order. While unused mirrors remain, recovery is an in-source hop, not a switch
+// to a different source.
+function hasQueuedTmdbSourceFallback() {
+  return (
+    isTmdbResolvedPlayback && tmdbSourceAttemptIndex < tmdbSourceQueue.length
+  );
+}
+
 function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
   if (
     !isTmdbResolvedPlayback ||
@@ -4627,16 +4643,21 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
   stopLocalCacheUpgradeWatch();
   isRecoveringTmdbStream = true;
   showResolver(message || "Switching source...");
-  demoteCurrentExternalEmbedSourceForRecovery(
-    failureMessage || message || "External HLS playback failed.",
-  );
 
-  if (tmdbSourceAttemptIndex < tmdbSourceQueue.length) {
+  // Hopping between mirrors of the current source is not leaving it, so keep the
+  // selected source hash (and its menu tick) and just advance the queue. Only
+  // demote/clear the selection when no mirrors remain and we fall through to
+  // re-resolving a different source.
+  if (hasQueuedTmdbSourceFallback()) {
     void tryNextTmdbSource().finally(() => {
       isRecoveringTmdbStream = false;
     });
     return true;
   }
+
+  demoteCurrentExternalEmbedSourceForRecovery(
+    failureMessage || message || "External HLS playback failed.",
+  );
 
   if (
     shouldAllowTorrentResolveFallback() &&
