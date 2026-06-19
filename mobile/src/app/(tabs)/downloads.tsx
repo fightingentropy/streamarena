@@ -6,6 +6,7 @@ import { PosterImage } from "@/components/PosterImage";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { Screen, CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
 import { EmptyState } from "@/components/ui/States";
+import { DownloadProgressRing, downloadRingFill } from "@/components/ui/DownloadProgressRing";
 import { formatBytes } from "@/lib/disk-usage";
 import { watchHref } from "@/lib/nav";
 import {
@@ -33,6 +34,7 @@ function statusLine(record: OfflineDownloadRecord, liveBytes: number | undefined
 function DownloadRow({ record }: { record: OfflineDownloadRecord }) {
   const router = useRouter();
   const liveBytes = useOfflineStore((s) => s.downloadedBytes[`${record.accountScope}:${record.assetId}`]);
+  const progress = useOfflineStore((s) => s.progress[`${record.accountScope}:${record.assetId}`]);
   const removeDownload = useOfflineStore((s) => s.removeDownload);
   const queueDownload = useOfflineStore((s) => s.queueDownload);
 
@@ -79,6 +81,10 @@ function DownloadRow({ record }: { record: OfflineDownloadRecord }) {
               <Play size={13} color="#fff" fill="#fff" />
             </View>
           </View>
+        ) : record.status === "downloading" ? (
+          <View style={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.4)" }}>
+            <DownloadProgressRing progress={downloadRingFill(record.status, progress ?? 0, liveBytes ?? 0)} size={32} strokeWidth={3} />
+          </View>
         ) : null}
       </View>
 
@@ -92,7 +98,7 @@ function DownloadRow({ record }: { record: OfflineDownloadRecord }) {
           </Text>
         ) : null}
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
-          {record.status === "downloading" || record.status === "queued" ? (
+          {record.status === "queued" ? (
             <ActivityIndicator size="small" color={colors.accent} />
           ) : record.status === "ready" ? (
             <Check size={13} color={colors.muted} />

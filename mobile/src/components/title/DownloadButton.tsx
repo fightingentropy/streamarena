@@ -1,7 +1,8 @@
 import { useCallback, useState } from "react";
-import { ActivityIndicator, Alert, View } from "react-native";
+import { ActivityIndicator, Alert } from "react-native";
 import { AlertCircle, Check, Download, X } from "lucide-react-native";
 import { PressableScale } from "@/components/ui/PressableScale";
+import { DownloadProgressRing, downloadRingFill } from "@/components/ui/DownloadProgressRing";
 import { DetailAction } from "@/components/title/ActionRow";
 import { formatBytes } from "@/lib/disk-usage";
 import { selectionAsync } from "@/lib/haptics";
@@ -74,7 +75,13 @@ export function DownloadButton({ assetId, getMeta, variant = "action", scope = "
     icon = <ActivityIndicator size="small" color={colors.muted} />;
     label = "Queued";
   } else if (dl.status === "downloading") {
-    icon = <ActivityIndicator size="small" color={colors.accent} />;
+    icon = (
+      <DownloadProgressRing
+        progress={downloadRingFill(dl.status, dl.progress, dl.bytes)}
+        size={variant === "icon" ? 24 : 28}
+        strokeWidth={variant === "icon" ? 2.5 : 3}
+      />
+    );
     label = dl.bytes > 0 ? formatBytes(dl.bytes) : "Downloading";
     active = true;
   } else if (dl.status === "ready") {
@@ -98,13 +105,10 @@ export function DownloadButton({ assetId, getMeta, variant = "action", scope = "
         style={{ width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" }}
       >
         {busy && dl.status === "downloading" ? (
-          // Spinner with a tiny cancel affordance overlaid.
-          <View style={{ alignItems: "center", justifyContent: "center" }}>
-            <ActivityIndicator size="small" color={colors.accent} />
-            <View style={{ position: "absolute" }}>
-              <X size={12} color={colors.muted} />
-            </View>
-          </View>
+          // Filling progress ring with a cancel ✕ in the center.
+          <DownloadProgressRing progress={downloadRingFill(dl.status, dl.progress, dl.bytes)} size={30} strokeWidth={2.5}>
+            <X size={12} color={colors.muted} />
+          </DownloadProgressRing>
         ) : (
           icon
         )}
