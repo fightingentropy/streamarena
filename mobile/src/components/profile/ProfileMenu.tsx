@@ -1,10 +1,10 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Image, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useRouter } from "expo-router";
-import { Download, LogOut, Settings, User } from "lucide-react-native";
+import { Download, LogOut, Settings } from "lucide-react-native";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { useAuth } from "@/lib/auth";
 import { useUiStore } from "@/store/ui";
@@ -109,8 +109,8 @@ export function ProfileMenu() {
           ]}
         >
           <View className="flex-row items-center gap-3 px-5 py-3">
-            <View className="h-14 w-14 items-center justify-center overflow-hidden rounded-full" style={{ backgroundColor: "#2a2a2a" }}>
-              <User size={26} color={colors.iconIdle} />
+            <View className="h-14 w-14 overflow-hidden rounded-full" style={{ backgroundColor: "#2a2a2a" }}>
+              <Image source={require("../../../assets/images/avatar.jpg")} style={{ width: 56, height: 56 }} />
             </View>
             <View className="min-w-0 flex-1">
               <Text numberOfLines={1} className="text-xl font-bold" style={{ color: colors.foreground }}>
