@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "StreamArena",
+    "slug": "streamarena-mobile",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/images/icon.png",
+    "scheme": "streamarena",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "backgroundColor": "#0a0a0a",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "xyz.streamarena.app",
+      "infoPlist": {
+        "UIBackgroundModes": ["audio", "fetch"],
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "android": {
+      "package": "xyz.streamarena.app",
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.WAKE_LOCK"
+      ]
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "./plugins/withSigning",
+      "expo-router",
+      "expo-secure-store",
+      [
+        "react-native-video",
+        {
+          "enableBackgroundAudio": true,
+          "enableNotificationControls": false
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0a0a0a",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 110
+        }
+      ]
+    ],
+    "extra": {
+      "apiOrigin": "https://streamarena.xyz"
+    },
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": false
+    }
+  }
+}
