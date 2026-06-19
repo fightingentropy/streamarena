@@ -1,9 +1,7 @@
-import { useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { Check } from "lucide-react-native";
 import { Sheet } from "@/components/ui/Sheet";
 import { selectionAsync } from "@/lib/haptics";
-import { getSources, type SourceSummary } from "@/lib/streamarena";
 import { usePlayerStore } from "@/video/state";
 import type { PlayerTextTrack } from "@/video/tracks";
 import { colors } from "@/theme";
@@ -34,9 +32,9 @@ function Row({ label, sublabel, active, onPress }: { label: string; sublabel?: s
 }
 
 // Player settings bottom sheet: subtitle and (when present) audio tracks come straight
-// from the resolved source; "Source" lazily lists alternates from /api/resolve/sources
-// and re-resolves on pick (preserving position). Audio/source changes go through
-// reopenWith; subtitles toggle instantly (sideloaded VTT, no re-resolve).
+// from the resolved source. Audio changes go through reopenWith (re-resolve, preserving
+// position); subtitles toggle instantly (sideloaded VTT, no re-resolve). Switching the
+// source itself lives in its own SourcesSheet, opened from the player's source button.
 export function PlayerSettingsSheet({
   visible,
   onClose,
@@ -47,34 +45,14 @@ export function PlayerSettingsSheet({
   textTracks: PlayerTextTrack[];
 }) {
   const resolved = usePlayerStore((s) => s.resolved);
-  const request = usePlayerStore((s) => s.request);
   const selectedSubtitle = usePlayerStore((s) => s.selectedSubtitle);
   const selectedAudio = usePlayerStore((s) => s.selectedAudioStreamIndex);
-  const selectedSourceHash = usePlayerStore((s) => s.selectedSourceHash);
   // The strip-proxy embed path plays through libVLC, which has no working sideloaded-subtitle
   // wiring yet and whose audio-switch would force the title onto the anti-bot-blocked backend
   // transcode (a dead source). Suppress both controls so the sheet never offers a broken pick.
   const isVlc = usePlayerStore((s) => s.source?.engine === "vlc");
 
   const audioTracks = resolved?.tracks?.audioTracks ?? [];
-  const [sources, setSources] = useState<SourceSummary[] | null>(null);
-  const [loadingSources, setLoadingSources] = useState(false);
-  const [sourcesError, setSourcesError] = useState(false);
-
-  async function loadSources() {
-    if (!request || loadingSources || sources) return;
-    setLoadingSources(true);
-    setSourcesError(false);
-    try {
-      const res = await getSources({ tmdbId: request.tmdbId, mediaType: request.mediaType, title: request.title, year: request.year, seasonNumber: request.seasonNumber, episodeNumber: request.episodeNumber });
-      setSources(res.sources ?? []);
-    } catch {
-      // Leave `sources` null so the button stays tappable for a retry.
-      setSourcesError(true);
-    } finally {
-      setLoadingSources(false);
-    }
-  }
 
   return (
     <Sheet visible={visible} onClose={onClose} heightPct={0.6} zIndex={200}>
@@ -126,36 +104,6 @@ export function PlayerSettingsSheet({
           </>
         ) : null}
 
-        <SectionTitle>Source</SectionTitle>
-        {sources == null ? (
-          <Pressable onPress={loadSources} accessibilityRole="button" style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 13 }}>
-            {loadingSources ? <ActivityIndicator size="small" color={colors.muted} /> : null}
-            <Text style={{ color: colors.accent, fontSize: 15, fontWeight: "600" }}>
-              {loadingSources ? "Finding sources…" : sourcesError ? "Couldn't load sources — tap to retry" : "Choose a different source"}
-            </Text>
-          </Pressable>
-        ) : sources.length === 0 ? (
-          <Text style={{ color: colors.muted, fontSize: 13, paddingVertical: 6 }}>No alternate sources found.</Text>
-        ) : (
-          sources.map((s, i) => {
-            const active = selectedSourceHash === s.sourceHash;
-            const meta = [s.qualityLabel, s.container?.toUpperCase(), s.size, s.seeders != null ? `${s.seeders} seeders` : null].filter(Boolean).join(" · ");
-            return (
-              <Row
-                key={`${s.sourceHash}-${i}`}
-                label={s.primary || s.filename || s.provider || `Source ${i + 1}`}
-                sublabel={meta || undefined}
-                active={active}
-                onPress={() => {
-                  if (active) return;
-                  selectionAsync();
-                  usePlayerStore.getState().reopenWith({ sourceHash: s.sourceHash });
-                  onClose();
-                }}
-              />
-            );
-          })
-        )}
       </ScrollView>
     </Sheet>
   );

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Captions, Pause, Play, Radio, RotateCcw, RotateCw, SkipForward, X } from "lucide-react-native";
+import { Captions, Layers, Pause, Play, Radio, RotateCcw, RotateCw, SkipForward, X } from "lucide-react-native";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { notificationError, selectionAsync } from "@/lib/haptics";
 import { usePlayerStore } from "@/video/state";
@@ -11,6 +11,7 @@ import { colors } from "@/theme";
 import { LiveSourcesSheet } from "./LiveSourcesSheet";
 import { PlayerSettingsSheet } from "./PlayerSettingsSheet";
 import { Scrubber } from "./Scrubber";
+import { SourcesSheet } from "./SourcesSheet";
 
 const AUTO_HIDE_MS = 3500;
 const SKIP_SECONDS = 10;
@@ -96,6 +97,7 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
   const liveSourceCount = usePlayerStore((s) => s.liveSources.length);
   const [visible, setVisible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
   const [streamsOpen, setStreamsOpen] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrubbing = useRef(false);
@@ -111,10 +113,10 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
   // settings sheet open).
   const scheduleHide = useCallback(() => {
     clearHide();
-    if (!paused && !buffering && status === "playing" && !scrubbing.current && !settingsOpen && !streamsOpen) {
+    if (!paused && !buffering && status === "playing" && !scrubbing.current && !settingsOpen && !sourcesOpen && !streamsOpen) {
       hideTimer.current = setTimeout(() => setVisible(false), AUTO_HIDE_MS);
     }
-  }, [clearHide, paused, buffering, status, settingsOpen, streamsOpen]);
+  }, [clearHide, paused, buffering, status, settingsOpen, sourcesOpen, streamsOpen]);
 
   const reveal = useCallback(() => {
     setVisible(true);
@@ -128,14 +130,14 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
 
   // Keep chrome up whenever playback isn't running or a sheet is open.
   useEffect(() => {
-    if (paused || buffering || status !== "playing" || settingsOpen || streamsOpen) {
+    if (paused || buffering || status !== "playing" || settingsOpen || sourcesOpen || streamsOpen) {
       clearHide();
       setVisible(true);
     } else {
       scheduleHide();
     }
     return clearHide;
-  }, [paused, buffering, status, settingsOpen, streamsOpen, scheduleHide, clearHide]);
+  }, [paused, buffering, status, settingsOpen, sourcesOpen, streamsOpen, scheduleHide, clearHide]);
 
   const toggleChrome = () => {
     if (visible) {
@@ -264,15 +266,26 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
                   </CircleButton>
                 ) : null
               ) : (
-                <CircleButton
-                  onPress={() => {
-                    selectionAsync();
-                    setSettingsOpen(true);
-                  }}
-                  accessibilityLabel="Subtitles and playback settings"
-                >
-                  <Captions size={20} color={subtitleOn ? colors.accent : "#fff"} />
-                </CircleButton>
+                <>
+                  <CircleButton
+                    onPress={() => {
+                      selectionAsync();
+                      setSourcesOpen(true);
+                    }}
+                    accessibilityLabel="Switch source"
+                  >
+                    <Layers size={20} color="#fff" />
+                  </CircleButton>
+                  <CircleButton
+                    onPress={() => {
+                      selectionAsync();
+                      setSettingsOpen(true);
+                    }}
+                    accessibilityLabel="Subtitles and playback settings"
+                  >
+                    <Captions size={20} color={subtitleOn ? colors.accent : "#fff"} />
+                  </CircleButton>
+                </>
               )}
             </View>
           </LinearGradient>
@@ -303,6 +316,7 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
       ) : null}
 
       <PlayerSettingsSheet visible={settingsOpen} onClose={() => setSettingsOpen(false)} textTracks={textTracks} />
+      <SourcesSheet visible={sourcesOpen} onClose={() => setSourcesOpen(false)} />
       <LiveSourcesSheet visible={streamsOpen} onClose={() => setStreamsOpen(false)} />
     </View>
   );
