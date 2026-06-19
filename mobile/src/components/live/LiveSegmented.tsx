@@ -3,15 +3,14 @@ import { PressableScale } from "@/components/ui/PressableScale";
 import { selectionAsync } from "@/lib/haptics";
 import { colors } from "@/theme";
 
-export type LiveTab = "sports" | "tv" | "twitch";
+export type LiveTab = "sports" | "tv";
 
 const TABS: { id: LiveTab; label: string }[] = [
   { id: "sports", label: "Sports" },
   { id: "tv", label: "Live TV" },
-  { id: "twitch", label: "Twitch" },
 ];
 
-// Pill segmented control for the Live tab's three surfaces.
+// Pill segmented control for the Live tab's two surfaces.
 export function LiveSegmented({ value, onChange }: { value: LiveTab; onChange: (tab: LiveTab) => void }) {
   return (
     <View

@@ -123,8 +123,3 @@ export async function resolveTwitchStream(channelOrUrl: string, signal?: AbortSi
     signal,
   });
 }
-
-// Curated Twitch channels to seed discovery (the rest is a free-form channel input).
-export const TWITCH_SUGGESTIONS: { channel: string; label: string }[] = [
-  { channel: "topmedia_topnews", label: "Top News" },
-];
