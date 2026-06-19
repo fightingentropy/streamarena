@@ -12,6 +12,7 @@ mod media;
 mod persistence;
 mod playback_optimize;
 mod process;
+mod provider_registry;
 mod rate_limit;
 mod resolver;
 mod routes;
@@ -121,6 +122,18 @@ async fn main() -> AppResult<()> {
     // Append a restart-log row so the admin Health panel can count restarts and
     // spot crash-looping. Best-effort — never block startup on it.
     let _ = db.record_service_start("startup".to_owned()).await;
+    // Hydrate the provider-override registry from the DB so admin URL swaps survive
+    // restarts. Best-effort: a read failure just leaves the compiled defaults.
+    match db.get_provider_overrides().await {
+        Ok(rows) => {
+            let count = rows.len();
+            provider_registry::load(rows.into_iter().collect());
+            if count > 0 {
+                info!("loaded {count} provider override(s)");
+            }
+        }
+        Err(error) => warn!("failed to load provider overrides: {error:?}"),
+    }
     let mut http_client_builder = reqwest::Client::builder()
         .user_agent("streamarena-backend")
         .timeout(Duration::from_secs(SHARED_HTTP_CLIENT_TIMEOUT_SECONDS));
