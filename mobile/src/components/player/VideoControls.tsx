@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Captions, Pause, Play, Radio, RotateCcw, RotateCw, SkipForward, X } from "lucide-react-native";
@@ -73,6 +73,14 @@ function SkipButton({ direction, onPress }: { direction: "back" | "forward"; onP
 // resolving/buffering and an error overlay (with retry) on failure.
 export function VideoControls({ title, subtitle, live = false, textTracks = [], onNext, onClose }: Props) {
   const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
+  const landscape = width > height;
+  // In the landscape player the safe-area context still reports the portrait insets (it
+  // doesn't re-measure for this rotated modal), which floats the chrome far from the
+  // top/bottom edges. Use tight landscape-appropriate padding so the title bar and the
+  // scrubber hug the edges; fall back to the real insets in portrait.
+  const topPad = landscape ? 10 : insets.top + 6;
+  const bottomPad = landscape ? 16 : insets.bottom + 12;
   const status = usePlayerStore((s) => s.status);
   const paused = usePlayerStore((s) => s.paused);
   const buffering = usePlayerStore((s) => s.buffering);
@@ -213,7 +221,7 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
           {/* Top scrim + title bar */}
           <LinearGradient
             colors={["rgba(0,0,0,0.75)", "transparent"]}
-            style={{ position: "absolute", top: 0, left: 0, right: 0, paddingTop: insets.top + 6, paddingHorizontal: 14, paddingBottom: 28 }}
+            style={{ position: "absolute", top: 0, left: 0, right: 0, paddingTop: topPad, paddingHorizontal: 14, paddingBottom: 28 }}
             pointerEvents="box-none"
           >
             <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }} pointerEvents="box-none">
@@ -286,7 +294,7 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
           {/* Bottom scrim + scrubber */}
           <LinearGradient
             colors={["transparent", "rgba(0,0,0,0.88)"]}
-            style={{ position: "absolute", bottom: 0, left: 0, right: 0, paddingTop: 36, paddingHorizontal: 16, paddingBottom: insets.bottom + 12 }}
+            style={{ position: "absolute", bottom: 0, left: 0, right: 0, paddingTop: 36, paddingHorizontal: 16, paddingBottom: bottomPad }}
             pointerEvents="box-none"
           >
             <Scrubber position={position} duration={duration} onSeek={onSeek} onScrubbing={onScrubbing} live={live} />
