@@ -281,3 +281,67 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
 
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_writable_recognizes_each_group() {
+        assert_eq!(
+            classify_writable(keys::SPORTS_NTVS_SEARCH),
+            Some(WriteKind::Url)
+        );
+        assert_eq!(
+            classify_writable(keys::INFRA_APP_ORIGIN),
+            Some(WriteKind::Url)
+        );
+        assert_eq!(
+            classify_writable("live:bbc-news:roku-1080p"),
+            Some(WriteKind::Url)
+        );
+        assert_eq!(
+            classify_writable("embed:vidlink:enabled"),
+            Some(WriteKind::Toggle)
+        );
+        // Not writable: unknown embed id, the env-only worker base, malformed keys.
+        assert_eq!(classify_writable("embed:bogus:enabled"), None);
+        assert_eq!(classify_writable(keys::INFRA_LIVE_HLS_WORKER), None);
+        assert_eq!(classify_writable("live:onlyonepart"), None);
+        assert_eq!(classify_writable("random:key"), None);
+    }
+
+    #[test]
+    fn resolve_prefers_override_then_default() {
+        // Synthetic key no other code/test reads, so the process-global store can't
+        // cross-contaminate parallel tests.
+        let key = "test:__registry_probe_resolve";
+        assert_eq!(
+            resolve(key, "https://default.example"),
+            "https://default.example"
+        );
+        set(key, "https://override.example");
+        assert_eq!(
+            resolve(key, "https://default.example"),
+            "https://override.example"
+        );
+        assert_eq!(get_override(key).as_deref(), Some("https://override.example"));
+        // An empty/whitespace value clears the override.
+        set(key, "   ");
+        assert_eq!(
+            resolve(key, "https://default.example"),
+            "https://default.example"
+        );
+        assert_eq!(get_override(key), None);
+    }
+
+    #[test]
+    fn embed_enabled_defaults_true_and_honors_disable_flag() {
+        let id = "test_fake_embed_probe";
+        assert!(embed_enabled(id));
+        set(&format!("embed:{id}:enabled"), "0");
+        assert!(!embed_enabled(id));
+        set(&format!("embed:{id}:enabled"), "");
+        assert!(embed_enabled(id));
+    }
+}
