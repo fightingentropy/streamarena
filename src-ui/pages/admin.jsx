@@ -18,6 +18,7 @@ import {
   TrendChart,
 } from "../admin/charts.jsx";
 import { UserDetailDrawer } from "../admin/user-detail.jsx";
+import ProvidersPanel from "../admin/providers.jsx";
 import {
   ActivityFeed,
   clockTime,
@@ -100,6 +101,13 @@ const NAV_ICONS = {
       <path d="M3.22 12H9.5l.5-1 2 4.5 2-7 1.5 3.5h4.78" />
     </>
   ),
+  providers: (
+    <>
+      <path d="M12 3 3 8l9 5 9-5-9-5Z" />
+      <path d="M3 12l9 5 9-5" />
+      <path d="M3 16l9 5 9-5" />
+    </>
+  ),
 };
 
 function NavIcon(props) {
@@ -151,6 +159,7 @@ const NAV = [
   { key: "activity", label: "Activity", icon: "activity" },
   { key: "feedback", label: "Feedback", icon: "feedback" },
   { key: "health", label: "Health", icon: "health" },
+  { key: "providers", label: "Providers", icon: "providers" },
 ];
 
 // Title + one-line subtitle shown in the content top bar per section.
@@ -160,6 +169,7 @@ const PAGE_META = {
   activity: { title: "Activity", sub: "Sign-ins, watches & live across StreamArena" },
   feedback: { title: "Feedback", sub: "Messages from your users" },
   health: { title: "Service health", sub: "Live infrastructure & streaming pipeline" },
+  providers: { title: "Providers", sub: "Stream sources & origins — view, test & swap" },
 };
 
 export default function AdminPage() {
@@ -1479,6 +1489,11 @@ export default function AdminPage() {
               </section>
             </Show>
           </Show>
+        </Show>
+
+        {/* ── Providers ────────────────────────────────────────────── */}
+        <Show when={tab() === "providers"}>
+          <ProvidersPanel onFlash={showFlash} />
         </Show>
         </main>
       </div>
