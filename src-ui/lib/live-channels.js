@@ -260,3 +260,54 @@ export const LIVE_CHANNEL_PLAYBACK_FALLBACKS = Object.freeze(
     ]),
   ),
 );
+
+// ── Runtime provider overrides ──────────────────────────────────────────────
+// The channel URLs above are compiled-in defaults, but the admin Providers
+// dashboard can swap a stream's URL (CDN tokens rotate, geo-blocks appear)
+// without a redeploy. Overrides are keyed `live:<channelId>:<streamId>` and
+// applied *in place*, so every holder of the LIVE_CHANNELS /
+// LIVE_CHANNEL_PLAYBACK_FALLBACKS references — which read `.source` lazily, at
+// click / playback time — picks them up. The shallow Object.freeze() above
+// guards structure, not the nested `.source` strings, so this is allowed.
+
+let liveOverridesPromise = null;
+
+export function applyLiveChannelOverrides(overrides) {
+  if (!overrides || typeof overrides !== "object") {
+    return;
+  }
+  for (const channel of LIVE_CHANNELS) {
+    const streams = Array.isArray(channel.streams) ? channel.streams : [];
+    for (const stream of streams) {
+      const next = overrides[`live:${channel.id}:${stream.id}`];
+      if (typeof next === "string" && next.trim()) {
+        stream.source = next.trim();
+      }
+    }
+    const defaultStream =
+      streams.find((stream) => stream.id === channel.defaultStreamId) || streams[0];
+    if (defaultStream) {
+      channel.source = defaultStream.source;
+    }
+    const fallback = LIVE_CHANNEL_PLAYBACK_FALLBACKS[channel.id];
+    if (fallback) {
+      fallback.source = channel.source;
+    }
+  }
+}
+
+// Fetch live overrides once and apply them. Fire-and-forget from page bootstrap;
+// callers don't await — defaults render immediately and the swap lands before any
+// realistic click. Idempotent (the in-flight/finished promise is reused).
+export function loadLiveChannelOverrides() {
+  if (liveOverridesPromise) {
+    return liveOverridesPromise;
+  }
+  liveOverridesPromise = fetch("/api/live/channel-overrides", { cache: "no-store" })
+    .then((response) => (response.ok ? response.json() : null))
+    .then((data) => applyLiveChannelOverrides(data && data.overrides))
+    .catch(() => {
+      /* keep compiled defaults if overrides can't be fetched */
+    });
+  return liveOverridesPromise;
+}

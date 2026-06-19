@@ -1,6 +1,10 @@
 import "../../style.css";
 
 import { mountAuthenticatedPage } from "../lib/page-entry.js";
+import { loadLiveChannelOverrides } from "../lib/live-channels.js";
+
+// The home page surfaces a live rail; apply admin URL overrides early.
+loadLiveChannelOverrides();
 
 const homeBootstrapFetchTimeoutMs = 2500;
 

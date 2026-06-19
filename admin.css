@@ -2220,3 +2220,141 @@ a:focus-visible {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* ── Providers dashboard ──────────────────────────────────────────────────── */
+.admin-provider-head {
+  align-items: center;
+}
+.admin-provider-headactions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.admin-provider-hint {
+  margin: -6px 0 18px;
+  color: var(--admin-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  max-width: 74ch;
+}
+.admin-provider-group {
+  margin-top: 24px;
+}
+.admin-provider-group:first-of-type {
+  margin-top: 0;
+}
+.admin-provider-grouphead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--admin-line-soft);
+}
+.admin-provider-grouptitle {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+.admin-provider-groupsub {
+  color: var(--admin-muted);
+  font-size: 0.78rem;
+}
+.admin-provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.admin-provider-row {
+  border: 1px solid var(--admin-line-soft);
+  border-radius: var(--admin-radius-sm);
+  padding: 12px 14px;
+  background: var(--admin-bg);
+}
+.admin-provider-row.is-off {
+  opacity: 0.62;
+}
+.admin-provider-rowtop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+.admin-provider-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.admin-provider-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.admin-provider-key {
+  color: var(--admin-muted-soft);
+  font-family: var(--admin-mono);
+  font-size: 0.72rem;
+}
+.admin-provider-input {
+  font-family: var(--admin-mono);
+  font-size: 0.8rem;
+}
+.admin-provider-url-readonly {
+  font-family: var(--admin-mono);
+  font-size: 0.8rem;
+  color: var(--admin-muted);
+  word-break: break-all;
+  padding: 9px 12px;
+  border: 1px dashed var(--admin-line-soft);
+  border-radius: var(--admin-radius-sm);
+}
+.admin-provider-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.admin-test-badge {
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+.admin-test-badge.is-ok {
+  color: var(--admin-green);
+  background: rgba(95, 160, 125, 0.14);
+}
+.admin-test-badge.is-bad {
+  color: var(--admin-red-bright);
+  background: rgba(229, 9, 20, 0.12);
+}
+.admin-provider-tag {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--admin-accent);
+  background: var(--admin-accent-soft);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.admin-provider-note,
+.admin-provider-default {
+  margin-top: 8px;
+  color: var(--admin-muted);
+  font-size: 0.76rem;
+}
+.admin-provider-default {
+  font-family: var(--admin-mono);
+  color: var(--admin-muted-soft);
+  word-break: break-all;
+}
