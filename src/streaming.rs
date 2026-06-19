@@ -903,6 +903,27 @@ impl StreamingService {
             .map_err(|error| ApiError::internal(error.to_string()))
     }
 
+    /// Resolve an `/api/hls/*` input to an ffmpeg source, distinguishing our own signed
+    /// live-HLS proxy URL (the form embed VOD resolves to) from a direct file / real-debrid
+    /// URL. For the live-proxy case the signature is validated, `directSeg` is dropped (so
+    /// segments route through the Mini and get PNG-stripped), and the host is pinned to
+    /// localhost — a crafted `input` can neither forge a stream nor redirect ffmpeg. Returns
+    /// `(ffmpeg_source, is_live_proxy)`; `is_live_proxy` selects the HLS-aware duration probe.
+    fn resolve_hls_source(&self, input: &str) -> AppResult<(String, bool)> {
+        if let Some(path_query) = live_hls_proxy_path_query(input) {
+            let proxied = strip_live_hls_direct_seg(&path_query);
+            let uri: Uri = proxied
+                .parse()
+                .map_err(|_| ApiError::bad_request("Invalid playback source."))?;
+            if !crate::live::is_signed_live_hls_request(&self.config.live_hls_proxy_secret, &uri) {
+                return Err(ApiError::bad_request("Invalid or unsigned playback source."));
+            }
+            let url = format!("http://127.0.0.1:{}{}", self.config.port, proxied);
+            return Ok((url, true));
+        }
+        Ok((self.media.resolve_transcode_input(input)?, false))
+    }
+
     pub async fn create_hls_playlist_response(
         &self,
         input: &str,
@@ -911,9 +932,21 @@ impl StreamingService {
         self.hls_metrics
             .playlist_requests
             .fetch_add(1, Ordering::Relaxed);
-        let source_input = self.media.resolve_transcode_input(input)?;
-        let probe = self.media.probe_media_tracks(&source_input).await?;
-        let media_duration_seconds = probe.durationSeconds.max(1) as f64;
+        let (source_input, is_live_proxy) = self.resolve_hls_source(input)?;
+        // Live-proxy embeds are HLS with query-masked segment extensions; probe_media_tracks'
+        // bare ffprobe rejects those, so use the HLS-aware duration probe for them.
+        let media_duration_seconds = if is_live_proxy {
+            self.media
+                .probe_hls_source_duration(&source_input)
+                .await?
+                .max(1) as f64
+        } else {
+            self.media
+                .probe_media_tracks(&source_input)
+                .await?
+                .durationSeconds
+                .max(1) as f64
+        };
         let segment_count =
             ((media_duration_seconds / HLS_SEGMENT_DURATION_SECONDS as f64).ceil() as i64).max(1);
         let safe_audio_stream = if audio_stream_index >= 0 {
@@ -969,7 +1002,7 @@ impl StreamingService {
         self.hls_metrics
             .segment_requests
             .fetch_add(1, Ordering::Relaxed);
-        let source_input = self.media.resolve_transcode_input(input)?;
+        let (source_input, _is_live_proxy) = self.resolve_hls_source(input)?;
         let segment_path = self
             .get_or_create_hls_segment(&source_input, segment_index.max(0), audio_stream_index)
             .await?;
@@ -1932,6 +1965,41 @@ fn build_hls_transcode_args(
         "-y".to_owned(),
     ];
     args.extend(encode_config.pre_input_args.clone());
+    // A live-proxy embed source is HLS read over localhost: its segment URLs carry a query
+    // string that masks the .ts extension, so relax ffmpeg's protocol/extension gates and add
+    // http reconnect to ride out transient upstream blips. +genpts and a large analyze window
+    // stabilize the embed's timestamps. Direct file / real-debrid inputs are left untouched.
+    if source_input.contains("/api/live/hls.m3u8") {
+        args.extend(
+            [
+                "-protocol_whitelist",
+                "file,http,https,tcp,tls,crypto",
+                "-extension_picky",
+                "0",
+                "-allowed_extensions",
+                "ALL",
+                "-reconnect",
+                "1",
+                "-reconnect_streamed",
+                "1",
+                "-reconnect_delay_max",
+                "5",
+                // Bound every network read (~20s). A rate-limited/blocked upstream CDN
+                // otherwise makes the read hang forever, so jobs for dead servers pile up
+                // and starve the backend. With this, the job errors out and is reaped; the
+                // mobile player's 6s stall watchdog has already advanced to another server.
+                "-rw_timeout",
+                "20000000",
+                "-fflags",
+                "+genpts",
+                "-analyzeduration",
+                "100M",
+                "-probesize",
+                "100M",
+            ]
+            .map(str::to_owned),
+        );
+    }
     args.extend([
         "-i".to_owned(),
         source_input.to_owned(),
@@ -2104,6 +2172,27 @@ fn live_hls_proxy_path_query(input: &str) -> Option<String> {
         Some(query) => format!("/api/live/hls.m3u8?{query}"),
         None => "/api/live/hls.m3u8".to_owned(),
     })
+}
+
+/// Drop the `directSeg` hint from a live-HLS proxy path+query. `directSeg=1` tells the
+/// proxy to point segment URLs straight at the source CDN (cross-origin browsers fetch +
+/// strip them client-side). ffmpeg has no such hook, so for a server-side remux we must
+/// force segments back through the Mini's `/api/live/hls-resource` handler — that's where
+/// PNG-disguised MPEG-TS gets stripped. `directSeg` is outside the signed payload (only
+/// `input`+`referer` are signed), so removing it keeps the signature valid.
+fn strip_live_hls_direct_seg(path_query: &str) -> String {
+    let Some((path, query)) = path_query.split_once('?') else {
+        return path_query.to_owned();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| pair.split('=').next().unwrap_or("") != "directSeg")
+        .collect();
+    if kept.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{path}?{}", kept.join("&"))
+    }
 }
 
 fn build_export_ffmpeg_args(

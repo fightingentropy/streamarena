@@ -176,6 +176,44 @@ impl MediaService {
         Ok(probe)
     }
 
+    /// Duration (seconds) of a live-proxy HLS source, probed with the segment-protocol gates
+    /// relaxed — its segment URLs carry a query string that masks the `.ts` extension, which
+    /// the default `probe_media_tracks` ffprobe rejects. Takes an already-resolved localhost
+    /// source URL; does NOT re-run `resolve_transcode_input` (that only accepts direct files /
+    /// real-debrid and would reject the proxy URL).
+    pub async fn probe_hls_source_duration(&self, source_input: &str) -> AppResult<i64> {
+        let command = vec![
+            "ffprobe".to_owned(),
+            "-v".to_owned(),
+            "error".to_owned(),
+            "-protocol_whitelist".to_owned(),
+            "file,http,https,tcp,tls,crypto".to_owned(),
+            "-extension_picky".to_owned(),
+            "0".to_owned(),
+            "-allowed_extensions".to_owned(),
+            "ALL".to_owned(),
+            "-analyzeduration".to_owned(),
+            "100M".to_owned(),
+            "-probesize".to_owned(),
+            "100M".to_owned(),
+            "-print_format".to_owned(),
+            "json".to_owned(),
+            "-show_format".to_owned(),
+            source_input.to_owned(),
+        ];
+        let raw = run_process_capture_text(&command, 20_000)
+            .await
+            .map_err(ApiError::bad_gateway)?;
+        let payload = serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
+        let duration = payload
+            .get("format")
+            .and_then(|format| format.get("duration"))
+            .and_then(|value| value.as_str())
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        Ok(duration.max(1.0) as i64)
+    }
+
     pub async fn create_subtitle_vtt_response(
         &self,
         input: &str,
