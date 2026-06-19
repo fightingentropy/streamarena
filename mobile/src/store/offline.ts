@@ -13,6 +13,12 @@ import {
   type DownloadRow,
 } from "@/lib/offline-db";
 import { getIsOnline, isMeteredConnection, subscribeOnline } from "@/lib/connectivity";
+import {
+  absolutizeSubtitlePaths,
+  relativizeSubtitlePaths,
+  toAbsoluteOfflinePath,
+  toRelativeOfflinePath,
+} from "@/lib/offline-paths";
 import { storage } from "@/lib/storage";
 
 // Offline downloads for video. Ports the proven Spotify offline engine (serial pump,
@@ -115,10 +121,12 @@ function recordToRow(record: OfflineDownloadRecord): DownloadRow {
     scopes: JSON.stringify(record.scopes),
     status: record.status,
     meta: JSON.stringify(record.meta),
-    videoPath: record.videoPath ?? null,
-    posterPath: record.posterPath ?? null,
-    backdropPath: record.backdropPath ?? null,
-    subtitlePaths: record.subtitlePaths ? JSON.stringify(record.subtitlePaths) : null,
+    // Store container-relative paths — the iOS Documents UUID changes across reinstalls,
+    // so an absolute file:// path would go stale and trigger a needless re-download.
+    videoPath: toRelativeOfflinePath(record.videoPath),
+    posterPath: toRelativeOfflinePath(record.posterPath),
+    backdropPath: toRelativeOfflinePath(record.backdropPath),
+    subtitlePaths: record.subtitlePaths ? JSON.stringify(relativizeSubtitlePaths(record.subtitlePaths)) : null,
     bytes: record.bytes,
     addedAt: record.addedAt,
     updatedAt: record.updatedAt,
@@ -132,10 +140,13 @@ function rowToRecord(row: DownloadRow): OfflineDownloadRecord {
     scopes: JSON.parse(row.scopes) as DownloadScope[],
     status: row.status as DownloadStatus,
     meta: JSON.parse(row.meta) as OfflineMeta,
-    videoPath: row.videoPath ?? undefined,
-    posterPath: row.posterPath ?? undefined,
-    backdropPath: row.backdropPath ?? undefined,
-    subtitlePaths: row.subtitlePaths ? (JSON.parse(row.subtitlePaths) as Record<string, string>) : undefined,
+    // Re-anchor the stored relative paths to the current container's documentDirectory.
+    videoPath: toAbsoluteOfflinePath(row.videoPath) ?? undefined,
+    posterPath: toAbsoluteOfflinePath(row.posterPath) ?? undefined,
+    backdropPath: toAbsoluteOfflinePath(row.backdropPath) ?? undefined,
+    subtitlePaths: row.subtitlePaths
+      ? absolutizeSubtitlePaths(JSON.parse(row.subtitlePaths) as Record<string, string>)
+      : undefined,
     bytes: row.bytes,
     addedAt: row.addedAt,
     updatedAt: row.updatedAt,

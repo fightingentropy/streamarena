@@ -1,5 +1,6 @@
 import * as FileSystem from "expo-file-system/legacy";
 import * as SQLite from "expo-sqlite";
+import { toAbsoluteOfflinePath } from "@/lib/offline-paths";
 
 // expo-sqlite store for offline video download records. Adapted from the Spotify
 // app's audio store: a single TEXT primary key (`${accountScope}:${assetId}`),
@@ -17,10 +18,10 @@ export type DownloadRow = {
   scopes: string; // JSON string[]
   status: string;
   meta: string; // JSON OfflineMeta
-  videoPath: string | null;
+  videoPath: string | null; // container-relative ("offline-media/…"); see lib/offline-paths
   posterPath: string | null;
   backdropPath: string | null;
-  subtitlePaths: string | null; // JSON Record<lang, file://path>
+  subtitlePaths: string | null; // JSON Record<lang, relative path>
   bytes: number;
   addedAt: number;
   updatedAt: number;
@@ -115,7 +116,8 @@ export async function readAllDownloadedRecords(accountScope: string): Promise<Do
 // row is flipped back to "queued" (videoPath cleared) for the serial pump to
 // re-download. Poster/backdrop/subtitle sidecars are best-effort and not gated here.
 export async function verifyOrRepairRecord(row: DownloadRow): Promise<{ ok: boolean }> {
-  const videoPath = row.videoPath;
+  // Stored paths are container-relative; resolve against the live documentDirectory.
+  const videoPath = toAbsoluteOfflinePath(row.videoPath);
   if (videoPath) {
     try {
       const info = await FileSystem.getInfoAsync(videoPath);
