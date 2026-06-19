@@ -79,6 +79,10 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
   const position = usePlayerStore((s) => s.position);
   const duration = usePlayerStore((s) => s.duration);
   const error = usePlayerStore((s) => s.error);
+  // Whether "Try again" can actually do anything: live needs sources to walk, VOD needs a
+  // request to re-open. In the no-staged-request live deep-link case both are empty, so
+  // retry() is a no-op — hide the button and leave only the working Close.
+  const canRetry = usePlayerStore((s) => (s.live ? s.liveSources.length > 0 : s.request != null));
   const subtitleOn = usePlayerStore((s) => s.selectedSubtitle != null);
 
   const liveSourceCount = usePlayerStore((s) => s.liveSources.length);
@@ -169,13 +173,15 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
           {error || "Couldn't start this title."}
         </Text>
         <View style={{ flexDirection: "row", gap: 12, marginTop: 22 }}>
-          <PressableScale
-            onPress={() => usePlayerStore.getState().retry()}
-            accessibilityLabel="Retry"
-            style={{ backgroundColor: colors.accent, paddingHorizontal: 22, paddingVertical: 11, borderRadius: 8 }}
-          >
-            <Text style={{ color: "#fff", fontSize: 14, fontWeight: "700" }}>Try again</Text>
-          </PressableScale>
+          {canRetry ? (
+            <PressableScale
+              onPress={() => usePlayerStore.getState().retry()}
+              accessibilityLabel="Retry"
+              style={{ backgroundColor: colors.accent, paddingHorizontal: 22, paddingVertical: 11, borderRadius: 8 }}
+            >
+              <Text style={{ color: "#fff", fontSize: 14, fontWeight: "700" }}>Try again</Text>
+            </PressableScale>
+          ) : null}
           <PressableScale
             onPress={onClose}
             accessibilityLabel="Close"

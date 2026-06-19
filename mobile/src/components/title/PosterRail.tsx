@@ -1,19 +1,29 @@
-import { ScrollView, Text, View } from "react-native";
+import { useCallback } from "react";
+import { FlatList, type ListRenderItemInfo, ScrollView, Text, View } from "react-native";
 import { PosterCard } from "@/components/title/PosterCard";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { type Title } from "@/lib/streamarena";
 import { colors, layout } from "@/theme";
 
-// A titled horizontal rail of poster cards.
+// A titled horizontal rail of poster cards. Uses a windowed FlatList so only the visible
+// (plus a small buffer) cards mount their image — off-screen tiles in a long rail no longer
+// decode up front. `priority="high"` marks the above-the-fold first rail for earlier fetch.
 export function PosterRail({
   title,
   items,
   imageBase,
+  priority,
 }: {
   title: string;
   items: Title[];
   imageBase?: string;
+  priority?: "low" | "normal" | "high";
 }) {
+  const renderItem = useCallback(
+    ({ item }: ListRenderItemInfo<Title>) => <PosterCard title={item} imageBase={imageBase} priority={priority} />,
+    [imageBase, priority],
+  );
+  const keyExtractor = useCallback((t: Title) => `${t.mediaType}-${t.id}`, []);
   if (!items.length) return null;
   return (
     <View style={{ marginBottom: 22 }}>
@@ -22,15 +32,17 @@ export function PosterRail({
       >
         {title}
       </Text>
-      <ScrollView
+      <FlatList
         horizontal
+        data={items}
+        renderItem={renderItem}
+        keyExtractor={keyExtractor}
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: 16, gap: 10 }}
-      >
-        {items.map((t) => (
-          <PosterCard key={`${t.mediaType}-${t.id}`} title={t} imageBase={imageBase} />
-        ))}
-      </ScrollView>
+        initialNumToRender={6}
+        windowSize={5}
+        removeClippedSubviews
+      />
     </View>
   );
 }

@@ -42,6 +42,7 @@ export function TwitchView() {
             autoCapitalize="none"
             autoCorrect={false}
             returnKeyType="go"
+            accessibilityLabel="Twitch channel name or URL"
             onSubmitEditing={() => valid && watch(channel)}
             style={{
               flex: 1,

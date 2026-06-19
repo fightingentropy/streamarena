@@ -1,4 +1,5 @@
-import { ScrollView, Text, View } from "react-native";
+import { memo, useCallback } from "react";
+import { FlatList, type ListRenderItemInfo, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Play } from "lucide-react-native";
 import { PosterImage } from "@/components/PosterImage";
@@ -7,7 +8,7 @@ import { titleHref } from "@/lib/nav";
 import { type ContinueWatchingItem } from "@/lib/streamarena";
 import { colors, layout } from "@/theme";
 
-function CardItem({ item }: { item: ContinueWatchingItem }) {
+const CardItem = memo(function CardItem({ item }: { item: ContinueWatchingItem }) {
   const router = useRouter();
   const w = layout.stillWidth;
   const h = layout.stillHeight;
@@ -42,20 +43,28 @@ function CardItem({ item }: { item: ContinueWatchingItem }) {
       </Text>
     </PressableScale>
   );
-}
+});
 
 export function ContinueWatchingRail({ items }: { items: ContinueWatchingItem[] }) {
+  const renderItem = useCallback(({ item }: ListRenderItemInfo<ContinueWatchingItem>) => <CardItem item={item} />, []);
+  const keyExtractor = useCallback((item: ContinueWatchingItem) => item.sourceIdentity, []);
   if (!items.length) return null;
   return (
     <View style={{ marginBottom: 22 }}>
       <Text style={{ color: colors.foreground, fontSize: 17, fontWeight: "700", paddingHorizontal: 16, marginBottom: 10 }}>
         Continue Watching
       </Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 10 }}>
-        {items.map((item) => (
-          <CardItem key={item.sourceIdentity} item={item} />
-        ))}
-      </ScrollView>
+      <FlatList
+        horizontal
+        data={items}
+        renderItem={renderItem}
+        keyExtractor={keyExtractor}
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ paddingHorizontal: 16, gap: 10 }}
+        initialNumToRender={6}
+        windowSize={5}
+        removeClippedSubviews
+      />
     </View>
   );
 }

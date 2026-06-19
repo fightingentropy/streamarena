@@ -1,8 +1,9 @@
-import { useMemo } from "react";
-import { Text, View } from "react-native";
+import { useCallback, useMemo, useState } from "react";
+import { RefreshControl, Text, View } from "react-native";
 import Animated, { useAnimatedScrollHandler, useSharedValue } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
+import { getIsOnline } from "@/lib/connectivity";
 import { GlassHeader } from "@/components/nav/GlassHeader";
 import { ProfileButton } from "@/components/profile/ProfileButton";
 import { BillboardHero } from "@/components/title/BillboardHero";
@@ -26,8 +27,15 @@ export default function HomeScreen() {
   const scope = useAccountScope();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { data: home, loading } = useHomeBootstrap(scope);
+  const { data: home, loading, error, refetch } = useHomeBootstrap(scope);
   const { items: continueItems } = useContinueWatching(scope);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    refetch(); // background re-fetch; updates `home` when it lands
+    setTimeout(() => setRefreshing(false), 1200);
+  }, [refetch]);
 
   const scrollY = useSharedValue(0);
   const onScroll = useAnimatedScrollHandler((e) => {
@@ -60,6 +68,7 @@ export default function HomeScreen() {
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: CONTENT_BOTTOM_INSET + insets.bottom }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} colors={[colors.accent]} />}
       >
         {hero ? (
           <BillboardHero
@@ -82,10 +91,27 @@ export default function HomeScreen() {
               <PosterRailSkeleton />
             </>
           ) : isEmpty ? (
-            <EmptyState title="Nothing here yet" subtitle="Pull to refresh once the catalog warms up." />
+            error && !getIsOnline() ? (
+              <EmptyState
+                title="You’re offline"
+                subtitle="Pull down to retry once you’re back online — your downloads are still available."
+                actionLabel="Go to Downloads"
+                onAction={() => router.push("/downloads")}
+              />
+            ) : error ? (
+              <EmptyState title="Couldn’t load the catalog" subtitle="Pull down to try again." />
+            ) : (
+              <EmptyState title="Nothing here yet" subtitle="Pull down to refresh once the catalog warms up." />
+            )
           ) : (
-            rails.map((rail) => (
-              <PosterRail key={rail.label} title={rail.label} items={rail.items} imageBase={imageBase} />
+            rails.map((rail, i) => (
+              <PosterRail
+                key={rail.label}
+                title={rail.label}
+                items={rail.items}
+                imageBase={imageBase}
+                priority={i === 0 ? "high" : undefined}
+              />
             ))
           )}
         </View>

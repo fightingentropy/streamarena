@@ -11,7 +11,17 @@ export function ErrorText({ children }: { children: string }) {
   );
 }
 
-export function EmptyState({ title, subtitle }: { title: string; subtitle?: string }) {
+export function EmptyState({
+  title,
+  subtitle,
+  actionLabel,
+  onAction,
+}: {
+  title: string;
+  subtitle?: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
   return (
     <View className="items-center px-8 py-16">
       <Text className="text-center text-base font-medium" style={{ color: colors.foreground }}>
@@ -21,6 +31,16 @@ export function EmptyState({ title, subtitle }: { title: string; subtitle?: stri
         <Text className="mt-2 text-center text-sm" style={{ color: colors.muted }}>
           {subtitle}
         </Text>
+      ) : null}
+      {actionLabel && onAction ? (
+        <PressableScale
+          onPress={onAction}
+          className="mt-5 rounded-full px-6 py-3"
+          style={{ backgroundColor: colors.accent }}
+          accessibilityLabel={actionLabel}
+        >
+          <Text className="font-semibold text-white">{actionLabel}</Text>
+        </PressableScale>
       ) : null}
     </View>
   );

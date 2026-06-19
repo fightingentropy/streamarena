@@ -16,6 +16,7 @@ export function PosterImage({
   transition = 200,
   recyclingKey,
   showPlaceholderIcon = true,
+  priority,
 }: {
   uri?: string | null;
   contentFit?: ImageContentFit;
@@ -23,6 +24,8 @@ export function PosterImage({
   transition?: number;
   recyclingKey?: string;
   showPlaceholderIcon?: boolean;
+  // expo-image fetch priority — set "high" for above-the-fold art (hero, first rail).
+  priority?: "low" | "normal" | "high";
 }) {
   const abs = uri ? toAbsoluteApiUrl(uri) : "";
   const [failed, setFailed] = useState(false);
@@ -44,6 +47,7 @@ export function PosterImage({
       transition={transition}
       recyclingKey={recyclingKey ?? abs}
       cachePolicy="memory-disk"
+      priority={priority}
       onError={() => setFailed(true)}
     />
   );

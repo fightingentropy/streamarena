@@ -58,6 +58,40 @@ function segId(url: string, ref: string): number {
   return id;
 }
 
+// Tiny LRU of recently-stripped segments keyed by segment id. A range probe followed by a
+// full GET — or a short backward seek — reuses the clean bytes instead of re-fetching from
+// the rate-limited, anti-bot-gated CDN (redundant fetches also raise the block risk). Kept
+// tight: TS segments are multi-MB and the device is memory-constrained.
+const SEG_CACHE_MAX = 3;
+const segCache = new Map<number, Uint8Array>();
+function segCacheGet(id: number): Uint8Array | undefined {
+  const v = segCache.get(id);
+  if (v !== undefined) {
+    segCache.delete(id); // refresh recency (most-recent stays at the end)
+    segCache.set(id, v);
+  }
+  return v;
+}
+function segCachePut(id: number, bytes: Uint8Array): void {
+  segCache.delete(id);
+  segCache.set(id, bytes);
+  while (segCache.size > SEG_CACHE_MAX) {
+    const oldest = segCache.keys().next().value;
+    if (oldest === undefined) break;
+    segCache.delete(oldest);
+  }
+}
+
+// Drop all per-session segment state. Called when a new master is built (a new title starts)
+// so the id table can't grow unbounded across a long session, and a new title's ids can't
+// collide with the previous title's cached bytes.
+function resetSegState(): void {
+  segTable.clear();
+  segIndex.clear();
+  segCache.clear();
+  segSeq = 0;
+}
+
 /** The running proxy port, or null if it hasn't started yet (callers fall back). */
 export function getStripProxyPort(): number | null {
   return serverPort;
@@ -81,7 +115,21 @@ export function ensureStripProxy(): Promise<number> {
 
 /** Build the master URL handed to the player: it hits the proxy, never the CDN. */
 export function stripProxyMasterUrl(port: number, masterAbsUrl: string, referer?: string): string {
+  // A new playback session starts here (decideSource calls this once before VLC issues any
+  // /m or /s request), so it's the safe point to drop the previous title's segment state.
+  resetSegState();
   return proxyUrl(port, "m", masterAbsUrl, referer || "");
+}
+
+/** Tear down the loopback server + segment state (dev: Metro reload; frees sockets/port). */
+export function stopStripProxy(): void {
+  try {
+    server?.close();
+  } catch {}
+  server = null;
+  serverPort = null;
+  starting = null;
+  resetSegState();
 }
 
 function listenWithRetry(port: number, triesLeft: number): Promise<number> {
@@ -174,7 +222,14 @@ async function serve(socket: TcpSock, path: string, range: string | null): Promi
       const playlist = rewritePlaylist(text, baseUrl, referer, serverPort as number);
       send(socket, 200, "OK", "application/vnd.apple.mpegurl", Buffer.from(playlist, "utf8"));
     } else if (url.pathname === "/s") {
-      const clean = stripPngPrefix(await fetchBytes(target, referer));
+      // Reuse a cached strip when the player range-probes then full-GETs the same segment
+      // (or seeks back into it), so the CDN is hit once per segment, not per request.
+      const cacheId = idStr !== null ? parseInt(idStr, 10) : NaN;
+      let clean = Number.isNaN(cacheId) ? undefined : segCacheGet(cacheId);
+      if (clean === undefined) {
+        clean = stripPngPrefix(await fetchBytes(target, referer));
+        if (!Number.isNaN(cacheId)) segCachePut(cacheId, clean);
+      }
       sendBytes(socket, "video/mp2t", clean, range);
     } else {
       sendText(socket, 404, "not found");
@@ -212,15 +267,54 @@ function fetchInit(u: string, referer: string): RequestInit {
   };
 }
 
+// These embed CDNs are flaky and anti-bot (Cloudflare 1010, transient 502/520, dead hangs).
+// A fetch with no timeout that the CDN accepts but never answers would hang the await in
+// serve() forever and, because requests are serialized per socket, block every later
+// pipelined request behind it. So bound every upstream fetch and retry transient failures
+// like a real browser/hls.js would. Playlists get a tighter budget than segments.
+const PLAYLIST_TIMEOUT_MS = 6000;
+const SEGMENT_TIMEOUT_MS = 10000;
+const FETCH_ATTEMPTS = 3;
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 1010]);
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function fetchWithTimeout(u: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    return await fetch(u, { ...init, signal: ac.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Fetch with a per-attempt timeout and bounded retries on transient network/HTTP failures.
+async function fetchUpstream(u: string, referer: string, timeoutMs: number, what: string): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < FETCH_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetchWithTimeout(u, fetchInit(u, referer), timeoutMs);
+      if (res.ok) return res;
+      lastErr = new Error(`${what} ${res.status}`);
+      if (!RETRYABLE_STATUS.has(res.status)) throw lastErr;
+    } catch (e) {
+      lastErr = e; // network error or abort (timeout) — retryable
+    }
+    if (attempt < FETCH_ATTEMPTS - 1) await delay(150 * (attempt + 1));
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(`${what} failed`);
+}
+
 async function fetchText(u: string, referer: string): Promise<string> {
-  const res = await fetch(u, fetchInit(u, referer));
-  if (!res.ok) throw new Error(`playlist ${res.status}`);
+  const res = await fetchUpstream(u, referer, PLAYLIST_TIMEOUT_MS, "playlist");
   return res.text();
 }
 
 async function fetchBytes(u: string, referer: string): Promise<Uint8Array> {
-  const res = await fetch(u, fetchInit(u, referer));
-  if (!res.ok) throw new Error(`segment ${res.status}`);
+  const res = await fetchUpstream(u, referer, SEGMENT_TIMEOUT_MS, "segment");
   return new Uint8Array(await res.arrayBuffer());
 }
 
@@ -364,9 +458,13 @@ function send(
       "",
       "",
     ].join("\r\n");
-  // Write the full response but keep the socket open for the next pipelined request.
+  // Write header then body as two writes (the socket is serialized behind `busy`, so order
+  // holds), keeping the socket open for the next pipelined request. Two writes avoid the
+  // extra Buffer.concat copy of a multi-MB segment; a playlist body is already a Buffer and
+  // is forwarded without a re-copy.
   try {
-    socket.write(Buffer.concat([Buffer.from(header, "latin1"), Buffer.from(body)]));
+    socket.write(Buffer.from(header, "latin1"));
+    if (body.length > 0) socket.write(Buffer.isBuffer(body) ? body : Buffer.from(body));
   } catch {
     try {
       socket.destroy();
@@ -377,22 +475,23 @@ function send(
 // .ts segments: honor a Range request (players sometimes probe/range) by slicing the
 // already-in-memory stripped buffer; otherwise return the whole clean segment.
 function sendBytes(socket: TcpSock, contentType: string, bytes: Uint8Array, range: string | null): void {
-  const full = Buffer.from(bytes);
+  // Operate on the stripped buffer directly; a Range slice is a view (no copy) and send()
+  // does the single unavoidable copy when handing it to the native socket.
   if (range) {
     const m = /bytes=(\d+)-(\d*)/.exec(range);
     if (m) {
       const start = parseInt(m[1], 10);
-      const end = m[2] ? Math.min(parseInt(m[2], 10), full.length - 1) : full.length - 1;
+      const end = m[2] ? Math.min(parseInt(m[2], 10), bytes.length - 1) : bytes.length - 1;
       if (start <= end) {
-        send(socket, 206, "Partial Content", contentType, full.subarray(start, end + 1), [
-          `Content-Range: bytes ${start}-${end}/${full.length}`,
+        send(socket, 206, "Partial Content", contentType, bytes.subarray(start, end + 1), [
+          `Content-Range: bytes ${start}-${end}/${bytes.length}`,
           "Accept-Ranges: bytes",
         ]);
         return;
       }
     }
   }
-  send(socket, 200, "OK", contentType, full, ["Accept-Ranges: bytes"]);
+  send(socket, 200, "OK", contentType, bytes, ["Accept-Ranges: bytes"]);
 }
 
 function sendText(socket: TcpSock, status: number, message: string): void {

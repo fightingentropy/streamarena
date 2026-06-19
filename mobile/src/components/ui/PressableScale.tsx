@@ -36,6 +36,11 @@ export function PressableScale({ children, scaleTo = 0.985, style, onPressIn, on
     );
   }
 
+  // NOTE: the press scale MUST go through a style *array* (`[{transform}, style]`), not a
+  // Pressable style *function* (`({pressed}) => [...]`). NativeWind's className interop on
+  // this component can't merge with a style function and silently drops the styling (the
+  // Play/Info hero pills lose their background). The per-tap setState re-render is the price
+  // of keeping className working here.
   return (
     <Pressable
       {...props}

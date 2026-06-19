@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { FlatList, Text, useWindowDimensions, View } from "react-native";
+import { useCallback, useEffect, useMemo } from "react";
+import { FlatList, type ListRenderItemInfo, Text, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { PosterCard } from "@/components/title/PosterCard";
 import { ContinueWatchingRail } from "@/components/title/ContinueWatchingCard";
@@ -31,7 +31,14 @@ export default function MyListScreen() {
     useMyListStore.getState().hydrate(accountScope);
   }, [accountScope]);
 
-  const titles = items.map(myListItemToTitle).filter((t) => t.id);
+  // `items` is a stable Zustand slice (changes only on real mutation), so memoizing keeps a
+  // stable `data` identity for FlatList — no re-diff/re-render of rows on unrelated renders.
+  const titles = useMemo(() => items.map(myListItemToTitle).filter((t) => t.id), [items]);
+  const keyExtractor = useCallback((t: (typeof titles)[number]) => `${t.mediaType}-${t.id}`, []);
+  const renderItem = useCallback(
+    ({ item }: ListRenderItemInfo<(typeof titles)[number]>) => <PosterCard title={item} width={itemWidth} />,
+    [itemWidth],
+  );
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background, paddingTop: insets.top + 8 }}>
@@ -50,7 +57,7 @@ export default function MyListScreen() {
       ) : (
         <FlatList
           data={titles}
-          keyExtractor={(t) => `${t.mediaType}-${t.id}`}
+          keyExtractor={keyExtractor}
           numColumns={COLS}
           columnWrapperStyle={{ gap: GAP, paddingHorizontal: H_PADDING }}
           contentContainerStyle={{ gap: GAP, paddingTop: 2, paddingBottom: CONTENT_BOTTOM_INSET + insets.bottom }}
@@ -72,7 +79,7 @@ export default function MyListScreen() {
               </Text>
             </View>
           }
-          renderItem={({ item }) => <PosterCard title={item} width={itemWidth} />}
+          renderItem={renderItem}
         />
       )}
     </View>

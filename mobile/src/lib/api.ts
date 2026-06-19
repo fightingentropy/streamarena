@@ -408,5 +408,10 @@ export function useApiData<T>(
   useEffect(() => startLoad(false), [startLoad]);
   useEffect(() => on(API_CACHE_CLEARED_EVENT, () => startLoad(false)), [startLoad]);
 
-  return { data, loading, error };
+  // Background re-fetch that keeps the current data visible (for pull-to-refresh / retry).
+  const refetch = useCallback(() => {
+    startLoad(true);
+  }, [startLoad]);
+
+  return { data, loading, error, refetch };
 }

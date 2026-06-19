@@ -110,7 +110,7 @@ type PlayerState = {
   onLoad: (duration: number) => void;
   setProgress: (position: number, duration: number) => void;
   onBuffer: (buffering: boolean) => void;
-  onEnd: () => void;
+  onEnd: (info?: { fraction?: number }) => void;
   onError: (message?: string) => void;
   onStall: () => void;
   play: () => void;
@@ -201,6 +201,14 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     const s = get();
     if (s.resumeApplied || !s.loaded || s.resumeFor !== s.request) return;
     const target = s.resumeSeconds;
+    // If playback has already advanced meaningfully past the saved point — e.g. a slow
+    // continue-watching read resolves after the user has manually scrubbed ahead — applying
+    // it now would yank them backward. Skip it. (The fallback re-seek paths set
+    // resumeSeconds≈position, so position ≈ target there and this guard doesn't fire.)
+    if (s.position > target + 5) {
+      set({ resumeApplied: true });
+      return;
+    }
     const fits = target > 5 && (s.duration <= 0 || target < s.duration - 10);
     if (fits) {
       seekImpl?.(target);
@@ -512,7 +520,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       set({ buffering });
     },
 
-    onEnd() {
+    onEnd(info) {
       if (get().status === "idle") return;
       // A live stream "ending" means the feed dropped — walk to the next source.
       if (get().live) {
@@ -524,7 +532,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       // A genuine finish lands near the end. Some dead/empty HLS embeds fire onEnd
       // immediately at position ~0 — treat that as a failed source (fallback walk),
       // never as "finished", so TV autoplay can't rapidly skip whole episodes.
-      const realEnd = duration > 0 ? position >= duration * 0.85 : position > 60;
+      // The VLC path supplies a duration-independent 0..1 finish fraction (high-water mark
+      // over playback); trust >= 0.85 as a real finish even when media length stayed 0,
+      // which the position/duration heuristic alone would misread on those streams.
+      const frac = info?.fraction;
+      const realEnd =
+        (frac != null && frac >= 0.85) || (duration > 0 ? position >= duration * 0.85 : position > 60);
       if (realEnd) {
         reportNow(position, duration, true);
         // Stop reporting so the unmount's close()→reportNow can't re-create the

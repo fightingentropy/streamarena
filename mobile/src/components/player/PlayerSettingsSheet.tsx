@@ -51,6 +51,10 @@ export function PlayerSettingsSheet({
   const selectedSubtitle = usePlayerStore((s) => s.selectedSubtitle);
   const selectedAudio = usePlayerStore((s) => s.selectedAudioStreamIndex);
   const selectedSourceHash = usePlayerStore((s) => s.selectedSourceHash);
+  // The strip-proxy embed path plays through libVLC, which has no working sideloaded-subtitle
+  // wiring yet and whose audio-switch would force the title onto the anti-bot-blocked backend
+  // transcode (a dead source). Suppress both controls so the sheet never offers a broken pick.
+  const isVlc = usePlayerStore((s) => s.source?.engine === "vlc");
 
   const audioTracks = resolved?.tracks?.audioTracks ?? [];
   const [sources, setSources] = useState<SourceSummary[] | null>(null);
@@ -78,22 +82,28 @@ export function PlayerSettingsSheet({
         <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "800", marginTop: 6 }}>Playback settings</Text>
 
         <SectionTitle>Subtitles</SectionTitle>
-        <Row label="Off" active={selectedSubtitle == null} onPress={() => { selectionAsync(); usePlayerStore.getState().setSubtitle(null); }} />
-        {textTracks.length === 0 ? (
-          <Text style={{ color: colors.muted, fontSize: 13, paddingVertical: 6 }}>No subtitles for this source.</Text>
+        {isVlc ? (
+          <Text style={{ color: colors.muted, fontSize: 13, paddingVertical: 6 }}>Subtitles aren’t available for this source yet.</Text>
         ) : (
-          textTracks.map((t, i) => (
-            <Row
-              key={`${t.streamIndex}-${i}`}
-              label={t.title}
-              sublabel={t.language !== "und" ? t.language.toUpperCase() : undefined}
-              active={selectedSubtitle === i}
-              onPress={() => { selectionAsync(); usePlayerStore.getState().setSubtitle(i); }}
-            />
-          ))
+          <>
+            <Row label="Off" active={selectedSubtitle == null} onPress={() => { selectionAsync(); usePlayerStore.getState().setSubtitle(null); }} />
+            {textTracks.length === 0 ? (
+              <Text style={{ color: colors.muted, fontSize: 13, paddingVertical: 6 }}>No subtitles for this source.</Text>
+            ) : (
+              textTracks.map((t, i) => (
+                <Row
+                  key={`${t.streamIndex}-${i}`}
+                  label={t.title}
+                  sublabel={t.language !== "und" ? t.language.toUpperCase() : undefined}
+                  active={selectedSubtitle === i}
+                  onPress={() => { selectionAsync(); usePlayerStore.getState().setSubtitle(i); }}
+                />
+              ))
+            )}
+          </>
         )}
 
-        {audioTracks.length > 1 ? (
+        {!isVlc && audioTracks.length > 1 ? (
           <>
             <SectionTitle>Audio</SectionTitle>
             {audioTracks.map((a, i) => {

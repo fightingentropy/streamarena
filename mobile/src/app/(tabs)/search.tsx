@@ -74,10 +74,11 @@ export default function SearchScreen() {
             autoCapitalize="none"
             autoCorrect={false}
             returnKeyType="search"
+            accessibilityLabel="Search movies and shows"
             style={{ flex: 1, color: colors.foreground, fontSize: 16 }}
           />
           {query.length > 0 ? (
-            <PressableScale onPress={() => setQuery("")} hitSlop={8}>
+            <PressableScale onPress={() => setQuery("")} hitSlop={8} accessibilityLabel="Clear search">
               <X size={18} color={colors.muted} />
             </PressableScale>
           ) : null}

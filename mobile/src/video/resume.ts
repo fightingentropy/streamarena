@@ -13,7 +13,9 @@ export async function loadResumeSeconds(
   try {
     const data = await getJson<{ entries: ContinueWatchingItem[] }>(
       withAccountScope("/api/user/continue-watching", scope),
-      { signal },
+      // Short timeout: a stuck continue-watching read must give up (start from the top)
+      // rather than fire a stale resume seek up to the default 45s later.
+      { signal, timeoutMs: 8000 },
     );
     const entry = (data.entries ?? []).find((e) => e.sourceIdentity === identity);
     const seconds = Number(entry?.resumeSeconds);

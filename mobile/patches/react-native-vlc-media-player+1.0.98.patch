@@ -1,0 +1,67 @@
+diff --git a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.h b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.h
+index e027268..b6d2990 100755
+--- a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.h
++++ b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.h
+@@ -27,6 +27,7 @@
+ 
+ - (instancetype)initWithEventDispatcher:(RCTEventDispatcher *)eventDispatcher NS_DESIGNATED_INITIALIZER;
+ - (void)setMuted:(BOOL)value;
++- (void)setVolume:(float)value;
+ - (void)startRecording:(NSString*)path;
+ - (void)stopRecording;
+ - (void)stopPlayer;
+diff --git a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.m b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.m
+index 54e29ee..0adf0aa 100755
+--- a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.m
++++ b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.m
+@@ -237,7 +237,17 @@ - (void)mediaPlayerStateChanged:(NSNotification *)aNotification
+                 break;
+             case VLCMediaPlayerStateError:
+                 NSLog(@"VLCMediaPlayerStateError %i", _player.numberOfAudioTracks);
+-                // This callback doesn't have any data about the error, we need to rely on the error dialog
++                // No structured error payload is exposed here (only the VLCDialogProvider
++                // surfaces auth/cert dialogs), but a demux/decode/network failure mid-stream
++                // MUST reach JS — otherwise the player freezes on the last frame and the
++                // fallback walk never runs. Emit onVideoError before tearing down.
++                if (self.onVideoError) {
++                    self.onVideoError(@{
++                        @"target": self.reactTag,
++                        @"title": [NSNull null],
++                        @"message": @"Playback error"
++                    });
++                }
+                 [self _release];
+                 break;
+             default:
+@@ -430,6 +440,16 @@ - (void)setMuted:(BOOL)value
+     }
+ }
+ 
++- (void)setVolume:(float)value
++{
++    if (_player) {
++        // MobileVLCKit's VLCAudio.volume is an int where 100 == unity (200 == +6dB boost).
++        // Map the JS store's 0..1 value to 0..100 so the gesture's full travel equals a
++        // normal 0–100% range, matching the on-screen volume HUD.
++        [[_player audio] setVolume:(int)roundf(MAX(0.0f, MIN(1.0f, value)) * 100.0f)];
++    }
++}
++
+ #pragma mark - VLCCustomDialogRendererProtocol
+ 
+ - (void)showErrorWithTitle:(NSString *)title message:(NSString *)message {
+diff --git a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayerManager.m b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayerManager.m
+index 971e823..d735e04 100755
+--- a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayerManager.m
++++ b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayerManager.m
+@@ -46,6 +46,10 @@ - (dispatch_queue_t)methodQueue
+     BOOL isMuted = [RCTConvert BOOL:json];
+     [view setMuted:isMuted];
+ };
++RCT_CUSTOM_VIEW_PROPERTY(volume, float, RCTVLCPlayer)
++{
++    [view setVolume:[RCTConvert float:json]];
++};
+ RCT_EXPORT_VIEW_PROPERTY(audioTrack, int);
+ RCT_EXPORT_VIEW_PROPERTY(textTrack, int);
+ RCT_EXPORT_VIEW_PROPERTY(autoplay, BOOL);

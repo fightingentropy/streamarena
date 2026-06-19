@@ -160,10 +160,11 @@ export default function WatchScreen() {
               ref={videoRef as RefObject<VlcVideoRef>}
               uri={source.uri}
               paused={paused}
+              volume={volume}
               onLoad={(dur) => usePlayerStore.getState().onLoad(dur)}
               onProgress={(cur, dur) => usePlayerStore.getState().setProgress(cur, dur)}
               onBuffer={(b) => usePlayerStore.getState().onBuffer(b)}
-              onEnd={() => usePlayerStore.getState().onEnd()}
+              onEnd={(info) => usePlayerStore.getState().onEnd(info)}
               onError={(msg) => usePlayerStore.getState().onError(msg)}
             />
           ) : (

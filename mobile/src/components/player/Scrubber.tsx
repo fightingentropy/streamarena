@@ -78,6 +78,17 @@ export function Scrubber({ position, duration, onSeek, onScrubbing, live = false
         <View
           style={{ height: ROW_H, justifyContent: "center" }}
           onLayout={(e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width)}
+          accessible
+          accessibilityRole="adjustable"
+          accessibilityLabel="Seek"
+          accessibilityValue={{ min: 0, max: Math.round(max), now: Math.round(value), text: `${formatTime(value)} of ${formatTime(max)}` }}
+          accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
+          onAccessibilityAction={(e) => {
+            if (max <= 0) return; // unknown/live duration — nothing to step through
+            const step = Math.max(5, max * 0.05);
+            if (e.nativeEvent.actionName === "increment") onSeek(Math.min(max, value + step));
+            else if (e.nativeEvent.actionName === "decrement") onSeek(Math.max(0, value - step));
+          }}
         >
           <View
             style={{
@@ -114,7 +125,12 @@ export function Scrubber({ position, duration, onSeek, onScrubbing, live = false
           />
         </View>
       </GestureDetector>
-      <View className="flex-row justify-between" style={{ marginTop: 4 }}>
+      <View
+        className="flex-row justify-between"
+        style={{ marginTop: 4 }}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+      >
         <Text style={{ color: colors.foreground, fontSize: 12, fontVariant: ["tabular-nums"] }}>{formatTime(value)}</Text>
         <Text style={{ color: colors.muted, fontSize: 12, fontVariant: ["tabular-nums"] }}>
           {max > 0 ? `-${formatTime(Math.max(0, max - value))}` : formatTime(max)}
