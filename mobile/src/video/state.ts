@@ -44,7 +44,21 @@ const LIVE_HEALTHY_PLAYBACK_SECONDS = 6;
 // Hard failures (a 502 segment -> onError) still skip fast; this only backstops a source
 // that loads its playlist but never produces video.
 const STALL_FALLBACK_MS = 15000;
+// A source still buffering when the fuse fires is loading, not hung: a cold transcode
+// seeking to a deep resume offset (the exact case the web player's progress-aware switch
+// watchdog protects — src-ui/pages/player.js) can take longer than the base window to render
+// its first frame. Once a source has shown buffering activity, grant a bounded extra budget
+// before walking, so a working-but-slow source isn't abandoned. Capped so a source that
+// loads its playlist but never produces a frame is still walked (~30s worst case). VLC's
+// bridge exposes no buffer-% stream, so "is it still loading" can only be "did it ever
+// buffer" — hence a bounded extension rather than the web's re-arm-on-each-byte.
+const STALL_EXTENSION_MS = 7500;
+const MAX_STALL_EXTENSIONS = 2;
 let stallTimer: ReturnType<typeof setTimeout> | null = null;
+// Set once per armed window when VLC reports buffering; the only pre-first-frame "still
+// loading" signal the engine surfaces. Reset on a fresh arm (new source), not on extension.
+let sawBufferingSinceArm = false;
+let stallExtensions = 0;
 // Baseline for detecting *real* playback advancement (position actually climbing), which
 // is the only trustworthy "this source works" signal. onLoad merely means the playlist
 // parsed — a blocked/stego source still reaches onLoad and then sits frozen at 0:00. Reset
@@ -59,7 +73,16 @@ function clearStallTimer() {
 function armStallTimer() {
   clearStallTimer();
   lastProgressSample = null;
+  sawBufferingSinceArm = false;
+  stallExtensions = 0;
   stallTimer = setTimeout(() => usePlayerStore.getState().onStall(), STALL_FALLBACK_MS);
+}
+// Re-arm for a shorter follow-on window after a stall fired while the source was still
+// loading. Keeps the progress baseline (lastProgressSample) and the buffering flag so real
+// advancement during the extension still clears via setProgress.
+function extendStallTimer() {
+  clearStallTimer();
+  stallTimer = setTimeout(() => usePlayerStore.getState().onStall(), STALL_EXTENSION_MS);
 }
 
 type ResolveExtra = { refresh?: boolean; audioStreamIndex?: number; sourceHash?: string };
@@ -517,6 +540,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     },
 
     onBuffer(buffering) {
+      // Buffering while the stall watchdog is armed (VOD startup) is the "still loading"
+      // signal that lets onStall grant an extension instead of walking a slow-but-working
+      // source. Sticky for the window so a single transition still counts.
+      if (buffering && stallTimer != null && !get().live) sawBufferingSinceArm = true;
       set({ buffering });
     },
 
@@ -598,6 +625,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       // we must escape. The timer only survives to here when no real progress happened.
       if (s.live || !s.request || s.paused) return;
       if (s.status === "idle" || s.status === "ended" || s.status === "error") return;
+      // Showed buffering activity and budget remains? It's a slow start, not a hung source —
+      // extend instead of walking, so a cold transcode spinning up to a deep resume offset
+      // isn't abandoned. A frozen source that never buffered (or has run out of extensions)
+      // falls through and is walked.
+      if (sawBufferingSinceArm && stallExtensions < MAX_STALL_EXTENSIONS) {
+        stallExtensions += 1;
+        extendStallTimer();
+        return;
+      }
       clearStallTimer();
       reportPlaybackError("Source stalled before playback.");
       void advanceToNextServer("This title's servers aren't responding right now.");
