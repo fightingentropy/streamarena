@@ -35,6 +35,9 @@ pub struct Config {
     pub remux_max_concurrent: usize,
     pub remux_queue_timeout_ms: u64,
     pub remux_process_timeout_seconds: u64,
+    pub export_max_concurrent: usize,
+    pub export_queue_timeout_ms: u64,
+    pub export_process_timeout_seconds: u64,
     pub resolver_max_concurrent: usize,
     pub resolver_queue_timeout_ms: u64,
     pub sports_resolver_max_concurrent: usize,
@@ -96,6 +99,18 @@ impl Config {
         let remux_process_timeout_seconds = parse_u64_env(
             "REMUX_PROCESS_TIMEOUT_SECONDS",
             4 * 60 * 60,
+            60,
+            24 * 60 * 60,
+        );
+        // Offline export (`/api/download/export.mp4`) gets its own, longer budget and a
+        // separate concurrency pool so a slow full-file faststart copy never holds a
+        // remux permit hostage from live playback.
+        let export_max_concurrent = parse_usize_env("EXPORT_MAX_CONCURRENT", 2, 1, 8);
+        let export_queue_timeout_ms =
+            parse_u64_env("EXPORT_QUEUE_TIMEOUT_MS", 5_000, 100, 120_000);
+        let export_process_timeout_seconds = parse_u64_env(
+            "EXPORT_PROCESS_TIMEOUT_SECONDS",
+            6 * 60 * 60,
             60,
             24 * 60 * 60,
         );
@@ -170,6 +185,9 @@ impl Config {
             remux_max_concurrent,
             remux_queue_timeout_ms,
             remux_process_timeout_seconds,
+            export_max_concurrent,
+            export_queue_timeout_ms,
+            export_process_timeout_seconds,
             resolver_max_concurrent,
             resolver_queue_timeout_ms,
             sports_resolver_max_concurrent,

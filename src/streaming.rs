@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
-use axum::http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
-use axum::http::{Response, StatusCode};
+use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
+use axum::http::{Response, StatusCode, Uri};
 use dashmap::DashMap;
 use futures_util::stream;
 use serde::Serialize;
@@ -16,6 +16,7 @@ use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::{Instant as TokioInstant, sleep, sleep_until, timeout};
 use tokio_util::io::ReaderStream;
+use url::Url;
 use url::form_urlencoded::byte_serialize;
 
 use crate::config::Config;
@@ -72,6 +73,7 @@ pub struct StreamingService {
     remux_metrics: Arc<RemuxMetrics>,
     remux_active_jobs: Arc<DashMap<u64, i64>>,
     remux_next_job_id: Arc<AtomicU64>,
+    export_permits: Arc<Semaphore>,
 }
 
 #[derive(Default)]
@@ -126,6 +128,18 @@ struct RemuxStreamState {
     child: Child,
     buffer: Vec<u8>,
     guard: RemuxStreamGuard,
+    deadline: TokioInstant,
+    timeout_seconds: u64,
+}
+
+// Offline export streaming state. Simpler than the remux variant — no per-job metrics
+// guard, just the permit held for the lifetime of the stream and a single absolute
+// deadline. The permit releases on drop (including client disconnect via kill_on_drop).
+struct ExportStreamState {
+    stdout: ChildStdout,
+    child: Child,
+    buffer: Vec<u8>,
+    _permit: OwnedSemaphorePermit,
     deadline: TokioInstant,
     timeout_seconds: u64,
 }
@@ -210,6 +224,7 @@ struct VideoEncodeConfig {
 impl StreamingService {
     pub fn new(config: Config, runtime: RuntimeServices, media: MediaService) -> Self {
         let remux_max_concurrent = config.remux_max_concurrent;
+        let export_max_concurrent = config.export_max_concurrent;
         let hls_max_transcode_jobs = config.hls_max_transcode_jobs;
         let hls_max_segment_renders = config.hls_max_segment_renders;
         Self {
@@ -226,6 +241,7 @@ impl StreamingService {
             remux_metrics: Arc::new(RemuxMetrics::default()),
             remux_active_jobs: Arc::new(DashMap::new()),
             remux_next_job_id: Arc::new(AtomicU64::new(1)),
+            export_permits: Arc::new(Semaphore::new(export_max_concurrent)),
         }
     }
 
@@ -737,6 +753,152 @@ impl StreamingService {
                 self.config.remux_hwaccel_mode.clone(),
             )
             .header("X-Remux-Hwaccel-Effective", effective_remux_hwaccel_mode)
+            .body(Body::from_stream(stream))
+            .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    /// Stream a downloadable MP4 for offline viewing: copy the source video, normalize
+    /// audio to stereo AAC, and emit a fragmented MP4 (`frag_keyframe+empty_moov`) live to
+    /// the client. Fragmented (not faststart) is deliberate: bytes flow immediately, so a
+    /// long copy never blanks past the client's idle timeout, and the resulting file still
+    /// seeks fine in AVPlayer. Runs under a separate timeout + permit pool so a long
+    /// download never starves live remuxes. `Content-Disposition: attachment` marks it a
+    /// file. (No Range/resume — a foreground download that drops restarts; acceptable v1.)
+    pub async fn create_export_response(
+        &self,
+        input: &str,
+        audio_stream_index: i64,
+        duration_seconds: i64,
+        is_head: bool,
+    ) -> AppResult<Response<Body>> {
+        // Two input shapes resolve to an ffmpeg input:
+        //  • Our own signed live-HLS proxy URL — the form embed sources resolve to. ffmpeg
+        //    reads the proxy stream over localhost HTTP and remuxes HLS→MP4. The signature is
+        //    validated first (so ffmpeg only ever fetches a URL our resolver minted), and the
+        //    host is forced to 127.0.0.1 so a crafted `input` can't redirect the fetch — the
+        //    proxy itself already SSRF-gates the upstream embed, so there's no new surface.
+        //  • A direct file / real-debrid URL — SSRF-validated by `resolve_transcode_input`,
+        //    then stream-copied.
+        let (ffmpeg_input, is_hls, filename_source) =
+            if let Some(path_query) = live_hls_proxy_path_query(input) {
+                let uri: Uri = path_query
+                    .parse()
+                    .map_err(|_| ApiError::bad_request("Invalid download source."))?;
+                if !crate::live::is_signed_live_hls_request(
+                    &self.config.live_hls_proxy_secret,
+                    &uri,
+                ) {
+                    return Err(ApiError::bad_request("Invalid or unsigned download source."));
+                }
+                let url = format!("http://127.0.0.1:{}{}", self.config.port, path_query);
+                (url, true, "download.mp4".to_owned())
+            } else {
+                let source = self.media.resolve_transcode_input(input)?;
+                let name = source.clone();
+                (source, false, name)
+            };
+        let disposition = format!(
+            "attachment; filename=\"{}\"",
+            export_download_filename(&filename_source)
+        );
+
+        // HEAD: cheap existence/type probe — return headers without spawning ffmpeg.
+        if is_head {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "video/mp4")
+                .header(CACHE_CONTROL, "no-store")
+                .header(CONTENT_DISPOSITION, disposition)
+                .body(Body::empty())
+                .map_err(|error| ApiError::internal(error.to_string()));
+        }
+
+        let permit = match timeout(
+            Duration::from_millis(self.config.export_queue_timeout_ms),
+            self.export_permits.clone().acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => return Err(ApiError::internal("Export limiter is closed.")),
+            Err(_) => {
+                return Err(ApiError::too_many_requests(
+                    "Server is busy preparing another download. Please retry in a moment.",
+                ));
+            }
+        };
+
+        let safe_audio_stream_index = if audio_stream_index >= 0 {
+            audio_stream_index
+        } else {
+            -1
+        };
+        let safe_duration_seconds = duration_seconds.max(0);
+        let args = build_export_ffmpeg_args(
+            &ffmpeg_input,
+            is_hls,
+            safe_audio_stream_index,
+            safe_duration_seconds,
+        );
+
+        let mut command = Command::new("ffmpeg");
+        command
+            .args(args.iter())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .map_err(|error| ApiError::internal(format!("Failed to start ffmpeg: {error}")))?;
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => return Err(ApiError::internal("Failed to capture ffmpeg stdout.")),
+        };
+        if let Some(stderr) = child.stderr.take() {
+            spawn_bounded_ffmpeg_stderr_logger("export", stderr, None);
+        }
+
+        let timeout_seconds = self.config.export_process_timeout_seconds;
+        let stream = stream::try_unfold(
+            ExportStreamState {
+                stdout,
+                child,
+                buffer: vec![0_u8; 64 * 1024],
+                _permit: permit,
+                deadline: TokioInstant::now() + Duration::from_secs(timeout_seconds),
+                timeout_seconds,
+            },
+            |mut state| async move {
+                let read = tokio::select! {
+                    read_result = state.stdout.read(&mut state.buffer) => match read_result {
+                        Ok(read) => read,
+                        Err(error) => return Err(error),
+                    },
+                    _ = sleep_until(state.deadline) => {
+                        let _ = state.child.kill().await;
+                        let _ = state.child.wait().await;
+                        eprintln!("[export] ffmpeg timed out after {} seconds", state.timeout_seconds);
+                        return Ok(None);
+                    }
+                };
+                if read == 0 {
+                    let status = state.child.wait().await?;
+                    if !status.success() {
+                        eprintln!("[export] ffmpeg exited with code {}", status.code().unwrap_or(-1));
+                    }
+                    return Ok(None);
+                }
+                let bytes = Bytes::copy_from_slice(&state.buffer[..read]);
+                Ok::<_, std::io::Error>(Some((bytes, state)))
+            },
+        );
+
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "video/mp4")
+            .header(CACHE_CONTROL, "no-store")
+            .header(CONTENT_DISPOSITION, disposition)
             .body(Body::from_stream(stream))
             .map_err(|error| ApiError::internal(error.to_string()))
     }
@@ -1914,6 +2076,130 @@ impl Drop for HlsSegmentRenderGuard {
                 .segment_render_failed
                 .fetch_add(1, Ordering::Relaxed);
         }
+    }
+}
+
+// Build the ffmpeg args for an offline export: copy the source video (H.264/HEVC
+// pass-through — fast, exact quality), normalize audio to stereo AAC for universal
+// playback, drop subtitle + data streams (subtitles ship as sidecar VTT), and emit a
+// fragmented MP4 streamed to stdout. NOTE: no `+discardcorrupt` (unlike the live remux
+// recipe) — for a download we must copy every video packet faithfully, not silently
+// drop "corrupt" ones. A non-MP4-compatible video codec makes the copy fail, surfaced
+// to the client as a non-downloadable source.
+/// If `input` is our own live-HLS proxy URL (the form embed sources resolve to), return its
+/// `/api/live/hls.m3u8?…` path+query so the export can hand it to ffmpeg as an HLS input.
+/// Accepts both the relative path and an absolute URL to any host — the host is discarded
+/// (the export always re-issues the request against localhost), so this can't be abused to
+/// point ffmpeg elsewhere. Returns None for every other input (direct files / real-debrid).
+fn live_hls_proxy_path_query(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.starts_with("/api/live/hls.m3u8") {
+        return Some(trimmed.to_owned());
+    }
+    let url = Url::parse(trimmed).ok()?;
+    if url.path() != "/api/live/hls.m3u8" {
+        return None;
+    }
+    Some(match url.query() {
+        Some(query) => format!("/api/live/hls.m3u8?{query}"),
+        None => "/api/live/hls.m3u8".to_owned(),
+    })
+}
+
+fn build_export_ffmpeg_args(
+    source: &str,
+    is_hls: bool,
+    audio_stream_index: i64,
+    duration_seconds: i64,
+) -> Vec<String> {
+    let mut args = vec!["-v".to_owned(), "error".to_owned()];
+    // HLS input is our localhost proxy: ffmpeg gates segment protocols behind an explicit
+    // whitelist, and http reconnect keeps a long VOD copy alive across transient blips.
+    if is_hls {
+        args.extend([
+            "-protocol_whitelist".to_owned(),
+            "file,http,https,tcp,tls,crypto".to_owned(),
+            // Proxied segment URLs carry a query string (…/seg-1.ts?auth=…&vod=1) that masks
+            // the .ts extension, and some CDNs use extensionless object keys. ffmpeg 7+ gates
+            // both behind extension_picky; disabling it (plus allow-all) accepts the same
+            // segments AVPlayer streams. Stego sources (PNG-wrapped) still legitimately fail.
+            "-extension_picky".to_owned(),
+            "0".to_owned(),
+            "-allowed_extensions".to_owned(),
+            "ALL".to_owned(),
+            "-reconnect".to_owned(),
+            "1".to_owned(),
+            "-reconnect_streamed".to_owned(),
+            "1".to_owned(),
+            "-reconnect_delay_max".to_owned(),
+            "5".to_owned(),
+        ]);
+    }
+    args.extend([
+        "-fflags".to_owned(),
+        "+genpts".to_owned(),
+        "-analyzeduration".to_owned(),
+        "100M".to_owned(),
+        "-probesize".to_owned(),
+        "100M".to_owned(),
+        "-i".to_owned(),
+        source.to_owned(),
+    ]);
+    // Optional duration cap (clip exports / fast verification); 0 means the whole file.
+    if duration_seconds > 0 {
+        args.push("-t".to_owned());
+        args.push(duration_seconds.to_string());
+    }
+    args.push("-map".to_owned());
+    args.push("0:v:0".to_owned());
+    args.push("-map".to_owned());
+    args.push(if audio_stream_index >= 0 {
+        format!("0:{audio_stream_index}?")
+    } else {
+        "0:a:0?".to_owned()
+    });
+    args.extend([
+        "-c:v".to_owned(),
+        "copy".to_owned(),
+        "-c:a".to_owned(),
+        "aac".to_owned(),
+        "-ac".to_owned(),
+        "2".to_owned(),
+        "-b:a".to_owned(),
+        "192k".to_owned(),
+        "-sn".to_owned(),
+        "-dn".to_owned(),
+        "-movflags".to_owned(),
+        "frag_keyframe+empty_moov+default_base_moof".to_owned(),
+        "-frag_duration".to_owned(),
+        "5000000".to_owned(),
+        "-f".to_owned(),
+        "mp4".to_owned(),
+        "pipe:1".to_owned(),
+    ]);
+    args
+}
+
+// Derive a safe `attachment` filename from the source basename (sanitized to ASCII).
+fn export_download_filename(source: &str) -> String {
+    let trimmed = source.split(['?', '#']).next().unwrap_or(source);
+    let base = trimmed.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    let stem = base.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(base);
+    let safe: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe = safe.trim();
+    if safe.is_empty() {
+        "download.mp4".to_owned()
+    } else {
+        format!("{safe}.mp4")
     }
 }
 

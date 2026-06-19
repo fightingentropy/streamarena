@@ -393,6 +393,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/local-cache/stream", any(local_cache_stream_handler))
         .route("/api/remux", any(remux_handler))
+        .route("/api/download/export.mp4", any(download_export_handler))
         .route("/api/media/tracks", any(media_tracks_handler))
         .route("/api/subtitles.vtt", any(subtitles_vtt_handler))
         .route(
@@ -2225,6 +2226,37 @@ pub async fn remux_handler(
             manual_audio_sync_ms,
             &preferred_video_mode,
         )
+        .await
+}
+
+// Offline export: a fragmented MP4 of the chosen source + audio language, streamed live
+// for offline download. Cookie-authenticated via `api_auth_middleware` like every other
+// `protected_api` route.
+pub async fn download_export_handler(
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET && method != Method::HEAD {
+        return Err(ApiError::method_not_allowed("Method not allowed."));
+    }
+    let params = query_pairs(uri.query().unwrap_or_default());
+    let input = params.get("input").cloned().unwrap_or_default();
+    if input.trim().is_empty() {
+        return Err(ApiError::bad_request("Missing input query parameter."));
+    }
+    let audio_stream_index = params
+        .get("audioStream")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(-1);
+    // Optional duration cap (clip exports / fast verification); omitted means the whole title.
+    let duration_seconds = params
+        .get("duration")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or_default();
+    state
+        .streaming
+        .create_export_response(&input, audio_stream_index, duration_seconds, method == Method::HEAD)
         .await
 }
 
