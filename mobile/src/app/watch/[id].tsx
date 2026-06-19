@@ -1,4 +1,4 @@
-import { type ComponentProps, useEffect, useMemo, useRef } from "react";
+import { type ComponentProps, type RefObject, useEffect, useMemo, useRef } from "react";
 import { StatusBar, StyleSheet, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
@@ -10,6 +10,7 @@ import Video, {
   SelectedTrackType,
   type VideoRef,
 } from "react-native-video";
+import { VlcVideo, type VlcVideoRef } from "@/video/VlcVideo";
 import { PlayerGestureLayer } from "@/components/player/PlayerGestureLayer";
 import { VideoControls } from "@/components/player/VideoControls";
 import { useAccountScopeOrNull } from "@/lib/auth";
@@ -49,7 +50,7 @@ export default function WatchScreen() {
   }>();
   const router = useRouter();
   const scope = useAccountScopeOrNull();
-  const videoRef = useRef<VideoRef>(null);
+  const videoRef = useRef<VideoRef | VlcVideoRef | null>(null);
   const isLive = params.live === "1";
 
   const request = useMemo<PlayRequest>(() => {
@@ -120,7 +121,8 @@ export default function WatchScreen() {
   );
 
   useEffect(() => {
-    const seekFn = (seconds: number) => videoRef.current?.seek(seconds);
+    const seekFn = (seconds: number) =>
+      (videoRef.current as { seek: (s: number) => void } | null)?.seek(seconds);
     registerSeek(seekFn);
     void allowLandscape();
     if (isLive) {
@@ -153,31 +155,44 @@ export default function WatchScreen() {
       <StatusBar hidden />
       <PlayerGestureLayer>
         {source ? (
-          <Video
-            ref={videoRef}
-            source={{ uri: source.uri }}
-            style={StyleSheet.absoluteFill}
-            paused={paused}
-            volume={volume}
-            resizeMode="contain"
-            progressUpdateInterval={1000}
-            ignoreSilentSwitch="ignore"
-            textTracks={videoTextTracks}
-            selectedTextTrack={
-              selectedSubtitle == null
-                ? { type: SelectedTrackType.DISABLED }
-                : { type: SelectedTrackType.INDEX, value: selectedSubtitle }
-            }
-            onLoad={(d: OnLoadData) => usePlayerStore.getState().onLoad(d.duration)}
-            onProgress={(p: OnProgressData) =>
-              usePlayerStore.getState().setProgress(p.currentTime, p.seekableDuration || p.playableDuration || 0)
-            }
-            onBuffer={(b: OnBufferData) => usePlayerStore.getState().onBuffer(b.isBuffering)}
-            onEnd={() => usePlayerStore.getState().onEnd()}
-            onError={(e: OnVideoErrorData) =>
-              usePlayerStore.getState().onError(e?.error?.errorString || "This source couldn't be played.")
-            }
-          />
+          source.engine === "vlc" ? (
+            <VlcVideo
+              ref={videoRef as RefObject<VlcVideoRef>}
+              uri={source.uri}
+              paused={paused}
+              onLoad={(dur) => usePlayerStore.getState().onLoad(dur)}
+              onProgress={(cur, dur) => usePlayerStore.getState().setProgress(cur, dur)}
+              onBuffer={(b) => usePlayerStore.getState().onBuffer(b)}
+              onEnd={() => usePlayerStore.getState().onEnd()}
+              onError={(msg) => usePlayerStore.getState().onError(msg)}
+            />
+          ) : (
+            <Video
+              ref={videoRef as RefObject<VideoRef>}
+              source={{ uri: source.uri }}
+              style={StyleSheet.absoluteFill}
+              paused={paused}
+              volume={volume}
+              resizeMode="contain"
+              progressUpdateInterval={1000}
+              ignoreSilentSwitch="ignore"
+              textTracks={videoTextTracks}
+              selectedTextTrack={
+                selectedSubtitle == null
+                  ? { type: SelectedTrackType.DISABLED }
+                  : { type: SelectedTrackType.INDEX, value: selectedSubtitle }
+              }
+              onLoad={(d: OnLoadData) => usePlayerStore.getState().onLoad(d.duration)}
+              onProgress={(p: OnProgressData) =>
+                usePlayerStore.getState().setProgress(p.currentTime, p.seekableDuration || p.playableDuration || 0)
+              }
+              onBuffer={(b: OnBufferData) => usePlayerStore.getState().onBuffer(b.isBuffering)}
+              onEnd={() => usePlayerStore.getState().onEnd()}
+              onError={(e: OnVideoErrorData) =>
+                usePlayerStore.getState().onError(e?.error?.errorString || "This source couldn't be played.")
+              }
+            />
+          )
         ) : null}
         <VideoControls
           title={request.title}

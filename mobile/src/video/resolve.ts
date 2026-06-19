@@ -1,5 +1,6 @@
 import { resolveTitle, type ResolvedSource } from "@/lib/streamarena";
 import { decideSource } from "./routing";
+import { ensureStripProxy } from "./strip-proxy";
 import type { PlayRequest, VideoSource } from "./types";
 
 export type ResolveOptions = {
@@ -37,6 +38,15 @@ export async function resolveAndRoute(
     opts.signal,
   );
   const audioIdx = opts.audioStreamIndex ?? resolved.selectedAudioStreamIndex;
+  // External-embed VOD plays through the on-device strip proxy; make sure it's listening
+  // before routing so decideSource picks it up (it otherwise falls back to the transcode).
+  if (/\/api\/live\//i.test(resolved.playableUrl || "")) {
+    try {
+      await ensureStripProxy();
+    } catch {
+      // Proxy failed to start — decideSource falls back to the backend transcode.
+    }
+  }
   const source = decideSource(resolved, audioIdx);
   return { resolved, source };
 }

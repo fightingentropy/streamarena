@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { getCachedPreferences, type ResolvedSource } from "@/lib/streamarena";
+import { getCachedPreferences, getSources, type ResolvedSource, type SourceSummary } from "@/lib/streamarena";
 import { buildOfflineResolved, getReadyOfflineRecord } from "@/store/offline";
 import { progressIdentity } from "./identity";
 import { type LivePlayRequest, type LiveSourceOption, resolveLiveSourceUrl } from "./live";
@@ -33,6 +33,35 @@ const HEALTHY_PLAYBACK_SECONDS = 30;
 // load-then-immediately-end embeds loop forever, since resolve success ≠ real playback.)
 const LIVE_HEALTHY_PLAYBACK_SECONDS = 6;
 
+// If a freshly-loaded VOD source produces no playback (no onLoad / no progress) within
+// this window, treat it as a dead/stalled server and auto-advance to the next one. This
+// catches the silent-hang case — PNG-stego embeds that never emit a clean onError, so the
+// error-driven fallback walk alone can't rescue them. Mirrors the web player's 6s bounded
+// retry (src-ui/player/live-streams.js `createBoundedRetryController`).
+// The transcode path needs ~10-15s to spin up (probe -> ffmpeg spawn -> first segments)
+// before AVPlayer can render a frame, so the silent-stall window must outlast that — a
+// shorter fuse skips even servers that DO work from the backend before they ever start.
+// Hard failures (a 502 segment -> onError) still skip fast; this only backstops a source
+// that loads its playlist but never produces video.
+const STALL_FALLBACK_MS = 15000;
+let stallTimer: ReturnType<typeof setTimeout> | null = null;
+// Baseline for detecting *real* playback advancement (position actually climbing), which
+// is the only trustworthy "this source works" signal. onLoad merely means the playlist
+// parsed — a blocked/stego source still reaches onLoad and then sits frozen at 0:00. Reset
+// whenever the timer (re)arms so each attempt is judged on its own progress.
+let lastProgressSample: number | null = null;
+function clearStallTimer() {
+  if (stallTimer != null) {
+    clearTimeout(stallTimer);
+    stallTimer = null;
+  }
+}
+function armStallTimer() {
+  clearStallTimer();
+  lastProgressSample = null;
+  stallTimer = setTimeout(() => usePlayerStore.getState().onStall(), STALL_FALLBACK_MS);
+}
+
 type ResolveExtra = { refresh?: boolean; audioStreamIndex?: number; sourceHash?: string };
 
 type PlayerState = {
@@ -58,6 +87,11 @@ type PlayerState = {
   selectedSubtitle: number | null;
   selectedAudioStreamIndex?: number;
   selectedSourceHash?: string;
+  // Full server list for the title (lazily fetched on the first auto-fallback), and the
+  // set of server hashes already attempted this run — the watchdog walks these so a dead
+  // default server is skipped until one plays, and can't loop (each tried at most once).
+  sources: SourceSummary[] | null;
+  triedHashes: string[];
   // Live mode (set by openLive): resume/reporting/offline are skipped, the controls hide
   // scrub/skip and show a LIVE badge, and liveSources powers the in-player source switcher.
   live: boolean;
@@ -78,6 +112,7 @@ type PlayerState = {
   onBuffer: (buffering: boolean) => void;
   onEnd: () => void;
   onError: (message?: string) => void;
+  onStall: () => void;
   play: () => void;
   pause: () => void;
   togglePlay: () => void;
@@ -120,6 +155,7 @@ async function runResolve(
       selectedAudioStreamIndex: extra.audioStreamIndex ?? resolved.selectedAudioStreamIndex,
       selectedSourceHash: extra.sourceHash ?? resolved.sourceHash,
     });
+    armStallTimer();
   } catch (e) {
     if (ac.signal.aborted) return;
     set({ status: "error", error: (e as Error)?.message || "Couldn't find a source for this title.", buffering: false });
@@ -174,6 +210,67 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     }
   }
 
+  // Auto-advance to the next untried server from the full source list (lazily fetched —
+  // the same list the manual picker shows). Drives the stall watchdog and the exhausted
+  // error path: a dead/blocked/stego default server is skipped until one actually plays.
+  // Bounded by triedHashes (each server tried at most once) so it can't loop.
+  async function advanceToNextServer(message?: string) {
+    const { request, scope, position, sources, triedHashes, selectedSourceHash } = get();
+    if (!request) {
+      set({ status: "error", error: message || "Playback error", buffering: false });
+      return;
+    }
+    const tried = new Set(triedHashes);
+    if (selectedSourceHash) tried.add(selectedSourceHash);
+
+    resolveAbort?.abort();
+    const ac = new AbortController();
+    resolveAbort = ac;
+    stopReporting();
+
+    let list = sources;
+    if (!list) {
+      try {
+        const res = await getSources({
+          tmdbId: request.tmdbId,
+          mediaType: request.mediaType,
+          title: request.title,
+          year: request.year,
+          seasonNumber: request.seasonNumber,
+          episodeNumber: request.episodeNumber,
+        });
+        if (ac.signal.aborted) return;
+        list = res.sources ?? [];
+        set({ sources: list });
+      } catch {
+        list = [];
+      }
+    }
+    if (ac.signal.aborted) return;
+
+    const next = (list ?? []).find((src) => src.sourceHash && !tried.has(src.sourceHash));
+    if (next?.sourceHash) {
+      set({
+        triedHashes: [...tried],
+        status: "resolving",
+        buffering: true,
+        error: null,
+        errorCount: 0,
+        reresolved: false,
+        resolved: null,
+        source: null,
+        loaded: false,
+        resumeApplied: false,
+        resumeSeconds: position,
+        resumeFor: request,
+        selectedSubtitle: null,
+      });
+      await runResolve(request, scope, { sourceHash: next.sourceHash }, ac, set);
+    } else {
+      set({ status: "error", error: message || "No working server found for this title.", buffering: false });
+    }
+  }
+
   return {
     status: "idle",
     request: null,
@@ -194,6 +291,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     selectedSubtitle: null,
     selectedAudioStreamIndex: undefined,
     selectedSourceHash: undefined,
+    sources: null,
+    triedHashes: [],
     live: false,
     liveSources: [],
     selectedLiveSourceId: null,
@@ -224,10 +323,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         selectedSubtitle: null,
         selectedAudioStreamIndex: undefined,
         selectedSourceHash: undefined,
+        sources: null,
+        triedHashes: [],
         live: false,
         liveSources: [],
         selectedLiveSourceId: null,
       });
+      clearStallTimer();
       // Fetch the saved resume position in parallel with resolving the source.
       void loadResumeSeconds(progressIdentity(req), scope, ac.signal).then((seconds) => {
         if (ac.signal.aborted || get().request !== req) return;
@@ -289,7 +391,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         resumeSeconds: position,
         resumeFor: request,
         selectedSubtitle: null,
+        triedHashes: [],
       });
+      clearStallTimer();
       void runResolve(request, scope, { audioStreamIndex, sourceHash }, ac, set);
     },
 
@@ -367,11 +471,27 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         status: get().paused ? "paused" : "playing",
         buffering: false,
       });
+      // onLoad means the playlist parsed — NOT that frames are flowing. A stalled source
+      // (blocked CDN, or stego segments AVPlayer can't demux) still fires onLoad, then sits
+      // at 0:00. So DON'T clear the watchdog here — leave the loading-armed window running so
+      // the full ~15s startup budget applies; only real position advancement (setProgress)
+      // clears it. Live keeps its own failLiveSource recovery.
+      if (get().live) clearStallTimer();
       maybeApplyResume();
     },
 
     setProgress(position, duration) {
       if (get().status === "idle" || (!get().request && !get().live)) return;
+      // Real advancement (position climbing past the previous sample) proves the source
+      // actually plays — disarm the stall watchdog. A source frozen at 0:00 never advances,
+      // so the watchdog survives to fire. The first sample only sets the baseline, which
+      // makes this robust to a resume-seek jumping the position before playback begins.
+      if (!get().live) {
+        if (lastProgressSample != null && position > lastProgressSample + 0.3) {
+          clearStallTimer();
+        }
+        lastProgressSample = position;
+      }
       const next: Partial<PlayerState> = { position };
       if (Number.isFinite(duration) && duration > 0) next.duration = duration;
       // Sustained playback means the current source genuinely works — clear the error
@@ -418,6 +538,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
 
     onError(message) {
       if (get().status === "idle" || (!get().request && !get().live)) return;
+      clearStallTimer();
       // Live: walk the source list (no TMDB re-resolve / VOD fallback candidates).
       if (get().live) {
         failLiveSource(message);
@@ -432,6 +553,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         const candidates = buildFallbackCandidates(resolved);
         if (attempt <= candidates.length) {
           set({ errorCount: attempt, status: "loading", buffering: true, error: null, source: candidates[attempt - 1] });
+          armStallTimer();
           return;
         }
       }
@@ -446,8 +568,26 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         return;
       }
 
-      // 3) Out of options.
-      set({ status: "error", error: message || "Playback error", buffering: false });
+      // 3) In-place options exhausted — auto-advance to the next untried server (the same
+      //    list the manual picker uses) before surfacing an error.
+      void advanceToNextServer(message);
+    },
+
+    // Stall watchdog fired: a VOD source produced no playback within STALL_FALLBACK_MS.
+    // Skip straight to the next server — a hung source rarely recovers via its own
+    // fallbackUrls (they share the same dead upstream). Guarded so a late timer can't
+    // act after playback actually began, or during live.
+    onStall() {
+      const s = get();
+      // Fire only while genuinely stuck: VOD, a request is live, and the user hasn't paused
+      // or stopped. Crucially do NOT skip on loaded/"playing" — onLoad flips status to
+      // "playing" before a single frame plays, and that frozen-at-0:00 case is exactly what
+      // we must escape. The timer only survives to here when no real progress happened.
+      if (s.live || !s.request || s.paused) return;
+      if (s.status === "idle" || s.status === "ended" || s.status === "error") return;
+      clearStallTimer();
+      reportPlaybackError("Source stalled before playback.");
+      void advanceToNextServer("This title's servers aren't responding right now.");
     },
 
     play() {
@@ -477,6 +617,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     close() {
       if (!get().live) reportNow(get().position, get().duration);
       stopReporting();
+      clearStallTimer();
       resolveAbort?.abort();
       resolveAbort = null;
       set({
@@ -499,6 +640,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         selectedSubtitle: null,
         selectedAudioStreamIndex: undefined,
         selectedSourceHash: undefined,
+        sources: null,
+        triedHashes: [],
         live: false,
         liveSources: [],
         selectedLiveSourceId: null,
