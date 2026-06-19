@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo } from "react";
 import { FlatList, type ListRenderItemInfo, Text, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { PosterCard } from "@/components/title/PosterCard";
@@ -7,9 +7,22 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
 import { SignedOutPrompt } from "@/components/ui/States";
 import { useAccountScopeOrNull, useSignedIn } from "@/lib/auth";
-import { useContinueWatching } from "@/lib/streamarena";
+import { type Title, useContinueWatching, useTitleDetails } from "@/lib/streamarena";
 import { myListItemToTitle, useMyListStore } from "@/store/mylist";
 import { colors } from "@/theme";
+
+// Grid tile for a saved title. The stored `thumb` paints instantly as a placeholder, but
+// some entries (e.g. saved on the web) hold a landscape backdrop, which looks wrong cropped
+// into the 2:3 grid — so prefer the canonical TMDB poster once the (cached) details load.
+// Falls back to the stored thumb when offline / before details arrive.
+const MyListCard = memo(function MyListCard({ title, width }: { title: Title; width: number }) {
+  const { data: details } = useTitleDetails(title.id, title.mediaType, !!title.id);
+  const withPoster = useMemo(
+    () => (details?.poster_path ? { ...title, posterPath: details.poster_path } : title),
+    [title, details?.poster_path],
+  );
+  return <PosterCard title={withPoster} width={width} />;
+});
 
 const COLS = 3;
 const H_PADDING = 16;
@@ -36,7 +49,7 @@ export default function MyListScreen() {
   const titles = useMemo(() => items.map(myListItemToTitle).filter((t) => t.id), [items]);
   const keyExtractor = useCallback((t: (typeof titles)[number]) => `${t.mediaType}-${t.id}`, []);
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<(typeof titles)[number]>) => <PosterCard title={item} width={itemWidth} />,
+    ({ item }: ListRenderItemInfo<(typeof titles)[number]>) => <MyListCard title={item} width={itemWidth} />,
     [itemWidth],
   );
 
