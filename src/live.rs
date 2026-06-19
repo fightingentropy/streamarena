@@ -297,11 +297,23 @@ pub async fn live_hls_resource_handler(
     let mut content_type = fetched.content_type;
     let mut bytes = fetched.bytes;
 
+    // PNG-disguised mpeg-ts: strip the prepended PNG header back to clean mpeg-ts (see
+    // the streaming fast-path above / hls-controller.js). A stripped fragment is already
+    // a clean `.ts`, so it skips the live re-encode below.
+    let stripped_png = match png_prefixed_ts_strip_offset(&bytes) {
+        Some(offset) => {
+            bytes.drain(0..offset);
+            content_type = "video/mp2t".to_owned();
+            true
+        }
+        None => false,
+    };
+
     // Some upstreams ship audio/markers the browser can't handle (Nova Sports MP2
     // audio; Bloomberg SCTE-35 ad markers) or an H.264 bitstream that breaks Chrome
     // once ffmpeg touches the container. Re-encode such segments to browser-safe
     // H.264 + AAC. The decision is probed once per stream and cached.
-    if is_live_ts_segment(&live_request.source_url, &content_type) {
+    if !stripped_png && is_live_ts_segment(&live_request.source_url, &content_type) {
         match process_live_segment(&state, &live_request.source_url, &bytes).await {
             LiveSegmentOutcome::Passthrough => {}
             LiveSegmentOutcome::Transcoded(output) => {
@@ -324,6 +336,27 @@ pub async fn live_hls_resource_handler(
 
 fn url_path_is_mpegts(url: &Url) -> bool {
     url.path().to_ascii_lowercase().ends_with(".ts")
+}
+
+/// Some external-embed CDNs disguise each `.ts` fragment as a PNG: a real PNG header
+/// (magic `89 50 4E 47 ...`) is prepended to the MPEG-TS payload and the whole thing
+/// is served as `content-type: image/png`. Browser hls.js strips this client-side
+/// (`src-ui/player/hls-controller.js`), but native players (AVPlayer) can't, so they
+/// stall on the fragment forever. Mirror the client stripper: when the bytes start
+/// with the PNG magic, return the offset of the first MPEG-TS sync byte (`0x47` with
+/// 188-byte periodicity). Returns `None` for clean segments after a cheap 4-byte
+/// check, so it's safe to call on every fragment.
+fn png_prefixed_ts_strip_offset(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 8 || bytes[0] != 0x89 || bytes[1] != 0x50 || bytes[2] != 0x4e || bytes[3] != 0x47 {
+        return None;
+    }
+    let limit = bytes.len().saturating_sub(376).min(65536);
+    for i in 1..limit {
+        if bytes[i] == 0x47 && bytes[i + 188] == 0x47 && bytes[i + 376] == 0x47 {
+            return Some(i);
+        }
+    }
+    None
 }
 
 /// Stream a live HLS segment over plain HTTP without buffering the whole body in
@@ -368,6 +401,27 @@ async fn stream_live_hls_resource_via_http(
     // non-`.ts` URL).
     if content_type.to_ascii_lowercase().contains("mp2t") {
         return Ok(None);
+    }
+    // PNG-disguised mpeg-ts (external-embed CDNs prefix a PNG header to the .ts payload
+    // and serve it as image/png). Native players can't strip it the way browser hls.js
+    // does, so buffer the (small, cacheable) segment, strip to the first TS sync byte,
+    // and hand back clean mpeg-ts. Clean (non-PNG) bodies keep streaming below.
+    if content_type.to_ascii_lowercase().contains("png") {
+        let raw = timeout(LIVE_UPSTREAM_REQUEST_TIMEOUT, response.bytes())
+            .await
+            .map_err(|_| ApiError::bad_gateway("Live HLS resource read timed out."))?
+            .map_err(|_| ApiError::bad_gateway("Live HLS resource read failed."))?;
+        let (out, out_content_type) = match png_prefixed_ts_strip_offset(&raw) {
+            Some(offset) => (raw.slice(offset..), "video/mp2t".to_owned()),
+            None => (raw, content_type),
+        };
+        return Response::builder()
+            .status(200)
+            .header("content-type", out_content_type)
+            .header("cache-control", cache_control)
+            .body(Body::from(out))
+            .map(Some)
+            .map_err(|error| ApiError::internal(error.to_string()));
     }
     let body = Body::from_stream(response.bytes_stream());
     Response::builder()
@@ -2234,8 +2288,8 @@ mod tests {
         browser_bound_live_hls_referer_header, host_matches_allowed_live_hls_host,
         is_allowed_live_hls_url, is_browser_bound_live_hls_upstream, is_live_ts_segment,
         is_public_external_embed_hls_proxy_url, is_trusted_external_embed_hls_request,
-        live_audio_stream_key, normalize_hls_referer, query_pairs, rewrite_live_hls_playlist,
-        strip_video_only_stream_inf_codecs,
+        live_audio_stream_key, normalize_hls_referer, png_prefixed_ts_strip_offset, query_pairs,
+        rewrite_live_hls_playlist, strip_video_only_stream_inf_codecs,
     };
 
     #[test]
@@ -2987,5 +3041,34 @@ https://other.example.net/seg-2.ts\n#EXT-X-ENDLIST\n";
             )),
             Some("https://hesgoaler.com/stream.php?ch=NOVASPORTS1".to_owned())
         );
+    }
+
+    #[test]
+    fn png_prefixed_ts_strip_offset_finds_the_sync_byte() {
+        // A 64-byte fake PNG header, then a 3-packet mpeg-ts run (0x47 every 188 bytes).
+        let mut buf = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+        buf.extend(std::iter::repeat(0xab).take(56)); // pad the "PNG" header to 64 bytes
+        let ts_start = buf.len();
+        let mut ts = vec![0u8; 188 * 3];
+        ts[0] = 0x47;
+        ts[188] = 0x47;
+        ts[376] = 0x47;
+        buf.extend_from_slice(&ts);
+        assert_eq!(png_prefixed_ts_strip_offset(&buf), Some(ts_start));
+        // Stripping from that offset yields a clean mpeg-ts run.
+        assert_eq!(buf[ts_start], 0x47);
+    }
+
+    #[test]
+    fn png_prefixed_ts_strip_offset_passes_through_clean_segments() {
+        // Real mpeg-ts (no PNG magic) is left untouched.
+        let mut ts = vec![0u8; 188 * 3];
+        ts[0] = 0x47;
+        ts[188] = 0x47;
+        ts[376] = 0x47;
+        assert_eq!(png_prefixed_ts_strip_offset(&ts), None);
+        // A PNG with no embedded ts sync run is also left alone.
+        let png_only = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03];
+        assert_eq!(png_prefixed_ts_strip_offset(&png_only), None);
     }
 }

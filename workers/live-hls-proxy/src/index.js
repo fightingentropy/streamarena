@@ -414,6 +414,32 @@ async function relayResourceViaOrigin(request, url, env) {
   });
 }
 
+// Some external-embed CDNs disguise each `.ts` fragment as a PNG: a real PNG header
+// (magic `89 50 4E 47 ...`) is prepended to the MPEG-TS payload, served as
+// `content-type: image/png`. Browser hls.js strips this client-side
+// (`src-ui/player/hls-controller.js`) and the Rust origin strips it in
+// `live_hls_resource_handler`; mirror it here so the worker's direct-fetch path hands
+// native players (AVPlayer) clean mpeg-ts too. Cheap 4-byte check ⇒ safe for every
+// fragment; returns the input untouched when it isn't PNG-prefixed.
+function stripPngPrefixedTs(bytes) {
+  if (
+    bytes.length < 8 ||
+    bytes[0] !== 0x89 ||
+    bytes[1] !== 0x50 ||
+    bytes[2] !== 0x4e ||
+    bytes[3] !== 0x47
+  ) {
+    return bytes;
+  }
+  const limit = Math.min(bytes.length - 376, 65536);
+  for (let i = 1; i < limit; i += 1) {
+    if (bytes[i] === 0x47 && bytes[i + 188] === 0x47 && bytes[i + 376] === 0x47) {
+      return bytes.subarray(i);
+    }
+  }
+  return bytes;
+}
+
 async function handleResource(request, url, env) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return deny(405, "method not allowed");
@@ -446,6 +472,24 @@ async function handleResource(request, url, env) {
     upstream = await fetch(target.toString(), { method: "GET", headers: upstreamHeaders, cf });
   } catch (error) {
     return deny(502, "upstream fetch failed");
+  }
+
+  // PNG-disguised mpeg-ts: buffer the (small, cacheable) segment, strip the prepended
+  // PNG header to the first TS sync byte, and serve clean mpeg-ts so native players can
+  // demux it. Only PNG responses are buffered; everything else streams through below.
+  const upstreamContentType = upstream.headers.get("content-type") || "";
+  if (request.method === "GET" && upstream.ok && /png/i.test(upstreamContentType)) {
+    const raw = new Uint8Array(await upstream.arrayBuffer());
+    const stripped = stripPngPrefixedTs(raw);
+    const headers = new Headers();
+    headers.set("content-type", stripped.length !== raw.length ? "video/mp2t" : upstreamContentType);
+    const acceptRanges = upstream.headers.get("accept-ranges");
+    if (acceptRanges) headers.set("accept-ranges", acceptRanges);
+    headers.set("Cache-Control", `public, max-age=${SEGMENT_CACHE_TTL_SECONDS}`);
+    headers.set("Access-Control-Allow-Origin", "*");
+    headers.set("X-Live-Proxy", "cf-worker");
+    headers.set("X-Live-Proxy-Mode", "upstream");
+    return new Response(stripped, { status: upstream.status, headers });
   }
 
   const headers = new Headers();
