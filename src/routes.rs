@@ -1061,6 +1061,23 @@ async fn admin_provider_set_handler(
             "1" | "" => String::new(),
             _ => return Err(ApiError::bad_request("Toggle value must be 0 or 1.")),
         },
+        // A ranking weight: a whole number in a sane range. Empty clears it back to
+        // the compiled default tier.
+        crate::provider_registry::WriteKind::Rank => {
+            if raw_value.is_empty() {
+                String::new()
+            } else {
+                let weight: i64 = raw_value
+                    .parse()
+                    .map_err(|_| ApiError::bad_request("Rank weight must be a whole number."))?;
+                if !(0..=10_000).contains(&weight) {
+                    return Err(ApiError::bad_request(
+                        "Rank weight must be between 0 and 10000.",
+                    ));
+                }
+                weight.to_string()
+            }
+        }
     };
     if value.is_empty() {
         state.db.delete_provider_override(key.clone()).await?;

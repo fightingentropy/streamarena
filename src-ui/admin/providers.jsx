@@ -44,7 +44,8 @@ const GROUPS = [
   {
     key: "embed",
     title: "VOD embed providers",
-    sub: "Enable or disable external movie / show sources",
+    sub: "Enable, disable & rank external movie / show sources",
+    hint: "Listed top-to-bottom in the order they appear in the in-app Server menu. Reorder with the arrows or set a weight directly (higher = shown first). Live per-title health can still nudge the final order by a small amount on top of this baseline.",
   },
   { key: "infra", title: "Infrastructure", sub: "App origin & upstream bases" },
 ];
@@ -82,6 +83,7 @@ export default function ProvidersPanel(props) {
   const [status, setStatus] = createSignal("loading");
   const [error, setError] = createSignal("");
   const [edits, setEdits] = createSignal({});
+  const [rankEdits, setRankEdits] = createSignal({});
   const [tests, setTests] = createSignal({});
   const [busy, setBusy] = createSignal({});
 
@@ -95,6 +97,7 @@ export default function ProvidersPanel(props) {
       setProviders(data.providers || []);
       setLiveOverrides(data.liveOverrides || {});
       setEdits({});
+      setRankEdits({});
       setStatus("ready");
     } catch (e) {
       setError(e.message || "Failed to load providers");
@@ -108,13 +111,19 @@ export default function ProvidersPanel(props) {
     for (const provider of providers()) {
       (map[provider.group] || (map[provider.group] = [])).push(provider);
     }
+    // Embed providers display in their effective ranked order — the same order the
+    // in-app Server menu shows — so the reorder arrows read top-to-bottom.
+    map.embed.sort((a, b) => (b.rank ?? 0) - (a.rank ?? 0) || a.label.localeCompare(b.label));
     return map;
   });
+
+  const embedCount = createMemo(() => (rowsByGroup().embed || []).length);
 
   const overrideCount = createMemo(() => {
     let count = Object.keys(liveOverrides()).length;
     for (const provider of providers()) {
       if (provider.overridden) count += 1;
+      if (provider.rankOverridden) count += 1;
     }
     return count;
   });
@@ -138,6 +147,63 @@ export default function ProvidersPanel(props) {
       flash(e.message || "Save failed", true);
     } finally {
       markBusy(row.key, false);
+    }
+  }
+
+  // Embed rank overrides live under `embed:<id>:rank` (the row key is the sibling
+  // `:enabled` flag), so derive one from the other.
+  const rankKey = (row) => row.key.replace(/:enabled$/, ":rank");
+  const rankEditValue = (row) => {
+    const current = rankEdits();
+    return row.key in current ? current[row.key] : row.rank ?? "";
+  };
+  const setRankEdit = (key, value) => setRankEdits((prev) => ({ ...prev, [key]: value }));
+
+  async function saveRank(row, explicitValue) {
+    const value =
+      explicitValue !== undefined ? explicitValue : String(rankEditValue(row) ?? "").trim();
+    markBusy(row.key, true);
+    try {
+      await postJson("/api/admin/providers/set", { key: rankKey(row), value });
+      flash(value === "" ? `Reset ${row.label} rank to default` : `Saved ${row.label} rank`);
+      await load();
+    } catch (e) {
+      flash(e.message || "Save failed", true);
+    } finally {
+      markBusy(row.key, false);
+    }
+  }
+
+  // Reorder by swapping a provider's weight with its neighbour's, so the move is
+  // exactly one position and the displayed order updates predictably.
+  async function moveRank(row, dir) {
+    const list = rowsByGroup().embed || [];
+    const i = list.findIndex((r) => r.key === row.key);
+    const j = dir === "up" ? i - 1 : i + 1;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    const neighbor = list[j];
+    let self;
+    let other;
+    if (row.rank === neighbor.rank) {
+      // Equal weights: nudge past the neighbour to force the swap.
+      self = dir === "up" ? neighbor.rank + 1 : neighbor.rank - 1;
+      other = neighbor.rank;
+    } else {
+      self = neighbor.rank;
+      other = row.rank;
+    }
+    markBusy(row.key, true);
+    markBusy(neighbor.key, true);
+    try {
+      await postJson("/api/admin/providers/set", { key: rankKey(row), value: String(self) });
+      await postJson("/api/admin/providers/set", { key: rankKey(neighbor), value: String(other) });
+      flash(`Moved ${row.label} ${dir}`);
+      await load();
+    } catch (e) {
+      flash(e.message || "Reorder failed", true);
+    } finally {
+      markBusy(row.key, false);
+      markBusy(neighbor.key, false);
     }
   }
 
@@ -173,6 +239,7 @@ export default function ProvidersPanel(props) {
     const row = props2.row;
     const result = () => tests()[row.key];
     const isBusy = () => Boolean(busy()[row.key]);
+    const position = () => props2.index() + 1;
     return (
       <div classList={{ "admin-provider-row": true, "is-off": row.toggle && !row.enabled }}>
         <div class="admin-provider-rowtop">
@@ -181,6 +248,9 @@ export default function ProvidersPanel(props) {
               {row.label}
               <Show when={row.overridden}>
                 <span class="admin-provider-tag">overridden</span>
+              </Show>
+              <Show when={row.rankOverridden}>
+                <span class="admin-provider-tag">re-ranked</span>
               </Show>
             </span>
             <span class="admin-provider-key">{row.key}</span>
@@ -193,6 +263,53 @@ export default function ProvidersPanel(props) {
             />
           </Show>
         </div>
+
+        <Show when={row.rank != null}>
+          <div class="admin-rank-row">
+            <span class="admin-rank-pos">#{position()}</span>
+            <div class="admin-rank-arrows">
+              <button
+                class="admin-btn admin-rank-arrow"
+                disabled={isBusy() || position() === 1}
+                title="Move up"
+                aria-label={`Move ${row.label} up`}
+                onClick={() => moveRank(row, "up")}
+              >
+                ↑
+              </button>
+              <button
+                class="admin-btn admin-rank-arrow"
+                disabled={isBusy() || position() === embedCount()}
+                title="Move down"
+                aria-label={`Move ${row.label} down`}
+                onClick={() => moveRank(row, "down")}
+              >
+                ↓
+              </button>
+            </div>
+            <label class="admin-rank-weight">
+              <span class="admin-rank-weight-cap">Weight</span>
+              <input
+                class="admin-input admin-rank-input"
+                type="number"
+                min="0"
+                max="10000"
+                step="10"
+                value={rankEditValue(row)}
+                onInput={(e) => setRankEdit(row.key, e.currentTarget.value)}
+              />
+            </label>
+            <button class="admin-btn is-primary" disabled={isBusy()} onClick={() => saveRank(row)}>
+              Save
+            </button>
+            <Show when={row.rankOverridden}>
+              <button class="admin-btn" disabled={isBusy()} onClick={() => saveRank(row, "")}>
+                Reset
+              </button>
+            </Show>
+            <span class="admin-rank-default">default {row.rankDefault}</span>
+          </div>
+        </Show>
 
         <Show
           when={row.editable}
@@ -285,8 +402,13 @@ export default function ProvidersPanel(props) {
                   <h3 class="admin-provider-grouptitle">{group.title}</h3>
                   <span class="admin-provider-groupsub">{group.sub}</span>
                 </div>
+                <Show when={group.hint}>
+                  <p class="admin-provider-grouphint">{group.hint}</p>
+                </Show>
                 <div class="admin-provider-list">
-                  <For each={rowsByGroup()[group.key]}>{(row) => <ProviderRow row={row} />}</For>
+                  <For each={rowsByGroup()[group.key]}>
+                    {(row, index) => <ProviderRow row={row} index={index} />}
+                  </For>
                 </div>
               </div>
             </Show>

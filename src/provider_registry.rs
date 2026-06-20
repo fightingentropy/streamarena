@@ -103,6 +103,50 @@ pub fn embed_enabled(id: &str) -> bool {
     get_override(&format!("embed:{id}:enabled")).map_or(true, |value| value.trim() != "0")
 }
 
+/// Default ranking weight per embed provider — the de-facto reliability tier that
+/// drives the Server-menu order and the auto-pick/fallback order in the resolver
+/// (see `external_embed_source_availability_score`). Higher = preferred / shown
+/// first. Admins can override any of these live via `embed:<id>:rank`; live
+/// per-title health still nudges the final order by a capped amount on top of
+/// this baseline.
+///
+/// LordFlix ranks first: its segments stream to the browser directly off its CDN
+/// (tiktokcdn, CORS-open), off the mini's bandwidth-limited uplink, so it's both
+/// fastest and cheapest for our origin. VidRock shares that pipeline server-side.
+/// Both rank above the flaky ones (VidLink/VixSrc gate on TLS fingerprint, Icefy's
+/// upstream rate-limits). The Aether-backed gallic/meridian are the lowest real
+/// tier — cached third-party fallbacks that only fire when first-party sources
+/// miss the title.
+pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
+    ("lordflix", 1_600),
+    ("vidrock", 1_400),
+    ("notorrent", 1_100),
+    ("vidlink", 950),
+    ("vixsrc", 800),
+    ("videasy", 700),
+    ("icefy", 500),
+    ("gallic", 450),
+    ("meridian", 400),
+];
+
+/// Compiled default ranking weight for an embed provider (0 if unknown).
+pub fn embed_default_rank(id: &str) -> i64 {
+    EMBED_DEFAULT_RANK
+        .iter()
+        .find(|(key, _)| *key == id)
+        .map_or(0, |(_, value)| *value)
+}
+
+/// The admin rank override for an embed provider, if a valid one is set.
+pub fn embed_rank_override(id: &str) -> Option<i64> {
+    get_override(&format!("embed:{id}:rank")).and_then(|raw| raw.trim().parse::<i64>().ok())
+}
+
+/// Effective ranking weight: the admin override if set, else the compiled default.
+pub fn embed_rank(id: &str) -> i64 {
+    embed_rank_override(id).unwrap_or_else(|| embed_default_rank(id))
+}
+
 /// What kind of write a key accepts, or `None` if it is not admin-writable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteKind {
@@ -110,6 +154,8 @@ pub enum WriteKind {
     Url,
     /// An enable/disable flag ("0"/"1").
     Toggle,
+    /// A ranking weight (a whole number; empty value clears it).
+    Rank,
 }
 
 pub fn classify_writable(key: &str) -> Option<WriteKind> {
@@ -126,11 +172,16 @@ pub fn classify_writable(key: &str) -> Option<WriteKind> {
         | keys::SPORTS_NTVS_SEARCH
         | keys::INFRA_APP_ORIGIN
         | keys::INFRA_TORRENTIO => Some(WriteKind::Url),
-        _ => key
-            .strip_prefix("embed:")
-            .and_then(|rest| rest.strip_suffix(":enabled"))
-            .filter(|id| EMBED_IDS.contains(id))
-            .map(|_| WriteKind::Toggle),
+        _ => {
+            let rest = key.strip_prefix("embed:")?;
+            if let Some(id) = rest.strip_suffix(":enabled") {
+                return EMBED_IDS.contains(&id).then_some(WriteKind::Toggle);
+            }
+            if let Some(id) = rest.strip_suffix(":rank") {
+                return EMBED_IDS.contains(&id).then_some(WriteKind::Rank);
+            }
+            None
+        }
     }
 }
 
@@ -150,6 +201,15 @@ pub struct ProviderInfo {
     /// Has an enable/disable toggle (embed providers).
     pub toggle: bool,
     pub enabled: bool,
+    /// Effective ranking weight (embed providers only; higher = shown first).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<i64>,
+    /// Compiled default ranking weight (embed providers only).
+    #[serde(rename = "rankDefault", skip_serializing_if = "Option::is_none")]
+    pub rank_default: Option<i64>,
+    /// Whether the ranking weight is admin-overridden.
+    #[serde(rename = "rankOverridden")]
+    pub rank_overridden: bool,
     pub note: String,
 }
 
@@ -165,6 +225,9 @@ fn url_entry(key: &str, group: &str, label: &str, default_url: &str, note: &str)
         editable: true,
         toggle: false,
         enabled: true,
+        rank: None,
+        rank_default: None,
+        rank_overridden: false,
         note: note.to_owned(),
     }
 }
@@ -244,7 +307,11 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
             editable: false,
             toggle: true,
             enabled: embed_enabled(id),
-            note: "Enable/disable only — base URL is coupled to resolver host logic".to_owned(),
+            rank: Some(embed_rank(id)),
+            rank_default: Some(embed_default_rank(id)),
+            rank_overridden: embed_rank_override(id).is_some(),
+            note: "Enable/disable + ranking weight — base URL is coupled to resolver host logic"
+                .to_owned(),
         });
     }
 
@@ -276,6 +343,9 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
         editable: false,
         toggle: false,
         enabled: true,
+        rank: None,
+        rank_default: None,
+        rank_overridden: false,
         note: "Env-controlled (LIVE_HLS_RESOURCE_WORKER_BASE) — on the hot segment path".to_owned(),
     });
 
@@ -304,11 +374,45 @@ mod tests {
             classify_writable("embed:vidlink:enabled"),
             Some(WriteKind::Toggle)
         );
+        assert_eq!(
+            classify_writable("embed:vidlink:rank"),
+            Some(WriteKind::Rank)
+        );
         // Not writable: unknown embed id, the env-only worker base, malformed keys.
         assert_eq!(classify_writable("embed:bogus:enabled"), None);
+        assert_eq!(classify_writable("embed:bogus:rank"), None);
         assert_eq!(classify_writable(keys::INFRA_LIVE_HLS_WORKER), None);
         assert_eq!(classify_writable("live:onlyonepart"), None);
         assert_eq!(classify_writable("random:key"), None);
+    }
+
+    #[test]
+    fn embed_rank_prefers_override_then_compiled_default() {
+        // Use a real embed id but restore it after so parallel tests that read the
+        // process-global store aren't affected.
+        let id = "vixsrc";
+        assert_eq!(embed_rank(id), embed_default_rank(id));
+        assert_eq!(embed_rank_override(id), None);
+        set(&format!("embed:{id}:rank"), "1750");
+        assert_eq!(embed_rank_override(id), Some(1750));
+        assert_eq!(embed_rank(id), 1750);
+        // A non-numeric override is ignored (falls back to the default).
+        set(&format!("embed:{id}:rank"), "oops");
+        assert_eq!(embed_rank_override(id), None);
+        assert_eq!(embed_rank(id), embed_default_rank(id));
+        // Clearing restores the default.
+        set(&format!("embed:{id}:rank"), "");
+        assert_eq!(embed_rank(id), embed_default_rank(id));
+    }
+
+    #[test]
+    fn every_embed_id_has_a_default_rank() {
+        for id in EMBED_IDS {
+            assert!(
+                embed_default_rank(id) > 0,
+                "embed id {id} is missing a default rank weight"
+            );
+        }
     }
 
     #[test]

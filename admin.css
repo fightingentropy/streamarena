@@ -2358,3 +2358,61 @@ a:focus-visible {
   color: var(--admin-muted-soft);
   word-break: break-all;
 }
+.admin-provider-grouphint {
+  margin: -2px 0 10px;
+  color: var(--admin-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  max-width: 64ch;
+}
+.admin-rank-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--admin-line-soft);
+  border-radius: var(--admin-radius-sm);
+  background: var(--admin-surface-2);
+}
+.admin-rank-pos {
+  font-family: var(--admin-mono);
+  font-weight: 700;
+  font-size: 0.82rem;
+  color: var(--admin-accent);
+  min-width: 2.4ch;
+  text-align: right;
+}
+.admin-rank-arrows {
+  display: inline-flex;
+  gap: 4px;
+}
+.admin-rank-arrow {
+  padding: 4px 9px;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.admin-rank-weight {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.admin-rank-weight-cap {
+  color: var(--admin-muted);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.admin-rank-input {
+  width: 7ch;
+  font-family: var(--admin-mono);
+  font-size: 0.8rem;
+  text-align: right;
+}
+.admin-rank-default {
+  margin-left: auto;
+  color: var(--admin-muted-soft);
+  font-family: var(--admin-mono);
+  font-size: 0.74rem;
+}

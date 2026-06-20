@@ -5543,34 +5543,22 @@ fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) -> bool {
 }
 
 fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 {
-    // This table is the de-facto reliability tier for the Server menu and the
-    // auto-pick/fallback order (it dominates external_embed_source_rank_score).
-    // LordFlix ranks first: it's the one provider whose segments stream to the
-    // browser directly off its CDN (tiktokcdn, CORS-open) — completely off the
-    // mini's bandwidth-limited home uplink — so when it has a title it's both the
-    // fastest and the cheapest for our uplink-constrained origin. VidRock shares the
-    // same tiktokcdn pipeline server-side; both rank above the flaky ones: VidLink's
-    // CDN (storm.vodvidl.site) and VixSrc (vixsrc.to + vix-content.net) both gate on
-    // TLS fingerprint (served via curl, a little slower), and Icefy's upstream
-    // rate-limits. The LordFlix->VidRock gap (200) exceeds the +150 positive-health
-    // cap, so a transient VidRock good streak can't lift it above LordFlix; only a
-    // genuine per-title LordFlix failure (the uncapped -6000 penalty) demotes it, at
-    // which point the staggered hedge races the next provider in immediately.
-    match source.provider.id {
-        "lordflix" => 1_600,
-        "vidrock" => 1_400,
-        "notorrent" => 1_100,
-        "vidlink" => 950,
-        "vixsrc" => 800,
-        "videasy" if source.server.is_none() => 700,
-        "icefy" => 500,
-        // Aether-backed; deliberately the lowest real tier — a cached third-party
-        // fallback that only fires when every first-party source misses the title.
-        "gallic" => 450,
-        "meridian" => 400,
-        "videasy" => 150,
-        _ => 0,
+    // This is the de-facto reliability tier for the Server menu and the auto-pick/
+    // fallback order (it dominates external_embed_source_rank_score). The per-
+    // provider baseline lives in `provider_registry::EMBED_DEFAULT_RANK` (which
+    // documents the tier rationale) and is admin-overridable live via the Providers
+    // dashboard (`embed:<id>:rank`), so an operator can re-rank sources without a
+    // redeploy. The default LordFlix->VidRock gap (200) exceeds the +150 positive-
+    // health cap, so a transient good streak can't lift a lower tier above a higher
+    // one; only a genuine per-title failure (the uncapped -6000 penalty) demotes a
+    // source, at which point the staggered hedge races the next provider in.
+    //
+    // VidEasy's per-server variants stay a low fallback tier regardless of the
+    // provider weight — they only surface when the base providers miss.
+    if source.provider.id == "videasy" && source.server.is_some() {
+        return 150;
     }
+    crate::provider_registry::embed_rank(source.provider.id)
 }
 
 fn external_embed_source_quality_score(source: ExternalEmbedSource) -> i64 {
