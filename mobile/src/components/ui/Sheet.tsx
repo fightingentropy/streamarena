@@ -41,14 +41,22 @@ export function Sheet({
   children: ReactNode;
 }) {
   const insets = useSafeAreaInsets();
-  const { height: screenH } = useWindowDimensions();
+  const { width: screenW, height: screenH } = useWindowDimensions();
+  const landscape = screenW > screenH;
 
   // Keep the panel mounted through the exit animation, then unmount.
   const [mounted, setMounted] = useState(visible);
 
-  // Panel height: requested fraction of the screen, but never under the notch.
+  // Panel height: requested fraction of the screen, but never under the notch. In
+  // landscape the screen's short side drives this, so cap it tighter so the card stays
+  // compact instead of swallowing most of the height.
   const maxH = screenH - insets.top;
-  const panelH = Math.min(screenH * heightPct, maxH);
+  const panelH = Math.min(screenH * (landscape ? Math.min(heightPct, 0.82) : heightPct), maxH);
+  // In landscape the device's Dynamic Island sits on a side edge, and a full-width sheet
+  // runs straight under it (the player presents rotated, so the safe-area context still
+  // reports stale portrait insets and can't pad it away). Render a compact, centered card
+  // instead — narrow enough that the empty side margins clear the Island on either edge.
+  const panelW = landscape ? Math.min(screenW * 0.6, 460) : undefined;
 
   const progress = useSharedValue(0); // 0 = hidden, 1 = shown
   const dragY = useSharedValue(0); // live finger offset while dragging down
@@ -108,7 +116,7 @@ export function Sheet({
     // that froze every control (you could still hear audio but couldn't tap anything).
     <View
       pointerEvents={visible ? "auto" : "none"}
-      style={[StyleSheet.absoluteFill, { zIndex, elevation: zIndex, justifyContent: "flex-end" }]}
+      style={[StyleSheet.absoluteFill, { zIndex, elevation: zIndex, justifyContent: "flex-end", alignItems: landscape ? "center" : "stretch" }]}
     >
       {/* backdrop: tap to close. A real Pressable (not raw onTouchEnd, which fired for
           any stray touch ending here — including the tail of the gesture that opened
@@ -123,6 +131,7 @@ export function Sheet({
           style={[
             {
               height: panelH,
+              width: panelW,
               backgroundColor: colors.background,
               borderTopLeftRadius: 20,
               borderTopRightRadius: 20,
