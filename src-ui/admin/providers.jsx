@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js";
 
 import { LIVE_CHANNELS } from "../lib/live-channels.js";
 import { Toggle } from "./widgets.jsx";
@@ -31,23 +31,31 @@ async function postJson(url, body) {
   return data;
 }
 
-// Group order + headings. The "live" rows are derived on the client from the
-// compiled channel list (the backend only stores their overrides); the rest come
-// straight from the backend catalog.
+// Each group is its own sub-tab so the page is a short focused view instead of one
+// endless scroll. `tabLabel` is the short chip; `title`/`sub` head the active view.
+// The "live" rows are derived on the client from the compiled channel list (the
+// backend only stores their overrides); the rest come straight from the catalog.
 const GROUPS = [
   {
-    key: "live",
-    title: "Live TV channels",
-    sub: "Direct HLS / embed source per channel stream",
-  },
-  { key: "sports", title: "Sports stream APIs", sub: "Match discovery & schedule endpoints" },
-  {
     key: "embed",
-    title: "VOD embed providers",
+    tabLabel: "Rankings",
+    title: "VOD source ranking",
     sub: "Enable, disable & rank external movie / show sources",
     hint: "Listed top-to-bottom in the order they appear in the in-app Server menu. Reorder with the arrows or set a weight directly (higher = shown first). Live per-title health can still nudge the final order by a small amount on top of this baseline.",
   },
-  { key: "infra", title: "Infrastructure", sub: "App origin & upstream bases" },
+  {
+    key: "live",
+    tabLabel: "Live TV",
+    title: "Live TV channels",
+    sub: "Direct HLS / embed source per channel stream",
+  },
+  {
+    key: "sports",
+    tabLabel: "Sports",
+    title: "Sports stream APIs",
+    sub: "Match discovery & schedule endpoints",
+  },
+  { key: "infra", tabLabel: "Infrastructure", title: "Infrastructure", sub: "App origin & upstream bases" },
 ];
 
 // Build the live-channel rows from the compiled channel list + the override map.
@@ -86,6 +94,8 @@ export default function ProvidersPanel(props) {
   const [rankEdits, setRankEdits] = createSignal({});
   const [tests, setTests] = createSignal({});
   const [busy, setBusy] = createSignal({});
+  const [subTab, setSubTab] = createSignal("embed");
+  const [filter, setFilter] = createSignal("");
 
   const flash = (text, isError = false) => props.onFlash && props.onFlash(text, isError);
 
@@ -126,6 +136,46 @@ export default function ProvidersPanel(props) {
       if (provider.rankOverridden) count += 1;
     }
     return count;
+  });
+
+  // Sub-tabs: one chip per non-empty group, with a row count.
+  const tabs = createMemo(() =>
+    GROUPS.map((group) => ({ ...group, count: (rowsByGroup()[group.key] || []).length })).filter(
+      (group) => group.count > 0,
+    ),
+  );
+  // Keep the active sub-tab valid once the catalog has loaded (or if its group
+  // empties out). Gated on the catalog so the default lands on Rankings rather than
+  // flipping to Live TV during the brief window where only the compiled live rows
+  // exist.
+  createEffect(() => {
+    if (!providers().length) return;
+    const list = tabs();
+    if (list.length && !list.some((t) => t.key === subTab())) setSubTab(list[0].key);
+  });
+  const selectTab = (key) => {
+    setSubTab(key);
+    setFilter("");
+  };
+  // Stable group identity (by key) so switching tabs swaps the view but a save/
+  // reload doesn't churn the whole block.
+  const activeGroup = createMemo(() => GROUPS.find((group) => group.key === subTab()) || null);
+  // Rankings keeps its full sorted list (positions + reorder arrows depend on it);
+  // the longer URL lists (Live TV especially) get a client-side filter so the page
+  // isn't an endless scroll.
+  const filterable = createMemo(() => {
+    const group = activeGroup();
+    return Boolean(group) && group.key !== "embed" && (rowsByGroup()[group.key] || []).length > 8;
+  });
+  const visibleRows = createMemo(() => {
+    const group = activeGroup();
+    if (!group) return [];
+    const rows = rowsByGroup()[group.key] || [];
+    const query = filter().trim().toLowerCase();
+    if (!query || !filterable()) return rows;
+    return rows.filter((row) =>
+      `${row.label} ${row.key} ${row.note || ""}`.toLowerCase().includes(query),
+    );
   });
 
   const editValue = (row) => {
@@ -393,27 +443,62 @@ export default function ProvidersPanel(props) {
         <div class="admin-error">Couldn’t load providers: {error()}</div>
       </Show>
 
-      <Show when={status() !== "error"}>
-        <For each={GROUPS}>
+      <Show when={status() === "loading" && !providers().length}>
+        <p class="admin-provider-empty">Loading providers…</p>
+      </Show>
+
+      <Show when={providers().length}>
+        <div class="admin-subtabs" role="tablist">
+          <For each={tabs()}>
+            {(t) => (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={subTab() === t.key}
+                classList={{ "admin-subtab": true, "is-active": subTab() === t.key }}
+                onClick={() => selectTab(t.key)}
+              >
+                {t.tabLabel}
+                <span class="admin-subtab-count">{t.count}</span>
+              </button>
+            )}
+          </For>
+        </div>
+
+        <Show when={activeGroup()} keyed>
           {(group) => (
-            <Show when={(rowsByGroup()[group.key] || []).length}>
-              <div class="admin-provider-group">
-                <div class="admin-provider-grouphead">
-                  <h3 class="admin-provider-grouptitle">{group.title}</h3>
-                  <span class="admin-provider-groupsub">{group.sub}</span>
-                </div>
-                <Show when={group.hint}>
-                  <p class="admin-provider-grouphint">{group.hint}</p>
-                </Show>
+            <div class="admin-provider-group">
+              <div class="admin-provider-grouphead">
+                <h3 class="admin-provider-grouptitle">{group.title}</h3>
+                <span class="admin-provider-groupsub">{group.sub}</span>
+              </div>
+              <Show when={group.hint}>
+                <p class="admin-provider-grouphint">{group.hint}</p>
+              </Show>
+              <Show when={filterable()}>
+                <input
+                  class="admin-input admin-provider-filter"
+                  type="search"
+                  spellcheck={false}
+                  autocomplete="off"
+                  placeholder={`Filter ${group.tabLabel.toLowerCase()}…`}
+                  value={filter()}
+                  onInput={(e) => setFilter(e.currentTarget.value)}
+                />
+              </Show>
+              <Show
+                when={visibleRows().length}
+                fallback={<p class="admin-provider-empty">No matches for “{filter()}”.</p>}
+              >
                 <div class="admin-provider-list">
-                  <For each={rowsByGroup()[group.key]}>
+                  <For each={visibleRows()}>
                     {(row, index) => <ProviderRow row={row} index={index} />}
                   </For>
                 </div>
-              </div>
-            </Show>
+              </Show>
+            </div>
           )}
-        </For>
+        </Show>
       </Show>
     </section>
   );

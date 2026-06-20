@@ -2365,6 +2365,64 @@ a:focus-visible {
   line-height: 1.5;
   max-width: 64ch;
 }
+.admin-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding-bottom: 13px;
+  border-bottom: 1px solid var(--admin-line-soft);
+}
+.admin-subtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border: 1px solid var(--admin-line-soft);
+  border-radius: 999px;
+  background: var(--admin-bg);
+  color: var(--admin-muted);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+.admin-subtab:hover {
+  color: var(--admin-text);
+  border-color: var(--admin-line);
+}
+.admin-subtab.is-active {
+  background: var(--admin-accent-soft);
+  border-color: var(--admin-accent);
+  color: var(--admin-text);
+}
+.admin-subtab-count {
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--admin-muted-soft);
+  background: var(--admin-surface-2);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.admin-subtab.is-active .admin-subtab-count {
+  color: var(--admin-accent);
+  background: var(--admin-accent-soft);
+}
+.admin-provider-filter {
+  width: 100%;
+  max-width: 360px;
+  margin-bottom: 12px;
+}
+.admin-provider-empty {
+  color: var(--admin-muted);
+  font-size: 0.85rem;
+  padding: 8px 0 4px;
+}
 .admin-rank-row {
   display: flex;
   align-items: center;
@@ -2405,7 +2463,11 @@ a:focus-visible {
   letter-spacing: 0.04em;
 }
 .admin-rank-input {
-  width: 7ch;
+  /* Wide enough for a 4–5 digit weight once the base input padding + the number
+     spinner are accounted for (a bare 7ch clips to the first digit). */
+  width: 96px;
+  padding-left: 8px;
+  padding-right: 8px;
   font-family: var(--admin-mono);
   font-size: 0.8rem;
   text-align: right;
