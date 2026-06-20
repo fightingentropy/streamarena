@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshControl, Text, View } from "react-native";
 import Animated, { useAnimatedScrollHandler, useSharedValue } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -7,13 +7,17 @@ import { getIsOnline } from "@/lib/connectivity";
 import { GlassHeader } from "@/components/nav/GlassHeader";
 import { ProfileButton } from "@/components/profile/ProfileButton";
 import { BillboardHero } from "@/components/title/BillboardHero";
+import { ContinueWatchingActionsSheet } from "@/components/title/ContinueWatchingActionsSheet";
 import { ContinueWatchingRail } from "@/components/title/ContinueWatchingCard";
 import { PosterRail, PosterRailSkeleton } from "@/components/title/PosterRail";
 import { CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
 import { EmptyState } from "@/components/ui/States";
 import { useAccountScope } from "@/lib/auth";
+import { impactLight } from "@/lib/haptics";
 import { titleHref } from "@/lib/nav";
 import {
+  type ContinueWatchingItem,
+  deleteContinueWatching,
   HOME_RAILS,
   homeHero,
   normalizeTmdbTitle,
@@ -38,6 +42,37 @@ export default function HomeScreen() {
     useCallback(() => {
       refetchContinue();
     }, [refetchContinue]),
+  );
+
+  // Long-press context menu for a Continue Watching card. `hiddenCW` optimistically drops a
+  // removed title from the rail immediately; the self-clean effect forgets ids once the
+  // server list no longer carries them, so a re-watched title can reappear.
+  const [menuItem, setMenuItem] = useState<ContinueWatchingItem | null>(null);
+  const [hiddenCW, setHiddenCW] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    setHiddenCW((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set([...prev].filter((id) => continueItems.some((i) => i.sourceIdentity === id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [continueItems]);
+  const visibleContinue = useMemo(
+    () => continueItems.filter((i) => !hiddenCW.has(i.sourceIdentity)),
+    [continueItems, hiddenCW],
+  );
+  const onItemLongPress = useCallback((it: ContinueWatchingItem) => {
+    impactLight();
+    setMenuItem(it);
+  }, []);
+  const onRemoveCW = useCallback(
+    (it: ContinueWatchingItem) => {
+      setHiddenCW((prev) => new Set(prev).add(it.sourceIdentity));
+      setMenuItem(null);
+      void deleteContinueWatching(it.sourceIdentity, it.seriesId || undefined, scope)
+        .then(() => refetchContinue())
+        .catch(() => {});
+    },
+    [scope, refetchContinue],
   );
 
   const [refreshing, setRefreshing] = useState(false);
@@ -93,7 +128,9 @@ export default function HomeScreen() {
         )}
 
         <View style={{ marginTop: hero ? 8 : 0 }}>
-          {continueItems.length > 0 ? <ContinueWatchingRail items={continueItems} /> : null}
+          {visibleContinue.length > 0 ? (
+            <ContinueWatchingRail items={visibleContinue} onItemLongPress={onItemLongPress} />
+          ) : null}
 
           {showSkeleton ? (
             <>
@@ -129,6 +166,8 @@ export default function HomeScreen() {
       </Animated.ScrollView>
 
       <GlassHeader scrollY={scrollY} left={wordmark} right={<ProfileButton />} fadeStart={180} fadeEnd={380} />
+
+      <ContinueWatchingActionsSheet item={menuItem} onClose={() => setMenuItem(null)} onRemove={onRemoveCW} />
     </View>
   );
 }

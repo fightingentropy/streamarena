@@ -4,22 +4,16 @@ import { useRouter } from "expo-router";
 import { Play } from "lucide-react-native";
 import { PosterImage } from "@/components/PosterImage";
 import { PressableScale } from "@/components/ui/PressableScale";
-import { titleHref, watchHref } from "@/lib/nav";
+import { buildResumeHref } from "@/lib/continue-watching";
 import { type ContinueWatchingItem, type MediaType, useTitleDetails } from "@/lib/streamarena";
 import { colors, layout } from "@/theme";
 
-// Pull season/episode out of a TV continue-watching entry. sourceIdentity is the canonical
-// resume key (tmdb:tv:<id>:s<season>:e<episode>); fall back to the display "S1 E5" label.
-// Returns null when neither yields a season+episode.
-function tvSeasonEpisode(item: ContinueWatchingItem): { season: number; episode: number } | null {
-  const fromId = /:s(\d+):e(\d+)\b/i.exec(item.sourceIdentity ?? "");
-  if (fromId) return { season: Number(fromId[1]), episode: Number(fromId[2]) };
-  const fromLabel = /\bS(\d+)\s*E(\d+)\b/i.exec(item.episode ?? "");
-  if (fromLabel) return { season: Number(fromLabel[1]), episode: Number(fromLabel[2]) };
-  return null;
-}
+type CardProps = {
+  item: ContinueWatchingItem;
+  onLongPress?: (item: ContinueWatchingItem) => void;
+};
 
-const CardItem = memo(function CardItem({ item }: { item: ContinueWatchingItem }) {
+const CardItem = memo(function CardItem({ item, onLongPress }: CardProps) {
   const router = useRouter();
   const w = layout.stillWidth;
   const h = layout.stillHeight;
@@ -39,33 +33,22 @@ const CardItem = memo(function CardItem({ item }: { item: ContinueWatchingItem }
       ? Math.max(4, Math.min(96, Math.round((resumeSeconds / estDurationSeconds) * 100)))
       : 24;
 
-  // These cards are already mid-title, so resume straight into the player and skip the
-  // detail/summary page. TV needs a concrete season+episode; if we can't determine one,
-  // fall back to the detail page rather than open a player that can't pick an episode.
+  // These cards are already mid-title, so resume straight into the player. seasonCount (TV)
+  // lets the player roll into the next season on finish; see buildResumeHref for the rest.
   const onPress = () => {
-    if (!item.tmdbId) return;
-    const extra: Record<string, string> = { mediaType };
-    if (item.title) extra.title = item.title;
-    if (item.year) extra.year = item.year;
-    if (item.thumb) extra.poster = item.thumb;
-    if (mediaType === "tv") {
-      const se = tvSeasonEpisode(item);
-      if (!se) {
-        router.push(titleHref(mediaType, item.tmdbId));
-        return;
-      }
-      extra.seasonNumber = String(se.season);
-      extra.episodeNumber = String(se.episode);
-      // seasonCount lets the player roll into the next season on finish; episodeCount is
-      // unknown without a season fetch, so within-season autoplay stays optimistic.
-      if (details?.number_of_seasons) extra.seasonCount = String(details.number_of_seasons);
-    }
-    router.push(watchHref(item.tmdbId, extra));
+    const href = buildResumeHref(item, details?.number_of_seasons);
+    if (href) router.push(href);
   };
   const label = item.episode ? `${item.title ?? ""} · ${item.episode}` : item.title ?? "";
 
   return (
-    <PressableScale onPress={onPress} style={{ width: w }} accessibilityLabel={`Resume ${item.title ?? ""}`}>
+    <PressableScale
+      onPress={onPress}
+      onLongPress={onLongPress ? () => onLongPress(item) : undefined}
+      delayLongPress={300}
+      style={{ width: w }}
+      accessibilityLabel={`Resume ${item.title ?? ""}`}
+    >
       <View style={{ width: w, height: h, borderRadius: 6, overflow: "hidden", backgroundColor: "#1a1a1a" }}>
         <PosterImage uri={item.thumb || item.src} style={{ width: w, height: h }} />
         <View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center" }}>
@@ -96,8 +79,17 @@ const CardItem = memo(function CardItem({ item }: { item: ContinueWatchingItem }
   );
 });
 
-export function ContinueWatchingRail({ items }: { items: ContinueWatchingItem[] }) {
-  const renderItem = useCallback(({ item }: ListRenderItemInfo<ContinueWatchingItem>) => <CardItem item={item} />, []);
+export function ContinueWatchingRail({
+  items,
+  onItemLongPress,
+}: {
+  items: ContinueWatchingItem[];
+  onItemLongPress?: (item: ContinueWatchingItem) => void;
+}) {
+  const renderItem = useCallback(
+    ({ item }: ListRenderItemInfo<ContinueWatchingItem>) => <CardItem item={item} onLongPress={onItemLongPress} />,
+    [onItemLongPress],
+  );
   const keyExtractor = useCallback((item: ContinueWatchingItem) => item.sourceIdentity, []);
   if (!items.length) return null;
   return (
