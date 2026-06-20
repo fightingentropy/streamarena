@@ -781,7 +781,12 @@ impl StreamingService {
         //    then stream-copied.
         let (ffmpeg_input, is_hls, filename_source) =
             if let Some(path_query) = live_hls_proxy_path_query(input) {
-                let uri: Uri = path_query
+                // ffmpeg can't strip the raw (PNG-stego) segments that `directSeg=1` passes
+                // through for on-device players, so force the proxy's transcode path for the
+                // server-side remux — same as `resolve_hls_source` does for playback. Without
+                // this the export fetches stego segments and ffmpeg fails ("dimensions not set").
+                let proxied = strip_live_hls_direct_seg(&path_query);
+                let uri: Uri = proxied
                     .parse()
                     .map_err(|_| ApiError::bad_request("Invalid download source."))?;
                 if !crate::live::is_signed_live_hls_request(
@@ -790,7 +795,7 @@ impl StreamingService {
                 ) {
                     return Err(ApiError::bad_request("Invalid or unsigned download source."));
                 }
-                let url = format!("http://127.0.0.1:{}{}", self.config.port, path_query);
+                let url = format!("http://127.0.0.1:{}{}", self.config.port, proxied);
                 (url, true, "download.mp4".to_owned())
             } else {
                 let source = self.media.resolve_transcode_input(input)?;
