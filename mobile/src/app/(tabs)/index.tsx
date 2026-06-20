@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { RefreshControl, Text, View } from "react-native";
 import Animated, { useAnimatedScrollHandler, useSharedValue } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { getIsOnline } from "@/lib/connectivity";
 import { GlassHeader } from "@/components/nav/GlassHeader";
 import { ProfileButton } from "@/components/profile/ProfileButton";
@@ -28,14 +28,25 @@ export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { data: home, loading, error, refetch } = useHomeBootstrap(scope);
-  const { items: continueItems } = useContinueWatching(scope);
+  const { items: continueItems, refetch: refetchContinue } = useContinueWatching(scope);
+
+  // Continue Watching is written by the player (after ~5s of playback) and the cache is
+  // invalidated, but the invalidation doesn't notify mounted hooks — so without this the
+  // rail only picks up a freshly-watched title on a cold relaunch. Re-fetch whenever Home
+  // regains focus (returning from the player, or switching back to this tab).
+  useFocusEffect(
+    useCallback(() => {
+      refetchContinue();
+    }, [refetchContinue]),
+  );
 
   const [refreshing, setRefreshing] = useState(false);
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     refetch(); // background re-fetch; updates `home` when it lands
+    refetchContinue(); // pull-to-refresh should refresh the Continue Watching rail too
     setTimeout(() => setRefreshing(false), 1200);
-  }, [refetch]);
+  }, [refetch, refetchContinue]);
 
   const scrollY = useSharedValue(0);
   const onScroll = useAnimatedScrollHandler((e) => {

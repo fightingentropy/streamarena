@@ -418,12 +418,12 @@ const EMPTY_ENTRIES: EntriesEnvelope<never> = { entries: [] };
 const EMPTY_PREFS: UserPreferences = {};
 
 export function useContinueWatching(scope?: string | null) {
-  const { data, loading, error } = useApiData<EntriesEnvelope<ContinueWatchingItem>>(
+  const { data, loading, error, refetch } = useApiData<EntriesEnvelope<ContinueWatchingItem>>(
     withAccountScope("/api/user/continue-watching", scope),
     EMPTY_ENTRIES,
     { enabled: !!scope, keepPreviousData: true },
   );
-  return { items: data.entries ?? [], loading, error };
+  return { items: data.entries ?? [], loading, error, refetch };
 }
 
 export function useMyList(scope?: string | null) {
