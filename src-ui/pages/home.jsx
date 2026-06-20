@@ -248,6 +248,13 @@ function setArtworkImageFallback(image) {
   if (!(image instanceof HTMLImageElement)) {
     return;
   }
+  if (image.classList.contains("card-rail-logo")) {
+    // A missing title-logo should reveal the styled text title beneath it, not swap in a
+    // generic thumbnail. Drop the logo and clear the flag so the `.card-rail-title` shows.
+    image.closest(".card-rail-art")?.classList.remove("has-logo");
+    image.remove();
+    return;
+  }
   const fallbackPath = image.classList.contains("hero-poster")
     ? "assets/images/thumbnail-top10-h.jpg"
     : DEFAULT_LOCAL_THUMBNAIL;
@@ -833,6 +840,8 @@ function createFeaturedHeroFromTmdbItem(
     : posterPath
       ? `${imageBase}/w780${posterPath}`
       : "assets/images/thumbnail-top10-h.jpg";
+  const logoPath = String(item?.logo_path || "").trim();
+  const logoUrl = logoPath ? `${imageBase}/w500${logoPath}` : "";
   const genreNames = (Array.isArray(item?.genre_ids) ? item.genre_ids : [])
     .map((id) => genreMap.get(id))
     .filter(Boolean)
@@ -849,6 +858,7 @@ function createFeaturedHeroFromTmdbItem(
     year,
     runtime: "Movie",
     maturity: item?.adult ? "18+" : "13+",
+    logoUrl,
     tagline: String(item?.tagline || "").trim(),
     description:
       String(item?.overview || "").trim() || "No description available.",
@@ -1423,6 +1433,7 @@ export default function HomePage() {
   const [searchBoxOpen, setSearchBoxOpen] = createSignal(false);
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
   const [featuredHero, setFeaturedHero] = createSignal(createDefaultFeaturedHero());
+  const [failedHeroLogos, setFailedHeroLogos] = createSignal(new Set());
   const [featuredHeroReady, setFeaturedHeroReady] = createSignal(false);
   const [featuredHeroCandidates, setFeaturedHeroCandidates] = createSignal([]);
   const [featuredHeroIndex, setFeaturedHeroIndex] = createSignal(0);
@@ -1644,6 +1655,25 @@ export default function HomePage() {
       seriesId: params.get("seriesId") || "",
     });
     window.location.href = playerUrl;
+  }
+
+  // The featured-hero title-logo, unless it has already failed to load (then the hero
+  // falls back to its stacked text title).
+  function heroLogoSrc() {
+    const url = String(featuredHero()?.logoUrl || "").trim();
+    return url && !failedHeroLogos().has(url) ? url : "";
+  }
+
+  function handleHeroLogoError(event) {
+    const url = event.currentTarget?.getAttribute("src");
+    if (!url) {
+      return;
+    }
+    setFailedHeroLogos((previous) => {
+      const next = new Set(previous);
+      next.add(url);
+      return next;
+    });
   }
 
   function getHeroDestination() {
@@ -2859,6 +2889,9 @@ export default function HomePage() {
     const heroUrl = backdropPath
       ? `${imageBase}/w1280${backdropPath}`
       : posterUrl;
+    const logoPath =
+      typeof item.logo_path === "string" ? item.logo_path.trim() : "";
+    const logoUrl = logoPath ? `${imageBase}/w500${logoPath}` : "";
     const maturity = item.adult ? "18" : "13+";
     const mediaLabel = mediaType === "tv" ? "Series" : "Movie";
     const genreNames = (item.genre_ids || [])
@@ -2911,10 +2944,15 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
-        <div class="card-rail-art">
+        <div class="card-rail-art${logoUrl ? " has-logo" : ""}">
           ${top10BadgeMarkup}
           <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />
           <div class="card-rail-shade" aria-hidden="true"></div>
+          ${
+            logoUrl
+              ? `<img class="card-rail-logo" src="${escapeHtml(logoUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />`
+              : ""
+          }
           <span class="card-rail-title" aria-hidden="true">${displayTitle}</span>
         </div>
         ${recentBadgeMarkup}
@@ -5251,12 +5289,21 @@ export default function HomePage() {
         >
           <h1
             id="heroTitle"
-            class="hero-title-stacked"
+            class={`hero-title-stacked${heroLogoSrc() ? " has-logo" : ""}`}
             tabindex="0"
             aria-label={`Open ${featuredHero().title || "featured movie"} player`}
             onClick={handleHeroTitleClick}
             onKeydown={handleHeroTitleKeydown}
           >
+            {heroLogoSrc() ? (
+              <img
+                class="hero-title-logo"
+                src={heroLogoSrc()}
+                alt={featuredHero().title || "Featured title"}
+                decoding="async"
+                onError={handleHeroLogoError}
+              />
+            ) : null}
             {getFeaturedHeroTitleLines(featuredHero()).map(
                 (line) => <><span>{line}</span></>,
               )}

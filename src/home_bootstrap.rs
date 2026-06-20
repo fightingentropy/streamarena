@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use futures_util::future::join_all;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tracing::warn;
@@ -12,6 +13,7 @@ use crate::routes::AppState;
 use crate::utils::now_ms;
 
 const TMDB_FETCH_TIMEOUT_MS: u64 = 8_000;
+const TMDB_IMAGES_TIMEOUT_MS: u64 = 8_000;
 const BOOTSTRAP_PAGE: &str = "1";
 const HOME_BOOTSTRAP_REFRESH_AFTER_MS: i64 = 15 * 60 * 1000;
 const HOME_BOOTSTRAP_RAIL_LIMIT: usize = 14;
@@ -302,6 +304,19 @@ pub async fn build_home_bootstrap(
         "nowPlaying",
     );
 
+    // Enrich every rail with TMDB title-logo art so cards — and the featured hero, which
+    // rotates through `popular` — render each title's wordmark instead of plain overlaid
+    // text. Runs inside the background bootstrap refresh, and each `/images` lookup is cached
+    // by the TMDB layer, so the request hot path never pays for it. Sequential awaits keep
+    // the peak number of in-flight `/images` requests modest.
+    let movie_popular_payload = enrich_rail_with_logos(state, movie_popular_payload, "movie").await;
+    let movie_crowd_payload = enrich_rail_with_logos(state, movie_crowd_payload, "movie").await;
+    let movie_acclaimed_payload =
+        enrich_rail_with_logos(state, movie_acclaimed_payload, "movie").await;
+    let tv_binge_payload = enrich_rail_with_logos(state, tv_binge_payload, "tv").await;
+    let tv_popular_payload = enrich_rail_with_logos(state, tv_popular_payload, "tv").await;
+    let tv_acclaimed_payload = enrich_rail_with_logos(state, tv_acclaimed_payload, "tv").await;
+
     Ok(json!({
         "imageBase": "https://image.tmdb.org/t/p",
         "genres": genres_or_previous(merge_genres(&movie_genres, &tv_genres), previous),
@@ -548,6 +563,124 @@ fn slim_tmdb_item(item: Value) -> Value {
     Value::Object(slim)
 }
 
+/// Attach a `logo_path` (TMDB title-treatment artwork) to each item of an already-slimmed
+/// rail, so its cards can render the show's wordmark in place of plain overlaid text.
+/// Lookups run concurrently and lean on the TMDB response cache for repeat refreshes.
+async fn enrich_rail_with_logos(state: &AppState, rail: Value, default_media_type: &str) -> Value {
+    let Value::Object(mut object) = rail else {
+        return rail;
+    };
+    let Some(Value::Array(results)) = object.remove("results") else {
+        object.insert("results".to_owned(), Value::Array(Vec::new()));
+        return Value::Object(object);
+    };
+
+    let enriched = join_all(
+        results
+            .into_iter()
+            .map(|item| enrich_item_with_logo(state, item, default_media_type)),
+    )
+    .await;
+    object.insert("results".to_owned(), Value::Array(enriched));
+    Value::Object(object)
+}
+
+async fn enrich_item_with_logo(
+    state: &AppState,
+    mut item: Value,
+    default_media_type: &str,
+) -> Value {
+    let Value::Object(map) = &mut item else {
+        return item;
+    };
+    let Some(id) = map.get("id").and_then(tmdb_id_as_string) else {
+        return item;
+    };
+    let media_type = map
+        .get("media_type")
+        .and_then(Value::as_str)
+        .filter(|media_type| *media_type == "movie" || *media_type == "tv")
+        .unwrap_or(default_media_type)
+        .to_owned();
+    if let Some(logo_path) = fetch_logo_path(state, &id, &media_type).await {
+        map.insert("logo_path".to_owned(), Value::String(logo_path));
+    }
+    item
+}
+
+async fn fetch_logo_path(state: &AppState, id: &str, media_type: &str) -> Option<String> {
+    let path = format!("/{media_type}/{id}/images");
+    let mut params = BTreeMap::new();
+    // The TMDB client forces `language=en-US`; widen the result so language-neutral ("null")
+    // logos come back too, then pick the best English/most-voted wordmark ourselves.
+    params.insert("include_image_language".to_owned(), "en,null".to_owned());
+    let payload = state
+        .tmdb
+        .fetch(&path, params, TMDB_IMAGES_TIMEOUT_MS)
+        .await
+        .ok()?;
+    select_best_logo_path(&payload)
+}
+
+fn tmdb_id_as_string(value: &Value) -> Option<String> {
+    match value {
+        Value::Number(number) => Some(number.to_string()),
+        Value::String(text) if !text.trim().is_empty() => Some(text.trim().to_owned()),
+        _ => None,
+    }
+}
+
+/// Pick the best title-logo `file_path` from a TMDB `/images` payload: raster (PNG) only,
+/// preferring an English wordmark, then the highest community rating.
+fn select_best_logo_path(payload: &Value) -> Option<String> {
+    let logos = payload.get("logos").and_then(Value::as_array)?;
+    let mut best: Option<LogoCandidate<'_>> = None;
+    for logo in logos {
+        let Some(file_path) = logo.get("file_path").and_then(Value::as_str) else {
+            continue;
+        };
+        let file_path = file_path.trim();
+        // SVG logos don't resize through the `/t/p/w{N}` CDN, so keep to raster wordmarks.
+        if !file_path.to_ascii_lowercase().ends_with(".png") {
+            continue;
+        }
+        let candidate = LogoCandidate {
+            file_path,
+            is_english: logo
+                .get("iso_639_1")
+                .and_then(Value::as_str)
+                .is_some_and(|language| language.eq_ignore_ascii_case("en")),
+            vote_average: logo
+                .get("vote_average")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+            vote_count: logo.get("vote_count").and_then(Value::as_i64).unwrap_or(0),
+        };
+        if best
+            .as_ref()
+            .is_none_or(|current| candidate.is_better_than(current))
+        {
+            best = Some(candidate);
+        }
+    }
+    best.map(|candidate| candidate.file_path.to_owned())
+}
+
+struct LogoCandidate<'a> {
+    file_path: &'a str,
+    is_english: bool,
+    vote_average: f64,
+    vote_count: i64,
+}
+
+impl LogoCandidate<'_> {
+    fn is_better_than(&self, other: &Self) -> bool {
+        // English wordmark wins first, then the better-rated logo.
+        (self.is_english, self.vote_average, self.vote_count)
+            > (other.is_english, other.vote_average, other.vote_count)
+    }
+}
+
 fn library_empty_value() -> Value {
     json!({ "movies": [], "series": [] })
 }
@@ -626,10 +759,52 @@ fn civil_from_unix_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
 mod tests {
     use super::{
         MOVIE_POPULAR_QUALITY, bootstrap_data_tag, genres_or_previous, inject_bootstrap_into_html,
-        rail_payload_or_previous, tmdb_list_payload_with_quality, utc_date_from_unix_days,
+        rail_payload_or_previous, select_best_logo_path, tmdb_list_payload_with_quality,
+        utc_date_from_unix_days,
     };
     use crate::error::ApiError;
     use serde_json::json;
+
+    #[test]
+    fn select_best_logo_prefers_english_png_by_votes() {
+        let payload = json!({
+            "logos": [
+                // Highest-voted overall, but French — English must still win.
+                { "file_path": "/french.png", "iso_639_1": "fr", "vote_average": 9.5, "vote_count": 80 },
+                { "file_path": "/english-low.png", "iso_639_1": "en", "vote_average": 5.0, "vote_count": 3 },
+                { "file_path": "/english-high.png", "iso_639_1": "en", "vote_average": 8.0, "vote_count": 40 },
+                // Best-rated English logo, but SVG — skipped in favor of the raster wordmark.
+                { "file_path": "/english.svg", "iso_639_1": "en", "vote_average": 10.0, "vote_count": 99 }
+            ]
+        });
+        assert_eq!(
+            select_best_logo_path(&payload).as_deref(),
+            Some("/english-high.png")
+        );
+    }
+
+    #[test]
+    fn select_best_logo_skips_svg_falls_back_to_neutral_and_handles_missing() {
+        let only_svg = json!({
+            "logos": [
+                { "file_path": "/wordmark.svg", "iso_639_1": "en", "vote_average": 9.0, "vote_count": 9 }
+            ]
+        });
+        assert_eq!(select_best_logo_path(&only_svg), None);
+        assert_eq!(select_best_logo_path(&json!({})), None);
+        assert_eq!(select_best_logo_path(&json!({ "logos": [] })), None);
+
+        // With no English logo, a language-neutral PNG is still a usable wordmark.
+        let neutral = json!({
+            "logos": [
+                { "file_path": "/neutral.png", "iso_639_1": null, "vote_average": 3.0, "vote_count": 1 }
+            ]
+        });
+        assert_eq!(
+            select_best_logo_path(&neutral).as_deref(),
+            Some("/neutral.png")
+        );
+    }
 
     #[test]
     fn escapes_json_data_script_breakout_sequences() {
