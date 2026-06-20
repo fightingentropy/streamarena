@@ -235,11 +235,17 @@ impl TmdbService {
         extend_expires_at: Option<i64>,
     ) -> AppResult<Option<Value>> {
         if let Some(entry) = self.cache.get(cache_key) {
-            if entry.expires_at > now_ms() {
+            // Copy out what we need and release this shard's read lock *before* touching the
+            // same DashMap shard again. `entry` is an owned `Ref` guard, so it lives until the
+            // end of this block — calling `cache.entry()`/`cache.remove()` (shard write lock)
+            // while it is still held self-deadlocks the shard, which then wedges every tokio
+            // worker that subsequently touches it (observed as a full-runtime hang).
+            let existing_expires_at = entry.expires_at;
+            let value = (entry.expires_at > now_ms()).then(|| entry.value.clone());
+            drop(entry);
+
+            if let Some(value) = value {
                 self.hits.fetch_add(1, Ordering::Relaxed);
-                let existing_expires_at = entry.expires_at;
-                let value = entry.value.clone();
-                drop(entry);
                 let extended_expires_at =
                     cache_extension_expires_at(extend_expires_at, existing_expires_at);
                 self.cache.entry(cache_key.to_owned()).and_modify(|e| {
@@ -255,6 +261,7 @@ impl TmdbService {
                 }
                 return Ok(Some(value));
             }
+
             self.cache.remove(cache_key);
             self.expired.fetch_add(1, Ordering::Relaxed);
         }
