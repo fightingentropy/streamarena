@@ -262,29 +262,39 @@ export function createHlsPlaybackController({
           const createFastFailureLoadPolicy = (
             maxTimeToFirstByteMs,
             maxLoadTimeMs,
+            { maxNumRetry = 0, retryDelayMs = 0, maxRetryDelayMs = 0 } = {},
           ) => ({
             default: {
               maxTimeToFirstByteMs,
               maxLoadTimeMs,
               timeoutRetry: {
-                maxNumRetry: 0,
-                retryDelayMs: 0,
-                maxRetryDelayMs: 0,
+                maxNumRetry,
+                retryDelayMs,
+                maxRetryDelayMs,
               },
               errorRetry: {
-                maxNumRetry: 0,
-                retryDelayMs: 0,
-                maxRetryDelayMs: 0,
+                maxNumRetry,
+                retryDelayMs,
+                maxRetryDelayMs,
               },
             },
           });
+          // Playlists/manifests stay zero-retry so a genuinely dead source is
+          // abandoned fast during startup failover (this is what makes a bad
+          // candidate give up in ~20-45s instead of hls.js's long defaults).
           const fastFailurePlaylistLoadPolicy = createFastFailureLoadPolicy(
             20000,
             45000,
           );
+          // Segments/keys keep the tight startup timeouts but get a small retry
+          // budget: a single slow/failed fragment — common right after a far seek
+          // on a bandwidth-limited embed CDN (e.g. LordFlix's proxied segments) —
+          // must self-heal in place rather than killing the whole source and
+          // bouncing the viewer to another provider from the start.
           const fastFailureResourceLoadPolicy = createFastFailureLoadPolicy(
             30000,
             60000,
+            { maxNumRetry: 2, retryDelayMs: 500, maxRetryDelayMs: 2000 },
           );
           const pngStrippingLoader =
             createPngPrefixStrippingLoader(HlsConstructor);
@@ -314,6 +324,12 @@ export function createHlsPlaybackController({
               : {}),
           });
           let hlsRecoveryAttempts = 0;
+          // Becomes true once this source has actually appended media (a buffered
+          // fragment). Fast-fail / immediate provider-switch on a network error is
+          // only appropriate while the source is still trying to start; once it has
+          // proven it plays, a transient error (e.g. a far-seek segment hiccup) must
+          // recover in place on the SAME source, never silently switch providers.
+          let sourceHasStartedPlayback = false;
           activeHlsController = hls;
           qualityLevels = [];
           selectedQualityLevel = -1;
@@ -325,8 +341,11 @@ export function createHlsPlaybackController({
             }
             if (
               data.type === HlsConstructor.ErrorTypes.NETWORK_ERROR &&
-              failFastNetworkErrors
+              failFastNetworkErrors &&
+              !sourceHasStartedPlayback
             ) {
+              // Startup-only fast failover: the source never produced playable media,
+              // so abandon it quickly and let the player try the next candidate.
               handleHlsPlaybackFailure(
                 data.details
                   ? `HLS playback failed (${data.details}).`
@@ -336,8 +355,11 @@ export function createHlsPlaybackController({
             }
             if (
               data.type === HlsConstructor.ErrorTypes.NETWORK_ERROR &&
-              hlsRecoveryAttempts < 1
+              hlsRecoveryAttempts < 2
             ) {
+              // The source is already playing (or fast-fail is off): resume loading
+              // the SAME source at the current position. This is the path a post-seek
+              // segment error takes — it must not switch providers or restart at zero.
               hlsRecoveryAttempts += 1;
               hls.startLoad();
               return;
@@ -391,6 +413,12 @@ export function createHlsPlaybackController({
           });
           hls.on(HlsConstructor.Events.FRAG_BUFFERED, () => {
             if (activeHlsController === hls) {
+              // A buffered fragment is real, playable progress: the source works.
+              // From here on, transient errors recover in place instead of tripping
+              // the startup fast-fail that would switch providers, and each clean
+              // segment refreshes the in-place retry budget for the next hiccup.
+              sourceHasStartedPlayback = true;
+              hlsRecoveryAttempts = 0;
               // Each appended segment is forward progress — keeps a slow-but-working
               // source (e.g. a cold transcode buffering a far seek) from being treated
               // as a failed startup.
