@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo } from "react";
 import { FlatList, type ListRenderItemInfo, Text, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useFocusEffect } from "expo-router";
 import { PosterCard } from "@/components/title/PosterCard";
 import { ContinueWatchingRail } from "@/components/title/ContinueWatchingCard";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -38,11 +39,21 @@ export default function MyListScreen() {
   const items = useMyListStore((s) => s.items);
   const hydrated = useMyListStore((s) => s.hydrated);
   const loading = useMyListStore((s) => s.loading);
-  const { items: continueItems } = useContinueWatching(accountScope);
+  const { items: continueItems, refetch: refetchContinue } = useContinueWatching(accountScope);
 
   useEffect(() => {
     useMyListStore.getState().hydrate(accountScope);
   }, [accountScope]);
+
+  // The Continue Watching cache is invalidated on removal but mounted hooks aren't notified
+  // (invalidateUserDataCache emits no event), so re-pull whenever this tab regains focus —
+  // otherwise a title removed from the Home rail lingers in this tab's "Continue Watching"
+  // header until a cold relaunch. Mirrors the Home screen's refetch-on-focus.
+  useFocusEffect(
+    useCallback(() => {
+      refetchContinue();
+    }, [refetchContinue]),
+  );
 
   // `items` is a stable Zustand slice (changes only on real mutation), so memoizing keeps a
   // stable `data` identity for FlatList — no re-diff/re-render of rows on unrelated renders.
