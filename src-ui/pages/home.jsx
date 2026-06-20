@@ -2909,17 +2909,18 @@ export default function HomePage() {
         .trim()
         .toUpperCase(),
     );
-    const top10BadgeMarkup =
-      cardIndex >= 0 && cardIndex < TOP_TEN_RAIL_LIMIT
-        ? `<span class="card-top10-badge" aria-hidden="true"><span class="card-top10-badge-label">TOP</span><span class="card-top10-badge-rank">${cardIndex + 1}</span></span>`
-        : "";
-    const recentBadgeMarkup =
-      cardIndex >= 0 && cardIndex < TOP_TEN_RAIL_LIMIT
-        ? `<span class="card-recent-badge">Recently Added</span>`
-        : "";
+    const isTop10 = cardIndex >= 0 && cardIndex < TOP_TEN_RAIL_LIMIT;
+    // Top 10 cards use the portrait poster (with its title baked in) next to a giant rank.
+    const posterPortraitPath = item.poster_path || item.backdrop_path;
+    const posterPortraitUrl = posterPortraitPath
+      ? `${imageBase}/w500${posterPortraitPath}`
+      : "assets/images/thumbnail.jpg";
+    const recentBadgeMarkup = isTop10
+      ? `<span class="card-recent-badge">Recently Added</span>`
+      : "";
 
     const card = document.createElement("article");
-    card.className = "card";
+    card.className = isTop10 ? "card card--top10" : "card";
     card.tabIndex = 0;
     card.dataset.title = title;
     card.dataset.episode = year || "";
@@ -2942,10 +2943,18 @@ export default function HomePage() {
     card.dataset.tmdbId = String(item.id);
     card.dataset.mediaType = mediaType;
 
-    card.innerHTML = `
+    const cardBaseMarkup = isTop10
+      ? `
+      <div class="card-base card-base--top10">
+        <span class="card-rank" aria-hidden="true">${cardIndex + 1}</span>
+        <div class="card-rank-poster">
+          <img src="${escapeHtml(posterPortraitUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />
+          ${recentBadgeMarkup}
+        </div>
+      </div>`
+      : `
       <div class="card-base">
         <div class="card-rail-art${logoUrl ? " has-logo" : ""}">
-          ${top10BadgeMarkup}
           <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />
           <div class="card-rail-shade" aria-hidden="true"></div>
           ${
@@ -2955,8 +2964,10 @@ export default function HomePage() {
           }
           <span class="card-rail-title" aria-hidden="true">${displayTitle}</span>
         </div>
-        ${recentBadgeMarkup}
-      </div>
+      </div>`;
+
+    card.innerHTML = `
+      ${cardBaseMarkup}
       <div class="card-hover">
         <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" decoding="async" />
         <div class="card-hover-body">

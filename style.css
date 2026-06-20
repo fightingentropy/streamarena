@@ -705,37 +705,59 @@
     cursor: default;
 }
 
-.home-popular-row .card-top10-badge {
-    position: absolute;
-    top: 0;
-    right: 0;
-    z-index: 3;
+/* Netflix-style Top 10 rail: a giant rank numeral beside the portrait poster. */
+.home-popular-row .card.card--top10 {
+    --top10-poster-w: clamp(116px, 12vw, 168px);
+    flex: 0 0 auto;
+    width: auto;
+    background: transparent;
+    overflow: visible;
+}
+
+.home-popular-row .card--top10 .card-base--top10 {
     display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    width: 42px;
-    min-height: 52px;
-    padding: 5px 4px 12px;
-    background: linear-gradient(180deg, #f40612 0%, #c11119 100%);
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), 50% 100%, 0 calc(100% - 10px));
+    align-items: flex-end;
+    background: transparent;
+    border-radius: 0;
+    overflow: visible;
 }
 
-.home-popular-row .card-top10-badge-label {
-    font-size: 0.5rem;
-    font-weight: 800;
-    line-height: 1;
-    letter-spacing: 0.08em;
-}
-
-.home-popular-row .card-top10-badge-rank {
-    margin-top: 2px;
-    font-size: 1.35rem;
+.home-popular-row .card--top10 .card-rank {
+    flex: 0 0 auto;
+    margin: 0 calc(var(--top10-poster-w) * -0.34) 0 0;
+    font-family: "Arial Black", "Helvetica Neue", Arial, sans-serif;
+    font-size: calc(var(--top10-poster-w) * 2.05);
     font-weight: 900;
-    line-height: 0.9;
-    letter-spacing: -0.04em;
+    line-height: 0.66;
+    letter-spacing: -0.07em;
+    color: #0c0c0c;
+    -webkit-text-stroke: 2.5px #5b5b5b;
+    user-select: none;
+    -webkit-user-select: none;
+    pointer-events: none;
+}
+
+.home-popular-row .card--top10 .card-rank-poster {
+    position: relative;
+    z-index: 1;
+    flex: 0 0 var(--top10-poster-w);
+    width: var(--top10-poster-w);
+    aspect-ratio: 2 / 3;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.55);
+}
+
+.home-popular-row .card--top10 .card-rank-poster img {
+    width: 100%;
+    height: 100%;
+    aspect-ratio: auto;
+    border-radius: 0;
+    object-fit: cover;
+}
+
+.home-popular-row .card--top10 .card-recent-badge {
+    bottom: 8px;
 }
 
 .home-popular-row .card-recent-badge {
