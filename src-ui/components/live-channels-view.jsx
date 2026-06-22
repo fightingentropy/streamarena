@@ -1,3 +1,5 @@
+import { createSignal, For } from "solid-js";
+
 import { LIVE_CHANNELS } from "../lib/live-channels.js";
 import {
   addCurrentReturnToParam,
@@ -126,13 +128,59 @@ function renderChannelCard(channel) {
   </>;
 }
 
+const LIVE_CATEGORY_ORDER = ["Sports", "News", "General", "Business"];
+
+// Build the chip list from the genres actually present, in a friendly order, with
+// any unexpected genre appended so nothing silently disappears from the filter.
+function liveCategories() {
+  const present = new Set();
+  for (const channel of LIVE_CHANNELS) {
+    if (channel.genre) {
+      present.add(channel.genre);
+    }
+  }
+  const ordered = LIVE_CATEGORY_ORDER.filter((genre) => present.has(genre));
+  for (const genre of present) {
+    if (!ordered.includes(genre)) {
+      ordered.push(genre);
+    }
+  }
+  return ["All", ...ordered];
+}
+
 export default function LiveChannelsView() {
+  const categories = liveCategories();
+  const [activeCategory, setActiveCategory] = createSignal("All");
+  const visibleChannels = () => {
+    const active = activeCategory();
+    return active === "All"
+      ? LIVE_CHANNELS
+      : LIVE_CHANNELS.filter((channel) => channel.genre === active);
+  };
+
   return <>
     <main class="live-main">
       <section class="live-channel-section">
         <h2>Live Channels</h2>
+        <div class="live-category-filter" role="group" aria-label="Filter channels by category">
+          <For each={categories}>
+            {(category) => (
+              <button
+                type="button"
+                class="live-category-chip"
+                classList={{ "is-active": activeCategory() === category }}
+                aria-pressed={activeCategory() === category}
+                onClick={() => setActiveCategory(category)}
+              >
+                {category}
+              </button>
+            )}
+          </For>
+        </div>
         <div class="live-channel-grid">
-          {LIVE_CHANNELS.map((channel) => renderChannelCard(channel))}
+          <For each={visibleChannels()}>
+            {(channel) => renderChannelCard(channel)}
+          </For>
         </div>
       </section>
     </main>

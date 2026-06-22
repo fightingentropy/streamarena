@@ -8,8 +8,12 @@ export const BBC_NEWS_STREAM_URL =
   "https://vs-hls-push-ww-live.akamaized.net/x=4/i=urn:bbc:pips:service:bbc_news_channel_hd/mobile_wifi_main_hd_abr_v2.m3u8";
 export const BBC_NEWS_ROKU_STREAM_URL =
   "https://jmp2.uk/rok-6183f9f73a64394cf3c55690605af2a7.m3u8";
+// Sky's own skycdp.com linear path 404s now (those paths rotate). Use the
+// iptv-org-maintained Sky News feed via jmp2.uk — the same redirect service as
+// BBC News above. It 302s to a fresh Samsung TV Plus token on every play, so it
+// won't go stale the way a hardcoded tokenized URL would.
 export const SKY_NEWS_STREAM_URL =
-  "https://linear417-gb-hls1-prd-ak.cdn.skycdp.com/100e/Content/HLS_001_1080_30/Live/channel(skynews)/index_1080-30.m3u8";
+  "https://jmp2.uk/plu-55b285cd2665de274553d66f.m3u8";
 // ERT1's stream (bpk-tv/ERT1) became Greece-only in June 2026 — the CDN
 // returns 403 "Content blocked by security policy" from non-GR IPs. ERT World
 // (bpk-tv/ERTCosmos) is ERT's international feed and stays available abroad.
@@ -242,13 +246,13 @@ export const LIVE_CHANNELS = Object.freeze([
         id: "sky-hd",
         label: "Sky News HD",
         source: SKY_NEWS_STREAM_URL,
-        quality: "1080p HLS",
+        quality: "720p HLS",
       },
     ],
     artwork: LIVE_CHANNEL_ARTWORK.skyNews,
     genre: "News",
     region: "UK",
-    quality: "1080p HLS",
+    quality: "720p HLS",
   },
   {
     // Keeps the legacy "ert1" ids so saved /watch URLs and continue-watching

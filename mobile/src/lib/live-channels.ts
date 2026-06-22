@@ -32,8 +32,9 @@ const BLOOMBERG_US_PHOENIX_HD =
 const BBC_NEWS =
   "https://vs-hls-push-ww-live.akamaized.net/x=4/i=urn:bbc:pips:service:bbc_news_channel_hd/mobile_wifi_main_hd_abr_v2.m3u8";
 const BBC_NEWS_ROKU = "https://jmp2.uk/rok-6183f9f73a64394cf3c55690605af2a7.m3u8";
-const SKY_NEWS =
-  "https://linear417-gb-hls1-prd-ak.cdn.skycdp.com/100e/Content/HLS_001_1080_30/Live/channel(skynews)/index_1080-30.m3u8";
+// Sky's skycdp.com path 404s now; use the iptv-org Sky News feed via jmp2.uk
+// (same redirect service as BBC News — fresh Samsung TV Plus token per play).
+const SKY_NEWS = "https://jmp2.uk/plu-55b285cd2665de274553d66f.m3u8";
 // ERT World (international feed) — ERT1's own stream is GR-only (403 abroad) since 2026.
 const ERT_WORLD = "https://ert-ucdn.broadpeak-aas.com/bpk-tv/ERTCosmos/default/index.m3u8";
 const MEGA_NEWS =
@@ -183,10 +184,10 @@ export const LIVE_CHANNELS: LiveChannel[] = [
     title: "Sky News",
     source: SKY_NEWS,
     defaultStreamId: "sky-hd",
-    streams: [{ id: "sky-hd", label: "Sky News HD", source: SKY_NEWS, quality: "1080p HLS" }],
+    streams: [{ id: "sky-hd", label: "Sky News HD", source: SKY_NEWS, quality: "720p HLS" }],
     genre: "News",
     region: "UK",
-    quality: "1080p HLS",
+    quality: "720p HLS",
   },
   {
     id: "ert1",

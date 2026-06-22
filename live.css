@@ -41,6 +41,47 @@ body.live-route .page {
     letter-spacing: 0;
 }
 
+.live-category-filter {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 0 22px;
+}
+
+.live-category-chip {
+    appearance: none;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.82);
+    font: inherit;
+    font-size: 0.92rem;
+    font-weight: 600;
+    line-height: 1;
+    padding: 9px 16px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition:
+        background 150ms ease,
+        color 150ms ease,
+        border-color 150ms ease;
+}
+
+.live-category-chip:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+}
+
+.live-category-chip:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.6);
+    outline-offset: 2px;
+}
+
+.live-category-chip.is-active {
+    background: #fff;
+    border-color: #fff;
+    color: #0b0b0b;
+}
+
 .live-channel-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));

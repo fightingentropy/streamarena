@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { Image } from "expo-image";
 import { PressableScale } from "@/components/ui/PressableScale";
@@ -7,6 +8,40 @@ import { LIVE_LOGOS } from "@/lib/live-logos";
 import { liveRequestFromChannel } from "@/video/live";
 import { colors } from "@/theme";
 import { useStartLive } from "./useStartLive";
+
+const LIVE_CATEGORY_ORDER = ["Sports", "News", "General", "Business"];
+
+// Chip list from the genres actually present, in a friendly order (mirrors the web grid).
+function liveCategories(): string[] {
+  const present = new Set<string>();
+  for (const channel of LIVE_CHANNELS) {
+    if (channel.genre) present.add(channel.genre);
+  }
+  const ordered = LIVE_CATEGORY_ORDER.filter((genre) => present.has(genre));
+  for (const genre of present) {
+    if (!ordered.includes(genre)) ordered.push(genre);
+  }
+  return ["All", ...ordered];
+}
+
+function CategoryChip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <PressableScale onPress={onPress} accessibilityLabel={`Filter by ${label}`}>
+      <View
+        style={{
+          paddingHorizontal: 14,
+          paddingVertical: 8,
+          borderRadius: 999,
+          borderWidth: 1,
+          backgroundColor: active ? "#fff" : "rgba(255,255,255,0.06)",
+          borderColor: active ? "#fff" : "rgba(255,255,255,0.18)",
+        }}
+      >
+        <Text style={{ color: active ? "#0b0b0b" : colors.foreground, fontSize: 13, fontWeight: "700" }}>{label}</Text>
+      </View>
+    </PressableScale>
+  );
+}
 
 function ChannelTile({ channel, onPlay }: { channel: LiveChannel; onPlay: (c: LiveChannel) => void }) {
   const logo = LIVE_LOGOS[channel.id];
@@ -52,10 +87,30 @@ function ChannelTile({ channel, onPlay }: { channel: LiveChannel; onPlay: (c: Li
 export function LiveTvView() {
   const startLive = useStartLive();
   const onPlay = (c: LiveChannel) => startLive(liveRequestFromChannel(c));
+  const categories = liveCategories();
+  const [activeCategory, setActiveCategory] = useState("All");
+  const channels =
+    activeCategory === "All"
+      ? LIVE_CHANNELS
+      : LIVE_CHANNELS.filter((channel) => channel.genre === activeCategory);
   return (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 12, paddingBottom: CONTENT_BOTTOM_INSET }}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingBottom: 14 }}
+      >
+        {categories.map((category) => (
+          <CategoryChip
+            key={category}
+            label={category}
+            active={category === activeCategory}
+            onPress={() => setActiveCategory(category)}
+          />
+        ))}
+      </ScrollView>
       <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", rowGap: 12, paddingHorizontal: 16 }}>
-        {LIVE_CHANNELS.map((channel) => (
+        {channels.map((channel) => (
           <ChannelTile key={channel.id} channel={channel} onPlay={onPlay} />
         ))}
       </View>
