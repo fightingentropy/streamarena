@@ -3501,7 +3501,7 @@ fn ntvs_match_link_count(match_item: &NtvsMatch) -> usize {
     match_item
         .sources
         .iter()
-        .filter(|source| ntvs_source_embed_url(source, 1).is_some())
+        .filter(|source| streamed_source_stream_api_url(source).is_some())
         .count()
 }
 
@@ -3553,28 +3553,19 @@ fn normalize_ntvs_sport_match(
     let mut streams = Vec::new();
     let mut channels = Vec::new();
 
-    if let Some(watch_page_url) = ntvs_watch_page_url(match_item.id.trim()) {
-        streams.push(json!({
-            "id": "ntvs-watch-page",
-            "label": "NTVS Kobra",
-            "source": watch_page_url,
-            "provider": NTVS_SOURCE_ID,
-            "playbackType": "hls",
-            "quality": "HD"
-        }));
-        channels.push(json!({
-            "name": "NTVS Kobra",
-            "language": "HD",
-            "linkCount": 1
-        }));
-    }
-
+    // ntv.cx is a reskin of the streamed.su backend — its source slugs are
+    // byte-identical, so resolve each source through the streamed /api/stream
+    // endpoint instead of a hardcoded embed.st/<server>/<slug>/1. That endpoint
+    // enumerates every numbered stream with its `hd` flag, letting the streamed
+    // resolver pick the HD variant; the old /1 URL silently played whatever
+    // quality stream 1 happened to be (often SD). ntv.cx's own host only exposes
+    // /api/search (no /api/stream), so we point these at streamed.pk.
     let mut indexed_sources = match_item
         .sources
         .iter()
         .enumerate()
         .filter_map(|(index, source)| {
-            let source_url = ntvs_source_embed_url(source, 1)?;
+            let source_url = streamed_source_stream_api_url(source)?;
             let source_name = source.source.trim();
             Some((sports_embed_source_priority(source_name), index, source, source_url))
         })
@@ -3606,6 +3597,32 @@ fn normalize_ntvs_sport_match(
         }));
     }
 
+    // Keep ntv.cx's own "Kobra" watch page as a last-resort fallback *after* the
+    // HD embed sources. It resolves via ntv.cx directly (so it still works when
+    // streamed.pk is unreachable) but is typically lower quality, so it must
+    // never be the default: the mobile picker plays streams[0] and the web picker
+    // sorts /watch/ pages last.
+    let primary_channel = channels
+        .first()
+        .and_then(|channel| channel.get("name").and_then(Value::as_str))
+        .map(str::to_owned)
+        .unwrap_or_else(|| "NTVS Kobra".to_owned());
+    if let Some(watch_page_url) = ntvs_watch_page_url(match_item.id.trim()) {
+        streams.push(json!({
+            "id": "ntvs-watch-page",
+            "label": "NTVS Kobra",
+            "source": watch_page_url,
+            "provider": NTVS_SOURCE_ID,
+            "playbackType": "hls",
+            "quality": "SD"
+        }));
+        channels.push(json!({
+            "name": "NTVS Kobra",
+            "language": "SD",
+            "linkCount": 1
+        }));
+    }
+
     let ends_at_timestamp = match_item
         .date
         .saturating_add(NTVS_DEFAULT_DURATION_MINUTES.saturating_mul(60_000));
@@ -3619,7 +3636,7 @@ fn normalize_ntvs_sport_match(
         "sport": sport,
         "team1": team1,
         "team2": team2,
-        "primaryChannel": "NTVS Kobra",
+        "primaryChannel": primary_channel,
         "important": match_item.popular,
         "sourceMatchDate": "",
         "startTimestamp": match_item.date,
@@ -3632,25 +3649,6 @@ fn normalize_ntvs_sport_match(
         "languages": ["HD"],
         "provider": NTVS_SOURCE_ID
     })
-}
-
-fn ntvs_source_embed_url(source: &StreamedSource, stream_no: i64) -> Option<String> {
-    let source_name = source.source.trim();
-    let source_id = source.id.trim();
-    if source_name.is_empty() || source_id.is_empty() {
-        return None;
-    }
-
-    let mut url = Url::parse("https://embed.st/").ok()?;
-    let stream_no_text = stream_no.max(1).to_string();
-    {
-        let mut segments = url.path_segments_mut().ok()?;
-        segments.push("embed");
-        segments.push(source_name);
-        segments.push(source_id);
-        segments.push(&stream_no_text);
-    }
-    Some(url.to_string())
 }
 
 fn title_case_ascii(value: &str) -> String {
@@ -3690,7 +3688,7 @@ mod tests {
         is_supported_ntvs_wrapper_embed_url, is_supported_streamed_hls_url,
         is_supported_streamed_stream_url, live_stream_source_candidates,
         matchstream_live_stream_source_candidates, normalize_matchstream_link,
-        ntvs_source_embed_url, parse_fallback_stream_urls, parse_ntvs_hesgoaler_player_source,
+        parse_fallback_stream_urls, parse_ntvs_hesgoaler_player_source,
         remove_streamed_sources_by_index, sports_live_stream_source_candidates,
         sports_schedule_fresh_ttl_ms, sports_stream_provider_id, sports_stream_resolve_cache_key,
         streamed_match_is_live, streamed_source_stream_api_url,
@@ -3951,25 +3949,24 @@ mod tests {
         assert_eq!(matches[0]["provider"], NTVS_SOURCE_ID);
         assert_eq!(matches[0]["league"], "NTVS");
         assert_eq!(matches[0]["linkCount"], 3);
+        // HD embed sources come first (admin outranks echo via source priority),
+        // resolved through the streamed /api/stream endpoint so the resolver can
+        // pick the HD variant. primaryChannel tracks that top source.
+        assert_eq!(matches[0]["primaryChannel"], "NTVS Admin");
         assert_eq!(
             matches[0]["streams"][0]["source"],
-            "https://ntv.cx/watch/kobra/kosovo-vs-andorra-2472554"
+            "https://streamed.pk/api/stream/admin/ppv-kosovo-vs-andorra"
         );
         assert_eq!(
             matches[0]["streams"][1]["source"],
-            "https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1"
+            "https://streamed.pk/api/stream/echo/kosovo-vs-andorra-football-1545036"
         );
+        // ntv.cx's own Kobra watch page is demoted to a last-resort fallback.
         assert_eq!(
-            ntvs_source_embed_url(
-                &StreamedSource {
-                    source: "admin".to_owned(),
-                    id: "ppv-kosovo-vs-andorra".to_owned(),
-                },
-                1
-            )
-            .as_deref(),
-            Some("https://embed.st/embed/admin/ppv-kosovo-vs-andorra/1")
+            matches[0]["streams"][2]["source"],
+            "https://ntv.cx/watch/kobra/kosovo-vs-andorra-2472554"
         );
+        assert_eq!(matches[0]["streams"][2]["label"], "NTVS Kobra");
     }
 
     #[test]
