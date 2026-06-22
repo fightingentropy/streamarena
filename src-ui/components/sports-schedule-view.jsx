@@ -234,8 +234,11 @@ function sportsStreamPreferenceScore(stream = {}) {
   const source = String(stream?.source || "").trim().toLowerCase();
   const label = String(stream?.label || "").trim().toLowerCase();
   const provider = normalizeProviderId(stream?.provider) || "";
+  // House "/watch/" aggregator pages (e.g. ntv.cx /watch/kobra) resolve a single
+  // house-server stream that's usually lower quality than the explicit HD
+  // /api/stream sources. Keep them last so an HD source is the default pick.
   if (source.includes("/watch/")) {
-    return 0;
+    return 9;
   }
   if (label.includes("admin") || source.includes("/admin/") || source.includes("/api/stream/admin/")) {
     return provider === "ntvs" ? 1 : 2;
