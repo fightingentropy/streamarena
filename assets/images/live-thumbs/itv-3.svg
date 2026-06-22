@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180" width="320" height="180" role="img" aria-label="ITV3">
+  <title>ITV3</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#1b1f27"/>
+      <stop offset="1" stop-color="#0a0c10"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#5fe3d6"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="180" fill="url(#bg)"/>
+  <circle cx="14" cy="176" r="150" fill="#14b8a6" opacity="0.13"/>
+  <circle cx="300" cy="118" r="96" fill="#14b8a6" opacity="0.10"/>
+  <text x="160" y="100" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="800" letter-spacing="2.5" fill="#f5f5f5">ITV</text>
+  <text x="160" y="138" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="38" font-weight="800" letter-spacing="0.5" fill="#14b8a6">3</text>
+  <rect x="128" y="152" width="64" height="6" rx="3" fill="url(#bar)"/>
+  <g>
+    <rect x="228" y="18" width="68" height="26" rx="13" fill="#e50914"/>
+    <circle cx="246" cy="31" r="4" fill="#ffffff"/>
+    <text x="256" y="35" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" letter-spacing="1" fill="#ffffff">LIVE</text>
+  </g>
+</svg>
