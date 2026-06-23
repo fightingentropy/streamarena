@@ -73,6 +73,15 @@ async function postJson(url, body) {
   return data;
 }
 
+async function deleteJson(url) {
+  const response = await fetch(url, { method: "DELETE" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `Request failed (${response.status})`);
+  }
+  return data;
+}
+
 // Outline glyphs for the sidebar nav. Stroke-based (Lucide-style) and coloured
 // with `currentColor`, so the active/hover state on the link themes the icon —
 // CSP-safe (presentation attributes only, no inline style).
@@ -463,6 +472,17 @@ export default function AdminPage() {
     } catch (e) {
       showFlash(e.message, true);
       return false;
+    }
+  }
+
+  async function deleteFeedback(item) {
+    if (!window.confirm("Delete this feedback message? This can’t be undone.")) return;
+    try {
+      await deleteJson(`/api/admin/feedback/${item.id}`);
+      setFeedback((list) => list.filter((f) => f.id !== item.id));
+      showFlash("Feedback deleted.");
+    } catch (e) {
+      showFlash(e.message, true);
     }
   }
 
@@ -1254,6 +1274,14 @@ export default function AdminPage() {
                           <Show when={item.email && item.createdAt}> · </Show>
                           {relTime(item.createdAt)}
                         </span>
+                        <button
+                          class="admin-btn admin-btn-sm is-danger admin-feedback-delete"
+                          type="button"
+                          onClick={() => deleteFeedback(item)}
+                          aria-label="Delete feedback"
+                        >
+                          Delete
+                        </button>
                       </div>
                       <p class="admin-feedback-message">{item.message}</p>
                       <Show when={item.hasImage}>
