@@ -24,6 +24,7 @@ import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
 import { bindTopNavScrollState } from "../lib/top-nav-scroll.js";
 import {
   addCurrentReturnToParam,
+  buildTmdbWatchPath,
   buildWatchUrl,
   saveWatchParams,
   slugifyTitle,
@@ -1649,11 +1650,29 @@ export default function HomePage() {
 
     const _slug = slugifyTitle(title || "Title");
     addCurrentReturnToParam(params);
-    const playerUrl = buildWatchUrl(params);
+    // Full params (title, poster, audioLang, returnTo, …) are stashed so a warm
+    // reload restores everything; the visible URL stays short.
     saveWatchParams(_slug, params.toString(), {
       tmdbId: params.get("tmdbId") || "",
       seriesId: params.get("seriesId") || "",
     });
+    const _tmdbId = params.get("tmdbId") || "";
+    const _urlMediaType = params.get("mediaType") || "";
+    const _isTmdbCatalogTitle =
+      Boolean(_tmdbId) &&
+      (_urlMediaType === "movie" || _urlMediaType === "tv") &&
+      !playbackSrc;
+    const playerUrl = _isTmdbCatalogTitle
+      ? buildTmdbWatchPath({
+          mediaType: _urlMediaType,
+          tmdbId: _tmdbId,
+          title,
+          seasonNumber:
+            _urlMediaType === "tv" ? Number(params.get("seasonNumber")) || null : null,
+          episodeNumber:
+            _urlMediaType === "tv" ? Number(params.get("episodeNumber")) || null : null,
+        })
+      : buildWatchUrl(params);
     window.location.href = playerUrl;
   }
 

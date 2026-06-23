@@ -19,6 +19,47 @@ export function buildWatchUrl(params) {
   return query ? `/watch?${query}` : "/watch";
 }
 
+// Short, shareable, self-contained path for a TMDB catalog title. The tmdbId is
+// the only thing the player needs to cold-resolve everything else (title,
+// poster, year via /api/tmdb/details; audio/quality from stored prefs). The
+// slug is cosmetic and ignored on parse, e.g. /watch/movie/496243/parasite or
+// /watch/tv/1399/game-of-thrones/s1e5.
+export function buildTmdbWatchPath({
+  mediaType,
+  tmdbId,
+  title = "",
+  seasonNumber = null,
+  episodeNumber = null,
+} = {}) {
+  const type =
+    String(mediaType || "").trim().toLowerCase() === "tv" ? "tv" : "movie";
+  const id = String(tmdbId || "").trim();
+  if (!id) {
+    return buildWatchUrl({ title });
+  }
+  let path = `/watch/${type}/${id}`;
+  const slug = slugifyTitle(title);
+  if (slug) {
+    path += `/${slug}`;
+  }
+  if (type === "tv") {
+    const season = Math.floor(Number(seasonNumber));
+    const episode = Math.floor(Number(episodeNumber));
+    if (season > 0 && episode > 0) {
+      path += `/s${season}e${episode}`;
+    }
+  }
+  return path;
+}
+
+// Short path for a catalogued live channel. The channel id (e.g.
+// "bloomberg-tv-us") is enough for the player to rebuild the full stream set,
+// artwork and title from the live-channel catalog — no query string needed.
+export function buildLiveWatchPath(channelId) {
+  const id = String(channelId || "").trim();
+  return id ? `/watch/live/${id}` : "/watch";
+}
+
 export function buildWatchParamsStorageKey(slug, { tmdbId = "", seriesId = "" } = {}) {
   const base = `${LOCAL_PREFIX}${slug}`;
   const seriesKey = String(seriesId || "").trim().toLowerCase();

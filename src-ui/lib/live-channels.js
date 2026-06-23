@@ -369,6 +369,26 @@ export const LIVE_CHANNEL_PLAYBACK_FALLBACKS = Object.freeze(
   ),
 );
 
+// Reverse-map a playback source URL back to its channel id, so an arriving
+// long-form live URL (?live=1&src=…) can be canonicalized to /watch/live/<id>.
+// Matches the channel's current source or any of its stream variants.
+export function findLiveChannelIdBySource(source) {
+  const target = String(source || "").trim();
+  if (!target) {
+    return "";
+  }
+  for (const channel of LIVE_CHANNELS) {
+    if (String(channel.source || "").trim() === target) {
+      return channel.id;
+    }
+    const streams = Array.isArray(channel.streams) ? channel.streams : [];
+    if (streams.some((stream) => String(stream?.source || "").trim() === target)) {
+      return channel.id;
+    }
+  }
+  return "";
+}
+
 // ── Runtime provider overrides ──────────────────────────────────────────────
 // The channel URLs above are compiled-in defaults, but the admin Providers
 // dashboard can swap a stream's URL (CDN tokens rotate, geo-blocks appear)
