@@ -1261,6 +1261,23 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
+    /// Delete a feedback row (admin action). Returns the number of rows removed
+    /// so the caller can 404 on a stale id. The attached image, if any, lives in
+    /// the same row and goes with it.
+    pub async fn admin_delete_feedback(&self, id: i64) -> AppResult<usize> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let changed = connection.execute("DELETE FROM feedback WHERE id = ?", [id])?;
+            return_connection(&pool, connection);
+            Ok::<usize, rusqlite::Error>(changed)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
     pub async fn insert_health_sample(&self, sample: HealthSampleRow) -> AppResult<()> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();

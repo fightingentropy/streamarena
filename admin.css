@@ -1739,6 +1739,11 @@ a:focus-visible {
   gap: 4px 10px;
   margin-bottom: 7px;
 }
+.admin-feedback-delete {
+  margin-left: auto;
+  align-self: flex-start;
+  flex-shrink: 0;
+}
 .admin-feedback-author {
   font-size: 0.92rem;
   color: var(--admin-text);

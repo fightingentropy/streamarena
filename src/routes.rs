@@ -436,6 +436,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/admin/live-top", get(admin_live_top_handler))
         .route("/api/admin/feedback", get(admin_feedback_handler))
         .route(
+            "/api/admin/feedback/{id}",
+            any(admin_delete_feedback_handler),
+        )
+        .route(
             "/api/admin/feedback/{id}/image",
             get(admin_feedback_image_handler),
         )
@@ -635,6 +639,27 @@ async fn admin_feedback_image_handler(
         .header(axum::http::header::CACHE_CONTROL, "private, max-age=300")
         .body(Body::from(bytes))
         .map_err(|_| ApiError::internal("Failed to build image response."))
+}
+
+/// Delete a feedback message (admin-only). A missing id is a 404 so the UI can
+/// tell "already removed" apart from a successful delete.
+async fn admin_delete_feedback_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> AppResult<Response<Body>> {
+    if method != Method::DELETE {
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use DELETE.",
+        ));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let changed = state.db.admin_delete_feedback(id).await?;
+    if changed == 0 {
+        return Err(ApiError::not_found("Feedback not found."));
+    }
+    Ok(json_response(json!({ "ok": true })))
 }
 
 async fn admin_reset_password_handler(
