@@ -1427,6 +1427,34 @@ body {
     gap: 4px;
 }
 
+/* Each of these popovers stacks a fixed title above a scrollable option list.
+   Lay them out as flex columns so the list flexes to fill the popover's
+   remaining height and scrolls within it. Without this, the list's own
+   max-height can exceed the space the popover leaves below the title, and the
+   popover's `overflow: hidden` clips the last rows out of reach on short
+   viewports (you can't scroll the final source into view). `min-height: 0`
+   lets the list shrink below its content so `overflow-y: auto` actually
+   scrolls instead of overflowing the clip box. */
+.live-stream-popover,
+.source-popover,
+.hls-quality-popover {
+    display: flex;
+    flex-direction: column;
+}
+
+.live-stream-popover-title,
+.source-popover-title,
+.hls-quality-popover-title {
+    flex: 0 0 auto;
+}
+
+.live-stream-options,
+.source-popover-options.source-options,
+.hls-quality-options {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
 /* Card layout matching .audio-option.source-option so the live stream menu
    reads like the VOD server menu: icon tile left, checkmark on the right. */
 .audio-option.live-stream-option {
