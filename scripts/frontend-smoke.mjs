@@ -378,12 +378,9 @@ const pages = [
     path: `/watch?tmdbId=${hlsManagedTmdbId}&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1`,
     selector: ".player-shell",
     expectHlsMaster: true,
-    expectReproducibleWatchUrl: {
-      tmdbId: hlsManagedTmdbId,
-      mediaType: "tv",
-      seasonNumber: "1",
-      episodeNumber: "1",
-    },
+    // A legacy long URL must canonicalize to the short, self-contained path that
+    // carries the full identity (tmdbId + media type + season/episode).
+    expectCanonicalWatchPath: `/watch/tv/${hlsManagedTmdbId}/off-campus/s1e1`,
   },
   {
     path: "/player.html?tmdbId=auto-fallback-tv&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1",
@@ -1308,31 +1305,17 @@ async function runSmoke() {
         }
       }
 
-      if (pageSpec.expectReproducibleWatchUrl) {
-        const watchUrlState = await page.evaluate(() => {
-          const url = new URL(window.location.href);
-          return {
-            pathname: url.pathname,
-            tmdbId: url.searchParams.get("tmdbId") || "",
-            mediaType: url.searchParams.get("mediaType") || "",
-            seasonNumber: url.searchParams.get("seasonNumber") || "",
-            episodeNumber: url.searchParams.get("episodeNumber") || "",
-            sourceHash: url.searchParams.get("sourceHash") || "",
-          };
-        });
-        for (const [key, value] of Object.entries(pageSpec.expectReproducibleWatchUrl)) {
-          if (watchUrlState[key] !== value) {
-            throw new Error(
-              `${pageSpec.path}\nWatch URL should keep reproducible params.\n${JSON.stringify({
-                expected: pageSpec.expectReproducibleWatchUrl,
-                actual: watchUrlState,
-              })}`,
-            );
-          }
-        }
-        if (watchUrlState.pathname !== "/watch") {
+      if (pageSpec.expectCanonicalWatchPath) {
+        const watchUrlState = await page.evaluate(() => ({
+          pathname: window.location.pathname,
+          search: window.location.search,
+        }));
+        if (watchUrlState.pathname !== pageSpec.expectCanonicalWatchPath) {
           throw new Error(
-            `${pageSpec.path}\nPlayer should canonicalize to /watch with query params.\n${JSON.stringify(watchUrlState)}`,
+            `${pageSpec.path}\nPlayer should canonicalize to the short watch path.\n${JSON.stringify({
+              expected: pageSpec.expectCanonicalWatchPath,
+              actual: watchUrlState,
+            })}`,
           );
         }
       }

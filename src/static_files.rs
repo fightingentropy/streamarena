@@ -439,13 +439,18 @@ mod tests {
 
     #[test]
     fn maps_watch_route_to_player_html() {
-        let path = resolve_local_path(
-            Path::new("/tmp/app/dist"),
-            Path::new("/tmp/app"),
+        for route in [
             "/watch/electrical-course-2025/0",
-        )
-        .unwrap();
-        assert!(path.ends_with("player.html"));
+            "/watch/movie/496243/parasite",
+            "/watch/tv/1399/game-of-thrones/s1e5",
+            "/watch/movie/603",
+            "/watch/live/bloomberg-tv-us",
+        ] {
+            let path =
+                resolve_local_path(Path::new("/tmp/app/dist"), Path::new("/tmp/app"), route)
+                    .unwrap();
+            assert!(path.ends_with("player.html"), "route {route} should serve player.html");
+        }
     }
 
     #[test]

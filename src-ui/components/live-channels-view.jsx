@@ -3,9 +3,9 @@ import { createSignal, For } from "solid-js";
 import { LIVE_CHANNELS } from "../lib/live-channels.js";
 import {
   addCurrentReturnToParam,
+  buildLiveWatchPath,
   buildWatchUrl,
   saveWatchParams,
-  slugifyTitle,
 } from "../lib/watch-params.js";
 
 function slugify(value) {
@@ -94,8 +94,14 @@ function buildPlayerUrl(channel) {
   params.set("episode", "Live");
   addCurrentReturnToParam(params);
 
-  const slug = slugifyTitle(title);
-  saveWatchParams(slug, params.toString());
+  const channelId = String(channel?.id || "").trim();
+  if (channelId) {
+    // Stash the full params under the channel id so a warm reload of the short
+    // /watch/live/<id> URL restores returnTo / the selected variant instantly;
+    // a cold load rebuilds them from the catalog regardless.
+    saveWatchParams(channelId, params.toString());
+    return buildLiveWatchPath(channelId);
+  }
   return buildWatchUrl(params);
 }
 

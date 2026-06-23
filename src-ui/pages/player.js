@@ -35,7 +35,10 @@ import {
   SUBTITLE_COLOR_PREF_KEY,
   normalizeDefaultAudioLanguage,
 } from "../lib/preferences.js";
-import { LIVE_CHANNEL_PLAYBACK_FALLBACKS } from "../lib/live-channels.js";
+import {
+  LIVE_CHANNEL_PLAYBACK_FALLBACKS,
+  findLiveChannelIdBySource,
+} from "../lib/live-channels.js";
 import {
   deriveLiveStreamStateFromParams,
   createBoundedRetryController,
@@ -71,6 +74,8 @@ import {
 import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
 import { renderPlayerShell } from "../player/player-shell-template.jsx";
 import {
+  buildLiveWatchPath,
+  buildTmdbWatchPath,
   buildWatchUrl,
   findSeriesEntryBySlug,
   loadWatchParams,
@@ -379,9 +384,45 @@ function slugify(text) {
 }
 function parseWatchPath() {
   const path = window.location.pathname;
+  // Short live form: /watch/live/<channelId>. The id rebuilds the full stream
+  // set from the live-channel catalog.
+  const liveMatch = path.match(/^\/watch\/live\/([^/]+)\/?$/i);
+  if (liveMatch) {
+    const channelId = decodeURIComponent(liveMatch[1]);
+    return { kind: "live", channelId, slug: channelId };
+  }
+  // Short tmdb form: /watch/movie/<id>[/<slug>] and
+  // /watch/tv/<id>[/<slug>][/s<season>e<episode>]. The id is the unique key;
+  // the slug is cosmetic. Checked before the legacy shape so "movie"/"tv" are
+  // not mistaken for a title slug.
+  const tmdbMatch = path.match(/^\/watch\/(movie|tv)\/(\d+)((?:\/[^/]+)*)\/?$/i);
+  if (tmdbMatch) {
+    const rest = tmdbMatch[3].split("/").filter(Boolean);
+    let slug = "";
+    let seasonNumber = null;
+    let episodeNumber = null;
+    for (const segment of rest) {
+      const seasonEpisode = /^s(\d+)e(\d+)$/i.exec(segment);
+      if (seasonEpisode) {
+        seasonNumber = Number(seasonEpisode[1]);
+        episodeNumber = Number(seasonEpisode[2]);
+      } else if (!slug) {
+        slug = segment;
+      }
+    }
+    return {
+      kind: "tmdb",
+      mediaType: tmdbMatch[1].toLowerCase(),
+      tmdbId: tmdbMatch[2],
+      slug,
+      seasonNumber,
+      episodeNumber,
+    };
+  }
+  // Legacy form: /watch or /watch/<slug>[/<episodeIndex>].
   const match = path.match(/^\/watch(?:\/([^/]+))?(?:\/(\d+))?$/);
   if (!match) return null;
-  return { slug: match[1] || "", episodeIndex: match[2] };
+  return { kind: "legacy", slug: match[1] || "", episodeIndex: match[2] };
 }
 const _watchPath = parseWatchPath();
 const _isCleanUrl = Boolean(_watchPath);
@@ -397,10 +438,35 @@ let _sessionParams = null;
 if (_isCleanUrl && _watchPath.slug) {
   const _stored = loadWatchParams(_watchPath.slug);
   if (_stored) {
-    _sessionParams = new URLSearchParams(_stored);
+    const _storedParams = new URLSearchParams(_stored);
+    // For a tmdb-id clean URL the id in the path is authoritative; only trust
+    // stored params if they belong to the same title (two different titles can
+    // slugify to the same key within one session).
+    const _storedTmdbMatches =
+      _watchPath.kind !== "tmdb" ||
+      String(_storedParams.get("tmdbId") || "").trim() ===
+        String(_watchPath.tmdbId || "").trim();
+    if (_storedTmdbMatches) {
+      _sessionParams = _storedParams;
+    }
   }
 }
 const params = _sessionParams || new URLSearchParams(window.location.search);
+// Seed identity from a short tmdb-id URL so a cold deep link (no stored params,
+// no query string) resolves. Display metadata is hydrated from TMDB later in
+// initPlaybackSource.
+if (_watchPath?.kind === "tmdb") {
+  if (!params.has("tmdbId")) params.set("tmdbId", _watchPath.tmdbId);
+  if (!params.has("mediaType")) params.set("mediaType", _watchPath.mediaType);
+  if (_watchPath.mediaType === "tv") {
+    if (_watchPath.seasonNumber != null && !params.has("seasonNumber")) {
+      params.set("seasonNumber", String(_watchPath.seasonNumber));
+    }
+    if (_watchPath.episodeNumber != null && !params.has("episodeNumber")) {
+      params.set("episodeNumber", String(_watchPath.episodeNumber));
+    }
+  }
+}
 if (_isCleanUrl && _watchPath?.episodeIndex !== undefined) {
   const pathEpisodeIndex = Number(_watchPath.episodeIndex);
   if (Number.isFinite(pathEpisodeIndex) && pathEpisodeIndex >= 0) {
@@ -419,7 +485,20 @@ if (_isCleanUrl && _watchPath?.episodeIndex !== undefined) {
     params.set("episodeIndex", String(Math.floor(pathEpisodeIndex)));
   }
 }
-const _needsSlugResolve = _isCleanUrl && _watchPath.slug && !_sessionParams;
+const _needsSlugResolve =
+  _watchPath?.kind === "legacy" && _watchPath.slug && !_sessionParams;
+// A short tmdb URL needs its display metadata fetched from TMDB whenever the
+// title is missing or just a placeholder. Treating placeholders as "missing"
+// lets a stored "Untitled" (e.g. from a transient cold-load state) self-heal.
+function tmdbTitleIsMissing(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return !normalized || normalized === "untitled" || normalized === "title";
+}
+const _needsTmdbResolve =
+  _watchPath?.kind === "tmdb" && tmdbTitleIsMissing(params.get("title"));
+// A short live URL rebuilds its stream set from the channel catalog when cold.
+const _needsLiveResolve =
+  _watchPath?.kind === "live" && !params.has("src");
 
 const benchmarkModeEnabled = new Set(["1", "true", "yes", "on"]).has(
   String(params.get("benchmark") || "")
@@ -587,7 +666,7 @@ let isSeriesPlayback = _resolved.isSeries;
 let hasSeriesEpisodeControls =
   isSeriesPlayback && Boolean(activeSeries && seriesEpisodes.length > 1);
 let normalizedSeriesSourceParam = _resolved.normSrc;
-const thumbParam = String(params.get("thumb") || "").trim();
+let thumbParam = String(params.get("thumb") || "").trim();
 let src = isSeriesPlayback
   ? normalizedSeriesSourceParam || normalizedRawSourceParam
   : normalizedRawSourceParam;
@@ -9524,6 +9603,42 @@ function buildReproduciblePlaybackParams() {
   return nextParams;
 }
 
+// Address-bar URL once playback identity is settled. TMDB catalog titles get
+// the short shareable path; the full reproducible params live in storage so a
+// warm reload restores audio/quality/pinned-source/returnTo even though the
+// URL no longer carries them. Everything else keeps the reproducible query.
+// The catalogued live channel id behind the current playback, if any — from the
+// short URL we arrived on, else reverse-mapped from the active stream source so
+// even an old long live URL canonicalizes to /watch/live/<id>.
+function getLiveCanonicalChannelId() {
+  if (_watchPath?.kind === "live" && _watchPath.channelId) {
+    return _watchPath.channelId;
+  }
+  if (isLivePlayback) {
+    return findLiveChannelIdBySource(src) || "";
+  }
+  return "";
+}
+
+function buildCanonicalWatchUrl(nextParams) {
+  if (isTmdbResolvedPlayback && tmdbId && (mediaType === "movie" || mediaType === "tv")) {
+    return buildTmdbWatchPath({
+      mediaType,
+      tmdbId,
+      title,
+      seasonNumber:
+        mediaType === "tv" ? Math.max(1, Math.floor(Number(seasonNumber) || 1)) : null,
+      episodeNumber:
+        mediaType === "tv" ? Math.max(1, Math.floor(Number(episodeNumber) || 1)) : null,
+    });
+  }
+  const liveChannelId = getLiveCanonicalChannelId();
+  if (liveChannelId) {
+    return buildLiveWatchPath(liveChannelId);
+  }
+  return buildWatchUrl(nextParams);
+}
+
 function replaceReproducibleWatchUrl() {
   try {
     const nextParams = buildReproduciblePlaybackParams();
@@ -9533,7 +9648,26 @@ function replaceReproducibleWatchUrl() {
     for (const [key, value] of nextParams.entries()) {
       params.set(key, value);
     }
-    window.history.replaceState(null, "", buildWatchUrl(nextParams));
+    const canonicalUrl = buildCanonicalWatchUrl(nextParams);
+    if (canonicalUrl.startsWith("/watch/")) {
+      const isLiveCanonical = canonicalUrl.startsWith("/watch/live/");
+      // Storage key matches the URL's own slug so a warm reload finds it.
+      const slug = isLiveCanonical
+        ? canonicalUrl.slice("/watch/live/".length)
+        : slugify(title);
+      // Don't canonicalize to a placeholder slug (e.g. /…/untitled) before the
+      // TMDB title lands; a later pass rewrites it once the title resolves.
+      if (!slug || (!isLiveCanonical && tmdbTitleIsMissing(title))) {
+        return;
+      }
+      // Persist the reproducible params so a reload of the short path restores
+      // full playback state (audio/quality/variant/pinned source) from storage.
+      saveWatchParams(slug, nextParams.toString(), {
+        tmdbId,
+        seriesId: activeSeries?.id || requestedSeriesId || "",
+      });
+    }
+    window.history.replaceState(null, "", canonicalUrl);
   } catch {
     // Cosmetic only; playback should keep going if history updates are blocked.
   }
@@ -9649,9 +9783,84 @@ async function preferLocalMoviePlaybackSourceFromLibrary() {
   }
 }
 
+// Rebuild live playback state from a catalog fallback entry (title, source,
+// artwork, stream variants) and re-derive the source vars that depend on it.
+function applyLiveChannelFallback(liveMatch) {
+  if (!params.has("title")) params.set("title", liveMatch.title);
+  if (!params.has("src")) params.set("src", liveMatch.source);
+  if (!params.has("thumb") && liveMatch.thumb) params.set("thumb", liveMatch.thumb);
+  if (!params.has("episode")) params.set("episode", "Live");
+  params.set("live", "1");
+  if (!params.has("liveStreamId")) {
+    params.set("liveStreamId", liveMatch.defaultStreamId || "default");
+  }
+  if (!params.has("liveStreams")) {
+    params.set("liveStreams", JSON.stringify(liveMatch.streams || []));
+  }
+  if (liveMatch.liveEmbed && !params.has("liveEmbed")) {
+    params.set("liveEmbed", "1");
+  }
+  if (liveMatch.liveResolver && !params.has("liveResolver")) {
+    params.set("liveResolver", liveMatch.liveResolver);
+  }
+  rawSourceParam = String(params.get("src") || "").trim();
+  normalizedRawSourceParam = normalizePlaybackSourceValue(rawSourceParam);
+  refreshLiveStreamStateFromParams(params);
+  src = normalizedRawSourceParam;
+  hasExplicitSource = Boolean(src);
+  isExplicitLocalUploadSource = computeIsExplicitLocalUploadSource();
+  title = params.get("title") || title;
+  episode = params.get("episode") || episode;
+}
+
 async function initPlaybackSource() {
   // Ensure local series library is loaded before resolving playback
   await _seriesLibraryReady;
+
+  // ─── Cold short live URL: rebuild stream set from the channel catalog ───
+  if (_needsLiveResolve && _watchPath) {
+    const _liveMatch = LIVE_CHANNEL_PLAYBACK_FALLBACKS[_watchPath.channelId] || null;
+    if (_liveMatch) {
+      applyLiveChannelFallback(_liveMatch);
+    }
+  }
+
+  // ─── Cold short tmdb URL: hydrate title/year/poster from TMDB ───
+  if (_needsTmdbResolve && _watchPath) {
+    try {
+      const _detailQuery = new URLSearchParams({
+        tmdbId: _watchPath.tmdbId,
+        mediaType: _watchPath.mediaType,
+      });
+      const _details = await requestJson(
+        `/api/tmdb/details?${_detailQuery.toString()}`,
+        {},
+        25000,
+      );
+      // TMDB is authoritative for a cold short URL: overwrite rather than
+      // fill-if-absent, since an early reproducible-URL pass can seed a
+      // placeholder "Untitled" title into params before this runs.
+      const _resolvedTitle = String(_details?.title || _details?.name || "").trim();
+      if (_resolvedTitle) {
+        params.set("title", _resolvedTitle);
+      }
+      const _releaseDate = String(
+        _details?.release_date || _details?.first_air_date || "",
+      ).trim();
+      if (_releaseDate.length >= 4) {
+        params.set("year", _releaseDate.slice(0, 4));
+      }
+      const _posterPath = String(
+        _details?.poster_path || _details?.backdrop_path || "",
+      ).trim();
+      if (_posterPath) {
+        params.set("thumb", `https://image.tmdb.org/t/p/w1280${_posterPath}`);
+        thumbParam = params.get("thumb");
+      }
+    } catch {
+      // Best-effort; playback can still resolve from the tmdbId alone.
+    }
+  }
 
   // ─── Clean URL slug resolution (on refresh with no query params) ───
   if (_needsSlugResolve && _watchPath) {
@@ -9670,31 +9879,7 @@ async function initPlaybackSource() {
           : null);
         const _liveMatch = LIVE_CHANNEL_PLAYBACK_FALLBACKS[_slug] || null;
         if (_liveMatch) {
-          if (!params.has("title")) params.set("title", _liveMatch.title);
-          if (!params.has("src")) params.set("src", _liveMatch.source);
-          if (!params.has("thumb") && _liveMatch.thumb) params.set("thumb", _liveMatch.thumb);
-          if (!params.has("episode")) params.set("episode", "Live");
-          params.set("live", "1");
-          if (!params.has("liveStreamId")) {
-            params.set("liveStreamId", _liveMatch.defaultStreamId || "default");
-          }
-          if (!params.has("liveStreams")) {
-            params.set("liveStreams", JSON.stringify(_liveMatch.streams || []));
-          }
-          if (_liveMatch.liveEmbed && !params.has("liveEmbed")) {
-            params.set("liveEmbed", "1");
-          }
-          if (_liveMatch.liveResolver && !params.has("liveResolver")) {
-            params.set("liveResolver", _liveMatch.liveResolver);
-          }
-          rawSourceParam = String(params.get("src") || "").trim();
-          normalizedRawSourceParam = normalizePlaybackSourceValue(rawSourceParam);
-          refreshLiveStreamStateFromParams(params);
-          src = normalizedRawSourceParam;
-          hasExplicitSource = Boolean(src);
-          isExplicitLocalUploadSource = computeIsExplicitLocalUploadSource();
-          title = params.get("title") || title;
-          episode = params.get("episode") || episode;
+          applyLiveChannelFallback(_liveMatch);
         } else if (_movieMatch) {
           if (!params.has("title")) params.set("title", _movieMatch.title);
           if (!params.has("src") && _movieMatch.src) params.set("src", _movieMatch.src);
@@ -10132,7 +10317,8 @@ async function initPlaybackSource() {
   onMount(() => {
     collectSpeedOptionRefs();
     startAudioDecodeWatch();
-    setEpisodeLabel(_needsSlugResolve ? "" : title, _needsSlugResolve ? "" : episode);
+    const _deferLabel = _needsSlugResolve || _needsTmdbResolve || _needsLiveResolve;
+    setEpisodeLabel(_deferLabel ? "" : title, _deferLabel ? "" : episode);
 
     resumeFlushIntervalId = window.setInterval(() => {
       persistResumeTime(false);
