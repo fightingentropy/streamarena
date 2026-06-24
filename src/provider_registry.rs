@@ -46,7 +46,7 @@ pub mod keys {
 /// swappable; the dashboard exposes an enable/disable toggle instead.
 pub const EMBED_IDS: &[&str] = &[
     "videasy", "vidlink", "vidrock", "notorrent", "vixsrc", "lordflix", "icefy", "meridian",
-    "gallic",
+    "gallic", "nebula",
 ];
 
 /// Replace the whole override map (called once at startup from the DB).
@@ -103,6 +103,78 @@ pub fn embed_enabled(id: &str) -> bool {
     get_override(&format!("embed:{id}:enabled")).map_or(true, |value| value.trim() != "0")
 }
 
+/// An admin-registered custom Stremio stream-addon provider. Only identity lives
+/// here; enable/disable + rank ride the shared override store (`embed:<id>:*`), so
+/// the existing `/set` endpoint and Rankings UI manage them with no extra plumbing.
+#[derive(Clone, Debug)]
+pub struct CustomProvider {
+    pub id: String,
+    pub label: String,
+    pub base_url: String,
+}
+
+/// Default rank weight for custom providers — a low fallback tier (below the
+/// compiled embeds' floor), so a freshly added addon only fires when better
+/// sources miss. Admins can re-rank it live via `embed:<id>:rank`.
+pub const CUSTOM_PROVIDER_DEFAULT_RANK: i64 = 300;
+
+static CUSTOM_PROVIDERS: OnceLock<RwLock<Vec<CustomProvider>>> = OnceLock::new();
+
+fn custom_store() -> &'static RwLock<Vec<CustomProvider>> {
+    CUSTOM_PROVIDERS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Replace the whole custom-provider list (called once at startup from the DB).
+pub fn load_custom(list: Vec<CustomProvider>) {
+    if let Ok(mut guard) = custom_store().write() {
+        *guard = list;
+    }
+}
+
+/// Add or update a custom provider in memory (`id` is the stable key).
+pub fn add_custom(provider: CustomProvider) {
+    if let Ok(mut guard) = custom_store().write() {
+        if let Some(existing) = guard.iter_mut().find(|item| item.id == provider.id) {
+            *existing = provider;
+        } else {
+            guard.push(provider);
+        }
+    }
+}
+
+/// Remove a custom provider by id; returns true if one was actually removed.
+pub fn remove_custom(id: &str) -> bool {
+    if let Ok(mut guard) = custom_store().write() {
+        let before = guard.len();
+        guard.retain(|item| item.id != id);
+        return guard.len() != before;
+    }
+    false
+}
+
+/// Snapshot of all custom providers (used by the resolver and the catalog).
+pub fn list_custom() -> Vec<CustomProvider> {
+    custom_store().read().map(|guard| guard.clone()).unwrap_or_default()
+}
+
+/// Whether `id` is a registered custom provider.
+pub fn is_custom(id: &str) -> bool {
+    custom_store()
+        .read()
+        .map(|guard| guard.iter().any(|item| item.id == id))
+        .unwrap_or(false)
+}
+
+/// The stored Stremio-addon base URL for a custom provider id, if registered.
+pub fn custom_base(id: &str) -> Option<String> {
+    custom_store().read().ok().and_then(|guard| {
+        guard
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.base_url.clone())
+    })
+}
+
 /// Default ranking weight per embed provider — the de-facto reliability tier that
 /// drives the Server-menu order and the auto-pick/fallback order in the resolver
 /// (see `external_embed_source_availability_score`). Higher = preferred / shown
@@ -114,9 +186,10 @@ pub fn embed_enabled(id: &str) -> bool {
 /// (tiktokcdn, CORS-open), off the mini's bandwidth-limited uplink, so it's both
 /// fastest and cheapest for our origin. VidRock shares that pipeline server-side.
 /// Both rank above the flaky ones (VidLink/VixSrc gate on TLS fingerprint, Icefy's
-/// upstream rate-limits). The Aether-backed gallic/meridian are the lowest real
-/// tier — cached third-party fallbacks that only fire when first-party sources
-/// miss the title.
+/// upstream rate-limits). The Aether-backed gallic/meridian are low-tier cached
+/// third-party fallbacks. NebulaStreams (a Stremio addon, env-gated) ranks lowest:
+/// it only returns a usable direct-HLS stream for a subset of titles, so it fires
+/// last, after every first-party source misses.
 pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
     ("lordflix", 1_600),
     ("vidrock", 1_400),
@@ -127,14 +200,23 @@ pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
     ("icefy", 500),
     ("gallic", 450),
     ("meridian", 400),
+    ("nebula", 380),
 ];
 
-/// Compiled default ranking weight for an embed provider (0 if unknown).
+/// Compiled default ranking weight for an embed provider (custom providers get
+/// `CUSTOM_PROVIDER_DEFAULT_RANK`; 0 if the id is unknown entirely).
 pub fn embed_default_rank(id: &str) -> i64 {
     EMBED_DEFAULT_RANK
         .iter()
         .find(|(key, _)| *key == id)
-        .map_or(0, |(_, value)| *value)
+        .map(|(_, value)| *value)
+        .unwrap_or_else(|| {
+            if is_custom(id) {
+                CUSTOM_PROVIDER_DEFAULT_RANK
+            } else {
+                0
+            }
+        })
 }
 
 /// The admin rank override for an embed provider, if a valid one is set.
@@ -175,10 +257,10 @@ pub fn classify_writable(key: &str) -> Option<WriteKind> {
         _ => {
             let rest = key.strip_prefix("embed:")?;
             if let Some(id) = rest.strip_suffix(":enabled") {
-                return EMBED_IDS.contains(&id).then_some(WriteKind::Toggle);
+                return (EMBED_IDS.contains(&id) || is_custom(id)).then_some(WriteKind::Toggle);
             }
             if let Some(id) = rest.strip_suffix(":rank") {
-                return EMBED_IDS.contains(&id).then_some(WriteKind::Rank);
+                return (EMBED_IDS.contains(&id) || is_custom(id)).then_some(WriteKind::Rank);
             }
             None
         }
@@ -210,6 +292,10 @@ pub struct ProviderInfo {
     /// Whether the ranking weight is admin-overridden.
     #[serde(rename = "rankOverridden")]
     pub rank_overridden: bool,
+    /// True for admin-added custom Stremio-addon providers (vs compiled ones).
+    pub custom: bool,
+    /// Whether this provider can be deleted from the dashboard (custom only).
+    pub removable: bool,
     pub note: String,
 }
 
@@ -228,6 +314,8 @@ fn url_entry(key: &str, group: &str, label: &str, default_url: &str, note: &str)
         rank: None,
         rank_default: None,
         rank_overridden: false,
+        custom: false,
+        removable: false,
         note: note.to_owned(),
     }
 }
@@ -295,6 +383,9 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
         ("icefy", "Icefy", "https://streams.icefy.top"),
         ("meridian", "Meridian", "https://meridian.aether.bar"),
         ("gallic", "Gallic", "https://gallic.aether.bar"),
+        // Reference base only — the real install URL (with its private token) is
+        // supplied via the NEBULA_ADDON_BASE env var and never shown/stored here.
+        ("nebula", "NebulaStreams", "https://nebula.work.gd"),
     ];
     for (id, label, base) in EMBED_BASES.iter().copied() {
         out.push(ProviderInfo {
@@ -310,8 +401,35 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
             rank: Some(embed_rank(id)),
             rank_default: Some(embed_default_rank(id)),
             rank_overridden: embed_rank_override(id).is_some(),
+            custom: false,
+            removable: false,
             note: "Enable/disable + ranking weight — base URL is coupled to resolver host logic"
                 .to_owned(),
+        });
+    }
+
+    // ── Admin-added custom Stremio stream addons ─────────────────────────────
+    // Identity comes from the `custom_providers` table; enable/rank ride the same
+    // `embed:<id>:*` override store as the compiled embeds, so the Rankings UI
+    // treats them identically (plus a Remove button via `removable`).
+    for provider in list_custom() {
+        let enabled_key = format!("embed:{}:enabled", provider.id);
+        out.push(ProviderInfo {
+            key: enabled_key.clone(),
+            group: "embed".to_owned(),
+            label: provider.label.clone(),
+            default_url: provider.base_url.clone(),
+            effective_url: provider.base_url.clone(),
+            overridden: get_override(&enabled_key).is_some(),
+            editable: false,
+            toggle: true,
+            enabled: embed_enabled(&provider.id),
+            rank: Some(embed_rank(&provider.id)),
+            rank_default: Some(embed_default_rank(&provider.id)),
+            rank_overridden: embed_rank_override(&provider.id).is_some(),
+            custom: true,
+            removable: true,
+            note: "Custom Stremio stream addon — added from the dashboard".to_owned(),
         });
     }
 
@@ -346,6 +464,8 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
         rank: None,
         rank_default: None,
         rank_overridden: false,
+        custom: false,
+        removable: false,
         note: "Env-controlled (LIVE_HLS_RESOURCE_WORKER_BASE) — on the hot segment path".to_owned(),
     });
 

@@ -96,6 +96,9 @@ export default function ProvidersPanel(props) {
   const [busy, setBusy] = createSignal({});
   const [subTab, setSubTab] = createSignal("embed");
   const [filter, setFilter] = createSignal("");
+  const [newUrl, setNewUrl] = createSignal("");
+  const [newLabel, setNewLabel] = createSignal("");
+  const [adding, setAdding] = createSignal(false);
 
   const flash = (text, isError = false) => props.onFlash && props.onFlash(text, isError);
 
@@ -270,6 +273,46 @@ export default function ProvidersPanel(props) {
     }
   }
 
+  // Register a new custom Stremio stream-addon provider from a manifest/install URL.
+  async function addProvider(event) {
+    event?.preventDefault?.();
+    const url = String(newUrl() || "").trim();
+    if (!url) return;
+    const name = String(newLabel() || "").trim();
+    setAdding(true);
+    try {
+      const data = await postJson("/api/admin/providers/add", {
+        url,
+        ...(name ? { label: name } : {}),
+      });
+      flash(`Added ${data.label || "provider"}`);
+      setNewUrl("");
+      setNewLabel("");
+      setSubTab("embed");
+      await load();
+    } catch (e) {
+      flash(e.message || "Add failed", true);
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  // Custom providers carry `removable`; their row key is `embed:<id>:enabled`.
+  async function removeProvider(row) {
+    if (!window.confirm(`Remove ${row.label}? This deletes the custom provider.`)) return;
+    const id = row.key.replace(/^embed:/, "").replace(/:enabled$/, "");
+    markBusy(row.key, true);
+    try {
+      await postJson("/api/admin/providers/remove", { id });
+      flash(`Removed ${row.label}`);
+      await load();
+    } catch (e) {
+      flash(e.message || "Remove failed", true);
+    } finally {
+      markBusy(row.key, false);
+    }
+  }
+
   async function testRow(row) {
     const url = row.editable ? String(editValue(row) || "").trim() : row.effectiveUrl;
     if (!url) {
@@ -390,6 +433,16 @@ export default function ProvidersPanel(props) {
               </button>
             </Show>
           </Show>
+          <Show when={row.removable}>
+            <button
+              class="admin-btn"
+              disabled={isBusy()}
+              title="Delete this custom provider"
+              onClick={() => removeProvider(row)}
+            >
+              Remove
+            </button>
+          </Show>
           <Show when={result() && !result().pending}>
             <span
               classList={{
@@ -474,6 +527,41 @@ export default function ProvidersPanel(props) {
               </div>
               <Show when={group.hint}>
                 <p class="admin-provider-grouphint">{group.hint}</p>
+              </Show>
+              <Show when={group.key === "embed"}>
+                <form
+                  class="admin-provider-add"
+                  style={{ display: "flex", gap: "8px", "flex-wrap": "wrap", "margin-bottom": "14px" }}
+                  onSubmit={addProvider}
+                >
+                  <input
+                    class="admin-input"
+                    style={{ flex: "1 1 320px" }}
+                    type="text"
+                    spellcheck={false}
+                    autocomplete="off"
+                    placeholder="Stremio stream-addon URL (https://…/manifest.json)"
+                    value={newUrl()}
+                    onInput={(e) => setNewUrl(e.currentTarget.value)}
+                  />
+                  <input
+                    class="admin-input"
+                    style={{ flex: "0 1 180px" }}
+                    type="text"
+                    spellcheck={false}
+                    autocomplete="off"
+                    placeholder="Name (optional)"
+                    value={newLabel()}
+                    onInput={(e) => setNewLabel(e.currentTarget.value)}
+                  />
+                  <button
+                    class="admin-btn is-primary"
+                    type="submit"
+                    disabled={adding() || !newUrl().trim()}
+                  >
+                    {adding() ? "Adding…" : "Add provider"}
+                  </button>
+                </form>
               </Show>
               <Show when={filterable()}>
                 <input

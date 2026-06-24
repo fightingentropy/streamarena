@@ -463,6 +463,14 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/admin/providers/test",
             any(admin_provider_test_handler),
+        )
+        .route(
+            "/api/admin/providers/add",
+            any(admin_provider_add_handler),
+        )
+        .route(
+            "/api/admin/providers/remove",
+            any(admin_provider_remove_handler),
         );
 
     Router::new()
@@ -1175,6 +1183,208 @@ async fn admin_provider_test_handler(
         }
     };
     Ok(json_response(body))
+}
+
+/// Normalize a pasted addon URL to its base: drop a trailing `/manifest.json` or
+/// `/configure` and any trailing slash, and require an https origin (the resolve +
+/// playback paths are https-only). Returns None for anything that isn't a usable
+/// https base.
+fn normalize_custom_addon_base(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    let base = trimmed
+        .strip_suffix("/manifest.json")
+        .or_else(|| trimmed.strip_suffix("/configure"))
+        .unwrap_or(trimmed)
+        .trim_end_matches('/');
+    let parsed = url::Url::parse(base).ok()?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return None;
+    }
+    Some(base.to_owned())
+}
+
+/// Lowercase kebab-case slug from arbitrary text (for deriving a stable provider id).
+fn provider_slugify(value: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = true; // trims leading dashes
+    for ch in value.to_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
+}
+
+/// Whether a Stremio manifest is a stream addon for movies/series — the only kind
+/// we can resolve generically. Handles `resources` as plain strings or objects.
+fn manifest_is_stream_addon(manifest: &Value) -> bool {
+    let resources = manifest.get("resources").and_then(Value::as_array);
+    let has_stream = resources.is_some_and(|items| {
+        items.iter().any(|item| {
+            item.as_str() == Some("stream")
+                || item.get("name").and_then(Value::as_str) == Some("stream")
+        })
+    });
+    let types = manifest.get("types").and_then(Value::as_array);
+    let has_vod_type = types.is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| matches!(item.as_str(), Some("movie") | Some("series")))
+    });
+    has_stream && has_vod_type
+}
+
+/// Add a custom Stremio stream-addon provider from a pasted manifest/install URL.
+/// Validates the manifest is a movie/series stream addon, derives a stable unique
+/// id, and registers it so it resolves like NoTorrent/Nebula and shows up in the
+/// Providers dashboard. Admin-only.
+async fn admin_provider_add_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let payload = parse_json_body(request).await?;
+    let raw_url = payload
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    if raw_url.is_empty() {
+        return Err(ApiError::bad_request("A manifest or addon URL is required."));
+    }
+    let base = normalize_custom_addon_base(&raw_url)
+        .ok_or_else(|| ApiError::bad_request("Enter a valid https addon URL."))?;
+
+    // Fetch + validate the manifest so we only register addons we can actually use.
+    let manifest_url = format!("{base}/manifest.json");
+    let response = state
+        .http_client
+        .get(&manifest_url)
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|_| ApiError::bad_request("Couldn't reach that addon's manifest."))?;
+    if !response.status().is_success() {
+        return Err(ApiError::bad_request(format!(
+            "Addon manifest returned HTTP {}.",
+            response.status().as_u16()
+        )));
+    }
+    let manifest: Value = response
+        .json()
+        .await
+        .map_err(|_| ApiError::bad_request("That URL didn't return a valid Stremio manifest."))?;
+    if !manifest_is_stream_addon(&manifest) {
+        return Err(ApiError::bad_request(
+            "Not a supported addon: needs a `stream` resource for `movie`/`series`. Catalog-only or sports addons aren't supported.",
+        ));
+    }
+
+    // Label: admin-provided, else the manifest name, else the host.
+    let manifest_name = manifest.get("name").and_then(Value::as_str).unwrap_or("");
+    let label = payload
+        .get("label")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let label = if !label.is_empty() {
+        label.to_owned()
+    } else if !manifest_name.trim().is_empty() {
+        manifest_name.trim().to_owned()
+    } else {
+        url::Url::parse(&base)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(str::to_owned))
+            .unwrap_or_else(|| "Custom provider".to_owned())
+    };
+
+    // Stable id: custom-<slug-of-name>, deduped against compiled + existing custom.
+    let slug_seed = if !manifest_name.trim().is_empty() {
+        provider_slugify(manifest_name)
+    } else {
+        provider_slugify(&label)
+    };
+    let slug_seed = if slug_seed.is_empty() {
+        "addon".to_owned()
+    } else {
+        slug_seed
+    };
+    let taken = |candidate: &str| -> bool {
+        crate::provider_registry::EMBED_IDS.contains(&candidate)
+            || crate::provider_registry::is_custom(candidate)
+    };
+    let mut id = format!("custom-{slug_seed}");
+    let mut suffix = 2;
+    while taken(&id) {
+        id = format!("custom-{slug_seed}-{suffix}");
+        suffix += 1;
+    }
+
+    state
+        .db
+        .add_custom_provider(id.clone(), label.clone(), base.clone())
+        .await?;
+    crate::provider_registry::add_custom(crate::provider_registry::CustomProvider {
+        id: id.clone(),
+        label: label.clone(),
+        base_url: base.clone(),
+    });
+
+    Ok(json_response(
+        json!({ "ok": true, "id": id, "label": label, "base": base }),
+    ))
+}
+
+/// Remove an admin-added custom provider and clear its enable/rank overrides.
+/// Admin-only; refuses to touch compiled providers.
+async fn admin_provider_remove_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> AppResult<Response<Body>> {
+    if method != Method::POST {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+    }
+    auth::require_admin(&state.db, &headers).await?;
+    let payload = parse_json_body(request).await?;
+    let id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    if id.is_empty() {
+        return Err(ApiError::bad_request("id is required."));
+    }
+    if !crate::provider_registry::is_custom(&id) {
+        return Err(ApiError::bad_request(
+            "Only custom (dashboard-added) providers can be removed.",
+        ));
+    }
+    state.db.delete_custom_provider(id.clone()).await?;
+    crate::provider_registry::remove_custom(&id);
+    // Drop the provider's enable/rank override rows so a re-add starts clean.
+    for suffix in ["enabled", "rank"] {
+        let key = format!("embed:{id}:{suffix}");
+        state.db.delete_provider_override(key.clone()).await?;
+        crate::provider_registry::set(&key, "");
+    }
+    Ok(json_response(json!({ "ok": true, "id": id })))
 }
 
 /// Live-channel URL overrides for the signed-in frontend. The live page / player
@@ -4744,9 +4954,10 @@ mod tests {
     use super::{
         USER_IDENTITY_MAX_BYTES, USER_SYNC_MAX_ENTRIES, absolute_request_url_with_authority,
         apply_security_headers, build_playback_session_key, find_episode_pattern, is_valid_email,
-        normalize_preferred_audio_lang, normalize_subtitle_preference,
-        normalize_sync_continue_watching_entries, normalize_sync_watch_progress_entries,
-        normalize_user_updated_at, now_ms, query_flag_enabled, sanitize_my_list_entries,
+        manifest_is_stream_addon, normalize_custom_addon_base, normalize_preferred_audio_lang,
+        normalize_subtitle_preference, normalize_sync_continue_watching_entries,
+        normalize_sync_watch_progress_entries, normalize_user_updated_at, now_ms, provider_slugify,
+        query_flag_enabled, sanitize_my_list_entries,
     };
     use axum::http::header::{CONTENT_TYPE, HOST};
     use axum::http::{HeaderMap, HeaderValue, Uri};
@@ -5011,5 +5222,52 @@ mod tests {
         let url = absolute_request_url_with_authority(&uri, Some(authority), "0.0.0.0", 5173)
             .expect("request url");
         assert_eq!(url.as_str(), "http://127.0.0.1:5173/api/config");
+    }
+
+    #[test]
+    fn normalize_custom_addon_base_strips_suffixes_and_requires_https() {
+        let want = "https://nebula.work.gd/private/abc".to_owned();
+        for input in [
+            "https://nebula.work.gd/private/abc",
+            "https://nebula.work.gd/private/abc/",
+            "https://nebula.work.gd/private/abc/manifest.json",
+            "  https://nebula.work.gd/private/abc/configure  ",
+        ] {
+            assert_eq!(normalize_custom_addon_base(input), Some(want.clone()), "{input}");
+        }
+        // Non-https / junk rejected.
+        assert_eq!(normalize_custom_addon_base("http://nebula.work.gd/x"), None);
+        assert_eq!(normalize_custom_addon_base("not a url"), None);
+        assert_eq!(normalize_custom_addon_base(""), None);
+    }
+
+    #[test]
+    fn provider_slugify_makes_kebab_ids() {
+        assert_eq!(provider_slugify("NebulaStreams(CFG)"), "nebulastreams-cfg");
+        assert_eq!(provider_slugify("  My Addon!! 2 "), "my-addon-2");
+        assert_eq!(provider_slugify("already-kebab"), "already-kebab");
+        assert_eq!(provider_slugify("!!!"), "");
+    }
+
+    #[test]
+    fn manifest_is_stream_addon_accepts_vod_stream_addons_only() {
+        // String resources + movie/series types → accepted.
+        assert!(manifest_is_stream_addon(&serde_json::json!({
+            "resources": ["stream"], "types": ["movie", "series"]
+        })));
+        // Object-form resources → accepted.
+        assert!(manifest_is_stream_addon(&serde_json::json!({
+            "resources": [{"name": "stream", "types": ["movie"]}], "types": ["movie"]
+        })));
+        // Sports stream addon (no movie/series type) → rejected.
+        assert!(!manifest_is_stream_addon(&serde_json::json!({
+            "resources": ["catalog", "stream", "meta"], "types": ["sports"]
+        })));
+        // Catalog-only (no stream resource) → rejected.
+        assert!(!manifest_is_stream_addon(&serde_json::json!({
+            "resources": ["catalog"], "types": ["movie"]
+        })));
+        // Garbage → rejected.
+        assert!(!manifest_is_stream_addon(&serde_json::json!({})));
     }
 }

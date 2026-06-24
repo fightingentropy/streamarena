@@ -134,6 +134,25 @@ async fn main() -> AppResult<()> {
         }
         Err(error) => warn!("failed to load provider overrides: {error:?}"),
     }
+    // Hydrate admin-added custom Stremio-addon providers so they survive restarts.
+    match db.get_custom_providers().await {
+        Ok(rows) => {
+            let count = rows.len();
+            provider_registry::load_custom(
+                rows.into_iter()
+                    .map(|(id, label, base_url)| provider_registry::CustomProvider {
+                        id,
+                        label,
+                        base_url,
+                    })
+                    .collect(),
+            );
+            if count > 0 {
+                info!("loaded {count} custom provider(s)");
+            }
+        }
+        Err(error) => warn!("failed to load custom providers: {error:?}"),
+    }
     let mut http_client_builder = reqwest::Client::builder()
         .user_agent("streamarena-backend")
         .timeout(Duration::from_secs(SHARED_HTTP_CLIENT_TIMEOUT_SECONDS));

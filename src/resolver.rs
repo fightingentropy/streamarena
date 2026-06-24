@@ -441,6 +441,19 @@ const LORDFLIX_ENC_DEC_API: &str = "https://enc-dec.app/api";
 const LORDFLIX_REFERER: &str = "https://lordflix.org/";
 const LORDFLIX_SERVERS: &[&str] = &["Phoenix", "Rio", "Ativa"];
 const NOTORRENT_API_BASE: &str = "https://addon-osvh.onrender.com";
+// NebulaStreams is a Stremio stream addon with the same request/response shape as
+// NoTorrent (`/stream/{movie,series}/<imdb>.json`). Its configured-install base URL
+// embeds a private token, so it is supplied at runtime via the `NEBULA_ADDON_BASE`
+// env var rather than committed to this (public) repo. Unset/blank/non-https =>
+// the provider resolves to no sources (inert), exactly like an admin-disabled
+// embed. Shown in the admin catalog under the public, token-free `nebula.work.gd`
+// reference base. Lowest ranking tier — a fallback that only fires when our own
+// first-party sources miss a title (its addon returns a mix of direct HLS and
+// not-web-ready host pages, so its effective hit rate is modest).
+const NEBULA_ADDON_BASE_ENV: &str = "NEBULA_ADDON_BASE";
+static NEBULA_ADDON_BASE: LazyLock<Option<String>> = LazyLock::new(|| {
+    normalize_nebula_addon_base(&std::env::var(NEBULA_ADDON_BASE_ENV).unwrap_or_default())
+});
 // Meridian + Gallic are aether's (a P-Stream fork) open resolve endpoints. They
 // scrape obscure origins server-side (Meridian -> cdn.neuronix.sbs, Gallic ->
 // senpai-stream.club) and hand back the stream wrapped in their own m3u8 proxy.
@@ -513,6 +526,11 @@ const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
         id: "gallic",
         label: "Gallic",
         priority: 8,
+    },
+    ExternalEmbedProvider {
+        id: "nebula",
+        label: "NebulaStreams",
+        priority: 9,
     },
 ];
 
@@ -5507,9 +5525,10 @@ fn is_default_external_embed_hls_fallback_source(source: ExternalEmbedSource) ->
             .map(|server| server.id == "YORU")
             .unwrap_or(true),
         "vidlink" => source.server.is_none(),
-        "vidrock" | "notorrent" | "vixsrc" | "lordflix" | "meridian" | "gallic" => {
+        "vidrock" | "notorrent" | "vixsrc" | "lordflix" | "meridian" | "gallic" | "nebula" => {
             source.server.is_none()
         }
+        id if crate::provider_registry::is_custom(id) => source.server.is_none(),
         _ => false,
     }
 }
@@ -5539,7 +5558,8 @@ fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) -> bool {
             | "notorrent"
             | "meridian"
             | "gallic"
-    )
+            | "nebula"
+    ) || crate::provider_registry::is_custom(source.provider.id)
 }
 
 fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 {
@@ -5570,6 +5590,9 @@ fn external_embed_source_quality_score(source: ExternalEmbedSource) -> i64 {
         // Gallic upstream advertises up to 2160p; Meridian ~1080p.
         "gallic" => 400,
         "meridian" => 350,
+        // Lowest-tier fallback; keeps Nebula just below meridian/gallic and above
+        // the flaky VidEasy server-variants in the rank ordering.
+        "nebula" => 350,
         "videasy" => 300,
         _ => 0,
     }
@@ -6080,25 +6103,10 @@ fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
         ("lordflix", _) => lordflix_source_url(metadata),
-        ("notorrent", "movie") => {
-            let imdb_id = metadata.imdb_id.trim();
-            if imdb_id.is_empty() {
-                None
-            } else {
-                Some(format!("{NOTORRENT_API_BASE}/stream/movie/{imdb_id}.json"))
-            }
-        }
-        ("notorrent", "tv") => {
-            let imdb_id = metadata.imdb_id.trim();
-            if imdb_id.is_empty() {
-                None
-            } else {
-                Some(format!(
-                    "{NOTORRENT_API_BASE}/stream/series/{imdb_id}:{}:{}.json",
-                    metadata.season_number, metadata.episode_number
-                ))
-            }
-        }
+        // NoTorrent + Nebula are Stremio stream addons sharing one request shape;
+        // Nebula's base is env-gated, so an unset install resolves to no URL.
+        ("notorrent", _) => stremio_addon_stream_url(NOTORRENT_API_BASE, metadata),
+        ("nebula", _) => stremio_addon_stream_url(nebula_addon_base()?, metadata),
         ("meridian", "movie") => Some(format!("{MERIDIAN_API_BASE}/movie/{tmdb_id}")),
         ("meridian", "tv") => Some(format!(
             "{MERIDIAN_API_BASE}/show/{}/{}/{}",
@@ -6106,6 +6114,10 @@ fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -
         )),
         // Gallic's upstream (senpai-stream.club) is movie-only.
         ("gallic", "movie") => Some(format!("{GALLIC_API_BASE}/movie/{tmdb_id}")),
+        // Admin-added custom providers are generic Stremio stream addons keyed on
+        // the stored base URL (imdb-based, like NoTorrent/Nebula).
+        (id, _) if crate::provider_registry::is_custom(id) => crate::provider_registry::custom_base(id)
+            .and_then(|base| stremio_addon_stream_url(&base, metadata)),
         _ => None,
     }
 }
@@ -6134,9 +6146,50 @@ fn external_embed_source_hash(source: ExternalEmbedSource, metadata: &ResolveMet
     deterministic_40_hex(&identity)
 }
 
+// Leaked-`&'static` cache for admin-added custom providers. Their ids/labels are
+// runtime Strings; `ExternalEmbedProvider` needs `&'static str`, so each distinct
+// (id, label) pair is leaked exactly once and reused — never per call (which would
+// leak unboundedly, since `external_embed_sources` runs every resolve). The set is
+// admin-bounded and process-lifetime, so the leak is bounded.
+static CUSTOM_EMBED_PROVIDER_CACHE: LazyLock<
+    std::sync::RwLock<std::collections::HashMap<String, ExternalEmbedProvider>>,
+> = LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+
+/// `ExternalEmbedProvider` entries for the admin-registered custom Stremio addons,
+/// so they flow through the whole embed pipeline. Priority 10 keeps them below
+/// every compiled provider (0..=9); effective order is driven by `embed_rank`.
+fn custom_embed_providers() -> Vec<ExternalEmbedProvider> {
+    crate::provider_registry::list_custom()
+        .into_iter()
+        .map(|provider| {
+            let cache_key = format!("{}\u{0}{}", provider.id, provider.label);
+            if let Some(found) = CUSTOM_EMBED_PROVIDER_CACHE
+                .read()
+                .ok()
+                .and_then(|cache| cache.get(&cache_key).copied())
+            {
+                return found;
+            }
+            let entry = ExternalEmbedProvider {
+                id: Box::leak(provider.id.into_boxed_str()),
+                label: Box::leak(provider.label.into_boxed_str()),
+                priority: 10,
+            };
+            if let Ok(mut cache) = CUSTOM_EMBED_PROVIDER_CACHE.write() {
+                cache.insert(cache_key, entry);
+            }
+            entry
+        })
+        .collect()
+}
+
 fn external_embed_sources() -> Vec<ExternalEmbedSource> {
     let mut sources = Vec::new();
-    for provider in EXTERNAL_EMBED_PROVIDERS.iter().copied() {
+    for provider in EXTERNAL_EMBED_PROVIDERS
+        .iter()
+        .copied()
+        .chain(custom_embed_providers())
+    {
         // Admin can disable a flaky embed provider from the Providers dashboard
         // without a redeploy; a disabled provider contributes no sources.
         if !crate::provider_registry::embed_enabled(provider.id) {
@@ -6171,9 +6224,19 @@ fn external_embed_source_priority(source: ExternalEmbedSource, _metadata: &Resol
     }
     if matches!(
         source.provider.id,
-        "vidrock" | "notorrent" | "vixsrc" | "lordflix" | "icefy" | "meridian" | "gallic"
+        "vidrock"
+            | "notorrent"
+            | "vixsrc"
+            | "lordflix"
+            | "icefy"
+            | "meridian"
+            | "gallic"
+            | "nebula"
     ) && source.server.is_none()
     {
+        return source.provider.priority;
+    }
+    if crate::provider_registry::is_custom(source.provider.id) && source.server.is_none() {
         return source.provider.priority;
     }
     if source.provider.id == "videasy" && source.server.is_none() {
@@ -6229,8 +6292,10 @@ fn external_embed_source_detail_label(source: ExternalEmbedSource) -> &'static s
         "vixsrc" => return "Native HLS, alternate audio",
         "lordflix" => return "Multi-server native HLS",
         "notorrent" => return "Stremio addon HLS",
+        "nebula" => return "Stremio addon HLS",
         "meridian" => return "Native HLS, TV + movies",
         "gallic" => return "Native HLS, up to 4K",
+        id if crate::provider_registry::is_custom(id) => return "Custom Stremio addon",
         _ => {}
     }
     source
@@ -6279,10 +6344,34 @@ async fn resolve_external_embed_hls_playback_source(
             return resolve_lordflix_hls_playback_source(client, metadata, timeout_ms).await;
         }
         "notorrent" => {
-            return resolve_notorrent_hls_playback_source(client, metadata, timeout_ms).await;
+            return resolve_stremio_addon_hls_playback_source(
+                client,
+                NOTORRENT_API_BASE,
+                metadata,
+                timeout_ms,
+            )
+            .await;
+        }
+        "nebula" => {
+            return match nebula_addon_base() {
+                Some(base) => {
+                    resolve_stremio_addon_hls_playback_source(client, base, metadata, timeout_ms)
+                        .await
+                }
+                None => None,
+            };
         }
         "meridian" | "gallic" => {
             return resolve_aether_proxy_hls_playback_source(client, embed_url, timeout_ms).await;
+        }
+        id if crate::provider_registry::is_custom(id) => {
+            return match crate::provider_registry::custom_base(id) {
+                Some(base) => {
+                    resolve_stremio_addon_hls_playback_source(client, &base, metadata, timeout_ms)
+                        .await
+                }
+                None => None,
+            };
         }
         _ => {}
     }
@@ -6726,30 +6815,49 @@ async fn resolve_lordflix_server_hls_playback_source(
     None
 }
 
-async fn resolve_notorrent_hls_playback_source(
-    client: &reqwest::Client,
-    metadata: &ResolveMetadata,
-    timeout_ms: u64,
-) -> Option<ExternalEmbedHlsPlaybackSource> {
+/// Build the Stremio stream endpoint for a NoTorrent-shaped addon
+/// (`<base>/stream/{movie,series}/<imdb>[:s:e].json`). Returns `None` when the
+/// title has no IMDb id (the addons key on `tt…`, not TMDB).
+fn stremio_addon_stream_url(base: &str, metadata: &ResolveMetadata) -> Option<String> {
     let imdb_id = metadata.imdb_id.trim();
     if imdb_id.is_empty() {
         return None;
     }
-    let api_url = if metadata.media_type == "tv" {
-        format!(
-            "{NOTORRENT_API_BASE}/stream/series/{imdb_id}:{}:{}.json",
+    let base = base.trim_end_matches('/');
+    if metadata.media_type == "tv" {
+        Some(format!(
+            "{base}/stream/series/{imdb_id}:{}:{}.json",
             metadata.season_number, metadata.episode_number
-        )
+        ))
     } else {
-        format!("{NOTORRENT_API_BASE}/stream/movie/{imdb_id}.json")
-    };
-    let response = fetch_external_json::<NoTorrentStreamResponse>(
-        client,
-        &api_url,
-        None,
-        timeout_ms,
-    )
-    .await?;
+        Some(format!("{base}/stream/movie/{imdb_id}.json"))
+    }
+}
+
+/// Normalize a configured Stremio install base read from env: trim, drop any
+/// trailing slash / `manifest.json` suffix, and require https. Returns `None` for
+/// blank or non-https values so an unset/misconfigured addon stays inert.
+fn normalize_nebula_addon_base(raw: &str) -> Option<String> {
+    let mut base = raw.trim().trim_end_matches('/').to_owned();
+    if let Some(stripped) = base.strip_suffix("/manifest.json") {
+        base = stripped.trim_end_matches('/').to_owned();
+    }
+    (base.starts_with("https://") && base.len() > "https://".len()).then_some(base)
+}
+
+fn nebula_addon_base() -> Option<&'static str> {
+    NEBULA_ADDON_BASE.as_deref()
+}
+
+async fn resolve_stremio_addon_hls_playback_source(
+    client: &reqwest::Client,
+    base: &str,
+    metadata: &ResolveMetadata,
+    timeout_ms: u64,
+) -> Option<ExternalEmbedHlsPlaybackSource> {
+    let api_url = stremio_addon_stream_url(base, metadata)?;
+    let response =
+        fetch_external_json::<NoTorrentStreamResponse>(client, &api_url, None, timeout_ms).await?;
 
     for stream in response.streams {
         if !stream.external_url.trim().is_empty() {
@@ -6762,7 +6870,7 @@ async fn resolve_notorrent_hls_playback_source(
         {
             continue;
         }
-        let referer = notorrent_stream_referer(&stream);
+        let referer = stremio_addon_stream_referer(&stream);
         if let Some(source) =
             validate_external_embed_hls_playlist(client, stream_url, referer.as_deref(), timeout_ms)
                 .await
@@ -6773,7 +6881,7 @@ async fn resolve_notorrent_hls_playback_source(
     None
 }
 
-fn notorrent_stream_referer(stream: &NoTorrentStreamEntry) -> Option<String> {
+fn stremio_addon_stream_referer(stream: &NoTorrentStreamEntry) -> Option<String> {
     let mut headers = stream.behavior_hints.headers.clone();
     headers.extend(stream.behavior_hints.proxy_headers.request.clone());
     headers
@@ -8848,7 +8956,8 @@ mod tests {
         is_default_external_embed_hls_fallback_source, is_external_embed_hls_capable_source,
         is_persistent_source_resolve_error, is_public_external_embed_hls_hostname,
         is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
-        normalize_allowed_formats, normalize_resolved_source_for_software_decode,
+        normalize_allowed_formats, normalize_nebula_addon_base,
+        normalize_resolved_source_for_software_decode,
         normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
         now_ms, parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
         parse_torznab_xml, playback_session_key_allowed_for_user,
@@ -8858,7 +8967,7 @@ mod tests {
         should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
         should_prefer_software_decode_source, should_skip_playback_session_reuse,
         should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
-        user_facing_real_debrid_error,
+        stremio_addon_stream_url, user_facing_real_debrid_error,
     };
     use super::race_staggered_first_success;
     use super::{
@@ -10159,6 +10268,69 @@ mod tests {
             episode_title: "Celebration".to_owned(),
             media_type: "tv".to_owned(),
         }
+    }
+
+    #[test]
+    fn nebula_addon_base_normalizes_and_requires_https() {
+        assert_eq!(
+            normalize_nebula_addon_base("https://nebula.work.gd/private/abc123/"),
+            Some("https://nebula.work.gd/private/abc123".to_owned())
+        );
+        // Pasting the full manifest URL is tolerated.
+        assert_eq!(
+            normalize_nebula_addon_base("  https://nebula.work.gd/private/abc123/manifest.json  "),
+            Some("https://nebula.work.gd/private/abc123".to_owned())
+        );
+        // Blank / non-https / scheme-only => inert (no provider sources).
+        assert_eq!(normalize_nebula_addon_base(""), None);
+        assert_eq!(normalize_nebula_addon_base("   "), None);
+        assert_eq!(normalize_nebula_addon_base("http://nebula.work.gd/x"), None);
+        assert_eq!(normalize_nebula_addon_base("https://"), None);
+    }
+
+    #[test]
+    fn stremio_addon_stream_url_builds_movie_and_series_endpoints() {
+        let movie = sample_movie_metadata();
+        assert_eq!(
+            stremio_addon_stream_url("https://nebula.work.gd/private/abc", &movie),
+            Some("https://nebula.work.gd/private/abc/stream/movie/tt0000001.json".to_owned())
+        );
+        // Trailing slash on the base is collapsed.
+        assert_eq!(
+            stremio_addon_stream_url("https://nebula.work.gd/private/abc/", &movie),
+            Some("https://nebula.work.gd/private/abc/stream/movie/tt0000001.json".to_owned())
+        );
+        let tv = sample_tv_metadata();
+        assert_eq!(
+            stremio_addon_stream_url("https://addon-osvh.onrender.com", &tv),
+            Some("https://addon-osvh.onrender.com/stream/series/tt7660850:1:1.json".to_owned())
+        );
+        // No IMDb id => no endpoint (these addons key on tt…, not TMDB).
+        let mut no_imdb = sample_movie_metadata();
+        no_imdb.imdb_id = String::new();
+        assert_eq!(
+            stremio_addon_stream_url("https://nebula.work.gd", &no_imdb),
+            None
+        );
+    }
+
+    #[test]
+    fn nebula_is_a_hls_capable_fallback_embed_provider() {
+        let nebula = EXTERNAL_EMBED_PROVIDERS
+            .iter()
+            .copied()
+            .find(|provider| provider.id == "nebula")
+            .map(|provider| ExternalEmbedSource {
+                provider,
+                server: None,
+            })
+            .expect("nebula provider registered");
+        assert!(is_external_embed_hls_capable_source(nebula));
+        assert!(is_default_external_embed_hls_fallback_source(nebula));
+        // Registered in the shared registry with a positive default rank weight,
+        // and inert until NEBULA_ADDON_BASE is configured (no URL without a base).
+        assert!(crate::provider_registry::embed_default_rank("nebula") > 0);
+        assert!(external_embed_url(nebula, &sample_movie_metadata()).is_none());
     }
 
     fn sample_stream(title: &str, info_hash: &str) -> DiscoveryStream {

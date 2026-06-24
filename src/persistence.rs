@@ -2977,6 +2977,77 @@ impl Db {
         Ok(())
     }
 
+    /// Admin-registered custom Stremio stream-addon providers (id, label, base_url).
+    /// Enable/disable + rank ride the shared `provider_overrides` mechanism
+    /// (`embed:<id>:enabled` / `embed:<id>:rank`), so this table only stores identity.
+    pub async fn get_custom_providers(&self) -> AppResult<Vec<(String, String, String)>> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let rows = {
+                let mut stmt = connection.prepare(
+                    "SELECT id, label, base_url FROM custom_providers ORDER BY created_at ASC",
+                )?;
+                stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            };
+            return_connection(&pool, connection);
+            Ok::<Vec<(String, String, String)>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn add_custom_provider(
+        &self,
+        id: String,
+        label: String,
+        base_url: String,
+    ) -> AppResult<()> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute(
+                "INSERT INTO custom_providers (id, label, base_url, created_at)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   label = excluded.label,
+                   base_url = excluded.base_url",
+                params![id, label, base_url, now_ms()],
+            )?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn delete_custom_provider(&self, id: String) -> AppResult<()> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            connection.execute("DELETE FROM custom_providers WHERE id = ?", params![id])?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
     pub async fn get_user_watch_progress(
         &self,
         user_id: i64,
@@ -4142,6 +4213,12 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
           provider_key TEXT PRIMARY KEY,
           override_value TEXT NOT NULL,
           updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS custom_providers (
+          id TEXT PRIMARY KEY,
+          label TEXT NOT NULL,
+          base_url TEXT NOT NULL,
+          created_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS user_watch_progress (
           user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
