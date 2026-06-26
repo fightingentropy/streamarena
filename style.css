@@ -660,12 +660,12 @@
     z-index: 2;
     left: 8%;
     right: 8%;
-    bottom: 14%;
+    bottom: 12%;
     color: #fff;
-    font-size: clamp(0.82rem, 1.35vw, 1.15rem);
-    font-weight: 900;
-    line-height: 0.95;
-    letter-spacing: 0.06em;
+    font-size: clamp(1.05rem, 2vw, 1.85rem);
+    font-weight: 800;
+    line-height: 0.98;
+    letter-spacing: 0.015em;
     text-align: center;
     text-transform: uppercase;
     text-shadow:
@@ -684,16 +684,17 @@
 .home-popular-row .card img.card-rail-logo {
     position: absolute;
     z-index: 2;
-    left: 7%;
-    bottom: 11%;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 12%;
     width: auto;
     height: auto;
-    max-width: 68%;
-    max-height: 40%;
+    max-width: 84%;
+    max-height: 58%;
     aspect-ratio: auto;
     border-radius: 0;
     object-fit: contain;
-    object-position: left bottom;
+    object-position: center bottom;
     filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.7));
     pointer-events: none;
 }
@@ -737,10 +738,10 @@
     right: 8%;
     bottom: 18%;
     color: #fff;
-    font-size: clamp(0.82rem, 1.35vw, 1.15rem);
-    font-weight: 900;
-    line-height: 0.95;
-    letter-spacing: 0.06em;
+    font-size: clamp(1.05rem, 2vw, 1.85rem);
+    font-weight: 800;
+    line-height: 0.98;
+    letter-spacing: 0.015em;
     text-align: center;
     text-transform: uppercase;
     text-shadow:
@@ -756,16 +757,17 @@
 .home-page .continue-row .card img.card-rail-logo {
     position: absolute;
     z-index: 2;
-    left: 7%;
-    bottom: 18%;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 16%;
     width: auto;
     height: auto;
-    max-width: 64%;
-    max-height: 38%;
+    max-width: 84%;
+    max-height: 56%;
     aspect-ratio: auto;
     border-radius: 0;
     object-fit: contain;
-    object-position: left bottom;
+    object-position: center bottom;
     filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.7));
     pointer-events: none;
 }
