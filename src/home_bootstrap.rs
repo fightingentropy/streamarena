@@ -632,7 +632,7 @@ fn tmdb_id_as_string(value: &Value) -> Option<String> {
 
 /// Pick the best title-logo `file_path` from a TMDB `/images` payload: raster (PNG) only,
 /// preferring an English wordmark, then the highest community rating.
-fn select_best_logo_path(payload: &Value) -> Option<String> {
+pub(crate) fn select_best_logo_path(payload: &Value) -> Option<String> {
     let logos = payload.get("logos").and_then(Value::as_array)?;
     let mut best: Option<LogoCandidate<'_>> = None;
     for logo in logos {

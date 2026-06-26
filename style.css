@@ -698,6 +698,78 @@
     pointer-events: none;
 }
 
+/* Continue Watching cards reuse the rail-art title/logo treatment so they read like the
+   other rows, with the resume bar floating just below the wordmark. */
+.home-page .continue-row .card-rail-art {
+    position: relative;
+    overflow: hidden;
+    border-radius: 4px;
+    background: #181818;
+}
+
+.home-page .continue-row .card-rail-art img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: 0;
+    object-fit: cover;
+}
+
+.home-page .continue-row .card-rail-shade {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    background:
+        linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0) 42%),
+        linear-gradient(
+            0deg,
+            rgba(0, 0, 0, 0.92) 0%,
+            rgba(0, 0, 0, 0.55) 34%,
+            rgba(0, 0, 0, 0) 62%
+        );
+    pointer-events: none;
+}
+
+.home-page .continue-row .card-rail-title {
+    position: absolute;
+    z-index: 2;
+    left: 8%;
+    right: 8%;
+    bottom: 18%;
+    color: #fff;
+    font-size: clamp(0.82rem, 1.35vw, 1.15rem);
+    font-weight: 900;
+    line-height: 0.95;
+    letter-spacing: 0.06em;
+    text-align: center;
+    text-transform: uppercase;
+    text-shadow:
+        0 2px 8px rgba(0, 0, 0, 0.85),
+        0 8px 24px rgba(0, 0, 0, 0.55);
+    pointer-events: none;
+}
+
+.home-page .continue-row .card-rail-art.has-logo .card-rail-title {
+    display: none;
+}
+
+.home-page .continue-row .card img.card-rail-logo {
+    position: absolute;
+    z-index: 2;
+    left: 7%;
+    bottom: 18%;
+    width: auto;
+    height: auto;
+    max-width: 64%;
+    max-height: 38%;
+    aspect-ratio: auto;
+    border-radius: 0;
+    object-fit: contain;
+    object-position: left bottom;
+    filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.7));
+    pointer-events: none;
+}
+
 .home-page .continue-row .card,
 .home-page .continue-row .popular-cards .card,
 .continue-row .card,
@@ -779,16 +851,33 @@
 }
 
 .home-page .continue-row .card-base .progress {
-    height: 3px;
-    background: rgba(255, 255, 255, 0.24);
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    /* `<progress>` is a replaced element, so left+right alone won't stretch it; pin the width. */
+    width: calc(100% - 16px);
+    bottom: 7px;
+    height: 4px;
+    z-index: 3;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.32);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.home-page .continue-row .card-base .progress::-webkit-progress-bar {
+    border-radius: 999px;
+    background: transparent;
 }
 
 .home-page .continue-row .card-base .progress::-webkit-progress-value {
-    background: rgb(223, 36, 44);
+    border-radius: 999px;
+    background: var(--brand-red);
 }
 
 .home-page .continue-row .card-base .progress::-moz-progress-bar {
-    background: rgb(223, 36, 44);
+    border-radius: 999px;
+    background: var(--brand-red);
 }
 
 .home-page .continue-empty,

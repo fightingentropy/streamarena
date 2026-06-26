@@ -2781,6 +2781,16 @@ export default function HomePage() {
       ? genreNames.map(escapeHtml).join(" <span>&bull;</span> ")
       : "Continue <span>&bull;</span> Resume";
     const safeTitle = escapeHtml(title);
+    // Mirror the other rails: render the show's wordmark when TMDB has one, with the styled
+    // uppercase title as the fallback, over a backdrop-first art crop.
+    const displayTitle = escapeHtml(
+      String(title || "Untitled").replace(/\s+/g, " ").trim().toUpperCase(),
+    );
+    const logoPath = String(tmdbDetails?.logo_path || "").trim();
+    const logoUrl = logoPath ? `${TMDB_IMAGE_BASE}/w500${logoPath}` : "";
+    const artUrl = backdropPath
+      ? `${TMDB_IMAGE_BASE}/w780${backdropPath}`
+      : posterUrl;
     const safeDescription = tmdbDetails?.overview || "Resume where you left off.";
     const maturity = tmdbDetails?.adult ? "18" : "13+";
     const qualityLabel = "HD";
@@ -2853,7 +2863,16 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
-        <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
+        <div class="card-rail-art${logoUrl ? " has-logo" : ""}">
+          <img src="${escapeHtml(artUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />
+          <div class="card-rail-shade" aria-hidden="true"></div>
+          ${
+            logoUrl
+              ? `<img class="card-rail-logo" src="${escapeHtml(logoUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />`
+              : ""
+          }
+          <span class="card-rail-title" aria-hidden="true">${displayTitle}</span>
+        </div>
         <progress class="progress" value="${progressPercent}" max="100" aria-hidden="true"></progress>
       </div>
       <div class="card-hover">
