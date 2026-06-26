@@ -29,7 +29,7 @@
     min-height: auto;
     overflow: visible;
     padding-top: 0;
-    background: #000;
+    background: var(--bg);
 }
 
 .home-page .top-nav {
@@ -513,7 +513,7 @@
     margin: 0 0 44px;
     padding: 0;
     z-index: 12;
-    background: #000;
+    background: var(--bg);
 }
 
 .home-page .continue-row h2,
@@ -554,7 +554,7 @@
     --home-side-padding: 4%;
     --home-card-width: calc((100% - 128px) / 5);
     padding: 0 0 44px;
-    background: #000;
+    background: var(--bg);
 }
 
 .home-page .continue-row .cards.popular-cards,
@@ -802,7 +802,7 @@
     max-width: none;
     margin: 20px 0 0;
     padding: 32px 4% 24px;
-    background: #000;
+    background: var(--bg);
     box-sizing: border-box;
 }
 
@@ -1092,7 +1092,7 @@ body.modal-open {
     position: relative;
     min-height: 100dvh;
     overflow: hidden;
-    background: #000;
+    background: var(--bg);
 }
 
 @supports not (min-height: 100dvh) {
