@@ -6,10 +6,13 @@
     --glass: rgba(10, 10, 10, 0.38);
     --card-bg: rgba(20, 20, 20, 0.72);
     --font-brand-sans:
-        "Helvetica Neue",
+        -apple-system,
+        BlinkMacSystemFont,
+        "SF Pro Display",
+        "SF Pro Text",
         "Segoe UI",
+        "Helvetica Neue",
         Roboto,
-        Ubuntu,
         sans-serif;
 }
 
@@ -510,7 +513,7 @@
     left: auto;
     right: auto;
     bottom: auto;
-    margin: 0 0 44px;
+    margin: 0 0 22px;
     padding: 0;
     z-index: 12;
     background: var(--bg);
@@ -533,7 +536,7 @@
     position: relative;
     z-index: 12;
     margin-top: 0;
-    padding: 0 0 48px;
+    padding: 0 0 22px;
     background: transparent;
 }
 
@@ -569,7 +572,7 @@
 
 .home-popular-row .cards.popular-cards {
     gap: 10px;
-    padding-bottom: 24px;
+    padding-bottom: 8px;
 }
 
 .home-page .continue-row .cards.popular-cards,
@@ -598,7 +601,7 @@
 
 .home-popular-row .popular-cards .card {
     border-radius: 6px;
-    margin-bottom: 14px;
+    margin-bottom: 6px;
     overflow: visible;
 }
 
@@ -642,15 +645,10 @@
     border-radius: 0;
     background:
         linear-gradient(
-            180deg,
-            rgba(0, 0, 0, 0.15) 0%,
-            rgba(0, 0, 0, 0) 42%
-        ),
-        linear-gradient(
             0deg,
-            rgba(0, 0, 0, 0.92) 0%,
-            rgba(0, 0, 0, 0.55) 34%,
-            rgba(0, 0, 0, 0) 62%
+            rgba(0, 0, 0, 0.72) 0%,
+            rgba(0, 0, 0, 0.28) 30%,
+            rgba(0, 0, 0, 0) 58%
         );
     pointer-events: none;
 }
@@ -660,12 +658,12 @@
     z-index: 2;
     left: 8%;
     right: 8%;
-    bottom: 12%;
+    bottom: 13%;
     color: #fff;
-    font-size: clamp(1.05rem, 2vw, 1.85rem);
+    font-size: clamp(0.9rem, 1.5vw, 1.35rem);
     font-weight: 800;
-    line-height: 0.98;
-    letter-spacing: 0.015em;
+    line-height: 1;
+    letter-spacing: 0.01em;
     text-align: center;
     text-transform: uppercase;
     text-shadow:
@@ -680,22 +678,23 @@
 }
 
 /* `img.card-rail-logo` out-specifies the generic `.home-popular-row .card img` cover rule
-   so the wordmark keeps its own aspect ratio and sits bottom-left, Netflix-style. */
+   so the wordmark keeps its own aspect ratio. Kept modest so the key-art image stays the
+   hero, with the wordmark a Netflix-style overlay rather than covering the card. */
 .home-popular-row .card img.card-rail-logo {
     position: absolute;
     z-index: 2;
     left: 50%;
     transform: translateX(-50%);
-    bottom: 12%;
+    bottom: 14%;
     width: auto;
     height: auto;
-    max-width: 84%;
-    max-height: 58%;
+    max-width: 52%;
+    max-height: 34%;
     aspect-ratio: auto;
     border-radius: 0;
     object-fit: contain;
     object-position: center bottom;
-    filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.7));
+    filter: drop-shadow(0 2px 7px rgba(0, 0, 0, 0.72));
     pointer-events: none;
 }
 
@@ -721,12 +720,11 @@
     inset: 0;
     z-index: 1;
     background:
-        linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0) 42%),
         linear-gradient(
             0deg,
-            rgba(0, 0, 0, 0.92) 0%,
-            rgba(0, 0, 0, 0.55) 34%,
-            rgba(0, 0, 0, 0) 62%
+            rgba(0, 0, 0, 0.72) 0%,
+            rgba(0, 0, 0, 0.28) 30%,
+            rgba(0, 0, 0, 0) 58%
         );
     pointer-events: none;
 }
@@ -736,12 +734,12 @@
     z-index: 2;
     left: 8%;
     right: 8%;
-    bottom: 18%;
+    bottom: 20%;
     color: #fff;
-    font-size: clamp(1.05rem, 2vw, 1.85rem);
+    font-size: clamp(0.9rem, 1.5vw, 1.35rem);
     font-weight: 800;
-    line-height: 0.98;
-    letter-spacing: 0.015em;
+    line-height: 1;
+    letter-spacing: 0.01em;
     text-align: center;
     text-transform: uppercase;
     text-shadow:
@@ -759,16 +757,16 @@
     z-index: 2;
     left: 50%;
     transform: translateX(-50%);
-    bottom: 16%;
+    bottom: 20%;
     width: auto;
     height: auto;
-    max-width: 84%;
-    max-height: 56%;
+    max-width: 52%;
+    max-height: 34%;
     aspect-ratio: auto;
     border-radius: 0;
     object-fit: contain;
     object-position: center bottom;
-    filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.7));
+    filter: drop-shadow(0 2px 7px rgba(0, 0, 0, 0.72));
     pointer-events: none;
 }
 
@@ -990,7 +988,7 @@ body.is-search-mode .home-member-footer {
     .popular-row.home-popular-row,
     #myListRow.popular-row {
         --home-side-padding: 4%;
-        --home-card-width: calc((100% - 160px) / 6);
+        --home-card-width: calc((100% - 128px) / 5);
     }
 }
 
@@ -998,7 +996,7 @@ body.is-search-mode .home-member-footer {
     .home-page .continue-row,
     .popular-row.home-popular-row,
     #myListRow.popular-row {
-        --home-card-width: calc((100% - 160px) / 6);
+        --home-card-width: calc((100% - 128px) / 5);
     }
 }
 
