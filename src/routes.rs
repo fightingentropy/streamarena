@@ -2038,11 +2038,29 @@ pub async fn tmdb_details_handler(
         ));
     }
     let mut detail_params = BTreeMap::new();
-    detail_params.insert("append_to_response".to_owned(), "credits,videos".to_owned());
-    let details = state
+    detail_params.insert(
+        "append_to_response".to_owned(),
+        "credits,videos,images".to_owned(),
+    );
+    // Widen the appended image set so language-neutral ("null") title-logos come back too;
+    // `select_best_logo_path` then picks the best English/most-voted wordmark.
+    detail_params.insert("include_image_language".to_owned(), "en,null".to_owned());
+    let mut details = state
         .tmdb
         .fetch(&format!("/{media_type}/{tmdb_id}"), detail_params, 20_000)
         .await?;
+    // Hoist the chosen title-logo to a top-level `logo_path` (mirroring the home rails) and drop
+    // the bulky `images` blob the client doesn't need, so Continue Watching cards can render the
+    // show's wordmark just like every other rail.
+    let logo_path = details
+        .get("images")
+        .and_then(crate::home_bootstrap::select_best_logo_path);
+    if let Value::Object(map) = &mut details {
+        map.remove("images");
+        if let Some(logo_path) = logo_path {
+            map.insert("logo_path".to_owned(), Value::String(logo_path));
+        }
+    }
     Ok(json_response(details))
 }
 
