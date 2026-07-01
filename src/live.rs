@@ -62,6 +62,8 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "storm.vodvidl.site",
     "typhoontigertribe.net",
     "ttvnw.net",
+    "cdnlivetv.tv",
+    "cdn-live.tv",
 ];
 
 type HmacSha256 = Hmac<Sha256>;
@@ -1722,14 +1724,18 @@ fn stream_inf_resolution_height(line: &str) -> Option<u32> {
     height.trim().parse::<u32>().ok()
 }
 
-/// Cap an external-embed master playlist to <= 720p by dropping taller variant
-/// renditions (and their following URI line). External-embed VOD is proxied
-/// through the mini's home uplink, so a 1080p ladder (~4.5 Mbps/viewer) starves
-/// the uplink under concurrent load; 720p (~1.8 Mbps) roughly doubles the
-/// concurrent-viewer headroom. Never strips every variant: if no rendition is
-/// <= 720p (or none declare a resolution), the playlist is returned unchanged.
-fn cap_external_embed_master_to_720p<'a>(lines: &[&'a str]) -> Vec<&'a str> {
-    const MAX_HEIGHT: u32 = 720;
+/// Cap an external-embed master playlist to <= 1080p by dropping taller variant
+/// renditions (and their following URI line). External-embed media is proxied
+/// through the mini's home uplink, so an unbounded ladder (1440p/4K, 15+ Mbps/
+/// viewer) would starve it under concurrent load. 1080p is the top rendition
+/// these embeds actually serve (sports embeds ship a 1080p + ~540p ladder, the
+/// same one other front-ends expose), so keeping it matches the source while
+/// still dropping anything taller. The lower renditions stay in place, so hls.js
+/// ABR still drops bandwidth-constrained viewers down automatically. Never strips
+/// every variant: if no rendition is <= 1080p (or none declare a resolution), the
+/// playlist is returned unchanged.
+fn cap_external_embed_master_to_1080p<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+    const MAX_HEIGHT: u32 = 1080;
     let has_keepable = lines
         .iter()
         .filter(|line| {
@@ -1783,15 +1789,15 @@ fn rewrite_live_hls_master_playlist(
 ) -> String {
     // Trusted-embed streams (external-embed VOD, and sports — both signed via
     // build_trusted_external_embed_hls_playback_source) are proxied through the
-    // mini's bandwidth-limited home uplink, so cap their quality ladder to 720p.
-    // This is a no-op for single-quality streams (most live sports, which serve
-    // one transcoded rendition); it only reshapes multi-variant ladders (VOD
-    // movie/TV embeds), exactly where the uplink relief is needed. Skip the cap
+    // mini's bandwidth-limited home uplink, so cap their quality ladder to 1080p.
+    // This is a no-op for single-quality streams and for the common 1080p + ~540p
+    // ladders these embeds serve; it only reshapes ladders that advertise a 1440p/
+    // 4K rendition, dropping just that top tier to bound the uplink. Skip the cap
     // in direct-segment mode: those bytes stream off the source CDN, not the
     // uplink, so the full quality ladder is free.
     let capped_storage;
     let lines: &[&str] = if trusted_external_embed_secret.is_some() && !direct_segments {
-        capped_storage = cap_external_embed_master_to_720p(lines);
+        capped_storage = cap_external_embed_master_to_1080p(lines);
         &capped_storage
     } else {
         lines
@@ -2941,35 +2947,40 @@ mod tests {
     }
 
     #[test]
-    fn caps_external_embed_master_to_720p() {
+    fn caps_external_embed_master_to_1080p() {
+        // 1080p is kept (it's what livextv et al. expose for these embeds); only
+        // a taller 4K tier is dropped to bound the mini's uplink.
         let master = "#EXTM3U\n\
-#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=4500000,RESOLUTION=1920x1080\n\
+#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=16000000,RESOLUTION=3840x2160\n\
+/2160/index.m3u8\n\
+#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=8000000,RESOLUTION=1920x1080\n\
 /1080/index.m3u8\n\
-#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=1800000,RESOLUTION=1280x720\n\
-/720/index.m3u8\n\
-#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=720000,RESOLUTION=640x360\n\
-/360/index.m3u8";
+#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=700000,RESOLUTION=960x540\n\
+/540/index.m3u8";
         let lines: Vec<&str> = master.lines().collect();
-        let capped = super::cap_external_embed_master_to_720p(&lines).join("\n");
-        assert!(!capped.contains("1920x1080"), "1080p variant must be dropped");
-        assert!(!capped.contains("/1080/index.m3u8"), "1080p URI must be dropped");
-        assert!(capped.contains("1280x720") && capped.contains("/720/index.m3u8"));
-        assert!(capped.contains("640x360") && capped.contains("/360/index.m3u8"));
+        let capped = super::cap_external_embed_master_to_1080p(&lines).join("\n");
+        assert!(!capped.contains("3840x2160"), "4K variant must be dropped");
+        assert!(!capped.contains("/2160/index.m3u8"), "4K URI must be dropped");
+        assert!(
+            capped.contains("1920x1080") && capped.contains("/1080/index.m3u8"),
+            "1080p variant must be kept"
+        );
+        assert!(capped.contains("960x540") && capped.contains("/540/index.m3u8"));
     }
 
     #[test]
-    fn cap_keeps_master_when_no_rendition_is_720p_or_lower() {
-        // Only a 1080p rendition: dropping it would empty the master, so keep it.
+    fn cap_keeps_master_when_no_rendition_fits() {
+        // Only a 4K rendition: dropping it would empty the master, so keep it.
         let master = "#EXTM3U\n\
-#EXT-X-STREAM-INF:BANDWIDTH=4500000,RESOLUTION=1920x1080\n\
-/1080/index.m3u8";
+#EXT-X-STREAM-INF:BANDWIDTH=16000000,RESOLUTION=3840x2160\n\
+/2160/index.m3u8";
         let lines: Vec<&str> = master.lines().collect();
-        let capped = super::cap_external_embed_master_to_720p(&lines).join("\n");
-        assert!(capped.contains("/1080/index.m3u8"));
+        let capped = super::cap_external_embed_master_to_1080p(&lines).join("\n");
+        assert!(capped.contains("/2160/index.m3u8"));
         // No declared resolutions -> unchanged.
         let no_res = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4500000\n/v/index.m3u8";
         let lines: Vec<&str> = no_res.lines().collect();
-        assert_eq!(super::cap_external_embed_master_to_720p(&lines).join("\n"), no_res);
+        assert_eq!(super::cap_external_embed_master_to_1080p(&lines).join("\n"), no_res);
     }
 
     #[test]

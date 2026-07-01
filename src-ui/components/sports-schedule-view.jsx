@@ -58,11 +58,19 @@ const SPORT_TABS = Object.freeze(
   ),
 );
 
-const SPORTS_SCHEDULE_SOURCES = Object.freeze(["streamed", "matchstream", "ntvs"]);
+const SPORTS_SCHEDULE_SOURCES = Object.freeze([
+  "streamed",
+  "matchstream",
+  "ntvs",
+  "cdnlivetv",
+]);
+// Sources that only carry football (the backend rejects them for other sports).
+const FOOTBALL_ONLY_SPORTS_SOURCES = Object.freeze(["ntvs", "cdnlivetv"]);
 const SPORTS_SOURCE_LABELS = Object.freeze({
   streamed: "Streamed",
   matchstream: "MatchStream",
   ntvs: "NTVS",
+  cdnlivetv: "LiveTV",
 });
 
 function normalizeSport(value) {
@@ -114,12 +122,17 @@ function sportsSourceLabel(source) {
 function sportsScheduleSourcesForSport(sport) {
   return sport === "football"
     ? SPORTS_SCHEDULE_SOURCES
-    : SPORTS_SCHEDULE_SOURCES.filter((source) => source !== "ntvs");
+    : SPORTS_SCHEDULE_SOURCES.filter(
+        (source) => !FOOTBALL_ONLY_SPORTS_SOURCES.includes(source),
+      );
 }
 
 function normalizeProviderId(value) {
   const provider = String(value || "").trim().toLowerCase();
-  return provider === "streamed" || provider === "matchstream" || provider === "ntvs"
+  return provider === "streamed" ||
+    provider === "matchstream" ||
+    provider === "ntvs" ||
+    provider === "cdnlivetv"
     ? provider
     : "";
 }
@@ -130,6 +143,7 @@ function isProviderLabel(value) {
     normalized === "streamed" ||
     normalized === "matchstream" ||
     normalized === "ntvs" ||
+    normalized === "cdnlivetv" ||
     normalized === "auto"
   );
 }
@@ -245,6 +259,19 @@ function sportsStreamPreferenceScore(stream = {}) {
   }
   if (provider === "ntvs") {
     return 3;
+  }
+  if (provider === "cdnlivetv") {
+    // cdnlivetv (streamsports99) carries dedicated broadcaster feeds; rank by the
+    // resolution tag so FHD channels sit alongside the streamed default and SD
+    // fillers fall behind the standard providers.
+    const quality = String(stream?.quality || "").trim().toLowerCase();
+    if (quality === "fhd" || quality === "4k") {
+      return 4;
+    }
+    if (quality === "hd") {
+      return 5;
+    }
+    return 8;
   }
   if (provider === "streamed") {
     if (label.includes("delta") || source.includes("/api/stream/delta/")) {
