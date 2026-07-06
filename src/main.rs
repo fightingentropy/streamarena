@@ -105,6 +105,18 @@ fn raise_open_file_limit() {
 #[cfg(not(unix))]
 fn raise_open_file_limit() {}
 
+/// True when `host` matches a bypass entry exactly or as a dot-boundary
+/// subdomain ("opensubtitles.com" matches "api.opensubtitles.com" but never
+/// "evilopensubtitles.com").
+fn outbound_proxy_bypasses_host(host: &str, bypass_suffixes: &[String]) -> bool {
+    bypass_suffixes.iter().any(|suffix| {
+        host == suffix
+            || host
+                .strip_suffix(suffix.as_str())
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    })
+}
+
 #[tokio::main]
 async fn main() -> AppResult<()> {
     dotenvy::dotenv().ok();
@@ -161,9 +173,25 @@ async fn main() -> AppResult<()> {
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
     {
-        let proxy = reqwest::Proxy::all(&proxy_url).map_err(|error| {
+        // Scope the WARP proxy to the traffic that needs it. WARP exists to
+        // shield the embed/sports CDN fetches (fingerprint/abuse walls) and to
+        // keep Real-Debrid on one consistent egress IP (its links are
+        // IP-pinned) — so real-debrid.com is deliberately not bypassable by
+        // default. Metadata APIs (TMDB, Torrentio, addon manifests, Cloudflare
+        // API, OpenSubtitles) gain nothing from WARP and pay its latency while
+        // sharing its rate-limited egress; they go direct.
+        let proxy_target = reqwest::Url::parse(&proxy_url).map_err(|error| {
             crate::error::ApiError::internal(format!("Invalid OUTBOUND_HTTP_PROXY: {error}"))
         })?;
+        let bypass_hosts = crate::config::outbound_proxy_bypass_hosts();
+        let proxy = reqwest::Proxy::custom(move |url| {
+            let host = url.host_str()?.to_ascii_lowercase();
+            if outbound_proxy_bypasses_host(&host, &bypass_hosts) {
+                None
+            } else {
+                Some(proxy_target.clone())
+            }
+        });
         http_client_builder = http_client_builder.proxy(proxy);
     }
     let http_client = http_client_builder
@@ -236,6 +264,7 @@ async fn main() -> AppResult<()> {
             sweep_sports_stream_resolve_cache.prune();
             sweep_live_audio_transcode_cache.prune();
             sweep_live_hls_playlist_cache.prune();
+            crate::live::prune_live_proxy_statics();
             sweep_resolver.prune_resolve_cache();
         }
     });
@@ -332,4 +361,26 @@ async fn main() -> AppResult<()> {
     .await
     .map_err(|error: std::io::Error| crate::error::ApiError::internal(error.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::outbound_proxy_bypasses_host;
+
+    #[test]
+    fn proxy_bypass_matches_on_domain_boundary_only() {
+        let bypass: Vec<String> = ["api.themoviedb.org", "opensubtitles.com"]
+            .iter()
+            .map(|entry| (*entry).to_owned())
+            .collect();
+        assert!(outbound_proxy_bypasses_host("api.themoviedb.org", &bypass));
+        assert!(outbound_proxy_bypasses_host("api.opensubtitles.com", &bypass));
+        assert!(outbound_proxy_bypasses_host("www.opensubtitles.com", &bypass));
+        // Suffix without a dot boundary must NOT bypass the proxy.
+        assert!(!outbound_proxy_bypasses_host("evilopensubtitles.com", &bypass));
+        // Anything else keeps riding the proxy — notably real-debrid.
+        assert!(!outbound_proxy_bypasses_host("api.real-debrid.com", &bypass));
+        assert!(!outbound_proxy_bypasses_host("themoviedb.org", &bypass));
+        assert!(!outbound_proxy_bypasses_host("anything.example", &[]));
+    }
 }

@@ -13,6 +13,14 @@
         <link rel="icon" type="image/svg+xml" href="/assets/icons/streamarena-favicon.svg" />
         <link rel="icon" type="image/png" sizes="192x192" href="/assets/icons/streamarena-favicon-192.png" />
         <link rel="apple-touch-icon" sizes="180x180" href="/assets/icons/streamarena-app-icon-180.png" />
+        <!-- Live/sports HLS is fetched cross-origin from the Cloudflare Worker proxy;
+             warming DNS+TCP+TLS here takes that handshake off the first playlist
+             fetch's critical path. `crossorigin` matters: hls.js loads in CORS mode,
+             and a non-CORS preconnect opens a socket the CORS fetch cannot reuse.
+             live.streamarena.xyz is the zone-routed worker alias being rolled out;
+             preconnecting before it serves traffic is harmless. -->
+        <link rel="preconnect" href="https://streamarena-live-hls-proxy.erlinhoxha.workers.dev" crossorigin />
+        <link rel="preconnect" href="https://live.streamarena.xyz" crossorigin />
         <script type="module" src="/src-ui/entries/player.js"></script>
     </head>
     <body></body>

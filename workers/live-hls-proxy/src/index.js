@@ -54,9 +54,14 @@ const BROWSER_UA =
 // mini's per-request ffmpeg transcodes across viewers.
 const SEGMENT_CACHE_TTL_SECONDS = 20;
 // Live media playlists mutate every target-duration (~2-4s); a tiny TTL
-// coalesces concurrent viewers' polls without serving stale playlists. (Edge
-// cache hints are inert on workers.dev today; they matter if this Worker ever
-// moves onto a zone route, and they are harmless meanwhile.)
+// coalesces concurrent viewers' polls without serving stale playlists. (These
+// cf.cacheTtl hints were inert while this Worker lived only on workers.dev;
+// since the zone-routed custom domain was attached — see "routes" in
+// wrangler.jsonc — subrequest caching is empirically active on BOTH hosts
+// (verified 2026-07-06: MISS→HIT on repeat fetches via workers.dev and the
+// custom domain). The backend keeps workers.dev as its client-facing base to
+// stay out of the zone's L7 DDoS managed ruleset, which 503'd bursty live
+// polling on 2026-06-11; the custom domain is the standby host.)
 const PLAYLIST_CACHE_TTL_SECONDS = 2;
 // VOD external-embed masters (carried with `directSeg=1`) are immutable for the
 // stream token's life (~25 min) — unlike live, they never mutate. Cache the
@@ -148,6 +153,17 @@ function deny(status, message) {
     status,
     headers: { "cache-control": "no-store", "content-type": "text/plain" },
   });
+}
+
+// Observability for the edge-cache move: `cf-cache-status` on a subrequest
+// response says whether the cf.cacheTtl/cacheEverything hints actually hit
+// Cloudflare's cache (HIT/MISS/EXPIRED…). The header only appears when the
+// hints are live — i.e. on the zone-routed custom domain; on the workers.dev
+// rollback host it's absent and surfaces as "none". Relayed on every proxied
+// response so one curl against either host verifies the caching layer without
+// needing `wrangler tail`.
+function upstreamCacheStatus(upstream) {
+  return upstream.headers.get("cf-cache-status") || "none";
 }
 
 // Validate the shared signed-URL contract (`input`, optional `referer`,
@@ -353,6 +369,7 @@ async function handlePlaylist(request, url, env) {
         "content-type": "text/plain",
         "Access-Control-Allow-Origin": "*",
         "X-Live-Proxy": "cf-worker",
+        "X-Upstream-Cache": upstreamCacheStatus(upstream),
       },
     });
   }
@@ -368,6 +385,7 @@ async function handlePlaylist(request, url, env) {
       "Access-Control-Allow-Origin": "*",
       "X-Live-Proxy": "cf-worker",
       "X-Live-Proxy-Mode": "playlist",
+      "X-Upstream-Cache": upstreamCacheStatus(upstream),
     },
   });
 }
@@ -407,6 +425,7 @@ async function relayResourceViaOrigin(request, url, env) {
   headers.set("Access-Control-Allow-Origin", "*");
   headers.set("X-Live-Proxy", "cf-worker");
   headers.set("X-Live-Proxy-Mode", "origin");
+  headers.set("X-Upstream-Cache", upstreamCacheStatus(upstream));
 
   return new Response(request.method === "HEAD" ? null : upstream.body, {
     status: upstream.status,
@@ -489,6 +508,7 @@ async function handleResource(request, url, env) {
     headers.set("Access-Control-Allow-Origin", "*");
     headers.set("X-Live-Proxy", "cf-worker");
     headers.set("X-Live-Proxy-Mode", "upstream");
+    headers.set("X-Upstream-Cache", upstreamCacheStatus(upstream));
     return new Response(stripped, { status: upstream.status, headers });
   }
 
@@ -504,6 +524,7 @@ async function handleResource(request, url, env) {
   headers.set("Access-Control-Allow-Origin", "*");
   headers.set("X-Live-Proxy", "cf-worker");
   headers.set("X-Live-Proxy-Mode", "upstream");
+  headers.set("X-Upstream-Cache", upstreamCacheStatus(upstream));
 
   return new Response(request.method === "HEAD" ? null : upstream.body, {
     status: upstream.status,

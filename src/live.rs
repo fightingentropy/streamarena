@@ -1,15 +1,16 @@
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, Response, Uri};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dashmap::DashMap;
+use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
@@ -110,11 +111,24 @@ pub async fn live_hls_handler(
     let live_request = live_hls_request_input(&state, &uri, LiveHlsRequestKind::Playlist)?;
     let cache_key = live_hls_playlist_cache_key(&live_request);
 
-    // Serve an already-rewritten immutable playlist from memory: skips the cold
-    // ~5 s upstream fetch and the per-request rewrite + ~2000x HMAC sign for repeat
-    // loads, seeks, quality switches, and concurrent viewers of the same resolve.
+    // Serve an already-rewritten playlist from memory. Immutable VOD/master
+    // playlists skip the cold ~5 s upstream fetch and the per-request rewrite +
+    // ~2000x HMAC sign for repeat loads, seeks, quality switches, and concurrent
+    // viewers. Rolling live playlists ride the same cache with a ~1.5 s
+    // micro-TTL, so N viewers polling the same stream cost one upstream fetch
+    // per interval instead of N (all of which go through the WARP proxy).
     if let Some(cached) = state.live_hls_playlist_cache.get_fresh(&cache_key) {
-        return live_hls_playlist_response(&headers, &cached, "public, max-age=300");
+        return live_hls_playlist_response(&headers, &cached.body, cached.client_cache_control);
+    }
+
+    // Single-flight the miss: with several viewers on one stream, every playlist
+    // expiry would otherwise fan out into simultaneous identical upstream
+    // fetches. The Arc is cloned out of the DashMap and the shard guard dropped
+    // before the await (see the single-flight statics for why that matters).
+    let flight = single_flight_lock(&LIVE_HLS_PLAYLIST_SINGLE_FLIGHT, &cache_key);
+    let _in_flight = flight.lock().await;
+    if let Some(cached) = state.live_hls_playlist_cache.get_fresh(&cache_key) {
+        return live_hls_playlist_response(&headers, &cached.body, cached.client_cache_control);
     }
 
     let fetched = fetch_live_hls_playlist_upstream(&state, &live_request).await?;
@@ -136,13 +150,20 @@ pub async fn live_hls_handler(
         live_request.trusted_external_embed,
     );
 
-    let cache_control = if immutable {
-        let body: Arc<str> = Arc::from(rewritten.as_str());
-        state.live_hls_playlist_cache.store(cache_key, body);
-        "public, max-age=300"
+    // Upstream errors returned above and are never stored; only a successful
+    // rewrite lands in the cache. The client-facing Cache-Control still says
+    // `no-store` for rolling playlists — the micro-cache is backend-only.
+    let (ttl_ms, cache_control) = if immutable {
+        (LIVE_HLS_IMMUTABLE_PLAYLIST_CACHE_TTL_MS, "public, max-age=300")
     } else {
-        "no-store"
+        (LIVE_HLS_ROLLING_PLAYLIST_CACHE_TTL_MS, "no-store")
     };
+    state.live_hls_playlist_cache.store(
+        cache_key,
+        Arc::from(rewritten.as_str()),
+        ttl_ms,
+        cache_control,
+    );
     live_hls_playlist_response(&headers, &rewritten, cache_control)
 }
 
@@ -285,14 +306,47 @@ pub async fn live_hls_resource_handler(
     // Streaming fast-path: a non-`.ts` segment fetched over plain HTTP (not the
     // curl-fingerprint path, not a transcode candidate) is streamed straight to the
     // client, so TTFB is the first upstream chunk rather than the whole multi-MB
-    // segment download. `.ts` segments, curl-fetched hosts, and any upstream that
-    // turns out to be mpeg-ts fall through to the buffered (transcode-capable) path.
+    // segment download. Curl-fetched hosts, and any upstream that turns out to be
+    // mpeg-ts, fall through to the paths below.
     if !is_curl_fetch_live_hls_upstream(&live_request.source_url)
         && !url_path_is_mpegts(&live_request.source_url)
         && let Some(response) =
             stream_live_hls_resource_via_http(&state, &live_request, cache_control).await?
     {
         return Ok(response);
+    }
+
+    // Passthrough streaming for `.ts`: once the per-rendition probe has decided
+    // the stream needs no ffmpeg (the common case for live sports), segments can
+    // stream to the client as they download instead of buffering whole on the
+    // mini first — TTFB drops from a whole-segment download to the first
+    // upstream chunk. A missing/stale decision keeps the buffered path below,
+    // whose probe needs the full segment bytes; curl-fingerprint hosts can only
+    // be fetched via buffered curl.
+    if !is_curl_fetch_live_hls_upstream(&live_request.source_url)
+        && matches!(
+            state
+                .live_audio_transcode_cache
+                .get_fresh(&live_audio_stream_key(&live_request.source_url)),
+            Some(decision) if !decision.needs_processing()
+        )
+    {
+        return stream_live_ts_passthrough(&state, &live_request, cache_control).await;
+    }
+
+    // Buffered (transcode-capable) path. Processed output is cached and the
+    // fetch+ffmpeg is single-flighted per segment URL: N viewers of a
+    // transcode-needed stream otherwise fetch and re-encode the SAME segment N
+    // times, and beyond ~3 viewers the re-encode semaphore queue turns into
+    // 503s.
+    let segment_key = live_request.source_url.as_str().to_owned();
+    if let Some(cached) = LIVE_SEGMENT_OUTPUT_CACHE.get_fresh(&segment_key) {
+        return live_segment_response(cached, cache_control);
+    }
+    let flight = single_flight_lock(&LIVE_SEGMENT_SINGLE_FLIGHT, &segment_key);
+    let _in_flight = flight.lock().await;
+    if let Some(cached) = LIVE_SEGMENT_OUTPUT_CACHE.get_fresh(&segment_key) {
+        return live_segment_response(cached, cache_control);
     }
 
     let fetched = fetch_live_hls_resource_upstream(&state, &live_request).await?;
@@ -328,11 +382,35 @@ pub async fn live_hls_resource_handler(
         }
     }
 
+    let bytes = Bytes::from(bytes);
+    // Only cache final media bytes — errors returned above, and a playlist
+    // fetched through the resource path (curl-host keys/manifests) must never be
+    // replayed for 25 s to other viewers: a rolling playlist would go stale.
+    if !live_resource_looks_like_playlist(&content_type, &bytes) {
+        LIVE_SEGMENT_OUTPUT_CACHE.store(segment_key, content_type.clone(), bytes.clone());
+    }
     Response::builder()
         .status(200)
         .header("content-type", content_type)
         .header("cache-control", cache_control)
         .body(Body::from(bytes))
+        .map_err(|error| ApiError::internal(error.to_string()))
+}
+
+fn live_resource_looks_like_playlist(content_type: &str, bytes: &[u8]) -> bool {
+    content_type.to_ascii_lowercase().contains("mpegurl")
+        || bytes.starts_with(b"#EXTM3U")
+}
+
+fn live_segment_response(
+    cached: CachedLiveSegment,
+    cache_control: &str,
+) -> AppResult<Response<Body>> {
+    Response::builder()
+        .status(200)
+        .header("content-type", cached.content_type)
+        .header("cache-control", cache_control)
+        .body(Body::from(cached.bytes))
         .map_err(|error| ApiError::internal(error.to_string()))
 }
 
@@ -432,6 +510,136 @@ async fn stream_live_hls_resource_via_http(
         .header("cache-control", cache_control)
         .body(body)
         .map(Some)
+        .map_err(|error| ApiError::internal(error.to_string()))
+}
+
+/// How much of the body to peek before deciding to stream: enough for the PNG
+/// magic check (`png_prefixed_ts_strip_offset` wants >= 8 bytes).
+const LIVE_TS_PEEK_BYTES: usize = 8;
+
+/// True when the peeked head carries the PNG magic — the disguised-segment
+/// marker (see `png_prefixed_ts_strip_offset`).
+fn head_is_png_prefixed(head: &[u8]) -> bool {
+    head.len() >= 4 && head[..4] == [0x89, 0x50, 0x4e, 0x47]
+}
+
+/// Read chunks off `stream`, accumulating until at least `min_len` bytes are
+/// buffered or the stream ends. The head is handed back so the caller can
+/// prepend it to the remaining chunks — nothing is dropped or re-fetched.
+async fn peek_stream_head<S, E>(stream: &mut S, min_len: usize) -> Result<Vec<u8>, E>
+where
+    S: futures_util::Stream<Item = Result<Bytes, E>> + Unpin,
+{
+    let mut head = Vec::with_capacity(min_len);
+    while head.len() < min_len {
+        match stream.next().await {
+            Some(chunk) => head.extend_from_slice(&chunk?),
+            None => break,
+        }
+    }
+    Ok(head)
+}
+
+/// Stream a `.ts` live segment whose cached transcode decision is Passthrough:
+/// respond 200 as soon as the first upstream chunk arrives instead of buffering
+/// the whole multi-MB segment on the mini first. The first 8 bytes are peeked to
+/// catch PNG-disguised segments — those need the full body for the sync-byte
+/// scan, so the already-open response is drained to completion (no re-fetch),
+/// stripped, and served buffered. Only ever called for non-curl-fingerprint
+/// URLs with a fresh no-processing decision.
+async fn stream_live_ts_passthrough(
+    state: &AppState,
+    live_request: &LiveHlsRequest,
+    cache_control: &str,
+) -> AppResult<Response<Body>> {
+    // A viewer on the buffered path (or a previous PNG-disguised fetch) may have
+    // already produced these exact bytes.
+    if let Some(cached) = LIVE_SEGMENT_OUTPUT_CACHE.get_fresh(live_request.source_url.as_str()) {
+        return live_segment_response(cached, cache_control);
+    }
+    let referer = browser_bound_live_hls_referer_header(live_request.referer.as_deref());
+    let mut request = state
+        .http_client
+        .get(live_request.source_url.clone())
+        .header(reqwest::header::USER_AGENT, LIVE_HLS_BROWSER_USER_AGENT)
+        .header(reqwest::header::ACCEPT, "*/*")
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+    if let Some(referer) = referer.as_deref() {
+        request = request.header(reqwest::header::REFERER, referer);
+    }
+    let response = timeout(LIVE_UPSTREAM_REQUEST_TIMEOUT, request.send())
+        .await
+        .map_err(|_| ApiError::bad_gateway("Live HLS resource request timed out."))?
+        .map_err(|_| ApiError::bad_gateway("Live HLS resource request failed."))?;
+    if !response.status().is_success() {
+        return Err(ApiError::bad_gateway(format!(
+            "Live HLS resource request failed with status {}.",
+            response.status()
+        )));
+    }
+    let final_url = response.url().clone();
+    ensure_allowed_live_hls_final_url(&final_url, live_request, LiveHlsRequestKind::Resource)?;
+    let upstream_content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+
+    let mut stream = response.bytes_stream();
+    let head = timeout(
+        LIVE_UPSTREAM_REQUEST_TIMEOUT,
+        peek_stream_head(&mut stream, LIVE_TS_PEEK_BYTES),
+    )
+    .await
+    .map_err(|_| ApiError::bad_gateway("Live HLS resource read timed out."))?
+    .map_err(|_| ApiError::bad_gateway("Live HLS resource read failed."))?;
+
+    if head_is_png_prefixed(&head) {
+        let mut bytes = head;
+        let drained = timeout(LIVE_UPSTREAM_REQUEST_TIMEOUT, async {
+            while let Some(chunk) = stream.next().await {
+                bytes.extend_from_slice(&chunk?);
+            }
+            Ok::<_, reqwest::Error>(())
+        })
+        .await;
+        match drained {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err(ApiError::bad_gateway("Live HLS resource read failed.")),
+            Err(_) => return Err(ApiError::bad_gateway("Live HLS resource read timed out.")),
+        }
+        let (offset, content_type) = match png_prefixed_ts_strip_offset(&bytes) {
+            Some(offset) => (offset, "video/mp2t".to_owned()),
+            None => (0, upstream_content_type),
+        };
+        let bytes = Bytes::from(bytes).slice(offset..);
+        LIVE_SEGMENT_OUTPUT_CACHE.store(
+            live_request.source_url.as_str().to_owned(),
+            content_type.clone(),
+            bytes.clone(),
+        );
+        return Response::builder()
+            .status(200)
+            .header("content-type", content_type)
+            .header("cache-control", cache_control)
+            .body(Body::from(bytes))
+            .map_err(|error| ApiError::internal(error.to_string()));
+    }
+
+    let content_type = if url_path_is_mpegts(&live_request.source_url) {
+        "video/mp2t".to_owned()
+    } else {
+        upstream_content_type
+    };
+    let body = Body::from_stream(
+        futures_util::stream::iter([Ok::<Bytes, reqwest::Error>(Bytes::from(head))]).chain(stream),
+    );
+    Response::builder()
+        .status(200)
+        .header("content-type", content_type)
+        .header("cache-control", cache_control)
+        .body(body)
         .map_err(|error| ApiError::internal(error.to_string()))
 }
 
@@ -561,11 +769,18 @@ impl LiveAudioTranscodeCache {
 // upstream fetch + rewrite + ~2000x HMAC sign can be served from memory for repeat
 // loads, seeks, quality switches, and concurrent viewers of the same resolve. Keyed
 // by the upstream URL + referer + flags so a fresh resolve (new auth token) always
-// misses and re-fetches. Only immutable playlists (master + VOD media) are cached;
-// rolling live playlists are never stored. Capped tight because each VOD body is
-// ~2 MB.
-const LIVE_HLS_PLAYLIST_CACHE_TTL_MS: i64 = 120_000;
-const LIVE_HLS_PLAYLIST_CACHE_MAX_ENTRIES: usize = 24;
+// misses and re-fetches. Immutable playlists (master + VOD media) get the long TTL;
+// rolling live media playlists get a micro-TTL just long enough to collapse the
+// per-viewer poll storm (every viewer re-polls every ~2-4 s, and each miss is an
+// upstream fetch through the WARP proxy plus a full rewrite + re-sign) without
+// serving a meaningfully stale live window. The byte budget matches the old
+// 24-entry x ~2 MB VOD ceiling; the higher entry cap exists because rolling
+// entries are a few KB each and many live streams/renditions can be watched at
+// once.
+const LIVE_HLS_IMMUTABLE_PLAYLIST_CACHE_TTL_MS: i64 = 120_000;
+const LIVE_HLS_ROLLING_PLAYLIST_CACHE_TTL_MS: i64 = 1_500;
+const LIVE_HLS_PLAYLIST_CACHE_MAX_ENTRIES: usize = 64;
+const LIVE_HLS_PLAYLIST_CACHE_MAX_TOTAL_BYTES: usize = 48 * 1024 * 1024;
 /// Don't bother gzipping tiny playlists (master playlists are ~2 KB); the win is on
 /// the ~2 MB VOD media manifests, which compress >10x.
 const LIVE_HLS_GZIP_MIN_BYTES: usize = 4 * 1024;
@@ -574,10 +789,16 @@ const LIVE_HLS_GZIP_MIN_BYTES: usize = 4 * 1024;
 struct CachedLivePlaylist {
     body: Arc<str>,
     stored_at_ms: i64,
+    ttl_ms: i64,
+    /// What the client is told, independent of the server-side TTL: rolling live
+    /// playlists must stay `no-store` (the micro-cache is a backend dedupe only —
+    /// a browser or CDN replaying a live playlist stalls the player).
+    client_cache_control: &'static str,
 }
 
-/// In-memory cache of fully-rewritten, immutable live HLS playlists (external-embed
-/// VOD master + media manifests). See the comment above the constants for the
+/// In-memory cache of fully-rewritten live HLS playlists — immutable
+/// external-embed VOD/master manifests (long TTL) and rolling live media
+/// playlists (micro-TTL). See the comment above the constants for the
 /// invalidation reasoning.
 #[derive(Clone, Default)]
 pub struct LiveHlsPlaylistCache {
@@ -591,37 +812,191 @@ impl LiveHlsPlaylistCache {
         }
     }
 
-    fn get_fresh(&self, key: &str) -> Option<Arc<str>> {
+    fn get_fresh(&self, key: &str) -> Option<CachedLivePlaylist> {
         let entry = self.entries.get(key)?;
-        if now_ms() - entry.stored_at_ms > LIVE_HLS_PLAYLIST_CACHE_TTL_MS {
+        if now_ms() - entry.stored_at_ms > entry.ttl_ms {
             return None;
         }
-        Some(entry.body.clone())
+        Some(entry.clone())
     }
 
-    fn store(&self, key: String, body: Arc<str>) {
+    fn store(&self, key: String, body: Arc<str>, ttl_ms: i64, client_cache_control: &'static str) {
         self.entries.insert(
             key,
             CachedLivePlaylist {
                 body,
                 stored_at_ms: now_ms(),
+                ttl_ms,
+                client_cache_control,
             },
         );
-        if self.entries.len() > LIVE_HLS_PLAYLIST_CACHE_MAX_ENTRIES {
-            let now = now_ms();
-            self.entries
-                .retain(|_, value| now - value.stored_at_ms <= LIVE_HLS_PLAYLIST_CACHE_TTL_MS);
-            if self.entries.len() > LIVE_HLS_PLAYLIST_CACHE_MAX_ENTRIES {
-                self.entries.clear();
-            }
-        }
+        evict_expired_then_oldest(
+            &self.entries,
+            LIVE_HLS_PLAYLIST_CACHE_MAX_ENTRIES,
+            LIVE_HLS_PLAYLIST_CACHE_MAX_TOTAL_BYTES,
+            |entry, now| now - entry.stored_at_ms > entry.ttl_ms,
+            |entry| entry.stored_at_ms,
+            |entry| entry.body.len(),
+        );
     }
 
     pub fn prune(&self) {
         let now = now_ms();
         self.entries
-            .retain(|_, value| now - value.stored_at_ms <= LIVE_HLS_PLAYLIST_CACHE_TTL_MS);
+            .retain(|_, value| now - value.stored_at_ms <= value.ttl_ms);
     }
+}
+
+/// Shared eviction policy for the in-memory live caches: drop expired entries
+/// first, then oldest-first until both the entry-count and total-byte budgets
+/// hold. Keys are collected before any removal — removing while iterating a
+/// DashMap re-locks the shard the iterator holds and deadlocks.
+fn evict_expired_then_oldest<V>(
+    entries: &DashMap<String, V>,
+    max_entries: usize,
+    max_total_bytes: usize,
+    is_expired: impl Fn(&V, i64) -> bool,
+    stored_at_ms: impl Fn(&V) -> i64,
+    byte_len: impl Fn(&V) -> usize,
+) {
+    let now = now_ms();
+    entries.retain(|_, value| !is_expired(value, now));
+    let mut live: Vec<(String, i64, usize)> = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.key().clone(),
+                stored_at_ms(entry.value()),
+                byte_len(entry.value()),
+            )
+        })
+        .collect();
+    let mut total_bytes: usize = live.iter().map(|(_, _, len)| *len).sum();
+    if live.len() <= max_entries && total_bytes <= max_total_bytes {
+        return;
+    }
+    live.sort_unstable_by_key(|(_, stored_at, _)| *stored_at);
+    for (evicted, (key, _, len)) in live.iter().enumerate() {
+        if live.len() - evicted <= max_entries && total_bytes <= max_total_bytes {
+            break;
+        }
+        entries.remove(key);
+        total_bytes = total_bytes.saturating_sub(*len);
+    }
+}
+
+// Cache of FINAL processed live-segment bytes (post PNG-strip, post transcode/
+// remux), keyed by the full upstream segment URL. Without it, N viewers on a
+// transcode-needed stream mean N identical upstream fetches AND N identical
+// ffmpeg runs of the same segment racing the 3-permit re-encode semaphore —
+// beyond ~3 viewers the queue times out and viewers see 503s. The TTL only has
+// to outlive a live window's worth of polling (segments leave the playlist
+// after ~30 s); the byte budget bounds worst-case memory at ~24 MB/segment
+// transcode outputs.
+const LIVE_SEGMENT_OUTPUT_CACHE_TTL_MS: i64 = 25_000;
+const LIVE_SEGMENT_OUTPUT_CACHE_MAX_ENTRIES: usize = 64;
+const LIVE_SEGMENT_OUTPUT_CACHE_MAX_TOTAL_BYTES: usize = 96 * 1024 * 1024;
+
+#[derive(Clone)]
+struct CachedLiveSegment {
+    content_type: String,
+    bytes: Bytes,
+    stored_at_ms: i64,
+}
+
+struct LiveSegmentOutputCache {
+    entries: DashMap<String, CachedLiveSegment>,
+    max_entries: usize,
+    max_total_bytes: usize,
+}
+
+impl LiveSegmentOutputCache {
+    fn new(max_entries: usize, max_total_bytes: usize) -> Self {
+        Self {
+            entries: DashMap::new(),
+            max_entries,
+            max_total_bytes,
+        }
+    }
+
+    fn get_fresh(&self, key: &str) -> Option<CachedLiveSegment> {
+        let entry = self.entries.get(key)?;
+        if now_ms() - entry.stored_at_ms > LIVE_SEGMENT_OUTPUT_CACHE_TTL_MS {
+            return None;
+        }
+        Some(entry.clone())
+    }
+
+    fn store(&self, key: String, content_type: String, bytes: Bytes) {
+        if bytes.is_empty() || bytes.len() > self.max_total_bytes {
+            return;
+        }
+        self.entries.insert(
+            key,
+            CachedLiveSegment {
+                content_type,
+                bytes,
+                stored_at_ms: now_ms(),
+            },
+        );
+        evict_expired_then_oldest(
+            &self.entries,
+            self.max_entries,
+            self.max_total_bytes,
+            |entry, now| now - entry.stored_at_ms > LIVE_SEGMENT_OUTPUT_CACHE_TTL_MS,
+            |entry| entry.stored_at_ms,
+            |entry| entry.bytes.len(),
+        );
+    }
+
+    fn prune(&self) {
+        let now = now_ms();
+        self.entries
+            .retain(|_, value| now - value.stored_at_ms <= LIVE_SEGMENT_OUTPUT_CACHE_TTL_MS);
+    }
+}
+
+// Module-level statics, like the semaphores above: AppState is owned by
+// routes.rs and these are implementation details of the live proxy.
+static LIVE_SEGMENT_OUTPUT_CACHE: LazyLock<LiveSegmentOutputCache> = LazyLock::new(|| {
+    LiveSegmentOutputCache::new(
+        LIVE_SEGMENT_OUTPUT_CACHE_MAX_ENTRIES,
+        LIVE_SEGMENT_OUTPUT_CACHE_MAX_TOTAL_BYTES,
+    )
+});
+
+// Single-flight lock maps: concurrent cache misses on the same playlist key /
+// segment URL share ONE upstream fetch (+rewrite/+ffmpeg) instead of stampeding
+// the WARP proxy and the transcode semaphore. Usage pattern (deadlock-critical,
+// see the src/tmdb.rs history): get-or-insert the Arc, DROP the DashMap guard,
+// then `.lock().await` — never await while a shard guard is alive.
+static LIVE_HLS_PLAYLIST_SINGLE_FLIGHT: LazyLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> =
+    LazyLock::new(DashMap::new);
+static LIVE_SEGMENT_SINGLE_FLIGHT: LazyLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> =
+    LazyLock::new(DashMap::new);
+
+/// Clone the per-key single-flight lock out of `locks`, dropping the DashMap
+/// shard guard before the caller awaits the lock.
+fn single_flight_lock(
+    locks: &DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    key: &str,
+) -> Arc<tokio::sync::Mutex<()>> {
+    let entry = locks.entry(key.to_owned()).or_default();
+    Arc::clone(entry.value())
+}
+
+/// Drop single-flight entries nobody holds or waits on: `strong_count == 1`
+/// means the map owns the only reference, and `retain`'s shard write lock
+/// excludes a concurrent get-or-insert, so the check cannot race a new waiter.
+fn prune_single_flight_locks(locks: &DashMap<String, Arc<tokio::sync::Mutex<()>>>) {
+    locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+}
+
+/// Called from the main.rs 60 s sweep, alongside the AppState cache prunes.
+pub fn prune_live_proxy_statics() {
+    LIVE_SEGMENT_OUTPUT_CACHE.prune();
+    prune_single_flight_locks(&LIVE_HLS_PLAYLIST_SINGLE_FLIGHT);
+    prune_single_flight_locks(&LIVE_SEGMENT_SINGLE_FLIGHT);
 }
 
 /// Cache key for a rewritten playlist: the upstream URL plus everything that changes
@@ -3081,5 +3456,131 @@ https://other.example.net/seg-2.ts\n#EXT-X-ENDLIST\n";
         // A PNG with no embedded ts sync run is also left alone.
         let png_only = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03];
         assert_eq!(png_prefixed_ts_strip_offset(&png_only), None);
+    }
+
+    #[test]
+    fn playlist_cache_honors_per_entry_ttl() {
+        use std::sync::Arc;
+        let cache = super::LiveHlsPlaylistCache::new();
+        cache.store(
+            "rolling".to_owned(),
+            Arc::from("#EXTM3U rolling"),
+            super::LIVE_HLS_ROLLING_PLAYLIST_CACHE_TTL_MS,
+            "no-store",
+        );
+        cache.store(
+            "vod".to_owned(),
+            Arc::from("#EXTM3U vod"),
+            super::LIVE_HLS_IMMUTABLE_PLAYLIST_CACHE_TTL_MS,
+            "public, max-age=300",
+        );
+        let rolling = cache.get_fresh("rolling").expect("fresh rolling entry");
+        assert_eq!(rolling.client_cache_control, "no-store");
+        let vod = cache.get_fresh("vod").expect("fresh vod entry");
+        assert_eq!(vod.client_cache_control, "public, max-age=300");
+
+        // Age both entries past the rolling micro-TTL but well inside the
+        // immutable TTL: only the rolling entry expires.
+        cache.entries.get_mut("rolling").unwrap().stored_at_ms -= 2_000;
+        cache.entries.get_mut("vod").unwrap().stored_at_ms -= 2_000;
+        assert!(cache.get_fresh("rolling").is_none());
+        assert!(cache.get_fresh("vod").is_some());
+
+        cache.prune();
+        assert!(!cache.entries.contains_key("rolling"));
+        assert!(cache.entries.contains_key("vod"));
+    }
+
+    #[test]
+    fn segment_cache_evicts_oldest_beyond_byte_budget() {
+        use axum::body::Bytes;
+        let cache = super::LiveSegmentOutputCache::new(8, 100);
+        cache.store("a".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![0u8; 40]));
+        cache.entries.get_mut("a").unwrap().stored_at_ms -= 20;
+        cache.store("b".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![0u8; 40]));
+        cache.entries.get_mut("b").unwrap().stored_at_ms -= 10;
+        assert!(cache.get_fresh("a").is_some());
+        assert!(cache.get_fresh("b").is_some());
+
+        // 40 + 40 + 40 > 100: inserting "c" evicts the oldest ("a") only.
+        cache.store("c".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![0u8; 40]));
+        assert!(cache.get_fresh("a").is_none());
+        assert!(cache.get_fresh("b").is_some());
+        assert!(cache.get_fresh("c").is_some());
+
+        // A single body bigger than the whole budget is never cached (it would
+        // evict everything else for one segment).
+        cache.store("huge".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![0u8; 200]));
+        assert!(cache.get_fresh("huge").is_none());
+    }
+
+    #[test]
+    fn segment_cache_evicts_expired_then_oldest_beyond_entry_cap() {
+        use axum::body::Bytes;
+        let cache = super::LiveSegmentOutputCache::new(2, 1_000_000);
+        cache.store("old".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![1u8; 4]));
+        cache.entries.get_mut("old").unwrap().stored_at_ms -=
+            super::LIVE_SEGMENT_OUTPUT_CACHE_TTL_MS + 1;
+        cache.store("a".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![2u8; 4]));
+        cache.entries.get_mut("a").unwrap().stored_at_ms -= 10;
+        // Inserting "b" is over the 2-entry cap; the expired entry goes first and
+        // no fresh entry is touched.
+        cache.store("b".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![3u8; 4]));
+        assert!(cache.get_fresh("old").is_none());
+        assert!(cache.get_fresh("a").is_some());
+        assert!(cache.get_fresh("b").is_some());
+        // One more: nothing is expired now, so the oldest fresh entry ("a") goes.
+        cache.entries.get_mut("b").unwrap().stored_at_ms -= 5;
+        cache.store("c".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![4u8; 4]));
+        assert!(cache.get_fresh("a").is_none());
+        assert!(cache.get_fresh("b").is_some());
+        let c = cache.get_fresh("c").expect("newest entry kept");
+        assert_eq!(c.content_type, "video/mp2t");
+        assert_eq!(c.bytes.as_ref(), &[4u8; 4]);
+    }
+
+    #[tokio::test]
+    async fn peek_stream_head_covers_png_and_boundary_cases() {
+        use axum::body::Bytes;
+        use futures_util::StreamExt as _;
+        type Chunk = Result<Bytes, std::convert::Infallible>;
+
+        // Exactly-8-bytes first chunk: the peek stops at the boundary and the
+        // rest of the stream is untouched for the client body.
+        let mut stream = futures_util::stream::iter(vec![
+            Chunk::Ok(Bytes::from_static(&[0x47, 0, 1, 2, 3, 4, 5, 6])),
+            Chunk::Ok(Bytes::from_static(b"rest")),
+        ]);
+        let head = super::peek_stream_head(&mut stream, super::LIVE_TS_PEEK_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(head, vec![0x47, 0, 1, 2, 3, 4, 5, 6]);
+        assert!(!super::head_is_png_prefixed(&head));
+        assert_eq!(stream.next().await.unwrap().unwrap().as_ref(), b"rest");
+
+        // PNG magic split across 1-byte chunks still accumulates to a PNG head.
+        let png = [0x89u8, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+        let mut stream = futures_util::stream::iter(
+            png.iter()
+                .map(|byte| Chunk::Ok(Bytes::copy_from_slice(&[*byte])))
+                .collect::<Vec<_>>(),
+        );
+        let head = super::peek_stream_head(&mut stream, super::LIVE_TS_PEEK_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(head, png);
+        assert!(super::head_is_png_prefixed(&head));
+
+        // Clean-ts head is never mistaken for PNG.
+        assert!(!super::head_is_png_prefixed(&[0x47, 0x40, 0x11, 0x10, 0, 0, 0, 1]));
+
+        // Short EOF body (< peek size): returned as-is instead of hanging.
+        let mut stream =
+            futures_util::stream::iter(vec![Chunk::Ok(Bytes::from_static(&[0x47, 0x00]))]);
+        let head = super::peek_stream_head(&mut stream, super::LIVE_TS_PEEK_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(head, vec![0x47, 0x00]);
+        assert!(!super::head_is_png_prefixed(&head));
     }
 }

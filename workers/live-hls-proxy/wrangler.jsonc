@@ -4,6 +4,14 @@
   "main": "src/index.js",
   "compatibility_date": "2026-05-23",
   "workers_dev": true,
+  // Two hosts on purpose. The zone-routed custom domain is the primary: only on
+  // a zone route do the cf.cacheTtl/cacheEverything fetch hints in src/index.js
+  // actually engage the edge cache (segment fan-out, 2s playlist coalescing,
+  // cross-viewer transcode dedup) — on workers.dev they are inert no-ops. The
+  // workers.dev host stays enabled as the instant-rollback path: the backend
+  // selects which host signed URLs point at via LIVE_HLS_RESOURCE_WORKER_BASE,
+  // so reverting is an env-var flip on the mini, not a Worker redeploy.
+  "routes": [{ "pattern": "live.streamarena.xyz", "custom_domain": true }],
   "observability": { "enabled": true },
   // Public origin the playlist/viaOrigin routes relay to (the mini behind
   // Caddy). The path+query is forwarded verbatim so signatures keep validating.

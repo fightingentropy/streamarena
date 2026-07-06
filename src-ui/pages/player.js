@@ -10007,8 +10007,37 @@ async function initPlaybackSource() {
   selectRememberedWorkingLiveStreamIfNeeded();
   selectFirstFreshLiveStreamIfNeeded();
   resumeStorageKey = `streamarena-resume:${sourceIdentity}`;
-  if (isTmdbResolvedPlayback) {
-    await loadUserRealDebridPlaybackSettings();
+  // The RD-settings and continue-watching round-trips are independent of each
+  // other, but were previously awaited back-to-back — a full serialized RTT
+  // added to every cold open. Start both in flight now and await each only
+  // where its result is actually consumed: RD settings before the torrent-pin
+  // decisions just below, the continue-watching entry before the resume
+  // position is settled further down.
+  const userRealDebridSettingsReady = isTmdbResolvedPlayback
+    ? loadUserRealDebridPlaybackSettings()
+    : null;
+  // Self-contained ~5s timeout + catch so a slow or failed endpoint degrades
+  // to the localStorage resume path (exactly like the old inline try/catch)
+  // instead of stalling playback start — and so a rejection that lands while
+  // the RD await is still pending can't surface as an unhandled rejection.
+  const serverContinueWatchingFetch = isTmdbResolvedPlayback
+    ? (async () => {
+        const abortController = new AbortController();
+        const abortTimer = setTimeout(() => abortController.abort(), 5000);
+        try {
+          const res = await fetch("/api/user/continue-watching", {
+            signal: abortController.signal,
+          });
+          return res.ok ? await res.json() : null;
+        } catch {
+          return null;
+        } finally {
+          clearTimeout(abortTimer);
+        }
+      })()
+    : null;
+  if (userRealDebridSettingsReady) {
+    await userRealDebridSettingsReady;
   }
   applyRememberedTmdbSourcePin();
   clearDisabledTorrentPlaybackState();
@@ -10021,30 +10050,27 @@ async function initPlaybackSource() {
       lastPersistedResumeTime = storedResume;
     }
   } catch {}
-  if (isTmdbResolvedPlayback) {
+  if (serverContinueWatchingFetch) {
     try {
-      const res = await fetch("/api/user/continue-watching");
-      if (res.ok) {
-        const data = await res.json();
-        const entry = (data?.entries || []).find(
-          (e) => e.sourceIdentity === sourceIdentity,
-        );
-        if (entry) {
-          rememberServerContinueWatchingEntry(entry);
-          applyRememberedTmdbSourcePin({ force: true });
-          clearDisabledTorrentPlaybackState();
-          if (
-            !(resumeTime > 1) &&
-            Number.isFinite(entry.resumeSeconds) &&
-            entry.resumeSeconds > 1
-          ) {
-            resumeTime = entry.resumeSeconds;
-            lastPersistedResumeTime = entry.resumeSeconds;
-            resetInitialResumeApplication();
-            try {
-              localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
-            } catch {}
-          }
+      const data = await serverContinueWatchingFetch;
+      const entry = (data?.entries || []).find(
+        (e) => e.sourceIdentity === sourceIdentity,
+      );
+      if (entry) {
+        rememberServerContinueWatchingEntry(entry);
+        applyRememberedTmdbSourcePin({ force: true });
+        clearDisabledTorrentPlaybackState();
+        if (
+          !(resumeTime > 1) &&
+          Number.isFinite(entry.resumeSeconds) &&
+          entry.resumeSeconds > 1
+        ) {
+          resumeTime = entry.resumeSeconds;
+          lastPersistedResumeTime = entry.resumeSeconds;
+          resetInitialResumeApplication();
+          try {
+            localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
+          } catch {}
         }
       }
     } catch {}

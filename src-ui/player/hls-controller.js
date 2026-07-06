@@ -56,6 +56,49 @@ function createPngPrefixStrippingLoader(HlsConstructor) {
   };
 }
 
+// hls.js's ABR starts every session from `abrEwmaDefaultEstimate`, so returning
+// viewers spend the first seconds at low-res while it re-measures a throughput
+// it already learned last time. Persist the measured estimate across sessions
+// and seed the next session with it. Clamped to [300 kbps, 12 Mbps] so a single
+// stalled session can't pin future startups to the floor, and an unrealistically
+// high spike (cache hit, burst) can't make startup over-reach and rebuffer —
+// within the clamp ABR still corrects within a few fragments either way. All
+// localStorage access is try/catch'd: private-mode Safari throws on any touch.
+const BANDWIDTH_ESTIMATE_STORAGE_KEY = "streamarena-hls-bandwidth-estimate";
+const BANDWIDTH_ESTIMATE_MIN = 300_000;
+const BANDWIDTH_ESTIMATE_MAX = 12_000_000;
+
+function readPersistedBandwidthEstimate() {
+  try {
+    const stored = Number(
+      localStorage.getItem(BANDWIDTH_ESTIMATE_STORAGE_KEY),
+    );
+    if (Number.isFinite(stored) && stored > 0) {
+      return Math.min(
+        Math.max(stored, BANDWIDTH_ESTIMATE_MIN),
+        BANDWIDTH_ESTIMATE_MAX,
+      );
+    }
+  } catch {
+    // Unreadable storage — fall back to the conservative default.
+  }
+  return 0;
+}
+
+function persistBandwidthEstimate(estimate) {
+  if (!Number.isFinite(estimate) || estimate <= 0) {
+    return;
+  }
+  try {
+    localStorage.setItem(
+      BANDWIDTH_ESTIMATE_STORAGE_KEY,
+      String(Math.round(estimate)),
+    );
+  } catch {
+    // Best-effort — next session simply starts from the default again.
+  }
+}
+
 export function createHlsPlaybackController({
   getVideo = () => null,
   getLastRequestedAbsolutePlaybackSource = () => "",
@@ -80,6 +123,11 @@ export function createHlsPlaybackController({
   let qualityLevels = [];
   let selectedQualityLevel = -1;
   let activeQualityLevel = -1;
+  // FRAG_BUFFERED fires per segment (every few seconds); writing localStorage
+  // that often is pointless churn, so persistence is throttled to ~5s. Shared
+  // across hls instances on purpose — a source switch shouldn't reset the
+  // throttle window.
+  let lastBandwidthEstimatePersistAt = 0;
 
   // Eagerly start downloading the hls.js chunk (~163 KB) the moment the player
   // mounts so it lands in parallel with the auth/init/resolve phase instead of
@@ -149,6 +197,15 @@ export function createHlsPlaybackController({
     if (!activeHlsController) {
       resetQualityLevels();
       return;
+    }
+    try {
+      // Final snapshot of the learned throughput before teardown so the next
+      // session (or next source on this page) seeds ABR from it; the throttled
+      // FRAG_BUFFERED writes can be up to ~5s stale. Own try-block so a getter
+      // throw on a half-torn-down instance can never skip destroy() below.
+      persistBandwidthEstimate(activeHlsController.bandwidthEstimate);
+    } catch {
+      // Skip the snapshot; ABR just re-learns from the last persisted value.
     }
     try {
       activeHlsController.destroy();
@@ -298,20 +355,27 @@ export function createHlsPlaybackController({
           );
           const pngStrippingLoader =
             createPngPrefixStrippingLoader(HlsConstructor);
+          const persistedBandwidthEstimate = readPersistedBandwidthEstimate();
           const hls = new HlsConstructor({
             backBufferLength: 90,
             maxBufferLength: 60,
             // Strip PNG-disguised `.ts` prefixes (some embed CDNs) before demux.
             ...(pngStrippingLoader ? { fLoader: pngStrippingLoader } : {}),
             // Conservative ABR start: external-embed VOD and live are proxied
-            // through the mini's bandwidth-limited home uplink, so begin at the
-            // lowest rendition (fast, reliable startup even under uplink
-            // contention) and let ABR ramp up to higher quality once it measures
-            // real throughput. -1 keeps the start level auto-selected from this
-            // low estimate rather than pinned to a fixed index.
+            // through the mini's bandwidth-limited home uplink, so a first-ever
+            // session begins from a low estimate (fast, reliable startup even
+            // under uplink contention) and lets ABR ramp up once it measures
+            // real throughput. Returning viewers instead seed the clamped
+            // estimate persisted from their last session, skipping the low-res
+            // ramp-up. -1 keeps the start level auto-selected from the estimate
+            // rather than pinned to a fixed index.
             startLevel: -1,
-            abrEwmaDefaultEstimate: 700000,
-            testBandwidth: true,
+            abrEwmaDefaultEstimate: persistedBandwidthEstimate || 700000,
+            // With testBandwidth on, hls.js ignores the seeded estimate and
+            // spends the first fragment on a level-0 bitrate test anyway — so
+            // the test is only kept for first-ever sessions, where there is no
+            // persisted measurement to trust.
+            testBandwidth: !persistedBandwidthEstimate,
             autoStartLoad: hlsStartPosition < 0,
             startPosition: hlsStartPosition,
             ...(failFastNetworkErrors
@@ -423,6 +487,11 @@ export function createHlsPlaybackController({
               // source (e.g. a cold transcode buffering a far seek) from being treated
               // as a failed startup.
               onSourceLoadProgress();
+              const now = Date.now();
+              if (now - lastBandwidthEstimatePersistAt >= 5000) {
+                lastBandwidthEstimatePersistAt = now;
+                persistBandwidthEstimate(hls.bandwidthEstimate);
+              }
             }
           });
           hls.on(HlsConstructor.Events.LEVEL_SWITCHED, (_event, data = {}) => {

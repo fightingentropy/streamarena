@@ -91,11 +91,12 @@ const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_TOTAL_
 const EXTERNAL_EMBED_DIRECT_RESOLVE_TIMEOUT_MS: u64 = 4_500;
 /// Staggered-hedge delay for the external-embed candidate walk: the top-ranked
 /// candidate runs alone first, and only if it hasn't resolved within this window is
-/// the next candidate raced in parallel. Kept comfortably above a healthy resolve
-/// (~0.5–1.5s) so the common fast path never spawns a redundant attempt — the hedge
-/// only fires for a slow/hung provider, collapsing the cold worst case from
-/// sum-of-dead-providers to roughly best-working-provider + one stagger.
-const EXTERNAL_EMBED_HEDGE_STAGGER_MS: u64 = 2_000;
+/// the next candidate raced in parallel. Health-score ordering already puts the
+/// best provider first, so a healthy resolve (~0.5–1.5s) usually wins before the
+/// hedge fires; the occasional redundant attempt at the slow end of that band is
+/// an accepted cost for firing the failover sooner, collapsing the cold worst
+/// case from sum-of-dead-providers to roughly best-working-provider + one stagger.
+const EXTERNAL_EMBED_HEDGE_STAGGER_MS: u64 = 1_200;
 const EXTERNAL_EMBED_PROVIDER_HEALTH_KEY_PREFIX: &str = "external-embed-provider:";
 const EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP: i64 = 75;
 const EXTERNAL_EMBED_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36";
@@ -8971,8 +8972,8 @@ mod tests {
     };
     use super::race_staggered_first_success;
     use super::{
-        CachedResolvedEmbed, ResolvedEmbedCache, compute_external_embed_provider_rank_health_score,
-        external_embed_resolve_cache_key,
+        CachedResolvedEmbed, EXTERNAL_EMBED_HEDGE_STAGGER_MS, ResolvedEmbedCache,
+        compute_external_embed_provider_rank_health_score, external_embed_resolve_cache_key,
     };
     use super::finalize_external_embed_payload;
 
@@ -9002,9 +9003,13 @@ mod tests {
             hedge_attempt(started.clone(), 0, Duration::from_millis(500), Some("a")),
             hedge_attempt(started.clone(), 1, Duration::from_millis(100), Some("b")),
         ];
-        let winner = race_staggered_first_success(futures, Duration::from_millis(2_000)).await;
-        // Candidate 0 succeeds at 500ms, well within the 2s stagger, so candidate 1
-        // is never started.
+        let winner = race_staggered_first_success(
+            futures,
+            Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+        )
+        .await;
+        // Candidate 0 succeeds at 500ms — a healthy resolve, inside the production
+        // stagger — so candidate 1 is never started.
         assert_eq!(winner, Some((0, "a")));
         assert_eq!(*started.lock().unwrap(), vec![0]);
     }
@@ -9016,8 +9021,12 @@ mod tests {
             hedge_attempt(started.clone(), 0, Duration::from_millis(100), None),
             hedge_attempt(started.clone(), 1, Duration::from_millis(100), Some("b")),
         ];
-        let winner = race_staggered_first_success(futures, Duration::from_millis(2_000)).await;
-        // Candidate 0 fails at 100ms; candidate 1 starts then, not after the 2s
+        let winner = race_staggered_first_success(
+            futures,
+            Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+        )
+        .await;
+        // Candidate 0 fails at 100ms; candidate 1 starts then, not after the
         // stagger, and wins.
         assert_eq!(winner, Some((1, "b")));
         assert_eq!(*started.lock().unwrap(), vec![0, 1]);
@@ -9030,8 +9039,13 @@ mod tests {
             hedge_attempt(started.clone(), 0, Duration::from_millis(10_000), Some("slow")),
             hedge_attempt(started.clone(), 1, Duration::from_millis(500), Some("fast")),
         ];
-        let winner = race_staggered_first_success(futures, Duration::from_millis(2_000)).await;
-        // Candidate 0 stalls; candidate 1 is hedged in at 2s and resolves first.
+        let winner = race_staggered_first_success(
+            futures,
+            Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+        )
+        .await;
+        // Candidate 0 stalls; candidate 1 is hedged in at the stagger and
+        // resolves first.
         assert_eq!(winner, Some((1, "fast")));
         assert_eq!(*started.lock().unwrap(), vec![0, 1]);
     }
@@ -9044,8 +9058,11 @@ mod tests {
             hedge_attempt(started.clone(), 1, Duration::from_millis(100), None),
             hedge_attempt(started.clone(), 2, Duration::from_millis(100), None),
         ];
-        let winner: Option<(usize, &'static str)> =
-            race_staggered_first_success(futures, Duration::from_millis(2_000)).await;
+        let winner: Option<(usize, &'static str)> = race_staggered_first_success(
+            futures,
+            Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+        )
+        .await;
         assert_eq!(winner, None);
         assert_eq!(*started.lock().unwrap(), vec![0, 1, 2]);
     }
@@ -9054,7 +9071,11 @@ mod tests {
     async fn hedge_handles_empty_candidate_set() {
         let futures: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = Option<&'static str>>>>> =
             Vec::new();
-        let winner = race_staggered_first_success(futures, Duration::from_millis(2_000)).await;
+        let winner = race_staggered_first_success(
+            futures,
+            Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+        )
+        .await;
         assert_eq!(winner, None);
     }
 

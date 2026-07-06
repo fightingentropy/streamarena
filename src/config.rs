@@ -263,6 +263,46 @@ impl Config {
     }
 }
 
+/// Hosts that skip the outbound WARP proxy by default: metadata/API traffic
+/// that gains nothing from WARP's shielding but pays its latency and shares its
+/// rate-limited egress IP. Deliberately NOT here: real-debrid.com — its API
+/// pins download links to the requesting IP, so it must ride the same
+/// consistent WARP egress the media fetches use.
+const DEFAULT_OUTBOUND_PROXY_BYPASS_HOSTS: &[&str] = &[
+    "api.themoviedb.org",
+    "image.tmdb.org",
+    "torrentio.strem.fun",
+    "nebula.work.gd",
+    "api.cloudflare.com",
+    "opensubtitles.com",
+];
+
+/// Host suffixes whose outbound requests skip `OUTBOUND_HTTP_PROXY` and go
+/// direct (env `OUTBOUND_HTTP_PROXY_BYPASS`, comma-separated suffixes). A free
+/// function rather than a `Config` field: several modules build `Config` with
+/// exhaustive struct literals in their test fixtures, and this value is only
+/// ever consumed once, at HTTP-client construction in main.rs.
+pub fn outbound_proxy_bypass_hosts() -> Vec<String> {
+    parse_proxy_bypass_env("OUTBOUND_HTTP_PROXY_BYPASS")
+}
+
+/// Unset env -> the default bypass list; set-but-empty (or only whitespace/
+/// commas) -> empty, i.e. the operator explicitly re-routes everything through
+/// the proxy. Entries are trimmed and lowercased for suffix matching.
+fn parse_proxy_bypass_env(name: &str) -> Vec<String> {
+    match env::var(name) {
+        Ok(value) => value
+            .split(',')
+            .map(|entry| entry.trim().to_ascii_lowercase())
+            .filter(|entry| !entry.is_empty())
+            .collect(),
+        Err(_) => DEFAULT_OUTBOUND_PROXY_BYPASS_HOSTS
+            .iter()
+            .map(|entry| (*entry).to_owned())
+            .collect(),
+    }
+}
+
 fn generate_live_hls_proxy_secret() -> String {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).expect("OS CSPRNG unavailable - cannot sign live HLS URLs");
@@ -342,7 +382,36 @@ fn normalize_hwaccel_mode(value: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_csv_env, parse_u64_env, parse_usize_env};
+    use super::{
+        DEFAULT_OUTBOUND_PROXY_BYPASS_HOSTS, parse_csv_env, parse_proxy_bypass_env, parse_u64_env,
+        parse_usize_env,
+    };
+
+    #[test]
+    fn proxy_bypass_env_defaults_trims_and_distinguishes_empty() {
+        // Unset: the compiled default list (metadata APIs, never real-debrid).
+        let defaults = parse_proxy_bypass_env("OUTBOUND_PROXY_BYPASS_UNSET_TEST");
+        assert_eq!(defaults, DEFAULT_OUTBOUND_PROXY_BYPASS_HOSTS);
+        assert!(!defaults.iter().any(|host| host.contains("real-debrid")));
+
+        unsafe {
+            std::env::set_var(
+                "OUTBOUND_PROXY_BYPASS_SET_TEST",
+                " API.Example.com , ,cdn.other.net,",
+            );
+            std::env::set_var("OUTBOUND_PROXY_BYPASS_EMPTY_TEST", "  ");
+        }
+        assert_eq!(
+            parse_proxy_bypass_env("OUTBOUND_PROXY_BYPASS_SET_TEST"),
+            vec!["api.example.com", "cdn.other.net"]
+        );
+        // Set-but-empty: proxy everything (the pre-bypass behavior).
+        assert!(parse_proxy_bypass_env("OUTBOUND_PROXY_BYPASS_EMPTY_TEST").is_empty());
+        unsafe {
+            std::env::remove_var("OUTBOUND_PROXY_BYPASS_SET_TEST");
+            std::env::remove_var("OUTBOUND_PROXY_BYPASS_EMPTY_TEST");
+        }
+    }
 
     #[test]
     fn clamps_torznab_numeric_config() {
