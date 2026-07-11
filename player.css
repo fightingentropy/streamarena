@@ -552,6 +552,7 @@ body {
     appearance: none;
     width: 12px;
     height: 12px;
+    margin-top: -4px;
     border-radius: 999px;
     background: var(--ui-accent);
     border: 0;

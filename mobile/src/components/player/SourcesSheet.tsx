@@ -74,7 +74,12 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
         ) : (
           sources.map((s, i) => {
             const active = selectedSourceHash === s.sourceHash;
-            const meta = [s.qualityLabel, s.container?.toUpperCase(), s.size, s.seeders != null ? `${s.seeders} seeders` : null]
+            const meta = [
+              s.qualityLabel,
+              s.container?.toUpperCase(),
+              s.size,
+              s.isTorrent && s.seeders != null ? `${s.seeders} seeders` : null,
+            ]
               .filter(Boolean)
               .join(" · ");
             return (

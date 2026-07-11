@@ -252,6 +252,7 @@ export type SourceSummary = {
   filename?: string;
   qualityLabel?: string;
   container?: string;
+  isTorrent?: boolean;
   seeders?: number;
   size?: string;
   releaseGroup?: string;

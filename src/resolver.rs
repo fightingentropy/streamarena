@@ -315,6 +315,7 @@ struct SourceSummary {
     filename: String,
     qualityLabel: String,
     container: String,
+    isTorrent: bool,
     seeders: i64,
     size: String,
     releaseGroup: String,
@@ -4466,6 +4467,7 @@ fn summarize_stream_candidate_for_client(
             String::new()
         },
         container,
+        isTorrent: true,
         seeders,
         size: extract_stream_size_label(stream),
         releaseGroup: extract_stream_release_group(stream),
@@ -5436,6 +5438,7 @@ fn build_external_embed_source_summaries(
                 filename,
                 qualityLabel: external_embed_source_quality_label(source).to_owned(),
                 container: "hls".to_owned(),
+                isTorrent: false,
                 seeders: 0,
                 size: String::new(),
                 releaseGroup: external_embed_source_detail_label(source).to_owned(),
@@ -8999,7 +9002,8 @@ mod tests {
         should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
         should_prefer_software_decode_source, should_skip_playback_session_reuse,
         should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
-        stremio_addon_stream_url, user_facing_real_debrid_error,
+        stremio_addon_stream_url, summarize_stream_candidate_for_client,
+        user_facing_real_debrid_error,
     };
 
     use std::sync::Mutex as StdMutex;
@@ -9356,6 +9360,7 @@ mod tests {
         assert_eq!(sources[0].filename, "LordFlix embed");
         assert_eq!(sources[0].qualityLabel, "1080p");
         assert_eq!(sources[0].container, "hls");
+        assert!(!sources[0].isTorrent);
         assert_eq!(sources[0].releaseGroup, "Multi-server native HLS");
         assert_eq!(
             normalize_source_hash(&sources[0].sourceHash),
@@ -10806,6 +10811,17 @@ mod tests {
         );
 
         assert_eq!(selected.len(), 1);
+        let summary = summarize_stream_candidate_for_client(
+            selected[0],
+            &metadata,
+            "en",
+            "1080p",
+            &filters,
+            &HashMap::new(),
+        )
+        .expect("torrent source summary");
+        assert!(summary.isTorrent);
+        assert_eq!(summary.seeders, 80);
         assert_eq!(
             selected[0].infoHash,
             "7777777777777777777777777777777777777777"
