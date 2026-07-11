@@ -116,6 +116,8 @@ export function createHlsPlaybackController({
   onQualityLevelsChanged = () => {},
   getLiveHlsReferer = () => "",
   onSourceLoadProgress = () => {},
+  onSourcePlayable = () => {},
+  onRemuxFallbackActivated = () => {},
 } = {}) {
   let activeHlsController = null;
   let hlsConstructorPromise = null;
@@ -240,6 +242,7 @@ export function createHlsPlaybackController({
     hlsMeta = null,
     requestedStartSeconds = 0,
     preferredAudioSyncMs = 0,
+    autoplay = true,
     handleHlsPlaybackFailure = () => {},
   } = {}) {
     const video = getVideo();
@@ -253,11 +256,54 @@ export function createHlsPlaybackController({
     // hls.js's async attachMedia (the MSE attach resets currentTime to 0).
     // Live playback never passes a start offset, so it always stays at -1.
     const hlsStartPosition = requestedStartSeconds > 0 ? requestedStartSeconds : -1;
+    const loadRemuxFallback = (fallbackSource) => {
+      const absoluteFallbackSource = new URL(
+        fallbackSource,
+        window.location.origin,
+      ).toString();
+      video.setAttribute("src", absoluteFallbackSource);
+      video.addEventListener(
+        "loadeddata",
+        () => {
+          if (getLastRequestedAbsolutePlaybackSource() !== absoluteSource) {
+            return;
+          }
+          const currentSource = String(
+            video.currentSrc || video.getAttribute?.("src") || "",
+          ).trim();
+          if (currentSource === absoluteFallbackSource) {
+            onRemuxFallbackActivated(absoluteFallbackSource);
+            onSourceLoadProgress();
+            onSourcePlayable(absoluteFallbackSource);
+          }
+        },
+        { once: true },
+      );
+      video.load();
+      if (autoplay) {
+        void tryPlay();
+      }
+    };
 
     if (hasNativeHlsPlaybackSupport()) {
       resetQualityLevels();
       video.setAttribute("src", absoluteSource);
       video.load();
+      video.addEventListener(
+        "loadeddata",
+        () => {
+          if (getLastRequestedAbsolutePlaybackSource() !== absoluteSource) {
+            return;
+          }
+          const currentSource = String(
+            video.currentSrc || video.getAttribute?.("src") || "",
+          ).trim();
+          if (currentSource === absoluteSource) {
+            onSourcePlayable(absoluteSource);
+          }
+        },
+        { once: true },
+      );
       if (hlsStartPosition >= 0) {
         const applyNativeHlsStartPosition = () => {
           if (getLastRequestedAbsolutePlaybackSource() !== absoluteSource) {
@@ -288,16 +334,13 @@ export function createHlsPlaybackController({
           preferredAudioSyncMs,
           hlsMeta.subtitleStreamIndex,
         );
-        video.setAttribute(
-          "src",
-          new URL(remuxFallback, window.location.origin).toString(),
-        );
-        video.load();
-        void tryPlay();
+        loadRemuxFallback(remuxFallback);
       };
       video.addEventListener("error", onNativeHlsError, { once: true });
 
-      void tryPlay();
+      if (autoplay) {
+        void tryPlay();
+      }
       scheduleStreamStallRecovery();
       return true;
     }
@@ -472,7 +515,9 @@ export function createHlsPlaybackController({
               if (hlsStartPosition >= 0) {
                 hls.startLoad(hlsStartPosition);
               }
-              void tryPlay();
+              if (autoplay) {
+                void tryPlay();
+              }
             }
           });
           hls.on(HlsConstructor.Events.FRAG_BUFFERED, () => {
@@ -483,6 +528,7 @@ export function createHlsPlaybackController({
               // segment refreshes the in-place retry budget for the next hiccup.
               sourceHasStartedPlayback = true;
               hlsRecoveryAttempts = 0;
+              onSourcePlayable(absoluteSource);
               // Each appended segment is forward progress — keeps a slow-but-working
               // source (e.g. a cold transcode buffering a far seek) from being treated
               // as a failed startup.
@@ -531,12 +577,7 @@ export function createHlsPlaybackController({
         preferredAudioSyncMs,
         hlsMeta.subtitleStreamIndex,
       );
-      video.setAttribute(
-        "src",
-        new URL(remuxFallback, window.location.origin).toString(),
-      );
-      video.load();
-      void tryPlay();
+      loadRemuxFallback(remuxFallback);
       scheduleStreamStallRecovery();
       return true;
     }

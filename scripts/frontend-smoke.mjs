@@ -370,7 +370,7 @@ const pages = [
     expectMobileFullscreenToggle: true,
   },
   {
-    path: `/player.html?src=${encodeURIComponent(`live-iframe:${encodeURIComponent(liveIframeEmbedUrl)}`)}&live=1&title=Live%20Iframe`,
+    path: `/player.html?src=${encodeURIComponent(`live-iframe:${encodeURIComponent("/offline.html")}`)}&live=1&title=Live%20Iframe`,
     selector: ".player-shell",
     expectLiveIframeUnsandboxed: true,
   },
@@ -679,18 +679,14 @@ async function runSmoke() {
       if (pageSpec.expectSourceSwitch || pageSpec.expectSourceSwitchFailureRestore) {
         await context.addInitScript(({ sourceHashes, failingHash }) => {
           const shouldHandleSource = (media) => {
-            const currentSource = String(
-              media.currentSrc || media.getAttribute("src") || "",
-            );
+            const currentSource = String(media.getAttribute("src") || "");
             return sourceHashes.some((hash) => currentSource.includes(hash));
           };
           const isFailingSource = (media) => {
             if (!failingHash) {
               return false;
             }
-            const currentSource = String(
-              media.currentSrc || media.getAttribute("src") || "",
-            );
+            const currentSource = String(media.getAttribute("src") || "");
             return currentSource.includes(failingHash);
           };
           const originalLoad = HTMLMediaElement.prototype.load;
@@ -699,6 +695,11 @@ async function runSmoke() {
             if (!shouldHandleSource(this)) {
               return originalLoad.apply(this, args);
             }
+            const requestedSource = String(this.getAttribute("src") || "");
+            Object.defineProperty(this, "currentSrc", {
+              configurable: true,
+              value: new URL(requestedSource, window.location.origin).toString(),
+            });
             if (!isFailingSource(this)) {
               queueMicrotask(() => {
                 this.dispatchEvent(new Event("loadedmetadata"));
@@ -715,7 +716,9 @@ async function runSmoke() {
               queueMicrotask(() => {
                 this.dispatchEvent(new Event("error"));
               });
-              return new Promise(() => {});
+              return Promise.reject(
+                new DOMException("Mock playback failure", "NotSupportedError"),
+              );
             }
             queueMicrotask(() => {
               this.dispatchEvent(new Event("playing"));
@@ -1075,6 +1078,21 @@ async function runSmoke() {
             `${pageSpec.path}\nLive iframe should be unsandboxed while keeping frame policies.\n${JSON.stringify(iframeState)}`,
           );
         }
+        const readIframePlayLabel = () =>
+          page.getAttribute("#togglePlay", "aria-label");
+        const clickIframePlayToggle = () =>
+          page.evaluate(() => document.querySelector("#togglePlay")?.click());
+        if ((await readIframePlayLabel()) !== "Pause") {
+          throw new Error(`${pageSpec.path}\nLive iframe should start with play intent.`);
+        }
+        await clickIframePlayToggle();
+        if ((await readIframePlayLabel()) !== "Play") {
+          throw new Error(`${pageSpec.path}\nLive iframe pause intent was not retained.`);
+        }
+        await clickIframePlayToggle();
+        if ((await readIframePlayLabel()) !== "Pause") {
+          throw new Error(`${pageSpec.path}\nLive iframe did not resume play intent.`);
+        }
       }
 
       if (pageSpec.expectDirectVideo) {
@@ -1304,28 +1322,8 @@ async function runSmoke() {
             ?.click();
         }, sourceSwitchHashA);
 
-        // The failed switch surfaces the recovery overlay with a "Try another
-        // source" action rather than silently restoring the previous source.
-        await page.waitForFunction(
-          () => {
-            const overlay = document.querySelector(".resolver-overlay");
-            const alternate = document.querySelector("#resolverAlternateButton");
-            return Boolean(
-              overlay &&
-                !overlay.hidden &&
-                overlay.classList.contains("is-error") &&
-                alternate &&
-                !alternate.hidden,
-            );
-          },
-          null,
-          { timeout: 8_000 },
-        );
-
-        // Recovering resolves the working source (hashB). As elsewhere we assert
-        // on the selected source + active video rather than overlay state (the
-        // mock <video> never fires canplay headless, so the overlay lingers).
-        await page.click("#resolverAlternateButton");
+        // The failed provisional switch must roll back to the last confirmed
+        // source (hashB) without waiting for another user action.
         for (let attempt = 0; attempt < 150; attempt += 1) {
           const recovered = await page.evaluate((hash) => {
             const selectedHash =

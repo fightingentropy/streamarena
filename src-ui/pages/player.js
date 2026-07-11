@@ -80,6 +80,9 @@ import {
   normalizeResumeStartSeconds,
   withRemuxResumeStart,
 } from "../player/resume-start.js";
+import { createManualSourceSwitchController } from "../player/manual-source-switch.js";
+import { createLocalCacheUpgradeWatch } from "../player/local-cache-upgrade-watch.js";
+import { createLiveIframePlaybackClock } from "../player/live-iframe-playback-clock.js";
 import {
   attachFullscreenControl,
   isFullscreenActive,
@@ -175,14 +178,6 @@ const LIVE_WORKING_STREAM_CACHE_STORAGE_PREFIX = "streamarena-live-working-strea
 const LIVE_SOURCE_PREFERENCE_STORAGE_KEY = "streamarena-live-source-preferences";
 const LIVE_SOURCE_PREFERENCE_TTL_MS = 24 * 60 * 60 * 1000;
 const MANUAL_SOURCE_SWITCH_TIMEOUT_MS = 6000;
-// After a manual source switch we keep the previous (working) stream on standby and
-// only roll back to it if the newly selected source never comes online. "Never comes
-// online" must mean *no forward progress* — not merely "still buffering" — because a
-// far seek into a freshly spun-up transcode legitimately needs several seconds before
-// it can surface playable data. The restore watchdog re-checks on this cadence and
-// reverts only after this many consecutive checks with zero progress.
-const MANUAL_SOURCE_SWITCH_PROGRESS_INTERVAL_MS = 3000;
-const MANUAL_SOURCE_SWITCH_NO_PROGRESS_LIMIT = 4;
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
@@ -209,13 +204,9 @@ let audioDecodeRecoveryResetTimeout = null;
 let subtitleRestoreAfterSourceChangeTimeout = null;
 let tmdbSourceQueue = [];
 let tmdbSourceAttemptIndex = 0;
-let pendingManualSourceSwitchRestore = null;
-let pendingManualSourceSwitchTimeout = null;
 let tmdbSkipExternalEmbed = false;
 let tmdbResolveRetries = 0;
 let tmdbPlaybackRequestToken = 0;
-let manualSourceSwitchRequestToken = 0;
-let activeManualSourceSwitchRequestToken = 0;
 let userRealDebridSettingsLoaded = false;
 let userRealDebridConfigured = false;
 let userLocalTorrentEnabled = false;
@@ -283,8 +274,11 @@ let audioDecodeRecoveryAttempts = 0;
 let lastAudioDecodeRecoveryAt = 0;
 let lastPlaybackSourceSetAt = 0;
 let lastPlaybackSeekAt = 0;
-let liveIframePlaybackBaseSeconds = 0;
-let liveIframePlaybackStartedAtMs = 0;
+const liveIframePlaybackClock = createLiveIframePlaybackClock({
+  now: () => performance.now(),
+  isActive: () => isLiveIframePlaybackActive(),
+  isVisible: () => document.visibilityState !== "hidden",
+});
 let liveVisualHealthInterval = null;
 let liveVisualHealthCanvas = null;
 let liveVisualBlankSampleCount = 0;
@@ -394,6 +388,9 @@ const hlsPlaybackController = createHlsPlaybackController({
   onQualityLevelsChanged: (state) => hlsQualityControls.handleLevelsChanged(state),
   getLiveHlsReferer: () => activeLiveHlsReferer,
   onSourceLoadProgress: () => noteManualSourceSwitchProgress(),
+  onSourcePlayable: (absoluteSource) =>
+    completeManualSourceSwitchIfActive(absoluteSource),
+  onRemuxFallbackActivated: (absoluteSource) => adoptHlsRemuxFallbackSource(absoluteSource),
 });
 
 // ─── Watch URL support: reproducible /watch?... plus legacy /watch/<slug> ───
@@ -831,10 +828,6 @@ let currentTmdbPlaybackSessionKey = "";
 let currentTmdbResolverProvider = "";
 let currentTmdbResolvedFilename = "";
 let currentTmdbSelectedFile = "";
-let localCacheUpgradePollTimer = 0;
-let localCacheUpgradeInitialTimer = 0;
-let hasUpgradedToLocalCache = false;
-let localCacheUpgradeInFlight = false;
 let sourceSelectionPinned = Boolean(selectedSourceHash);
 let automaticTmdbAlternateRecoveryInFlight = false;
 
@@ -1761,7 +1754,7 @@ function maybeRecordLiveWatch() {
     }
     const nativePlaying =
       video && !video.paused && (Number(video.currentTime) || 0) > 1;
-    const iframePlaying = liveIframePlaybackStartedAtMs > 0;
+    const iframePlaying = liveIframePlaybackClock.isRunning();
     if (!nativePlaying && !iframePlaying) {
       return;
     }
@@ -2803,7 +2796,7 @@ function isLocalPlaybackSource(source) {
 }
 
 function shouldWatchForLocalCacheUpgrade(resolved) {
-  if (!isTmdbResolvedPlayback || hasUpgradedToLocalCache) {
+  if (!isTmdbResolvedPlayback || localCacheUpgradeWatch.hasUpgraded()) {
     return false;
   }
   const resolverProvider = String(
@@ -2847,66 +2840,53 @@ function buildLocalCacheUpgradeUrl() {
   return `/api/resolve/local-upgrade?${query.toString()}`;
 }
 
+const localCacheUpgradeWatch = createLocalCacheUpgradeWatch({
+  shouldWatch: shouldWatchForLocalCacheUpgrade,
+  canPoll: () => Boolean(
+    isTmdbResolvedPlayback &&
+      !isResolvingSource() &&
+      !isRecoveringTmdbStream &&
+      selectedSourceHash,
+  ),
+  getRequestIdentity: () => {
+    const activeSource = String(
+      lastRequestedPlaybackSource || video.currentSrc || "",
+    ).trim();
+    if (!activeSource || isLocalPlaybackSource(activeSource)) {
+      return null;
+    }
+    return {
+      activeSource,
+      requestUrl: buildLocalCacheUpgradeUrl(),
+      sessionKey: String(currentTmdbPlaybackSessionKey || "").trim(),
+      sourceHash: normalizeSourceHash(selectedSourceHash),
+    };
+  },
+  requestUpgrade: (identity) => requestJson(identity.requestUrl, {}, 8000),
+  shouldApplyPayload: (payload) => Boolean(payload?.ready && payload?.playableUrl),
+  applyUpgrade: (payload) => upgradePlaybackToLocalCache(payload),
+  setTimeoutFn: (callback, delayMs) => window.setTimeout(callback, delayMs),
+  clearTimeoutFn: (timeoutId) => window.clearTimeout(timeoutId),
+  setIntervalFn: (callback, delayMs) => window.setInterval(callback, delayMs),
+  clearIntervalFn: (intervalId) => window.clearInterval(intervalId),
+  initialDelayMs: LOCAL_CACHE_UPGRADE_INITIAL_DELAY_MS,
+  pollIntervalMs: LOCAL_CACHE_UPGRADE_POLL_MS,
+});
+
 function stopLocalCacheUpgradeWatch() {
-  if (localCacheUpgradePollTimer) {
-    window.clearInterval(localCacheUpgradePollTimer);
-    localCacheUpgradePollTimer = 0;
-  }
-  if (localCacheUpgradeInitialTimer) {
-    window.clearTimeout(localCacheUpgradeInitialTimer);
-    localCacheUpgradeInitialTimer = 0;
-  }
+  localCacheUpgradeWatch.stop();
 }
 
 function startLocalCacheUpgradeWatch(resolved) {
-  stopLocalCacheUpgradeWatch();
-  hasUpgradedToLocalCache = false;
-  if (!shouldWatchForLocalCacheUpgrade(resolved)) {
-    return;
-  }
-  localCacheUpgradeInitialTimer = window.setTimeout(() => {
-    localCacheUpgradeInitialTimer = 0;
-    void pollLocalCacheUpgrade();
-  }, LOCAL_CACHE_UPGRADE_INITIAL_DELAY_MS);
-  localCacheUpgradePollTimer = window.setInterval(() => {
-    void pollLocalCacheUpgrade();
-  }, LOCAL_CACHE_UPGRADE_POLL_MS);
+  localCacheUpgradeWatch.start(resolved);
 }
 
-async function pollLocalCacheUpgrade() {
-  if (
-    localCacheUpgradeInFlight ||
-    hasUpgradedToLocalCache ||
-    !isTmdbResolvedPlayback ||
-    isResolvingSource() ||
-    isRecoveringTmdbStream ||
-    !selectedSourceHash
-  ) {
-    return;
-  }
-  const activeSource = String(
-    lastRequestedPlaybackSource || video.currentSrc || "",
-  ).trim();
-  if (!activeSource || isLocalPlaybackSource(activeSource)) {
-    stopLocalCacheUpgradeWatch();
-    return;
-  }
-  localCacheUpgradeInFlight = true;
-  try {
-    const payload = await requestJson(buildLocalCacheUpgradeUrl(), {}, 8000);
-    if (!payload?.ready || !payload?.playableUrl) {
-      return;
-    }
-    await upgradePlaybackToLocalCache(payload);
-  } catch {
-    // Best effort; keep streaming from the current remote source.
-  } finally {
-    localCacheUpgradeInFlight = false;
-  }
+function isLocalCacheUpgradeWatchActive() {
+  return localCacheUpgradeWatch.isActive();
 }
 
 async function upgradePlaybackToLocalCache(payload) {
-  if (hasUpgradedToLocalCache) {
+  if (localCacheUpgradeWatch.hasUpgraded()) {
     return;
   }
   const localUrl = String(payload.playableUrl || "").trim();
@@ -2918,7 +2898,7 @@ async function upgradePlaybackToLocalCache(payload) {
     return;
   }
 
-  hasUpgradedToLocalCache = true;
+  localCacheUpgradeWatch.setHasUpgraded(true);
   stopLocalCacheUpgradeWatch();
 
   activeTrackSourceInput = String(payload.sourceInput || localUrl).trim();
@@ -3409,43 +3389,9 @@ function isTranscodeSourceActive() {
   return Boolean(activeTranscodeInput);
 }
 
-function getLiveIframePlaybackClockSeconds(nowMs = performance.now()) {
-  const baseSeconds = Math.max(0, Number(liveIframePlaybackBaseSeconds) || 0);
-  const startedAtMs = Number(liveIframePlaybackStartedAtMs) || 0;
-  if (startedAtMs <= 0) {
-    return baseSeconds;
-  }
-  return baseSeconds + Math.max(0, (nowMs - startedAtMs) / 1000);
-}
-
-function startLiveIframeProgressClock(startSeconds = 0) {
-  liveIframePlaybackBaseSeconds = normalizeResumeStartSeconds(startSeconds);
-  liveIframePlaybackStartedAtMs = performance.now();
-}
-
-function pauseLiveIframeProgressClock() {
-  if (liveIframePlaybackStartedAtMs <= 0) {
-    return;
-  }
-  liveIframePlaybackBaseSeconds = getLiveIframePlaybackClockSeconds();
-  liveIframePlaybackStartedAtMs = 0;
-}
-
-function resumeLiveIframeProgressClock() {
-  if (!isLiveIframePlaybackActive() || liveIframePlaybackStartedAtMs > 0) {
-    return;
-  }
-  liveIframePlaybackStartedAtMs = performance.now();
-}
-
-function resetLiveIframeProgressClock() {
-  liveIframePlaybackBaseSeconds = 0;
-  liveIframePlaybackStartedAtMs = 0;
-}
-
 function getEffectiveCurrentTime() {
   if (isLiveIframePlaybackActive()) {
-    return getLiveIframePlaybackClockSeconds();
+    return liveIframePlaybackClock.getSeconds();
   }
   if (isTranscodeSourceActive()) {
     return transcodeBaseOffsetSeconds + (Number(video.currentTime) || 0);
@@ -3601,7 +3547,7 @@ function clearLiveIframePlayback() {
     liveEmbedFrame.hidden = true;
     liveEmbedFrame.removeAttribute("src");
   }
-  resetLiveIframeProgressClock();
+  liveIframePlaybackClock.reset();
   playerShell?.classList.remove("live-iframe-active");
 }
 
@@ -3614,16 +3560,16 @@ function hardenLiveEmbedFrame() {
   liveEmbedFrame.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
 }
 
-function setLiveIframePlaybackSource(embedUrl, encodedSource, { startSeconds = null } = {}) {
+function setLiveIframePlaybackSource(embedUrl, encodedSource, { startSeconds = null, autoplay = true } = {}) {
   const hasExplicitStartSeconds =
     startSeconds !== null && startSeconds !== undefined;
   const nextStartSeconds = hasExplicitStartSeconds
     ? normalizeResumeStartSeconds(startSeconds)
-    : getLiveIframePlaybackClockSeconds();
+    : liveIframePlaybackClock.getSeconds();
+  const absoluteEmbedUrl = new URL(embedUrl, window.location.origin).toString();
   lastRequestedPlaybackSource = encodedSource;
-  lastRequestedAbsolutePlaybackSource = embedUrl;
+  lastRequestedAbsolutePlaybackSource = absoluteEmbedUrl;
   lastPlaybackSourceSetAt = performance.now();
-  startLiveIframeProgressClock(nextStartSeconds);
   liveEdgePinned = true;
   resetAudioDecodeWatchState();
   clearStreamStallRecovery();
@@ -3644,10 +3590,12 @@ function setLiveIframePlaybackSource(embedUrl, encodedSource, { startSeconds = n
   }
   if (liveEmbedFrame) {
     hardenLiveEmbedFrame();
-    liveEmbedFrame.src = embedUrl;
+    liveEmbedFrame.src = absoluteEmbedUrl;
     liveEmbedFrame.hidden = false;
   }
+  liveIframePlaybackClock.start({ startSeconds: nextStartSeconds, autoplay });
   playerShell?.classList.add("live-iframe-active");
+  syncPlayState();
   syncDurationText();
   showControls();
   scheduleControlsHide();
@@ -3660,7 +3608,29 @@ function isLiveIframePlaybackActive() {
   );
 }
 
-function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 0 } = {}) {
+function adoptHlsRemuxFallbackSource(absoluteSource) {
+  const fallbackSource = String(absoluteSource || "").trim();
+  const transcodeMeta = parseTranscodeSource(fallbackSource);
+  if (!fallbackSource || !transcodeMeta) {
+    return false;
+  }
+  lastRequestedPlaybackSource = fallbackSource;
+  lastRequestedAbsolutePlaybackSource = fallbackSource;
+  lastPlaybackSourceSetAt = performance.now();
+  resetAudioDecodeWatchState();
+  activeTranscodeInput = transcodeMeta.input;
+  transcodeBaseOffsetSeconds = transcodeMeta.startSeconds;
+  activeAudioStreamIndex = transcodeMeta.audioStreamIndex;
+  activeAudioSyncMs = transcodeMeta.audioSyncMs;
+  activeTrackSourceInput = transcodeMeta.input;
+  playbackBenchmark?._recordSourceChange(fallbackSource);
+  markManualSourceSwitchPlaybackRequested(selectedSourceHash);
+}
+
+function setVideoSource(
+  nextSource,
+  { resetInitialResume = true, startSeconds = 0, autoplay = true } = {},
+) {
   if (!nextSource) {
     return;
   }
@@ -3670,6 +3640,7 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
     activeLiveHlsReferer = "";
     setLiveIframePlaybackSource(iframeSource, nextSource, {
       startSeconds: requestedStartSeconds,
+      autoplay,
     });
     return;
   }
@@ -3708,11 +3679,7 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
     transcodeBaseOffsetSeconds = transcodeMeta.startSeconds;
     activeAudioStreamIndex = transcodeMeta.audioStreamIndex;
     activeAudioSyncMs = transcodeMeta.audioSyncMs;
-    if (
-      isTmdbResolvedPlayback &&
-      transcodeMeta.sourceHash &&
-      transcodeMeta.sourceHash !== selectedSourceHash
-    ) {
+    if (isTmdbResolvedPlayback && transcodeMeta.sourceHash && transcodeMeta.sourceHash !== selectedSourceHash) {
       selectedSourceHash = transcodeMeta.sourceHash;
       persistSourceHashInUrl();
     }
@@ -3780,6 +3747,7 @@ function setVideoSource(nextSource, { resetInitialResume = true, startSeconds = 
       hlsMeta,
       requestedStartSeconds,
       preferredAudioSyncMs,
+      autoplay,
       handleHlsPlaybackFailure,
     });
     startLiveVisualHealthWatch();
@@ -3826,15 +3794,11 @@ function getManualSourceSwitchRestoreSource() {
   );
 }
 
-function createManualSourceSwitchRestoreState({
-  targetSourceHash = "",
+function captureManualSourceSwitchBaseline({
   resumeSeconds = 0,
   wasPaused = true,
 } = {}) {
   return {
-    targetSourceHash: normalizeSourceHash(targetSourceHash),
-    targetPlaybackSource: "",
-    targetAbsolutePlaybackSource: "",
     restorePlaybackSource: getManualSourceSwitchRestoreSource(),
     restoreResumeSeconds: Math.max(0, Number(resumeSeconds) || 0),
     restoreWasPaused: Boolean(wasPaused),
@@ -3854,18 +3818,21 @@ function createManualSourceSwitchRestoreState({
     availableAudioTracks: [...availableAudioTracks],
     availableSubtitleTracks: [...availableSubtitleTracks],
     resolvedTrackPreferenceAudio,
+    preferredAudioLang,
     preferredSubtitleLang,
+    expectedDurationSeconds,
+    knownDurationSeconds,
+    tmdbSkipExternalEmbed,
     tmdbSourceQueue: [...tmdbSourceQueue],
     tmdbSourceAttemptIndex,
+    availablePlaybackSourceHashes: new Set(
+      availablePlaybackSources
+        .map((source) => normalizeSourceHash(source?.sourceHash))
+        .filter(Boolean),
+    ),
+    hasUpgradedToLocalCache: localCacheUpgradeWatch.hasUpgraded(),
+    localCacheUpgradeWatchWasActive: isLocalCacheUpgradeWatchActive(),
   };
-}
-
-function clearManualSourceSwitchRestore() {
-  if (pendingManualSourceSwitchTimeout) {
-    window.clearTimeout(pendingManualSourceSwitchTimeout);
-    pendingManualSourceSwitchTimeout = null;
-  }
-  pendingManualSourceSwitchRestore = null;
 }
 
 function captureManualSourceSwitchProgress() {
@@ -3885,135 +3852,34 @@ function captureManualSourceSwitchProgress() {
   };
 }
 
-// HLS "manifest parsed"/"fragment buffered" (and any other loading signal) call this
-// to prove the freshly selected source is alive and still working. A far seek into a
-// cold transcode can take many seconds to surface playable data, so it's *progress*,
-// not a fixed wall-clock, that keeps the restore from firing on a perfectly good
-// source.
-function noteManualSourceSwitchProgress() {
-  if (pendingManualSourceSwitchRestore) {
-    pendingManualSourceSwitchRestore.sawLoadProgress = true;
+function commitManualSourceSwitchPlayback(commitData) {
+  persistSourceHashInUrl();
+  persistAudioLangPreference(preferredAudioLang);
+  persistSubtitleLangPreference(preferredSubtitleLang);
+  if (commitData?.persistSubtitleStreamPreference) {
+    persistSubtitleStreamPreference(selectedSubtitleStreamIndex);
+  }
+  if (resumeTime > 1) {
+    persistContinueWatchingEntry(resumeTime);
+    syncContinueWatchingEntryToServer(resumeTime);
+  }
+  if (commitData?.resolved) {
+    void queueGallerySaveIfRequested(commitData.resolved);
+    startLocalCacheUpgradeWatch(commitData.resolved);
   }
 }
 
-function manualSourceSwitchMadeProgress(restoreState) {
-  const now = captureManualSourceSwitchProgress();
-  const prev = restoreState.progressSignature || {
-    readyState: 0,
-    bufferedEnd: 0,
-    currentTime: 0,
-  };
-  restoreState.progressSignature = now;
-  const advanced =
-    Boolean(restoreState.sawLoadProgress) ||
-    now.readyState > prev.readyState ||
-    now.bufferedEnd > prev.bufferedEnd + 0.01 ||
-    Math.abs(now.currentTime - prev.currentTime) > 0.01;
-  restoreState.sawLoadProgress = false;
-  return advanced;
-}
-
-function scheduleManualSourceSwitchRestoreCheck(restoreState) {
-  if (pendingManualSourceSwitchTimeout) {
-    window.clearTimeout(pendingManualSourceSwitchTimeout);
-  }
-  pendingManualSourceSwitchTimeout = window.setTimeout(() => {
-    if (pendingManualSourceSwitchRestore !== restoreState) {
-      return;
-    }
-    if (manualSourceSwitchMadeProgress(restoreState)) {
-      restoreState.noProgressTicks = 0;
-      scheduleManualSourceSwitchRestoreCheck(restoreState);
-      return;
-    }
-    restoreState.noProgressTicks = (restoreState.noProgressTicks || 0) + 1;
-    if (restoreState.noProgressTicks < MANUAL_SOURCE_SWITCH_NO_PROGRESS_LIMIT) {
-      scheduleManualSourceSwitchRestoreCheck(restoreState);
-      return;
-    }
-    void restoreManualSourceSwitchPlayback("Source startup timed out.");
-  }, MANUAL_SOURCE_SWITCH_PROGRESS_INTERVAL_MS);
-}
-
-function armManualSourceSwitchRestoreTimeout(restoreState) {
-  clearManualSourceSwitchRestore();
-  pendingManualSourceSwitchRestore = restoreState;
-  restoreState.progressSignature = captureManualSourceSwitchProgress();
-  restoreState.noProgressTicks = 0;
-  restoreState.sawLoadProgress = false;
-  scheduleManualSourceSwitchRestoreCheck(restoreState);
-}
-
-function isManualSourceSwitchPending() {
-  return Boolean(
-    activeManualSourceSwitchRequestToken || pendingManualSourceSwitchRestore,
-  );
-}
-
-function isManualSourceSwitchRequestActive() {
-  return Boolean(activeManualSourceSwitchRequestToken);
-}
-
-function finishManualSourceSwitchRequest(requestToken) {
-  if (activeManualSourceSwitchRequestToken === requestToken) {
-    activeManualSourceSwitchRequestToken = 0;
-  }
-}
-
-function markManualSourceSwitchPlaybackRequested(sourceHash = "") {
-  const restoreState = pendingManualSourceSwitchRestore;
-  if (!restoreState) {
-    return;
-  }
-  const normalizedSourceHash = normalizeSourceHash(sourceHash);
-  if (
-    normalizedSourceHash &&
-    restoreState.targetSourceHash &&
-    normalizedSourceHash !== restoreState.targetSourceHash
-  ) {
-    return;
-  }
-  restoreState.targetPlaybackSource = String(lastRequestedPlaybackSource || "").trim();
-  restoreState.targetAbsolutePlaybackSource = String(
-    lastRequestedAbsolutePlaybackSource || "",
-  ).trim();
-}
-
-function completeManualSourceSwitchIfActive() {
-  const restoreState = pendingManualSourceSwitchRestore;
+async function rollbackManualSourceSwitchPlayback(
+  restoreState,
+  { reason = "", request = null } = {},
+) {
   if (!restoreState) {
     return false;
   }
-  if (!restoreState.targetPlaybackSource && !restoreState.targetAbsolutePlaybackSource) {
-    return false;
-  }
-  const activeSource = String(
-    lastRequestedAbsolutePlaybackSource ||
-      video?.currentSrc ||
-      video?.getAttribute?.("src") ||
-      "",
-  ).trim();
-  if (
-    restoreState.targetAbsolutePlaybackSource &&
-    activeSource &&
-    activeSource !== restoreState.targetAbsolutePlaybackSource
-  ) {
-    return false;
-  }
-  clearManualSourceSwitchRestore();
-  return true;
-}
 
-async function restoreManualSourceSwitchPlayback(message = "") {
-  const restoreState = pendingManualSourceSwitchRestore;
-  if (!restoreState) {
-    return false;
-  }
-  clearManualSourceSwitchRestore();
-
-  if (restoreState.targetSourceHash) {
-    resolverFailedSourceHashes.add(restoreState.targetSourceHash);
-  }
+  const rollbackPlaybackRequestToken = ++tmdbPlaybackRequestToken;
+  stopLocalCacheUpgradeWatch();
+  const activePlaybackSource = getManualSourceSwitchRestoreSource();
 
   selectedSourceHash = restoreState.selectedSourceHash;
   sourceSelectionPinned = restoreState.sourceSelectionPinned;
@@ -4031,9 +3897,24 @@ async function restoreManualSourceSwitchPlayback(message = "") {
   availableAudioTracks = [...restoreState.availableAudioTracks];
   availableSubtitleTracks = [...restoreState.availableSubtitleTracks];
   resolvedTrackPreferenceAudio = restoreState.resolvedTrackPreferenceAudio;
+  preferredAudioLang = restoreState.preferredAudioLang;
   preferredSubtitleLang = restoreState.preferredSubtitleLang;
+  expectedDurationSeconds = restoreState.expectedDurationSeconds;
+  knownDurationSeconds = restoreState.knownDurationSeconds;
+  tmdbSkipExternalEmbed = restoreState.tmdbSkipExternalEmbed;
   tmdbSourceQueue = [...restoreState.tmdbSourceQueue];
   tmdbSourceAttemptIndex = restoreState.tmdbSourceAttemptIndex;
+
+  const targetSourceHash = normalizeSourceHash(request?.targetSourceHash);
+  if (
+    targetSourceHash &&
+    !restoreState.availablePlaybackSourceHashes.has(targetSourceHash)
+  ) {
+    availablePlaybackSources = availablePlaybackSources.filter(
+      (source) => normalizeSourceHash(source?.sourceHash) !== targetSourceHash,
+    );
+    renderSourceOptionButtons();
+  }
 
   applyPreferredSourceAudioSync(selectedSourceHash);
   persistSourceHashInUrl();
@@ -4045,27 +3926,97 @@ async function restoreManualSourceSwitchPlayback(message = "") {
   hideResolver();
 
   const restoreSource = String(restoreState.restorePlaybackSource || "").trim();
-  if (restoreSource) {
+  if (restoreSource && activePlaybackSource !== restoreSource) {
     setVideoSource(restoreSource, {
       startSeconds: restoreState.restoreResumeSeconds,
       resetInitialResume: false,
+      autoplay: !restoreState.restoreWasPaused,
     });
     applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
     if (restoreState.restoreWasPaused) {
       video.pause();
     } else {
       await tryPlay();
+      if (
+        !manualSourceSwitch.isCurrent(request) ||
+        tmdbPlaybackRequestToken !== rollbackPlaybackRequestToken
+      ) {
+        return false;
+      }
     }
-    if (restoreState.restoreResumeSeconds > 1) {
+    if (
+      restoreState.restoreResumeSeconds > 1 &&
+      !isTranscodeSourceActive()
+    ) {
       seekToAbsoluteTime(restoreState.restoreResumeSeconds);
     }
+    knownDurationSeconds = restoreState.knownDurationSeconds;
+  }
+  expectedDurationSeconds = restoreState.expectedDurationSeconds;
+  syncDurationText();
+
+  localCacheUpgradeWatch.setHasUpgraded(restoreState.hasUpgradedToLocalCache);
+  if (restoreState.localCacheUpgradeWatchWasActive) {
+    startLocalCacheUpgradeWatch({
+      playableUrl: restoreSource,
+      resolverProvider: restoreState.currentTmdbResolverProvider,
+    });
   }
 
   console.warn(
     "Source switch failed; restored previous stream.",
-    String(message || "").trim(),
+    String(reason || "").trim(),
   );
   return true;
+}
+
+const manualSourceSwitch = createManualSourceSwitchController({
+  normalizeSourceHash,
+  captureProgress: captureManualSourceSwitchProgress,
+  getActivePlaybackSource: () =>
+    String(
+      (isLiveIframePlaybackActive() ? liveEmbedFrame?.src : video?.currentSrc) ||
+        "",
+    ).trim(),
+  commit: commitManualSourceSwitchPlayback,
+  rollback: rollbackManualSourceSwitchPlayback,
+  markFailed: (sourceHash) => resolverFailedSourceHashes.add(sourceHash),
+  logger: console,
+  setTimeoutFn: (callback, delayMs) => window.setTimeout(callback, delayMs),
+  clearTimeoutFn: (timeoutId) => window.clearTimeout(timeoutId),
+});
+
+function noteManualSourceSwitchProgress() {
+  manualSourceSwitch.noteProgress();
+}
+
+function isManualSourceSwitchPending() {
+  return manualSourceSwitch.isPending();
+}
+
+function markManualSourceSwitchPlaybackRequested(sourceHash = "") {
+  const request = manualSourceSwitch.getPending();
+  if (!request) {
+    return false;
+  }
+  return manualSourceSwitch.recordPlaybackRequested(request, {
+    sourceHash,
+    playbackSource: lastRequestedPlaybackSource,
+    absolutePlaybackSource: lastRequestedAbsolutePlaybackSource,
+  });
+}
+
+function completeManualSourceSwitchIfActive(activePlaybackSource = "") {
+  return manualSourceSwitch.completeIfActive(undefined, {
+    activePlaybackSource,
+  });
+}
+
+function failPendingManualSourceSwitch(message) {
+  const request = manualSourceSwitch.getPending();
+  return request
+    ? manualSourceSwitch.fail(request, message)
+    : Promise.resolve(false);
 }
 
 function reportCurrentTmdbPlaybackFailure(
@@ -4253,7 +4204,13 @@ function applyStoredSubtitleSelectionPreference() {
 
 async function applyResolvedTmdbPlayback(
   resolved,
-  { resolvedSourceHash = "", startSeconds = 0, playbackRequestToken = 0 } = {},
+  {
+    resolvedSourceHash = "",
+    startSeconds = 0,
+    playbackRequestToken = 0,
+    manualSourceSwitchRequest = null,
+    autoplay = true,
+  } = {},
 ) {
   if (
     playbackRequestToken &&
@@ -4264,6 +4221,10 @@ async function applyResolvedTmdbPlayback(
 
   const normalizedResolvedSourceHash = normalizeSourceHash(
     resolvedSourceHash || resolved?.sourceHash || selectedSourceHash,
+  );
+  const isProvisionalManualSourceSwitch = Boolean(
+    manualSourceSwitchRequest &&
+      manualSourceSwitch.isCurrent(manualSourceSwitchRequest),
   );
   currentTmdbPlaybackSessionKey = String(resolved?.session?.key || "").trim();
   currentTmdbResolverProvider = String(
@@ -4306,26 +4267,33 @@ async function applyResolvedTmdbPlayback(
   preferredSubtitleLang = normalizeSubtitlePreference(preferredSubtitleLang);
   selectedSourceHash = normalizedResolvedSourceHash;
   applyPreferredSourceAudioSync(selectedSourceHash);
-  persistSourceHashInUrl();
-  if (resumeTime > 1) {
-    persistContinueWatchingEntry(resumeTime);
-    syncContinueWatchingEntryToServer(resumeTime);
+  if (!isProvisionalManualSourceSwitch) {
+    persistSourceHashInUrl();
+    if (resumeTime > 1) {
+      persistContinueWatchingEntry(resumeTime);
+      syncContinueWatchingEntryToServer(resumeTime);
+    }
   }
 
   if (resolvedTrackPreferenceAudio && resolvedTrackPreferenceAudio !== "auto") {
     preferredAudioLang = resolvedTrackPreferenceAudio;
-    persistAudioLangPreference(preferredAudioLang);
+    if (!isProvisionalManualSourceSwitch) {
+      persistAudioLangPreference(preferredAudioLang);
+    }
   }
   const subtitleStreamPreferenceBeforeResolve =
     getStoredSubtitleStreamPreferenceForCurrentPlayback();
   applyStoredSubtitleSelectionPreference();
-  persistSubtitleLangPreference(preferredSubtitleLang);
-  if (
+  const shouldPersistSubtitleStreamPreference = Boolean(
     subtitleStreamPreferenceBeforeResolve.mode !== "unset" ||
     selectedSubtitleStreamIndex >= 0 ||
-    preferredSubtitleLang === "off"
-  ) {
-    persistSubtitleStreamPreference(selectedSubtitleStreamIndex);
+    preferredSubtitleLang === "off",
+  );
+  if (!isProvisionalManualSourceSwitch) {
+    persistSubtitleLangPreference(preferredSubtitleLang);
+    if (shouldPersistSubtitleStreamPreference) {
+      persistSubtitleStreamPreference(selectedSubtitleStreamIndex);
+    }
   }
 
   rebuildTrackOptionButtons();
@@ -4376,13 +4344,21 @@ async function applyResolvedTmdbPlayback(
         ]
       : resolved.fallbackUrls,
   );
-  void queueGallerySaveIfRequested(resolved);
+  if (isProvisionalManualSourceSwitch) {
+    manualSourceSwitch.setCommitData(manualSourceSwitchRequest, {
+      persistSubtitleStreamPreference: shouldPersistSubtitleStreamPreference,
+      resolved,
+    });
+  } else {
+    void queueGallerySaveIfRequested(resolved);
+  }
   const preferredSource =
     tmdbSourceQueue[0] || preferredBrowserSource || nativePreferredSource;
   const explicitStartSeconds = normalizeResumeStartSeconds(startSeconds);
   setVideoSource(preferredSource, {
     startSeconds: explicitStartSeconds || getInitialPlaybackStartSeconds(),
     resetInitialResume: explicitStartSeconds <= 0,
+    autoplay,
   });
   markManualSourceSwitchPlaybackRequested(normalizedResolvedSourceHash);
   applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
@@ -4421,8 +4397,18 @@ async function applyResolvedTmdbPlayback(
     );
   }
 
-  await tryPlay();
-  startLocalCacheUpgradeWatch(resolved);
+  if (autoplay) {
+    await tryPlay();
+  }
+  if (
+    playbackRequestToken &&
+    playbackRequestToken !== tmdbPlaybackRequestToken
+  ) {
+    return { nativeLaunched: false, resolved, stale: true };
+  }
+  if (!isProvisionalManualSourceSwitch) {
+    startLocalCacheUpgradeWatch(resolved);
+  }
   return { nativeLaunched: false, resolved };
 }
 
@@ -4443,7 +4429,7 @@ async function resolveTmdbSourcesAndPlay({
     : playbackRequestToken;
   if (applyPlayback) {
     stopLocalCacheUpgradeWatch();
-    hasUpgradedToLocalCache = false;
+    localCacheUpgradeWatch.setHasUpgraded(false);
   }
   if (isTmdbResolvedPlayback) {
     await loadUserRealDebridPlaybackSettings();
@@ -4525,7 +4511,7 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
   if (
     !isTmdbResolvedPlayback ||
     isRecoveringTmdbStream ||
-    isManualSourceSwitchRequestActive()
+    isManualSourceSwitchPending()
   ) {
     return false;
   }
@@ -5647,8 +5633,11 @@ function formatTime(totalSeconds) {
 }
 
 function syncPlayState() {
-  togglePlay.classList.toggle("paused", video.paused);
-  togglePlay.setAttribute("aria-label", video.paused ? "Play" : "Pause");
+  const isPaused = isLiveIframePlaybackActive()
+    ? liveIframePlaybackClock.isPaused()
+    : video.paused;
+  togglePlay.classList.toggle("paused", isPaused);
+  togglePlay.setAttribute("aria-label", isPaused ? "Play" : "Pause");
 }
 
 function clampPlayerVolume(value) {
@@ -7971,6 +7960,7 @@ function persistResumeTime(force = false) {
 
 async function tryPlay() {
   if (isLiveIframePlaybackActive()) {
+    liveIframePlaybackClock.play();
     syncPlayState();
     return;
   }
@@ -8039,8 +8029,14 @@ async function togglePlayback() {
     return;
   }
 
-  if (video.paused) {
+  const isIframePlayback = isLiveIframePlaybackActive();
+  const isPaused = isIframePlayback
+    ? liveIframePlaybackClock.isPaused()
+    : video.paused;
+  if (isPaused) {
     await tryPlay();
+  } else if (isIframePlayback) {
+    liveIframePlaybackClock.pause();
   } else {
     video.pause();
   }
@@ -8242,7 +8238,7 @@ function schedulePlaybackRecovery(
   // startup failure, so don't roll back to the previous source here: the restore
   // watchdog reverts only after sustained no-progress, and a genuine media/HLS error
   // reverts via the error path (handlePlaybackErrorRecovery).
-  if (pendingManualSourceSwitchRestore || isManualSourceSwitchRequestActive()) {
+  if (isManualSourceSwitchPending()) {
     return true;
   }
 
@@ -8628,10 +8624,11 @@ function tryAlternatePlaybackSourceNow() {
 async function handlePlaybackErrorRecovery(message) {
   const fallbackMessage =
     String(message || "").trim() || "Resolved stream could not be played.";
-  if (pendingManualSourceSwitchRestore) {
-    return restoreManualSourceSwitchPlayback(fallbackMessage);
+  const manualSwitchRequest = manualSourceSwitch.getPending();
+  if (manualSwitchRequest?.armed && !manualSwitchRequest.failureStarted) {
+    return failPendingManualSourceSwitch(fallbackMessage);
   }
-  if (isManualSourceSwitchRequestActive()) {
+  if (manualSwitchRequest) {
     return true;
   }
   if (isBrowserOffline()) {
@@ -10039,10 +10036,10 @@ async function initPlaybackSource() {
   function handleDocumentVisibilityChange() {
     if (document.visibilityState === "hidden") {
       handleGlobalBeforeunload();
-      pauseLiveIframeProgressClock();
+      liveIframePlaybackClock.suspend();
       return;
     }
-    resumeLiveIframeProgressClock();
+    liveIframePlaybackClock.resume();
     startLiveVisualHealthWatch();
   }
 
@@ -10622,7 +10619,7 @@ if (audioOptionsContainer) trackListener(audioOptionsContainer, "click", async (
   }
 
   const resumeFrom = getEffectiveCurrentTime();
-  const wasPaused = video.paused;
+  const wasPaused = isLiveIframePlaybackActive() ? liveIframePlaybackClock.isPaused() : video.paused;
   const selectedSubtitleTrack = getSubtitleTrackByStreamIndex(
     selectedSubtitleStreamIndex,
   );
@@ -10734,34 +10731,30 @@ async function handleSourceOptionSelection(nextSourceHash) {
     return;
   }
 
-  const sourceSwitchRequestToken = ++manualSourceSwitchRequestToken;
-  const previousSourceHash = selectedSourceHash;
-  const previousSourceSelectionPinned = sourceSelectionPinned;
-  activeManualSourceSwitchRequestToken = sourceSwitchRequestToken;
-  clearManualSourceSwitchRestore();
-
   if (!isTmdbResolvedPlayback) {
     selectedSourceHash = normalizedNextSourceHash;
     sourceSelectionPinned = true;
     applyPreferredSourceAudioSync(selectedSourceHash);
     persistSourceHashInUrl();
     syncAudioState();
-    finishManualSourceSwitchRequest(sourceSwitchRequestToken);
     return;
   }
 
   const resumeFrom = getEffectiveCurrentTime();
-  const wasPaused = video.paused;
-  const playbackRequestToken = ++tmdbPlaybackRequestToken;
-  const restoreState = createManualSourceSwitchRestoreState({
+  const wasPaused = isLiveIframePlaybackActive() ? liveIframePlaybackClock.isPaused() : video.paused;
+  const sourceSwitchRequest = manualSourceSwitch.begin({
     targetSourceHash: normalizedNextSourceHash,
-    resumeSeconds: resumeFrom,
-    wasPaused,
+    baseline: captureManualSourceSwitchBaseline({
+      resumeSeconds: resumeFrom,
+      wasPaused,
+    }),
   });
+  const playbackRequestToken = ++tmdbPlaybackRequestToken;
+  stopLocalCacheUpgradeWatch();
+  localCacheUpgradeWatch.setHasUpgraded(false);
   selectedSourceHash = normalizedNextSourceHash;
   sourceSelectionPinned = true;
   applyPreferredSourceAudioSync(selectedSourceHash);
-  persistSourceHashInUrl();
   syncAudioState();
   syncSourceSelectionState();
   renderSelectedSourceDetails();
@@ -10779,71 +10772,66 @@ async function handleSourceOptionSelection(nextSourceHash) {
       startSeconds: resumeFrom,
     });
     if (
-      sourceSwitchRequestToken !== manualSourceSwitchRequestToken ||
+      !manualSourceSwitch.isCurrent(sourceSwitchRequest) ||
       playbackRequestToken !== tmdbPlaybackRequestToken
     ) {
       return;
     }
     if (result?.nativeLaunched) {
+      manualSourceSwitch.clear();
+      persistSourceHashInUrl();
       return;
     }
     sourceSelectionPinned = true;
-    armManualSourceSwitchRestoreTimeout(restoreState);
+    manualSourceSwitch.arm(sourceSwitchRequest);
     showResolver("Switching source...");
     const applied = await applyResolvedTmdbPlayback(result.resolved, {
       resolvedSourceHash: result.resolvedSourceHash || normalizedNextSourceHash,
       startSeconds: resumeFrom,
       playbackRequestToken,
+      manualSourceSwitchRequest: sourceSwitchRequest,
+      autoplay: !wasPaused,
     });
     if (applied?.stale) {
-      if (pendingManualSourceSwitchRestore === restoreState) {
-        clearManualSourceSwitchRestore();
+      if (
+        manualSourceSwitch.isCurrent(sourceSwitchRequest) &&
+        !sourceSwitchRequest.failureStarted
+      ) {
+        manualSourceSwitch.clear();
       }
       return;
     }
-    if (pendingManualSourceSwitchRestore !== restoreState) {
+    if (
+      !manualSourceSwitch.isCurrent(sourceSwitchRequest) &&
+      sourceSwitchRequest.phase !== "completed"
+    ) {
       return;
     }
     if (applied?.nativeLaunched) {
-      clearManualSourceSwitchRestore();
+      if (manualSourceSwitch.isCurrent(sourceSwitchRequest)) {
+        manualSourceSwitch.clear();
+        commitManualSourceSwitchPlayback(sourceSwitchRequest.commitData);
+      }
       return;
     }
-    if (!wasPaused) {
-      await tryPlay();
-    }
-    if (pendingManualSourceSwitchRestore !== restoreState) {
-      return;
-    }
-    if (resumeFrom > 1) {
+    if (resumeFrom > 1 && !isTranscodeSourceActive()) {
       seekToAbsoluteTime(resumeFrom);
     }
-    if (video.readyState >= 2 || getEffectiveCurrentTime() > 0.5) {
+    if (
+      manualSourceSwitch.isCurrent(sourceSwitchRequest) &&
+      (video.readyState >= 2 || isLiveIframePlaybackActive())
+    ) {
       completeManualSourceSwitchIfActive();
     }
   } catch (error) {
-    if (pendingManualSourceSwitchRestore === restoreState) {
-      await restoreManualSourceSwitchPlayback(
+    if (manualSourceSwitch.isCurrent(sourceSwitchRequest)) {
+      await manualSourceSwitch.fail(
+        sourceSwitchRequest,
         error?.message || "Unable to switch source.",
       );
-      return;
     }
-    if (sourceSwitchRequestToken !== manualSourceSwitchRequestToken) {
-      resolverFailedSourceHashes.add(normalizedNextSourceHash);
-      return;
-    }
-    resolverFailedSourceHashes.add(normalizedNextSourceHash);
-    selectedSourceHash = previousSourceHash;
-    sourceSelectionPinned = previousSourceSelectionPinned;
-    applyPreferredSourceAudioSync(selectedSourceHash);
-    persistSourceHashInUrl();
-    syncAudioState();
-    syncSourceSelectionState();
-    renderSelectedSourceDetails();
-    hideSeekLoadingIndicator();
-    hideResolver();
-    console.warn("Unable to switch source.", error);
   } finally {
-    finishManualSourceSwitchRequest(sourceSwitchRequestToken);
+    manualSourceSwitch.finish(sourceSwitchRequest);
   }
 }
 
@@ -11522,6 +11510,7 @@ trackListener(window, "storage", (event) => {
   onCleanup(() => {
     _cleanups.forEach(fn => fn());
     _cleanups.length = 0;
+    manualSourceSwitch.dispose();
     if (resumeFlushIntervalId) {
       window.clearInterval(resumeFlushIntervalId);
       resumeFlushIntervalId = 0;
@@ -11540,7 +11529,7 @@ trackListener(window, "storage", (event) => {
     clearLiveStartupHealthWatch({ resetRequest: true });
     clearPlaybackRecovery();
     clearAudioDecodeWatch();
-    stopLocalCacheUpgradeWatch();
+    localCacheUpgradeWatch.dispose();
     clearSeekLoadingTimeout();
     closeSeekPreviewVideo();
     hlsPlaybackController.destroy();
