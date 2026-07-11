@@ -46,6 +46,22 @@ export function renderPlayerShell({
         <section class="controls-panel">
           <div class="seek-row">
             <div class="seek-bar-wrap">
+              <progress
+                id="seekBufferedProgress"
+                ref={refs.seekBufferedProgress}
+                class="seek-track-progress seek-track-buffered"
+                max="1000"
+                value="0"
+                aria-hidden="true"
+              ></progress>
+              <progress
+                id="seekPlayedProgress"
+                ref={refs.seekPlayedProgress}
+                class="seek-track-progress seek-track-played"
+                max="1000"
+                value="0"
+                aria-hidden="true"
+              ></progress>
               <input
                 id="seekBar"
                 ref={refs.seekBar}

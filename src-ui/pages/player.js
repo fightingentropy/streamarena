@@ -111,7 +111,7 @@ function fetchUserApi(path, options) {
 
 export default function PlayerPage() {
   // ─── Ref declarations (replacing document.getElementById) ───
-  let video, goBack, seekBar, seekPreview, seekPreviewCanvas, seekPreviewTime;
+  let video, goBack, seekBar, seekPlayedProgress, seekBufferedProgress, seekPreview, seekPreviewCanvas, seekPreviewTime;
   let durationText, togglePlay, rewind10, forward10, volumeControl, volumeSlider;
   let toggleMutePlayer, toggleFullscreen, toggleSpeed, speedControl;
   let toggleHlsQuality, hlsQualityControl, hlsQualityMenu, hlsQualityOptionsContainer;
@@ -7287,11 +7287,8 @@ function paintSeekProgress(progressValue, bufferedValue = null) {
       Number.isFinite(Number(bufferedValue)) ? Number(bufferedValue) : clamped,
     ),
   );
-  const playedPercent = (clamped / max) * 100;
-  const bufferedPercent = (bufferedClamped / max) * 100;
-  setRuntimeStyleRule(".seek-bar", {
-    "--seek-played": `${playedPercent}%`, "--seek-buffered": `${bufferedPercent}%`,
-  });
+  if (seekPlayedProgress) seekPlayedProgress.value = clamped;
+  if (seekBufferedProgress) seekBufferedProgress.value = bufferedClamped;
 }
 
 function syncDurationText(elapsedSeconds = getEffectiveCurrentTime()) {
@@ -11594,6 +11591,8 @@ trackListener(window, "storage", (event) => {
       resolverTitle: (el) => { resolverTitle = el; },
       rewind10: (el) => { rewind10 = el; },
       seekBar: (el) => { seekBar = el; },
+      seekBufferedProgress: (el) => { seekBufferedProgress = el; },
+      seekPlayedProgress: (el) => { seekPlayedProgress = el; },
       seekLoadingOverlay: (el) => { seekLoadingOverlay = el; },
       seekPreview: (el) => { seekPreview = el; },
       seekPreviewCanvas: (el) => { seekPreviewCanvas = el; },

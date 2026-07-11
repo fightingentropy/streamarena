@@ -766,6 +766,8 @@ async function runSmoke() {
         const seekProgressState = await page.evaluate(() => {
           const video = document.querySelector("#playerVideo");
           const seekBar = document.querySelector("#seekBar");
+          const playedProgress = document.querySelector("#seekPlayedProgress");
+          const bufferedProgress = document.querySelector("#seekBufferedProgress");
           Object.defineProperty(video, "duration", {
             configurable: true,
             value: 100,
@@ -776,19 +778,32 @@ async function runSmoke() {
           });
           video.dispatchEvent(new Event("timeupdate"));
           const style = getComputedStyle(seekBar);
+          let playedRuleBackground = "";
+          for (const sheet of Array.from(document.styleSheets)) {
+            try {
+              for (const rule of Array.from(sheet.cssRules || [])) {
+                if (rule.selectorText === ".seek-track-played::-webkit-progress-value") {
+                  playedRuleBackground = rule.style.background;
+                }
+              }
+            } catch {
+              // Ignore cross-origin sheets; the bundled player stylesheet is same-origin.
+            }
+          }
           return {
             value: Number(seekBar.value),
-            played: style.getPropertyValue("--seek-played").trim(),
-            buffered: style.getPropertyValue("--seek-buffered").trim(),
+            played: Number(playedProgress.value),
+            buffered: Number(bufferedProgress.value),
             backgroundImage: style.backgroundImage,
+            playedRuleBackground,
           };
         });
         if (
           seekProgressState.value !== 400 ||
-          seekProgressState.played !== "40%" ||
-          seekProgressState.buffered !== "40%" ||
-          !seekProgressState.backgroundImage.includes("rgb(229, 9, 20)") ||
-          !seekProgressState.backgroundImage.includes("40%")
+          seekProgressState.played !== 400 ||
+          seekProgressState.buffered !== 400 ||
+          seekProgressState.backgroundImage !== "none" ||
+          seekProgressState.playedRuleBackground !== "var(--ui-accent)"
         ) {
           throw new Error(
             `${pageSpec.path}\nSeek track did not paint the played portion red.\n${JSON.stringify(seekProgressState)}`,
