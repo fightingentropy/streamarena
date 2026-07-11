@@ -446,14 +446,36 @@ body {
 }
 
 .seek-bar {
+    --seek-played: 0%;
+    --seek-buffered: 0%;
     appearance: none;
     width: 100%;
     height: 4px;
     border-radius: 999px;
-    background: var(--ui-line);
+    background: linear-gradient(
+        to right,
+        var(--ui-accent) 0%,
+        var(--ui-accent) var(--seek-played),
+        var(--ui-buffered) var(--seek-played),
+        var(--ui-buffered) var(--seek-buffered),
+        var(--ui-line) var(--seek-buffered),
+        var(--ui-line) 100%
+    );
     outline: none;
     cursor: pointer;
     pointer-events: auto;
+}
+
+.seek-bar::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 999px;
+    background: transparent;
+}
+
+.seek-bar::-moz-range-track {
+    height: 4px;
+    border-radius: 999px;
+    background: transparent;
 }
 
 .seek-preview {

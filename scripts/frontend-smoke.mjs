@@ -374,6 +374,7 @@ const pages = [
     path: `/player.html?src=${encodeURIComponent(hevcSmokeVideo)}&title=Project%20Hail%20Mary&year=2026`,
     selector: ".player-shell",
     expectDirectVideo: true,
+    expectSeekProgress: true,
   },
   {
     path: `/player.html?src=${encodeURIComponent(hevcSmokeVideo)}&title=Project%20Hail%20Mary&year=2026`,
@@ -760,6 +761,40 @@ async function runSmoke() {
         }
       }
       await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
+
+      if (pageSpec.expectSeekProgress) {
+        const seekProgressState = await page.evaluate(() => {
+          const video = document.querySelector("#playerVideo");
+          const seekBar = document.querySelector("#seekBar");
+          Object.defineProperty(video, "duration", {
+            configurable: true,
+            value: 100,
+          });
+          Object.defineProperty(video, "currentTime", {
+            configurable: true,
+            value: 40,
+          });
+          video.dispatchEvent(new Event("timeupdate"));
+          const style = getComputedStyle(seekBar);
+          return {
+            value: Number(seekBar.value),
+            played: style.getPropertyValue("--seek-played").trim(),
+            buffered: style.getPropertyValue("--seek-buffered").trim(),
+            backgroundImage: style.backgroundImage,
+          };
+        });
+        if (
+          seekProgressState.value !== 400 ||
+          seekProgressState.played !== "40%" ||
+          seekProgressState.buffered !== "40%" ||
+          !seekProgressState.backgroundImage.includes("rgb(229, 9, 20)") ||
+          !seekProgressState.backgroundImage.includes("40%")
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nSeek track did not paint the played portion red.\n${JSON.stringify(seekProgressState)}`,
+          );
+        }
+      }
 
       if (pageSpec.expectHlsManagedDuringImport) {
         const earlyVideoSource = await page.evaluate(

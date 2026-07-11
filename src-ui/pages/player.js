@@ -7290,7 +7290,7 @@ function paintSeekProgress(progressValue, bufferedValue = null) {
   const playedPercent = (clamped / max) * 100;
   const bufferedPercent = (bufferedClamped / max) * 100;
   setRuntimeStyleRule(".seek-bar", {
-    background: `linear-gradient(to right, var(--ui-accent) 0%, var(--ui-accent) ${playedPercent}%, var(--ui-buffered) ${playedPercent}%, var(--ui-buffered) ${bufferedPercent}%, var(--ui-line) ${bufferedPercent}%, var(--ui-line) 100%)`,
+    "--seek-played": `${playedPercent}%`, "--seek-buffered": `${bufferedPercent}%`,
   });
 }
 
