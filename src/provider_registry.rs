@@ -35,6 +35,7 @@ pub mod keys {
     pub const SPORTS_MATCHSTREAM_WEBMASTER: &str = "sports:matchstream-webmaster";
     pub const SPORTS_MATCHSTREAM_VIEWER: &str = "sports:matchstream-viewer";
     pub const SPORTS_NTVS_SEARCH: &str = "sports:ntvs-search";
+    pub const SPORTS_ESPN_FOOTBALL: &str = "sports:espn-football";
 
     pub const INFRA_APP_ORIGIN: &str = "infra:app-origin";
     pub const INFRA_TORRENTIO: &str = "infra:torrentio";
@@ -341,6 +342,13 @@ fn url_entry(key: &str, group: &str, label: &str, default_url: &str, note: &str)
 pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
     // ── Sports stream APIs (URL-swappable) ──────────────────────────────────
     let mut out = vec![
+        url_entry(
+            keys::SPORTS_ESPN_FOOTBALL,
+            "sports",
+            "ESPN · football fixtures",
+            crate::football::ESPN_FOOTBALL_SCOREBOARD_URL,
+            "Broad football fixture scoreboard; contains no playback URLs",
+        ),
         url_entry(
             keys::SPORTS_STREAMED_FOOTBALL,
             "sports",

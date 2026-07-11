@@ -156,8 +156,8 @@ Live and sports flow:
 1. `/live` renders static live channels from `src-ui/lib/live-channels.js`.
 2. HLS live channel playlists and segments are proxied through protected `/api/live/hls.m3u8` and `/api/live/hls-resource` with an allowlist in `src/live.rs`.
 3. Twitch-backed live sources resolve through protected `/api/twitch/stream`.
-4. `/sports` fetches schedules for football, basketball, tennis, hockey, baseball, American football, and cricket through `src/football.rs`; the default Auto source merges Streamed and MatchStream schedules so both providers show up in the live stream picker.
-5. Live sports streams resolve through protected `/api/sports/stream`; the server uses short-lived HLS resolution caching, bounded Playwright concurrency, `scripts/resolve-streamed-hls.mjs` for Streamed, and `scripts/resolve-matchstream-hls.mjs` for MatchStream.
+4. `/sports` fetches schedules for football, basketball, tennis, hockey, baseball, American football, and cricket through `src/football.rs`. Football uses ESPN's broad scoreboard as its fixture list, then merges matching sources from Streamed, MatchStream, NTVS, and cdnlivetv; a match can therefore appear before any stream is available.
+5. Live sports streams still resolve only through protected `/api/sports/stream`; fixture metadata never becomes a playback URL. The server uses short-lived HLS resolution caching and bounded Playwright concurrency for the stream providers.
 
 ## Features
 
@@ -262,6 +262,7 @@ Sports:
 - Tabs for football, basketball, tennis, hockey, baseball, American football, and cricket.
 - Schedule grouping by date.
 - Live/upcoming state.
+- ESPN-backed football fixture discovery independent of stream availability.
 - Stream source counts and stream selector handoff to the player.
 - Server schedule cache with stale-if-error fallback.
 
@@ -683,7 +684,7 @@ Sports proxy/WARP:
 - Required sports env: `SPORTS_HTTP_PROXY=http://127.0.0.1:40000`.
 - Existing full-backend proxy env may also point at the same listener: `OUTBOUND_HTTP_PROXY=http://127.0.0.1:40000`.
 - Streamed may fail directly from the ISP path; the expected healthy path is through WARP's local proxy.
-- `scripts/check-mini.sh` validates WARP status, WARP proxy mode, the `SPORTS_HTTP_PROXY` value, and real proxied Streamed/NTVS football schedule requests.
+- `scripts/check-mini.sh` validates WARP status, WARP proxy mode, the `SPORTS_HTTP_PROXY` value, real proxied Streamed/NTVS requests, and a populated direct ESPN football fixture response.
 - `scripts/deploy-mini.sh` deploys resolver helpers:
   - `bin/resolve-external-embed-hls.mjs` for movie/TV native HLS.
   - `bin/resolve-streamed-hls.mjs` for Streamed sports native HLS.
@@ -861,7 +862,7 @@ Live sports stream fails:
 
 - Install Playwright Chromium with `bun run bench:playback:install`.
 - Check `STREAMED_HLS_RESOLVER_SCRIPT`, `MATCHSTREAM_HLS_RESOLVER_SCRIPT`, or `NTVS_HLS_RESOLVER_SCRIPT`.
-- If the default sports source fails to load, switch the `/sports` source picker to MatchStream or leave it on Auto so the backend can fall back when Streamed is unreachable.
+- If football fixtures fail to load, check the ESPN scoreboard in provider settings and `/api/debug/sports`; Auto falls back to the stream-provider inventories if ESPN is temporarily unavailable.
 - If a sports provider needs a proxy, set `SPORTS_HTTP_PROXY`; use provider-specific browser proxy overrides only when a browser extractor needs a different proxy from the schedule/API requests.
 
 Upload fails:

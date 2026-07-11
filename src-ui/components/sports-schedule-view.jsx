@@ -64,9 +64,12 @@ const SPORTS_SCHEDULE_SOURCES = Object.freeze([
   "ntvs",
   "cdnlivetv",
 ]);
+const FOOTBALL_SCHEDULE_SOURCES = Object.freeze(["auto"]);
 // Sources that only carry football (the backend rejects them for other sports).
 const FOOTBALL_ONLY_SPORTS_SOURCES = Object.freeze(["ntvs", "cdnlivetv"]);
 const SPORTS_SOURCE_LABELS = Object.freeze({
+  auto: "Combined",
+  espn: "ESPN",
   streamed: "Streamed",
   matchstream: "MatchStream",
   ntvs: "NTVS",
@@ -121,7 +124,7 @@ function sportsSourceLabel(source) {
 
 function sportsScheduleSourcesForSport(sport) {
   return sport === "football"
-    ? SPORTS_SCHEDULE_SOURCES
+    ? FOOTBALL_SCHEDULE_SOURCES
     : SPORTS_SCHEDULE_SOURCES.filter(
         (source) => !FOOTBALL_ONLY_SPORTS_SOURCES.includes(source),
       );
@@ -132,7 +135,9 @@ function normalizeProviderId(value) {
   return provider === "streamed" ||
     provider === "matchstream" ||
     provider === "ntvs" ||
-    provider === "cdnlivetv"
+    provider === "cdnlivetv" ||
+    provider === "espn" ||
+    provider === "auto"
     ? provider
     : "";
 }
@@ -144,6 +149,7 @@ function isProviderLabel(value) {
     normalized === "matchstream" ||
     normalized === "ntvs" ||
     normalized === "cdnlivetv" ||
+    normalized === "espn" ||
     normalized === "auto"
   );
 }

@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
 use std::env;
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Body;
+use axum::body::{Body, to_bytes};
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, Response, StatusCode};
 use dashmap::DashMap;
@@ -26,6 +27,7 @@ const STREAMED_SOURCE_ID: &str = "streamed";
 const MATCHSTREAM_SOURCE_ID: &str = "matchstream";
 const NTVS_SOURCE_ID: &str = "ntvs";
 const CDNLIVETV_SOURCE_ID: &str = "cdnlivetv";
+const ESPN_SOURCE_ID: &str = "espn";
 const AUTO_SOURCE_ID: &str = "auto";
 const STREAMED_FOOTBALL_CACHE_KEY: &str = "streamed:football";
 const STREAMED_BASKETBALL_CACHE_KEY: &str = "streamed:basketball";
@@ -42,6 +44,7 @@ const MATCHSTREAM_BASEBALL_CACHE_KEY: &str = "matchstream:baseball";
 const MATCHSTREAM_AMERICAN_FOOTBALL_CACHE_KEY: &str = "matchstream:american-football";
 const MATCHSTREAM_CRICKET_CACHE_KEY: &str = "matchstream:cricket";
 const NTVS_FOOTBALL_CACHE_KEY: &str = "ntvs:football";
+const ESPN_FOOTBALL_CACHE_KEY: &str = "espn:football";
 pub(crate) const STREAMED_MATCHES_BASE_URL: &str = "https://streamed.pk/api/matches";
 pub(crate) const STREAMED_FOOTBALL_MATCHES_URL: &str = "https://streamed.pk/api/matches/football";
 pub(crate) const STREAMED_BASKETBALL_MATCHES_URL: &str =
@@ -60,10 +63,15 @@ pub(crate) const MATCHSTREAM_WEBMASTER_URL: &str = "https://matchstream.do/webma
 pub(crate) const MATCHSTREAM_VIEWER_URL: &str = "https://matchstream.do/viewer";
 const MATCHSTREAM_DEFAULT_DURATION_MINUTES: i64 = 180;
 pub(crate) const NTVS_SEARCH_URL: &str = "https://ntvs.cx/api/search";
+pub(crate) const ESPN_FOOTBALL_SCOREBOARD_URL: &str =
+    "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?limit=500";
 const NTVS_REFERER: &str = "https://ntvs.cx/";
 const NTVS_DEFAULT_SERVER: &str = "kobra";
 const NTVS_FOOTBALL_SEARCH_QUERY: &str = "football";
 const NTVS_DEFAULT_DURATION_MINUTES: i64 = 180;
+const ESPN_DEFAULT_DURATION_MINUTES: i64 = 180;
+const ESPN_MATCH_MERGE_TOLERANCE_MS: i64 = 2 * 60 * 60 * 1000;
+const FOOTBALL_SCHEDULE_PROVIDER_TIMEOUT_MS: u64 = 3_500;
 const NTVS_EMBED_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-ntvs-hls.mjs";
 const NTVS_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-ntvs-hls.mjs";
 const NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
@@ -246,6 +254,7 @@ pub struct ResolveFootballStreamQuery {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SportsScheduleSource {
     Auto,
+    Espn,
     Streamed,
     Matchstream,
     Ntvs,
@@ -744,6 +753,7 @@ impl SportsScheduleSource {
             .as_str()
         {
             AUTO_SOURCE_ID => Ok(Self::Auto),
+            ESPN_SOURCE_ID => Ok(Self::Espn),
             STREAMED_SOURCE_ID => Ok(Self::Streamed),
             MATCHSTREAM_SOURCE_ID => Ok(Self::Matchstream),
             NTVS_SOURCE_ID => Ok(Self::Ntvs),
@@ -755,6 +765,7 @@ impl SportsScheduleSource {
 
 #[derive(Clone, Copy)]
 struct SportsScheduleConfig {
+    espn_cache_key: Option<&'static str>,
     streamed_cache_key: &'static str,
     matchstream_cache_key: &'static str,
     ntvs_cache_key: Option<&'static str>,
@@ -764,6 +775,7 @@ struct SportsScheduleConfig {
 }
 
 const FOOTBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    espn_cache_key: Some(ESPN_FOOTBALL_CACHE_KEY),
     streamed_cache_key: STREAMED_FOOTBALL_CACHE_KEY,
     matchstream_cache_key: MATCHSTREAM_FOOTBALL_CACHE_KEY,
     ntvs_cache_key: Some(NTVS_FOOTBALL_CACHE_KEY),
@@ -773,6 +785,7 @@ const FOOTBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
 };
 
 const BASKETBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    espn_cache_key: None,
     streamed_cache_key: STREAMED_BASKETBALL_CACHE_KEY,
     matchstream_cache_key: MATCHSTREAM_BASKETBALL_CACHE_KEY,
     ntvs_cache_key: None,
@@ -782,6 +795,7 @@ const BASKETBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
 };
 
 const TENNIS_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    espn_cache_key: None,
     streamed_cache_key: STREAMED_TENNIS_CACHE_KEY,
     matchstream_cache_key: MATCHSTREAM_TENNIS_CACHE_KEY,
     ntvs_cache_key: None,
@@ -791,6 +805,7 @@ const TENNIS_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
 };
 
 const HOCKEY_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    espn_cache_key: None,
     streamed_cache_key: STREAMED_HOCKEY_CACHE_KEY,
     matchstream_cache_key: MATCHSTREAM_HOCKEY_CACHE_KEY,
     ntvs_cache_key: None,
@@ -800,6 +815,7 @@ const HOCKEY_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
 };
 
 const BASEBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    espn_cache_key: None,
     streamed_cache_key: STREAMED_BASEBALL_CACHE_KEY,
     matchstream_cache_key: MATCHSTREAM_BASEBALL_CACHE_KEY,
     ntvs_cache_key: None,
@@ -809,6 +825,7 @@ const BASEBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
 };
 
 const AMERICAN_FOOTBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    espn_cache_key: None,
     streamed_cache_key: STREAMED_AMERICAN_FOOTBALL_CACHE_KEY,
     matchstream_cache_key: MATCHSTREAM_AMERICAN_FOOTBALL_CACHE_KEY,
     ntvs_cache_key: None,
@@ -818,6 +835,7 @@ const AMERICAN_FOOTBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleCo
 };
 
 const CRICKET_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    espn_cache_key: None,
     streamed_cache_key: STREAMED_CRICKET_CACHE_KEY,
     matchstream_cache_key: MATCHSTREAM_CRICKET_CACHE_KEY,
     ntvs_cache_key: None,
@@ -880,7 +898,12 @@ async fn sport_matches_response(
     query: SportsScheduleQuery,
     config: SportsScheduleConfig,
 ) -> AppResult<Response<Body>> {
+    let source = SportsScheduleSource::from_query(query.source.as_deref())?;
+    if source == SportsScheduleSource::Auto && config.espn_cache_key.is_some() {
+        return auto_football_matches_response(state, config).await;
+    }
     let SportsScheduleConfig {
+        espn_cache_key,
         streamed_cache_key,
         matchstream_cache_key,
         ntvs_cache_key,
@@ -888,7 +911,7 @@ async fn sport_matches_response(
         streamed_category,
         sport_name,
     } = config;
-    match SportsScheduleSource::from_query(query.source.as_deref())? {
+    match source {
         SportsScheduleSource::Auto => {
             auto_sport_matches_response(
                 state,
@@ -899,6 +922,14 @@ async fn sport_matches_response(
                 sport_name,
             )
             .await
+        }
+        SportsScheduleSource::Espn => {
+            let Some(espn_cache_key) = espn_cache_key else {
+                return Err(ApiError::bad_request(
+                    "ESPN schedule is only available for football.",
+                ));
+            };
+            espn_football_matches_response(state, espn_cache_key).await
         }
         SportsScheduleSource::Streamed => {
             streamed_sport_matches_response(
@@ -978,6 +1009,361 @@ async fn auto_sport_matches_response(
     )))
 }
 
+async fn auto_football_matches_response(
+    state: &AppState,
+    config: SportsScheduleConfig,
+) -> AppResult<Response<Body>> {
+    let SportsScheduleConfig {
+        espn_cache_key,
+        streamed_cache_key,
+        matchstream_cache_key,
+        ntvs_cache_key,
+        cdnlivetv_cache_key,
+        streamed_category,
+        sport_name,
+    } = config;
+    let espn_cache_key = espn_cache_key
+        .ok_or_else(|| ApiError::internal("Football ESPN schedule cache was not configured."))?;
+    let ntvs_response = async {
+        let cache_key = ntvs_cache_key.ok_or_else(|| {
+            ApiError::internal("Football NTVS schedule cache was not configured.")
+        })?;
+        ntvs_sport_matches_response(state, cache_key, sport_name).await
+    };
+    let cdnlivetv_response = async {
+        let cache_key = cdnlivetv_cache_key.ok_or_else(|| {
+            ApiError::internal("Football cdnlivetv schedule cache was not configured.")
+        })?;
+        cdnlivetv_sport_matches_response(state, cache_key, sport_name).await
+    };
+
+    // Fixture discovery and playback discovery are deliberately independent.
+    // ESPN supplies the broad scoreboard; the four existing providers only add
+    // playable sources to matching fixtures (and remain as fallbacks if ESPN is
+    // temporarily unavailable).
+    let (espn, streamed, matchstream, ntvs, cdnlivetv) = tokio::join!(
+        sports_schedule_provider_with_timeout(
+            ESPN_SOURCE_ID,
+            espn_football_matches_response(state, espn_cache_key),
+        ),
+        sports_schedule_provider_with_timeout(
+            STREAMED_SOURCE_ID,
+            streamed_sport_matches_response(
+                state,
+                streamed_cache_key,
+                streamed_category,
+                sport_name,
+            ),
+        ),
+        sports_schedule_provider_with_timeout(
+            MATCHSTREAM_SOURCE_ID,
+            matchstream_sport_matches_response(state, matchstream_cache_key, sport_name),
+        ),
+        sports_schedule_provider_with_timeout(NTVS_SOURCE_ID, ntvs_response),
+        sports_schedule_provider_with_timeout(CDNLIVETV_SOURCE_ID, cdnlivetv_response),
+    );
+
+    let mut payloads = Vec::new();
+    let mut errors = Vec::new();
+    for (provider, result) in [
+        (ESPN_SOURCE_ID, espn),
+        (STREAMED_SOURCE_ID, streamed),
+        (MATCHSTREAM_SOURCE_ID, matchstream),
+        (NTVS_SOURCE_ID, ntvs),
+        (CDNLIVETV_SOURCE_ID, cdnlivetv),
+    ] {
+        match result {
+            Ok(response) => match sports_schedule_payload_from_response(response).await {
+                Ok(payload) => payloads.push(payload),
+                Err(error) => errors.push(format!("{provider}: {}", api_error_message(&error))),
+            },
+            Err(error) => errors.push(format!("{provider}: {}", api_error_message(&error))),
+        }
+    }
+
+    if payloads.is_empty() {
+        return Err(ApiError::bad_gateway(format!(
+            "Football schedule providers failed. {}",
+            errors.join("; ")
+        )));
+    }
+
+    Ok(schedule_response(
+        merge_sports_schedule_payloads(payloads, sport_name),
+        "aggregate",
+    ))
+}
+
+async fn sports_schedule_provider_with_timeout<F>(
+    provider: &'static str,
+    future: F,
+) -> AppResult<Response<Body>>
+where
+    F: Future<Output = AppResult<Response<Body>>>,
+{
+    timeout(
+        Duration::from_millis(FOOTBALL_SCHEDULE_PROVIDER_TIMEOUT_MS),
+        future,
+    )
+    .await
+    .map_err(|_| ApiError::gateway_timeout(format!("{provider} schedule timed out.")))?
+}
+
+async fn sports_schedule_payload_from_response(response: Response<Body>) -> AppResult<Value> {
+    let body = to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .map_err(|error| {
+            ApiError::internal(format!("Failed to read sports schedule response: {error}"))
+        })?;
+    serde_json::from_slice(&body).map_err(|error| {
+        ApiError::internal(format!(
+            "Failed to decode sports schedule response: {error}"
+        ))
+    })
+}
+
+fn merge_sports_schedule_payloads(payloads: Vec<Value>, sport_name: &'static str) -> Value {
+    let fetched_at_ms = payloads
+        .iter()
+        .filter_map(|payload| payload.get("fetchedAt").and_then(Value::as_i64))
+        .max()
+        .unwrap_or_else(now_ms);
+    let mut matches: Vec<Value> = Vec::new();
+
+    for payload in payloads {
+        let Some(source_matches) = payload.get("matches").and_then(Value::as_array) else {
+            continue;
+        };
+        for incoming in source_matches {
+            if let Some(existing) = matches
+                .iter_mut()
+                .find(|existing| sports_schedule_matches_refer_to_same_fixture(existing, incoming))
+            {
+                merge_sports_schedule_match(existing, incoming);
+            } else {
+                matches.push(incoming.clone());
+            }
+        }
+    }
+
+    matches.sort_by_key(|match_item| {
+        match_item
+            .get("startTimestamp")
+            .and_then(Value::as_i64)
+            .unwrap_or(i64::MAX)
+    });
+
+    json!({
+        "source": ESPN_FOOTBALL_SCOREBOARD_URL,
+        "sourceProvider": AUTO_SOURCE_ID,
+        "sport": sport_name,
+        "fetchedAt": fetched_at_ms,
+        "matches": matches
+    })
+}
+
+fn sports_schedule_matches_refer_to_same_fixture(left: &Value, right: &Value) -> bool {
+    let left_start = left
+        .get("startTimestamp")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let right_start = right
+        .get("startTimestamp")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    if left_start <= 0
+        || right_start <= 0
+        || left_start.abs_diff(right_start) > ESPN_MATCH_MERGE_TOLERANCE_MS as u64
+    {
+        return false;
+    }
+
+    let left_teams = sports_schedule_team_pair(left);
+    let right_teams = sports_schedule_team_pair(right);
+    if let (Some((left_home, left_away)), Some((right_home, right_away))) =
+        (left_teams, right_teams)
+    {
+        return (left_home == right_home && left_away == right_away)
+            || (left_home == right_away && left_away == right_home);
+    }
+
+    normalize_sports_schedule_name(
+        left.get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    ) == normalize_sports_schedule_name(
+        right
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
+}
+
+fn sports_schedule_team_pair(match_item: &Value) -> Option<(String, String)> {
+    let home = normalize_sports_schedule_name(
+        match_item
+            .get("team1")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    );
+    let away = normalize_sports_schedule_name(
+        match_item
+            .get("team2")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    );
+    (!home.is_empty() && !away.is_empty()).then_some((home, away))
+}
+
+fn normalize_sports_schedule_name(value: &str) -> String {
+    value
+        .split(|ch: char| !ch.is_alphanumeric())
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_lowercase())
+        .filter(|part| !matches!(part.as_str(), "fc" | "afc" | "cf" | "sc" | "club"))
+        .map(|part| {
+            if part == "utd" {
+                "united".to_owned()
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn merge_sports_schedule_match(existing: &mut Value, incoming: &Value) {
+    let mut providers = BTreeSet::new();
+    collect_sports_schedule_providers(existing, &mut providers);
+    collect_sports_schedule_providers(incoming, &mut providers);
+    let incoming_streams = incoming
+        .get("streams")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let incoming_channels = incoming
+        .get("channels")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let incoming_languages = incoming
+        .get("languages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let incoming_end = incoming
+        .get("endsAtTimestamp")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let incoming_important = incoming
+        .get("important")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let Some(existing_object) = existing.as_object_mut() else {
+        return;
+    };
+
+    merge_sports_schedule_array(existing_object, "streams", incoming_streams, "source");
+    merge_sports_schedule_array(existing_object, "channels", incoming_channels, "name");
+    merge_sports_schedule_array(existing_object, "languages", incoming_languages, "");
+
+    let link_count = existing_object
+        .get("streams")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let channel_count = existing_object
+        .get("channels")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    existing_object.insert("linkCount".to_owned(), json!(link_count));
+    existing_object.insert("channelCount".to_owned(), json!(channel_count));
+    existing_object.insert(
+        "endsAtTimestamp".to_owned(),
+        json!(
+            existing_object
+                .get("endsAtTimestamp")
+                .and_then(Value::as_i64)
+                .unwrap_or_default()
+                .max(incoming_end)
+        ),
+    );
+    existing_object.insert(
+        "important".to_owned(),
+        json!(
+            existing_object
+                .get("important")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || incoming_important
+        ),
+    );
+    let providers = providers.into_iter().collect::<Vec<_>>();
+    existing_object.insert("providers".to_owned(), json!(providers));
+    existing_object.insert(
+        "provider".to_owned(),
+        json!(if providers.len() == 1 {
+            providers[0].as_str()
+        } else {
+            AUTO_SOURCE_ID
+        }),
+    );
+}
+
+fn collect_sports_schedule_providers(match_item: &Value, providers: &mut BTreeSet<String>) {
+    if let Some(provider) = match_item.get("provider").and_then(Value::as_str) {
+        let provider = provider.trim();
+        if !provider.is_empty() && provider != AUTO_SOURCE_ID {
+            providers.insert(provider.to_owned());
+        }
+    }
+    if let Some(items) = match_item.get("providers").and_then(Value::as_array) {
+        for provider in items.iter().filter_map(Value::as_str) {
+            let provider = provider.trim();
+            if !provider.is_empty() && provider != AUTO_SOURCE_ID {
+                providers.insert(provider.to_owned());
+            }
+        }
+    }
+}
+
+fn merge_sports_schedule_array(
+    object: &mut serde_json::Map<String, Value>,
+    field: &str,
+    incoming: Vec<Value>,
+    unique_field: &str,
+) {
+    let target = object.entry(field.to_owned()).or_insert_with(|| json!([]));
+    let Some(target) = target.as_array_mut() else {
+        return;
+    };
+    let mut seen = target
+        .iter()
+        .map(|item| sports_schedule_array_identity(item, unique_field))
+        .collect::<BTreeSet<_>>();
+    for item in incoming {
+        let identity = sports_schedule_array_identity(&item, unique_field);
+        if !identity.is_empty() && seen.insert(identity) {
+            target.push(item);
+        }
+    }
+}
+
+fn sports_schedule_array_identity(value: &Value, field: &str) -> String {
+    if field.is_empty() {
+        return value.as_str().unwrap_or_default().trim().to_lowercase();
+    }
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase()
+}
+
 fn api_error_message(error: &ApiError) -> &str {
     error.message().unwrap_or("unknown error")
 }
@@ -999,6 +1385,189 @@ fn sports_http_client(state: &AppState) -> AppResult<reqwest::Client> {
         .proxy(proxy)
         .build()
         .map_err(|error| ApiError::internal(error.to_string()))
+}
+
+async fn espn_football_matches_response(
+    state: &AppState,
+    cache_key: &'static str,
+) -> AppResult<Response<Body>> {
+    if let Some(payload) = state.sports_schedule_cache.fresh(cache_key, now_ms()) {
+        return Ok(schedule_response(payload, "hit"));
+    }
+
+    let schedule_lock = state.sports_schedule_cache.lock_for(cache_key);
+    let _guard = schedule_lock.lock().await;
+    if let Some(payload) = state.sports_schedule_cache.fresh(cache_key, now_ms()) {
+        return Ok(schedule_response(payload, "hit"));
+    }
+
+    let started_at_ms = now_ms();
+    match fetch_espn_football_matches_payload(state).await {
+        Ok((payload, fetched_at_ms)) => {
+            state
+                .sports_provider_health
+                .record_success(ESPN_SOURCE_ID, "schedule", started_at_ms);
+            state
+                .sports_schedule_cache
+                .insert(cache_key, payload.clone(), fetched_at_ms);
+            Ok(schedule_response(payload, "miss"))
+        }
+        Err(error) => {
+            state.sports_provider_health.record_failure(
+                ESPN_SOURCE_ID,
+                "schedule",
+                started_at_ms,
+                api_error_message(&error),
+            );
+            if let Some(payload) = state.sports_schedule_cache.stale(cache_key, now_ms()) {
+                return Ok(schedule_response(payload, "stale"));
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn fetch_espn_football_matches_payload(state: &AppState) -> AppResult<(Value, i64)> {
+    let source_url = provider_registry::resolve(
+        provider_registry::keys::SPORTS_ESPN_FOOTBALL,
+        ESPN_FOOTBALL_SCOREBOARD_URL,
+    );
+    // ESPN's scoreboard is fixture metadata, not a playback provider, so it does
+    // not need the WARP proxy used by the stream-discovery sites.
+    let response = state
+        .http_client
+        .get(&source_url)
+        .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                ApiError::gateway_timeout("Timed out fetching ESPN football schedule.")
+            } else {
+                ApiError::bad_gateway(format!("Failed to fetch ESPN football schedule: {error}"))
+            }
+        })?;
+
+    if !response.status().is_success() {
+        return Err(ApiError::bad_gateway(format!(
+            "ESPN football schedule returned HTTP {}.",
+            response.status(),
+        )));
+    }
+
+    let source_payload = response.json::<Value>().await.map_err(|error| {
+        ApiError::bad_gateway(format!("Failed to parse ESPN football schedule: {error}"))
+    })?;
+    Ok(build_espn_football_matches_payload(
+        source_payload,
+        &source_url,
+    ))
+}
+
+fn build_espn_football_matches_payload(source_payload: Value, source_url: &str) -> (Value, i64) {
+    let now = now_ms();
+    let matches = source_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|event| normalize_espn_football_match(event, now))
+        .collect::<Vec<_>>();
+    let fetched_at_ms = now_ms();
+    (
+        json!({
+            "source": source_url,
+            "sourceProvider": ESPN_SOURCE_ID,
+            "sport": "Football",
+            "fetchedAt": fetched_at_ms,
+            "matches": matches
+        }),
+        fetched_at_ms,
+    )
+}
+
+fn normalize_espn_football_match(event: &Value, now: i64) -> Option<Value> {
+    let event_id = event.get("id").and_then(Value::as_str)?.trim();
+    let source_date = event.get("date").and_then(Value::as_str)?.trim();
+    let start_timestamp = parse_espn_start_ms(source_date)?;
+    let ends_at_timestamp = start_timestamp.saturating_add(ESPN_DEFAULT_DURATION_MINUTES * 60_000);
+    if ends_at_timestamp <= now {
+        return None;
+    }
+
+    let home = espn_event_team(event, "home")?;
+    let away = espn_event_team(event, "away")?;
+    if home.is_empty() || away.is_empty() {
+        return None;
+    }
+    let title = format!("{home} vs {away}");
+    let league = event
+        .pointer("/competitions/0/altGameNote")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Football");
+    let league_lower = league.to_ascii_lowercase();
+    let important = [
+        "world cup",
+        "champions league",
+        "europa league",
+        "premier league",
+        "la liga",
+        "bundesliga",
+        "serie a",
+        "ligue 1",
+    ]
+    .iter()
+    .any(|needle| league_lower.contains(needle));
+
+    Some(json!({
+        "id": format!("espn-{event_id}"),
+        "title": title,
+        "matchText": title,
+        "sourceDisplayTime": "",
+        "league": league,
+        "sport": "Football",
+        "team1": home,
+        "team2": away,
+        "primaryChannel": "",
+        "important": important,
+        "sourceMatchDate": source_date.get(0..10).unwrap_or_default(),
+        "startTimestamp": start_timestamp,
+        "endsAtTimestamp": ends_at_timestamp,
+        "durationMinutes": ESPN_DEFAULT_DURATION_MINUTES,
+        "linkCount": 0,
+        "channelCount": 0,
+        "channels": [],
+        "streams": [],
+        "languages": [],
+        "provider": ESPN_SOURCE_ID,
+        "providers": [ESPN_SOURCE_ID]
+    }))
+}
+
+fn espn_event_team(event: &Value, home_away: &str) -> Option<String> {
+    event
+        .pointer("/competitions/0/competitors")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|competitor| {
+            competitor
+                .get("homeAway")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value.eq_ignore_ascii_case(home_away))
+        })
+        .and_then(|competitor| competitor.pointer("/team/displayName"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn parse_espn_start_ms(value: &str) -> Option<i64> {
+    // ESPN emits UTC RFC3339 values such as `2026-07-11T21:00Z`.
+    let prefix = value.trim().get(0..16)?;
+    parse_cdnlivetv_start_ms(&prefix.replace('T', " "))
 }
 
 async fn streamed_sport_matches_response(
@@ -4312,8 +4881,9 @@ mod tests {
         is_supported_ntvs_hls_url, is_supported_ntvs_stream_url, is_supported_ntvs_watch_url,
         is_supported_ntvs_wrapper_embed_url, is_supported_streamed_hls_url,
         is_supported_streamed_stream_url, live_stream_source_candidates,
-        matchstream_live_stream_source_candidates, normalize_matchstream_link,
-        normalize_ntvs_fetch_url, parse_fallback_stream_urls, parse_ntvs_hesgoaler_player_source,
+        matchstream_live_stream_source_candidates, merge_sports_schedule_payloads,
+        normalize_espn_football_match, normalize_matchstream_link, normalize_ntvs_fetch_url,
+        parse_espn_start_ms, parse_fallback_stream_urls, parse_ntvs_hesgoaler_player_source,
         remove_streamed_sources_by_index, resolve_ntvs_candidate_url,
         sports_live_stream_source_candidates, sports_schedule_fresh_ttl_ms,
         sports_stream_provider_id, sports_stream_resolve_cache_key, streamed_match_is_live,
@@ -4364,6 +4934,101 @@ mod tests {
             SportsScheduleSource::from_query(Some("ntvs")).unwrap(),
             SportsScheduleSource::Ntvs
         );
+        assert_eq!(
+            SportsScheduleSource::from_query(Some("espn")).unwrap(),
+            SportsScheduleSource::Espn
+        );
+    }
+
+    #[test]
+    fn normalizes_espn_scoreboard_fixture_without_playback_sources() {
+        let start = parse_espn_start_ms("2026-07-11T21:00Z").unwrap();
+        let event = json!({
+            "id": "760512",
+            "date": "2026-07-11T21:00Z",
+            "competitions": [{
+                "altGameNote": "FIFA World Cup, Quarterfinals",
+                "competitors": [
+                    {"homeAway": "home", "team": {"displayName": "Norway"}},
+                    {"homeAway": "away", "team": {"displayName": "England"}}
+                ]
+            }]
+        });
+
+        let normalized = normalize_espn_football_match(&event, start - 1).unwrap();
+        assert_eq!(normalized["id"], "espn-760512");
+        assert_eq!(normalized["title"], "Norway vs England");
+        assert_eq!(normalized["league"], "FIFA World Cup, Quarterfinals");
+        assert_eq!(normalized["startTimestamp"], start);
+        assert_eq!(normalized["provider"], "espn");
+        assert_eq!(normalized["linkCount"], 0);
+        assert!(normalized["streams"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn combined_schedule_keeps_espn_fixture_and_attaches_stream_provider() {
+        let start = 1_800_000_000_000i64;
+        let espn = json!({
+            "sourceProvider": "espn",
+            "fetchedAt": 100,
+            "matches": [{
+                "id": "espn-1",
+                "title": "Manchester United vs Liverpool",
+                "league": "English Premier League",
+                "sport": "Football",
+                "team1": "Manchester United",
+                "team2": "Liverpool FC",
+                "startTimestamp": start,
+                "endsAtTimestamp": start + 10_800_000,
+                "important": true,
+                "linkCount": 0,
+                "channelCount": 0,
+                "channels": [],
+                "streams": [],
+                "languages": [],
+                "provider": "espn",
+                "providers": ["espn"]
+            }]
+        });
+        let streamed = json!({
+            "sourceProvider": "streamed",
+            "fetchedAt": 200,
+            "matches": [{
+                "id": "streamed-1",
+                "title": "Liverpool vs Man Utd",
+                "league": "Streamed",
+                "sport": "Football",
+                "team1": "Liverpool",
+                "team2": "Manchester Utd",
+                "startTimestamp": start + 30 * 60_000,
+                "endsAtTimestamp": start + 11_000_000,
+                "important": false,
+                "linkCount": 1,
+                "channelCount": 1,
+                "channels": [{"name": "Streamed HD"}],
+                "streams": [{
+                    "id": "streamed-admin-1",
+                    "label": "Streamed Admin",
+                    "source": "https://streamed.pk/api/stream/admin/1",
+                    "provider": "streamed",
+                    "playbackType": "hls",
+                    "quality": "HD"
+                }],
+                "languages": ["HD"],
+                "provider": "streamed"
+            }]
+        });
+
+        let combined = merge_sports_schedule_payloads(vec![espn, streamed], "Football");
+        let matches = combined["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["id"], "espn-1");
+        assert_eq!(matches[0]["league"], "English Premier League");
+        assert_eq!(matches[0]["provider"], "auto");
+        assert_eq!(matches[0]["linkCount"], 1);
+        assert_eq!(matches[0]["streams"][0]["provider"], "streamed");
+        assert_eq!(combined["sourceProvider"], "auto");
+        assert_eq!(combined["fetchedAt"], 200);
     }
 
     #[test]

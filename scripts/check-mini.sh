@@ -159,6 +159,11 @@ ntvs_proxy_http=$(
     curl -sS --proxy "$sports_http_proxy" -o /dev/null -w "%{http_code}" --max-time 12 'https://ntvs.cx/api/search?q=football&server=kobra' 2>/dev/null || true
   fi
 )
+espn_football_event_count=$(
+  curl -fsS --max-time 12 \
+    'https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?limit=500' \
+    2>/dev/null | jq -r '.events | length' 2>/dev/null || echo 0
+)
 
 printf 'runtime_tree=%s\n' "$runtime_tree"
 printf 'expected_tree=%s\n' "$expected_tree"
@@ -185,6 +190,7 @@ printf 'users_db_quick_check=%s\n' "$users_db_quick_check"
 printf 'effective_open_signup=%s\n' "$effective_open_signup"
 printf 'rd_token_encryption_configured=%s\n' "$rd_token_encryption_configured"
 printf 'sports_proxy_matches_expected=%s\n' "$sports_proxy_matches_expected"
+printf 'espn_football_event_count=%s\n' "$espn_football_event_count"
 printf 'app_daemon=%s\n' "$app_daemon"
 printf 'caddy_daemon=%s\n' "$caddy_daemon"
 printf 'legacy_caddy_daemon=%s\n' "$legacy_caddy_daemon"
@@ -330,6 +336,7 @@ fi
 [[ "$warp_mode" == "WarpProxy on port 40000" ]] && pass "WARP is in local proxy mode on port 40000" || bad "WARP mode is $warp_mode"
 [[ "$streamed_proxy_http" == "200" ]] && pass "Streamed schedule is reachable through WARP proxy" || bad "Streamed schedule through WARP proxy returned HTTP $streamed_proxy_http"
 [[ "$ntvs_proxy_http" == "200" ]] && pass "NTVS football search is reachable through WARP proxy" || bad "NTVS football search through WARP proxy returned HTTP $ntvs_proxy_http"
+[[ "$espn_football_event_count" =~ ^[1-9][0-9]*$ ]] && pass "ESPN football fixture schedule is populated ($espn_football_event_count events)" || bad "ESPN football fixture schedule is empty or unreachable"
 [[ "$app_daemon" == "yes" ]] && pass "backend LaunchDaemon exists" || bad "backend LaunchDaemon missing"
 [[ "$caddy_daemon" == "yes" ]] && pass "Caddy LaunchDaemon exists" || bad "Caddy LaunchDaemon missing"
 [[ "$legacy_caddy_daemon" == "no" ]] && pass "legacy Caddy LaunchDaemon file is removed" || bad "legacy Caddy LaunchDaemon file still exists"
