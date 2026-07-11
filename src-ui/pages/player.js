@@ -74,7 +74,12 @@ import {
   createRemuxRouting,
   normalizeAudioSyncMs,
 } from "../player/remux-routing.js";
-import { normalizeResumeStartSeconds, withRemuxResumeStart } from "../player/resume-start.js";
+import {
+  RESUME_CLEAR_AT_END_THRESHOLD_SECONDS,
+  createInitialResumeController,
+  normalizeResumeStartSeconds,
+  withRemuxResumeStart,
+} from "../player/resume-start.js";
 import {
   attachFullscreenControl,
   isFullscreenActive,
@@ -223,10 +228,6 @@ let activeTranscodeInput = "";
 let activeAudioStreamIndex = -1;
 let activeAudioSyncMs = 0;
 let transcodeBaseOffsetSeconds = 0;
-let hasAppliedInitialResume = false;
-let initialResumeRetryTimeout = 0;
-let initialResumeAttemptCount = 0;
-let initialResumeApplyDeadline = 0;
 let pendingTranscodeSeekRatio = null;
 let pendingStandardSeekRatio = null;
 let activeTrackSourceInput = "";
@@ -809,11 +810,6 @@ const AUDIO_SYNC_STEP_MS = 50;
 const RESUME_SAVE_MIN_INTERVAL_MS = 3000;
 const RESUME_SAVE_MIN_DELTA_SECONDS = 1.5;
 const RESUME_FLUSH_INTERVAL_MS = 1000;
-const INITIAL_RESUME_RETRY_MS = 250;
-const INITIAL_RESUME_MAX_ATTEMPTS = 120;
-const INITIAL_RESUME_APPLY_WINDOW_MS = 30000;
-const INITIAL_RESUME_TOLERANCE_SECONDS = 2;
-const RESUME_CLEAR_AT_END_THRESHOLD_SECONDS = 8;
 const LOCAL_CACHE_UPGRADE_POLL_MS = 20_000;
 const LOCAL_CACHE_UPGRADE_INITIAL_DELAY_MS = 8_000;
 const CONTINUE_WATCHING_META_KEY = "streamarena-continue-watching-meta";
@@ -1824,139 +1820,29 @@ function removeContinueWatchingEntry() {
   }).catch(() => {});
 }
 
-function hasInitialResumeTarget() {
-  return Number.isFinite(resumeTime) && resumeTime > 1;
-}
-
-function getInitialPlaybackStartSeconds() { return hasInitialResumeTarget() ? normalizeResumeStartSeconds(resumeTime) : 0; }
-
-function clearInitialResumeRetry() {
-  if (initialResumeRetryTimeout) {
-    window.clearTimeout(initialResumeRetryTimeout);
-    initialResumeRetryTimeout = 0;
-  }
-}
-
-function resetInitialResumeApplication() {
-  clearInitialResumeRetry();
-  initialResumeAttemptCount = 0;
-  hasAppliedInitialResume = false;
-  initialResumeApplyDeadline = hasInitialResumeTarget()
-    ? Date.now() + INITIAL_RESUME_APPLY_WINDOW_MS
-    : 0;
-}
-
-function markInitialResumeHandled() {
-  clearInitialResumeRetry();
-  initialResumeAttemptCount = 0;
-  hasAppliedInitialResume = true;
-  initialResumeApplyDeadline = 0;
-}
-
-function isCurrentTimeAtInitialResumeTarget() {
-  if (!hasInitialResumeTarget()) {
-    return true;
-  }
-  const current = getEffectiveCurrentTime();
-  return (
-    Number.isFinite(current) &&
-    current >= resumeTime - INITIAL_RESUME_TOLERANCE_SECONDS
-  );
-}
-
-function shouldHoldProgressSaveForInitialResume(effectiveCurrentTime) {
-  return (
-    hasInitialResumeTarget() &&
-    initialResumeApplyDeadline > 0 &&
-    Date.now() <= initialResumeApplyDeadline &&
-    Number.isFinite(effectiveCurrentTime) &&
-    effectiveCurrentTime < resumeTime - INITIAL_RESUME_TOLERANCE_SECONDS
-  );
-}
-
-function applyInitialResumeIfReady() {
-  if (!hasInitialResumeTarget()) {
-    hasAppliedInitialResume = true;
-    return true;
-  }
-
-  if (hasAppliedInitialResume && isCurrentTimeAtInitialResumeTarget()) {
-    return true;
-  }
-
-  if (
-    hasAppliedInitialResume &&
-    initialResumeApplyDeadline > 0 &&
-    Date.now() <= initialResumeApplyDeadline &&
-    !isCurrentTimeAtInitialResumeTarget()
-  ) {
-    hasAppliedInitialResume = false;
-  }
-
-  if (hasAppliedInitialResume) {
-    return true;
-  }
-
-  const seekScaleDurationSeconds = getSeekScaleDurationSeconds();
-  if (
-    !Number.isFinite(seekScaleDurationSeconds) ||
-    seekScaleDurationSeconds <= 0 ||
-    resumeTime >= seekScaleDurationSeconds - RESUME_CLEAR_AT_END_THRESHOLD_SECONDS
-  ) {
-    return false;
-  }
-
-  try {
-    if (isTranscodeSourceActive()) {
-      const relativeResume = resumeTime - transcodeBaseOffsetSeconds;
-      if (
-        relativeResume >= 0 &&
-        Number.isFinite(video.duration) &&
-        relativeResume < video.duration - 3
-      ) {
-        video.currentTime = relativeResume;
-      } else {
-        seekToAbsoluteTime(resumeTime, { isInitialResume: true });
-      }
-    } else {
-      const timelineDurationSeconds = getTimelineDurationSeconds();
-      if (
-        !Number.isFinite(timelineDurationSeconds) ||
-        timelineDurationSeconds <= 0 ||
-        resumeTime >= timelineDurationSeconds - RESUME_CLEAR_AT_END_THRESHOLD_SECONDS
-      ) {
-        return false;
-      }
-      video.currentTime = resumeTime;
-    }
-
-    hasAppliedInitialResume = true;
-    clearInitialResumeRetry();
-    syncSeekState();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function scheduleInitialResumeRetry() {
-  if (
-    hasAppliedInitialResume ||
-    !hasInitialResumeTarget() ||
-    initialResumeRetryTimeout ||
-    initialResumeAttemptCount >= INITIAL_RESUME_MAX_ATTEMPTS
-  ) {
-    return;
-  }
-
-  initialResumeAttemptCount += 1;
-  initialResumeRetryTimeout = window.setTimeout(() => {
-    initialResumeRetryTimeout = 0;
-    if (!applyInitialResumeIfReady()) {
-      scheduleInitialResumeRetry();
-    }
-  }, INITIAL_RESUME_RETRY_MS);
-}
+const {
+  hasTarget: hasInitialResumeTarget,
+  getStartSeconds: getInitialPlaybackStartSeconds,
+  reset: resetInitialResumeApplication,
+  markHandled: markInitialResumeHandled,
+  shouldHoldProgressSave: shouldHoldProgressSaveForInitialResume,
+  applyIfReady: applyInitialResumeIfReady,
+  scheduleRetry: scheduleInitialResumeRetry,
+  clearRetry: clearInitialResumeRetry,
+} = createInitialResumeController({
+  getResumeTime: () => resumeTime,
+  getEffectiveCurrentTime,
+  getSeekScaleDurationSeconds,
+  getTimelineDurationSeconds,
+  isTranscodeSourceActive,
+  getTranscodeBaseOffsetSeconds: () => transcodeBaseOffsetSeconds,
+  getVideo: () => video,
+  seekToAbsoluteTime: (seconds) =>
+    seekToAbsoluteTime(seconds, { isInitialResume: true }),
+  syncSeekState,
+  setTimeoutFn: (callback, delayMs) => window.setTimeout(callback, delayMs),
+  clearTimeoutFn: (timeoutId) => window.clearTimeout(timeoutId),
+});
 
 if (resumeTime > 1) {
   resetInitialResumeApplication();
