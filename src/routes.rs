@@ -41,6 +41,7 @@ use crate::process::{
     RuntimeServices, resolve_effective_remux_hwaccel_mode, to_absolute_playback_url,
 };
 use crate::resolver::{LocalCacheUpgradeRequest, ResolverService};
+use crate::secret_store::{REAL_DEBRID_TOKEN_PREF_KEY, RealDebridTokenCipher};
 use crate::static_files::serve_static;
 use crate::streaming::StreamingService;
 use crate::tmdb::TmdbService;
@@ -57,6 +58,7 @@ use crate::utils::{
 pub struct AppState {
     pub config: Config,
     pub db: Db,
+    pub real_debrid_token_cipher: RealDebridTokenCipher,
     pub tmdb: TmdbService,
     pub media: MediaService,
     pub http_client: reqwest::Client,
@@ -84,7 +86,6 @@ pub struct AppState {
 }
 
 const JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
-const REAL_DEBRID_API_KEY_PREF_KEY: &str = "streamarena-real-debrid-api-key";
 const LOCAL_TORRENT_ENABLED_PREF_KEY: &str = "streamarena-local-torrent-enabled";
 const USER_PREF_MAX_ENTRIES: usize = 200;
 const USER_PREF_KEY_MAX_BYTES: usize = 128;
@@ -2287,7 +2288,7 @@ pub async fn resolve_sources_handler(
         ));
     }
     let user = auth::require_auth(&state.db, &headers).await?;
-    let real_debrid_api_key = real_debrid_api_key_for_user(&state.db, user.id).await?;
+    let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
 
     let payload = state
         .resolver
@@ -2380,7 +2381,7 @@ pub async fn resolve_movie_handler(
         normalized == "1" || normalized.eq_ignore_ascii_case("true")
     });
     let user = auth::require_auth(&state.db, &headers).await?;
-    let real_debrid_api_key = real_debrid_api_key_for_user(&state.db, user.id).await?;
+    let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
     let payload = state
         .resolver
@@ -2455,7 +2456,7 @@ pub async fn resolve_local_upgrade_handler(
         ));
     }
     let user = auth::require_auth(&state.db, &headers).await?;
-    let real_debrid_api_key = real_debrid_api_key_for_user(&state.db, user.id).await?;
+    let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
     if real_debrid_api_key.is_empty() || !local_torrent_enabled {
         return Ok(json_response(json!({ "ready": false })));
@@ -2525,7 +2526,7 @@ pub async fn resolve_tv_handler(
         normalized == "1" || normalized.eq_ignore_ascii_case("true")
     });
     let user = auth::require_auth(&state.db, &headers).await?;
-    let real_debrid_api_key = real_debrid_api_key_for_user(&state.db, user.id).await?;
+    let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
     let payload = state
         .resolver
@@ -2607,7 +2608,7 @@ pub async fn local_torrent_stream_handler(
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     let user = auth::require_auth(&state.db, &headers).await?;
-    let real_debrid_api_key = real_debrid_api_key_for_user(&state.db, user.id).await?;
+    let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
     if real_debrid_api_key.is_empty() {
         return Err(real_debrid_api_key_required_error());
@@ -2637,7 +2638,7 @@ pub async fn local_cache_stream_handler(
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     let user = auth::require_auth(&state.db, &headers).await?;
-    let real_debrid_api_key = real_debrid_api_key_for_user(&state.db, user.id).await?;
+    let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
     if real_debrid_api_key.is_empty() {
         return Err(real_debrid_api_key_required_error());
@@ -3574,8 +3575,7 @@ fn is_valid_email(value: &str) -> bool {
 }
 
 fn is_secret_user_preference_key(key: &str) -> bool {
-    key.trim()
-        .eq_ignore_ascii_case(REAL_DEBRID_API_KEY_PREF_KEY)
+    key.trim().eq_ignore_ascii_case(REAL_DEBRID_TOKEN_PREF_KEY)
 }
 
 fn bounded_trimmed_string(value: &str, max_bytes: usize) -> Option<String> {
@@ -3807,13 +3807,23 @@ fn mask_real_debrid_api_key(value: &str) -> String {
     )
 }
 
-async fn real_debrid_api_key_for_user(db: &Db, user_id: i64) -> AppResult<String> {
-    Ok(db
-        .get_user_preference(user_id, REAL_DEBRID_API_KEY_PREF_KEY.to_owned())
+async fn real_debrid_api_key_for_user(state: &AppState, user_id: i64) -> AppResult<String> {
+    let Some(stored_value) = state
+        .db
+        .get_user_preference(user_id, REAL_DEBRID_TOKEN_PREF_KEY.to_owned())
         .await?
-        .map(|value| normalize_real_debrid_api_key(&value))
-        .filter(|value| is_valid_real_debrid_api_key(value))
-        .unwrap_or_default())
+    else {
+        return Ok(String::new());
+    };
+    let value = state
+        .real_debrid_token_cipher
+        .decrypt_for_user(user_id, &stored_value)?;
+    let normalized = normalize_real_debrid_api_key(&value);
+    Ok(if is_valid_real_debrid_api_key(&normalized) {
+        normalized
+    } else {
+        String::new()
+    })
 }
 
 async fn local_torrent_enabled_for_user(db: &Db, user_id: i64) -> AppResult<bool> {
@@ -3879,7 +3889,7 @@ async fn user_real_debrid_handler(
     let user = auth::require_auth(&state.db, &headers).await?;
     match method {
         Method::GET => {
-            let api_key = real_debrid_api_key_for_user(&state.db, user.id).await?;
+            let api_key = real_debrid_api_key_for_user(&state, user.id).await?;
             let local_torrent_enabled =
                 !api_key.is_empty() && local_torrent_enabled_for_user(&state.db, user.id).await?;
             Ok(json_response(json!({
@@ -3904,7 +3914,7 @@ async fn user_real_debrid_handler(
                 if api_key.is_empty() {
                     state
                         .db
-                        .delete_user_preference(user.id, REAL_DEBRID_API_KEY_PREF_KEY.to_owned())
+                        .delete_user_preference(user.id, REAL_DEBRID_TOKEN_PREF_KEY.to_owned())
                         .await?;
                 } else {
                     if !is_valid_real_debrid_api_key(&api_key) {
@@ -3913,11 +3923,14 @@ async fn user_real_debrid_handler(
                         ));
                     }
 
+                    let encrypted_api_key = state
+                        .real_debrid_token_cipher
+                        .encrypt_for_user(user.id, &api_key)?;
                     state
                         .db
                         .upsert_user_preferences(
                             user.id,
-                            vec![(REAL_DEBRID_API_KEY_PREF_KEY.to_owned(), api_key.clone())],
+                            vec![(REAL_DEBRID_TOKEN_PREF_KEY.to_owned(), encrypted_api_key)],
                         )
                         .await?;
                 }
@@ -3942,7 +3955,7 @@ async fn user_real_debrid_handler(
                     .await?;
             }
 
-            let saved_api_key = real_debrid_api_key_for_user(&state.db, user.id).await?;
+            let saved_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
             let mut local_torrent_enabled =
                 local_torrent_enabled_for_user(&state.db, user.id).await?;
             if saved_api_key.is_empty() && local_torrent_enabled {

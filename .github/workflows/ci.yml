@@ -69,7 +69,7 @@ jobs:
       - name: Install Playwright Chromium
         run: bunx playwright install --with-deps chromium
 
-      # lint:frontend && build && check:architecture && test:rust && test:frontend
+      # lint:frontend && build && check:architecture && test:rust && test:worker && test:frontend
       - name: Run full check
         run: bun run check
 

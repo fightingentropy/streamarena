@@ -82,6 +82,13 @@ users_db_quick_check=$(sqlite3 -readonly "$app/cache/users.sqlite" 'PRAGMA quick
 canonical_open_signup=$(awk -F= '/^OPEN_SIGNUP=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true)
 app_open_signup=$(awk -F= '/^OPEN_SIGNUP=/ {print substr($0, length($1) + 2); exit}' "$app/.env" 2>/dev/null || true)
 effective_open_signup="${canonical_open_signup:-${app_open_signup:-unset}}"
+rd_token_encryption_configured=no
+rd_token_keyring=$(awk -F= '/^REAL_DEBRID_TOKEN_ENCRYPTION_KEYS=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true)
+if printf '%s\n' "$rd_token_keyring" \
+  | grep -Eq '^[A-Za-z0-9._-]{1,48}:[A-Za-z0-9_-]{43}(,[A-Za-z0-9._-]{1,48}:[A-Za-z0-9_-]{43})*$'; then
+  rd_token_encryption_configured=yes
+fi
+unset rd_token_keyring
 sports_http_proxy=$(
   awk -F= '/^SPORTS_HTTP_PROXY=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true
 )
@@ -176,6 +183,7 @@ printf 'cache_mode=%s\n' "$cache_mode"
 printf 'users_db_mode=%s\n' "$users_db_mode"
 printf 'users_db_quick_check=%s\n' "$users_db_quick_check"
 printf 'effective_open_signup=%s\n' "$effective_open_signup"
+printf 'rd_token_encryption_configured=%s\n' "$rd_token_encryption_configured"
 printf 'sports_proxy_matches_expected=%s\n' "$sports_proxy_matches_expected"
 printf 'app_daemon=%s\n' "$app_daemon"
 printf 'caddy_daemon=%s\n' "$caddy_daemon"
@@ -244,6 +252,7 @@ cache_mode=$(value_for cache_mode)
 users_db_mode=$(value_for users_db_mode)
 users_db_quick_check=$(value_for users_db_quick_check)
 effective_open_signup=$(value_for effective_open_signup)
+rd_token_encryption_configured=$(value_for rd_token_encryption_configured)
 sports_proxy_matches_expected=$(value_for sports_proxy_matches_expected)
 app_daemon=$(value_for app_daemon)
 caddy_daemon=$(value_for caddy_daemon)
@@ -307,6 +316,7 @@ ntvs_proxy_http=$(value_for ntvs_proxy_http)
 [[ "$users_db_mode" == "600" ]] && pass "users database permissions are 600" || bad "users database permissions are $users_db_mode"
 [[ "$users_db_quick_check" == "ok" ]] && pass "users database quick_check is ok" || bad "users database quick_check is $users_db_quick_check"
 [[ "$effective_open_signup" == "0" ]] && pass "public signup is closed" || bad "OPEN_SIGNUP is $effective_open_signup (expected 0)"
+[[ "$rd_token_encryption_configured" == "yes" ]] && pass "Real-Debrid token encryption key ring is configured" || bad "REAL_DEBRID_TOKEN_ENCRYPTION_KEYS is missing or malformed"
 if [[ "$env_in_app" == "no" ]]; then
   pass "deploy tree has no .env (secrets stay in the canonical env file)"
 elif [[ "$app_env_mode" == "600" ]]; then

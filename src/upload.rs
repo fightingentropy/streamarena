@@ -60,10 +60,11 @@ struct UploadSession {
     metadata: Map<String, Value>,
     expected_bytes: Option<u64>,
     received_bytes: u64,
-    created_at: i64,
-    /// Serializes concurrent chunk appends for a single session so the
-    /// read-append-update of `received_bytes` cannot interleave (TOCTOU).
-    chunk_lock: Arc<tokio::sync::Mutex<()>>,
+    last_activity_at: i64,
+    /// Serializes every operation that can read, append, finalize, or remove
+    /// this session. Holding one lifecycle lock across those transitions keeps
+    /// the in-memory counter and the temp file in sync.
+    lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[allow(non_snake_case)]
@@ -131,10 +132,36 @@ impl UploadService {
         let stale_ids = self
             .sessions
             .iter()
-            .filter(|entry| entry.created_at + UPLOAD_SESSION_STALE_MS <= now)
+            .filter(|entry| {
+                entry
+                    .last_activity_at
+                    .saturating_add(UPLOAD_SESSION_STALE_MS)
+                    <= now
+            })
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>();
         for session_id in stale_ids {
+            let Some(lifecycle_lock) = self
+                .sessions
+                .get(&session_id)
+                .map(|entry| entry.lifecycle_lock.clone())
+            else {
+                continue;
+            };
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+            let is_still_stale = self
+                .sessions
+                .get(&session_id)
+                .map(|entry| {
+                    entry
+                        .last_activity_at
+                        .saturating_add(UPLOAD_SESSION_STALE_MS)
+                        <= now
+                })
+                .unwrap_or(false);
+            if !is_still_stale {
+                continue;
+            }
             if let Some((_, session)) = self.sessions.remove(&session_id) {
                 let _ = remove_file_if_present(&session.temp_path).await;
             }
@@ -202,8 +229,8 @@ impl UploadService {
                 metadata: object,
                 expected_bytes,
                 received_bytes: 0,
-                created_at: now_ms(),
-                chunk_lock: Arc::new(tokio::sync::Mutex::new(())),
+                last_activity_at: now_ms(),
+                lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
         Ok(json!({
@@ -217,32 +244,62 @@ impl UploadService {
         if session_id.trim().is_empty() {
             return Err(ApiError::bad_request("Missing sessionId."));
         }
-        let (temp_path, chunk_lock) = self
+        let lifecycle_lock = self
             .sessions
             .get(session_id)
-            .map(|entry| (entry.temp_path.clone(), entry.chunk_lock.clone()))
+            .map(|entry| entry.lifecycle_lock.clone())
             .ok_or_else(|| ApiError::not_found("Upload session not found."))?;
-        // Serialize appends for this session: the file append and the
-        // received_bytes update must be atomic with respect to other chunks.
-        let _chunk_guard = chunk_lock.lock().await;
-        // Re-read the running total under the lock; an earlier concurrent chunk
-        // may have advanced it after we cloned the temp path.
-        let previous_received = self
+        let _lifecycle_guard = lifecycle_lock.lock().await;
+        // Re-read all state under the lifecycle lock. A finish or stale-session
+        // sweep may have removed the session after the lock was cloned.
+        let (temp_path, previous_received, expected_bytes) = self
             .sessions
             .get(session_id)
-            .map(|entry| entry.received_bytes)
+            .map(|entry| {
+                (
+                    entry.temp_path.clone(),
+                    entry.received_bytes,
+                    entry.expected_bytes,
+                )
+            })
             .ok_or_else(|| ApiError::not_found("Upload session not found."))?;
         self.ensure_upload_directories().await?;
-        let written_bytes =
-            append_request_chunk_to_file(&temp_path, body, UPLOAD_SESSION_CHUNK_MAX_BYTES).await?;
+
+        let on_disk_bytes = match upload_temp_file_len(&temp_path).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if let Some((_, session)) = self.sessions.remove(session_id) {
+                    let _ = remove_file_if_present(&session.temp_path).await;
+                }
+                return Err(error);
+            }
+        };
+        if on_disk_bytes != previous_received {
+            if let Some((_, session)) = self.sessions.remove(session_id) {
+                let _ = remove_file_if_present(&session.temp_path).await;
+            }
+            return Err(inconsistent_upload_session_error());
+        }
+
+        let max_file_bytes = expected_bytes
+            .unwrap_or(self.config.max_upload_bytes as u64)
+            .min(self.config.max_upload_bytes as u64);
+        let written_bytes = append_request_chunk_to_file(
+            &temp_path,
+            body,
+            UPLOAD_SESSION_CHUNK_MAX_BYTES,
+            max_file_bytes,
+        )
+        .await?;
         if written_bytes == 0 {
             return Err(ApiError::bad_request("Empty chunk payload."));
         }
-        let next_total = previous_received.saturating_add(written_bytes);
-        if next_total > self.config.max_upload_bytes as u64 {
-            rollback_chunk_file_to_len(&temp_path, previous_received).await;
-            return Err(total_upload_limit_error(self.config.max_upload_bytes));
-        }
+        let Some(next_total) = previous_received.checked_add(written_bytes) else {
+            if let Some((_, session)) = self.sessions.remove(session_id) {
+                let _ = remove_file_if_present(&session.temp_path).await;
+            }
+            return Err(ApiError::bad_request("Invalid chunk payload."));
+        };
 
         let received_bytes = {
             let mut session = self
@@ -250,6 +307,7 @@ impl UploadService {
                 .get_mut(session_id)
                 .ok_or_else(|| ApiError::not_found("Upload session not found."))?;
             session.received_bytes = next_total;
+            session.last_activity_at = now_ms();
             session.received_bytes
         };
         Ok(json!({
@@ -273,21 +331,53 @@ impl UploadService {
         if session_id.is_empty() {
             return Err(ApiError::bad_request("Missing sessionId."));
         }
+        let lifecycle_lock = self
+            .sessions
+            .get(&session_id)
+            .map(|entry| entry.lifecycle_lock.clone())
+            .ok_or_else(|| ApiError::not_found("Upload session not found."))?;
+        let lifecycle_guard = lifecycle_lock.lock().await;
+        let session = self
+            .sessions
+            .get(&session_id)
+            .map(|entry| entry.clone())
+            .ok_or_else(|| ApiError::not_found("Upload session not found."))?;
+        let on_disk_bytes = match upload_temp_file_len(&session.temp_path).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if let Some((_, session)) = self.sessions.remove(&session_id) {
+                    let _ = remove_file_if_present(&session.temp_path).await;
+                }
+                return Err(error);
+            }
+        };
+        let validation_error = if on_disk_bytes == 0 {
+            Some(ApiError::bad_request("Uploaded file is empty."))
+        } else if on_disk_bytes > self.config.max_upload_bytes as u64 {
+            Some(total_upload_limit_error(self.config.max_upload_bytes))
+        } else if on_disk_bytes != session.received_bytes {
+            Some(inconsistent_upload_session_error())
+        } else if session
+            .expected_bytes
+            .is_some_and(|expected_bytes| on_disk_bytes != expected_bytes)
+        {
+            Some(ApiError::bad_request(
+                "Upload is incomplete. Retry the file upload.",
+            ))
+        } else {
+            None
+        };
         let Some((_, session)) = self.sessions.remove(&session_id) else {
             return Err(ApiError::not_found("Upload session not found."));
         };
-        if session.received_bytes == 0 {
+        if let Some(error) = validation_error {
             let _ = remove_file_if_present(&session.temp_path).await;
-            return Err(ApiError::bad_request("Uploaded file is empty."));
+            return Err(error);
         }
-        if let Some(expected_bytes) = session.expected_bytes
-            && session.received_bytes != expected_bytes
-        {
-            let _ = remove_file_if_present(&session.temp_path).await;
-            return Err(ApiError::bad_request(
-                "Upload is incomplete. Retry the file upload.",
-            ));
-        }
+        // Removal is the atomic claim on finalization. Any append, sweep, or
+        // second finish that cloned this lock must re-check the map after it
+        // acquires the guard and will observe that the session is gone.
+        drop(lifecycle_guard);
 
         let mut metadata_map = session.metadata.clone();
         for (key, value) in object {
@@ -1305,6 +1395,7 @@ async fn append_request_chunk_to_file(
     path: &Path,
     body: Body,
     max_chunk_bytes: usize,
+    max_file_bytes: u64,
 ) -> AppResult<u64> {
     let mut file = OpenOptions::new()
         .create(true)
@@ -1318,6 +1409,9 @@ async fn append_request_chunk_to_file(
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
         .len();
+    if initial_len > max_file_bytes {
+        return Err(session_upload_limit_error());
+    }
     let mut stream = body.into_data_stream();
     let mut written_bytes = 0usize;
 
@@ -1343,6 +1437,14 @@ async fn append_request_chunk_to_file(
             rollback_partial_chunk(&file, initial_len).await;
             return Err(chunk_limit_error(max_chunk_bytes));
         }
+        let Some(next_file_len) = initial_len.checked_add(next_written_bytes as u64) else {
+            rollback_partial_chunk(&file, initial_len).await;
+            return Err(ApiError::bad_request("Invalid chunk payload."));
+        };
+        if next_file_len > max_file_bytes {
+            rollback_partial_chunk(&file, initial_len).await;
+            return Err(session_upload_limit_error());
+        }
         if let Err(error) = file.write_all(&chunk).await {
             rollback_partial_chunk(&file, initial_len).await;
             return Err(ApiError::internal(error.to_string()));
@@ -1362,9 +1464,12 @@ async fn rollback_partial_chunk(file: &fs::File, initial_len: u64) {
     let _ = file.set_len(initial_len).await;
 }
 
-async fn rollback_chunk_file_to_len(path: &Path, len: u64) {
-    if let Ok(file) = OpenOptions::new().write(true).open(path).await {
-        let _ = file.set_len(len).await;
+async fn upload_temp_file_len(path: &Path) -> AppResult<u64> {
+    match fs::metadata(path).await {
+        Ok(metadata) if metadata.is_file() => Ok(metadata.len()),
+        Ok(_) => Err(inconsistent_upload_session_error()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(ApiError::internal(error.to_string())),
     }
 }
 
@@ -1381,6 +1486,14 @@ fn chunk_limit_error(max_chunk_bytes: usize) -> ApiError {
         "Chunk payload exceeded the {} MiB upload limit.",
         max_chunk_bytes / (1024 * 1024)
     ))
+}
+
+fn session_upload_limit_error() -> ApiError {
+    ApiError::payload_too_large("Upload exceeded its declared or configured size limit.")
+}
+
+fn inconsistent_upload_session_error() -> ApiError {
+    ApiError::bad_request("Upload session data is inconsistent. Retry the file upload.")
 }
 
 fn total_upload_limit_error(max_upload_bytes: usize) -> ApiError {
@@ -1722,10 +1835,12 @@ fn build_gallery_download_job_key(
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use axum::body::{Body, Bytes};
     use futures_util::stream;
     use serde_json::{Map, Value, json};
+    use tokio::sync::{Barrier, mpsc};
 
     use super::{
         UPLOAD_SESSION_CHUNK_MAX_BYTES, UploadService, UploadSession,
@@ -1809,8 +1924,8 @@ mod tests {
                 metadata: Map::new(),
                 expected_bytes: None,
                 received_bytes: 0,
-                created_at: now_ms(),
-                chunk_lock: Arc::new(tokio::sync::Mutex::new(())),
+                last_activity_at: now_ms(),
+                lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
 
@@ -1860,8 +1975,8 @@ mod tests {
                 metadata: Map::new(),
                 expected_bytes: None,
                 received_bytes: 4,
-                created_at: now_ms(),
-                chunk_lock: Arc::new(tokio::sync::Mutex::new(())),
+                last_activity_at: now_ms(),
+                lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
 
@@ -1941,8 +2056,8 @@ mod tests {
                 metadata: Map::new(),
                 expected_bytes: None,
                 received_bytes: 4,
-                created_at: now_ms(),
-                chunk_lock: Arc::new(tokio::sync::Mutex::new(())),
+                last_activity_at: now_ms(),
+                lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
 
@@ -1991,8 +2106,8 @@ mod tests {
                 metadata: Map::new(),
                 expected_bytes: Some(5),
                 received_bytes: 4,
-                created_at: now_ms(),
-                chunk_lock: Arc::new(tokio::sync::Mutex::new(())),
+                last_activity_at: now_ms(),
+                lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
 
@@ -2011,6 +2126,426 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_dir_all(root_dir).await;
+    }
+
+    #[tokio::test]
+    async fn finish_waits_for_an_in_flight_append_before_claiming_the_session() {
+        let (service, root_dir) = setup_test_upload_service("finish-after-append").await;
+        let temp_path = service
+            .config
+            .upload_temp_dir
+            .join("finish-after-append.part");
+        service.sessions.insert(
+            "session-finish-after-append".to_owned(),
+            UploadSession {
+                temp_path: temp_path.clone(),
+                file_name: "finish-after-append.mp4".to_owned(),
+                metadata: upload_test_metadata("Finish After Append"),
+                expected_bytes: Some(8),
+                received_bytes: 0,
+                last_activity_at: now_ms(),
+                lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+            },
+        );
+
+        let (chunk_sender, chunk_receiver) = mpsc::channel::<Bytes>(2);
+        chunk_sender
+            .send(Bytes::from_static(b"part"))
+            .await
+            .expect("queue first chunk");
+        let upload_stream = stream::unfold(chunk_receiver, |mut receiver| async move {
+            receiver
+                .recv()
+                .await
+                .map(|chunk| (Ok::<Bytes, std::io::Error>(chunk), receiver))
+        });
+        let append_service = service.clone();
+        let append_task = tokio::spawn(async move {
+            append_service
+                .append_chunk(
+                    "session-finish-after-append",
+                    Body::from_stream(upload_stream),
+                )
+                .await
+        });
+        wait_for_file_len(&temp_path, 4).await;
+
+        let finish_service = service.clone();
+        let finish_task = tokio::spawn(async move {
+            finish_service
+                .finish_session(json!({"sessionId": "session-finish-after-append"}))
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !finish_task.is_finished(),
+            "finish must wait while append owns the lifecycle lock"
+        );
+        assert_eq!(
+            tokio::fs::read(&temp_path)
+                .await
+                .expect("temp file remains during append"),
+            b"part"
+        );
+
+        chunk_sender
+            .send(Bytes::from_static(b"done"))
+            .await
+            .expect("queue final chunk");
+        drop(chunk_sender);
+        let appended = append_task
+            .await
+            .expect("append task joins")
+            .expect("append succeeds");
+        assert_eq!(
+            appended.get("receivedBytes").and_then(Value::as_u64),
+            Some(8)
+        );
+        finish_task
+            .await
+            .expect("finish task joins")
+            .expect("finish succeeds after append");
+        assert!(service.sessions.is_empty());
+        assert!(tokio::fs::metadata(&temp_path).await.is_err());
+
+        let _ = tokio::fs::remove_dir_all(root_dir).await;
+    }
+
+    #[tokio::test]
+    async fn simultaneous_finishes_have_exactly_one_winner() {
+        let (service, root_dir) = setup_test_upload_service("double-finish").await;
+        let temp_path = service.config.upload_temp_dir.join("double-finish.part");
+        tokio::fs::create_dir_all(&service.config.upload_temp_dir)
+            .await
+            .expect("create upload temp dir");
+        tokio::fs::write(&temp_path, b"seed")
+            .await
+            .expect("seed upload temp file");
+        service.sessions.insert(
+            "session-double-finish".to_owned(),
+            UploadSession {
+                temp_path: temp_path.clone(),
+                file_name: "double-finish.mp4".to_owned(),
+                metadata: upload_test_metadata("Double Finish"),
+                expected_bytes: Some(4),
+                received_bytes: 4,
+                last_activity_at: now_ms(),
+                lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+            },
+        );
+
+        let barrier = Arc::new(Barrier::new(3));
+        let first_service = service.clone();
+        let first_barrier = barrier.clone();
+        let first = tokio::spawn(async move {
+            first_barrier.wait().await;
+            first_service
+                .finish_session(json!({"sessionId": "session-double-finish"}))
+                .await
+        });
+        let second_service = service.clone();
+        let second_barrier = barrier.clone();
+        let second = tokio::spawn(async move {
+            second_barrier.wait().await;
+            second_service
+                .finish_session(json!({"sessionId": "session-double-finish"}))
+                .await
+        });
+        barrier.wait().await;
+
+        let first_result = first.await.expect("first finish joins");
+        let second_result = second.await.expect("second finish joins");
+        let successful_finishes = [first_result.is_ok(), second_result.is_ok()]
+            .into_iter()
+            .filter(|success| *success)
+            .count();
+        assert_eq!(
+            successful_finishes, 1,
+            "exactly one finalizer must claim the session"
+        );
+        let losing_error = first_result.err().or_else(|| second_result.err()).unwrap();
+        assert!(
+            format!("{losing_error:?}").contains("Upload session not found"),
+            "unexpected losing error: {losing_error:?}"
+        );
+        assert!(service.sessions.is_empty());
+        assert!(tokio::fs::metadata(&temp_path).await.is_err());
+
+        let mut video_entries = tokio::fs::read_dir(service.config.assets_dir.join("videos"))
+            .await
+            .expect("read finalized videos");
+        let mut finalized_files = 0;
+        while video_entries
+            .next_entry()
+            .await
+            .expect("read video entry")
+            .is_some()
+        {
+            finalized_files += 1;
+        }
+        assert_eq!(finalized_files, 1, "only one final file may be produced");
+
+        let _ = tokio::fs::remove_dir_all(root_dir).await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_chunks_cannot_oversubscribe_declared_size() {
+        let (service, root_dir) = setup_test_upload_service("concurrent-quota").await;
+        let temp_path = service.config.upload_temp_dir.join("concurrent-quota.part");
+        service.sessions.insert(
+            "session-concurrent-quota".to_owned(),
+            UploadSession {
+                temp_path: temp_path.clone(),
+                file_name: "concurrent-quota.mp4".to_owned(),
+                metadata: Map::new(),
+                expected_bytes: Some(6),
+                received_bytes: 0,
+                last_activity_at: now_ms(),
+                lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+            },
+        );
+
+        let (first, second) = tokio::join!(
+            service.append_chunk("session-concurrent-quota", Body::from("aaaa")),
+            service.append_chunk("session-concurrent-quota", Body::from("bbbb")),
+        );
+        let successful_chunks = [first.is_ok(), second.is_ok()]
+            .into_iter()
+            .filter(|success| *success)
+            .count();
+        assert_eq!(
+            successful_chunks, 1,
+            "only one chunk may fit within the declared size"
+        );
+        let losing_error = first.err().or_else(|| second.err()).unwrap();
+        assert!(
+            format!("{losing_error:?}").contains("Upload exceeded"),
+            "unexpected quota error: {losing_error:?}"
+        );
+        assert_eq!(
+            tokio::fs::metadata(&temp_path)
+                .await
+                .expect("quota temp file exists")
+                .len(),
+            4
+        );
+        assert_eq!(
+            service
+                .sessions
+                .get("session-concurrent-quota")
+                .expect("session remains")
+                .received_bytes,
+            4
+        );
+
+        let _ = tokio::fs::remove_dir_all(root_dir).await;
+    }
+
+    #[tokio::test]
+    async fn append_rejects_unaccounted_on_disk_bytes_before_writing() {
+        let (mut service, root_dir) = setup_test_upload_service("append-size-mismatch").await;
+        service.config.max_upload_bytes = 6;
+        let temp_path = service
+            .config
+            .upload_temp_dir
+            .join("append-size-mismatch.part");
+        tokio::fs::create_dir_all(&service.config.upload_temp_dir)
+            .await
+            .expect("create upload temp dir");
+        tokio::fs::write(&temp_path, b"disk")
+            .await
+            .expect("seed unaccounted bytes");
+        service.sessions.insert(
+            "session-append-size-mismatch".to_owned(),
+            UploadSession {
+                temp_path: temp_path.clone(),
+                file_name: "append-size-mismatch.mp4".to_owned(),
+                metadata: Map::new(),
+                expected_bytes: None,
+                received_bytes: 0,
+                last_activity_at: now_ms(),
+                lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+            },
+        );
+
+        let error = service
+            .append_chunk("session-append-size-mismatch", Body::from("new"))
+            .await
+            .expect_err("unaccounted bytes must invalidate the session");
+        assert!(
+            format!("{error:?}").contains("Upload session data is inconsistent"),
+            "unexpected mismatch error: {error:?}"
+        );
+        assert!(service.sessions.is_empty());
+        assert!(
+            tokio::fs::metadata(&temp_path).await.is_err(),
+            "invalid session cleanup must remove all bytes"
+        );
+
+        let _ = tokio::fs::remove_dir_all(root_dir).await;
+    }
+
+    #[tokio::test]
+    async fn finish_rejects_counter_and_file_length_mismatch_and_cleans_up() {
+        let (service, root_dir) = setup_test_upload_service("finish-size-mismatch").await;
+        let temp_path = service.config.upload_temp_dir.join("size-mismatch.part");
+        tokio::fs::create_dir_all(&service.config.upload_temp_dir)
+            .await
+            .expect("create upload temp dir");
+        tokio::fs::write(&temp_path, b"disk")
+            .await
+            .expect("seed upload temp file");
+        service.sessions.insert(
+            "session-size-mismatch".to_owned(),
+            UploadSession {
+                temp_path: temp_path.clone(),
+                file_name: "size-mismatch.mp4".to_owned(),
+                metadata: Map::new(),
+                expected_bytes: Some(4),
+                received_bytes: 3,
+                last_activity_at: now_ms(),
+                lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+            },
+        );
+
+        let error = service
+            .finish_session(json!({"sessionId": "session-size-mismatch"}))
+            .await
+            .expect_err("mismatched session must not finalize");
+        assert!(
+            format!("{error:?}").contains("Upload session data is inconsistent"),
+            "unexpected mismatch error: {error:?}"
+        );
+        assert!(service.sessions.is_empty());
+        assert!(tokio::fs::metadata(&temp_path).await.is_err());
+
+        // Cleanup and a repeated finalization are both safe after invalidation.
+        service.sweep_sessions().await;
+        let second_error = service
+            .finish_session(json!({"sessionId": "session-size-mismatch"}))
+            .await
+            .expect_err("invalidated session stays unavailable");
+        assert!(format!("{second_error:?}").contains("Upload session not found"));
+
+        let _ = tokio::fs::remove_dir_all(root_dir).await;
+    }
+
+    #[tokio::test]
+    async fn active_append_refreshes_session_before_waiting_sweep_rechecks_staleness() {
+        let (service, root_dir) = setup_test_upload_service("sweep-active-append").await;
+        let temp_path = service.config.upload_temp_dir.join("sweep-active.part");
+        service.sessions.insert(
+            "session-sweep-active".to_owned(),
+            UploadSession {
+                temp_path: temp_path.clone(),
+                file_name: "sweep-active.mp4".to_owned(),
+                metadata: Map::new(),
+                expected_bytes: Some(8),
+                received_bytes: 0,
+                last_activity_at: now_ms(),
+                lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+            },
+        );
+
+        let (chunk_sender, chunk_receiver) = mpsc::channel::<Bytes>(2);
+        chunk_sender
+            .send(Bytes::from_static(b"part"))
+            .await
+            .expect("queue first chunk");
+        let upload_stream = stream::unfold(chunk_receiver, |mut receiver| async move {
+            receiver
+                .recv()
+                .await
+                .map(|chunk| (Ok::<Bytes, std::io::Error>(chunk), receiver))
+        });
+        let append_service = service.clone();
+        let append_task = tokio::spawn(async move {
+            append_service
+                .append_chunk("session-sweep-active", Body::from_stream(upload_stream))
+                .await
+        });
+        wait_for_file_len(&temp_path, 4).await;
+        service
+            .sessions
+            .get_mut("session-sweep-active")
+            .expect("mark session stale")
+            .last_activity_at = now_ms() - super::UPLOAD_SESSION_STALE_MS - 1;
+
+        let sweep_service = service.clone();
+        let sweep_task = tokio::spawn(async move {
+            sweep_service.sweep_sessions().await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !sweep_task.is_finished(),
+            "sweep must wait for the active append"
+        );
+        assert_eq!(
+            tokio::fs::metadata(&temp_path)
+                .await
+                .expect("active temp file remains")
+                .len(),
+            4
+        );
+
+        chunk_sender
+            .send(Bytes::from_static(b"done"))
+            .await
+            .expect("queue final chunk");
+        drop(chunk_sender);
+        append_task
+            .await
+            .expect("append task joins")
+            .expect("append succeeds");
+        sweep_task.await.expect("sweep task joins");
+
+        let session = service
+            .sessions
+            .get("session-sweep-active")
+            .expect("freshly active session remains");
+        assert_eq!(session.received_bytes, 8);
+        assert!(
+            session
+                .last_activity_at
+                .saturating_add(super::UPLOAD_SESSION_STALE_MS)
+                > now_ms()
+        );
+        drop(session);
+        assert_eq!(
+            tokio::fs::read(&temp_path)
+                .await
+                .expect("active upload remains intact"),
+            b"partdone"
+        );
+
+        let _ = tokio::fs::remove_dir_all(root_dir).await;
+    }
+
+    fn upload_test_metadata(title: &str) -> Map<String, Value> {
+        json!({
+            "contentType": "movie",
+            "title": title,
+        })
+        .as_object()
+        .expect("test upload metadata object")
+        .clone()
+    }
+
+    async fn wait_for_file_len(path: &std::path::Path, expected_len: u64) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if tokio::fs::metadata(path)
+                    .await
+                    .map(|metadata| metadata.len() == expected_len)
+                    .unwrap_or(false)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("temp file reached expected length");
     }
 
     async fn setup_test_upload_service(name: &str) -> (UploadService, PathBuf) {

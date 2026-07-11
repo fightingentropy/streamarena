@@ -31,21 +31,31 @@
 //    and without the direct base the fetch re-enters the zone edge, putting
 //    the DDoS ruleset right back in the path for relayed client retries.)
 //
-// Security: every request must carry the same HMAC `sig` the Rust backend
-// produces (`sign_live_hls_proxy_url` in src/live.rs) — only the mini, holding
-// LIVE_HLS_PROXY_SECRET, can mint valid URLs, so this is not an open proxy
-// (origin relays are additionally pinned to ORIGIN_BASE). The signature is
-// HMAC-SHA256 over: CONTEXT 0x00 input 0x00 referer, base64url (no pad).
+// Security: every request must carry the same expiry-bound HMAC `sig` the Rust
+// backend produces (`sign_live_hls_proxy_url` in src/live.rs) — only the mini,
+// holding LIVE_HLS_PROXY_SECRET, can mint valid URLs, so this is not an open
+// proxy (origin relays are additionally pinned to ORIGIN_BASE). The v2
+// signature is HMAC-SHA256 over:
+//   CONTEXT 0x00 input 0x00 referer 0x00 expires
+// where `expires` is canonical absolute Unix time in seconds.
 //
 // Config: env.LIVE_HLS_PROXY_SECRET (secret, must equal the mini's),
-// env.ORIGIN_BASE (var, e.g. https://streamarena.xyz), and optional
+// env.ORIGIN_BASE (var, e.g. https://streamarena.xyz), optional transition var
+// env.LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL (absolute Unix seconds), and optional
 // env.ORIGIN_DIRECT_BASE (secret, e.g. http://<random-label>.streamarena.xyz
 // — a grey-cloud record; kept secret so the public repo doesn't advertise the
 // name, and plain HTTP so no certificate ever lands the name in CT logs. The
 // leg carries signed URLs for short-lived public streams, so plaintext is an
 // accepted trade-off for keeping the origin IP unpublished).
 
-const SIGNATURE_CONTEXT = "streamarena-live-hls-v1";
+const SIGNATURE_CONTEXT_V1 = "streamarena-live-hls-v1";
+const SIGNATURE_CONTEXT_V2 = "streamarena-live-hls-v2";
+// Keep these values exactly aligned with src/live.rs. The four-hour issuance
+// TTL covers long playback; the six-hour ceiling rejects operator mistakes and
+// attacker-chosen far-future expiries; 60 seconds handles clock skew.
+const SIGNATURE_TTL_SECONDS = 4 * 60 * 60;
+const SIGNATURE_MAX_TTL_SECONDS = 6 * 60 * 60;
+const SIGNATURE_CLOCK_SKEW_SECONDS = 60;
 const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 // Segments are immutable for their short live lifetime; a brief edge cache is
@@ -93,7 +103,14 @@ function concatBytes(chunks) {
   return out;
 }
 
-async function verifySignature(secret, input, referer, signature) {
+async function verifySignature(
+  secret,
+  input,
+  referer,
+  expires,
+  signature,
+  context = SIGNATURE_CONTEXT_V2,
+) {
   let provided;
   try {
     provided = base64UrlDecodeToBytes(signature);
@@ -108,11 +125,14 @@ async function verifySignature(secret, input, referer, signature) {
     ["sign"],
   );
   const message = concatBytes([
-    encoder.encode(SIGNATURE_CONTEXT),
+    encoder.encode(context),
     new Uint8Array([0]),
     encoder.encode(input),
     new Uint8Array([0]),
     encoder.encode(referer),
+    ...(expires === null
+      ? []
+      : [new Uint8Array([0]), encoder.encode(String(expires))]),
   ]);
   // Recompute and constant-time compare. (Workers' crypto.subtle.verify for HMAC
   // is unreliable; signing matches the Rust backend exactly, so compare bytes.)
@@ -121,6 +141,25 @@ async function verifySignature(secret, input, referer, signature) {
   let diff = 0;
   for (let i = 0; i < expected.length; i += 1) diff |= provided[i] ^ expected[i];
   return diff === 0;
+}
+
+function parseSignatureExpiry(value, nowSeconds) {
+  if (typeof value !== "string" || !/^(0|[1-9]\d*)$/.test(value)) return null;
+  const expires = Number(value);
+  if (!Number.isSafeInteger(expires)) return null;
+  const earliest = nowSeconds - SIGNATURE_CLOCK_SKEW_SECONDS;
+  const latest = nowSeconds + SIGNATURE_MAX_TTL_SECONDS + SIGNATURE_CLOCK_SKEW_SECONDS;
+  return expires >= earliest && expires <= latest ? expires : null;
+}
+
+function legacySignatureIsTemporarilyAllowed(value, nowSeconds) {
+  if (typeof value !== "string" || !/^(0|[1-9]\d*)$/.test(value)) return false;
+  const deadline = Number(value);
+  if (!Number.isSafeInteger(deadline)) return false;
+  return (
+    deadline >= nowSeconds - SIGNATURE_CLOCK_SKEW_SECONDS &&
+    deadline <= nowSeconds + SIGNATURE_MAX_TTL_SECONDS + SIGNATURE_CLOCK_SKEW_SECONDS
+  );
 }
 
 // Port of `is_public_hls_proxy_hostname` in src/live.rs: reject localhost /
@@ -167,18 +206,57 @@ function upstreamCacheStatus(upstream) {
 }
 
 // Validate the shared signed-URL contract (`input`, optional `referer`,
-// `externalEmbed=1`, `sig`) and return the parsed target, or a deny Response.
-async function authorizeSignedRequest(url, env) {
+// `externalEmbed=1`, `expires`, `sig`) and return the parsed target, or a deny
+// Response. During the documented deployment transition only, a v1 URL without
+// an expiry can be accepted until one tightly-bounded absolute deadline.
+async function authorizeSignedRequest(
+  url,
+  env,
+  nowSeconds = Math.floor(Date.now() / 1000),
+) {
   const input = url.searchParams.get("input");
   const referer = url.searchParams.get("referer") || "";
-  const signature = url.searchParams.get("sig");
   const externalEmbed = url.searchParams.get("externalEmbed");
-  if (!input || !signature || externalEmbed !== "1") return deny(400, "bad request");
+  if (!input || externalEmbed !== "1") return deny(400, "bad request");
 
   const secret = env.LIVE_HLS_PROXY_SECRET;
   if (!secret) return deny(503, "not configured");
-  if (!(await verifySignature(secret, input, referer, signature))) {
-    return deny(403, "bad signature");
+
+  const expiryValue = url.searchParams.get("expires");
+  let expiresAt = null;
+  if (expiryValue === null) {
+    const legacySignature = url.searchParams.get("sig");
+    if (
+      !legacySignature ||
+      !legacySignatureIsTemporarilyAllowed(
+        env.LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL,
+        nowSeconds,
+      )
+    ) {
+      return deny(400, "missing expiry");
+    }
+    if (
+      !(await verifySignature(
+        secret,
+        input,
+        referer,
+        null,
+        legacySignature,
+        SIGNATURE_CONTEXT_V1,
+      ))
+    ) {
+      return deny(403, "bad signature");
+    }
+  } else {
+    expiresAt = parseSignatureExpiry(expiryValue, nowSeconds);
+    if (expiresAt === null) return deny(403, "bad expiry");
+    // During backend-first rollout `sig` is v1 for the old Worker while
+    // `sigV2` is the expiry-bound value. In steady state v2 lives in `sig`.
+    const signature = url.searchParams.get("sigV2") || url.searchParams.get("sig");
+    if (!signature) return deny(400, "bad request");
+    if (!(await verifySignature(secret, input, referer, expiresAt, signature))) {
+      return deny(403, "bad signature");
+    }
   }
 
   let target;
@@ -192,7 +270,7 @@ async function authorizeSignedRequest(url, env) {
   }
   if (!isPublicHlsProxyHostname(target.hostname)) return deny(403, "host not allowed");
 
-  return { target, referer };
+  return { target, referer, expiresAt };
 }
 
 // One GET to a specific origin base. Path+query is forwarded verbatim so the
@@ -531,6 +609,18 @@ async function handleResource(request, url, env) {
     headers,
   });
 }
+
+// Named exports keep the security contract directly regression-testable in
+// Node without changing the Worker's module-handler entry point.
+export {
+  SIGNATURE_CLOCK_SKEW_SECONDS,
+  SIGNATURE_MAX_TTL_SECONDS,
+  SIGNATURE_TTL_SECONDS,
+  authorizeSignedRequest,
+  legacySignatureIsTemporarilyAllowed,
+  parseSignatureExpiry,
+  verifySignature,
+};
 
 export default {
   async fetch(request, env) {

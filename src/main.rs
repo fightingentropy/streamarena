@@ -16,6 +16,7 @@ mod provider_registry;
 mod rate_limit;
 mod resolver;
 mod routes;
+mod secret_store;
 mod static_files;
 mod streaming;
 mod tmdb;
@@ -156,6 +157,17 @@ async fn main() -> AppResult<()> {
 
     let config = Config::load();
     let db = Db::initialize(&config).await?;
+    let real_debrid_token_cipher = secret_store::RealDebridTokenCipher::from_env()?;
+    let token_migration = real_debrid_token_cipher
+        .migrate_existing_tokens(&db)
+        .await?;
+    if token_migration.plaintext_encrypted > 0 || token_migration.keys_rotated > 0 {
+        info!(
+            plaintext_encrypted = token_migration.plaintext_encrypted,
+            keys_rotated = token_migration.keys_rotated,
+            "secured stored Real-Debrid tokens"
+        );
+    }
     // Append a restart-log row so the admin Health panel can count restarts and
     // spot crash-looping. Best-effort — never block startup on it.
     let _ = db.record_service_start("startup".to_owned()).await;
@@ -297,6 +309,7 @@ async fn main() -> AppResult<()> {
     let state = AppState {
         config: config.clone(),
         db,
+        real_debrid_token_cipher,
         tmdb,
         media,
         http_client,

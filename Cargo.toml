@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 axum = { version = "0.8", features = ["json", "macros"] }
 aes = "0.8"
+aes-gcm = "0.10"
 base64 = "0.22"
 cbc = { version = "0.1", features = ["alloc"] }
 dashmap = "6"
@@ -29,6 +30,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2"
+zeroize = "1"
 argon2 = "0.5"
 getrandom = "0.4"
 hmac = "0.12"

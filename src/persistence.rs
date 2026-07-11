@@ -359,6 +359,33 @@ impl Db {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) async fn initialize_test_paths(
+        cache_path: PathBuf,
+        users_path: PathBuf,
+    ) -> AppResult<Self> {
+        let cache_dir = cache_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        tokio::fs::create_dir_all(cache_dir)
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        let cache_for_task = cache_path.clone();
+        let users_for_task = users_path.clone();
+        task::spawn_blocking(move || initialize_databases(&cache_for_task, &users_for_task))
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+
+        Ok(Self {
+            cache_path: Arc::new(cache_path),
+            cache_pool: Arc::new(std::sync::Mutex::new(Vec::new())),
+            users_path: Arc::new(users_path),
+            users_pool: Arc::new(std::sync::Mutex::new(Vec::new())),
+        })
+    }
+
     pub async fn sweep(&self) {
         let cache_path = self.cache_path.clone();
         let cache_pool = self.cache_pool.clone();
@@ -2920,6 +2947,34 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
+    /// All values for one preference key, including their owning user id. This
+    /// is intentionally narrow: it supports startup secret migration without
+    /// exposing unrelated user preferences to the encryption layer.
+    pub async fn get_user_preferences_by_key(
+        &self,
+        pref_key: String,
+    ) -> AppResult<Vec<(i64, String)>> {
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let rows = {
+                let mut stmt = connection.prepare(
+                    "SELECT user_id, pref_value FROM user_preferences WHERE pref_key = ?",
+                )?;
+                stmt.query_map([pref_key], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            };
+            return_connection(&pool, connection);
+            Ok::<Vec<(i64, String)>, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))
+    }
+
     pub async fn upsert_user_preferences(
         &self,
         user_id: i64,
@@ -2948,6 +3003,93 @@ impl Db {
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
         .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Replace one preference for multiple users in a single transaction.
+    /// Used by secret migration/key rotation so an authentication or storage
+    /// failure cannot leave a partially rewritten key ring generation.
+    #[cfg(test)]
+    pub async fn upsert_user_preferences_for_users(
+        &self,
+        pref_key: String,
+        entries: Vec<(i64, String)>,
+    ) -> AppResult<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            let tx = connection.unchecked_transaction()?;
+            for (user_id, value) in entries {
+                tx.execute(
+                    "INSERT INTO user_preferences (user_id, pref_key, pref_value, updated_at)
+                     VALUES (?, ?, ?, ?)
+                     ON CONFLICT(user_id, pref_key) DO UPDATE SET
+                       pref_value = excluded.pref_value,
+                       updated_at = excluded.updated_at",
+                    params![user_id, pref_key, value, now],
+                )?;
+            }
+            tx.commit()?;
+            return_connection(&pool, connection);
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Atomically replace already-read preference values. If another process
+    /// changes any row between the migration read and write, the transaction is
+    /// rolled back rather than overwriting the newer value.
+    pub async fn replace_user_preferences_if_unchanged(
+        &self,
+        pref_key: String,
+        entries: Vec<(i64, String, String)>,
+    ) -> AppResult<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let path = self.users_path.clone();
+        let pool = self.users_pool.clone();
+        let all_replaced = task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            let tx = connection.unchecked_transaction()?;
+            let mut all_replaced = true;
+            for (user_id, expected_value, replacement_value) in entries {
+                let changed = tx.execute(
+                    "UPDATE user_preferences
+                     SET pref_value = ?, updated_at = ?
+                     WHERE user_id = ? AND pref_key = ? AND pref_value = ?",
+                    params![replacement_value, now, user_id, pref_key, expected_value],
+                )?;
+                if changed != 1 {
+                    all_replaced = false;
+                    break;
+                }
+            }
+            if all_replaced {
+                tx.commit()?;
+            } else {
+                drop(tx);
+            }
+            return_connection(&pool, connection);
+            Ok::<bool, rusqlite::Error>(all_replaced)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        if !all_replaced {
+            return Err(ApiError::internal(
+                "A stored Real-Debrid token changed during encryption migration; restart to retry safely.",
+            ));
+        }
         Ok(())
     }
 

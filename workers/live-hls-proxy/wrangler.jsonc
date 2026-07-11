@@ -19,6 +19,9 @@
   // Secrets (set out-of-band, never committed):
   //   wrangler secret put LIVE_HLS_PROXY_SECRET
   //     Must equal the mini's LIVE_HLS_PROXY_SECRET so signatures validate.
+  //   wrangler secret put LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL
+  //     Temporary v1->v2 rollout deadline (absolute Unix seconds, <=6h ahead).
+  //     Omit in normal operation; missing-expiry URLs then fail closed.
   //   wrangler secret put ORIGIN_DIRECT_BASE
   //     Optional http:// base on a grey-cloud (DNS-only) hostname for the
   //     origin IP; origin fetches then connect direct instead of re-entering

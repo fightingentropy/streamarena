@@ -141,7 +141,7 @@ External movie/TV embed stack:
 - VidEasy embeds are built from `https://player.videasy.to/movie/...` or `/tv/...`; the legacy `player.videasy.net` redirect is still accepted by the resolver. Extracted HLS playlists are accepted on public HTTPS hosts discovered by the trusted resolver.
 - VidLink embeds are built from `https://vidlink.pro/movie/...` or `/tv/...`; extracted HLS playlist hosts include `storm.vodvidl.site` and `typhoontigertribe.net`.
 - VidLink HLS resolves through a native Node/WASM token path first, with Playwright kept as a fallback. VidEasy HLS still resolves through Playwright. The mini deploy copies `scripts/resolve-external-embed-hls.mjs` to `bin/resolve-external-embed-hls.mjs` and keeps resolver Node dependencies under `~/.local/share/streamarena-node` outside the app runtime tree. Icefy, VidRock, NoTorrent, VixSrc, and LordFlix are resolved by backend API adapters. All native providers must return a public HTTPS playlist that validates as `#EXTM3U`; the backend signs those proxy URLs before playback.
-- Native external HLS playback is proxied through protected `/api/live/hls.m3u8` and `/api/live/hls-resource` so playlist child URLs, segment URLs, and required referers stay under backend control.
+- Native external HLS playback is proxied through protected `/api/live/hls.m3u8` and `/api/live/hls-resource` so playlist child URLs, segment URLs, and required referers stay under backend control. Resolver-minted proxy URLs carry an expiry-bound HMAC; the same absolute expiry propagates to rewritten child playlists, keys, and segments. Authenticated allowlisted live-channel requests and browser-direct CDN URLs keep their existing unsigned/direct paths.
 - Iframe-only movie/TV providers are intentionally excluded so playback stays inside the app's own controls.
 - Older/failed and iframe-only providers such as VidKing, 2Embed, VidSrc, VidNest, AutoEmbed, SuperEmbed, Embed.su, and MoviesAPI are intentionally not part of the current stack.
 
@@ -420,6 +420,28 @@ Per-user Settings:
 - Real-Debrid API token - enables Torrentio/Torznab torrent source discovery and Real-Debrid resolution for that user.
 - Local torrent cache - separately enables local torrent/cache playback for that user, and still requires a saved Real-Debrid API token.
 
+Real-Debrid tokens are encrypted at rest with AES-256-GCM. Configure an
+operator-managed key ring before a user saves a token:
+
+```bash
+printf 'rd-2026-07:'
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'
+```
+
+Store the resulting `key-id:base64url-key` value in
+`REAL_DEBRID_TOKEN_ENCRYPTION_KEYS`. The first comma-separated entry is the
+active write key; later entries are decrypt-only rotation keys. On startup the
+server authenticates every encrypted token, encrypts all legacy plaintext rows,
+and rewrites rows using older keys before accepting traffic. Startup fails
+closed when stored tokens exist but the key ring is absent, malformed, or
+cannot authenticate every row.
+
+To rotate, prepend a newly generated key with a new id, retain the old entries,
+and restart once. After that startup succeeds and all rows have been rewritten,
+the old entries can be removed on a subsequent restart. Back up the canonical
+key ring separately from SQLite: losing every matching key makes the stored
+tokens intentionally unrecoverable. Never reuse a key id with different bytes.
+
 Optional integrations:
 
 - `OPENSUBTITLES_API_KEY`
@@ -439,6 +461,7 @@ Server:
 - `OPEN_SIGNUP` - public registration, disabled by default. Keep it `0` in production.
 - `SIGNUP_INVITE_CODE` - optional secret that permits viewer registration while public sign-up is closed.
 - `BOOTSTRAP_ADMIN_EMAIL` - optional admin-bootstrap email. Bootstrap requires the matching email and `SIGNUP_INVITE_CODE`; remove this setting once the admin exists.
+- `REAL_DEBRID_TOKEN_ENCRYPTION_KEYS` - comma-separated `key-id:base64url-key` ring for per-user Real-Debrid tokens. Each key is 32 random bytes; the first entry is active and retained entries support rotation.
 - `OUTBOUND_HTTP_PROXY` - optional HTTP/SOCKS proxy for server outbound requests.
 - `SPORTS_HTTP_PROXY` - optional HTTP/SOCKS proxy only for sports provider schedule/stream requests and sports browser HLS extraction. For Cloudflare WARP proxy mode this is typically `socks5://127.0.0.1:40000`.
 - `MAX_UPLOAD_BYTES` - default 10 GiB, clamped to at least 50 MiB.
@@ -448,7 +471,9 @@ Embed/live resolver helpers:
 - `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs` when present, otherwise `bin/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable native external HLS extraction.
 - `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - per-provider timeout budget for native HLS resolution; default 8000. Direct API providers are capped lower internally for quick rotation.
 - `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS` - total native HLS extraction budget before falling back to the normal resolver stack; default 26000. Movie/TV external embeds that do not expose native HLS are not returned as iframes.
-- `LIVE_HLS_PROXY_SECRET` - optional shared signing secret for dynamic external HLS proxy URLs; generated at startup when omitted. Set this for multi-instance deployments so signed URLs survive instance changes.
+- `LIVE_HLS_PROXY_SECRET` - optional shared signing secret for dynamic external HLS proxy URLs; generated at startup when omitted. Set this for multi-instance deployments and to the same Worker secret. Signed URLs use a four-hour TTL; backend and Worker allow 60 seconds of clock skew and reject expiries more than six hours in the future.
+- `LIVE_HLS_EMIT_LEGACY_SIGNATURE` - deployment-transition switch only. `1` emits both the old v1 `sig` and expiry-bound `sigV2`; default `0` emits only expiry-bound v2 in `sig`.
+- `LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL` - deployment-transition deadline only, expressed as absolute Unix seconds. Missing-expiry v1 URLs are rejected by default; when set, the deadline must be no more than six hours ahead and acceptance stops automatically after it (plus clock skew).
 - `VIDLINK_NATIVE_ASSET_CACHE_TTL_MS` - TTL for cached VidLink native token assets fetched by the Node resolver; default 7200000.
 - `STREAMED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-streamed-hls.mjs` when present, otherwise `bin/resolve-streamed-hls.mjs`; set to `0`/`off` to disable.
 - `MATCHSTREAM_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-matchstream-hls.mjs` when present, otherwise `bin/resolve-matchstream-hls.mjs`; set to `0`/`off` to disable.
@@ -575,12 +600,13 @@ Development and checks:
 - `bun run preview` - Vite preview server.
 - `bun run lint:frontend` - JavaScript syntax check for `src-ui`, `scripts`, and `vite.config.js`.
 - `bun run test:rust` - Rust tests.
+- `bun run test:worker` - live-HLS Worker signature/expiry contract tests.
 - `bun run test:frontend` - Playwright smoke test against a mocked API.
 - `bun run check:rust` - Rust formatting and Clippy with warnings denied.
 - `bun run audit:rust` - RustSec dependency audit using the locally installed advisory database.
 - `bun run check:quality` - Rust format, Clippy, and dependency security gates. Install `cargo-audit` first with `cargo install cargo-audit --locked`.
 - `bun run check:architecture` - guardrails for app shape, frontend dependencies, entrypoints, source sizes, and bundle sizes.
-- `bun run check` - frontend lint, build, architecture check, Rust tests, and frontend smoke test.
+- `bun run check` - frontend lint, build, architecture check, Rust tests, live-HLS Worker tests, and frontend smoke test.
 
 Benchmarks:
 
@@ -742,6 +768,32 @@ Expected results:
 - Protected `/api/library` without login: `401`
 - Public host root: `302` to the login page
 - Public `/api/auth/me` without login: `401`
+
+### Live HLS signature rollout
+
+The Worker and backend must move from timeless v1 signatures to expiry-bound v2
+without stranding an active player. Normal operation is strict: leave
+`LIVE_HLS_EMIT_LEGACY_SIGNATURE=0` and
+`LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL` unset in both runtimes.
+
+For the one-time rollout, prefer Worker first:
+
+1. Choose one absolute deadline four hours ahead (`deadline=$(($(date +%s) + 14400))`). Never choose more than six hours ahead.
+2. Put that value in the Worker's temporary binding before deploying the new Worker: `printf '%s' "$deadline" | npx wrangler secret put LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL --config workers/live-hls-proxy/wrangler.jsonc`. Wrangler secret updates deploy a Worker version immediately, so setting it while the old code is live is safe—the old code ignores it.
+3. Deploy `workers/live-hls-proxy` with `npx wrangler deploy --config workers/live-hls-proxy/wrangler.jsonc`. It accepts old missing-expiry v1 URLs only until the deadline and accepts v2 immediately.
+4. Set the same `LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL` in the mini's canonical env, keep `LIVE_HLS_EMIT_LEGACY_SIGNATURE=0`, then deploy/restart the backend. New URLs now contain only `expires` plus v2 `sig`; already-open v1 streams remain valid only for the bounded window.
+5. After the deadline, verify a v1 URL without `expires` is rejected, remove the mini deadline, and run `npx wrangler secret delete LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL --config workers/live-hls-proxy/wrangler.jsonc`.
+
+If operational constraints force backend-first order, temporarily set
+`LIVE_HLS_EMIT_LEGACY_SIGNATURE=1` together with the same deadline. The backend
+then emits v1 in `sig` for the old Worker and expiry-bound v2 in `sigV2` for the
+new origin. Deploy the Worker next, immediately return the backend flag to `0`
+and restart it, then perform step 5. Once the deadline passes, removing
+`expires` cannot downgrade either dual-signed or strict URLs to v1.
+
+The Worker uses Cloudflare's standard `crypto.subtle` Web Crypto binding for
+HMAC verification; keep its constants and fixed-vector test aligned with
+`src/live.rs`. See Cloudflare's [Web Crypto runtime documentation](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/) and [Wrangler secret commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/#secret).
 
 Deploying code:
 
