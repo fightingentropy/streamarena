@@ -63,6 +63,8 @@ caddy_data_dir="/var/db/streamarena-caddy"
 caddy_log_dir="$state_dir"
 app_plist="/Library/LaunchDaemons/com.fightingentropy.streamarena-app.plist"
 caddy_plist="/Library/LaunchDaemons/com.fightingentropy.streamarena-caddy.plist"
+legacy_caddy_label="xyz.streamarena.caddy"
+legacy_caddy_plist="/Library/LaunchDaemons/${legacy_caddy_label}.plist"
 sysctl_plist="/Library/LaunchDaemons/com.fightingentropy.streamarena-sysctl.plist"
 caddy_bin="/usr/local/bin/caddy"
 
@@ -382,6 +384,25 @@ if [[ -n "$old_app_pids" ]]; then
     exit 1
   fi
 fi
+
+# Older installs used a KeepAlive service with a different label. Stop and
+# remove it before adopting the canonical daemon; killing only its process lets
+# launchd immediately respawn it and leaves the new Caddy unable to bind ports.
+if launchctl print "system/$legacy_caddy_label" >/dev/null 2>&1; then
+  echo "Retiring legacy Caddy LaunchDaemon: $legacy_caddy_label"
+  sudo launchctl bootout "system/$legacy_caddy_label" 2>/dev/null \
+    || sudo launchctl bootout system "$legacy_caddy_plist" 2>/dev/null \
+    || true
+  for _ in {1..15}; do
+    launchctl print "system/$legacy_caddy_label" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if launchctl print "system/$legacy_caddy_label" >/dev/null 2>&1; then
+    echo "Legacy Caddy LaunchDaemon did not stop within 15 seconds" >&2
+    exit 1
+  fi
+fi
+sudo rm -f "$legacy_caddy_plist"
 
 if launchctl print system/com.fightingentropy.streamarena-caddy >/dev/null 2>&1; then
   if [[ "$caddy_plist_changed" -eq 1 || "$caddy_config_changed" -eq 1 ]]; then

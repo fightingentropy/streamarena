@@ -28,14 +28,18 @@ bad() {
   fail=1
 }
 
-remote_output="$(ssh "${SSH_OPTS[@]}" "$MINI_HOST" \
-  "REMOTE_APP='$REMOTE_APP' PUBLIC_HOST='$PUBLIC_HOST' MAX_DISK_PERCENT='$MAX_DISK_PERCENT' MIN_FREE_GB='$MIN_FREE_GB' SPORTS_PROXY_EXPECTED='$SPORTS_PROXY_EXPECTED' bash -s" <<'REMOTE'
+remote_output_file="$(mktemp)"
+trap 'rm -f "$remote_output_file"' EXIT
+ssh "${SSH_OPTS[@]}" "$MINI_HOST" \
+  "REMOTE_APP='$REMOTE_APP' PUBLIC_HOST='$PUBLIC_HOST' MAX_DISK_PERCENT='$MAX_DISK_PERCENT' MIN_FREE_GB='$MIN_FREE_GB' SPORTS_PROXY_EXPECTED='$SPORTS_PROXY_EXPECTED' bash -s" \
+  >"$remote_output_file" <<'REMOTE'
 set -euo pipefail
 
 app="$REMOTE_APP"
 expected_tree="assets,bin,cache,dist"
 caddy_bin="/usr/local/bin/caddy"
 tunnel_plist="/Library/LaunchDaemons/com.cloudflare.cloudflared.streamarena.plist"
+legacy_caddy_plist="/Library/LaunchDaemons/xyz.streamarena.caddy.plist"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 node_deps_dir="${STREAMARENA_NODE_DEPS_DIR:-$HOME/.local/share/streamarena-node}"
 
@@ -58,17 +62,14 @@ caddy_pid=$(pgrep -x caddy | head -1 || true)
 tunnel_pid=$(pgrep -f "cloudflared tunnel run streamarena" | head -1 || true)
 tunnel_daemon=$(test -e "$tunnel_plist" && echo yes || echo no)
 caddy_version=$("$caddy_bin" version 2>/dev/null | awk '{print $1}' || true)
-caddy_client_ip_guard=$(
-  caddy_config="$HOME/.config/caddy/Caddyfile"
-  if sudo -n grep -q 'trusted_proxies static' "$caddy_config" 2>/dev/null \
-    && sudo -n grep -qi 'header_up cf-connecting-ip' "$caddy_config" 2>/dev/null \
-    && sudo -n grep -qi 'client_ip_headers CF-Connecting-IP' "$caddy_config" 2>/dev/null \
-    && sudo -n grep -q 'remote_ip private_ranges' "$caddy_config" 2>/dev/null; then
-    echo yes
-  else
-    echo no
-  fi
-)
+caddy_client_ip_guard=no
+caddy_config="$HOME/.config/caddy/Caddyfile"
+if sudo -n grep -q 'trusted_proxies static' "$caddy_config" 2>/dev/null \
+  && sudo -n grep -qi 'header_up cf-connecting-ip' "$caddy_config" 2>/dev/null \
+  && sudo -n grep -qi 'client_ip_headers CF-Connecting-IP' "$caddy_config" 2>/dev/null \
+  && sudo -n grep -q 'remote_ip private_ranges' "$caddy_config" 2>/dev/null; then
+  caddy_client_ip_guard=yes
+fi
 asset_files=$(find "$app/assets" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
 video_files=$(find "$app/assets/videos" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
 asset_symlinks=$(find "$app/assets" -type l 2>/dev/null | wc -l | tr -d ' ' || true)
@@ -87,6 +88,8 @@ sports_http_proxy=$(
 sports_proxy_matches_expected=$([[ "$sports_http_proxy" == "$SPORTS_PROXY_EXPECTED" ]] && echo yes || echo no)
 app_daemon=$(test -f "/Library/LaunchDaemons/com.fightingentropy.streamarena-app.plist" && echo yes || echo no)
 caddy_daemon=$(test -f "/Library/LaunchDaemons/com.fightingentropy.streamarena-caddy.plist" && echo yes || echo no)
+legacy_caddy_daemon=$(test -e "$legacy_caddy_plist" && echo yes || echo no)
+legacy_caddy_loaded=$(launchctl print "system/xyz.streamarena.caddy" >/dev/null 2>&1 && echo yes || echo no)
 app_launch_state=$(launchctl print "system/com.fightingentropy.streamarena-app" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
 caddy_launch_state=$(launchctl print "system/com.fightingentropy.streamarena-caddy" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
 app_runs=$(launchctl print "system/com.fightingentropy.streamarena-app" 2>/dev/null | awk -F= '/runs =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
@@ -176,6 +179,8 @@ printf 'effective_open_signup=%s\n' "$effective_open_signup"
 printf 'sports_proxy_matches_expected=%s\n' "$sports_proxy_matches_expected"
 printf 'app_daemon=%s\n' "$app_daemon"
 printf 'caddy_daemon=%s\n' "$caddy_daemon"
+printf 'legacy_caddy_daemon=%s\n' "$legacy_caddy_daemon"
+printf 'legacy_caddy_loaded=%s\n' "$legacy_caddy_loaded"
 printf 'app_launch_state=%s\n' "${app_launch_state:-missing}"
 printf 'caddy_launch_state=%s\n' "${caddy_launch_state:-missing}"
 printf 'app_runs=%s\n' "${app_runs:-missing}"
@@ -208,7 +213,9 @@ printf 'warp_mode=%s\n' "${warp_mode:-missing}"
 printf 'streamed_proxy_http=%s\n' "${streamed_proxy_http:-missing}"
 printf 'ntvs_proxy_http=%s\n' "${ntvs_proxy_http:-missing}"
 REMOTE
-)"
+remote_output="$(cat "$remote_output_file")"
+rm -f "$remote_output_file"
+trap - EXIT
 
 printf '%s\n' "$remote_output"
 
@@ -240,6 +247,8 @@ effective_open_signup=$(value_for effective_open_signup)
 sports_proxy_matches_expected=$(value_for sports_proxy_matches_expected)
 app_daemon=$(value_for app_daemon)
 caddy_daemon=$(value_for caddy_daemon)
+legacy_caddy_daemon=$(value_for legacy_caddy_daemon)
+legacy_caddy_loaded=$(value_for legacy_caddy_loaded)
 app_launch_state=$(value_for app_launch_state)
 caddy_launch_state=$(value_for caddy_launch_state)
 app_runs=$(value_for app_runs)
@@ -313,6 +322,8 @@ fi
 [[ "$ntvs_proxy_http" == "200" ]] && pass "NTVS football search is reachable through WARP proxy" || bad "NTVS football search through WARP proxy returned HTTP $ntvs_proxy_http"
 [[ "$app_daemon" == "yes" ]] && pass "backend LaunchDaemon exists" || bad "backend LaunchDaemon missing"
 [[ "$caddy_daemon" == "yes" ]] && pass "Caddy LaunchDaemon exists" || bad "Caddy LaunchDaemon missing"
+[[ "$legacy_caddy_daemon" == "no" ]] && pass "legacy Caddy LaunchDaemon file is removed" || bad "legacy Caddy LaunchDaemon file still exists"
+[[ "$legacy_caddy_loaded" == "no" ]] && pass "legacy Caddy launchd service is unloaded" || bad "legacy Caddy launchd service is still loaded"
 [[ "$app_launch_state" == "running" ]] && pass "backend launchd state is running (runs=$app_runs)" || bad "backend launchd state is $app_launch_state"
 [[ "$caddy_launch_state" == "running" ]] && pass "Caddy launchd state is running (runs=$caddy_runs)" || bad "Caddy launchd state is $caddy_launch_state"
 [[ "$log_agent" == "yes" ]] && pass "log rotation LaunchAgent exists" || bad "log rotation LaunchAgent missing"

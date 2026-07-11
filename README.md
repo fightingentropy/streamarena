@@ -596,7 +596,7 @@ Mac mini:
 - `bun run mini:map-ports` - create router UPnP forwards for TCP 80 and 443.
 - `CF_API_TOKEN=... bun run mini:update-dns` - update Cloudflare-proxied A records with automatic TTL.
 - `bun run mini:check` - verify runtime tree, protected API auth status, Caddy, launchd, env permissions, sports WARP proxy, resolver helpers, agents, disk space, and public response.
-- `bun run mini:deploy` - run quality/tests, stage a rollback-capable release, deploy `dist`, backend binary, library metadata, images, and icons, then restart/check.
+- `bun run mini:deploy` - run quality/tests, stage a release while retaining the previous artifacts, deploy `dist`, backend binary, library metadata, images, and icons, then restart/check. Failed post-restart verification leaves the new binary active because database migrations can be forward-only; the retained artifacts are for deliberate, schema-aware recovery only.
 - `bun run mini:deploy -- --skip-build` - reuse existing `dist/` and release binary.
 - `bun run mini:deploy -- --video assets/videos/<file>.mp4` - copy that symlink target as a real mini video file.
 - `bun run mini:backup -- <backup-root>` - full timestamped backup.

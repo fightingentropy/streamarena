@@ -24,6 +24,11 @@ Usage: scripts/deploy-mini.sh [options]
 Builds on the MacBook, deploys runtime artifacts to the Mac mini, restarts the
 backend through launchd, then runs scripts/check-mini.sh.
 
+The previous release is retained until verification succeeds. A failed
+post-restart verification keeps the new release active because database
+migrations may be forward-only; recovery is therefore an explicit operator
+decision rather than an automatic binary downgrade.
+
 By default this runs `bun run check:quality` and `bun run check` (Rust
 format/lint/audit, frontend lint/build/architecture, and all tests) before
 shipping, so broken code can't be deployed. With
@@ -224,7 +229,10 @@ fi
 set -euo pipefail
 umask 077
 
-paths=(dist bin assets/library.json assets/images assets/icons)
+# Keep the executable directory last. Until this final rename, launchd can only
+# restart the already-running release, so an earlier swap error can safely
+# restore the previous files without crossing a forward database migration.
+paths=(dist assets/library.json assets/images assets/icons bin)
 swapped=()
 
 rollback_swaps() {
@@ -277,29 +285,9 @@ if [[ "$deployment_ok" -eq 1 ]]; then
 fi
 
 if [[ "$deployment_ok" -ne 1 ]]; then
-  echo "Deployment verification failed; restoring the previous release." >&2
-  "${SSH_BASE[@]}" "$MINI_HOST" \
-    "REMOTE_APP='$REMOTE_APP' REMOTE_STAGE='$REMOTE_STAGE' REMOTE_ROLLBACK='$REMOTE_ROLLBACK' bash -s" <<'REMOTE'
-set -euo pipefail
-umask 077
-failed="$REMOTE_APP/.deploy-failed/$(basename "$REMOTE_STAGE")"
-for rel in assets/icons assets/images assets/library.json bin dist; do
-  current="$REMOTE_APP/$rel"
-  previous="$REMOTE_ROLLBACK/$rel"
-  failed_path="$failed/$rel"
-  if [[ -e "$previous" || -L "$previous" ]]; then
-    mkdir -p "$(dirname "$failed_path")" "$(dirname "$current")"
-    if [[ -e "$current" || -L "$current" ]]; then
-      mv "$current" "$failed_path"
-    fi
-    mv "$previous" "$current"
-  fi
-done
-REMOTE
-  if [[ "$RESTART" -eq 1 ]]; then
-    "$ROOT_DIR/scripts/install-mini-server.sh" || true
-  fi
-  "$ROOT_DIR/scripts/check-mini.sh" || true
+  echo "Deployment verification failed; the new release remains active." >&2
+  echo "Previous release artifacts are retained at: $REMOTE_ROLLBACK" >&2
+  echo "Do not restore an older backend without confirming database-schema compatibility." >&2
   exit 1
 fi
 
