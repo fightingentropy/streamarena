@@ -7,13 +7,12 @@
     "icon": "./assets/images/icon.png",
     "scheme": "streamarena",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
     "backgroundColor": "#0a0a0a",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "xyz.streamarena.app",
       "infoPlist": {
-        "CFBundleDisplayName": "Netflix",
+        "CFBundleDisplayName": "StreamArena",
         "UIBackgroundModes": ["audio", "fetch"],
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true

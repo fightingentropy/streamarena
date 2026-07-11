@@ -1,5 +1,5 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import CookieManager from "@react-native-cookies/cookies";
+import CookieManager from "@preeternal/react-native-cookie-manager";
 import { API_AUTH_REQUIRED_EVENT, invalidateApiCache } from "@/lib/api";
 import { on } from "@/lib/events";
 import { apiFetch } from "@/lib/http";

@@ -19,7 +19,7 @@ mime_guess = "2"
 multer = "3"
 reqwest = { version = "0.13", default-features = false, features = ["charset", "form", "gzip", "http2", "json", "query", "rustls", "stream"] }
 regex = "1"
-quick-xml = "0.40"
+quick-xml = "0.41"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -42,3 +42,9 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # `test-util` enables tokio's paused-time test clock (`start_paused`) so the
 # staggered-hedge resolver tests run deterministically without real sleeps.
 tokio = { version = "1", features = ["full", "test-util"] }
+
+# StreamArena always starts librqbit with UPnP port forwarding disabled. Replace
+# librqbit's unconditional UPnP dependency with a no-network compatibility shim
+# so the disabled feature cannot pull its vulnerable XML parser into production.
+[patch.crates-io]
+librqbit-upnp = { path = "vendor/librqbit-upnp-disabled" }

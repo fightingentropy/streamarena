@@ -199,7 +199,10 @@ mod tests {
     fn hash_password_uses_a_fresh_salt_each_time() {
         let a = hash_password("same-password").expect("hash a");
         let b = hash_password("same-password").expect("hash b");
-        assert_ne!(a, b, "identical passwords must not produce identical hashes");
+        assert_ne!(
+            a, b,
+            "identical passwords must not produce identical hashes"
+        );
         assert!(verify_password("same-password", &a));
         assert!(verify_password("same-password", &b));
     }
@@ -222,7 +225,8 @@ mod tests {
         assert_eq!(a.len(), 64, "32 random bytes hex-encoded is 64 chars");
         assert!(
             a.chars()
-                .all(|c| c.is_ascii_hexdigit() && (!c.is_ascii_alphabetic() || c.is_ascii_lowercase())),
+                .all(|c| c.is_ascii_hexdigit()
+                    && (!c.is_ascii_alphabetic() || c.is_ascii_lowercase())),
             "token must be lowercase hex"
         );
         assert_ne!(a, b, "tokens must not repeat");
@@ -252,8 +256,14 @@ mod tests {
     fn extract_session_token_is_none_when_absent_or_blank() {
         assert_eq!(extract_session_token(&HeaderMap::new()), None);
         assert_eq!(extract_session_token(&headers_with_cookie("other=1")), None);
-        assert_eq!(extract_session_token(&headers_with_cookie("session=")), None);
-        assert_eq!(extract_session_token(&headers_with_cookie("session=   ")), None);
+        assert_eq!(
+            extract_session_token(&headers_with_cookie("session=")),
+            None
+        );
+        assert_eq!(
+            extract_session_token(&headers_with_cookie("session=   ")),
+            None
+        );
     }
 
     // ── require_auth / require_admin against a real (temp) database ────
@@ -344,11 +354,10 @@ mod tests {
     }
 
     fn error_status(result: AppResult<AuthUser>) -> StatusCode {
-        result
-            .err()
-            .expect("expected an error result")
-            .into_response()
-            .status()
+        let Err(error) = result else {
+            panic!("expected an error result");
+        };
+        error.into_response().status()
     }
 
     async fn seed_user(db: &Db, email: &str) -> i64 {

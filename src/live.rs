@@ -154,7 +154,10 @@ pub async fn live_hls_handler(
     // rewrite lands in the cache. The client-facing Cache-Control still says
     // `no-store` for rolling playlists — the micro-cache is backend-only.
     let (ttl_ms, cache_control) = if immutable {
-        (LIVE_HLS_IMMUTABLE_PLAYLIST_CACHE_TTL_MS, "public, max-age=300")
+        (
+            LIVE_HLS_IMMUTABLE_PLAYLIST_CACHE_TTL_MS,
+            "public, max-age=300",
+        )
     } else {
         (LIVE_HLS_ROLLING_PLAYLIST_CACHE_TTL_MS, "no-store")
     };
@@ -250,10 +253,9 @@ pub fn is_signed_live_hls_request(live_hls_proxy_secret: &str, uri: &Uri) -> boo
     {
         return false;
     }
-    let (Some(input), Some(signature)) = (
-        params.get("input"),
-        params.get(LIVE_HLS_SIGNATURE_PARAM),
-    ) else {
+    let (Some(input), Some(signature)) =
+        (params.get("input"), params.get(LIVE_HLS_SIGNATURE_PARAM))
+    else {
         return false;
     };
     // The signature covers the normalized input + referer exactly as the URL
@@ -398,8 +400,7 @@ pub async fn live_hls_resource_handler(
 }
 
 fn live_resource_looks_like_playlist(content_type: &str, bytes: &[u8]) -> bool {
-    content_type.to_ascii_lowercase().contains("mpegurl")
-        || bytes.starts_with(b"#EXTM3U")
+    content_type.to_ascii_lowercase().contains("mpegurl") || bytes.starts_with(b"#EXTM3U")
 }
 
 fn live_segment_response(
@@ -427,16 +428,16 @@ fn url_path_is_mpegts(url: &Url) -> bool {
 /// 188-byte periodicity). Returns `None` for clean segments after a cheap 4-byte
 /// check, so it's safe to call on every fragment.
 fn png_prefixed_ts_strip_offset(bytes: &[u8]) -> Option<usize> {
-    if bytes.len() < 8 || bytes[0] != 0x89 || bytes[1] != 0x50 || bytes[2] != 0x4e || bytes[3] != 0x47 {
+    if bytes.len() < 8
+        || bytes[0] != 0x89
+        || bytes[1] != 0x50
+        || bytes[2] != 0x4e
+        || bytes[3] != 0x47
+    {
         return None;
     }
     let limit = bytes.len().saturating_sub(376).min(65536);
-    for i in 1..limit {
-        if bytes[i] == 0x47 && bytes[i + 188] == 0x47 && bytes[i + 376] == 0x47 {
-            return Some(i);
-        }
-    }
-    None
+    (1..limit).find(|&i| bytes[i] == 0x47 && bytes[i + 188] == 0x47 && bytes[i + 376] == 0x47)
 }
 
 /// Stream a live HLS segment over plain HTTP without buffering the whole body in
@@ -1111,8 +1112,15 @@ fn audio_codec_needs_live_transcode(codec: &str) -> bool {
 /// re-encode bitrate can match the source quality.
 async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<LiveTranscodeDecision> {
     let args = [
-        "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height",
-        "-of", "csv=p=0", "-i", "-",
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_type,codec_name,width,height",
+        "-of",
+        "csv=p=0",
+        "-i",
+        "-",
     ]
     .iter()
     .map(|value| (*value).to_owned())
@@ -1139,10 +1147,12 @@ async fn probe_live_segment_needs_transcode(bytes: Vec<u8>) -> Option<LiveTransc
         }
         saw_stream = true;
         // Data / SCTE-35 / subtitle PIDs break hls.js's TS transmux; drop them.
-        if tokens
-            .iter()
-            .any(|token| matches!(token.as_str(), "data" | "subtitle" | "scte_35" | "timed_id3"))
-        {
+        if tokens.iter().any(|token| {
+            matches!(
+                token.as_str(),
+                "data" | "subtitle" | "scte_35" | "timed_id3"
+            )
+        }) {
             has_data_streams = true;
         }
         // The video stream's line carries "<codec>,video,<width>,<height>".
@@ -1210,10 +1220,38 @@ async fn transcode_live_segment_to_browser_safe(
         .and_then(|value| value.parse::<u64>().ok())
         .map_or_else(|| video_bitrate.to_owned(), |kbps| format!("{}k", kbps * 2));
     let args = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-copyts", "-i", "-", "-map", "0:v:0?",
-        "-map", "0:a:0?", "-c:v", video_encoder, "-a53cc", "0", "-b:v", video_bitrate, "-maxrate",
-        &max_rate, "-bufsize", &buf_size, "-c:a", "aac", "-b:a", "160k", "-muxpreload", "0",
-        "-muxdelay", "0", "-f", "mpegts", "-",
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-copyts",
+        "-i",
+        "-",
+        "-map",
+        "0:v:0?",
+        "-map",
+        "0:a:0?",
+        "-c:v",
+        video_encoder,
+        "-a53cc",
+        "0",
+        "-b:v",
+        video_bitrate,
+        "-maxrate",
+        &max_rate,
+        "-bufsize",
+        &buf_size,
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-muxpreload",
+        "0",
+        "-muxdelay",
+        "0",
+        "-f",
+        "mpegts",
+        "-",
     ]
     .iter()
     .map(|value| (*value).to_owned())
@@ -1234,8 +1272,26 @@ async fn transcode_live_segment_to_browser_safe(
 /// the full segment and the browser's decoder tolerates the bitstream as-is.
 async fn remux_live_segment_strip_data(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     let args = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-copyts", "-i", "-", "-map", "0:v:0?",
-        "-map", "0:a:0?", "-c", "copy", "-muxpreload", "0", "-muxdelay", "0", "-f", "mpegts", "-",
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-copyts",
+        "-i",
+        "-",
+        "-map",
+        "0:v:0?",
+        "-map",
+        "0:a:0?",
+        "-c",
+        "copy",
+        "-muxpreload",
+        "0",
+        "-muxdelay",
+        "0",
+        "-f",
+        "mpegts",
+        "-",
     ]
     .iter()
     .map(|value| (*value).to_owned())
@@ -1352,8 +1408,8 @@ fn live_hls_request_input(
     // skip the Mini's uplink. Default (and the proxied fallback URL) keep the
     // full Mini proxy behavior. Only ever reduces Mini involvement, never the
     // SSRF surface, so it doesn't need to be part of the signed payload.
-    let direct_segments = trusted_external_embed
-        && params.get("directSeg").map(String::as_str) == Some("1");
+    let direct_segments =
+        trusted_external_embed && params.get("directSeg").map(String::as_str) == Some("1");
     Ok(LiveHlsRequest {
         source_url,
         referer,
@@ -1449,9 +1505,7 @@ pub fn build_sports_live_hls_playback_source(
 /// any host NOT listed keeps going through the Mini proxy (the safe default).
 fn is_cors_direct_hls_host(host: &str) -> bool {
     let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    host == "tcloud.lordflix.club"
-        || host == "tiktokcdn.com"
-        || host.ends_with(".tiktokcdn.com")
+    host == "tcloud.lordflix.club" || host == "tiktokcdn.com" || host.ends_with(".tiktokcdn.com")
 }
 
 /// In direct-segment mode, return the absolute upstream URL untouched when its
@@ -1532,7 +1586,11 @@ async fn fetch_live_hls_playlist_upstream(
     }
 
     let fetched = fetch_live_hls_playlist_via_browser(live_request).await?;
-    ensure_allowed_live_hls_final_url(&fetched.final_url, live_request, LiveHlsRequestKind::Playlist)?;
+    ensure_allowed_live_hls_final_url(
+        &fetched.final_url,
+        live_request,
+        LiveHlsRequestKind::Playlist,
+    )?;
     Ok(fetched)
 }
 
@@ -1601,7 +1659,11 @@ pub(crate) fn parse_curl_response_headers(headers: &str) -> (u16, Option<String>
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("HTTP/") {
             // "HTTP/2 200" or "HTTP/1.1 200 OK" -> the token after the version.
-            if let Some(code) = rest.split_whitespace().nth(1).and_then(|c| c.parse::<u16>().ok()) {
+            if let Some(code) = rest
+                .split_whitespace()
+                .nth(1)
+                .and_then(|c| c.parse::<u16>().ok())
+            {
                 status = code;
             }
         } else if let Some((name, value)) = trimmed.split_once(':')
@@ -1798,7 +1860,10 @@ async fn fetch_live_hls_resource_via_http(
         .await
         .map_err(|_| ApiError::bad_gateway("Live HLS resource response could not be read."))?
         .to_vec();
-    Ok(LiveHlsResourceFetch { content_type, bytes })
+    Ok(LiveHlsResourceFetch {
+        content_type,
+        bytes,
+    })
 }
 
 async fn fetch_live_hls_playlist_via_browser(
@@ -1814,9 +1879,10 @@ async fn fetch_live_hls_playlist_via_browser(
         ));
     }
 
-    let referer_page = browser_bound_live_hls_page_url(live_request.referer.as_deref()).ok_or_else(
-        || ApiError::bad_gateway("Live HLS browser fetch requires a player page referer."),
-    )?;
+    let referer_page = browser_bound_live_hls_page_url(live_request.referer.as_deref())
+        .ok_or_else(|| {
+            ApiError::bad_gateway("Live HLS browser fetch requires a player page referer.")
+        })?;
 
     let mut command = Command::new("node");
     command
@@ -2186,11 +2252,8 @@ fn rewrite_live_hls_master_playlist(
         }
 
         if line.starts_with('#') {
-            let rewritten_line = rewrite_hls_uri_attribute(
-                base_url,
-                line,
-                referer,
-                |input, referer| {
+            let rewritten_line =
+                rewrite_hls_uri_attribute(base_url, line, referer, |input, referer| {
                     if let Some(direct) = direct_hls_url_if_eligible(input, direct_segments) {
                         return direct;
                     }
@@ -2209,8 +2272,7 @@ fn rewrite_live_hls_master_playlist(
                             trusted_external_embed_secret,
                         )
                     }
-                },
-            );
+                });
             rewritten.push(strip_video_only_stream_inf_codecs(&rewritten_line));
             continue;
         }
@@ -2427,8 +2489,7 @@ fn rewrite_live_hls_media_playlist(
     // half the kept window keeps the start fragment safely inside the window
     // even after it slides during startup.
     let kept_window_seconds: f64 = segment_durations.iter().skip(dropped_segments).sum();
-    let start_offset_seconds =
-        LIVE_HLS_START_OFFSET_SECONDS.min(kept_window_seconds / 2.0);
+    let start_offset_seconds = LIVE_HLS_START_OFFSET_SECONDS.min(kept_window_seconds / 2.0);
     if start_offset_seconds >= LIVE_HLS_START_OFFSET_MIN_SECONDS {
         header.push(format!(
             "#EXT-X-START:TIME-OFFSET=-{start_offset_seconds:.3},PRECISE=NO"
@@ -2664,9 +2725,8 @@ fn find_hls_attribute_start(line: &str, attribute: &str) -> Option<usize> {
 mod tests {
     use super::{
         LiveHlsRequestKind, audio_codec_needs_live_transcode,
-        build_sports_live_hls_playback_source,
-        build_trusted_external_embed_hls_playback_source,
-        browser_bound_live_hls_referer_header, host_matches_allowed_live_hls_host,
+        browser_bound_live_hls_referer_header, build_sports_live_hls_playback_source,
+        build_trusted_external_embed_hls_playback_source, host_matches_allowed_live_hls_host,
         is_allowed_live_hls_url, is_browser_bound_live_hls_upstream, is_live_ts_segment,
         is_public_external_embed_hls_proxy_url, is_trusted_external_embed_hls_request,
         live_audio_stream_key, normalize_hls_referer, png_prefixed_ts_strip_offset, query_pairs,
@@ -2719,7 +2779,8 @@ mod tests {
 
     #[test]
     fn routes_signed_live_playlists_to_worker_base() {
-        let signed = "/api/live/hls.m3u8?input=https%3A%2F%2Fcdn%2Flive.m3u8&externalEmbed=1&sig=abc";
+        let signed =
+            "/api/live/hls.m3u8?input=https%3A%2F%2Fcdn%2Flive.m3u8&externalEmbed=1&sig=abc";
         assert_eq!(
             super::route_live_playback_source_via_worker(
                 "https://live.example.workers.dev/",
@@ -2758,15 +2819,15 @@ mod tests {
     #[test]
     fn strips_video_only_codecs_but_keeps_complete_ones() {
         // Video-only CODECS (the Nova Sports 1 MP2 case) gets stripped.
-        let video_only = "#EXT-X-STREAM-INF:BANDWIDTH=8730000,RESOLUTION=1920x1080,CODECS=\"avc1.640029\"";
+        let video_only =
+            "#EXT-X-STREAM-INF:BANDWIDTH=8730000,RESOLUTION=1920x1080,CODECS=\"avc1.640029\"";
         let stripped = strip_video_only_stream_inf_codecs(video_only);
         assert!(!stripped.to_ascii_lowercase().contains("codecs="));
         assert!(stripped.contains("BANDWIDTH=8730000"));
         assert!(stripped.contains("RESOLUTION=1920x1080"));
 
         // Audio+video CODECS (the working Nova Sports 2 case) is preserved.
-        let complete =
-            "#EXT-X-STREAM-INF:BANDWIDTH=6190000,CODECS=\"avc1.4d4029,mp4a.40.2\",RESOLUTION=1280x720";
+        let complete = "#EXT-X-STREAM-INF:BANDWIDTH=6190000,CODECS=\"avc1.4d4029,mp4a.40.2\",RESOLUTION=1280x720";
         assert_eq!(strip_video_only_stream_inf_codecs(complete), complete);
 
         // Non STREAM-INF lines are untouched.
@@ -2785,18 +2846,21 @@ mod tests {
 
     #[test]
     fn derives_stable_live_audio_stream_key_ignoring_token() {
-        let a: url::Url =
-            "https://lovely.lovetier.bz/NOVASPORTS1/tracks-v1a1/seg-1.ts?token=abc".parse().unwrap();
-        let b: url::Url =
-            "https://lovely.lovetier.bz/NOVASPORTS1/tracks-v1a1/seg-2.ts?token=xyz".parse().unwrap();
+        let a: url::Url = "https://lovely.lovetier.bz/NOVASPORTS1/tracks-v1a1/seg-1.ts?token=abc"
+            .parse()
+            .unwrap();
+        let b: url::Url = "https://lovely.lovetier.bz/NOVASPORTS1/tracks-v1a1/seg-2.ts?token=xyz"
+            .parse()
+            .unwrap();
         assert_eq!(live_audio_stream_key(&a), live_audio_stream_key(&b));
         assert_eq!(
             live_audio_stream_key(&a),
             "lovely.lovetier.bz/NOVASPORTS1/tracks-v1a1"
         );
 
-        let other: url::Url =
-            "https://lovely.lovetier.bz/NOVASPORTS2/tracks-v1a1/seg-1.ts".parse().unwrap();
+        let other: url::Url = "https://lovely.lovetier.bz/NOVASPORTS2/tracks-v1a1/seg-1.ts"
+            .parse()
+            .unwrap();
         assert_ne!(live_audio_stream_key(&a), live_audio_stream_key(&other));
 
         // Renditions of the same channel probe independently: the probed video
@@ -3097,9 +3161,10 @@ mod tests {
 
     #[test]
     fn live_playlist_start_offset_clamps_to_short_windows() {
-        let base: url::Url = "https://liveprodusphoenixeast.global.ssl.fastly.net/USPhx-HD/index.m3u8"
-            .parse()
-            .expect("base url");
+        let base: url::Url =
+            "https://liveprodusphoenixeast.global.ssl.fastly.net/USPhx-HD/index.m3u8"
+                .parse()
+                .expect("base url");
 
         // Long window (8 x 6 s = 48 s): the full 18 s offset fits.
         let long_window = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n".to_owned()
@@ -3228,7 +3293,10 @@ mod tests {
     fn gzip_roundtrips_playlist_bytes() {
         let body = "#EXTM3U\n".to_owned() + &"/api/live/hls-resource?input=x&sig=y\n".repeat(500);
         let compressed = super::gzip_bytes(body.as_bytes()).expect("gzip");
-        assert!(compressed.len() < body.len() / 5, "expected >5x compression");
+        assert!(
+            compressed.len() < body.len() / 5,
+            "expected >5x compression"
+        );
         use std::io::Read;
         let mut decoder = flate2::read::GzDecoder::new(compressed.as_slice());
         let mut restored = String::new();
@@ -3238,12 +3306,16 @@ mod tests {
 
     #[test]
     fn browser_bound_live_hls_hosts_prefer_direct_playback() {
-        let strmd: url::Url =
-            "https://lb10.strmd.st/secure/token/rtmp/stream/id/1/playlist.m3u8".parse().unwrap();
+        let strmd: url::Url = "https://lb10.strmd.st/secure/token/rtmp/stream/id/1/playlist.m3u8"
+            .parse()
+            .unwrap();
         let strmd_top: url::Url =
-            "https://lb12.strmd.top/secure/token/rtmp/stream/id/1/playlist.m3u8".parse().unwrap();
-        let hesgoaler: url::Url =
-            "https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8?token=abc".parse().unwrap();
+            "https://lb12.strmd.top/secure/token/rtmp/stream/id/1/playlist.m3u8"
+                .parse()
+                .unwrap();
+        let hesgoaler: url::Url = "https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8?token=abc"
+            .parse()
+            .unwrap();
 
         assert!(is_browser_bound_live_hls_upstream(&strmd));
         assert!(is_browser_bound_live_hls_upstream(&strmd_top));
@@ -3251,14 +3323,14 @@ mod tests {
 
         let secret = "test-live-hls-proxy-secret-with-enough-length";
         let referer = "https://embed.st/embed/admin/ppv-croatia-vs-slovenia/1";
-        assert!(build_sports_live_hls_playback_source(strmd.as_str(), Some(referer), secret)
-            .starts_with("/api/live/hls.m3u8?"));
-        assert!(build_sports_live_hls_playback_source(
-            hesgoaler.as_str(),
-            Some(referer),
-            secret
-        )
-        .starts_with("/api/live/hls.m3u8?"));
+        assert!(
+            build_sports_live_hls_playback_source(strmd.as_str(), Some(referer), secret)
+                .starts_with("/api/live/hls.m3u8?")
+        );
+        assert!(
+            build_sports_live_hls_playback_source(hesgoaler.as_str(), Some(referer), secret)
+                .starts_with("/api/live/hls.m3u8?")
+        );
     }
 
     #[test]
@@ -3266,15 +3338,22 @@ mod tests {
         let storm: url::Url = "https://storm.vodvidl.site/proxy/wiwii/abc/playlist.m3u8?auth=x"
             .parse()
             .unwrap();
-        let storm_sub: url::Url = "https://edge.vodvidl.site/proxy/abc/seg-1.ts".parse().unwrap();
-        let typhoon: url::Url = "https://typhoontigertribe.net/example/index.m3u8".parse().unwrap();
-        let vixsrc: url::Url = "https://vixsrc.to/playlist/231752?token=x&expires=1".parse().unwrap();
+        let storm_sub: url::Url = "https://edge.vodvidl.site/proxy/abc/seg-1.ts"
+            .parse()
+            .unwrap();
+        let typhoon: url::Url = "https://typhoontigertribe.net/example/index.m3u8"
+            .parse()
+            .unwrap();
+        let vixsrc: url::Url = "https://vixsrc.to/playlist/231752?token=x&expires=1"
+            .parse()
+            .unwrap();
         let vixcdn: url::Url =
             "https://sc-u5-01.vix-content.net/hls/10/3/1f/uuid/video/480p/0000-0500.ts?token=x"
                 .parse()
                 .unwrap();
-        let strmd: url::Url =
-            "https://lb10.strmd.st/secure/token/rtmp/stream/id/1/playlist.m3u8".parse().unwrap();
+        let strmd: url::Url = "https://lb10.strmd.st/secure/token/rtmp/stream/id/1/playlist.m3u8"
+            .parse()
+            .unwrap();
         let bloomberg: url::Url = "https://www.bloomberg.com/live.m3u8".parse().unwrap();
 
         assert!(super::is_curl_fetch_live_hls_upstream(&storm));
@@ -3291,7 +3370,10 @@ mod tests {
     #[test]
     fn parses_curl_response_headers() {
         let h2 = "HTTP/2 200 \r\ncontent-type: video/mp2t\r\ncontent-length: 851640\r\n\r\n";
-        assert_eq!(super::parse_curl_response_headers(h2), (200, Some("video/mp2t".to_owned())));
+        assert_eq!(
+            super::parse_curl_response_headers(h2),
+            (200, Some("video/mp2t".to_owned()))
+        );
         let h1 = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/html; charset=UTF-8\r\n";
         assert_eq!(
             super::parse_curl_response_headers(h1),
@@ -3335,7 +3417,10 @@ mod tests {
         let lines: Vec<&str> = master.lines().collect();
         let capped = super::cap_external_embed_master_to_1080p(&lines).join("\n");
         assert!(!capped.contains("3840x2160"), "4K variant must be dropped");
-        assert!(!capped.contains("/2160/index.m3u8"), "4K URI must be dropped");
+        assert!(
+            !capped.contains("/2160/index.m3u8"),
+            "4K URI must be dropped"
+        );
         assert!(
             capped.contains("1920x1080") && capped.contains("/1080/index.m3u8"),
             "1080p variant must be kept"
@@ -3355,7 +3440,10 @@ mod tests {
         // No declared resolutions -> unchanged.
         let no_res = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4500000\n/v/index.m3u8";
         let lines: Vec<&str> = no_res.lines().collect();
-        assert_eq!(super::cap_external_embed_master_to_1080p(&lines).join("\n"), no_res);
+        assert_eq!(
+            super::cap_external_embed_master_to_1080p(&lines).join("\n"),
+            no_res
+        );
     }
 
     #[test]
@@ -3379,8 +3467,13 @@ https://other.example.net/seg-2.ts\n#EXT-X-ENDLIST\n";
         let secret = Some("test-live-hls-proxy-secret-with-enough-length");
 
         // directSeg ON: tiktokcdn segment stays direct, the other is proxied.
-        let direct =
-            rewrite_live_hls_playlist(&base, playlist, Some("https://lordflix.club/"), secret, true);
+        let direct = rewrite_live_hls_playlist(
+            &base,
+            playlist,
+            Some("https://lordflix.club/"),
+            secret,
+            true,
+        );
         assert!(
             direct.contains("https://p16-sg.tiktokcdn.com/a/seg-1.ts"),
             "tiktokcdn segment must be left direct"
@@ -3433,7 +3526,7 @@ https://other.example.net/seg-2.ts\n#EXT-X-ENDLIST\n";
     fn png_prefixed_ts_strip_offset_finds_the_sync_byte() {
         // A 64-byte fake PNG header, then a 3-packet mpeg-ts run (0x47 every 188 bytes).
         let mut buf = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-        buf.extend(std::iter::repeat(0xab).take(56)); // pad the "PNG" header to 64 bytes
+        buf.extend(std::iter::repeat_n(0xab, 56)); // pad the "PNG" header to 64 bytes
         let ts_start = buf.len();
         let mut ts = vec![0u8; 188 * 3];
         ts[0] = 0x47;
@@ -3454,7 +3547,9 @@ https://other.example.net/seg-2.ts\n#EXT-X-ENDLIST\n";
         ts[376] = 0x47;
         assert_eq!(png_prefixed_ts_strip_offset(&ts), None);
         // A PNG with no embedded ts sync run is also left alone.
-        let png_only = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03];
+        let png_only = vec![
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03,
+        ];
         assert_eq!(png_prefixed_ts_strip_offset(&png_only), None);
     }
 
@@ -3495,22 +3590,38 @@ https://other.example.net/seg-2.ts\n#EXT-X-ENDLIST\n";
     fn segment_cache_evicts_oldest_beyond_byte_budget() {
         use axum::body::Bytes;
         let cache = super::LiveSegmentOutputCache::new(8, 100);
-        cache.store("a".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![0u8; 40]));
+        cache.store(
+            "a".to_owned(),
+            "video/mp2t".to_owned(),
+            Bytes::from(vec![0u8; 40]),
+        );
         cache.entries.get_mut("a").unwrap().stored_at_ms -= 20;
-        cache.store("b".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![0u8; 40]));
+        cache.store(
+            "b".to_owned(),
+            "video/mp2t".to_owned(),
+            Bytes::from(vec![0u8; 40]),
+        );
         cache.entries.get_mut("b").unwrap().stored_at_ms -= 10;
         assert!(cache.get_fresh("a").is_some());
         assert!(cache.get_fresh("b").is_some());
 
         // 40 + 40 + 40 > 100: inserting "c" evicts the oldest ("a") only.
-        cache.store("c".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![0u8; 40]));
+        cache.store(
+            "c".to_owned(),
+            "video/mp2t".to_owned(),
+            Bytes::from(vec![0u8; 40]),
+        );
         assert!(cache.get_fresh("a").is_none());
         assert!(cache.get_fresh("b").is_some());
         assert!(cache.get_fresh("c").is_some());
 
         // A single body bigger than the whole budget is never cached (it would
         // evict everything else for one segment).
-        cache.store("huge".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![0u8; 200]));
+        cache.store(
+            "huge".to_owned(),
+            "video/mp2t".to_owned(),
+            Bytes::from(vec![0u8; 200]),
+        );
         assert!(cache.get_fresh("huge").is_none());
     }
 
@@ -3518,20 +3629,36 @@ https://other.example.net/seg-2.ts\n#EXT-X-ENDLIST\n";
     fn segment_cache_evicts_expired_then_oldest_beyond_entry_cap() {
         use axum::body::Bytes;
         let cache = super::LiveSegmentOutputCache::new(2, 1_000_000);
-        cache.store("old".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![1u8; 4]));
+        cache.store(
+            "old".to_owned(),
+            "video/mp2t".to_owned(),
+            Bytes::from(vec![1u8; 4]),
+        );
         cache.entries.get_mut("old").unwrap().stored_at_ms -=
             super::LIVE_SEGMENT_OUTPUT_CACHE_TTL_MS + 1;
-        cache.store("a".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![2u8; 4]));
+        cache.store(
+            "a".to_owned(),
+            "video/mp2t".to_owned(),
+            Bytes::from(vec![2u8; 4]),
+        );
         cache.entries.get_mut("a").unwrap().stored_at_ms -= 10;
         // Inserting "b" is over the 2-entry cap; the expired entry goes first and
         // no fresh entry is touched.
-        cache.store("b".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![3u8; 4]));
+        cache.store(
+            "b".to_owned(),
+            "video/mp2t".to_owned(),
+            Bytes::from(vec![3u8; 4]),
+        );
         assert!(cache.get_fresh("old").is_none());
         assert!(cache.get_fresh("a").is_some());
         assert!(cache.get_fresh("b").is_some());
         // One more: nothing is expired now, so the oldest fresh entry ("a") goes.
         cache.entries.get_mut("b").unwrap().stored_at_ms -= 5;
-        cache.store("c".to_owned(), "video/mp2t".to_owned(), Bytes::from(vec![4u8; 4]));
+        cache.store(
+            "c".to_owned(),
+            "video/mp2t".to_owned(),
+            Bytes::from(vec![4u8; 4]),
+        );
         assert!(cache.get_fresh("a").is_none());
         assert!(cache.get_fresh("b").is_some());
         let c = cache.get_fresh("c").expect("newest entry kept");
@@ -3572,7 +3699,9 @@ https://other.example.net/seg-2.ts\n#EXT-X-ENDLIST\n";
         assert!(super::head_is_png_prefixed(&head));
 
         // Clean-ts head is never mistaken for PNG.
-        assert!(!super::head_is_png_prefixed(&[0x47, 0x40, 0x11, 0x10, 0, 0, 0, 1]));
+        assert!(!super::head_is_png_prefixed(&[
+            0x47, 0x40, 0x11, 0x10, 0, 0, 0, 1
+        ]));
 
         // Short EOF body (< peek size): returned as-is instead of hanging.
         let mut stream =

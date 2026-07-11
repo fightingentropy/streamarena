@@ -329,7 +329,12 @@ pub fn compute_status(input: &HealthInputs) -> (Status, Vec<Check>) {
     } else {
         Status::Green
     };
-    checks.push(check("restarts", "Restarts", restart_status, restart_detail));
+    checks.push(check(
+        "restarts",
+        "Restarts",
+        restart_status,
+        restart_detail,
+    ));
 
     // File descriptors — the exhaustion incident.
     if input.fd_limit > 0 && input.fd_count >= 0 {

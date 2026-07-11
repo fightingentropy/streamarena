@@ -12,6 +12,9 @@
     "test:frontend:unit": "node ./scripts/auth-local-state-test.mjs && node ./scripts/subtitle-offset-test.mjs",
     "test:frontend": "bun run test:frontend:unit && node ./scripts/frontend-smoke.mjs",
     "test": "bun run test:rust && bun run test:frontend",
+    "check:rust": "cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings",
+    "audit:rust": "cargo audit --no-fetch",
+    "check:quality": "bun run check:rust && bun run audit:rust",
     "check:architecture": "node ./scripts/check-architecture.mjs",
     "check": "bun run lint:frontend && bun run build && bun run check:architecture && bun run test:rust && bun run test:frontend",
     "build": "vite build",
@@ -35,7 +38,7 @@
   },
   "devDependencies": {
     "playwright": "^1.60.0",
-    "vite": "^8.0.14",
+    "vite": "^8.1.4",
     "vite-plugin-solid": "^2.11.12"
   },
   "overrides": {

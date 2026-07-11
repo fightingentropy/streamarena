@@ -14,9 +14,8 @@ use url::Url;
 use axum::http::HeaderMap;
 
 use crate::auth;
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::error::{ApiError, AppResult, json_response};
-use crate::health::HealthInputs;
 use crate::football::{
     SportsProviderHealth, SportsScheduleCache, SportsStreamResolveCache,
     american_football_matches_handler, baseball_matches_handler, basketball_matches_handler,
@@ -24,6 +23,7 @@ use crate::football::{
     football_stream_resolve_handler, hockey_matches_handler,
     streamed_sports_stream_resolve_handler, tennis_matches_handler,
 };
+use crate::health::HealthInputs;
 use crate::home_bootstrap;
 use crate::library::{
     normalize_upload_content_type, normalize_upload_episode_ordinal, normalize_whitespace,
@@ -217,10 +217,7 @@ async fn api_auth_middleware(
     // to this origin without a browser session (cookies don't cross the
     // worker hop); the HMAC in the URL is the authorization — only this
     // backend can mint it. Everything else requires a session.
-    if crate::live::is_signed_live_hls_request(
-        &state.config.live_hls_proxy_secret,
-        request.uri(),
-    ) {
+    if crate::live::is_signed_live_hls_request(&state.config.live_hls_proxy_secret, request.uri()) {
         return Ok(next.run(request).await);
     }
     auth::require_auth(&state.db, &headers).await?;
@@ -464,10 +461,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/admin/providers/test",
             any(admin_provider_test_handler),
         )
-        .route(
-            "/api/admin/providers/add",
-            any(admin_provider_add_handler),
-        )
+        .route("/api/admin/providers/add", any(admin_provider_add_handler))
         .route(
             "/api/admin/providers/remove",
             any(admin_provider_remove_handler),
@@ -530,7 +524,8 @@ async fn admin_growth_handler(
     auth::require_admin(&state.db, &headers).await?;
     let days = admin_query_i64(&uri, "days", 30);
     let rows = state.db.admin_growth(days).await?;
-    let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
+    let value =
+        serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({ "days": value })))
 }
 
@@ -548,7 +543,8 @@ async fn admin_users_handler(
     let limit = admin_query_i64(&uri, "limit", 200);
     let offset = admin_query_i64(&uri, "offset", 0);
     let rows = state.db.admin_users(search, limit, offset).await?;
-    let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
+    let value =
+        serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({ "users": value })))
 }
 
@@ -564,7 +560,9 @@ async fn admin_user_detail_handler(
     auth::require_admin(&state.db, &headers).await?;
     let user_id = admin_query_i64(&uri, "id", 0);
     if user_id <= 0 {
-        return Err(ApiError::bad_request("A numeric id query parameter is required."));
+        return Err(ApiError::bad_request(
+            "A numeric id query parameter is required.",
+        ));
     }
     let detail = state
         .db
@@ -588,7 +586,8 @@ async fn admin_activity_handler(
     auth::require_admin(&state.db, &headers).await?;
     let limit = admin_query_i64(&uri, "limit", 50);
     let rows = state.db.admin_activity(limit).await?;
-    let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
+    let value =
+        serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({ "events": value })))
 }
 
@@ -604,7 +603,8 @@ async fn admin_live_top_handler(
     auth::require_admin(&state.db, &headers).await?;
     let days = admin_query_i64(&uri, "days", 7);
     let rows = state.db.admin_top_live_streams(days, 12).await?;
-    let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
+    let value =
+        serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({ "streams": value })))
 }
 
@@ -620,7 +620,8 @@ async fn admin_feedback_handler(
     auth::require_admin(&state.db, &headers).await?;
     let limit = admin_query_i64(&uri, "limit", 100);
     let rows = state.db.admin_feedback(limit).await?;
-    let value = serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
+    let value =
+        serde_json::to_value(rows).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({ "feedback": value })))
 }
 
@@ -677,7 +678,9 @@ async fn admin_reset_password_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
@@ -711,7 +714,9 @@ async fn admin_set_disabled_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     let admin = auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
@@ -742,7 +747,9 @@ async fn admin_set_admin_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     let admin = auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
@@ -773,7 +780,9 @@ async fn admin_delete_user_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     let admin = auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
@@ -829,7 +838,11 @@ async fn gather_health(state: &AppState) -> AppResult<HealthGather> {
     let recent = state.db.recent_health_samples(now - 10 * 60 * 1000).await?;
     let baseline = recent.first();
     let delta = |current: i64, base: i64| -> i64 {
-        if current >= base { current - base } else { current }
+        if current >= base {
+            current - base
+        } else {
+            current
+        }
     };
     let (http_window_total, http_window_5xx, live_proxy_window_5xx) = match baseline {
         Some(b) => (
@@ -856,7 +869,9 @@ async fn gather_health(state: &AppState) -> AppResult<HealthGather> {
 
     let starts = state.db.service_starts_since(now - 60 * 60 * 1000).await?;
     let restarts_last_1h = starts.len() as i64;
-    let minutes_since_last_restart = starts.first().map(|s| ((now - s.startedAt) / 60_000).max(0));
+    let minutes_since_last_restart = starts
+        .first()
+        .map(|s| ((now - s.startedAt) / 60_000).max(0));
 
     let provider_summary = state.sports_provider_health.summary(true);
     let worst_provider_consecutive_failures = provider_summary
@@ -871,7 +886,8 @@ async fn gather_health(state: &AppState) -> AppResult<HealthGather> {
         })
         .unwrap_or(0);
 
-    let streaming_stats = serde_json::to_value(state.streaming.stats()).unwrap_or_else(|_| json!({}));
+    let streaming_stats =
+        serde_json::to_value(state.streaming.stats()).unwrap_or_else(|_| json!({}));
     let resolver_stats = serde_json::to_value(state.resolver.stats()).unwrap_or_else(|_| json!({}));
 
     let req_5xx_rate = if http_window_total > 0 {
@@ -1033,7 +1049,9 @@ async fn admin_providers_handler(
     let providers_value =
         serde_json::to_value(providers).map_err(|error| ApiError::internal(error.to_string()))?;
     let live_overrides: std::collections::BTreeMap<String, String> =
-        crate::provider_registry::live_overrides().into_iter().collect();
+        crate::provider_registry::live_overrides()
+            .into_iter()
+            .collect();
     let live_value = serde_json::to_value(live_overrides)
         .map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({
@@ -1051,7 +1069,9 @@ async fn admin_provider_set_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
@@ -1136,7 +1156,9 @@ async fn admin_provider_test_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
@@ -1252,7 +1274,9 @@ async fn admin_provider_add_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
@@ -1263,7 +1287,9 @@ async fn admin_provider_add_handler(
         .trim()
         .to_owned();
     if raw_url.is_empty() {
-        return Err(ApiError::bad_request("A manifest or addon URL is required."));
+        return Err(ApiError::bad_request(
+            "A manifest or addon URL is required.",
+        ));
     }
     let base = normalize_custom_addon_base(&raw_url)
         .ok_or_else(|| ApiError::bad_request("Enter a valid https addon URL."))?;
@@ -1358,7 +1384,9 @@ async fn admin_provider_remove_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
@@ -1400,7 +1428,9 @@ async fn live_channel_overrides_handler(
     }
     auth::require_auth(&state.db, &headers).await?;
     let overrides: std::collections::BTreeMap<String, String> =
-        crate::provider_registry::live_overrides().into_iter().collect();
+        crate::provider_registry::live_overrides()
+            .into_iter()
+            .collect();
     let value =
         serde_json::to_value(overrides).map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(json_response(json!({ "overrides": value })))
@@ -1409,11 +1439,13 @@ async fn live_channel_overrides_handler(
 pub async fn debug_cache(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     uri: Uri,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET && method != Method::POST {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
+    auth::require_admin(&state.db, &headers).await?;
     let clear_requested = query_flag_enabled(uri.query().unwrap_or_default(), "clear");
     if clear_requested && method != Method::POST {
         return Err(ApiError::method_not_allowed(
@@ -1450,10 +1482,12 @@ pub async fn debug_cache(
 pub async fn debug_sports(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
+    auth::require_admin(&state.db, &headers).await?;
     Ok(json_response(json!({
         "scheduleCache": state.sports_schedule_cache.debug_payload(),
         "streamResolveCache": state.sports_stream_resolve_cache.stats(),
@@ -1481,6 +1515,12 @@ pub async fn config_handler(
         "resolverProviders": ["fastest", "local-torrent", "real-debrid"],
         "torznabConfigured": !state.config.torznab_api_url.is_empty(),
         "tmdbConfigured": !state.config.tmdb_api_key.is_empty(),
+        "signup": {
+            "open": state.config.open_signup_enabled,
+            "inviteEnabled": !state.config.signup_invite_code.is_empty(),
+            "bootstrapEnabled": config::bootstrap_admin_email().is_some()
+                && !state.config.signup_invite_code.is_empty()
+        },
         "playbackSessionsEnabled": state.config.playback_sessions_enabled,
         "autoAudioSyncEnabled": state.config.auto_audio_sync_enabled,
         "remuxVideoMode": state.config.remux_video_mode,
@@ -1509,12 +1549,16 @@ pub async fn config_handler(
 pub async fn health_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     uri: Uri,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
     let refresh = query_flag_enabled(uri.query().unwrap_or_default(), "refresh");
+    if refresh {
+        auth::require_admin(&state.db, &headers).await?;
+    }
     let ffmpeg = state.runtime.get_ffmpeg_capabilities(refresh).await;
     Ok(json_response(json!({
         "ok": true,
@@ -1551,8 +1595,10 @@ pub async fn library_get_handler(State(state): State<AppState>) -> AppResult<Res
 
 pub async fn library_put_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
+    auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let updated = write_local_library(&state.config.local_library_path, payload).await?;
     Ok(json_response(json!({
@@ -1672,7 +1718,7 @@ pub async fn title_preferences_handler(
                 .await?;
             state
                 .db
-                .delete_playback_sessions_for_tmdb(tmdb_id.clone())
+                .delete_playback_sessions_for_tmdb(user.id, tmdb_id.clone())
                 .await?;
             state
                 .db
@@ -1755,7 +1801,10 @@ pub async fn session_progress_handler(
     } else {
         requested_session_key.clone()
     };
-    let mut existing = state.db.get_playback_session(session_key.clone()).await?;
+    let mut existing = state
+        .db
+        .get_playback_session(user.id, session_key.clone())
+        .await?;
     if let Some(ref session) = existing
         && session.tmdb_id != tmdb_id
     {
@@ -1773,12 +1822,15 @@ pub async fn session_progress_handler(
             .await?;
             session_key =
                 build_playback_session_key(&tmdb_id, &effective_audio_lang, &preferred_quality);
-            existing = state.db.get_playback_session(session_key.clone()).await?;
+            existing = state
+                .db
+                .get_playback_session(user.id, session_key.clone())
+                .await?;
         }
         if existing.is_none() {
             existing = state
                 .db
-                .get_latest_playback_session_for_tmdb(tmdb_id.clone())
+                .get_latest_playback_session_for_tmdb(user.id, tmdb_id.clone())
                 .await?;
             if let Some(ref latest) = existing {
                 session_key = latest.session_key.clone();
@@ -1810,6 +1862,7 @@ pub async fn session_progress_handler(
     let updated = state
         .db
         .update_playback_session_progress(
+            user.id,
             session_key.clone(),
             position_seconds,
             health_state.clone(),
@@ -1822,66 +1875,27 @@ pub async fn session_progress_handler(
         ));
     }
 
-    let source_hash = payload
-        .get("sourceHash")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
-    let event_type = payload
-        .get("eventType")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
+    // Never trust the caller to identify which source should be penalized. The
+    // source identity comes from the authenticated user's stored session.
+    let source_hash = existing.source_hash.trim().to_lowercase();
     let last_error_text = payload
         .get("lastError")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
 
-    if health_state == "invalid" {
+    if health_state == "invalid" && !source_hash.is_empty() {
         state
             .db
-            .invalidate_all_movie_resolve_caches_for_tmdb(tmdb_id.clone())
-            .await?;
-        if !source_hash.is_empty() {
-            let inferred_event = match event_type.as_str() {
-                "decode_failure" | "ended_early" | "playback_error" => event_type.clone(),
-                _ if last_error_text.to_lowercase().contains("decode") => {
-                    "decode_failure".to_owned()
-                }
-                _ => "playback_error".to_owned(),
-            };
-            state
-                .db
-                .record_source_health_event(
-                    source_hash.clone(),
-                    inferred_event,
-                    last_error_text.clone(),
-                )
-                .await?;
-            state
-                .db
-                .invalidate_playback_sessions_by_source_hash(
-                    source_hash.clone(),
-                    last_error_text.if_empty_then(|| "Playback source failed.".to_owned()),
-                )
-                .await?;
-        }
-    } else if !source_hash.is_empty()
-        && matches!(
-            event_type.as_str(),
-            "success" | "decode_failure" | "ended_early" | "playback_error"
-        )
-    {
-        state
-            .db
-            .record_source_health_event(source_hash, event_type, last_error_text)
+            .invalidate_playback_sessions_by_source_hash(
+                user.id,
+                source_hash.clone(),
+                last_error_text.if_empty_then(|| "Playback source failed.".to_owned()),
+            )
             .await?;
     }
 
-    let next_session = state.db.get_playback_session(session_key).await?;
+    let next_session = state.db.get_playback_session(user.id, session_key).await?;
     Ok(json_response(json!({
         "ok": true,
         "session": next_session.map(build_playback_session_payload)
@@ -2131,6 +2145,7 @@ pub async fn tmdb_tv_season_handler(
 pub async fn upload_infer_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
@@ -2138,6 +2153,7 @@ pub async fn upload_infer_handler(
             "Method not allowed. Use POST.",
         ));
     }
+    auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let file_name = normalize_whitespace(
         payload
@@ -2158,6 +2174,7 @@ pub async fn upload_infer_handler(
 pub async fn upload_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
@@ -2165,6 +2182,7 @@ pub async fn upload_handler(
             "Method not allowed. Use POST.",
         ));
     }
+    auth::require_admin(&state.db, &headers).await?;
     let payload = state.upload.handle_direct_upload(request).await?;
     Ok(json_response(payload))
 }
@@ -2172,6 +2190,7 @@ pub async fn upload_handler(
 pub async fn upload_session_start_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
@@ -2179,6 +2198,7 @@ pub async fn upload_session_start_handler(
             "Method not allowed. Use POST.",
         ));
     }
+    auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     Ok(json_response(state.upload.start_session(payload).await?))
 }
@@ -2186,6 +2206,7 @@ pub async fn upload_session_start_handler(
 pub async fn upload_session_chunk_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     uri: Uri,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
@@ -2194,6 +2215,7 @@ pub async fn upload_session_chunk_handler(
             "Method not allowed. Use POST.",
         ));
     }
+    auth::require_admin(&state.db, &headers).await?;
     let params = query_pairs(uri.query().unwrap_or_default());
     let session_id = params.get("sessionId").cloned().unwrap_or_default();
     Ok(json_response(
@@ -2207,6 +2229,7 @@ pub async fn upload_session_chunk_handler(
 pub async fn upload_session_finish_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
@@ -2214,6 +2237,7 @@ pub async fn upload_session_finish_handler(
             "Method not allowed. Use POST.",
         ));
     }
+    auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     Ok(json_response(state.upload.finish_session(payload).await?))
 }
@@ -2221,6 +2245,7 @@ pub async fn upload_session_finish_handler(
 pub async fn gallery_save_stream_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
@@ -2228,6 +2253,7 @@ pub async fn gallery_save_stream_handler(
             "Method not allowed. Use POST.",
         ));
     }
+    auth::require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     Ok(json_response(state.upload.queue_gallery_save(payload)?))
 }
@@ -2707,7 +2733,12 @@ pub async fn download_export_handler(
         .unwrap_or_default();
     state
         .streaming
-        .create_export_response(&input, audio_stream_index, duration_seconds, method == Method::HEAD)
+        .create_export_response(
+            &input,
+            audio_stream_index,
+            duration_seconds,
+            method == Method::HEAD,
+        )
         .await
 }
 
@@ -3004,6 +3035,25 @@ fn absolute_request_url_with_authority(
 const SESSION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
 const SIGNUP_CLOSED_MESSAGE: &str = "Sign-up is closed. Ask the app owner for access.";
 
+/// Returns whether an allowed registration should become the configured
+/// bootstrap administrator. A bootstrap address must also present the invite
+/// code, even when public signup is open, so the address cannot be preempted by
+/// someone who merely knows it. `None` means registration is closed for this
+/// request. This deliberately has no "first user" exception.
+fn signup_admin_status(
+    open_signup: bool,
+    configured_invite: &str,
+    supplied_invite: &str,
+    bootstrap_email: Option<&str>,
+    email: &str,
+) -> Option<bool> {
+    let valid_invite = !configured_invite.is_empty() && supplied_invite == configured_invite;
+    if bootstrap_email.is_some_and(|configured| configured == email) {
+        return valid_invite.then_some(true);
+    }
+    (open_signup || valid_invite).then_some(false)
+}
+
 fn set_session_cookie(token: &str, secure: bool) -> String {
     let secure_attr = if secure { "; Secure" } else { "" };
     format!(
@@ -3087,12 +3137,15 @@ async fn auth_signup_handler(
         ));
     }
 
-    let has_valid_invite_code = !state.config.signup_invite_code.is_empty()
-        && invite_code == state.config.signup_invite_code;
-    let is_open_signup = state.config.open_signup_enabled || has_valid_invite_code;
-    if !is_open_signup && state.db.user_count().await? > 0 {
-        return Err(ApiError::forbidden(SIGNUP_CLOSED_MESSAGE));
-    }
+    let bootstrap_admin_email = config::bootstrap_admin_email();
+    let is_bootstrap_admin = signup_admin_status(
+        state.config.open_signup_enabled,
+        &state.config.signup_invite_code,
+        &invite_code,
+        bootstrap_admin_email.as_deref(),
+        &email,
+    )
+    .ok_or_else(|| ApiError::forbidden(SIGNUP_CLOSED_MESSAGE))?;
 
     if state.db.get_user_by_email(email.clone()).await?.is_some() {
         return Err(ApiError::bad_request("Email already in use."));
@@ -3102,17 +3155,22 @@ async fn auth_signup_handler(
         .await
         .map_err(ApiError::internal)?;
 
-    let user_id = if is_open_signup {
+    let user_id = if is_bootstrap_admin {
+        state
+            .db
+            .create_bootstrap_admin(
+                email.clone(),
+                password_hash,
+                display_name.clone(),
+                bootstrap_admin_email.unwrap_or_default(),
+            )
+            .await?
+            .ok_or_else(|| ApiError::forbidden(SIGNUP_CLOSED_MESSAGE))?
+    } else {
         state
             .db
             .create_user(email.clone(), password_hash, display_name.clone())
             .await?
-    } else {
-        state
-            .db
-            .create_first_user(email.clone(), password_hash, display_name.clone())
-            .await?
-            .ok_or_else(|| ApiError::forbidden(SIGNUP_CLOSED_MESSAGE))?
     };
 
     let token = auth::generate_session_token();
@@ -3130,7 +3188,7 @@ async fn auth_signup_handler(
     match state
         .db
         .create_email_verification_token(
-            email.clone(),
+            user_id,
             crate::email::sha256_hex(&raw_token),
             verify_expires_at,
         )
@@ -3154,7 +3212,8 @@ async fn auth_signup_handler(
             "id": user_id,
             "email": email,
             "displayName": display_name,
-            "emailVerified": false
+            "emailVerified": false,
+            "isAdmin": is_bootstrap_admin
         }
     }));
     response.headers_mut().insert(
@@ -3307,11 +3366,11 @@ async fn auth_verify_handler(
         .await?
     {
         None => "invalid",
-        Some((token_email, expires_at)) => {
+        Some((user_id, expires_at)) => {
             if expires_at <= now_ms() {
                 "expired"
             } else {
-                state.db.mark_email_verified(token_email, now_ms()).await?;
+                state.db.mark_email_verified(user_id, now_ms()).await?;
                 "success"
             }
         }
@@ -3354,7 +3413,7 @@ async fn auth_resend_verification_handler(
         match state
             .db
             .create_email_verification_token(
-                user.email.clone(),
+                user.id,
                 crate::email::sha256_hex(&raw_token),
                 verify_expires_at,
             )
@@ -3406,13 +3465,13 @@ async fn auth_forgot_handler(
     }
 
     // Act only for real accounts, but always respond identically.
-    if state.db.get_user_by_email(email.clone()).await?.is_some() {
+    if let Some((user_id, _, _, _)) = state.db.get_user_by_email(email.clone()).await? {
         let raw_token = auth::generate_session_token();
         let reset_expires_at = now_ms() + crate::email::RESET_TOKEN_TTL_MS;
         match state
             .db
             .create_password_reset_token(
-                email.clone(),
+                user_id,
                 crate::email::sha256_hex(&raw_token),
                 reset_expires_at,
             )
@@ -3467,7 +3526,7 @@ async fn auth_reset_handler(
         ));
     }
 
-    let (email, expires_at) = state
+    let (user_id, expires_at) = state
         .db
         .consume_password_reset_token(crate::email::sha256_hex(&token))
         .await?
@@ -3481,7 +3540,7 @@ async fn auth_reset_handler(
     let hash = auth::hash_password_async(password.to_string())
         .await
         .map_err(ApiError::internal)?;
-    let changed = state.db.set_password_by_email(email, hash).await?;
+    let changed = state.db.set_password_by_user_id(user_id, hash).await?;
     if changed == 0 {
         return Err(ApiError::bad_request("This reset link is no longer valid."));
     }
@@ -4045,7 +4104,9 @@ async fn user_live_watch_handler(
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
     if method != Method::POST {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use POST."));
+        return Err(ApiError::method_not_allowed(
+            "Method not allowed. Use POST.",
+        ));
     }
     let user = auth::require_auth(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
@@ -4975,7 +5036,7 @@ mod tests {
         manifest_is_stream_addon, normalize_custom_addon_base, normalize_preferred_audio_lang,
         normalize_subtitle_preference, normalize_sync_continue_watching_entries,
         normalize_sync_watch_progress_entries, normalize_user_updated_at, now_ms, provider_slugify,
-        query_flag_enabled, sanitize_my_list_entries,
+        query_flag_enabled, sanitize_my_list_entries, signup_admin_status,
     };
     use axum::http::header::{CONTENT_TYPE, HOST};
     use axum::http::{HeaderMap, HeaderValue, Uri};
@@ -5110,6 +5171,55 @@ mod tests {
     }
 
     #[test]
+    fn closed_signup_has_no_public_first_claimant_exception() {
+        assert_eq!(
+            signup_admin_status(false, "", "", None, "claimant@example.com"),
+            None
+        );
+        assert_eq!(
+            signup_admin_status(
+                false,
+                "invite-secret",
+                "invite-secret",
+                None,
+                "viewer@example.com",
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            signup_admin_status(
+                false,
+                "invite-secret",
+                "invite-secret",
+                Some("owner@example.com"),
+                "owner@example.com",
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            signup_admin_status(
+                true,
+                "invite-secret",
+                "wrong-invite",
+                Some("owner@example.com"),
+                "owner@example.com",
+            ),
+            None,
+            "the reserved bootstrap address cannot be preempted during open signup"
+        );
+        assert_eq!(
+            signup_admin_status(
+                true,
+                "",
+                "",
+                Some("owner@example.com"),
+                "viewer@example.com",
+            ),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn normalizes_legacy_user_sync_maps() {
         let payload = serde_json::json!({
             "watchProgress": {
@@ -5148,7 +5258,10 @@ mod tests {
     fn normalize_user_updated_at_caps_future_but_keeps_past() {
         let now = now_ms();
         // Legacy/small timestamps pass through untouched.
-        assert_eq!(normalize_user_updated_at(Some(&serde_json::json!(123))), 123);
+        assert_eq!(
+            normalize_user_updated_at(Some(&serde_json::json!(123))),
+            123
+        );
         // Non-positive falls back to now.
         assert!(normalize_user_updated_at(Some(&serde_json::json!(0))) >= now);
         // A year-3000 timestamp is capped to roughly now (within the skew window).
@@ -5251,7 +5364,11 @@ mod tests {
             "https://nebula.work.gd/private/abc/manifest.json",
             "  https://nebula.work.gd/private/abc/configure  ",
         ] {
-            assert_eq!(normalize_custom_addon_base(input), Some(want.clone()), "{input}");
+            assert_eq!(
+                normalize_custom_addon_base(input),
+                Some(want.clone()),
+                "{input}"
+            );
         }
         // Non-https / junk rejected.
         assert_eq!(normalize_custom_addon_base("http://nebula.work.gd/x"), None);

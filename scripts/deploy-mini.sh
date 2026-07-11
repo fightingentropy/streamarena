@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -23,8 +24,9 @@ Usage: scripts/deploy-mini.sh [options]
 Builds on the MacBook, deploys runtime artifacts to the Mac mini, restarts the
 backend through launchd, then runs scripts/check-mini.sh.
 
-By default this runs `bun run check` (lint + build + arch + Rust tests +
-frontend tests) before shipping, so broken code can't be deployed. With
+By default this runs `bun run check:quality` and `bun run check` (Rust
+format/lint/audit, frontend lint/build/architecture, and all tests) before
+shipping, so broken code can't be deployed. With
 --skip-build it also refuses to deploy a release binary that is older than the
 Rust sources, which is what caused past "stale binary" deploys.
 
@@ -86,6 +88,14 @@ done
 
 SSH_BASE=(ssh -i "$SSH_KEY" -o BatchMode=yes)
 RSYNC_SSH="ssh -i $SSH_KEY -o BatchMode=yes"
+DEPLOY_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+REMOTE_STAGE="$REMOTE_APP/.deploy-staging/$DEPLOY_ID"
+REMOTE_ROLLBACK="$REMOTE_APP/.deploy-rollback/$DEPLOY_ID"
+
+cleanup_remote_stage() {
+  "${SSH_BASE[@]}" "$MINI_HOST" "rm -rf -- '$REMOTE_STAGE'" >/dev/null 2>&1 || true
+}
+trap cleanup_remote_stage EXIT
 
 BACKEND_BIN="target/release/streamarena-backend"
 
@@ -106,9 +116,10 @@ assert_artifact_fresh() {
   fi
 }
 
-# Pre-deploy validation gate: lint, build, architecture check, and the Rust +
-# frontend test suites. Skipping this is what let broken code reach the mini.
+# Pre-deploy validation gate: Rust format/clippy/security checks plus frontend
+# lint/build/architecture and the Rust + frontend test suites.
 if [[ "$SKIP_CHECK" -eq 0 ]]; then
+  bun run check:quality
   bun run check
 fi
 
@@ -131,24 +142,24 @@ fi
 [[ -d dist ]] || { echo "Missing dist/. Run without --skip-build first." >&2; exit 1; }
 [[ -x "$BACKEND_BIN" ]] || { echo "Missing $BACKEND_BIN. Run without --skip-build first." >&2; exit 1; }
 
-"${SSH_BASE[@]}" "$MINI_HOST" "mkdir -p '$REMOTE_APP/dist' '$REMOTE_APP/bin' '$REMOTE_APP/assets/images' '$REMOTE_APP/assets/icons' '$REMOTE_APP/assets/videos'"
+"${SSH_BASE[@]}" "$MINI_HOST" \
+  "rm -rf -- '$REMOTE_STAGE' '$REMOTE_ROLLBACK' && mkdir -p '$REMOTE_STAGE/dist' '$REMOTE_STAGE/bin' '$REMOTE_STAGE/assets/images' '$REMOTE_STAGE/assets/icons' '$REMOTE_APP/assets/videos'"
 
-rsync -a --delete -e "$RSYNC_SSH" dist/ "$MINI_HOST:$REMOTE_APP/dist/"
+rsync -a --delete -e "$RSYNC_SSH" dist/ "$MINI_HOST:$REMOTE_STAGE/dist/"
 
-rsync -a -e "$RSYNC_SSH" target/release/streamarena-backend "$MINI_HOST:$REMOTE_APP/bin/streamarena-backend.new"
-"${SSH_BASE[@]}" "$MINI_HOST" "chmod 755 '$REMOTE_APP/bin/streamarena-backend.new' && mv '$REMOTE_APP/bin/streamarena-backend.new' '$REMOTE_APP/bin/streamarena-backend'"
-rsync -a -e "$RSYNC_SSH" scripts/resolve-external-embed-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-external-embed-hls.mjs"
-rsync -a -e "$RSYNC_SSH" scripts/resolve-streamed-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-streamed-hls.mjs"
-rsync -a -e "$RSYNC_SSH" scripts/resolve-matchstream-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-matchstream-hls.mjs"
-rsync -a -e "$RSYNC_SSH" scripts/resolve-ntvs-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-ntvs-hls.mjs"
-rsync -a -e "$RSYNC_SSH" scripts/resolve-cdnlivetv-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-cdnlivetv-hls.mjs"
-rsync -a -e "$RSYNC_SSH" scripts/fetch-browser-live-hls.mjs "$MINI_HOST:$REMOTE_APP/bin/fetch-browser-live-hls.mjs"
-rsync -a -e "$RSYNC_SSH" scripts/resolve-embed-min.mjs "$MINI_HOST:$REMOTE_APP/bin/resolve-embed-min.mjs"
-"${SSH_BASE[@]}" "$MINI_HOST" "chmod 755 '$REMOTE_APP/bin/resolve-external-embed-hls.mjs' '$REMOTE_APP/bin/resolve-streamed-hls.mjs' '$REMOTE_APP/bin/resolve-matchstream-hls.mjs' '$REMOTE_APP/bin/resolve-ntvs-hls.mjs' '$REMOTE_APP/bin/resolve-cdnlivetv-hls.mjs' '$REMOTE_APP/bin/fetch-browser-live-hls.mjs' '$REMOTE_APP/bin/resolve-embed-min.mjs'"
+rsync -a -e "$RSYNC_SSH" target/release/streamarena-backend "$MINI_HOST:$REMOTE_STAGE/bin/streamarena-backend"
+rsync -a -e "$RSYNC_SSH" scripts/resolve-external-embed-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-external-embed-hls.mjs"
+rsync -a -e "$RSYNC_SSH" scripts/resolve-streamed-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-streamed-hls.mjs"
+rsync -a -e "$RSYNC_SSH" scripts/resolve-matchstream-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-matchstream-hls.mjs"
+rsync -a -e "$RSYNC_SSH" scripts/resolve-ntvs-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-ntvs-hls.mjs"
+rsync -a -e "$RSYNC_SSH" scripts/resolve-cdnlivetv-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-cdnlivetv-hls.mjs"
+rsync -a -e "$RSYNC_SSH" scripts/fetch-browser-live-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/fetch-browser-live-hls.mjs"
+rsync -a -e "$RSYNC_SSH" scripts/resolve-embed-min.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-embed-min.mjs"
+"${SSH_BASE[@]}" "$MINI_HOST" "chmod 755 '$REMOTE_STAGE/bin/'*"
 
-rsync -a -e "$RSYNC_SSH" assets/library.json "$MINI_HOST:$REMOTE_APP/assets/library.json"
-rsync -a --delete -e "$RSYNC_SSH" assets/images/ "$MINI_HOST:$REMOTE_APP/assets/images/"
-rsync -a --delete -e "$RSYNC_SSH" assets/icons/ "$MINI_HOST:$REMOTE_APP/assets/icons/"
+rsync -a -e "$RSYNC_SSH" assets/library.json "$MINI_HOST:$REMOTE_STAGE/assets/library.json"
+rsync -a --delete -e "$RSYNC_SSH" assets/images/ "$MINI_HOST:$REMOTE_STAGE/assets/images/"
+rsync -a --delete -e "$RSYNC_SSH" assets/icons/ "$MINI_HOST:$REMOTE_STAGE/assets/icons/"
 
 "${SSH_BASE[@]}" "$MINI_HOST" "PLAYWRIGHT_VERSION='$PLAYWRIGHT_VERSION' LIBSODIUM_WRAPPERS_VERSION='$LIBSODIUM_WRAPPERS_VERSION' bash -s" <<'REMOTE'
 set -euo pipefail
@@ -208,10 +219,88 @@ if [[ "${#VIDEOS[@]}" -gt 0 ]]; then
   done
 fi
 
+"${SSH_BASE[@]}" "$MINI_HOST" \
+  "REMOTE_APP='$REMOTE_APP' REMOTE_STAGE='$REMOTE_STAGE' REMOTE_ROLLBACK='$REMOTE_ROLLBACK' bash -s" <<'REMOTE'
+set -euo pipefail
+umask 077
+
+paths=(dist bin assets/library.json assets/images assets/icons)
+swapped=()
+
+rollback_swaps() {
+  local status=$?
+  trap - ERR
+  failed="$REMOTE_APP/.deploy-failed/$(basename "$REMOTE_STAGE")"
+  for ((index=${#swapped[@]} - 1; index >= 0; index--)); do
+    rel="${swapped[$index]}"
+    current="$REMOTE_APP/$rel"
+    previous="$REMOTE_ROLLBACK/$rel"
+    failed_path="$failed/$rel"
+    mkdir -p "$(dirname "$failed_path")" "$(dirname "$current")"
+    if [[ -e "$current" || -L "$current" ]]; then
+      mv "$current" "$failed_path" || true
+    fi
+    if [[ -e "$previous" || -L "$previous" ]]; then
+      mv "$previous" "$current" || true
+    fi
+  done
+  exit "$status"
+}
+trap rollback_swaps ERR
+
+for rel in "${paths[@]}"; do
+  staged="$REMOTE_STAGE/$rel"
+  current="$REMOTE_APP/$rel"
+  previous="$REMOTE_ROLLBACK/$rel"
+  [[ -e "$staged" || -L "$staged" ]]
+  mkdir -p "$(dirname "$current")" "$(dirname "$previous")"
+  if [[ -e "$current" || -L "$current" ]]; then
+    mv "$current" "$previous"
+  fi
+  swapped+=("$rel")
+  mv "$staged" "$current"
+done
+
+trap - ERR
+REMOTE
+
+deployment_ok=1
 if [[ "$RESTART" -eq 1 ]]; then
-  "${SSH_BASE[@]}" "$MINI_HOST" "pkill -TERM -f '$REMOTE_APP/bin/streamarena-backend' || true"
-  sleep 4
+  "$ROOT_DIR/scripts/install-mini-server.sh" || deployment_ok=0
 fi
 
-"$ROOT_DIR/scripts/install-mini-agents.sh"
-"$ROOT_DIR/scripts/check-mini.sh"
+if [[ "$deployment_ok" -eq 1 ]]; then
+  "$ROOT_DIR/scripts/install-mini-agents.sh" || deployment_ok=0
+fi
+if [[ "$deployment_ok" -eq 1 ]]; then
+  "$ROOT_DIR/scripts/check-mini.sh" || deployment_ok=0
+fi
+
+if [[ "$deployment_ok" -ne 1 ]]; then
+  echo "Deployment verification failed; restoring the previous release." >&2
+  "${SSH_BASE[@]}" "$MINI_HOST" \
+    "REMOTE_APP='$REMOTE_APP' REMOTE_STAGE='$REMOTE_STAGE' REMOTE_ROLLBACK='$REMOTE_ROLLBACK' bash -s" <<'REMOTE'
+set -euo pipefail
+umask 077
+failed="$REMOTE_APP/.deploy-failed/$(basename "$REMOTE_STAGE")"
+for rel in assets/icons assets/images assets/library.json bin dist; do
+  current="$REMOTE_APP/$rel"
+  previous="$REMOTE_ROLLBACK/$rel"
+  failed_path="$failed/$rel"
+  if [[ -e "$previous" || -L "$previous" ]]; then
+    mkdir -p "$(dirname "$failed_path")" "$(dirname "$current")"
+    if [[ -e "$current" || -L "$current" ]]; then
+      mv "$current" "$failed_path"
+    fi
+    mv "$previous" "$current"
+  fi
+done
+REMOTE
+  if [[ "$RESTART" -eq 1 ]]; then
+    "$ROOT_DIR/scripts/install-mini-server.sh" || true
+  fi
+  "$ROOT_DIR/scripts/check-mini.sh" || true
+  exit 1
+fi
+
+"${SSH_BASE[@]}" "$MINI_HOST" "rm -rf -- '$REMOTE_STAGE' '$REMOTE_ROLLBACK'"

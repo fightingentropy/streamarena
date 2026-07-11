@@ -42,13 +42,14 @@ node_deps_dir="${STREAMARENA_NODE_DEPS_DIR:-$HOME/.local/share/streamarena-node}
 # A 600-permissioned .env in the app dir is a supported config source (the
 # backend loads it via dotenvy); exclude it from the structure check and verify
 # its permissions separately below.
-runtime_tree=$(find "$app" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | grep -vxF .env | sort | paste -sd, - || true)
+runtime_tree=$(find "$app" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null \
+  | grep -Ev '^(\.env|\.deploy-(staging|rollback|failed))$' \
+  | sort | paste -sd, - || true)
 app_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/health/live || true)
 library_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/library || true)
-# Direct-origin Caddy probes were retired: the origin is locked to Cloudflare
-# IPs, so a loopback request to Caddy is aborted (always 000). The reverse proxy
-# is verified end-to-end through the public hostname instead (see PUBLIC_URL
-# checks at the bottom of this script).
+# The reverse proxy is verified end-to-end through the public hostname below;
+# the backend's loopback health check separately isolates app health from edge
+# and DNS failures.
 listener=$(lsof -nP -iTCP:5173 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
 caddy_80=$(sudo lsof -nP -iTCP:80 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
 caddy_443=$(sudo lsof -nP -iTCP:443 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
@@ -57,12 +58,29 @@ caddy_pid=$(pgrep -x caddy | head -1 || true)
 tunnel_pid=$(pgrep -f "cloudflared tunnel run streamarena" | head -1 || true)
 tunnel_daemon=$(test -e "$tunnel_plist" && echo yes || echo no)
 caddy_version=$("$caddy_bin" version 2>/dev/null | awk '{print $1}' || true)
+caddy_client_ip_guard=$(
+  caddy_config="$HOME/.config/caddy/Caddyfile"
+  if sudo -n grep -q 'trusted_proxies static' "$caddy_config" 2>/dev/null \
+    && sudo -n grep -qi 'header_up cf-connecting-ip' "$caddy_config" 2>/dev/null \
+    && sudo -n grep -qi 'client_ip_headers CF-Connecting-IP' "$caddy_config" 2>/dev/null \
+    && sudo -n grep -q 'remote_ip private_ranges' "$caddy_config" 2>/dev/null; then
+    echo yes
+  else
+    echo no
+  fi
+)
 asset_files=$(find "$app/assets" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
 video_files=$(find "$app/assets/videos" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
 asset_symlinks=$(find "$app/assets" -type l 2>/dev/null | wc -l | tr -d ' ' || true)
 env_mode=$(stat -f '%Lp' "$HOME/.config/streamarena/env" 2>/dev/null || echo missing)
 env_in_app=$(test -e "$app/.env" && echo yes || echo no)
 app_env_mode=$(stat -f '%Lp' "$app/.env" 2>/dev/null || echo none)
+cache_mode=$(stat -f '%Lp' "$app/cache" 2>/dev/null || echo missing)
+users_db_mode=$(stat -f '%Lp' "$app/cache/users.sqlite" 2>/dev/null || echo missing)
+users_db_quick_check=$(sqlite3 -readonly "$app/cache/users.sqlite" 'PRAGMA quick_check;' 2>/dev/null || echo failed)
+canonical_open_signup=$(awk -F= '/^OPEN_SIGNUP=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true)
+app_open_signup=$(awk -F= '/^OPEN_SIGNUP=/ {print substr($0, length($1) + 2); exit}' "$app/.env" 2>/dev/null || true)
+effective_open_signup="${canonical_open_signup:-${app_open_signup:-unset}}"
 sports_http_proxy=$(
   awk -F= '/^SPORTS_HTTP_PROXY=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true
 )
@@ -144,12 +162,17 @@ printf 'caddy_pid=%s\n' "${caddy_pid:-missing}"
 printf 'tunnel_pid=%s\n' "${tunnel_pid:-missing}"
 printf 'tunnel_daemon=%s\n' "$tunnel_daemon"
 printf 'caddy_version=%s\n' "${caddy_version:-missing}"
+printf 'caddy_client_ip_guard=%s\n' "$caddy_client_ip_guard"
 printf 'asset_files=%s\n' "$asset_files"
 printf 'video_files=%s\n' "$video_files"
 printf 'asset_symlinks=%s\n' "$asset_symlinks"
 printf 'env_mode=%s\n' "$env_mode"
 printf 'env_in_app=%s\n' "$env_in_app"
 printf 'app_env_mode=%s\n' "$app_env_mode"
+printf 'cache_mode=%s\n' "$cache_mode"
+printf 'users_db_mode=%s\n' "$users_db_mode"
+printf 'users_db_quick_check=%s\n' "$users_db_quick_check"
+printf 'effective_open_signup=%s\n' "$effective_open_signup"
 printf 'sports_proxy_matches_expected=%s\n' "$sports_proxy_matches_expected"
 printf 'app_daemon=%s\n' "$app_daemon"
 printf 'caddy_daemon=%s\n' "$caddy_daemon"
@@ -205,10 +228,15 @@ caddy_pid=$(value_for caddy_pid)
 tunnel_pid=$(value_for tunnel_pid)
 tunnel_daemon=$(value_for tunnel_daemon)
 caddy_version=$(value_for caddy_version)
+caddy_client_ip_guard=$(value_for caddy_client_ip_guard)
 asset_symlinks=$(value_for asset_symlinks)
 env_mode=$(value_for env_mode)
 env_in_app=$(value_for env_in_app)
 app_env_mode=$(value_for app_env_mode)
+cache_mode=$(value_for cache_mode)
+users_db_mode=$(value_for users_db_mode)
+users_db_quick_check=$(value_for users_db_quick_check)
+effective_open_signup=$(value_for effective_open_signup)
 sports_proxy_matches_expected=$(value_for sports_proxy_matches_expected)
 app_daemon=$(value_for app_daemon)
 caddy_daemon=$(value_for caddy_daemon)
@@ -246,14 +274,14 @@ ntvs_proxy_http=$(value_for ntvs_proxy_http)
 [[ "$app_http" == "200" ]] && pass "mini live health returns HTTP 200" || bad "mini live health returned HTTP $app_http"
 [[ "$library_http" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "API library endpoint returns HTTP $PROTECTED_ENDPOINT_STATUS" || bad "API library endpoint returned HTTP $library_http"
 # Caddy reverse-proxy correctness is checked via the public hostname (through
-# Cloudflare) in the PUBLIC_URL section below; the origin can't be probed
-# directly now that it only accepts Cloudflare IPs.
+# Cloudflare) in the PUBLIC_URL section below.
 [[ "$listener" == "127.0.0.1:5173" ]] && pass "backend listener is localhost only" || bad "backend listener is '$listener'"
 [[ "$caddy_80" == *":80" ]] && pass "Caddy listens on port 80" || bad "Caddy port 80 listener is '$caddy_80'"
 [[ "$caddy_443" == *":443" ]] && pass "Caddy listens on port 443" || bad "Caddy port 443 listener is '$caddy_443'"
 [[ "$app_pid" != "missing" ]] && pass "backend process is running ($app_pid)" || bad "backend process missing"
 [[ "$caddy_pid" != "missing" ]] && pass "Caddy process is running ($caddy_pid)" || bad "Caddy process missing"
 [[ "$caddy_version" != "missing" ]] && pass "Caddy is installed ($caddy_version)" || bad "Caddy is missing"
+[[ "$caddy_client_ip_guard" == "yes" ]] && pass "Caddy sanitizes client IP headers using Cloudflare's trusted ranges" || bad "Caddy client IP trust guard is missing"
 [[ "$asset_symlinks" == "0" ]] && pass "mini assets have no symlinks" || bad "mini assets have $asset_symlinks symlink(s)"
 [[ "$hls_resolver" == "yes" ]] && pass "external HLS resolver script is deployed" || bad "external HLS resolver script is missing"
 [[ "$streamed_hls_resolver" == "yes" ]] && pass "Streamed sports HLS resolver script is deployed" || bad "Streamed sports HLS resolver script is missing"
@@ -266,6 +294,10 @@ ntvs_proxy_http=$(value_for ntvs_proxy_http)
 [[ "$libsodium_module" == "yes" ]] && pass "libsodium-wrappers module is installed for native VidLink resolver" || bad "libsodium-wrappers module is missing for native VidLink resolver"
 [[ "$playwright_chromium" == "yes" ]] && pass "Playwright Chromium is installed for resolver helpers" || bad "Playwright Chromium is missing for resolver helpers"
 [[ "$env_mode" == "600" ]] && pass "server env permissions are 600" || bad "server env permissions are $env_mode"
+[[ "$cache_mode" == "700" ]] && pass "runtime cache permissions are 700" || bad "runtime cache permissions are $cache_mode"
+[[ "$users_db_mode" == "600" ]] && pass "users database permissions are 600" || bad "users database permissions are $users_db_mode"
+[[ "$users_db_quick_check" == "ok" ]] && pass "users database quick_check is ok" || bad "users database quick_check is $users_db_quick_check"
+[[ "$effective_open_signup" == "0" ]] && pass "public signup is closed" || bad "OPEN_SIGNUP is $effective_open_signup (expected 0)"
 if [[ "$env_in_app" == "no" ]]; then
   pass "deploy tree has no .env (secrets stay in the canonical env file)"
 elif [[ "$app_env_mode" == "600" ]]; then
@@ -312,6 +344,12 @@ fi
 # sign-in page rather than render anything, and that sign-in page must load.
 public_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL" || true)"
 [[ "$public_status" == "302" ]] && pass "$PUBLIC_URL gates anonymous visitors (HTTP 302 to login)" || bad "$PUBLIC_URL returned HTTP $public_status (expected 302 redirect to login)"
+
+public_edge_server="$(
+  { curl -sSI --max-time 10 "$PUBLIC_URL" 2>/dev/null || true; } \
+    | awk -F: 'tolower($1) == "server" {gsub(/^[[:space:]]+|[[:space:]\r]+$/, "", $2); print tolower($2); exit}'
+)"
+[[ "$public_edge_server" == "cloudflare" ]] && pass "$PUBLIC_HOST is Cloudflare-proxied" || bad "$PUBLIC_HOST edge server is '$public_edge_server' (expected cloudflare)"
 
 public_login_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL/login.html" || true)"
 [[ "$public_login_status" == "200" ]] && pass "$PUBLIC_URL/login.html is reachable (HTTP 200)" || bad "$PUBLIC_URL/login.html returned HTTP $public_login_status"

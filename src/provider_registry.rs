@@ -45,8 +45,16 @@ pub mod keys {
 /// per-host referer/fingerprint logic in the resolver, so they are not URL-
 /// swappable; the dashboard exposes an enable/disable toggle instead.
 pub const EMBED_IDS: &[&str] = &[
-    "videasy", "vidlink", "vidrock", "notorrent", "vixsrc", "lordflix", "icefy", "meridian",
-    "gallic", "nebula",
+    "videasy",
+    "vidlink",
+    "vidrock",
+    "notorrent",
+    "vixsrc",
+    "lordflix",
+    "icefy",
+    "meridian",
+    "gallic",
+    "nebula",
 ];
 
 /// Replace the whole override map (called once at startup from the DB).
@@ -79,7 +87,10 @@ pub fn resolve(key: &str, default: &str) -> String {
 
 /// The raw override for a key, if any (used for catalog display).
 pub fn get_override(key: &str) -> Option<String> {
-    store().read().ok().and_then(|guard| guard.get(key).cloned())
+    store()
+        .read()
+        .ok()
+        .and_then(|guard| guard.get(key).cloned())
 }
 
 /// Only the live-channel overrides, served to the frontend so it can merge them
@@ -100,7 +111,7 @@ pub fn live_overrides() -> HashMap<String, String> {
 /// Whether an external embed provider is enabled. Stored as `embed:<id>:enabled`
 /// = "0" to disable; absence (or any non-"0" value) means enabled.
 pub fn embed_enabled(id: &str) -> bool {
-    get_override(&format!("embed:{id}:enabled")).map_or(true, |value| value.trim() != "0")
+    get_override(&format!("embed:{id}:enabled")).is_none_or(|value| value.trim() != "0")
 }
 
 /// An admin-registered custom Stremio stream-addon provider. Only identity lives
@@ -154,7 +165,10 @@ pub fn remove_custom(id: &str) -> bool {
 
 /// Snapshot of all custom providers (used by the resolver and the catalog).
 pub fn list_custom() -> Vec<CustomProvider> {
-    custom_store().read().map(|guard| guard.clone()).unwrap_or_default()
+    custom_store()
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
 }
 
 /// Whether `id` is a registered custom provider.
@@ -306,7 +320,9 @@ fn url_entry(key: &str, group: &str, label: &str, default_url: &str, note: &str)
         group: group.to_owned(),
         label: label.to_owned(),
         default_url: default_url.to_owned(),
-        effective_url: override_value.clone().unwrap_or_else(|| default_url.to_owned()),
+        effective_url: override_value
+            .clone()
+            .unwrap_or_else(|| default_url.to_owned()),
         overridden: override_value.is_some(),
         editable: true,
         toggle: false,
@@ -323,51 +339,51 @@ fn url_entry(key: &str, group: &str, label: &str, default_url: &str, note: &str)
 /// The backend-known provider catalog (sports, embed, infra). Live channels are
 /// assembled on the frontend from the compiled channel list + `live_overrides()`.
 pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
-    let mut out = Vec::new();
-
     // ── Sports stream APIs (URL-swappable) ──────────────────────────────────
-    out.push(url_entry(
-        keys::SPORTS_STREAMED_FOOTBALL,
-        "sports",
-        "Streamed · football schedule",
-        crate::football::STREAMED_FOOTBALL_MATCHES_URL,
-        "streamed.pk football match list",
-    ));
-    out.push(url_entry(
-        keys::SPORTS_STREAMED_BASKETBALL,
-        "sports",
-        "Streamed · basketball schedule",
-        crate::football::STREAMED_BASKETBALL_MATCHES_URL,
-        "streamed.pk basketball match list",
-    ));
-    out.push(url_entry(
-        keys::SPORTS_STREAMED_MATCHES,
-        "sports",
-        "Streamed · matches base",
-        crate::football::STREAMED_MATCHES_BASE_URL,
-        "Base for other sport categories (/{sport} is appended)",
-    ));
-    out.push(url_entry(
-        keys::SPORTS_MATCHSTREAM_WEBMASTER,
-        "sports",
-        "MatchStream · webmaster",
-        crate::football::MATCHSTREAM_WEBMASTER_URL,
-        "matchstream.do discovery + referer",
-    ));
-    out.push(url_entry(
-        keys::SPORTS_MATCHSTREAM_VIEWER,
-        "sports",
-        "MatchStream · viewer",
-        crate::football::MATCHSTREAM_VIEWER_URL,
-        "matchstream.do viewer endpoint",
-    ));
-    out.push(url_entry(
-        keys::SPORTS_NTVS_SEARCH,
-        "sports",
-        "NTVS · search",
-        crate::football::NTVS_SEARCH_URL,
-        "ntvs.cx football search API",
-    ));
+    let mut out = vec![
+        url_entry(
+            keys::SPORTS_STREAMED_FOOTBALL,
+            "sports",
+            "Streamed · football schedule",
+            crate::football::STREAMED_FOOTBALL_MATCHES_URL,
+            "streamed.pk football match list",
+        ),
+        url_entry(
+            keys::SPORTS_STREAMED_BASKETBALL,
+            "sports",
+            "Streamed · basketball schedule",
+            crate::football::STREAMED_BASKETBALL_MATCHES_URL,
+            "streamed.pk basketball match list",
+        ),
+        url_entry(
+            keys::SPORTS_STREAMED_MATCHES,
+            "sports",
+            "Streamed · matches base",
+            crate::football::STREAMED_MATCHES_BASE_URL,
+            "Base for other sport categories (/{sport} is appended)",
+        ),
+        url_entry(
+            keys::SPORTS_MATCHSTREAM_WEBMASTER,
+            "sports",
+            "MatchStream · webmaster",
+            crate::football::MATCHSTREAM_WEBMASTER_URL,
+            "matchstream.do discovery + referer",
+        ),
+        url_entry(
+            keys::SPORTS_MATCHSTREAM_VIEWER,
+            "sports",
+            "MatchStream · viewer",
+            crate::football::MATCHSTREAM_VIEWER_URL,
+            "matchstream.do viewer endpoint",
+        ),
+        url_entry(
+            keys::SPORTS_NTVS_SEARCH,
+            "sports",
+            "NTVS · search",
+            crate::football::NTVS_SEARCH_URL,
+            "ntvs.cx football search API",
+        ),
+    ];
 
     // ── External VOD embeds (enable/disable; base shown for reference) ───────
     // Display bases mirror `resolver::external_embed_url`. They are reference-only
@@ -549,7 +565,10 @@ mod tests {
             resolve(key, "https://default.example"),
             "https://override.example"
         );
-        assert_eq!(get_override(key).as_deref(), Some("https://override.example"));
+        assert_eq!(
+            get_override(key).as_deref(),
+            Some("https://override.example")
+        );
         // An empty/whitespace value clears the override.
         set(key, "   ");
         assert_eq!(

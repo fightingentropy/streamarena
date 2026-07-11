@@ -134,7 +134,8 @@ impl HomeBootstrapCache {
     /// Reload the last persisted payload after a restart so the first visitor
     /// gets real rails instead of the "warming" placeholder.
     async fn restore_persisted(&self, state: &AppState) -> Option<Value> {
-        let (payload, refreshed_at_ms) = state.db.get_home_bootstrap_cache().await.ok().flatten()?;
+        let (payload, refreshed_at_ms) =
+            state.db.get_home_bootstrap_cache().await.ok().flatten()?;
         if is_warming_payload(&payload) {
             return None;
         }

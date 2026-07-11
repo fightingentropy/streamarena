@@ -140,7 +140,7 @@ export function SportsView() {
         </View>
       ) : error && isEmpty ? (
         <View style={{ paddingHorizontal: 16, paddingTop: 40 }}>
-          <ErrorText>Couldn't load the schedule. Pull back and try again.</ErrorText>
+          <ErrorText>Couldn’t load the schedule. Pull back and try again.</ErrorText>
         </View>
       ) : isEmpty ? (
         <EmptyState title="No live or upcoming matches" subtitle="Check back closer to game time." />

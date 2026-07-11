@@ -1,0 +1,10 @@
+[package]
+name = "librqbit-upnp"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Disabled UPnP compatibility shim for StreamArena's librqbit build"
+publish = false
+
+[dependencies]
+anyhow = "1"

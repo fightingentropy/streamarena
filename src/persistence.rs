@@ -75,6 +75,7 @@ pub struct TitlePreference {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct PlaybackSession {
+    pub user_id: i64,
     pub session_key: String,
     pub tmdb_id: String,
     pub audio_lang: String,
@@ -95,6 +96,7 @@ pub struct PlaybackSession {
 
 #[derive(Debug, Clone)]
 pub struct PersistPlaybackSessionInput {
+    pub user_id: i64,
     pub session_key: String,
     pub tmdb_id: String,
     pub audio_lang: String,
@@ -531,8 +533,9 @@ impl Db {
             )?;
             if normalize_preferred_audio_lang(&audio_lang) != "auto" {
                 let _ = tx.execute(
-                    "DELETE FROM playback_sessions WHERE tmdb_id = ? AND audio_lang = 'auto'",
-                    [tmdb_id.as_str()],
+                    "DELETE FROM playback_sessions
+                     WHERE user_id = ? AND tmdb_id = ? AND audio_lang = 'auto'",
+                    params![user_id, tmdb_id],
                 );
             }
             tx.commit()?;
@@ -570,14 +573,18 @@ impl Db {
         Ok(())
     }
 
-    pub async fn delete_playback_sessions_for_tmdb(&self, tmdb_id: String) -> AppResult<()> {
+    pub async fn delete_playback_sessions_for_tmdb(
+        &self,
+        user_id: i64,
+        tmdb_id: String,
+    ) -> AppResult<()> {
         let path = self.cache_path.clone();
         let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
-                "DELETE FROM playback_sessions WHERE tmdb_id = ?",
-                [tmdb_id.as_str()],
+                "DELETE FROM playback_sessions WHERE user_id = ? AND tmdb_id = ?",
+                params![user_id, tmdb_id],
             )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
@@ -611,11 +618,12 @@ impl Db {
 
     pub async fn get_playback_session(
         &self,
+        user_id: i64,
         session_key: String,
     ) -> AppResult<Option<PlaybackSession>> {
         let path = self.cache_path.clone();
         let pool = self.cache_pool.clone();
-        task::spawn_blocking(move || get_playback_session_inner(&pool, &path, session_key))
+        task::spawn_blocking(move || get_playback_session_inner(&pool, &path, user_id, session_key))
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?
             .map_err(|error| ApiError::internal(error.to_string()))
@@ -623,6 +631,7 @@ impl Db {
 
     pub async fn get_latest_playback_session_for_tmdb(
         &self,
+        user_id: i64,
         tmdb_id: String,
     ) -> AppResult<Option<PlaybackSession>> {
         let path = self.cache_path.clone();
@@ -634,17 +643,17 @@ impl Db {
                     "
                     SELECT session_key
                     FROM playback_sessions
-                    WHERE tmdb_id = ?
+                    WHERE user_id = ? AND tmdb_id = ?
                     ORDER BY updated_at DESC
                     LIMIT 1
                     ",
-                    [tmdb_id.as_str()],
+                    params![user_id, tmdb_id],
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?;
             return_connection(&pool, connection);
             match key {
-                Some(session_key) => get_playback_session_inner(&pool, &path, session_key),
+                Some(session_key) => get_playback_session_inner(&pool, &path, user_id, session_key),
                 None => Ok(None),
             }
         })
@@ -655,6 +664,7 @@ impl Db {
 
     pub async fn get_latest_healthy_playback_sessions_for_tmdb(
         &self,
+        user_id: i64,
         tmdb_id: String,
         limit: i64,
     ) -> AppResult<Vec<PlaybackSession>> {
@@ -667,7 +677,8 @@ impl Db {
                 "
                     SELECT session_key
                     FROM playback_sessions
-                    WHERE tmdb_id = ?
+                    WHERE user_id = ?
+                      AND tmdb_id = ?
                       AND health_state != 'invalid'
                       AND playable_url != ''
                     ORDER BY updated_at DESC
@@ -675,7 +686,7 @@ impl Db {
                     ",
             )?;
             let keys = statement
-                .query_map(params![tmdb_id.as_str(), normalized_limit], |row| {
+                .query_map(params![user_id, tmdb_id, normalized_limit], |row| {
                     row.get::<_, String>(0)
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -683,7 +694,9 @@ impl Db {
             return_connection(&pool, connection);
             let mut sessions = Vec::new();
             for session_key in keys {
-                if let Some(session) = get_playback_session_inner(&pool, &path, session_key)? {
+                if let Some(session) =
+                    get_playback_session_inner(&pool, &path, user_id, session_key)?
+                {
                     sessions.push(session);
                 }
             }
@@ -696,6 +709,7 @@ impl Db {
 
     pub async fn update_playback_session_progress(
         &self,
+        user_id: i64,
         session_key: String,
         position_seconds: f64,
         health_state: String,
@@ -704,7 +718,8 @@ impl Db {
         let path = self.cache_path.clone();
         let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
-            let Some(existing) = get_playback_session_inner(&pool, &path, session_key.clone())?
+            let Some(existing) =
+                get_playback_session_inner(&pool, &path, user_id, session_key.clone())?
             else {
                 return Ok(false);
             };
@@ -737,7 +752,7 @@ impl Db {
                   last_error = ?,
                   updated_at = ?,
                   last_accessed_at = ?
-                WHERE session_key = ?
+                WHERE user_id = ? AND session_key = ?
                 ",
                 params![
                     position_seconds.max(0.0),
@@ -746,6 +761,7 @@ impl Db {
                     next_error,
                     now_ms(),
                     now_ms(),
+                    user_id,
                     session_key,
                 ],
             )?;
@@ -759,6 +775,7 @@ impl Db {
 
     pub async fn invalidate_playback_sessions_by_source_hash(
         &self,
+        user_id: i64,
         source_hash: String,
         reason: String,
     ) -> AppResult<usize> {
@@ -780,13 +797,15 @@ impl Db {
                   last_error = ?,
                   updated_at = ?,
                   last_accessed_at = ?
-                WHERE source_hash = ?
+                WHERE user_id = ?
+                  AND source_hash = ?
                   AND health_state != 'invalid'
                 ",
                 params![
                     reason.chars().take(500).collect::<String>(),
                     now,
                     now,
+                    user_id,
                     normalized_source_hash,
                 ],
             )?;
@@ -800,6 +819,7 @@ impl Db {
 
     pub async fn refresh_playback_session_validation_window(
         &self,
+        user_id: i64,
         session_key: String,
     ) -> AppResult<bool> {
         let path = self.cache_path.clone();
@@ -815,13 +835,14 @@ impl Db {
                   next_validation_at = ?,
                   updated_at = ?,
                   last_accessed_at = ?
-                WHERE session_key = ?
+                WHERE user_id = ? AND session_key = ?
                 ",
                 params![
                     now,
                     now + PLAYBACK_SESSION_VALIDATE_INTERVAL_MS,
                     now,
                     now,
+                    user_id,
                     session_key,
                 ],
             )?;
@@ -837,7 +858,8 @@ impl Db {
         &self,
         input: PersistPlaybackSessionInput,
     ) -> AppResult<()> {
-        if input.session_key.trim().is_empty()
+        if input.user_id <= 0
+            || input.session_key.trim().is_empty()
             || input.tmdb_id.trim().is_empty()
             || input.playable_url.trim().is_empty()
         {
@@ -851,7 +873,8 @@ impl Db {
             let normalized_audio_lang = normalize_preferred_audio_lang(&input.audio_lang);
             let normalized_quality = normalize_preferred_stream_quality(&input.preferred_quality);
             let session_key = input.session_key.trim().to_owned();
-            let existing = get_playback_session_inner(&pool, &path, session_key.clone())?;
+            let existing =
+                get_playback_session_inner(&pool, &path, input.user_id, session_key.clone())?;
             let auto_session_key = if normalized_audio_lang != "auto" {
                 build_related_playback_session_key_with_audio(
                     &session_key,
@@ -863,7 +886,7 @@ impl Db {
                 String::new()
             };
             let auto_session = if !auto_session_key.is_empty() && auto_session_key != session_key {
-                get_playback_session_inner(&pool, &path, auto_session_key.clone())?
+                get_playback_session_inner(&pool, &path, input.user_id, auto_session_key.clone())?
             } else {
                 None
             };
@@ -882,6 +905,7 @@ impl Db {
             tx.execute(
                 "
                 INSERT INTO playback_sessions (
+                  user_id,
                   session_key,
                   tmdb_id,
                   audio_lang,
@@ -900,8 +924,8 @@ impl Db {
                   updated_at,
                   last_accessed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(session_key) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, session_key) DO UPDATE SET
                   tmdb_id = excluded.tmdb_id,
                   audio_lang = excluded.audio_lang,
                   source_hash = excluded.source_hash,
@@ -919,6 +943,7 @@ impl Db {
                   last_accessed_at = excluded.last_accessed_at
                 ",
                 params![
+                    input.user_id,
                     session_key,
                     input.tmdb_id.trim(),
                     normalized_audio_lang,
@@ -943,8 +968,8 @@ impl Db {
             )?;
             if !auto_session_key.is_empty() && auto_session_key != session_key {
                 let _ = tx.execute(
-                    "DELETE FROM playback_sessions WHERE session_key = ?",
-                    [auto_session_key.as_str()],
+                    "DELETE FROM playback_sessions WHERE user_id = ? AND session_key = ?",
+                    params![input.user_id, auto_session_key],
                 );
             }
             tx.commit()?;
@@ -1243,12 +1268,7 @@ impl Db {
                 .query_row(
                     "SELECT image_data, image_mime FROM feedback WHERE id = ?1",
                     [id],
-                    |row| {
-                        Ok((
-                            row.get::<_, Option<Vec<u8>>>(0)?,
-                            row.get::<_, String>(1)?,
-                        ))
-                    },
+                    |row| Ok((row.get::<_, Option<Vec<u8>>>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?;
             return_connection(&pool, connection);
@@ -1873,11 +1893,15 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
-    pub async fn create_first_user(
+    /// Create the operator-nominated bootstrap account as an administrator.
+    /// The email comparison is repeated inside the INSERT so a caller cannot
+    /// accidentally promote an arbitrary first claimant by passing a boolean.
+    pub async fn create_bootstrap_admin(
         &self,
         email: String,
         password_hash: String,
         display_name: String,
+        configured_email: String,
     ) -> AppResult<Option<i64>> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
@@ -1885,16 +1909,23 @@ impl Db {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
             let inserted = connection.execute(
-                "INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
-                 SELECT ?, ?, ?, ?, ?
-                 WHERE NOT EXISTS (SELECT 1 FROM users LIMIT 1)",
-                params![email, password_hash, display_name, now, now],
+                "INSERT INTO users (
+                   username, password_hash, display_name, is_admin, created_at, updated_at
+                 )
+                 SELECT ?, ?, ?, 1, ?, ?
+                 WHERE trim(?) != '' AND lower(trim(?)) = lower(trim(?))",
+                params![
+                    email,
+                    password_hash,
+                    display_name,
+                    now,
+                    now,
+                    configured_email,
+                    configured_email,
+                    email,
+                ],
             )?;
-            let id = if inserted > 0 {
-                Some(connection.last_insert_rowid())
-            } else {
-                None
-            };
+            let id = (inserted > 0).then(|| connection.last_insert_rowid());
             return_connection(&pool, connection);
             Ok::<Option<i64>, rusqlite::Error>(id)
         })
@@ -1903,6 +1934,7 @@ impl Db {
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
+    #[cfg(test)]
     pub async fn user_count(&self) -> AppResult<i64> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
@@ -1956,13 +1988,14 @@ impl Db {
     ) -> AppResult<()> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
+        let token_hash = crate::email::sha256_hex(&token);
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
             connection.execute(
-                "INSERT INTO auth_sessions (token, user_id, created_at, expires_at)
+                "INSERT INTO auth_sessions (token_hash, user_id, created_at, expires_at)
                  VALUES (?, ?, ?, ?)",
-                params![token, user_id, now, expires_at],
+                params![token_hash, user_id, now, expires_at],
             )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
@@ -1976,12 +2009,13 @@ impl Db {
     pub async fn get_session(&self, token: String) -> AppResult<Option<(i64, i64)>> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
+        let token_hash = crate::email::sha256_hex(&token);
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
                 .query_row(
-                    "SELECT user_id, expires_at FROM auth_sessions WHERE token = ?",
-                    [token.as_str()],
+                    "SELECT user_id, expires_at FROM auth_sessions WHERE token_hash = ?",
+                    [token_hash.as_str()],
                     |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
                 )
                 .optional()?;
@@ -1996,11 +2030,12 @@ impl Db {
     pub async fn delete_session(&self, token: String) -> AppResult<()> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
+        let token_hash = crate::email::sha256_hex(&token);
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
-                "DELETE FROM auth_sessions WHERE token = ?",
-                [token.as_str()],
+                "DELETE FROM auth_sessions WHERE token_hash = ?",
+                [token_hash.as_str()],
             )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
@@ -2059,7 +2094,10 @@ impl Db {
                 |sql: &str, arg: i64| connection.query_row(sql, [arg], |row| row.get::<_, i64>(0));
             let overview = AdminOverview {
                 totalUsers: scalar("SELECT COUNT(*) FROM users")?,
-                newUsers24h: scalar1("SELECT COUNT(*) FROM users WHERE created_at >= ?", now - day)?,
+                newUsers24h: scalar1(
+                    "SELECT COUNT(*) FROM users WHERE created_at >= ?",
+                    now - day,
+                )?,
                 newUsers7d: scalar1(
                     "SELECT COUNT(*) FROM users WHERE created_at >= ?",
                     now - 7 * day,
@@ -2068,10 +2106,15 @@ impl Db {
                     "SELECT COUNT(*) FROM users WHERE created_at >= ?",
                     now - 30 * day,
                 )?,
-                verifiedUsers: scalar("SELECT COUNT(*) FROM users WHERE email_verified_at IS NOT NULL")?,
+                verifiedUsers: scalar(
+                    "SELECT COUNT(*) FROM users WHERE email_verified_at IS NOT NULL",
+                )?,
                 adminUsers: scalar("SELECT COUNT(*) FROM users WHERE is_admin = 1")?,
                 disabledUsers: scalar("SELECT COUNT(*) FROM users WHERE is_disabled = 1")?,
-                activeSessions: scalar1("SELECT COUNT(*) FROM auth_sessions WHERE expires_at > ?", now)?,
+                activeSessions: scalar1(
+                    "SELECT COUNT(*) FROM auth_sessions WHERE expires_at > ?",
+                    now,
+                )?,
                 activeUsers: scalar1(
                     "SELECT COUNT(DISTINCT user_id) FROM auth_sessions WHERE expires_at > ?",
                     now,
@@ -2288,7 +2331,7 @@ impl Db {
             }
 
             return_connection(&pool, connection);
-            events.sort_by(|a, b| b.ts.cmp(&a.ts));
+            events.sort_by_key(|event| std::cmp::Reverse(event.ts));
             events.truncate(limit as usize);
             Ok::<Vec<AdminActivityEvent>, rusqlite::Error>(events)
         })
@@ -2553,6 +2596,14 @@ impl Db {
             )?;
             if changed > 0 {
                 tx.execute("DELETE FROM auth_sessions WHERE user_id = ?", [user_id])?;
+                tx.execute(
+                    "DELETE FROM password_reset_tokens WHERE user_id = ?",
+                    [user_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM email_verification_tokens WHERE user_id = ?",
+                    [user_id],
+                )?;
             }
             tx.commit()?;
             return_connection(&pool, connection);
@@ -2620,11 +2671,11 @@ impl Db {
 
     // ── Email verification ───────────────────────────────────────────
 
-    /// Store a verification token (hashed) for an email, replacing any prior
-    /// token for that email so only the most recent link stays valid.
+    /// Store a verification token (hashed) for a user, replacing any prior
+    /// token so only the most recent link stays valid.
     pub async fn create_email_verification_token(
         &self,
-        email: String,
+        user_id: i64,
         token_hash: String,
         expires_at: i64,
     ) -> AppResult<()> {
@@ -2632,16 +2683,18 @@ impl Db {
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
+            let tx = connection.unchecked_transaction()?;
             let now = now_ms();
-            connection.execute(
-                "DELETE FROM email_verification_tokens WHERE email = ?",
-                [email.as_str()],
+            tx.execute(
+                "DELETE FROM email_verification_tokens WHERE user_id = ?",
+                [user_id],
             )?;
-            connection.execute(
-                "INSERT INTO email_verification_tokens (token_hash, email, expires_at, created_at)
+            tx.execute(
+                "INSERT INTO email_verification_tokens (token_hash, user_id, expires_at, created_at)
                  VALUES (?, ?, ?, ?)",
-                params![token_hash, email, expires_at, now],
+                params![token_hash, user_id, expires_at, now],
             )?;
+            tx.commit()?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
@@ -2652,29 +2705,27 @@ impl Db {
     }
 
     /// Look up a verification token by its hash and delete it (single-use),
-    /// returning the associated email and expiry if it existed. The token is
+    /// returning the associated user id and expiry if it existed. The token is
     /// consumed regardless of expiry so used/stale tokens cannot be replayed.
     pub async fn consume_email_verification_token(
         &self,
         token_hash: String,
-    ) -> AppResult<Option<(String, i64)>> {
+    ) -> AppResult<Option<(i64, i64)>> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
                 .query_row(
-                    "SELECT email, expires_at FROM email_verification_tokens WHERE token_hash = ?",
+                    "DELETE FROM email_verification_tokens
+                     WHERE token_hash = ?
+                     RETURNING user_id, expires_at",
                     [token_hash.as_str()],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
                 )
                 .optional()?;
-            connection.execute(
-                "DELETE FROM email_verification_tokens WHERE token_hash = ?",
-                [token_hash.as_str()],
-            )?;
             return_connection(&pool, connection);
-            Ok::<Option<(String, i64)>, rusqlite::Error>(row)
+            Ok::<Option<(i64, i64)>, rusqlite::Error>(row)
         })
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
@@ -2683,15 +2734,15 @@ impl Db {
 
     /// Mark a user's email as verified. Idempotent: only sets the timestamp the
     /// first time (the `email_verified_at IS NULL` guard).
-    pub async fn mark_email_verified(&self, email: String, verified_at: i64) -> AppResult<()> {
+    pub async fn mark_email_verified(&self, user_id: i64, verified_at: i64) -> AppResult<()> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             connection.execute(
                 "UPDATE users SET email_verified_at = ?, updated_at = ?
-                 WHERE username = ? AND email_verified_at IS NULL",
-                params![verified_at, now_ms(), email],
+                 WHERE id = ? AND email_verified_at IS NULL",
+                params![verified_at, now_ms(), user_id],
             )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
@@ -2704,11 +2755,11 @@ impl Db {
 
     // ── Password reset ───────────────────────────────────────────────
 
-    /// Store a reset token (hashed) for an email, replacing any prior token so
+    /// Store a reset token (hashed) for a user, replacing any prior token so
     /// only the most recent link stays valid.
     pub async fn create_password_reset_token(
         &self,
-        email: String,
+        user_id: i64,
         token_hash: String,
         expires_at: i64,
     ) -> AppResult<()> {
@@ -2716,16 +2767,18 @@ impl Db {
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
+            let tx = connection.unchecked_transaction()?;
             let now = now_ms();
-            connection.execute(
-                "DELETE FROM password_reset_tokens WHERE email = ?",
-                [email.as_str()],
+            tx.execute(
+                "DELETE FROM password_reset_tokens WHERE user_id = ?",
+                [user_id],
             )?;
-            connection.execute(
-                "INSERT INTO password_reset_tokens (token_hash, email, expires_at, created_at)
+            tx.execute(
+                "INSERT INTO password_reset_tokens (token_hash, user_id, expires_at, created_at)
                  VALUES (?, ?, ?, ?)",
-                params![token_hash, email, expires_at, now],
+                params![token_hash, user_id, expires_at, now],
             )?;
+            tx.commit()?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
@@ -2736,40 +2789,38 @@ impl Db {
     }
 
     /// Look up a reset token by its hash and delete it (single-use), returning
-    /// the associated email and expiry if it existed. Consumed regardless of
+    /// the associated user id and expiry if it existed. Consumed regardless of
     /// expiry so used/stale tokens cannot be replayed.
     pub async fn consume_password_reset_token(
         &self,
         token_hash: String,
-    ) -> AppResult<Option<(String, i64)>> {
+    ) -> AppResult<Option<(i64, i64)>> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let row = connection
                 .query_row(
-                    "SELECT email, expires_at FROM password_reset_tokens WHERE token_hash = ?",
+                    "DELETE FROM password_reset_tokens
+                     WHERE token_hash = ?
+                     RETURNING user_id, expires_at",
                     [token_hash.as_str()],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
                 )
                 .optional()?;
-            connection.execute(
-                "DELETE FROM password_reset_tokens WHERE token_hash = ?",
-                [token_hash.as_str()],
-            )?;
             return_connection(&pool, connection);
-            Ok::<Option<(String, i64)>, rusqlite::Error>(row)
+            Ok::<Option<(i64, i64)>, rusqlite::Error>(row)
         })
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?
         .map_err(|error| ApiError::internal(error.to_string()))
     }
 
-    /// Set a user's password by email and clear their sessions (force re-login
-    /// everywhere). Returns rows changed (0 = no such user).
-    pub async fn set_password_by_email(
+    /// Set a user's password by id, clear sessions, and revoke every outstanding
+    /// account-recovery token. Returns rows changed (0 = no such user).
+    pub async fn set_password_by_user_id(
         &self,
-        email: String,
+        user_id: i64,
         password_hash: String,
     ) -> AppResult<usize> {
         let path = self.users_path.clone();
@@ -2778,14 +2829,18 @@ impl Db {
             let connection = take_connection(&pool, &path)?;
             let tx = connection.unchecked_transaction()?;
             let changed = tx.execute(
-                "UPDATE users SET password_hash = ?, updated_at = ? WHERE username = ?",
-                params![password_hash, now_ms(), email],
+                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                params![password_hash, now_ms(), user_id],
             )?;
             if changed > 0 {
+                tx.execute("DELETE FROM auth_sessions WHERE user_id = ?", [user_id])?;
                 tx.execute(
-                    "DELETE FROM auth_sessions
-                     WHERE user_id IN (SELECT id FROM users WHERE username = ?)",
-                    [email.as_str()],
+                    "DELETE FROM password_reset_tokens WHERE user_id = ?",
+                    [user_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM email_verification_tokens WHERE user_id = ?",
+                    [user_id],
                 )?;
             }
             tx.commit()?;
@@ -3218,6 +3273,7 @@ impl Db {
                 if let Some(reconciled) = reconcile_continue_watching_source_metadata(
                     &cache_connection,
                     ContinueWatchingReconcileInput {
+                        user_id,
                         tmdb_id: &row.tmdb_id,
                         media_type: &row.media_type,
                         season_number,
@@ -3368,7 +3424,7 @@ impl Db {
             }
 
             let mut candidates = candidates.into_values().collect::<Vec<_>>();
-            candidates.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+            candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.updated_at));
             candidates.truncate(normalized_limit as usize);
             return_connection(&pool, connection);
             Ok::<Vec<TmdbTvWarmupCandidate>, rusqlite::Error>(candidates)
@@ -3480,6 +3536,7 @@ impl Db {
             let reconciled = reconcile_continue_watching_source_metadata(
                 &cache_connection,
                 ContinueWatchingReconcileInput {
+                    user_id,
                     tmdb_id: &normalized_tmdb_id,
                     media_type: &normalized_media_type,
                     season_number,
@@ -3759,6 +3816,7 @@ impl Db {
 fn get_playback_session_inner(
     pool: &Pool,
     path: &Path,
+    user_id: i64,
     session_key: String,
 ) -> Result<Option<PlaybackSession>, rusqlite::Error> {
     let connection = take_connection(pool, path)?;
@@ -3766,6 +3824,7 @@ fn get_playback_session_inner(
         .query_row(
             "
             SELECT
+              user_id,
               session_key,
               tmdb_id,
               audio_lang,
@@ -3782,21 +3841,22 @@ fn get_playback_session_inner(
               last_verified_at,
               next_validation_at
             FROM playback_sessions
-            WHERE session_key = ?
+            WHERE user_id = ? AND session_key = ?
             ",
-            [session_key.as_str()],
+            params![user_id, session_key],
             |row| {
-                let fallback_urls = row.get::<_, String>(7)?;
-                let metadata = row.get::<_, String>(8)?;
+                let fallback_urls = row.get::<_, String>(8)?;
+                let metadata = row.get::<_, String>(9)?;
                 Ok(PlaybackSession {
-                    session_key: row.get(0)?,
-                    tmdb_id: row.get(1)?,
-                    audio_lang: normalize_preferred_audio_lang(&row.get::<_, String>(2)?),
-                    preferred_quality: parse_movie_resolve_key_quality(&row.get::<_, String>(0)?),
-                    source_hash: row.get::<_, String>(3)?.trim().to_lowercase(),
-                    selected_file: row.get(4)?,
-                    filename: row.get(5)?,
-                    playable_url: row.get(6)?,
+                    user_id: row.get(0)?,
+                    session_key: row.get(1)?,
+                    tmdb_id: row.get(2)?,
+                    audio_lang: normalize_preferred_audio_lang(&row.get::<_, String>(3)?),
+                    preferred_quality: parse_movie_resolve_key_quality(&row.get::<_, String>(1)?),
+                    source_hash: row.get::<_, String>(4)?.trim().to_lowercase(),
+                    selected_file: row.get(5)?,
+                    filename: row.get(6)?,
+                    playable_url: row.get(7)?,
                     fallback_urls: serde_json::from_str::<Vec<String>>(&fallback_urls)
                         .unwrap_or_default()
                         .into_iter()
@@ -3804,12 +3864,12 @@ fn get_playback_session_inner(
                         .filter(|value| !value.is_empty())
                         .collect(),
                     metadata: serde_json::from_str::<Value>(&metadata).unwrap_or(Value::Null),
-                    last_position_seconds: row.get::<_, f64>(9)?.max(0.0),
-                    health_state: normalize_session_health_state(&row.get::<_, String>(10)?),
-                    health_fail_count: row.get::<_, i64>(11)?.max(0),
-                    last_error: row.get(12)?,
-                    last_verified_at: row.get::<_, i64>(13)?.max(0),
-                    next_validation_at: row.get::<_, i64>(14)?.max(0),
+                    last_position_seconds: row.get::<_, f64>(10)?.max(0.0),
+                    health_state: normalize_session_health_state(&row.get::<_, String>(11)?),
+                    health_fail_count: row.get::<_, i64>(12)?.max(0),
+                    last_error: row.get(13)?,
+                    last_verified_at: row.get::<_, i64>(14)?.max(0),
+                    next_validation_at: row.get::<_, i64>(15)?.max(0),
                 })
             },
         )
@@ -3946,6 +4006,70 @@ fn copy_durable_tables(connection: &Connection) -> Result<(), rusqlite::Error> {
         }
         let dest_columns = schema_table_columns(&tx, "main", table)?;
         let src_columns = schema_table_columns(&tx, "legacy", table)?;
+        if *table == "auth_sessions"
+            && !src_columns
+                .iter()
+                .any(|column| column.eq_ignore_ascii_case("token_hash"))
+            && src_columns
+                .iter()
+                .any(|column| column.eq_ignore_ascii_case("token"))
+        {
+            let sessions = {
+                let mut statement = tx.prepare(
+                    "SELECT session.token, session.user_id,
+                            session.created_at, session.expires_at
+                     FROM legacy.auth_sessions AS session
+                     WHERE session.user_id IN (SELECT id FROM main.users)",
+                )?;
+                statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            for (token, user_id, created_at, expires_at) in sessions {
+                tx.execute(
+                    "INSERT OR IGNORE INTO main.auth_sessions
+                       (token_hash, user_id, created_at, expires_at)
+                     VALUES (?, ?, ?, ?)",
+                    params![
+                        crate::email::sha256_hex(&token),
+                        user_id,
+                        created_at,
+                        expires_at,
+                    ],
+                )?;
+            }
+            continue;
+        }
+        if matches!(
+            *table,
+            "password_reset_tokens" | "email_verification_tokens"
+        ) && !src_columns
+            .iter()
+            .any(|column| column.eq_ignore_ascii_case("user_id"))
+            && src_columns
+                .iter()
+                .any(|column| column.eq_ignore_ascii_case("email"))
+        {
+            tx.execute(
+                &format!(
+                    "INSERT OR IGNORE INTO main.\"{table}\"
+                       (token_hash, user_id, expires_at, created_at)
+                     SELECT token.token_hash, users.id, token.expires_at, token.created_at
+                     FROM legacy.\"{table}\" AS token
+                     JOIN main.users AS users
+                       ON users.username = token.email COLLATE NOCASE"
+                ),
+                [],
+            )?;
+            continue;
+        }
         let shared: Vec<String> = dest_columns
             .into_iter()
             .filter(|column| {
@@ -3966,7 +4090,10 @@ fn copy_durable_tables(connection: &Connection) -> Result<(), rusqlite::Error> {
         // rows whose user was deleted without the cascade firing (e.g. inserted
         // while foreign_keys was off); copying those would trip the FK constraint,
         // so drop them by keeping only rows with a surviving parent.
-        let parent_filter = if shared.iter().any(|column| column.eq_ignore_ascii_case("user_id")) {
+        let parent_filter = if shared
+            .iter()
+            .any(|column| column.eq_ignore_ascii_case("user_id"))
+        {
             " WHERE \"user_id\" IN (SELECT id FROM main.\"users\")"
         } else {
             ""
@@ -4108,7 +4235,8 @@ fn build_cache_schema(path: &Path) -> Result<(), rusqlite::Error> {
           refreshed_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS playback_sessions (
-          session_key TEXT PRIMARY KEY,
+          user_id INTEGER NOT NULL,
+          session_key TEXT NOT NULL,
           tmdb_id TEXT NOT NULL,
           audio_lang TEXT NOT NULL,
           source_hash TEXT NOT NULL DEFAULT '',
@@ -4124,9 +4252,9 @@ fn build_cache_schema(path: &Path) -> Result<(), rusqlite::Error> {
           last_verified_at INTEGER NOT NULL DEFAULT 0,
           next_validation_at INTEGER NOT NULL DEFAULT 0,
           updated_at INTEGER NOT NULL,
-          last_accessed_at INTEGER NOT NULL
+          last_accessed_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, session_key)
         );
-        CREATE INDEX IF NOT EXISTS idx_playback_sessions_tmdb_lang ON playback_sessions(tmdb_id, audio_lang);
         CREATE INDEX IF NOT EXISTS idx_playback_sessions_updated ON playback_sessions(updated_at);
         CREATE INDEX IF NOT EXISTS idx_playback_sessions_last_accessed ON playback_sessions(last_accessed_at);
         CREATE TABLE IF NOT EXISTS source_health_stats (
@@ -4158,7 +4286,67 @@ fn build_cache_schema(path: &Path) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_title_track_preferences_updated ON title_track_preferences(updated_at);
         ",
     )?;
+    migrate_playback_sessions_schema(&connection)?;
     migrate_title_preferences_schema(&connection)?;
+    Ok(())
+}
+
+/// Playback sessions used to be globally keyed. They are regenerable cache
+/// entries, so the safest migration is to discard that cross-user state and
+/// rebuild with a composite `(user_id, session_key)` identity.
+fn migrate_playback_sessions_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let primary_key_columns = {
+        let mut statement = connection.prepare("PRAGMA table_info(\"playback_sessions\")")?;
+        let mut columns = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|(_, ordinal)| *ordinal > 0)
+            .collect::<Vec<_>>();
+        columns.sort_by_key(|(_, ordinal)| *ordinal);
+        columns
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>()
+    };
+    let has_scoped_primary_key = primary_key_columns == ["user_id", "session_key"];
+    if !has_scoped_primary_key {
+        connection.execute_batch(
+            "
+            DROP TABLE playback_sessions;
+            CREATE TABLE playback_sessions (
+              user_id INTEGER NOT NULL,
+              session_key TEXT NOT NULL,
+              tmdb_id TEXT NOT NULL,
+              audio_lang TEXT NOT NULL,
+              source_hash TEXT NOT NULL DEFAULT '',
+              selected_file TEXT NOT NULL DEFAULT '',
+              filename TEXT NOT NULL DEFAULT '',
+              playable_url TEXT NOT NULL,
+              fallback_urls_json TEXT NOT NULL DEFAULT '[]',
+              metadata_json TEXT NOT NULL DEFAULT '{}',
+              last_position_seconds REAL NOT NULL DEFAULT 0,
+              health_state TEXT NOT NULL DEFAULT 'unknown',
+              health_fail_count INTEGER NOT NULL DEFAULT 0,
+              last_error TEXT NOT NULL DEFAULT '',
+              last_verified_at INTEGER NOT NULL DEFAULT 0,
+              next_validation_at INTEGER NOT NULL DEFAULT 0,
+              updated_at INTEGER NOT NULL,
+              last_accessed_at INTEGER NOT NULL,
+              PRIMARY KEY (user_id, session_key)
+            );
+            CREATE INDEX idx_playback_sessions_updated ON playback_sessions(updated_at);
+            CREATE INDEX idx_playback_sessions_last_accessed ON playback_sessions(last_accessed_at);
+            ",
+        )?;
+    }
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_playback_sessions_tmdb_lang
+         ON playback_sessions(user_id, tmdb_id, audio_lang)",
+        [],
+    )?;
     Ok(())
 }
 
@@ -4182,7 +4370,7 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
           updated_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS auth_sessions (
-          token TEXT PRIMARY KEY,
+          token_hash TEXT PRIMARY KEY,
           user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           created_at INTEGER NOT NULL,
           expires_at INTEGER NOT NULL
@@ -4190,18 +4378,16 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
         CREATE TABLE IF NOT EXISTS email_verification_tokens (
           token_hash TEXT PRIMARY KEY,
-          email TEXT NOT NULL,
+          user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
           expires_at INTEGER NOT NULL,
           created_at INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_email_verification_email ON email_verification_tokens(email);
         CREATE TABLE IF NOT EXISTS password_reset_tokens (
           token_hash TEXT PRIMARY KEY,
-          email TEXT NOT NULL,
+          user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
           expires_at INTEGER NOT NULL,
           created_at INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_password_reset_email ON password_reset_tokens(email);
         CREATE TABLE IF NOT EXISTS user_preferences (
           user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           pref_key TEXT NOT NULL,
@@ -4377,6 +4563,8 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
         "is_disabled",
         "is_disabled INTEGER NOT NULL DEFAULT 0",
     )?;
+    migrate_auth_sessions_schema(&connection)?;
+    migrate_account_token_schema(&connection)?;
     // Rebrand: stored preference keys used a legacy "netflix-" prefix (the same
     // strings the browser uses, uploaded on login and written back on hydrate).
     // Rename them suffix-preserving to "streamarena-" so the client-side
@@ -4391,6 +4579,113 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
         DELETE FROM user_preferences WHERE pref_key LIKE 'netflix-%';
         ",
     )?;
+    Ok(())
+}
+
+/// Replace raw bearer tokens with SHA-256 hashes without expiring live sessions.
+/// The column rename is also the durable migration marker, preventing tokens
+/// from being double-hashed on later startups.
+fn migrate_auth_sessions_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let columns = table_column_names(connection, "auth_sessions")?;
+    let has_token_hash = columns
+        .iter()
+        .any(|column| column.eq_ignore_ascii_case("token_hash"));
+    if !has_token_hash {
+        let tx = connection.unchecked_transaction()?;
+        let sessions = {
+            let mut statement =
+                tx.prepare("SELECT token, user_id, created_at, expires_at FROM auth_sessions")?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        tx.execute_batch(
+            "
+            CREATE TABLE auth_sessions_hash_migration (
+              token_hash TEXT PRIMARY KEY,
+              user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              created_at INTEGER NOT NULL,
+              expires_at INTEGER NOT NULL
+            );
+            ",
+        )?;
+        for (token, user_id, created_at, expires_at) in sessions {
+            tx.execute(
+                "INSERT OR IGNORE INTO auth_sessions_hash_migration
+                   (token_hash, user_id, created_at, expires_at)
+                 SELECT ?, ?, ?, ?
+                 WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)",
+                params![
+                    crate::email::sha256_hex(&token),
+                    user_id,
+                    created_at,
+                    expires_at,
+                    user_id,
+                ],
+            )?;
+        }
+        tx.execute_batch(
+            "
+            DROP TABLE auth_sessions;
+            ALTER TABLE auth_sessions_hash_migration RENAME TO auth_sessions;
+            ",
+        )?;
+        tx.commit()?;
+    }
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Migrate the original email-bound recovery tables to user-id foreign keys.
+/// Existing live tokens are preserved when their email still maps to a user;
+/// orphaned tokens are deliberately dropped. Rebuilding is required because
+/// SQLite cannot add a foreign-key constraint with `ALTER TABLE ADD COLUMN`.
+fn migrate_account_token_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    for (table, index) in [
+        ("email_verification_tokens", "idx_email_verification_user"),
+        ("password_reset_tokens", "idx_password_reset_user"),
+    ] {
+        let columns = table_column_names(connection, table)?;
+        let has_user_id = columns
+            .iter()
+            .any(|column| column.eq_ignore_ascii_case("user_id"));
+        if !has_user_id {
+            let replacement = format!("{table}_user_id_migration");
+            let tx = connection.unchecked_transaction()?;
+            tx.execute_batch(&format!(
+                "
+                CREATE TABLE \"{replacement}\" (
+                  token_hash TEXT PRIMARY KEY,
+                  user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                  expires_at INTEGER NOT NULL,
+                  created_at INTEGER NOT NULL
+                );
+                INSERT OR IGNORE INTO \"{replacement}\"
+                  (token_hash, user_id, expires_at, created_at)
+                SELECT token.token_hash, users.id, token.expires_at, token.created_at
+                FROM \"{table}\" AS token
+                JOIN users ON users.username = token.email COLLATE NOCASE;
+                DROP TABLE \"{table}\";
+                ALTER TABLE \"{replacement}\" RENAME TO \"{table}\";
+                "
+            ))?;
+            tx.commit()?;
+        }
+        connection.execute(
+            &format!("CREATE INDEX IF NOT EXISTS \"{index}\" ON \"{table}\"(user_id)"),
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -4537,6 +4832,14 @@ fn sweep_users_db(pool: &Pool, path: &Path) -> Result<(), rusqlite::Error> {
     let connection = take_connection(pool, path)?;
     let now = now_ms();
     connection.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", [now])?;
+    connection.execute(
+        "DELETE FROM password_reset_tokens WHERE expires_at <= ?",
+        [now],
+    )?;
+    connection.execute(
+        "DELETE FROM email_verification_tokens WHERE expires_at <= ?",
+        [now],
+    )?;
     connection.execute(
         "DELETE FROM health_samples WHERE ts <= ?",
         [now - HEALTH_SAMPLE_STALE_MS],
@@ -4762,6 +5065,7 @@ fn continue_watching_target_episode(
 }
 
 struct ContinueWatchingReconcileInput<'a> {
+    user_id: i64,
     tmdb_id: &'a str,
     media_type: &'a str,
     season_number: i64,
@@ -4783,6 +5087,7 @@ fn reconcile_continue_watching_source_metadata(
 
     let Some(candidate) = latest_continue_watching_playback_session_metadata(
         connection,
+        input.user_id,
         normalized_tmdb_id,
         input.media_type,
         input.season_number,
@@ -4815,6 +5120,7 @@ fn reconcile_continue_watching_source_metadata(
 
     let current = continue_watching_playback_session_metadata_for_input(
         connection,
+        input.user_id,
         incoming_session_key,
         &incoming_source_hash,
     )?;
@@ -4840,6 +5146,7 @@ fn reconcile_continue_watching_source_metadata(
 
 fn latest_continue_watching_playback_session_metadata(
     connection: &Connection,
+    user_id: i64,
     tmdb_id: &str,
     media_type: &str,
     season_number: i64,
@@ -4850,14 +5157,15 @@ fn latest_continue_watching_playback_session_metadata(
         SELECT session_key, source_hash, filename, playable_url, metadata_json,
                updated_at, last_accessed_at
         FROM playback_sessions
-        WHERE tmdb_id = ?
+        WHERE user_id = ?
+          AND tmdb_id = ?
           AND health_state != 'invalid'
           AND playable_url != ''
         ORDER BY last_accessed_at DESC, updated_at DESC
         LIMIT 80
         ",
     )?;
-    let rows = statement.query_map([tmdb_id.trim()], |row| {
+    let rows = statement.query_map(params![user_id, tmdb_id.trim()], |row| {
         let session_key: String = row.get(0)?;
         let source_hash: String = row.get(1)?;
         let filename: String = row.get(2)?;
@@ -4911,6 +5219,7 @@ fn latest_continue_watching_playback_session_metadata(
 
 fn continue_watching_playback_session_metadata_for_input(
     connection: &Connection,
+    user_id: i64,
     session_key: &str,
     source_hash: &str,
 ) -> Result<Option<ContinueWatchingSourceMetadata>, rusqlite::Error> {
@@ -4924,7 +5233,7 @@ fn continue_watching_playback_session_metadata_for_input(
         SELECT session_key, source_hash, filename, playable_url, metadata_json,
                updated_at, last_accessed_at
         FROM playback_sessions
-        WHERE session_key = ?
+        WHERE user_id = ? AND session_key = ?
         LIMIT 1
         "
     } else {
@@ -4932,7 +5241,7 @@ fn continue_watching_playback_session_metadata_for_input(
         SELECT session_key, source_hash, filename, playable_url, metadata_json,
                updated_at, last_accessed_at
         FROM playback_sessions
-        WHERE source_hash = ?
+        WHERE user_id = ? AND source_hash = ?
         ORDER BY last_accessed_at DESC, updated_at DESC
         LIMIT 1
         "
@@ -4944,7 +5253,7 @@ fn continue_watching_playback_session_metadata_for_input(
         source_hash.trim()
     };
     let row = statement
-        .query_row([param], |row| {
+        .query_row(params![user_id, param], |row| {
             let metadata_raw: String = row.get(4)?;
             let metadata =
                 serde_json::from_str::<Value>(&metadata_raw).unwrap_or_else(|_| json!({}));
@@ -4962,7 +5271,12 @@ fn continue_watching_playback_session_metadata_for_input(
         .optional()?;
 
     if row.is_none() && lookup_by_session_key && !source_hash.trim().is_empty() {
-        return continue_watching_playback_session_metadata_for_input(connection, "", source_hash);
+        return continue_watching_playback_session_metadata_for_input(
+            connection,
+            user_id,
+            "",
+            source_hash,
+        );
     }
 
     Ok(row)
@@ -5416,10 +5730,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migrates_global_playback_cache_to_scoped_composite_keys() {
+        let path = unique_temp_db_path("legacy-global-playback-schema");
+        let setup_path = path.clone();
+        super::task::spawn_blocking(move || {
+            let connection = open_connection(&setup_path)?;
+            connection.execute_batch(
+                "
+                CREATE TABLE playback_sessions (
+                  session_key TEXT PRIMARY KEY,
+                  tmdb_id TEXT NOT NULL,
+                  audio_lang TEXT NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  last_accessed_at INTEGER NOT NULL
+                );
+                INSERT INTO playback_sessions
+                  (session_key, tmdb_id, audio_lang, updated_at, last_accessed_at)
+                VALUES ('123:auto:1080p', '123', 'auto', 1, 1);
+                ",
+            )?;
+            drop(connection);
+
+            super::build_cache_schema(&setup_path)?;
+            let connection = open_connection(&setup_path)?;
+            let count: i64 =
+                connection.query_row("SELECT COUNT(*) FROM playback_sessions", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(
+                count, 0,
+                "unsafe global cache rows must not survive migration"
+            );
+            let mut statement = connection.prepare("PRAGMA table_info(playback_sessions)")?;
+            let mut primary_key = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|(_, ordinal)| *ordinal > 0)
+                .collect::<Vec<_>>();
+            primary_key.sort_by_key(|(_, ordinal)| *ordinal);
+            assert_eq!(
+                primary_key
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+                vec!["user_id", "session_key"]
+            );
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("join playback schema migration")
+        .expect("migrate playback schema");
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
     async fn persists_playback_sessions_and_moves_auto_progress() {
         let path = unique_temp_db_path("playback-session");
         let db = setup_test_playback_session_db(&path).await;
         db.persist_playback_session(PersistPlaybackSessionInput {
+            user_id: 1,
             session_key: "123:auto:1080p".to_owned(),
             tmdb_id: "123".to_owned(),
             audio_lang: "auto".to_owned(),
@@ -5434,6 +5807,7 @@ mod tests {
         .await
         .expect("persist auto session");
         db.update_playback_session_progress(
+            1,
             "123:auto:1080p".to_owned(),
             187.0,
             "healthy".to_owned(),
@@ -5443,6 +5817,7 @@ mod tests {
         .expect("update auto progress");
 
         db.persist_playback_session(PersistPlaybackSessionInput {
+            user_id: 1,
             session_key: "123:en:1080p".to_owned(),
             tmdb_id: "123".to_owned(),
             audio_lang: "en".to_owned(),
@@ -5462,7 +5837,7 @@ mod tests {
         .expect("persist language session");
 
         let persisted = db
-            .get_playback_session("123:en:1080p".to_owned())
+            .get_playback_session(1, "123:en:1080p".to_owned())
             .await
             .expect("load persisted session")
             .expect("session exists");
@@ -5475,7 +5850,7 @@ mod tests {
             ]
         );
         assert!(
-            db.get_playback_session("123:auto:1080p".to_owned())
+            db.get_playback_session(1, "123:auto:1080p".to_owned())
                 .await
                 .expect("load auto session")
                 .is_none()
@@ -5494,6 +5869,7 @@ mod tests {
             ("tv:123:s1:e2:auto:1080p", 2, "Show.S01E02.mkv"),
         ] {
             db.persist_playback_session(PersistPlaybackSessionInput {
+                user_id: 1,
                 session_key: session_key.to_owned(),
                 tmdb_id: "123".to_owned(),
                 audio_lang: "auto".to_owned(),
@@ -5516,20 +5892,20 @@ mod tests {
         }
 
         assert!(
-            db.get_playback_session("tv:123:s1:e1:auto:1080p".to_owned())
+            db.get_playback_session(1, "tv:123:s1:e1:auto:1080p".to_owned())
                 .await
                 .expect("load episode 1")
                 .is_some()
         );
         assert!(
-            db.get_playback_session("tv:123:s1:e2:auto:1080p".to_owned())
+            db.get_playback_session(1, "tv:123:s1:e2:auto:1080p".to_owned())
                 .await
                 .expect("load episode 2")
                 .is_some()
         );
 
         let sessions = db
-            .get_latest_healthy_playback_sessions_for_tmdb("123".to_owned(), 10)
+            .get_latest_healthy_playback_sessions_for_tmdb(1, "123".to_owned(), 10)
             .await
             .expect("load latest healthy sessions");
         assert_eq!(sessions.len(), 2);
@@ -5547,6 +5923,7 @@ mod tests {
             ("789:en:1080p", "789", "def"),
         ] {
             db.persist_playback_session(PersistPlaybackSessionInput {
+                user_id: 1,
                 session_key: session_key.to_owned(),
                 tmdb_id: tmdb_id.to_owned(),
                 audio_lang: "en".to_owned(),
@@ -5564,6 +5941,7 @@ mod tests {
 
         let updated = db
             .invalidate_playback_sessions_by_source_hash(
+                1,
                 "abc".to_owned(),
                 "Playback failed.".to_owned(),
             )
@@ -5573,7 +5951,7 @@ mod tests {
 
         for session_key in ["123:en:1080p", "456:en:1080p"] {
             let session = db
-                .get_playback_session(session_key.to_owned())
+                .get_playback_session(1, session_key.to_owned())
                 .await
                 .expect("load invalidated session")
                 .expect("session exists");
@@ -5583,7 +5961,7 @@ mod tests {
         }
 
         let untouched = db
-            .get_playback_session("789:en:1080p".to_owned())
+            .get_playback_session(1, "789:en:1080p".to_owned())
             .await
             .expect("load untouched session")
             .expect("session exists");
@@ -5592,12 +5970,85 @@ mod tests {
 
         let updated_again = db
             .invalidate_playback_sessions_by_source_hash(
+                1,
                 "abc".to_owned(),
                 "Playback failed again.".to_owned(),
             )
             .await
             .expect("invalidate source sessions again");
         assert_eq!(updated_again, 0);
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn playback_session_reads_updates_and_invalidation_are_user_scoped() {
+        let path = unique_temp_db_path("playback-session-user-scope");
+        let db = setup_test_playback_session_db(&path).await;
+        let session_key = "local-torrent:123:en:1080p";
+
+        for user_id in [11, 22] {
+            db.persist_playback_session(PersistPlaybackSessionInput {
+                user_id,
+                session_key: session_key.to_owned(),
+                tmdb_id: "123".to_owned(),
+                audio_lang: "en".to_owned(),
+                preferred_quality: "1080p".to_owned(),
+                source_hash: "shared-source".to_owned(),
+                selected_file: "1".to_owned(),
+                filename: "Movie.mp4".to_owned(),
+                playable_url: format!("https://example.test/{user_id}/movie.mp4"),
+                fallback_urls: Vec::new(),
+                metadata: json!({"tmdbId":"123","displayTitle":"Movie"}),
+            })
+            .await
+            .expect("persist user-scoped session");
+        }
+
+        db.update_playback_session_progress(
+            11,
+            session_key.to_owned(),
+            91.0,
+            "healthy".to_owned(),
+            String::new(),
+        )
+        .await
+        .expect("update first user");
+        assert_eq!(
+            db.get_playback_session(22, session_key.to_owned())
+                .await
+                .expect("load second user")
+                .expect("second session exists")
+                .last_position_seconds,
+            0.0
+        );
+
+        assert_eq!(
+            db.invalidate_playback_sessions_by_source_hash(
+                11,
+                "shared-source".to_owned(),
+                "User 11 playback failed.".to_owned(),
+            )
+            .await
+            .expect("invalidate first user"),
+            1
+        );
+        assert_eq!(
+            db.get_playback_session(11, session_key.to_owned())
+                .await
+                .expect("load first user")
+                .expect("first session exists")
+                .health_state,
+            "invalid"
+        );
+        assert_eq!(
+            db.get_playback_session(22, session_key.to_owned())
+                .await
+                .expect("load second user")
+                .expect("second session exists")
+                .health_state,
+            "healthy"
+        );
 
         let _ = tokio::fs::remove_file(&path).await;
     }
@@ -5623,6 +6074,7 @@ mod tests {
             ),
         ] {
             db.persist_playback_session(PersistPlaybackSessionInput {
+                user_id: 1,
                 session_key: session_key.to_owned(),
                 tmdb_id: "123".to_owned(),
                 audio_lang: audio_lang.to_owned(),
@@ -5639,6 +6091,7 @@ mod tests {
         }
 
         db.invalidate_playback_sessions_by_source_hash(
+            1,
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
             "Playback failed.".to_owned(),
         )
@@ -5646,7 +6099,7 @@ mod tests {
         .expect("invalidate latest session");
 
         let latest = db
-            .get_latest_healthy_playback_sessions_for_tmdb("123".to_owned(), 1)
+            .get_latest_healthy_playback_sessions_for_tmdb(1, "123".to_owned(), 1)
             .await
             .expect("load latest healthy session")
             .into_iter()
@@ -5664,6 +6117,7 @@ mod tests {
         let path = unique_temp_db_path("playback-session-refresh");
         let db = setup_test_playback_session_db(&path).await;
         db.persist_playback_session(PersistPlaybackSessionInput {
+            user_id: 1,
             session_key: "123:en:1080p".to_owned(),
             tmdb_id: "123".to_owned(),
             audio_lang: "en".to_owned(),
@@ -5678,6 +6132,7 @@ mod tests {
         .await
         .expect("persist session");
         db.update_playback_session_progress(
+            1,
             "123:en:1080p".to_owned(),
             187.0,
             "healthy".to_owned(),
@@ -5697,7 +6152,7 @@ mod tests {
                 SET
                   last_verified_at = ?,
                   next_validation_at = ?
-                WHERE session_key = ?
+                WHERE user_id = 1 AND session_key = ?
                 ",
                 params![
                     stale_verified_at,
@@ -5713,14 +6168,14 @@ mod tests {
 
         let before_refresh = super::now_ms();
         assert!(
-            db.refresh_playback_session_validation_window("123:en:1080p".to_owned())
+            db.refresh_playback_session_validation_window(1, "123:en:1080p".to_owned())
                 .await
                 .expect("refresh validation window")
         );
         let after_refresh = super::now_ms();
 
         let refreshed = db
-            .get_playback_session("123:en:1080p".to_owned())
+            .get_playback_session(1, "123:en:1080p".to_owned())
             .await
             .expect("load refreshed session")
             .expect("session exists");
@@ -5866,6 +6321,7 @@ mod tests {
             .expect("create user");
 
         db.persist_playback_session(PersistPlaybackSessionInput {
+            user_id,
             session_key: "local-torrent:tv:273240:s1:e2:en:auto".to_owned(),
             tmdb_id: "273240".to_owned(),
             audio_lang: "en".to_owned(),
@@ -5895,9 +6351,9 @@ mod tests {
                 UPDATE playback_sessions
                 SET updated_at = 1,
                     last_accessed_at = 1
-                WHERE session_key = ?
+                WHERE user_id = ? AND session_key = ?
                 ",
-                ["local-torrent:tv:273240:s1:e2:en:auto"],
+                params![user_id, "local-torrent:tv:273240:s1:e2:en:auto"],
             )?;
             Ok::<(), rusqlite::Error>(())
         })
@@ -5906,6 +6362,7 @@ mod tests {
         .expect("local timestamp update");
 
         db.persist_playback_session(PersistPlaybackSessionInput {
+            user_id,
             session_key: "tv:273240:s1:e2:en:auto".to_owned(),
             tmdb_id: "273240".to_owned(),
             audio_lang: "en".to_owned(),
@@ -6121,12 +6578,18 @@ mod tests {
 
         // Durable health history survives the wipe...
         assert_eq!(
-            db.recent_health_samples(0).await.expect("samples after").len(),
+            db.recent_health_samples(0)
+                .await
+                .expect("samples after")
+                .len(),
             1,
             "health_samples must survive clear_persistent_caches"
         );
         assert_eq!(
-            db.service_starts_since(0).await.expect("starts after").len(),
+            db.service_starts_since(0)
+                .await
+                .expect("starts after")
+                .len(),
             1,
             "service_starts must survive clear_persistent_caches"
         );
@@ -6137,31 +6600,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_first_user_only_inserts_when_users_table_is_empty() {
-        let path = unique_temp_db_path("first-user");
+    async fn bootstrap_admin_only_promotes_the_operator_configured_email() {
+        let path = unique_temp_db_path("bootstrap-admin");
         let db = setup_test_playback_session_db(&path).await;
 
-        let first = db
-            .create_first_user(
-                "first@example.com".to_owned(),
-                "hash-one".to_owned(),
-                "First".to_owned(),
+        let rejected = db
+            .create_bootstrap_admin(
+                "claimant@example.com".to_owned(),
+                "hash".to_owned(),
+                "Claimant".to_owned(),
+                "owner@example.com".to_owned(),
             )
             .await
-            .expect("create first user");
-        assert!(first.is_some());
-        assert_eq!(db.user_count().await.expect("count users"), 1);
+            .expect("reject mismatched bootstrap email");
+        assert!(rejected.is_none());
+        assert_eq!(db.user_count().await.expect("count after rejection"), 0);
 
-        let second = db
-            .create_first_user(
-                "second@example.com".to_owned(),
-                "hash-two".to_owned(),
-                "Second".to_owned(),
+        let owner_id = db
+            .create_bootstrap_admin(
+                "owner@example.com".to_owned(),
+                "hash".to_owned(),
+                "Owner".to_owned(),
+                "OWNER@example.com".to_owned(),
             )
             .await
-            .expect("attempt second first user");
-        assert!(second.is_none());
-        assert_eq!(db.user_count().await.expect("count users"), 1);
+            .expect("create configured bootstrap admin")
+            .expect("matching email inserted");
+        let owner = db
+            .get_auth_user(owner_id)
+            .await
+            .expect("load owner")
+            .expect("owner exists");
+        assert!(owner.3, "configured bootstrap account must be an admin");
 
         let _ = tokio::fs::remove_file(&path).await;
     }
@@ -6182,11 +6652,11 @@ mod tests {
             "new users start unverified"
         );
 
-        db.create_email_verification_token(email.clone(), "hash-a".to_owned(), 10_000)
+        db.create_email_verification_token(user_id, "hash-a".to_owned(), 10_000)
             .await
             .expect("create token a");
-        // A second token for the same email invalidates the first.
-        db.create_email_verification_token(email.clone(), "hash-b".to_owned(), 20_000)
+        // A second token for the same user invalidates the first.
+        db.create_email_verification_token(user_id, "hash-b".to_owned(), 20_000)
             .await
             .expect("create token b");
         assert!(
@@ -6201,7 +6671,7 @@ mod tests {
             .consume_email_verification_token("hash-b".to_owned())
             .await
             .expect("consume b");
-        assert_eq!(consumed, Some((email.clone(), 20_000)));
+        assert_eq!(consumed, Some((user_id, 20_000)));
         assert!(
             db.consume_email_verification_token("hash-b".to_owned())
                 .await
@@ -6210,7 +6680,7 @@ mod tests {
             "tokens are single-use"
         );
 
-        db.mark_email_verified(email.clone(), 123_456)
+        db.mark_email_verified(user_id, 123_456)
             .await
             .expect("mark verified");
         assert_eq!(
@@ -6218,7 +6688,7 @@ mod tests {
             Some(123_456)
         );
         // Idempotent: a later mark does not overwrite the first timestamp.
-        db.mark_email_verified(email, 999_999)
+        db.mark_email_verified(user_id, 999_999)
             .await
             .expect("mark verified again");
         assert_eq!(
@@ -6227,6 +6697,242 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn recovery_tokens_are_atomic_user_bound_and_revoked_with_credentials() {
+        let path = unique_temp_db_path("recovery-token-lifecycle");
+        let db = setup_test_playback_session_db(&path).await;
+        let user_id = db
+            .create_user(
+                "reset@example.com".to_owned(),
+                "old-hash".to_owned(),
+                "Reset User".to_owned(),
+            )
+            .await
+            .expect("create reset user");
+
+        db.create_password_reset_token(user_id, "race-token".to_owned(), i64::MAX)
+            .await
+            .expect("create race token");
+        let (left, right) = tokio::join!(
+            db.consume_password_reset_token("race-token".to_owned()),
+            db.consume_password_reset_token("race-token".to_owned())
+        );
+        let consumed = [left.expect("left consume"), right.expect("right consume")]
+            .into_iter()
+            .filter(Option::is_some)
+            .count();
+        assert_eq!(
+            consumed, 1,
+            "DELETE RETURNING must be atomically single-use"
+        );
+
+        db.create_password_reset_token(user_id, "reset-token".to_owned(), i64::MAX)
+            .await
+            .expect("create reset token");
+        db.create_email_verification_token(user_id, "verify-token".to_owned(), i64::MAX)
+            .await
+            .expect("create verify token");
+        db.create_session("active-session".to_owned(), user_id, i64::MAX)
+            .await
+            .expect("create auth session");
+        assert_eq!(
+            db.admin_set_password(user_id, "new-hash".to_owned())
+                .await
+                .expect("admin reset password"),
+            1
+        );
+        assert!(
+            db.get_session("active-session".to_owned())
+                .await
+                .expect("load revoked session")
+                .is_none()
+        );
+        assert!(
+            db.consume_password_reset_token("reset-token".to_owned())
+                .await
+                .expect("load revoked reset token")
+                .is_none()
+        );
+        assert!(
+            db.consume_email_verification_token("verify-token".to_owned())
+                .await
+                .expect("load revoked verification token")
+                .is_none()
+        );
+
+        db.create_password_reset_token(user_id, "delete-reset".to_owned(), i64::MAX)
+            .await
+            .expect("create deletion reset token");
+        db.create_email_verification_token(user_id, "delete-verify".to_owned(), i64::MAX)
+            .await
+            .expect("create deletion verify token");
+        assert_eq!(db.admin_delete_user(user_id).await.expect("delete user"), 1);
+        assert!(
+            db.consume_password_reset_token("delete-reset".to_owned())
+                .await
+                .expect("load cascaded reset token")
+                .is_none()
+        );
+        assert!(
+            db.consume_email_verification_token("delete-verify".to_owned())
+                .await
+                .expect("load cascaded verification token")
+                .is_none()
+        );
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn migrates_email_bound_recovery_tokens_to_user_foreign_keys() {
+        let path = unique_temp_db_path("legacy-recovery-token-schema");
+        let setup_path = path.clone();
+        super::task::spawn_blocking(move || {
+            let connection = open_connection(&setup_path)?;
+            connection.execute_batch(
+                "
+                CREATE TABLE users (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                  password_hash TEXT NOT NULL,
+                  display_name TEXT NOT NULL DEFAULT '',
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE email_verification_tokens (
+                  token_hash TEXT PRIMARY KEY,
+                  email TEXT NOT NULL,
+                  expires_at INTEGER NOT NULL,
+                  created_at INTEGER NOT NULL
+                );
+                CREATE TABLE password_reset_tokens (
+                  token_hash TEXT PRIMARY KEY,
+                  email TEXT NOT NULL,
+                  expires_at INTEGER NOT NULL,
+                  created_at INTEGER NOT NULL
+                );
+                INSERT INTO users
+                  (username, password_hash, display_name, created_at, updated_at)
+                VALUES ('legacy@example.com', 'hash', 'Legacy', 1, 1);
+                INSERT INTO email_verification_tokens
+                  (token_hash, email, expires_at, created_at)
+                VALUES ('legacy-verify', 'legacy@example.com', 10, 1);
+                INSERT INTO password_reset_tokens
+                  (token_hash, email, expires_at, created_at)
+                VALUES ('legacy-reset', 'legacy@example.com', 10, 1);
+                ",
+            )?;
+            drop(connection);
+
+            super::build_users_schema(&setup_path)?;
+            let connection = open_connection(&setup_path)?;
+            for table in ["email_verification_tokens", "password_reset_tokens"] {
+                let user_id = connection.query_row(
+                    &format!("SELECT user_id FROM {table} LIMIT 1"),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?;
+                assert_eq!(user_id, 1);
+            }
+            connection.execute("DELETE FROM users WHERE id = 1", [])?;
+            let remaining: i64 = connection.query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM email_verification_tokens) +
+                   (SELECT COUNT(*) FROM password_reset_tokens)",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(remaining, 0, "token foreign keys must cascade on deletion");
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("join legacy token migration")
+        .expect("migrate legacy token schema");
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn migrates_raw_session_tokens_without_invalidating_active_sessions() {
+        let cache_path = unique_temp_db_path("raw-session-token-migration");
+        let users_path = users_db_path_for(&cache_path);
+        let setup_path = users_path.clone();
+        super::task::spawn_blocking(move || {
+            let connection = open_connection(&setup_path)?;
+            connection.execute_batch(
+                "
+                CREATE TABLE users (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                  password_hash TEXT NOT NULL,
+                  display_name TEXT NOT NULL DEFAULT '',
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE auth_sessions (
+                  token TEXT PRIMARY KEY,
+                  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  created_at INTEGER NOT NULL,
+                  expires_at INTEGER NOT NULL
+                );
+                INSERT INTO users
+                  (username, password_hash, display_name, created_at, updated_at)
+                VALUES ('session@example.com', 'hash', 'Session User', 1, 1);
+                INSERT INTO auth_sessions (token, user_id, created_at, expires_at)
+                VALUES ('live-raw-token', 1, 1, 9223372036854775807);
+                ",
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("join raw token setup")
+        .expect("seed raw token schema");
+
+        let config = test_config(&cache_path);
+        let db = Db::initialize(&config)
+            .await
+            .expect("migrate session tokens");
+        assert_eq!(
+            db.get_session("live-raw-token".to_owned())
+                .await
+                .expect("look up migrated session"),
+            Some((1, i64::MAX)),
+            "the original bearer token must remain usable after migration"
+        );
+        drop(db);
+
+        let inspect_path = users_path.clone();
+        super::task::spawn_blocking(move || {
+            let connection = open_connection(&inspect_path)?;
+            let stored = connection.query_row(
+                "SELECT token_hash FROM auth_sessions WHERE user_id = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )?;
+            assert_eq!(stored, crate::email::sha256_hex("live-raw-token"));
+            assert_ne!(stored, "live-raw-token");
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("join hash inspection")
+        .expect("inspect migrated token hash");
+
+        // A second initialization must use the column marker and avoid hashing
+        // the already-hashed value again.
+        let db = Db::initialize(&config)
+            .await
+            .expect("reinitialize migrated db");
+        assert!(
+            db.get_session("live-raw-token".to_owned())
+                .await
+                .expect("look up session after restart")
+                .is_some()
+        );
+
+        let _ = tokio::fs::remove_file(&cache_path).await;
+        let _ = tokio::fs::remove_file(&users_path).await;
     }
 
     #[tokio::test]
@@ -6252,8 +6958,8 @@ mod tests {
         let check_path = path.clone();
         let (integrity, table_count) = super::task::spawn_blocking(move || {
             let connection = open_connection(&check_path)?;
-            let integrity =
-                connection.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))?;
+            let integrity = connection
+                .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))?;
             let table_count = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
                 [],
@@ -6337,8 +7043,10 @@ mod tests {
         tokio::fs::write(&path, &corrupt)
             .await
             .expect("corrupt cache db");
-        let _ = tokio::fs::remove_file(PathBuf::from(format!("{}-wal", path.to_string_lossy()))).await;
-        let _ = tokio::fs::remove_file(PathBuf::from(format!("{}-shm", path.to_string_lossy()))).await;
+        let _ =
+            tokio::fs::remove_file(PathBuf::from(format!("{}-wal", path.to_string_lossy()))).await;
+        let _ =
+            tokio::fs::remove_file(PathBuf::from(format!("{}-shm", path.to_string_lossy()))).await;
 
         // Re-initialize: the cache DB self-heals; users.sqlite is untouched.
         let db = Db::initialize(&config)
@@ -6362,17 +7070,28 @@ mod tests {
         );
 
         // The corrupt cache file was quarantined (not silently deleted).
-        let stem = path.file_stem().expect("db file stem").to_string_lossy().into_owned();
+        let stem = path
+            .file_stem()
+            .expect("db file stem")
+            .to_string_lossy()
+            .into_owned();
         let parent = path.parent().expect("db parent dir").to_path_buf();
         let prefix = format!("{stem}.corrupt-");
         let mut backups = Vec::new();
         let mut entries = tokio::fs::read_dir(&parent).await.expect("read temp dir");
         while let Some(entry) = entries.next_entry().await.expect("read dir entry") {
-            if entry.file_name().to_string_lossy().starts_with(prefix.as_str()) {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(prefix.as_str())
+            {
                 backups.push(entry.path());
             }
         }
-        assert!(!backups.is_empty(), "corrupt cache file should be quarantined");
+        assert!(
+            !backups.is_empty(),
+            "corrupt cache file should be quarantined"
+        );
 
         let _ = tokio::fs::remove_file(&path).await;
         let _ = tokio::fs::remove_file(users_db_path_for(&path)).await;
@@ -6400,6 +7119,17 @@ mod tests {
             // user was deleted without the cascade firing — so foreign_keys is off
             // here to allow inserting it, just as the real legacy DB accumulated one.
             connection.pragma_update(None, "foreign_keys", false)?;
+            connection.execute_batch(
+                "
+                DROP TABLE auth_sessions;
+                CREATE TABLE auth_sessions (
+                  token TEXT PRIMARY KEY,
+                  user_id INTEGER NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  expires_at INTEGER NOT NULL
+                );
+                ",
+            )?;
             let now = super::now_ms();
             connection.execute(
                 "INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
@@ -6465,7 +7195,10 @@ mod tests {
             "orphan session (no surviving user) must be dropped, not block migration"
         );
         assert_eq!(
-            db.get_user_my_list(user_id).await.expect("load my list").len(),
+            db.get_user_my_list(user_id)
+                .await
+                .expect("load my list")
+                .len(),
             1,
             "my-list rows should migrate"
         );
@@ -6475,7 +7208,10 @@ mod tests {
             .get_tmdb_cache("legacy-key".to_owned())
             .await
             .expect("load cache row after migration");
-        assert!(cached.is_some(), "cache rows in the legacy file remain usable");
+        assert!(
+            cached.is_some(),
+            "cache rows in the legacy file remain usable"
+        );
 
         // The migration is non-destructive: the user rows are still in the legacy
         // file as a safety net.

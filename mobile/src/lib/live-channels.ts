@@ -137,7 +137,7 @@ const HESGOALER_SPORTS: LiveChannel[] = (
     { slug: "ziggo-sport-4", code: "ZiggoSport4", title: "Ziggo Sport 4", region: "Netherlands" },
     { slug: "ziggo-sport-5", code: "ZiggoSport5", title: "Ziggo Sport 5", region: "Netherlands" },
     { slug: "ziggo-sport-6", code: "ZiggoSport6", title: "Ziggo Sport 6", region: "Netherlands" },
-  ] as Array<{ slug: string; code: string; title: string; region: string; genre?: string }>
+  ] as { slug: string; code: string; title: string; region: string; genre?: string }[]
 ).map(({ slug, code, title, region, genre = "Sports" }) => ({
   id: slug,
   title,

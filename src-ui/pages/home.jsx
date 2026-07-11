@@ -2333,10 +2333,17 @@ export default function HomePage() {
     if (!(button instanceof HTMLButtonElement)) {
       return;
     }
+    const itemTitle = String(button.dataset.itemTitle || "").trim();
     button.classList.toggle("is-active", Boolean(isActive));
     button.setAttribute(
       "aria-label",
-      isActive ? "Remove from My List" : "Add to My List",
+      isActive
+        ? itemTitle
+          ? `Remove ${itemTitle} from My List`
+          : "Remove from My List"
+        : itemTitle
+          ? `Add ${itemTitle} to My List`
+          : "Add to My List",
     );
     button.dataset.tooltip = isActive ? "Remove from My List" : "Add to My List";
     button.setAttribute("aria-pressed", isActive ? "true" : "false");
@@ -2347,14 +2354,14 @@ export default function HomePage() {
     if (!(card instanceof HTMLElement)) {
       return;
     }
-    const button = card.querySelector(
-      ".hover-my-list, button[aria-label*='my list' i]",
-    );
-    if (!(button instanceof HTMLButtonElement)) {
-      return;
-    }
-    button.classList.add("hover-my-list");
-    setMyListButtonState(button, isMyListEntryActive(getCardDetails(card)));
+    const isActive = isMyListEntryActive(getCardDetails(card));
+    card
+      .querySelectorAll(".hover-my-list, .card-touch-my-list")
+      .forEach((button) => {
+        if (button instanceof HTMLButtonElement) {
+          setMyListButtonState(button, isActive);
+        }
+      });
   }
 
   function syncAllMyListButtons() {
@@ -2597,6 +2604,44 @@ export default function HomePage() {
     });
   }
 
+  function ensureCardTouchActions(card) {
+    if (!(card instanceof HTMLElement) || card.querySelector(".card-touch-actions")) {
+      return;
+    }
+    const cardBase = card.querySelector(".card-base");
+    if (!(cardBase instanceof HTMLElement)) {
+      return;
+    }
+    const title = String(card.dataset.title || "title").trim() || "title";
+    const safeTitle = escapeHtml(title);
+    const actions = document.createElement("div");
+    actions.className = "card-touch-actions";
+    actions.setAttribute("role", "group");
+    actions.setAttribute("aria-label", `Actions for ${title}`);
+    actions.innerHTML = `
+      <button
+        class="card-touch-action card-touch-my-list"
+        type="button"
+        aria-label="Add ${safeTitle} to My List"
+        aria-pressed="false"
+        data-item-title="${safeTitle}"
+      >
+        ${myListIconMarkup(false)}
+      </button>
+      <button
+        class="card-touch-action card-touch-details"
+        type="button"
+        aria-label="More details for ${safeTitle}"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="8.5" fill="none" />
+          <path d="M12 10.5v6M12 7.5h.01" fill="none" stroke-linecap="round" />
+        </svg>
+      </button>
+    `;
+    cardBase.appendChild(actions);
+  }
+
   function attachCardInteractions(card) {
     if (!card || card.dataset.interactionsBound === "true") {
       return;
@@ -2605,6 +2650,7 @@ export default function HomePage() {
     queueOfflineArtworkFromElement(card);
     ensureCardLibraryEditButton(card);
     prepareCardTouchSurfaces(card);
+    ensureCardTouchActions(card);
     card.dataset.interactionsBound = "true";
 
     let pointerInside = false;
@@ -2672,11 +2718,12 @@ export default function HomePage() {
       openPlayerPage(getCardDetails(card));
     });
 
-    const hoverDetailsButton = card.querySelector(".hover-details");
-    hoverDetailsButton?.addEventListener("click", (event) => {
-      event.stopPropagation();
-      event.preventDefault();
-      openDetailsModal(card, hoverDetailsButton);
+    card.querySelectorAll(".hover-details, .card-touch-details").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        openDetailsModal(card, button);
+      });
     });
 
     const hoverEditButton = card.querySelector(".hover-edit");
@@ -2707,23 +2754,20 @@ export default function HomePage() {
       })();
     });
 
-    const hoverMyListButton = card.querySelector(
-      ".hover-my-list, button[aria-label*='my list' i]",
-    );
-    if (hoverMyListButton instanceof HTMLButtonElement) {
-      hoverMyListButton.classList.add("hover-my-list");
-      setMyListButtonState(
-        hoverMyListButton,
-        isMyListEntryActive(getCardDetails(card)),
-      );
-      hoverMyListButton.addEventListener("click", (event) => {
-        event.stopPropagation();
-        event.preventDefault();
-        toggleMyList(getCardDetails(card));
-        renderMyListRow();
-        syncAllMyListButtons();
+    const isCardInMyList = isMyListEntryActive(getCardDetails(card));
+    card
+      .querySelectorAll(".hover-my-list, .card-touch-my-list")
+      .forEach((button) => {
+        if (!(button instanceof HTMLButtonElement)) return;
+        setMyListButtonState(button, isCardInMyList);
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          event.preventDefault();
+          toggleMyList(getCardDetails(card));
+          renderMyListRow();
+          syncAllMyListButtons();
+        });
       });
-    }
   }
 
   // ---- Card building functions ----

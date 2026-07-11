@@ -647,7 +647,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       set({ paused: true, status: "paused" });
     },
     togglePlay() {
-      get().paused ? get().play() : get().pause();
+      if (get().paused) get().play();
+      else get().pause();
     },
 
     seekTo(seconds) {

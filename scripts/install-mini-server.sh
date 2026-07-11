@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
@@ -67,6 +68,9 @@ caddy_bin="/usr/local/bin/caddy"
 
 mkdir -p "$state_dir" "$bin_dir" "$caddy_config_dir"
 chmod 700 "$state_dir" "$bin_dir" "$caddy_config_dir"
+mkdir -p "$REMOTE_APP/cache"
+chmod 700 "$REMOTE_APP/cache"
+find "$REMOTE_APP/cache" -maxdepth 1 -type f -name 'users.sqlite*' -exec chmod 600 {} +
 
 if [[ ! -x "$REMOTE_APP/bin/streamarena-backend" ]]; then
   echo "Missing backend binary: $REMOTE_APP/bin/streamarena-backend" >&2
@@ -100,11 +104,15 @@ esac
 cat > "$bin_dir/streamarena-run-backend" <<'SCRIPT'
 #!/bin/bash
 set -uo pipefail
+umask 077
 
 export PATH="/Users/hermes/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export STREAMARENA_ENV_FILE="${STREAMARENA_ENV_FILE:-/Users/hermes/.config/streamarena/env}"
 export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 cd /Users/hermes/Developer/streamarena
+mkdir -p cache
+chmod 700 cache
+find cache -maxdepth 1 -type f -name 'users.sqlite*' -exec chmod 600 {} +
 
 if [[ -f "$STREAMARENA_ENV_FILE" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -150,6 +158,25 @@ if [[ -z "$host_blocks" ]]; then
   exit 1
 fi
 
+# Resolve Cloudflare's authoritative edge ranges at install time. Caddy only
+# trusts client-IP headers from those peers and rewrites CF-Connecting-IP for
+# every upstream request, so a direct-to-origin caller cannot spoof a fresh
+# rate-limit identity.
+cloudflare_ranges="$(
+  {
+    curl -fsSL https://www.cloudflare.com/ips-v4
+    printf '\n'
+    curl -fsSL https://www.cloudflare.com/ips-v6
+  } | awk '
+    NF {
+      if ($0 !~ /^[0-9A-Fa-f:.]+\/[0-9]+$/) exit 1
+      printf "%s ", $0
+      count += 1
+    }
+    END { if (count < 10) exit 1 }
+  '
+)"
+
 tls_line=""
 if [[ "$TLS_MODE" == "internal" ]]; then
   tls_line="  tls internal"
@@ -160,13 +187,21 @@ cat > "$tmp_caddy_config" <<CADDY
 {
   admin off
   auto_https disable_redirects
+  servers {
+    trusted_proxies static $cloudflare_ranges
+    trusted_proxies_strict
+    client_ip_headers CF-Connecting-IP X-Forwarded-For
+  }
 }
 
 (streamarena_proxy) {
+  @untrusted_origin not remote_ip private_ranges $cloudflare_ranges
+  respond @untrusted_origin 403
   encode zstd gzip
   reverse_proxy 127.0.0.1:5173 {
     lb_try_duration 30s
     lb_try_interval 250ms
+    header_up CF-Connecting-IP {client_ip}
   }
   log {
     output file $caddy_log_dir/caddy-access.log {
@@ -187,6 +222,10 @@ $tls_line
 }
 CADDY
 "$caddy_bin" fmt --overwrite "$tmp_caddy_config"
+caddy_config_changed=1
+if [[ -f "$caddy_config_dir/Caddyfile" ]] && cmp -s "$tmp_caddy_config" "$caddy_config_dir/Caddyfile"; then
+  caddy_config_changed=0
+fi
 sudo install -m 600 "$tmp_caddy_config" "$caddy_config_dir/Caddyfile"
 rm -f "$tmp_caddy_config"
 sudo "$caddy_bin" validate --config "$caddy_config_dir/Caddyfile" --adapter caddyfile
@@ -289,23 +328,96 @@ cat > "$tmp_sysctl_plist" <<'PLIST'
 </plist>
 PLIST
 
+app_plist_changed=1
+caddy_plist_changed=1
+sysctl_plist_changed=1
+[[ -f "$app_plist" ]] && cmp -s "$tmp_app_plist" "$app_plist" && app_plist_changed=0
+[[ -f "$caddy_plist" ]] && cmp -s "$tmp_caddy_plist" "$caddy_plist" && caddy_plist_changed=0
+[[ -f "$sysctl_plist" ]] && cmp -s "$tmp_sysctl_plist" "$sysctl_plist" && sysctl_plist_changed=0
 sudo install -m 644 "$tmp_app_plist" "$app_plist"
 sudo install -m 644 "$tmp_caddy_plist" "$caddy_plist"
 sudo install -m 644 "$tmp_sysctl_plist" "$sysctl_plist"
 rm -f "$tmp_app_plist" "$tmp_caddy_plist" "$tmp_sysctl_plist"
 
-sudo launchctl bootout system "$app_plist" 2>/dev/null || true
-sudo launchctl bootout system "$caddy_plist" 2>/dev/null || true
-sudo launchctl bootout system "$sysctl_plist" 2>/dev/null || true
-sudo launchctl bootstrap system "$app_plist"
-sudo launchctl bootstrap system "$caddy_plist"
-sudo launchctl bootstrap system "$sysctl_plist"
+old_app_pids="$(pgrep -f "$REMOTE_APP/bin/streamarena-backend" 2>/dev/null || true)"
+if launchctl print system/com.fightingentropy.streamarena-app >/dev/null 2>&1; then
+  if [[ "$app_plist_changed" -eq 1 ]]; then
+    sudo launchctl bootout system "$app_plist" 2>/dev/null || true
+    sudo launchctl bootstrap system "$app_plist"
+  else
+    # SIGTERM lets the backend drain active responses before launchd's KeepAlive
+    # starts the newly deployed binary.
+    pkill -TERM -f "$REMOTE_APP/bin/streamarena-backend" 2>/dev/null || true
+  fi
+else
+  if [[ -n "$old_app_pids" ]]; then
+    pkill -TERM -f "$REMOTE_APP/bin/streamarena-backend" 2>/dev/null || true
+  fi
+  sudo launchctl bootstrap system "$app_plist"
+fi
+
+# Do not report a successful deploy while the old in-memory binary is still
+# draining. The backend allows at most 30 seconds before closing long-lived
+# responses, then launchd's KeepAlive starts the replacement.
+if [[ -n "$old_app_pids" ]]; then
+  replacement_ready=0
+  for _ in {1..40}; do
+    old_still_running=0
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] || continue
+      if kill -0 "$pid" 2>/dev/null; then
+        old_still_running=1
+        break
+      fi
+    done <<< "$old_app_pids"
+    current_app_pids="$(pgrep -f "$REMOTE_APP/bin/streamarena-backend" 2>/dev/null || true)"
+    if [[ "$old_still_running" -eq 0 && -n "$current_app_pids" ]]; then
+      replacement_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$replacement_ready" -ne 1 ]]; then
+    echo "Backend replacement did not start within 40 seconds" >&2
+    exit 1
+  fi
+fi
+
+if launchctl print system/com.fightingentropy.streamarena-caddy >/dev/null 2>&1; then
+  if [[ "$caddy_plist_changed" -eq 1 || "$caddy_config_changed" -eq 1 ]]; then
+    sudo launchctl bootout system "$caddy_plist" 2>/dev/null || true
+    sudo launchctl bootstrap system "$caddy_plist"
+  fi
+else
+  # Adopt an older manually-started Caddy without racing it for :80/:443.
+  if pgrep -x caddy >/dev/null 2>&1; then
+    sudo pkill -TERM -x caddy 2>/dev/null || true
+    for _ in {1..15}; do
+      pgrep -x caddy >/dev/null 2>&1 || break
+      sleep 1
+    done
+    if pgrep -x caddy >/dev/null 2>&1; then
+      echo "Unmanaged Caddy did not stop within 15 seconds" >&2
+      exit 1
+    fi
+  fi
+  sudo launchctl bootstrap system "$caddy_plist"
+fi
+
+if launchctl print system/com.fightingentropy.streamarena-sysctl >/dev/null 2>&1; then
+  if [[ "$sysctl_plist_changed" -eq 1 ]]; then
+    sudo launchctl bootout system "$sysctl_plist" 2>/dev/null || true
+    sudo launchctl bootstrap system "$sysctl_plist"
+  fi
+else
+  sudo launchctl bootstrap system "$sysctl_plist"
+fi
 sudo launchctl enable system/com.fightingentropy.streamarena-app 2>/dev/null || true
 sudo launchctl enable system/com.fightingentropy.streamarena-caddy 2>/dev/null || true
 sudo launchctl enable system/com.fightingentropy.streamarena-sysctl 2>/dev/null || true
-sudo launchctl kickstart -k system/com.fightingentropy.streamarena-app
-sudo launchctl kickstart -k system/com.fightingentropy.streamarena-caddy
-sudo launchctl kickstart system/com.fightingentropy.streamarena-sysctl
+sudo launchctl kickstart system/com.fightingentropy.streamarena-app 2>/dev/null || true
+sudo launchctl kickstart system/com.fightingentropy.streamarena-caddy 2>/dev/null || true
+sudo launchctl kickstart system/com.fightingentropy.streamarena-sysctl 2>/dev/null || true
 
 sleep 2
 backend_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/library || true)

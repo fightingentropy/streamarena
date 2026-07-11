@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import { Check } from "lucide-react-native";
 import { Sheet } from "@/components/ui/Sheet";
@@ -19,7 +19,7 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
   const [loading, setLoading] = useState(false);
   const [errored, setErrored] = useState(false);
 
-  async function loadSources() {
+  const loadSources = useCallback(async () => {
     if (!request || loading || sources) return;
     setLoading(true);
     setErrored(false);
@@ -38,7 +38,7 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
     } finally {
       setLoading(false);
     }
-  }
+  }, [loading, request, sources]);
 
   // Drop the cached list when the title changes (e.g. next episode) so it re-fetches.
   useEffect(() => {
@@ -49,7 +49,7 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
   // Auto-load the list the first time the sheet opens (the guard no-ops once cached/in flight).
   useEffect(() => {
     if (visible) void loadSources();
-  }, [visible, request]);
+  }, [loadSources, visible]);
 
   return (
     <Sheet visible={visible} onClose={onClose} heightPct={0.6} zIndex={200}>

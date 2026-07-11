@@ -19,6 +19,7 @@ import {
   normalizeSubtitleColor,
 } from "../lib/preferences.js";
 import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
+import { handleAuthFailureResponse } from "../lib/auth.js";
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
 const DEFAULT_AVATAR_STYLE = "blue";
@@ -69,12 +70,16 @@ function getAvatarChoiceLabel(value) {
   }, "Blue");
 }
 
-function getRealDebridStatusLabel(configured, maskedKey) {
+function getRealDebridStatusLabel(configured, maskedKey, loadState) {
+  if (loadState === "loading") return "Loading…";
+  if (loadState === "error") return "Unavailable";
   if (!configured) return "Off";
   return maskedKey ? `On (${maskedKey})` : "On";
 }
 
-function getLocalTorrentStatusLabel(enabled) {
+function getLocalTorrentStatusLabel(enabled, loadState) {
+  if (loadState === "loading") return "Loading…";
+  if (loadState === "error") return "Unavailable";
   return enabled ? "On" : "Off";
 }
 
@@ -105,6 +110,7 @@ function syncPreferenceToServer(payload) {
     body: JSON.stringify(payload),
   })
     .then((res) => {
+      if (handleAuthFailureResponse(res)) return;
       if (!res.ok) throw new Error(`Preference sync failed: ${res.status}`);
     })
     .catch((error) => {
@@ -253,6 +259,9 @@ export default function SettingsPage() {
   const [realDebridApiKeyInput, setRealDebridApiKeyInput] = createSignal("");
   const [localTorrentEnabled, setLocalTorrentEnabled] = createSignal(false);
   const [realDebridStatus, setRealDebridStatus] = createSignal("");
+  const [realDebridLoadState, setRealDebridLoadState] = createSignal("loading");
+  const [realDebridApiKeyDirty, setRealDebridApiKeyDirty] = createSignal(false);
+  const [localTorrentDirty, setLocalTorrentDirty] = createSignal(false);
 
   // Avatar state
   const storedAvatarStyle = getStoredAvatarStylePreference();
@@ -344,17 +353,25 @@ export default function SettingsPage() {
   function handleRealDebridApiKeyInput(e) {
     const nextValue = String(e.target.value || "");
     setRealDebridApiKeyInput(nextValue);
+    setRealDebridApiKeyDirty(Boolean(nextValue.trim()));
     if (!realDebridConfigured() && !nextValue.trim()) {
       setLocalTorrentEnabled(false);
     }
   }
 
   function canToggleLocalTorrentCache() {
-    return realDebridConfigured() || Boolean(String(realDebridApiKeyInput() || "").trim());
+    return (
+      (realDebridLoadState() === "loaded" && realDebridConfigured()) ||
+      Boolean(String(realDebridApiKeyInput() || "").trim())
+    );
   }
 
   function handleLocalTorrentEnabledChange(e) {
-    setLocalTorrentEnabled(canToggleLocalTorrentCache() && Boolean(e.target.checked));
+    const nextEnabled = canToggleLocalTorrentCache() && Boolean(e.target.checked);
+    if (nextEnabled !== localTorrentEnabled()) {
+      setLocalTorrentDirty(true);
+    }
+    setLocalTorrentEnabled(nextEnabled);
   }
 
   function handleAvatarChoiceChange(value) {
@@ -381,20 +398,44 @@ export default function SettingsPage() {
   }
 
   async function loadRealDebridSetting() {
+    setRealDebridLoadState("loading");
+    setRealDebridStatus("Loading…");
     try {
-      const response = await fetch("/api/user/real-debrid");
-      if (!response.ok) return;
+      const response = await fetch("/api/user/real-debrid", { cache: "no-store" });
+      if (handleAuthFailureResponse(response)) return;
+      if (!response.ok) {
+        throw new Error(`Unable to load Real-Debrid settings (${response.status}).`);
+      }
       const payload = await response.json();
       setRealDebridConfigured(Boolean(payload?.configured));
       setRealDebridMaskedApiKey(String(payload?.maskedApiKey || ""));
-      setLocalTorrentEnabled(Boolean(payload?.localTorrentEnabled));
-    } catch {}
+      if (!localTorrentDirty()) {
+        setLocalTorrentEnabled(Boolean(payload?.localTorrentEnabled));
+      }
+      setRealDebridLoadState("loaded");
+      setRealDebridStatus("");
+    } catch (error) {
+      setRealDebridLoadState("error");
+      setRealDebridStatus(
+        error instanceof Error ? error.message : "Unable to load Real-Debrid settings.",
+      );
+    }
   }
 
   async function saveRealDebridSettings() {
+    const shouldSaveApiKey = realDebridApiKeyDirty();
+    const shouldSaveLocalTorrent = localTorrentDirty();
+    if (!shouldSaveApiKey && !shouldSaveLocalTorrent) {
+      return false;
+    }
+
     const apiKey = String(realDebridApiKeyInput() || "").trim();
-    const body = { localTorrentEnabled: localTorrentEnabled() };
-    if (apiKey) body.apiKey = apiKey;
+    const body = {};
+    if (shouldSaveApiKey && apiKey) body.apiKey = apiKey;
+    if (shouldSaveLocalTorrent) body.localTorrentEnabled = localTorrentEnabled();
+    if (Object.keys(body).length === 0) {
+      return false;
+    }
 
     setRealDebridStatus("Saving...");
     const response = await fetch("/api/user/real-debrid", {
@@ -403,6 +444,9 @@ export default function SettingsPage() {
       body: JSON.stringify(body),
     });
     const payload = await response.json().catch(() => ({}));
+    if (handleAuthFailureResponse(response)) {
+      throw new Error("Your session expired. Please sign in again.");
+    }
     if (!response.ok) {
       throw new Error(payload?.error || payload?.message || "Unable to save Real-Debrid key.");
     }
@@ -410,6 +454,9 @@ export default function SettingsPage() {
     setRealDebridMaskedApiKey(String(payload?.maskedApiKey || ""));
     setLocalTorrentEnabled(Boolean(payload?.localTorrentEnabled));
     setRealDebridApiKeyInput("");
+    setRealDebridApiKeyDirty(false);
+    setLocalTorrentDirty(false);
+    setRealDebridLoadState("loaded");
     setRealDebridStatus("Saved");
     return true;
   }
@@ -423,6 +470,9 @@ export default function SettingsPage() {
         body: JSON.stringify({ apiKey: "", localTorrentEnabled: false }),
       });
       const payload = await response.json().catch(() => ({}));
+      if (handleAuthFailureResponse(response)) {
+        throw new Error("Your session expired. Please sign in again.");
+      }
       if (!response.ok) {
         throw new Error(payload?.error || payload?.message || "Unable to clear Real-Debrid key.");
       }
@@ -430,6 +480,9 @@ export default function SettingsPage() {
       setRealDebridMaskedApiKey("");
       setRealDebridApiKeyInput("");
       setLocalTorrentEnabled(false);
+      setRealDebridApiKeyDirty(false);
+      setLocalTorrentDirty(false);
+      setRealDebridLoadState("loaded");
       setRealDebridStatus("Cleared");
       showToast("Real-Debrid key cleared");
     } catch (error) {
@@ -573,7 +626,11 @@ export default function SettingsPage() {
                 <span class="settings-row-icon settings-row-icon--debrid" aria-hidden="true"></span>
                 <div class="settings-row-copy">
                   <h3>Real-Debrid</h3>
-                  <p>{getRealDebridStatusLabel(realDebridConfigured(), realDebridMaskedApiKey())}</p>
+                  <p>{getRealDebridStatusLabel(
+                    realDebridConfigured(),
+                    realDebridMaskedApiKey(),
+                    realDebridLoadState(),
+                  )}</p>
                 </div>
                 <div class="settings-row-control real-debrid-controls">
                   <label class="settings-text-field" for="realDebridApiKey">
@@ -608,7 +665,7 @@ export default function SettingsPage() {
                 <span class="settings-row-icon settings-row-icon--torrent" aria-hidden="true"></span>
                 <div class="settings-row-copy">
                   <h3>Local torrent cache</h3>
-                  <p>{getLocalTorrentStatusLabel(localTorrentEnabled())}</p>
+                  <p>{getLocalTorrentStatusLabel(localTorrentEnabled(), realDebridLoadState())}</p>
                 </div>
                 <div class="settings-row-control local-torrent-controls">
                   <label

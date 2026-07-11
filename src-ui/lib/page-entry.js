@@ -1,4 +1,4 @@
-import { hydrateFromServer } from "./auth.js";
+import { getAuthSession, hydrateFromServer } from "./auth.js";
 import { initEmailVerificationBanner } from "./email-verification-banner.js";
 import { mountPage } from "./mount-page.js";
 import { migrateLegacyStorageKeys } from "./storage-migration.js";
@@ -13,22 +13,32 @@ export async function mountAuthenticatedPage(loadPage, options = {}) {
   // its keys, and before hydrateFromServer writes them back.
   migrateLegacyStorageKeys();
   // Download the page module and check auth in parallel for speed, but do not
-  // mount protected UI (or run its data fetches) until auth is confirmed.
+  // mount protected UI (or run its data fetches) until auth and account-backed
+  // browser preferences are settled.
   const componentPromise = loadPageComponent(loadPage);
-  const user = await fetch("/api/auth/me")
-    .then(async (response) => (response.ok ? await response.json() : null))
-    .catch(() => null);
+  const session = await getAuthSession();
 
-  if (!user) {
+  if (session.status === "unauthorized") {
     window.location.href = "/login.html";
     return;
   }
-  window.__currentUser = user;
+  if (!session.user) {
+    // A network/5xx failure is not proof that the session is invalid. Keep any
+    // owner-tagged state intact and let the login page explain the temporary
+    // verification failure instead of deleting it as though this were a 401.
+    window.location.href = "/login.html?auth=unavailable";
+    return;
+  }
+
+  if (session.status === "authenticated") {
+    const hydration = await hydrateFromServer();
+    if (hydration.authExpired) {
+      return;
+    }
+  }
 
   mountPage(await componentPromise, options);
-
-  void hydrateFromServer();
-  initEmailVerificationBanner(user);
+  initEmailVerificationBanner(session.user);
 }
 
 export async function mountPublicPage(loadPage, options = {}) {

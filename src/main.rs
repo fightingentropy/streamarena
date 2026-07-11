@@ -24,11 +24,13 @@ mod upload;
 mod utils;
 
 use std::env;
+use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::DefaultBodyLimit;
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
@@ -46,6 +48,7 @@ use crate::tmdb::TmdbService;
 use crate::upload::UploadService;
 
 const SHARED_HTTP_CLIENT_TIMEOUT_SECONDS: u64 = 30;
+const GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS: u64 = 30;
 
 fn format_startup_url(addr: SocketAddr) -> String {
     if addr.ip().is_loopback() {
@@ -115,6 +118,28 @@ fn outbound_proxy_bypasses_host(host: &str, bypass_suffixes: &[String]) -> bool 
                 .strip_suffix(suffix.as_str())
                 .is_some_and(|prefix| prefix.ends_with('.'))
     })
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if let Err(error) = result {
+                    warn!("failed to listen for Ctrl-C: {error}");
+                }
+            }
+            _ = terminate.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        warn!("failed to listen for Ctrl-C: {error}");
+    }
 }
 
 #[tokio::main]
@@ -354,12 +379,37 @@ async fn main() -> AppResult<()> {
     };
     let display_addr = format_startup_url(listener.local_addr().unwrap_or(addr));
     info!("Rust server running at http://{}", display_addr);
-    axum::serve(
+    let shutdown = CancellationToken::new();
+    let signal_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        info!("shutdown signal received; draining active requests");
+        signal_shutdown.cancel();
+    });
+    let graceful_shutdown = shutdown.clone();
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await
-    .map_err(|error: std::io::Error| crate::error::ApiError::internal(error.to_string()))?;
+    .with_graceful_shutdown(graceful_shutdown.cancelled_owned())
+    .into_future();
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => {
+            result.map_err(|error: std::io::Error| {
+                crate::error::ApiError::internal(error.to_string())
+            })?;
+        }
+        _ = async {
+            shutdown.cancelled().await;
+            tokio::time::sleep(Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS)).await;
+        } => {
+            warn!(
+                "graceful shutdown exceeded {}s; closing remaining connections",
+                GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS
+            );
+        }
+    }
     Ok(())
 }
 
@@ -374,12 +424,24 @@ mod tests {
             .map(|entry| (*entry).to_owned())
             .collect();
         assert!(outbound_proxy_bypasses_host("api.themoviedb.org", &bypass));
-        assert!(outbound_proxy_bypasses_host("api.opensubtitles.com", &bypass));
-        assert!(outbound_proxy_bypasses_host("www.opensubtitles.com", &bypass));
+        assert!(outbound_proxy_bypasses_host(
+            "api.opensubtitles.com",
+            &bypass
+        ));
+        assert!(outbound_proxy_bypasses_host(
+            "www.opensubtitles.com",
+            &bypass
+        ));
         // Suffix without a dot boundary must NOT bypass the proxy.
-        assert!(!outbound_proxy_bypasses_host("evilopensubtitles.com", &bypass));
+        assert!(!outbound_proxy_bypasses_host(
+            "evilopensubtitles.com",
+            &bypass
+        ));
         // Anything else keeps riding the proxy — notably real-debrid.
-        assert!(!outbound_proxy_bypasses_host("api.real-debrid.com", &bypass));
+        assert!(!outbound_proxy_bypasses_host(
+            "api.real-debrid.com",
+            &bypass
+        ));
         assert!(!outbound_proxy_bypasses_host("themoviedb.org", &bypass));
         assert!(!outbound_proxy_bypasses_host("anything.example", &[]));
     }

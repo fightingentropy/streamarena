@@ -2181,11 +2181,51 @@ body.is-search-mode #myListRow {
 }
 
 .card-base {
+    position: relative;
     border-radius: 4px;
     overflow: hidden;
     transition:
         opacity 220ms ease,
         transform 220ms ease;
+}
+
+.card-touch-actions {
+    display: none;
+}
+
+.card-touch-action {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.62);
+    border-radius: 999px;
+    background: rgba(12, 12, 12, 0.78);
+    color: #fff;
+    place-items: center;
+    box-shadow: 0 5px 16px rgba(0, 0, 0, 0.46);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    touch-action: manipulation;
+}
+
+.card-touch-action svg {
+    width: 21px;
+    height: 21px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+}
+
+.card-touch-action.is-active {
+    border-color: #fff;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.card-touch-action:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
 }
 
 .card img {
@@ -3229,6 +3269,22 @@ body.is-search-mode #myListRow {
         pointer-events: none;
     }
 
+    .card-touch-actions {
+        position: absolute;
+        right: 8px;
+        bottom: 8px;
+        z-index: 4;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        pointer-events: auto;
+        touch-action: manipulation;
+    }
+
+    .card-touch-action {
+        display: grid;
+    }
+
     .top-nav nav a.optional:not(.nav-mobile-primary):not(.is-active) {
         display: none !important;
     }
@@ -3425,6 +3481,80 @@ body.is-search-mode #myListRow {
 
     .search-context-menu {
         min-width: 230px;
+    }
+}
+
+@media (max-width: 420px) {
+    .home-page .top-nav {
+        gap: 6px;
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+
+    .home-page .nav-left {
+        flex: 1 1 auto;
+        gap: 6px;
+        min-width: 0;
+    }
+
+    .home-page .brand-wordmark-arc--nav {
+        width: 56px;
+    }
+
+    .home-page .top-nav nav {
+        gap: 2px;
+        min-width: 0;
+    }
+
+    .home-page .top-nav nav a,
+    .home-page .top-nav nav a.is-active {
+        min-height: 32px;
+        padding: 0 4px;
+        font-size: 0.72rem;
+    }
+
+    .home-page .top-nav nav a.is-active {
+        padding-right: 7px;
+        padding-left: 7px;
+    }
+
+    .home-page .nav-right {
+        flex: 0 0 auto;
+        gap: 4px;
+    }
+
+    .home-page .icon-btn {
+        width: 30px;
+        min-width: 30px;
+        height: 40px;
+        min-height: 40px;
+    }
+
+    .home-page .icon-btn svg {
+        width: 23px;
+        height: 23px;
+    }
+
+    .home-page .avatar {
+        width: 36px;
+        height: 36px;
+    }
+
+    body.is-search-mode .home-page .nav-left,
+    body.is-search-mode .home-page #openSearchButton,
+    body.is-search-mode .home-page .account-menu {
+        display: none;
+    }
+
+    body.is-search-mode .home-page .nav-right {
+        flex: 1 1 auto;
+        width: 100%;
+    }
+
+    body.is-search-mode .home-page .nav-search-box.is-open {
+        flex: 1 1 auto;
+        width: auto;
+        max-width: none;
     }
 }
 

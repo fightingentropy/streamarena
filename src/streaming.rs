@@ -55,8 +55,9 @@ const HLS_VIDEO_BUFSIZE: &str = "6000k";
 const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "opus", "vorbis", "flac", "alac"];
 // `mp2` (MPEG-1/2 Audio Layer II) is intentionally treated as unsafe: unlike MP3
 // (Layer III) it is not decodable through Media Source Extensions / hls.js.
-const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] =
-    &["ac3", "eac3", "dts", "dca", "truehd", "mlp", "pcm_", "wma", "mp2"];
+const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] = &[
+    "ac3", "eac3", "dts", "dca", "truehd", "mlp", "pcm_", "wma", "mp2",
+];
 
 #[derive(Clone)]
 pub struct StreamingService {
@@ -779,29 +780,29 @@ impl StreamingService {
         //    proxy itself already SSRF-gates the upstream embed, so there's no new surface.
         //  • A direct file / real-debrid URL — SSRF-validated by `resolve_transcode_input`,
         //    then stream-copied.
-        let (ffmpeg_input, is_hls, filename_source) =
-            if let Some(path_query) = live_hls_proxy_path_query(input) {
-                // ffmpeg can't strip the raw (PNG-stego) segments that `directSeg=1` passes
-                // through for on-device players, so force the proxy's transcode path for the
-                // server-side remux — same as `resolve_hls_source` does for playback. Without
-                // this the export fetches stego segments and ffmpeg fails ("dimensions not set").
-                let proxied = strip_live_hls_direct_seg(&path_query);
-                let uri: Uri = proxied
-                    .parse()
-                    .map_err(|_| ApiError::bad_request("Invalid download source."))?;
-                if !crate::live::is_signed_live_hls_request(
-                    &self.config.live_hls_proxy_secret,
-                    &uri,
-                ) {
-                    return Err(ApiError::bad_request("Invalid or unsigned download source."));
-                }
-                let url = format!("http://127.0.0.1:{}{}", self.config.port, proxied);
-                (url, true, "download.mp4".to_owned())
-            } else {
-                let source = self.media.resolve_transcode_input(input)?;
-                let name = source.clone();
-                (source, false, name)
-            };
+        let (ffmpeg_input, is_hls, filename_source) = if let Some(path_query) =
+            live_hls_proxy_path_query(input)
+        {
+            // ffmpeg can't strip the raw (PNG-stego) segments that `directSeg=1` passes
+            // through for on-device players, so force the proxy's transcode path for the
+            // server-side remux — same as `resolve_hls_source` does for playback. Without
+            // this the export fetches stego segments and ffmpeg fails ("dimensions not set").
+            let proxied = strip_live_hls_direct_seg(&path_query);
+            let uri: Uri = proxied
+                .parse()
+                .map_err(|_| ApiError::bad_request("Invalid download source."))?;
+            if !crate::live::is_signed_live_hls_request(&self.config.live_hls_proxy_secret, &uri) {
+                return Err(ApiError::bad_request(
+                    "Invalid or unsigned download source.",
+                ));
+            }
+            let url = format!("http://127.0.0.1:{}{}", self.config.port, proxied);
+            (url, true, "download.mp4".to_owned())
+        } else {
+            let source = self.media.resolve_transcode_input(input)?;
+            let name = source.clone();
+            (source, false, name)
+        };
         let disposition = format!(
             "attachment; filename=\"{}\"",
             export_download_filename(&filename_source)
@@ -890,7 +891,10 @@ impl StreamingService {
                 if read == 0 {
                     let status = state.child.wait().await?;
                     if !status.success() {
-                        eprintln!("[export] ffmpeg exited with code {}", status.code().unwrap_or(-1));
+                        eprintln!(
+                            "[export] ffmpeg exited with code {}",
+                            status.code().unwrap_or(-1)
+                        );
                     }
                     return Ok(None);
                 }
@@ -921,7 +925,9 @@ impl StreamingService {
                 .parse()
                 .map_err(|_| ApiError::bad_request("Invalid playback source."))?;
             if !crate::live::is_signed_live_hls_request(&self.config.live_hls_proxy_secret, &uri) {
-                return Err(ApiError::bad_request("Invalid or unsigned playback source."));
+                return Err(ApiError::bad_request(
+                    "Invalid or unsigned playback source.",
+                ));
             }
             let url = format!("http://127.0.0.1:{}{}", self.config.port, proxied);
             return Ok((url, true));

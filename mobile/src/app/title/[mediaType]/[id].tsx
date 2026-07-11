@@ -232,7 +232,7 @@ export default function TitleDetailScreen() {
                 </View>
               ) : seasonError ? (
                 <Text style={{ color: colors.muted, fontSize: 13, paddingHorizontal: 16, paddingVertical: 12 }}>
-                  Couldn't load episodes for this season.
+                  Couldn’t load episodes for this season.
                 </Text>
               ) : (season?.episodes?.length ?? 0) === 0 ? (
                 <Text style={{ color: colors.muted, fontSize: 13, paddingHorizontal: 16, paddingVertical: 12 }}>

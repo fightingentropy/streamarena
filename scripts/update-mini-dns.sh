@@ -5,15 +5,16 @@ MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
 ZONE_NAME="${ZONE_NAME:-streamarena.xyz}"
 PUBLIC_HOSTS="${PUBLIC_HOSTS:-streamarena.xyz,www.streamarena.xyz}"
-PROXIED="${PROXIED:-false}"
-TTL="${TTL:-60}"
+PROXIED="${PROXIED:-true}"
+# Cloudflare requires proxied records to use automatic TTL (`1` in the API).
+TTL="${TTL:-1}"
 PUBLIC_IP="${PUBLIC_IP:-}"
 
 usage() {
   cat <<'USAGE'
 Usage: CF_API_TOKEN=... scripts/update-mini-dns.sh
 
-Sets Cloudflare DNS-only A records for the Mac mini's current home public IP.
+Sets Cloudflare-proxied A records for the Mac mini's current home public IP.
 The token must have Zone.DNS edit access for the zone.
 
 Environment:
@@ -22,8 +23,8 @@ Environment:
   ZONE_NAME     Default: streamarena.xyz
   PUBLIC_HOSTS  Default: streamarena.xyz,www.streamarena.xyz
   PUBLIC_IP     Optional. If omitted, read from the Mac mini.
-  PROXIED       Default: false
-  TTL           Default: 60
+  PROXIED       Default: true
+  TTL           Default: 1 (Cloudflare automatic)
 USAGE
 }
 
@@ -107,7 +108,7 @@ for host in hosts:
             "content": public_ip,
             "ttl": ttl,
             "proxied": proxied,
-            "comment": "Direct Mac mini Caddy origin",
+            "comment": "Cloudflare-proxied Mac mini Caddy origin",
         })["result"]
         print(f"{host}: created {created['type']} {created['content']} proxied={created.get('proxied')}")
         continue
@@ -119,7 +120,7 @@ for host in hosts:
         "content": public_ip,
         "ttl": ttl,
         "proxied": proxied,
-        "comment": "Direct Mac mini Caddy origin",
+        "comment": "Cloudflare-proxied Mac mini Caddy origin",
     })["result"]
     print(f"{host}: updated {primary['type']}->{updated['type']} {updated['content']} proxied={updated.get('proxied')}")
 

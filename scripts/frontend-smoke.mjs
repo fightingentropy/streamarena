@@ -326,9 +326,27 @@ function apiPayload(url, method) {
 const pages = [
   { path: "/login.html", selector: ".login-page" },
   { path: "/settings.html", selector: ".settings-content" },
+  {
+    path: "/settings.html",
+    selector: ".settings-content",
+    expectRealDebridLoadFailureNoOverwrite: true,
+    expectHydratedPreferencesBeforeMount: true,
+  },
   { path: "/live.html", selector: ".live-page" },
   { path: "/sports", selector: ".sports-page", expectSportsTabs: true },
   { path: "/index.html", selector: ".home-page" },
+  {
+    path: "/index.html",
+    selector: ".home-page",
+    contextOptions: {
+      viewport: { width: 320, height: 700 },
+      deviceScaleFactor: 1,
+      hasTouch: true,
+      isMobile: true,
+    },
+    expectTouchCardActions: true,
+    expectNarrowNavigation: true,
+  },
   {
     path: "/index.html",
     selector: ".home-page",
@@ -423,6 +441,7 @@ async function runSmoke() {
       let liveStreamHlsInputs = [];
       let hlsBundleRequested = false;
       let hlsBundleReleased = false;
+      const realDebridUpdateBodies = [];
 
       let hlsBundleHoldActive = false;
       page.on("pageerror", (error) => {
@@ -569,6 +588,34 @@ async function runSmoke() {
           return;
         }
         if (
+          pageSpec.expectRealDebridLoadFailureNoOverwrite &&
+          url.pathname === "/api/user/real-debrid"
+        ) {
+          if (request.method() === "GET") {
+            await route.fulfill(jsonResponse({ error: "Temporary failure." }, 503));
+            return;
+          }
+          realDebridUpdateBodies.push(request.postDataJSON());
+          await route.fulfill(jsonResponse({
+            ok: true,
+            configured: true,
+            maskedApiKey: "abcd…wxyz",
+            localTorrentEnabled: false,
+          }));
+          return;
+        }
+        if (
+          pageSpec.expectHydratedPreferencesBeforeMount &&
+          url.pathname === "/api/user/preferences" &&
+          request.method() === "GET"
+        ) {
+          await route.fulfill(jsonResponse({
+            "streamarena-default-audio-lang": "ja",
+            "streamarena-subtitle-color-pref": "#00ff00",
+          }));
+          return;
+        }
+        if (
           pageSpec.expectServerContinueWatchingTruth &&
           url.pathname === "/api/user/continue-watching"
         ) {
@@ -609,6 +656,9 @@ async function runSmoke() {
       if (pageSpec.expectServerContinueWatchingTruth) {
         await context.addInitScript(() => {
           const staleSource = "tmdb:movie:999999";
+          const user = { id: 1, email: "smoke@example.com", displayName: "Smoke User" };
+          localStorage.setItem("streamarena-user-state-owner-v1", "1");
+          localStorage.setItem("streamarena-user-state-user-v1", JSON.stringify(user));
           localStorage.setItem(`streamarena-resume:${staleSource}`, "120");
           localStorage.setItem(
             "streamarena-continue-watching-meta",
@@ -720,6 +770,179 @@ async function runSmoke() {
       }
 
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+
+      if (pageSpec.expectTouchCardActions || pageSpec.expectNarrowNavigation) {
+        await page.waitForSelector(".card-touch-actions", { timeout: 8_000 });
+        const responsiveState = await page.evaluate(() => {
+          const nav = document.querySelector(".top-nav");
+          const navLeft = nav?.querySelector(".nav-left");
+          const navRight = nav?.querySelector(".nav-right");
+          const firstCard = document.querySelector(".card");
+          const firstCardHover = firstCard?.querySelector(".card-hover");
+          const actions = firstCard?.querySelector(".card-touch-actions");
+          const leftRect = navLeft?.getBoundingClientRect();
+          const rightRect = navRight?.getBoundingClientRect();
+          const cardRect = firstCard?.getBoundingClientRect();
+          const actionRect = actions?.getBoundingClientRect();
+          const actionButtons = [...(actions?.querySelectorAll("button") || [])].map((button) => {
+            const rect = button.getBoundingClientRect();
+            return {
+              display: getComputedStyle(button).display,
+              height: rect.height,
+              width: rect.width,
+            };
+          });
+          return {
+            viewportWidth: window.innerWidth,
+            coarsePointer: window.matchMedia("(hover: none) and (pointer: coarse)").matches,
+            navClientWidth: nav?.clientWidth || 0,
+            navScrollWidth: nav?.scrollWidth || 0,
+            navLeftRight: leftRect?.right || 0,
+            navRightLeft: rightRect?.left || 0,
+            navRightEdge: rightRect?.right || 0,
+            cardHoverDisplay: firstCardHover ? getComputedStyle(firstCardHover).display : "missing",
+            actionsDisplay: actions ? getComputedStyle(actions).display : "missing",
+            actionsPointerEvents: actions ? getComputedStyle(actions).pointerEvents : "missing",
+            actionsFitCard: Boolean(
+              cardRect && actionRect &&
+              actionRect.left >= cardRect.left - 0.5 &&
+              actionRect.right <= cardRect.right + 0.5 &&
+              actionRect.bottom <= cardRect.bottom + 0.5
+            ),
+            actionButtons,
+          };
+        });
+        if (
+          responsiveState.viewportWidth !== 320 ||
+          !responsiveState.coarsePointer ||
+          responsiveState.navLeftRight > responsiveState.navRightLeft + 0.5 ||
+          responsiveState.navRightEdge > responsiveState.viewportWidth + 0.5 ||
+          responsiveState.navScrollWidth > responsiveState.navClientWidth + 1 ||
+          responsiveState.cardHoverDisplay !== "none" ||
+          responsiveState.actionsDisplay !== "flex" ||
+          responsiveState.actionsPointerEvents === "none" ||
+          !responsiveState.actionsFitCard ||
+          responsiveState.actionButtons.length !== 2 ||
+          responsiveState.actionButtons.some(
+            (button) => button.display === "none" || button.width < 43 || button.height < 43,
+          )
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nTouch actions or 320px navigation layout regressed.\n${JSON.stringify(responsiveState)}`,
+          );
+        }
+
+        const touchActionGroups = page.locator(".card-touch-actions");
+        const touchActionGroupCount = await touchActionGroups.count();
+        if (touchActionGroupCount < 1) {
+          throw new Error(`${pageSpec.path}\nNo persistent touch card actions rendered.`);
+        }
+        const firstTouchActionGroup = touchActionGroups.first();
+        const touchDetailsButton = firstTouchActionGroup.locator(".card-touch-details");
+        if (await touchDetailsButton.count() !== 1) {
+          throw new Error(`${pageSpec.path}\nTouch Details action is missing or ambiguous.`);
+        }
+        await touchDetailsButton.click();
+        await page.waitForSelector(".details-modal.is-open", { timeout: 8_000 });
+        if (!page.url().endsWith("/index.html")) {
+          throw new Error(`${pageSpec.path}\nTouch Details action unexpectedly started playback.`);
+        }
+        await page.locator("#detailsClose").click();
+        await page.waitForSelector(".details-modal", { state: "hidden", timeout: 8_000 });
+
+        const touchMyListButton = firstTouchActionGroup.locator(".card-touch-my-list");
+        if (await touchMyListButton.count() !== 1) {
+          throw new Error(`${pageSpec.path}\nTouch My List action is missing or ambiguous.`);
+        }
+        await touchMyListButton.click();
+        await page.waitForFunction(
+          () => Boolean(document.querySelector(".card-touch-my-list[aria-pressed='true']")),
+          null,
+          { timeout: 8_000 },
+        );
+
+        const openSearchButton = page.locator("#openSearchButton");
+        if (await openSearchButton.count() !== 1) {
+          throw new Error(`${pageSpec.path}\nNarrow navigation Search control is missing or ambiguous.`);
+        }
+        await openSearchButton.click();
+        await page.waitForFunction(() => document.body.classList.contains("is-search-mode"));
+        await page.waitForSelector(".nav-search-box.is-open", {
+          state: "visible",
+          timeout: 8_000,
+        });
+        const searchLayout = await page.evaluate(() => {
+          const nav = document.querySelector(".top-nav");
+          const navLeft = nav?.querySelector(".nav-left");
+          const navRight = nav?.querySelector(".nav-right");
+          const search = nav?.querySelector(".nav-search-box.is-open");
+          const rightRect = navRight?.getBoundingClientRect();
+          const searchRect = search?.getBoundingClientRect();
+          return {
+            navLeftDisplay: navLeft ? getComputedStyle(navLeft).display : "missing",
+            navRightEdge: rightRect?.right || 0,
+            searchLeft: searchRect?.left || 0,
+            searchRight: searchRect?.right || 0,
+            viewportWidth: window.innerWidth,
+          };
+        });
+        if (
+          searchLayout.navLeftDisplay !== "none" ||
+          searchLayout.searchLeft < 9 ||
+          searchLayout.searchRight > searchLayout.viewportWidth - 9 ||
+          searchLayout.navRightEdge > searchLayout.viewportWidth + 0.5
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nSearch navigation overlaps at 320px.\n${JSON.stringify(searchLayout)}`,
+          );
+        }
+      }
+
+      if (pageSpec.expectRealDebridLoadFailureNoOverwrite) {
+        const initialPreferences = await page.evaluate(() => ({
+          audio: document.querySelector("#defaultAudioLanguage")?.value || "",
+          subtitleColor: document.querySelector("#subtitleColorInput")?.value || "",
+        }));
+        if (
+          initialPreferences.audio !== "ja" ||
+          initialPreferences.subtitleColor.toLowerCase() !== "#00ff00"
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nSettings mounted before server preference hydration.\n${JSON.stringify(initialPreferences)}`,
+          );
+        }
+        await page.waitForFunction(
+          () => /Unable to load Real-Debrid settings/.test(
+            document.querySelector(".real-debrid-status")?.textContent || "",
+          ),
+          null,
+          { timeout: 8_000 },
+        );
+        await page.getByRole("button", { name: "Save Settings" }).click();
+        await delay(250);
+        if (realDebridUpdateBodies.length !== 0) {
+          throw new Error(
+            `${pageSpec.path}\nUnrelated Settings save overwrote Real-Debrid state after GET failure.\n${JSON.stringify(realDebridUpdateBodies)}`,
+          );
+        }
+
+        await page.locator("#realDebridApiKey").fill("a".repeat(40));
+        await page.getByRole("button", { name: "Save Settings" }).click();
+        await page.waitForFunction(
+          () => document.querySelector(".real-debrid-status")?.textContent?.trim() === "Saved",
+          null,
+          { timeout: 8_000 },
+        );
+        if (
+          realDebridUpdateBodies.length !== 1 ||
+          realDebridUpdateBodies[0]?.apiKey !== "a".repeat(40) ||
+          Object.hasOwn(realDebridUpdateBodies[0], "localTorrentEnabled")
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nDirty Real-Debrid save did not use field-level update semantics.\n${JSON.stringify(realDebridUpdateBodies)}`,
+          );
+        }
+      }
 
       if (pageSpec.expectUnknownAudioFallback) {
         await page.waitForFunction(

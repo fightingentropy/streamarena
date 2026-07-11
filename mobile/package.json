@@ -8,15 +8,18 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "prebuild": "expo prebuild",
-    "typecheck": "node node_modules/@typescript/native/bin/tsc --noEmit",
+    "build:ios": "expo export --platform ios --output-dir dist --clear",
+    "typecheck": "tsc --noEmit",
     "lint": "expo lint",
+    "test": "node --test tests/*.test.js",
+    "doctor": "expo-doctor",
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "@preeternal/react-native-cookie-manager": "^6.3.3",
     "@react-native-community/slider": "5.2.0",
-    "@react-native-cookies/cookies": "^6.2.1",
     "clsx": "^2.1.1",
-    "expo": "~56.0.11",
+    "expo": "~56.0.15",
     "expo-blur": "~56.0.3",
     "expo-brightness": "~56.0.0",
     "expo-constants": "~56.0.18",
@@ -24,12 +27,12 @@
     "expo-haptics": "~56.0.0",
     "expo-image": "~56.0.11",
     "expo-linear-gradient": "~56.0.4",
-    "expo-linking": "~56.0.14",
+    "expo-linking": "~56.0.15",
     "expo-network": "~56.0.5",
-    "expo-router": "~56.2.10",
+    "expo-router": "~56.2.14",
     "expo-screen-orientation": "~56.0.5",
     "expo-secure-store": "~56.0.0",
-    "expo-splash-screen": "~56.0.10",
+    "expo-splash-screen": "~56.0.12",
     "expo-sqlite": "~56.0.0",
     "expo-status-bar": "~56.0.4",
     "expo-system-ui": "~56.0.5",
@@ -44,7 +47,7 @@
     "react-native-reanimated": "4.3.1",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "4.25.2",
-    "react-native-svg": "^15.14.0",
+    "react-native-svg": "15.15.4",
     "react-native-tcp-socket": "^6.4.1",
     "react-native-url-polyfill": "^2.0.0",
     "react-native-video": "^6.10.0",
@@ -57,9 +60,25 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
-    "@typescript/native": "npm:typescript@^7.0.2",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~56.0.4",
+    "expo-doctor": "^1.20.0",
     "patch-package": "^8.0.1",
-    "typescript": "npm:@typescript/typescript6@^6.0.2"
+    "typescript": "~6.0.3"
+  },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "react-native-tcp-socket",
+          "react-native-vector-icons",
+          "react-native-vlc-media-player"
+        ]
+      }
+    }
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
   },
   "private": true
 }

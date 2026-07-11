@@ -199,6 +199,7 @@ pub struct LocalCacheUpgradeRequest<'a> {
 }
 
 struct LocalCacheSessionLookup<'a> {
+    user_id: i64,
     tmdb_id: &'a str,
     audio_lang: &'a str,
     quality: &'a str,
@@ -1287,6 +1288,7 @@ impl ResolverService {
 
         if let Some(upgrade) = self
             .find_local_cache_upgrade_from_session(LocalCacheSessionLookup {
+                user_id: request.user_id,
                 tmdb_id,
                 audio_lang: &effective_audio_lang,
                 quality: &normalized_quality,
@@ -2493,6 +2495,7 @@ impl ResolverService {
                     );
                     self.db
                         .persist_playback_session(PersistPlaybackSessionInput {
+                            user_id,
                             session_key: session_key.clone(),
                             tmdb_id: metadata.tmdb_id.clone(),
                             audio_lang: response_audio_lang.clone(),
@@ -2506,7 +2509,7 @@ impl ResolverService {
                         })
                         .await?;
                     self.db
-                        .get_playback_session(session_key.clone())
+                        .get_playback_session(user_id, session_key.clone())
                         .await?
                         .map(|session| build_playback_session_payload(&session))
                         .unwrap_or_else(|| {
@@ -2572,7 +2575,11 @@ impl ResolverService {
                 build_playback_session_key(lookup.tmdb_id, lookup.audio_lang, lookup.quality)
             )
         };
-        let Some(session) = self.db.get_playback_session(session_key).await? else {
+        let Some(session) = self
+            .db
+            .get_playback_session(lookup.user_id, session_key)
+            .await?
+        else {
             return Ok(None);
         };
         if session.tmdb_id != lookup.tmdb_id
@@ -3259,7 +3266,7 @@ impl ResolverService {
         session_keys.dedup();
         let mut session = None;
         for session_key in session_keys {
-            if let Some(candidate) = self.db.get_playback_session(session_key).await? {
+            if let Some(candidate) = self.db.get_playback_session(user_id, session_key).await? {
                 session = Some(candidate);
                 break;
             }
@@ -3335,7 +3342,7 @@ impl ResolverService {
             }
             let _ = self
                 .db
-                .refresh_playback_session_validation_window(session.session_key.clone())
+                .refresh_playback_session_validation_window(user_id, session.session_key.clone())
                 .await;
         }
 
@@ -3372,7 +3379,7 @@ impl ResolverService {
 
         let sessions = self
             .db
-            .get_latest_healthy_playback_sessions_for_tmdb(metadata.tmdb_id.clone(), 20)
+            .get_latest_healthy_playback_sessions_for_tmdb(user_id, metadata.tmdb_id.clone(), 20)
             .await?;
         if sessions.is_empty() {
             return Ok(None);
@@ -3451,7 +3458,10 @@ impl ResolverService {
                 }
                 let _ = self
                     .db
-                    .refresh_playback_session_validation_window(session.session_key.clone())
+                    .refresh_playback_session_validation_window(
+                        user_id,
+                        session.session_key.clone(),
+                    )
                     .await;
             }
 
@@ -3482,6 +3492,7 @@ impl ResolverService {
         let _ = self
             .db
             .update_playback_session_progress(
+                session.user_id,
                 session.session_key.clone(),
                 session.last_position_seconds,
                 "invalid".to_owned(),
@@ -5540,11 +5551,7 @@ fn is_external_embed_source_healthy_enough_for_fallback(
     health_scores: &HashMap<String, i64>,
 ) -> bool {
     let source_hash = external_embed_source_hash(source, metadata);
-    health_scores
-        .get(&source_hash)
-        .copied()
-        .unwrap_or_default()
-        > SOURCE_HEALTH_AVOID_SCORE
+    health_scores.get(&source_hash).copied().unwrap_or_default() > SOURCE_HEALTH_AVOID_SCORE
 }
 
 fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) -> bool {
@@ -5679,7 +5686,8 @@ impl ResolvedEmbedCache {
         if self.entries.len() > RESOLVED_EMBED_CACHE_MAX_ENTRIES {
             let now = now_ms();
             let ttl = resolved_embed_cache_ttl_ms();
-            self.entries.retain(|_, value| now - value.cached_at_ms <= ttl);
+            self.entries
+                .retain(|_, value| now - value.cached_at_ms <= ttl);
             if self.entries.len() > RESOLVED_EMBED_CACHE_MAX_ENTRIES {
                 self.entries.clear();
             }
@@ -5693,13 +5701,15 @@ impl ResolvedEmbedCache {
     pub fn prune(&self) {
         let now = now_ms();
         let ttl = resolved_embed_cache_ttl_ms();
-        self.entries.retain(|_, value| now - value.cached_at_ms <= ttl);
+        self.entries
+            .retain(|_, value| now - value.cached_at_ms <= ttl);
     }
 }
 
 /// Build the resolved-payload JSON from a (freshly-resolved or cached) winning
 /// candidate. Re-signs the proxied URL and applies the caller's current preferences,
 /// so a cache hit produces an identical-shaped payload to a fresh resolve.
+#[allow(clippy::too_many_arguments)]
 fn finalize_external_embed_payload(
     metadata: &ResolveMetadata,
     source: ExternalEmbedSource,
@@ -5729,9 +5739,8 @@ fn finalize_external_embed_payload(
     // 20s-per-source fail-fast budget before recovering. workers.dev is outside the
     // zone, so the Worker hop dodges that layer entirely. The zone-routed URL stays
     // last in the queue as a worker-outage fallback.
-    let route_via_worker = |url: String| {
-        crate::live::route_live_playback_source_via_worker(live_hls_worker_base, url)
-    };
+    let route_via_worker =
+        |url: String| crate::live::route_live_playback_source_via_worker(live_hls_worker_base, url);
     let mut candidates = if is_external_embed_direct_segment_provider(source) {
         let direct_url = format!("{proxied_url}&directSeg=1");
         vec![
@@ -5808,7 +5817,8 @@ async fn build_external_embed_resolved_playback_payload(
     )
     .await?;
 
-    record_external_embed_health_event(request.db, candidate, request.metadata, "success", "").await;
+    record_external_embed_health_event(request.db, candidate, request.metadata, "success", "")
+        .await;
     if let (Some(cache), Some(key)) = (request.resolve_cache, request.cache_key) {
         cache.store(
             key.to_owned(),
@@ -6117,8 +6127,10 @@ fn external_embed_url(source: ExternalEmbedSource, metadata: &ResolveMetadata) -
         ("gallic", "movie") => Some(format!("{GALLIC_API_BASE}/movie/{tmdb_id}")),
         // Admin-added custom providers are generic Stremio stream addons keyed on
         // the stored base URL (imdb-based, like NoTorrent/Nebula).
-        (id, _) if crate::provider_registry::is_custom(id) => crate::provider_registry::custom_base(id)
-            .and_then(|base| stremio_addon_stream_url(&base, metadata)),
+        (id, _) if crate::provider_registry::is_custom(id) => {
+            crate::provider_registry::custom_base(id)
+                .and_then(|base| stremio_addon_stream_url(&base, metadata))
+        }
         _ => None,
     }
 }
@@ -6448,9 +6460,13 @@ async fn resolve_icefy_hls_playback_source(
         else {
             continue;
         };
-        if let Some(source) =
-            validate_external_embed_hls_playlist(client, &response.stream, Some(referer), timeout_ms)
-                .await
+        if let Some(source) = validate_external_embed_hls_playlist(
+            client,
+            &response.stream,
+            Some(referer),
+            timeout_ms,
+        )
+        .await
         {
             return Some(source);
         }
@@ -6551,7 +6567,8 @@ async fn resolve_aether_proxy_hls_playback_source(
     let body =
         fetch_external_text(client, embed_url, Some(AETHER_EMBED_REFERER), timeout_ms).await?;
     let (upstream_url, referer) = extract_aether_proxied_origin(&body)?;
-    validate_external_embed_hls_playlist(client, &upstream_url, referer.as_deref(), timeout_ms).await
+    validate_external_embed_hls_playlist(client, &upstream_url, referer.as_deref(), timeout_ms)
+        .await
 }
 
 /// Pull the real upstream URL (and its Referer) out of aether's
@@ -6889,7 +6906,12 @@ fn stremio_addon_stream_referer(stream: &NoTorrentStreamEntry) -> Option<String>
         .get("Referer")
         .or_else(|| headers.get("referer"))
         .cloned()
-        .or_else(|| headers.get("Origin").or_else(|| headers.get("origin")).cloned())
+        .or_else(|| {
+            headers
+                .get("Origin")
+                .or_else(|| headers.get("origin"))
+                .cloned()
+        })
 }
 
 async fn post_external_json<T: DeserializeOwned>(
@@ -7025,9 +7047,12 @@ async fn fetch_external_text(
     // their resolve-time fetches over the system curl (SecureTransport) instead.
     if is_curl_fetch_external_embed_host(&host) {
         let referer = referer.and_then(normalize_external_embed_hls_referer);
-        let response =
-            fetch_external_via_curl(&url, referer.as_deref(), "application/json, text/plain, */*")
-                .await?;
+        let response = fetch_external_via_curl(
+            &url,
+            referer.as_deref(),
+            "application/json, text/plain, */*",
+        )
+        .await?;
         if !(200..300).contains(&response.status) {
             return None;
         }
@@ -8938,12 +8963,18 @@ mod tests {
 
     use crate::error::ApiError;
 
+    use super::finalize_external_embed_payload;
+    use super::race_staggered_first_success;
+    use super::{
+        CachedResolvedEmbed, EXTERNAL_EMBED_HEDGE_STAGGER_MS, ResolvedEmbedCache,
+        compute_external_embed_provider_rank_health_score, external_embed_resolve_cache_key,
+    };
     use super::{
         DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, ExternalEmbedSource,
-        PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR,
-        ResolveFilters, ResolveMetadata, ResolvePreferences, ResolvedSource, ResolverExternalGuard,
-        ResolverMetrics, ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters,
-        SourceHealthStats, build_external_embed_source_summaries, build_movie_resolve_lock_key,
+        PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters, ResolveMetadata,
+        ResolvePreferences, ResolvedSource, ResolverExternalGuard, ResolverMetrics,
+        ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
+        build_external_embed_source_summaries, build_movie_resolve_lock_key,
         build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
         build_scoped_rd_torrent_cache_key, build_torrentio_stream_cache_key,
         build_torznab_request_url, build_torznab_stream_cache_key, build_tv_resolve_lock_key,
@@ -8958,9 +8989,9 @@ mod tests {
         is_persistent_source_resolve_error, is_public_external_embed_hls_hostname,
         is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
         normalize_allowed_formats, normalize_nebula_addon_base,
-        normalize_resolved_source_for_software_decode,
-        normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
-        now_ms, parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
+        normalize_resolved_source_for_software_decode, normalize_resolver_provider,
+        normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
+        parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
         parse_torznab_xml, playback_session_key_allowed_for_user,
         playback_session_matches_preferred_container, playback_session_matches_preferred_quality,
         playback_session_matches_source_hash, ready_info_has_selected_file_id,
@@ -8970,12 +9001,6 @@ mod tests {
         should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
         stremio_addon_stream_url, user_facing_real_debrid_error,
     };
-    use super::race_staggered_first_success;
-    use super::{
-        CachedResolvedEmbed, EXTERNAL_EMBED_HEDGE_STAGGER_MS, ResolvedEmbedCache,
-        compute_external_embed_provider_rank_health_score, external_embed_resolve_cache_key,
-    };
-    use super::finalize_external_embed_payload;
 
     use std::sync::Mutex as StdMutex;
     use std::time::Duration;
@@ -8983,17 +9008,15 @@ mod tests {
     /// Build an attempt future that records when it actually starts running (so a
     /// test can assert the hedge never launches a redundant attempt), sleeps for
     /// `delay`, then yields `result`.
-    fn hedge_attempt(
+    async fn hedge_attempt(
         started: Arc<StdMutex<Vec<usize>>>,
         index: usize,
         delay: Duration,
         result: Option<&'static str>,
-    ) -> impl std::future::Future<Output = Option<&'static str>> {
-        async move {
-            started.lock().unwrap().push(index);
-            tokio::time::sleep(delay).await;
-            result
-        }
+    ) -> Option<&'static str> {
+        started.lock().unwrap().push(index);
+        tokio::time::sleep(delay).await;
+        result
     }
 
     #[tokio::test(start_paused = true)]
@@ -9036,7 +9059,12 @@ mod tests {
     async fn hedge_races_next_when_current_stalls_past_stagger() {
         let started = Arc::new(StdMutex::new(Vec::new()));
         let futures = vec![
-            hedge_attempt(started.clone(), 0, Duration::from_millis(10_000), Some("slow")),
+            hedge_attempt(
+                started.clone(),
+                0,
+                Duration::from_millis(10_000),
+                Some("slow"),
+            ),
             hedge_attempt(started.clone(), 1, Duration::from_millis(500), Some("fast")),
         ];
         let winner = race_staggered_first_success(
@@ -9069,8 +9097,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn hedge_handles_empty_candidate_set() {
-        let futures: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = Option<&'static str>>>>> =
-            Vec::new();
+        let futures: Vec<
+            std::pin::Pin<Box<dyn std::future::Future<Output = Option<&'static str>>>>,
+        > = Vec::new();
         let winner = race_staggered_first_success(
             futures,
             Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
@@ -9111,7 +9140,10 @@ mod tests {
             playback_error_count: 17,
         };
         let score = compute_external_embed_provider_rank_health_score(&spotty);
-        assert!(score.abs() <= 75, "spotty provider should clamp within-tier: {score}");
+        assert!(
+            score.abs() <= 75,
+            "spotty provider should clamp within-tier: {score}"
+        );
 
         // A strongly-reliable provider clamps to the +cap.
         let strong = SourceHealthStats {
@@ -9121,7 +9153,10 @@ mod tests {
             ended_early_count: 0,
             playback_error_count: 0,
         };
-        assert_eq!(compute_external_embed_provider_rank_health_score(&strong), 75);
+        assert_eq!(
+            compute_external_embed_provider_rank_health_score(&strong),
+            75
+        );
 
         // A broadly DEAD provider (zero successes) keeps the uncapped avoid penalty.
         let dead = SourceHealthStats {
@@ -9161,7 +9196,8 @@ mod tests {
         // Deliberately ranked below every first-party source (Icefy is the lowest of
         // those) so they only fire when our own providers miss the title.
         let health = HashMap::new();
-        let icefy_rank = external_embed_source_rank_score(external_embed_provider("icefy"), &movie, &health);
+        let icefy_rank =
+            external_embed_source_rank_score(external_embed_provider("icefy"), &movie, &health);
         assert!(external_embed_source_rank_score(meridian, &movie, &health) < icefy_rank);
         assert!(external_embed_source_rank_score(gallic, &movie, &health) < icefy_rank);
     }
@@ -9195,7 +9231,10 @@ mod tests {
         let meridian_body = r#"{"title":"Oppenheimer","url":"https://yield.aether.bar/m3u8-proxy?url=https%3A%2F%2Fcdn.neuronix.sbs%2Fsegment%2Fabc%2F%3Ftoken1%3D11%26token3%3D22&headers=%7B%22Origin%22%3A%22https%3A%2F%2Fcdn.neuronix.sbs%22%2C%22Referer%22%3A%22https%3A%2F%2Fcdn.neuronix.sbs%2F%22%7D","subtitles":[]}"#;
         let (url, referer) =
             extract_aether_proxied_origin(meridian_body).expect("meridian wrapper unwraps");
-        assert_eq!(url, "https://cdn.neuronix.sbs/segment/abc/?token1=11&token3=22");
+        assert_eq!(
+            url,
+            "https://cdn.neuronix.sbs/segment/abc/?token1=11&token3=22"
+        );
         assert_eq!(referer.as_deref(), Some("https://cdn.neuronix.sbs/"));
 
         // Gallic-shaped body (nested `source.stream_url`, Referer only).
@@ -9246,7 +9285,10 @@ mod tests {
         let hit = cache.get_fresh(&key).expect("fresh entry");
         assert_eq!(hit.playback_url, "https://up.example/p.m3u8?auth=tok");
         cache.evict(&key);
-        assert!(cache.get_fresh(&key).is_none(), "evicted entry must be gone");
+        assert!(
+            cache.get_fresh(&key).is_none(),
+            "evicted entry must be gone"
+        );
     }
 
     #[test]
@@ -9285,9 +9327,13 @@ mod tests {
         assert!(super::is_curl_fetch_external_embed_host("VixSrc.TO"));
         assert!(super::is_curl_fetch_external_embed_host("cdn.vixsrc.to"));
         // Other external-embed providers keep using the rustls client.
-        assert!(!super::is_curl_fetch_external_embed_host("streams.icefy.top"));
+        assert!(!super::is_curl_fetch_external_embed_host(
+            "streams.icefy.top"
+        ));
         assert!(!super::is_curl_fetch_external_embed_host("vidrock.net"));
-        assert!(!super::is_curl_fetch_external_embed_host("notvixsrc.to.evil.com"));
+        assert!(!super::is_curl_fetch_external_embed_host(
+            "notvixsrc.to.evil.com"
+        ));
         // Resolve-side host list must agree with the playback-side curl matcher
         // so a host that resolves over curl also has its proxied playback fetched
         // over curl (and is never routed to the Worker).
@@ -9488,14 +9534,12 @@ mod tests {
             .iter()
             .filter_map(|value| value.as_str())
             .collect();
-        assert!(playable.starts_with(
-            "https://live-proxy.example.workers.dev/api/live/hls.m3u8?"
-        ));
+        assert!(playable.starts_with("https://live-proxy.example.workers.dev/api/live/hls.m3u8?"));
         assert!(playable.ends_with("&directSeg=1"));
         assert_eq!(fallbacks.len(), 3);
-        assert!(fallbacks[0].starts_with(
-            "https://live-proxy.example.workers.dev/api/live/hls.m3u8?"
-        ));
+        assert!(
+            fallbacks[0].starts_with("https://live-proxy.example.workers.dev/api/live/hls.m3u8?")
+        );
         assert!(!fallbacks[0].contains("directSeg"));
         assert!(fallbacks[1].starts_with("/api/live/hls.m3u8?"));
         assert!(fallbacks[1].ends_with("&directSeg=1"));
@@ -9541,9 +9585,9 @@ mod tests {
             .iter()
             .filter_map(|value| value.as_str())
             .collect();
-        assert!(relay_playable.starts_with(
-            "https://live-proxy.example.workers.dev/api/live/hls.m3u8?"
-        ));
+        assert!(
+            relay_playable.starts_with("https://live-proxy.example.workers.dev/api/live/hls.m3u8?")
+        );
         assert_eq!(relay_fallbacks.len(), 1);
         assert!(relay_fallbacks[0].starts_with("/api/live/hls.m3u8?"));
     }

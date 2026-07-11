@@ -1,80 +1,5 @@
-import { createSignal, onMount, Show } from "solid-js";
-
-// ─── Migrate localStorage data to server ───
-
-async function migrateLocalStorageToServer() {
-  const preferences = {};
-  const PREF_KEYS = [
-    "streamarena-default-audio-lang",
-    "streamarena-subtitle-color-pref",
-    "streamarena-profile-avatar-style",
-    "streamarena-profile-avatar-mode",
-    "streamarena-profile-avatar-image",
-  ];
-  for (const key of PREF_KEYS) {
-    const val = localStorage.getItem(key);
-    if (val !== null) preferences[key] = val;
-  }
-
-  const watchProgress = [];
-  const continueWatching = [];
-  try {
-    const metaRaw = localStorage.getItem("streamarena-continue-watching-meta");
-    if (metaRaw) {
-      const parsed = JSON.parse(metaRaw);
-      const entries = Array.isArray(parsed)
-        ? parsed
-        : Object.entries(parsed || {}).map(([sourceIdentity, entry]) => ({
-            ...(entry && typeof entry === "object" ? entry : {}),
-            sourceIdentity:
-              String(entry?.sourceIdentity || "").trim() || sourceIdentity,
-            resumeSeconds:
-              Number(entry?.resumeSeconds ?? entry) > 0
-                ? Number(entry?.resumeSeconds ?? entry)
-                : Number(localStorage.getItem(`streamarena-resume:${sourceIdentity}`) || 0),
-          }));
-      continueWatching.push(
-        ...entries.filter((entry) => String(entry?.sourceIdentity || "").trim()),
-      );
-    }
-  } catch {}
-
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (key?.startsWith("streamarena-resume:")) {
-      const id = key.slice("streamarena-resume:".length);
-      const val = Number(localStorage.getItem(key));
-      if (id && Number.isFinite(val) && val > 0) {
-        watchProgress.push({
-          sourceIdentity: id,
-          resumeSeconds: val,
-          updatedAt: Date.now(),
-        });
-      }
-    }
-  }
-
-  let myList = [];
-  try {
-    myList = JSON.parse(localStorage.getItem("streamarena-my-list-v1") || "[]");
-  } catch {}
-
-  const hasData =
-    Object.keys(preferences).length > 0 ||
-    watchProgress.length > 0 ||
-    continueWatching.length > 0 ||
-    myList.length > 0;
-  if (!hasData) return;
-
-  const syncRes = await fetch("/api/user/sync", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ preferences, watchProgress, continueWatching, myList }),
-  });
-  if (!syncRes.ok) {
-    console.warn("Failed to sync local data to server:", syncRes.status);
-  }
-}
+import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import { establishUserLocalState, getAuthSession } from "../lib/auth.js";
 
 export default function LoginPage() {
   const [isSignUp, setIsSignUp] = createSignal(false);
@@ -82,15 +7,28 @@ export default function LoginPage() {
   const [error, setError] = createSignal("");
   const [notice, setNotice] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
+  let authCheckController = null;
 
   // If already authenticated, redirect to home
   onMount(() => {
-    void fetch("/api/auth/me")
-      .then((res) => {
-        if (res.ok) window.location.href = "/";
+    authCheckController = new AbortController();
+    void getAuthSession({
+      allowOffline: false,
+      signal: authCheckController.signal,
+    })
+      .then((session) => {
+        if (authCheckController?.signal.aborted) return;
+        if (session.status === "authenticated") {
+          window.location.href = "/";
+          return;
+        }
+        if (session.status === "unavailable") {
+          setNotice("We couldn't verify your session right now. You can try signing in again.");
+        }
       })
       .catch(() => {});
   });
+  onCleanup(() => authCheckController?.abort());
 
   function toggleMode() {
     setIsSignUp((prev) => !prev);
@@ -144,6 +82,7 @@ export default function LoginPage() {
 
   async function handleSubmit(e) {
     e.preventDefault();
+    authCheckController?.abort();
     setError("");
     setSubmitting(true);
 
@@ -170,12 +109,15 @@ export default function LoginPage() {
         body: JSON.stringify(payload),
       });
 
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         throw new Error(data.error || data.message || `Request failed (${res.status})`);
       }
 
-      await migrateLocalStorageToServer();
+      const localState = establishUserLocalState(data.user);
+      if (!localState.ok) {
+        throw new Error("Sign-in succeeded, but the account response was invalid. Please reload.");
+      }
       window.location.href = "/";
     } catch (err) {
       setError(err.message || "Something went wrong. Please try again.");

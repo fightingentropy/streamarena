@@ -1,5 +1,4 @@
-import { resolveTitle } from "@/lib/streamarena";
-import { buildSubtitleUrl } from "@/lib/streamarena";
+import { buildSubtitleUrl, resolveTitle } from "@/lib/streamarena";
 import type { OfflineMeta, OfflineSubtitleSpec } from "@/store/offline";
 import { progressIdentity } from "./identity";
 import type { PlayRequest } from "./types";

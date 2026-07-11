@@ -72,6 +72,7 @@ import {
   toggleFullscreenMode as togglePlayerFullscreenMode,
 } from "../player/fullscreen.js";
 import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
+import { handleAuthFailureResponse } from "../lib/auth.js";
 import { renderPlayerShell } from "../player/player-shell-template.jsx";
 import {
   buildLiveWatchPath,
@@ -83,6 +84,13 @@ import {
   saveWatchParams,
   slugifyTitle,
 } from "../lib/watch-params.js";
+
+function fetchUserApi(path, options) {
+  return fetch(path, options).then((response) => {
+    handleAuthFailureResponse(response);
+    return response;
+  });
+}
 
 export default function PlayerPage() {
   // ─── Ref declarations (replacing document.getElementById) ───
@@ -1318,7 +1326,7 @@ async function loadUserRealDebridPlaybackSettings() {
     await userRealDebridSettingsPromise;
     return;
   }
-  userRealDebridSettingsPromise = fetch("/api/user/real-debrid", {
+  userRealDebridSettingsPromise = fetchUserApi("/api/user/real-debrid", {
     cache: "no-store",
   })
     .then(async (response) => (response.ok ? response.json() : {}))
@@ -1552,7 +1560,7 @@ try {
 }
 // If localStorage has no resume, fetch from server and apply as fallback.
 if (!(resumeTime > 1)) {
-  fetch("/api/user/watch-progress")
+  fetchUserApi("/api/user/watch-progress")
     .then((res) => (res.ok ? res.json() : null))
     .then((data) => {
       if (!data) return;
@@ -1743,7 +1751,7 @@ function syncContinueWatchingEntryToServer(resumeSeconds, { keepalive = false } 
   }
 
   const metadata = getCanonicalContinueWatchingMetadata();
-  fetch("/api/user/continue-watching", {
+  fetchUserApi("/api/user/continue-watching", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1786,7 +1794,7 @@ function maybeRecordLiveWatch() {
     }
     lastLiveWatchKey = cleanTitle;
     lastLiveWatchAt = now;
-    fetch("/api/user/live-watch", {
+    fetchUserApi("/api/user/live-watch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1825,7 +1833,7 @@ function removeContinueWatchingEntry() {
   }
 
   // Sync deletion to server in background
-  fetch("/api/user/continue-watching", {
+  fetchUserApi("/api/user/continue-watching", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sourceIdentity: normalizedSource }),
@@ -8169,7 +8177,7 @@ function persistResumeTime(force = false) {
     if (isNearEnd) {
       localStorage.removeItem(resumeStorageKey);
       removeContinueWatchingEntry();
-      fetch("/api/user/watch-progress", {
+      fetchUserApi("/api/user/watch-progress", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sourceIdentity }),
@@ -8217,7 +8225,7 @@ function persistResumeTime(force = false) {
     syncEpisodeProgressIndicators();
 
     // Sync watch progress to server in background
-    fetch("/api/user/watch-progress", {
+    fetchUserApi("/api/user/watch-progress", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sourceIdentity, resumeSeconds: nextResumeTime }),
@@ -10025,7 +10033,7 @@ async function initPlaybackSource() {
         const abortController = new AbortController();
         const abortTimer = setTimeout(() => abortController.abort(), 5000);
         try {
-          const res = await fetch("/api/user/continue-watching", {
+          const res = await fetchUserApi("/api/user/continue-watching", {
             signal: abortController.signal,
           });
           return res.ok ? await res.json() : null;
@@ -10079,7 +10087,7 @@ async function initPlaybackSource() {
   // If localStorage still has no resume, try the lighter progress endpoint.
   if (!(resumeTime > 1)) {
     try {
-      const res = await fetch("/api/user/watch-progress");
+      const res = await fetchUserApi("/api/user/watch-progress");
       if (res.ok) {
         const data = await res.json();
         const entry = (data?.entries || []).find(
@@ -10759,7 +10767,7 @@ speedOptions.forEach((option) => {
     closeSpeedPopover(false);
     try {
       localStorage.setItem(speedStorageKey, String(selectedRate));
-      fetch("/api/user/preferences", {
+      fetchUserApi("/api/user/preferences", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ [speedStorageKey]: String(selectedRate) }),
@@ -11506,7 +11514,7 @@ trackListener(video, "ended", () => {
   } catch {
     // Ignore storage access issues.
   }
-  fetch("/api/user/watch-progress", {
+  fetchUserApi("/api/user/watch-progress", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sourceIdentity }),

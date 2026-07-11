@@ -38,8 +38,8 @@ const STREMIO_SUBTITLE_ENGLISH_FALLBACK_TRACK_LIMIT: usize = 2;
 // must have a real name in get_subtitle_language_display_name — unknown codes
 // would otherwise be labeled "English".
 const STREMIO_SUBTITLE_LANGUAGE_MENU: &[&str] = &[
-    "en", "es", "fr", "de", "it", "pt", "el", "sq", "tr", "ru", "ar", "pl", "nl", "ro", "ja",
-    "ko", "zh",
+    "en", "es", "fr", "de", "it", "pt", "el", "sq", "tr", "ru", "ar", "pl", "nl", "ro", "ja", "ko",
+    "zh",
 ];
 const LOCAL_SIDECAR_SUBTITLE_STREAM_INDEX_BASE: i64 = 1_000_000;
 const EXTERNAL_SUBTITLE_STREAM_INDEX_BASE: i64 = 2_000_000;
@@ -1645,9 +1645,11 @@ fn build_stremio_subtitle_tracks_from_payload(
         let subtitle_id = item
             .get("id")
             .and_then(|value| {
-                value
-                    .as_i64()
-                    .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<i64>().ok()))
+                value.as_i64().or_else(|| {
+                    value
+                        .as_str()
+                        .and_then(|raw| raw.trim().parse::<i64>().ok())
+                })
             })
             .unwrap_or_default();
         if subtitle_id <= 0 || !seen_subtitle_ids.insert(subtitle_id) {
@@ -1668,7 +1670,8 @@ fn build_stremio_subtitle_tracks_from_payload(
         selected.push((language, subtitle_id, download_url));
     }
 
-    selected.sort_by_key(|(language, _, _)| stremio_subtitle_language_menu_rank(language, &preferred));
+    selected
+        .sort_by_key(|(language, _, _)| stremio_subtitle_language_menu_rank(language, &preferred));
 
     let mut label_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
@@ -2291,7 +2294,11 @@ mod tests {
                 "Greek (OpenSubtitles)",
             ]
         );
-        assert!(tracks.iter().all(|track| track.isExternal && track.isTextBased));
+        assert!(
+            tracks
+                .iter()
+                .all(|track| track.isExternal && track.isTextBased)
+        );
         assert_eq!(tracks[0].streamIndex, 3_000_000_000 + 102);
         assert_eq!(
             tracks[0].vttUrl,

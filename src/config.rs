@@ -106,8 +106,7 @@ impl Config {
         // separate concurrency pool so a slow full-file faststart copy never holds a
         // remux permit hostage from live playback.
         let export_max_concurrent = parse_usize_env("EXPORT_MAX_CONCURRENT", 2, 1, 8);
-        let export_queue_timeout_ms =
-            parse_u64_env("EXPORT_QUEUE_TIMEOUT_MS", 5_000, 100, 120_000);
+        let export_queue_timeout_ms = parse_u64_env("EXPORT_QUEUE_TIMEOUT_MS", 5_000, 100, 120_000);
         let export_process_timeout_seconds = parse_u64_env(
             "EXPORT_PROCESS_TIMEOUT_SECONDS",
             6 * 60 * 60,
@@ -223,11 +222,11 @@ impl Config {
             session_cookie_secure: normalize_bool_flag(
                 env::var("SESSION_COOKIE_SECURE").unwrap_or_else(|_| "1".to_owned()),
             ),
-            // Public sign-up is open by default. Set OPEN_SIGNUP=0 to re-close it
-            // (only the first account can be created once closed).
-            open_signup_enabled: normalize_bool_flag(
-                env::var("OPEN_SIGNUP").unwrap_or_else(|_| "1".to_owned()),
-            ),
+            // Fail closed when OPEN_SIGNUP is absent. Operators can explicitly
+            // enable public registration, use an invite code, or nominate one
+            // bootstrap administrator through BOOTSTRAP_ADMIN_EMAIL together
+            // with SIGNUP_INVITE_CODE.
+            open_signup_enabled: parse_bool_env("OPEN_SIGNUP", false),
             signup_invite_code: env::var("SIGNUP_INVITE_CODE")
                 .unwrap_or_default()
                 .trim()
@@ -261,6 +260,21 @@ impl Config {
                 .to_owned(),
         }
     }
+}
+
+/// The only email eligible to bootstrap an administrator. The signup route also
+/// requires the configured invite code, so knowing this address is insufficient
+/// to claim the account. Kept out of [`Config`] so it is never accidentally
+/// serialized with the public runtime configuration payload.
+pub fn bootstrap_admin_email() -> Option<String> {
+    configured_email_from_env("BOOTSTRAP_ADMIN_EMAIL")
+}
+
+fn configured_email_from_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
 }
 
 /// Hosts that skip the outbound WARP proxy by default: metadata/API traffic
@@ -356,6 +370,10 @@ fn normalize_bool_flag(value: String) -> bool {
     )
 }
 
+fn parse_bool_env(name: &str, fallback: bool) -> bool {
+    env::var(name).map(normalize_bool_flag).unwrap_or(fallback)
+}
+
 fn normalize_remux_video_mode(value: String) -> String {
     match value.trim().to_lowercase().as_str() {
         "copy" => "copy".to_owned(),
@@ -383,9 +401,35 @@ fn normalize_hwaccel_mode(value: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_OUTBOUND_PROXY_BYPASS_HOSTS, parse_csv_env, parse_proxy_bypass_env, parse_u64_env,
-        parse_usize_env,
+        DEFAULT_OUTBOUND_PROXY_BYPASS_HOSTS, configured_email_from_env, normalize_bool_flag,
+        parse_bool_env, parse_csv_env, parse_proxy_bypass_env, parse_u64_env, parse_usize_env,
     };
+
+    #[test]
+    fn signup_flags_fail_closed_and_bootstrap_email_is_normalized() {
+        assert!(!normalize_bool_flag("0".to_owned()));
+        assert!(!normalize_bool_flag("false".to_owned()));
+
+        unsafe {
+            std::env::remove_var("BOOTSTRAP_ADMIN_EMAIL_TEST");
+            std::env::remove_var("OPEN_SIGNUP_DEFAULT_TEST");
+        }
+        assert!(!parse_bool_env("OPEN_SIGNUP_DEFAULT_TEST", false));
+        assert_eq!(
+            configured_email_from_env("BOOTSTRAP_ADMIN_EMAIL_TEST"),
+            None
+        );
+        unsafe {
+            std::env::set_var("BOOTSTRAP_ADMIN_EMAIL_TEST", " Owner@Example.COM ");
+        }
+        assert_eq!(
+            configured_email_from_env("BOOTSTRAP_ADMIN_EMAIL_TEST").as_deref(),
+            Some("owner@example.com")
+        );
+        unsafe {
+            std::env::remove_var("BOOTSTRAP_ADMIN_EMAIL_TEST");
+        }
+    }
 
     #[test]
     fn proxy_bypass_env_defaults_trims_and_distinguishes_empty() {

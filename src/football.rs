@@ -540,7 +540,8 @@ impl SportsStreamResolveCache {
     pub fn prune(&self) {
         let now = now_ms();
         self.entries.retain(|_, cached| now <= cached.expires_at_ms);
-        self.failures.retain(|_, cached| now <= cached.expires_at_ms);
+        self.failures
+            .retain(|_, cached| now <= cached.expires_at_ms);
         self.locks.retain(|_, lock| Arc::strong_count(lock) > 1);
     }
 
@@ -752,135 +753,141 @@ impl SportsScheduleSource {
     }
 }
 
-pub async fn football_matches_handler(
-    State(state): State<AppState>,
-    Query(query): Query<SportsScheduleQuery>,
-) -> AppResult<Response<Body>> {
-    sport_matches_response(
-        &state,
-        query,
-        STREAMED_FOOTBALL_CACHE_KEY,
-        MATCHSTREAM_FOOTBALL_CACHE_KEY,
-        Some(NTVS_FOOTBALL_CACHE_KEY),
-        Some(CDNLIVETV_FOOTBALL_CACHE_KEY),
-        "football",
-        "Football",
-    )
-    .await
-}
-
-pub async fn basketball_matches_handler(
-    State(state): State<AppState>,
-    Query(query): Query<SportsScheduleQuery>,
-) -> AppResult<Response<Body>> {
-    sport_matches_response(
-        &state,
-        query,
-        STREAMED_BASKETBALL_CACHE_KEY,
-        MATCHSTREAM_BASKETBALL_CACHE_KEY,
-        None,
-        None,
-        "basketball",
-        "Basketball",
-    )
-    .await
-}
-
-pub async fn tennis_matches_handler(
-    State(state): State<AppState>,
-    Query(query): Query<SportsScheduleQuery>,
-) -> AppResult<Response<Body>> {
-    sport_matches_response(
-        &state,
-        query,
-        STREAMED_TENNIS_CACHE_KEY,
-        MATCHSTREAM_TENNIS_CACHE_KEY,
-        None,
-        None,
-        "tennis",
-        "Tennis",
-    )
-    .await
-}
-
-pub async fn hockey_matches_handler(
-    State(state): State<AppState>,
-    Query(query): Query<SportsScheduleQuery>,
-) -> AppResult<Response<Body>> {
-    sport_matches_response(
-        &state,
-        query,
-        STREAMED_HOCKEY_CACHE_KEY,
-        MATCHSTREAM_HOCKEY_CACHE_KEY,
-        None,
-        None,
-        "hockey",
-        "Hockey",
-    )
-    .await
-}
-
-pub async fn baseball_matches_handler(
-    State(state): State<AppState>,
-    Query(query): Query<SportsScheduleQuery>,
-) -> AppResult<Response<Body>> {
-    sport_matches_response(
-        &state,
-        query,
-        STREAMED_BASEBALL_CACHE_KEY,
-        MATCHSTREAM_BASEBALL_CACHE_KEY,
-        None,
-        None,
-        "baseball",
-        "Baseball",
-    )
-    .await
-}
-
-pub async fn american_football_matches_handler(
-    State(state): State<AppState>,
-    Query(query): Query<SportsScheduleQuery>,
-) -> AppResult<Response<Body>> {
-    sport_matches_response(
-        &state,
-        query,
-        STREAMED_AMERICAN_FOOTBALL_CACHE_KEY,
-        MATCHSTREAM_AMERICAN_FOOTBALL_CACHE_KEY,
-        None,
-        None,
-        "american-football",
-        "American Football",
-    )
-    .await
-}
-
-pub async fn cricket_matches_handler(
-    State(state): State<AppState>,
-    Query(query): Query<SportsScheduleQuery>,
-) -> AppResult<Response<Body>> {
-    sport_matches_response(
-        &state,
-        query,
-        STREAMED_CRICKET_CACHE_KEY,
-        MATCHSTREAM_CRICKET_CACHE_KEY,
-        None,
-        None,
-        "cricket",
-        "Cricket",
-    )
-    .await
-}
-
-async fn sport_matches_response(
-    state: &AppState,
-    query: SportsScheduleQuery,
+#[derive(Clone, Copy)]
+struct SportsScheduleConfig {
     streamed_cache_key: &'static str,
     matchstream_cache_key: &'static str,
     ntvs_cache_key: Option<&'static str>,
     cdnlivetv_cache_key: Option<&'static str>,
     streamed_category: &'static str,
     sport_name: &'static str,
+}
+
+const FOOTBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    streamed_cache_key: STREAMED_FOOTBALL_CACHE_KEY,
+    matchstream_cache_key: MATCHSTREAM_FOOTBALL_CACHE_KEY,
+    ntvs_cache_key: Some(NTVS_FOOTBALL_CACHE_KEY),
+    cdnlivetv_cache_key: Some(CDNLIVETV_FOOTBALL_CACHE_KEY),
+    streamed_category: "football",
+    sport_name: "Football",
+};
+
+const BASKETBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    streamed_cache_key: STREAMED_BASKETBALL_CACHE_KEY,
+    matchstream_cache_key: MATCHSTREAM_BASKETBALL_CACHE_KEY,
+    ntvs_cache_key: None,
+    cdnlivetv_cache_key: None,
+    streamed_category: "basketball",
+    sport_name: "Basketball",
+};
+
+const TENNIS_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    streamed_cache_key: STREAMED_TENNIS_CACHE_KEY,
+    matchstream_cache_key: MATCHSTREAM_TENNIS_CACHE_KEY,
+    ntvs_cache_key: None,
+    cdnlivetv_cache_key: None,
+    streamed_category: "tennis",
+    sport_name: "Tennis",
+};
+
+const HOCKEY_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    streamed_cache_key: STREAMED_HOCKEY_CACHE_KEY,
+    matchstream_cache_key: MATCHSTREAM_HOCKEY_CACHE_KEY,
+    ntvs_cache_key: None,
+    cdnlivetv_cache_key: None,
+    streamed_category: "hockey",
+    sport_name: "Hockey",
+};
+
+const BASEBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    streamed_cache_key: STREAMED_BASEBALL_CACHE_KEY,
+    matchstream_cache_key: MATCHSTREAM_BASEBALL_CACHE_KEY,
+    ntvs_cache_key: None,
+    cdnlivetv_cache_key: None,
+    streamed_category: "baseball",
+    sport_name: "Baseball",
+};
+
+const AMERICAN_FOOTBALL_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    streamed_cache_key: STREAMED_AMERICAN_FOOTBALL_CACHE_KEY,
+    matchstream_cache_key: MATCHSTREAM_AMERICAN_FOOTBALL_CACHE_KEY,
+    ntvs_cache_key: None,
+    cdnlivetv_cache_key: None,
+    streamed_category: "american-football",
+    sport_name: "American Football",
+};
+
+const CRICKET_SCHEDULE_CONFIG: SportsScheduleConfig = SportsScheduleConfig {
+    streamed_cache_key: STREAMED_CRICKET_CACHE_KEY,
+    matchstream_cache_key: MATCHSTREAM_CRICKET_CACHE_KEY,
+    ntvs_cache_key: None,
+    cdnlivetv_cache_key: None,
+    streamed_category: "cricket",
+    sport_name: "Cricket",
+};
+
+pub async fn football_matches_handler(
+    State(state): State<AppState>,
+    Query(query): Query<SportsScheduleQuery>,
 ) -> AppResult<Response<Body>> {
+    sport_matches_response(&state, query, FOOTBALL_SCHEDULE_CONFIG).await
+}
+
+pub async fn basketball_matches_handler(
+    State(state): State<AppState>,
+    Query(query): Query<SportsScheduleQuery>,
+) -> AppResult<Response<Body>> {
+    sport_matches_response(&state, query, BASKETBALL_SCHEDULE_CONFIG).await
+}
+
+pub async fn tennis_matches_handler(
+    State(state): State<AppState>,
+    Query(query): Query<SportsScheduleQuery>,
+) -> AppResult<Response<Body>> {
+    sport_matches_response(&state, query, TENNIS_SCHEDULE_CONFIG).await
+}
+
+pub async fn hockey_matches_handler(
+    State(state): State<AppState>,
+    Query(query): Query<SportsScheduleQuery>,
+) -> AppResult<Response<Body>> {
+    sport_matches_response(&state, query, HOCKEY_SCHEDULE_CONFIG).await
+}
+
+pub async fn baseball_matches_handler(
+    State(state): State<AppState>,
+    Query(query): Query<SportsScheduleQuery>,
+) -> AppResult<Response<Body>> {
+    sport_matches_response(&state, query, BASEBALL_SCHEDULE_CONFIG).await
+}
+
+pub async fn american_football_matches_handler(
+    State(state): State<AppState>,
+    Query(query): Query<SportsScheduleQuery>,
+) -> AppResult<Response<Body>> {
+    sport_matches_response(&state, query, AMERICAN_FOOTBALL_SCHEDULE_CONFIG).await
+}
+
+pub async fn cricket_matches_handler(
+    State(state): State<AppState>,
+    Query(query): Query<SportsScheduleQuery>,
+) -> AppResult<Response<Body>> {
+    sport_matches_response(&state, query, CRICKET_SCHEDULE_CONFIG).await
+}
+
+async fn sport_matches_response(
+    state: &AppState,
+    query: SportsScheduleQuery,
+    config: SportsScheduleConfig,
+) -> AppResult<Response<Body>> {
+    let SportsScheduleConfig {
+        streamed_cache_key,
+        matchstream_cache_key,
+        ntvs_cache_key,
+        cdnlivetv_cache_key,
+        streamed_category,
+        sport_name,
+    } = config;
     match SportsScheduleSource::from_query(query.source.as_deref())? {
         SportsScheduleSource::Auto => {
             auto_sport_matches_response(
@@ -1530,10 +1537,8 @@ async fn fetch_ntvs_sport_matches_payload(
 }
 
 fn ntvs_search_url(query: &str, server: &str) -> String {
-    let base = provider_registry::resolve(
-        provider_registry::keys::SPORTS_NTVS_SEARCH,
-        NTVS_SEARCH_URL,
-    );
+    let base =
+        provider_registry::resolve(provider_registry::keys::SPORTS_NTVS_SEARCH, NTVS_SEARCH_URL);
     // Fall back to the compiled default if an admin saved a malformed override.
     let mut url = Url::parse(&base)
         .or_else(|_| Url::parse(NTVS_SEARCH_URL))
@@ -1623,9 +1628,11 @@ async fn cdnlivetv_sport_matches_response(
     let started_at_ms = now_ms();
     match fetch_cdnlivetv_sport_matches_payload(state, sport_name).await {
         Ok((payload, fetched_at_ms)) => {
-            state
-                .sports_provider_health
-                .record_success(CDNLIVETV_SOURCE_ID, "schedule", started_at_ms);
+            state.sports_provider_health.record_success(
+                CDNLIVETV_SOURCE_ID,
+                "schedule",
+                started_at_ms,
+            );
             state
                 .sports_schedule_cache
                 .insert(cache_key, payload.clone(), fetched_at_ms);
@@ -1863,7 +1870,7 @@ fn curate_cdnlivetv_channels(channels: &[Value]) -> Vec<CdnlivetvChannelInfo> {
             ))
         })
         .collect::<Vec<_>>();
-    scored.sort_by(|left, right| right.0.cmp(&left.0));
+    scored.sort_by_key(|item| std::cmp::Reverse(item.0));
     scored
         .into_iter()
         .take(CDNLIVETV_MAX_CHANNELS_PER_MATCH)
@@ -1882,9 +1889,28 @@ fn cdnlivetv_channel_score(name: &str) -> i32 {
         score += 4;
     }
     const REPUTABLE: &[&str] = &[
-        "bein", "itv", "tnt", "sky", "dazn", "tsn", "espn", "sport tv", "canal", "rmc",
-        "eurosport", "arena", "match", "m6", "tf1", "tv4", "rai", "movistar", "viaplay",
-        "ziggo", "supersport", "premier",
+        "bein",
+        "itv",
+        "tnt",
+        "sky",
+        "dazn",
+        "tsn",
+        "espn",
+        "sport tv",
+        "canal",
+        "rmc",
+        "eurosport",
+        "arena",
+        "match",
+        "m6",
+        "tf1",
+        "tv4",
+        "rai",
+        "movistar",
+        "viaplay",
+        "ziggo",
+        "supersport",
+        "premier",
     ];
     if REPUTABLE.iter().any(|needle| lower.contains(needle)) {
         score += 3;
@@ -1910,12 +1936,11 @@ fn cdnlivetv_channel_quality_label(name: &str) -> &'static str {
 // stay correctly encoded, and reconstruct it from name+code otherwise.
 fn cdnlivetv_channel_player_url(name: &str, code: &str, provided: &str) -> String {
     let provided = provided.trim();
-    if !provided.is_empty() {
-        if let Ok(url) = Url::parse(provided) {
-            if is_supported_cdnlivetv_stream_url(&url) {
-                return url.to_string();
-            }
-        }
+    if !provided.is_empty()
+        && let Ok(url) = Url::parse(provided)
+        && is_supported_cdnlivetv_stream_url(&url)
+    {
+        return url.to_string();
     }
     let mut url = Url::parse(CDNLIVETV_CHANNEL_PLAYER_BASE).expect("valid cdnlivetv player base");
     url.query_pairs_mut()
@@ -1998,7 +2023,10 @@ async fn resolve_cached_cdnlivetv_live_stream(
     candidate_index: usize,
 ) -> AppResult<ResolvedLiveStream> {
     let cache_key = sports_stream_resolve_cache_key(CDNLIVETV_SOURCE_ID, source_url);
-    if let Some(mut resolved) = state.sports_stream_resolve_cache.fresh(&cache_key, now_ms()) {
+    if let Some(mut resolved) = state
+        .sports_stream_resolve_cache
+        .fresh(&cache_key, now_ms())
+    {
         resolved.candidate_index = candidate_index;
         resolved.attempted_streams = candidate_index + 1;
         return Ok(resolved);
@@ -2014,7 +2042,10 @@ async fn resolve_cached_cdnlivetv_live_stream(
 
     let lock = state.sports_stream_resolve_cache.lock_for(&cache_key);
     let _guard = lock.lock().await;
-    if let Some(mut resolved) = state.sports_stream_resolve_cache.fresh(&cache_key, now_ms()) {
+    if let Some(mut resolved) = state
+        .sports_stream_resolve_cache
+        .fresh(&cache_key, now_ms())
+    {
         resolved.candidate_index = candidate_index;
         resolved.attempted_streams = candidate_index + 1;
         return Ok(resolved);
@@ -2032,9 +2063,11 @@ async fn resolve_cached_cdnlivetv_live_stream(
     let _permit = state.sports_stream_resolve_cache.acquire_permit().await?;
     match resolve_verified_cdnlivetv_live_stream_uncached(source_url, candidate_index).await {
         Ok(resolved) => {
-            state
-                .sports_provider_health
-                .record_success(CDNLIVETV_SOURCE_ID, "stream", started_at_ms);
+            state.sports_provider_health.record_success(
+                CDNLIVETV_SOURCE_ID,
+                "stream",
+                started_at_ms,
+            );
             state
                 .sports_stream_resolve_cache
                 .insert(cache_key, resolved.clone(), now_ms());
@@ -2064,7 +2097,9 @@ async fn resolve_verified_cdnlivetv_live_stream_uncached(
     candidate_index: usize,
 ) -> AppResult<ResolvedLiveStream> {
     if !is_supported_cdnlivetv_stream_url(source_url) {
-        return Err(ApiError::bad_request("Unsupported cdnlivetv live stream URL."));
+        return Err(ApiError::bad_request(
+            "Unsupported cdnlivetv live stream URL.",
+        ));
     }
     let Some((playback_url, player_page_url)) = resolve_cdnlivetv_hls_url(source_url).await else {
         return Err(ApiError::bad_gateway(
@@ -2108,7 +2143,8 @@ async fn resolve_cdnlivetv_hls_url(source_url: &Url) -> Option<(Url, Url)> {
         return None;
     }
 
-    let resolver_output = serde_json::from_slice::<StreamedHlsResolverOutput>(&output.stdout).ok()?;
+    let resolver_output =
+        serde_json::from_slice::<StreamedHlsResolverOutput>(&output.stdout).ok()?;
     let playback_url = Url::parse(resolver_output.playback_url.trim()).ok()?;
     if !is_supported_cdnlivetv_hls_url(&playback_url) {
         return None;
@@ -2228,7 +2264,9 @@ async fn sports_stream_resolve_response(
     while let Some((source_url, provider, result)) = resolved_stream.next().await {
         match result {
             Ok(resolved) if resolved.playback_type == "hls" => {
-                return Ok(resolved_live_stream_response(state, resolved, provider, false));
+                return Ok(resolved_live_stream_response(
+                    state, resolved, provider, false,
+                ));
             }
             Ok(resolved) => {
                 errors.push(format!(
@@ -2701,10 +2739,10 @@ async fn resolve_streamed_embed_hls_url(embed_url: &Url) -> Option<Url> {
     // Fast path: the shared minimal-browser resolver (stub page + lock.js recipe;
     // it handles embedsports.top -> strmd.top just like embed.st -> strmd.st).
     let min_script = ntvs_embed_min_hls_resolver_script_path();
-    if !is_disabled_resolver_script(&min_script) {
-        if let Some(playback_url) = run_streamed_embed_min_resolver(&min_script, embed_url).await {
-            return Some(playback_url);
-        }
+    if !is_disabled_resolver_script(&min_script)
+        && let Some(playback_url) = run_streamed_embed_min_resolver(&min_script, embed_url).await
+    {
+        return Some(playback_url);
     }
 
     // Fallback: full-page Streamed resolver.
@@ -2835,16 +2873,15 @@ async fn resolve_ntvs_embed_st_hls_url(embed_url: &Url) -> Option<(Url, Url)> {
     // Fast path: minimal-browser resolver (stub page + the site's lock.js WASM
     // recipe — no bundle-jw.js/clappr/ads). Short budget; falls back on miss.
     let min_script = ntvs_embed_min_hls_resolver_script_path();
-    if !is_disabled_resolver_script(&min_script) {
-        if let Some(resolved) = run_ntvs_embed_resolver_script(
+    if !is_disabled_resolver_script(&min_script)
+        && let Some(resolved) = run_ntvs_embed_resolver_script(
             &min_script,
             embed_url,
             NTVS_EMBED_MIN_HLS_RESOLVE_TIMEOUT_SECONDS,
         )
         .await
-        {
-            return Some(resolved);
-        }
+    {
+        return Some(resolved);
     }
 
     // Fallback: full-page Playwright resolver.
@@ -3539,7 +3576,9 @@ fn resolve_ntvs_candidate_url(base_url: &Url, value: &str) -> Option<Url> {
             && let Some(hesgoaler_url) = resolve_ntvs_hesgoaler_player_url(&format!(
                 "{}{}",
                 url.path(),
-                url.query().map(|query| format!("?{query}")).unwrap_or_default()
+                url.query()
+                    .map(|query| format!("?{query}"))
+                    .unwrap_or_default()
             ))
         {
             return Some(hesgoaler_url);
@@ -3561,12 +3600,10 @@ fn resolve_ntvs_hesgoaler_player_url(value: &str) -> Option<Url> {
     if !path.eq_ignore_ascii_case("/stream.php") {
         return None;
     }
-    let channel = query
-        .split('&')
-        .find_map(|pair| {
-            let (key, value) = pair.split_once('=')?;
-            (key.eq_ignore_ascii_case("ch") && !value.trim().is_empty()).then_some(value.trim())
-        })?;
+    let channel = query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key.eq_ignore_ascii_case("ch") && !value.trim().is_empty()).then_some(value.trim())
+    })?;
     let mut url = Url::parse("https://hesgoaler.com/stream.php").ok()?;
     {
         let mut query_pairs = url.query_pairs_mut();
@@ -3893,14 +3930,15 @@ fn normalize_streamed_sport_match(
         .filter_map(|(index, source)| {
             let source_name = source.source.trim();
             let source_url = streamed_source_stream_api_url(source)?;
-            Some((sports_embed_source_priority(source_name), index, source_name, source_url))
+            Some((
+                sports_embed_source_priority(source_name),
+                index,
+                source_name,
+                source_url,
+            ))
         })
         .collect::<Vec<_>>();
-    indexed_sources.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then_with(|| left.1.cmp(&right.1))
-    });
+    indexed_sources.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
     let streams = indexed_sources
         .into_iter()
         .map(|(_, index, source_name, source_url)| {
@@ -4148,14 +4186,15 @@ fn normalize_ntvs_sport_match(
         .filter_map(|(index, source)| {
             let source_url = streamed_source_stream_api_url(source)?;
             let source_name = source.source.trim();
-            Some((sports_embed_source_priority(source_name), index, source, source_url))
+            Some((
+                sports_embed_source_priority(source_name),
+                index,
+                source,
+                source_url,
+            ))
         })
         .collect::<Vec<_>>();
-    indexed_sources.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then_with(|| left.1.cmp(&right.1))
-    });
+    indexed_sources.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
 
     for (index, source, source_url) in indexed_sources
         .into_iter()
@@ -4252,22 +4291,21 @@ fn title_case_ascii(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CDNLIVETV_MAX_CHANNELS_PER_MATCH, CDNLIVETV_SOURCE_ID, build_cdnlivetv_sport_matches_payload,
-        cdnlivetv_channel_quality_label, cdnlivetv_channel_score, curate_cdnlivetv_channels,
-        is_supported_cdnlivetv_hls_url, is_supported_cdnlivetv_stream_url,
-        parse_cdnlivetv_start_ms, unix_days_from_civil,
+        CDNLIVETV_MAX_CHANNELS_PER_MATCH, CDNLIVETV_SOURCE_ID,
+        build_cdnlivetv_sport_matches_payload, cdnlivetv_channel_quality_label,
+        cdnlivetv_channel_score, curate_cdnlivetv_channels, is_supported_cdnlivetv_hls_url,
+        is_supported_cdnlivetv_stream_url, parse_cdnlivetv_start_ms, unix_days_from_civil,
     };
     use super::{
         MATCHSTREAM_WEBMASTER_URL, MatchstreamChannel, MatchstreamMatch, NTVS_SOURCE_ID, NtvsMatch,
         SPORTS_SCHEDULE_FUTURE_CACHE_TTL_MS, SPORTS_SCHEDULE_STALE_IF_ERROR_MS,
         SPORTS_STREAM_RESOLVE_CACHE_TTL_MS, SPORTS_STREAM_RESOLVE_FAILURE_TTL_MS,
-        STREAMED_FOOTBALL_MATCHES_URL, STREAMED_SOURCE_ID,
-        SportsScheduleCache, SportsScheduleSource, SportsStreamResolveCache, StreamedMatch,
-        StreamedSource, StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
+        STREAMED_FOOTBALL_MATCHES_URL, STREAMED_SOURCE_ID, SportsScheduleCache,
+        SportsScheduleSource, SportsStreamResolveCache, StreamedMatch, StreamedSource,
+        StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
         build_ntvs_football_matches_payload, build_streamed_football_matches_payload,
         extract_matchstream_matches, extract_ntvs_candidate_urls,
         extract_streamed_watch_embed_streams, is_streamed_watch_url,
-        normalize_ntvs_fetch_url, resolve_ntvs_candidate_url,
         is_supported_matchstream_hls_url, is_supported_matchstream_player_url,
         is_supported_matchstream_stream_url, is_supported_ntvs_channel_url,
         is_supported_ntvs_embed_url, is_supported_ntvs_hesgoaler_player_url,
@@ -4275,10 +4313,11 @@ mod tests {
         is_supported_ntvs_wrapper_embed_url, is_supported_streamed_hls_url,
         is_supported_streamed_stream_url, live_stream_source_candidates,
         matchstream_live_stream_source_candidates, normalize_matchstream_link,
-        parse_fallback_stream_urls, parse_ntvs_hesgoaler_player_source,
-        remove_streamed_sources_by_index, sports_live_stream_source_candidates,
-        sports_schedule_fresh_ttl_ms, sports_stream_provider_id, sports_stream_resolve_cache_key,
-        streamed_match_is_live, streamed_source_stream_api_url,
+        normalize_ntvs_fetch_url, parse_fallback_stream_urls, parse_ntvs_hesgoaler_player_source,
+        remove_streamed_sources_by_index, resolve_ntvs_candidate_url,
+        sports_live_stream_source_candidates, sports_schedule_fresh_ttl_ms,
+        sports_stream_provider_id, sports_stream_resolve_cache_key, streamed_match_is_live,
+        streamed_source_stream_api_url,
     };
     use crate::utils::now_ms;
     use serde_json::json;
@@ -4740,8 +4779,7 @@ mod tests {
 
     #[test]
     fn normalizes_ntv_cx_fetch_urls_to_ntvs_cx() {
-        let ntv_channel =
-            url::Url::parse("https://ntv.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
+        let ntv_channel = url::Url::parse("https://ntv.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
         let ntv_embed = url::Url::parse(
             "https://ntv.cx/embed?t=OFd0cFZIcCtUQ3NleURxSUs1SW9VTHRKb2tpMjlQWXN2Y29SM2E0UDdvOFo5K2I4MWdPWHgvSVZxZDB3YnNjSw~~",
         )
@@ -5103,14 +5141,10 @@ mod tests {
             "https://cdnlivetv.tv/api/v1/channels/player/?name=ITV%201%20FHD%20UK&code=gb&user=cdnlivetv&plan=free",
         )
         .unwrap();
-        let hls = Url::parse(
-            "https://cdnlivetv.tv/secure/api/v1/6a288d2a/playlist.m3u8?token=abc",
-        )
-        .unwrap();
-        let sibling = Url::parse(
-            "https://cdn-live.tv/api/v1/channels/player/?name=Sky&code=gb",
-        )
-        .unwrap();
+        let hls = Url::parse("https://cdnlivetv.tv/secure/api/v1/6a288d2a/playlist.m3u8?token=abc")
+            .unwrap();
+        let sibling =
+            Url::parse("https://cdn-live.tv/api/v1/channels/player/?name=Sky&code=gb").unwrap();
         let other = Url::parse("https://example.com/api/v1/channels/player/?name=x").unwrap();
 
         assert!(is_supported_cdnlivetv_stream_url(&player));
@@ -5225,7 +5259,10 @@ mod tests {
         let game = &matches[0];
         assert_eq!(game["title"], "France vs Sweden");
         assert_eq!(game["provider"], CDNLIVETV_SOURCE_ID);
-        assert_eq!(game["startTimestamp"], parse_cdnlivetv_start_ms("2099-01-01 21:00").unwrap());
+        assert_eq!(
+            game["startTimestamp"],
+            parse_cdnlivetv_start_ms("2099-01-01 21:00").unwrap()
+        );
 
         let streams = game["streams"].as_array().unwrap();
         assert_eq!(streams.len(), 3);
@@ -5237,9 +5274,14 @@ mod tests {
             "https://cdnlivetv.tv/api/v1/channels/player/?name=ITV%201%20FHD%20UK&code=gb&user=cdnlivetv&plan=free"
         );
         // beIN had no url, so it's reconstructed into a valid player URL.
-        let bein = streams.iter().find(|s| s["label"] == "beIN SPORTS 1 FR HD").unwrap();
+        let bein = streams
+            .iter()
+            .find(|s| s["label"] == "beIN SPORTS 1 FR HD")
+            .unwrap();
         let bein_source = bein["source"].as_str().unwrap();
-        assert!(is_supported_cdnlivetv_stream_url(&Url::parse(bein_source).unwrap()));
+        assert!(is_supported_cdnlivetv_stream_url(
+            &Url::parse(bein_source).unwrap()
+        ));
         assert_eq!(bein["quality"], "HD");
     }
 

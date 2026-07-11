@@ -223,7 +223,7 @@ Subtitles and tracks:
 
 Programmatic uploads and library management:
 
-- The browser upload page has been removed; uploads are API-only.
+- The browser upload page has been removed; uploads are API-only and require an administrator session.
 - `.mp4` and `.mkv` inputs.
 - Movie or episode metadata payloads.
 - Filename metadata inference through `/api/upload/infer`.
@@ -274,11 +274,10 @@ PWA/offline behavior:
 
 Operational features:
 
-- `/api/health` reports uptime, streaming counters, resolver counters, sports resolver health, and ffmpeg/ffprobe capabilities.
+- `/api/health` reports uptime, streaming counters, resolver counters, sports resolver health, and cached ffmpeg/ffprobe capabilities. Forcing a capability refresh requires an administrator session.
 - `/api/config` reports configured integrations, resolver providers, upload limit, remux/HLS limits, and effective hardware acceleration.
-- `/api/debug/cache` reports persistent and in-memory cache counts.
-- `/api/debug/cache?clear=1` clears persistent resolver/TMDB/session/media caches and HLS cache data.
-- `/api/debug/sports` reports sports schedule cache, stream resolver cache, and provider health details.
+- Administrator-only `/api/debug/cache` reports persistent and in-memory cache counts; its POST clear operation removes persistent resolver/TMDB/session/media caches and HLS cache data.
+- Administrator-only `/api/debug/sports` reports sports schedule cache, stream resolver cache, and provider health details.
 - Runtime sweeps stale DB/cache/upload/streaming state every minute.
 
 ## Pages
@@ -315,7 +314,7 @@ Operational features:
 
 Public API routes:
 
-- `GET /api/health[?refresh=1]`
+- `GET /api/health` (`refresh=1` requires an administrator session)
 - `GET /api/health/live`
 - `GET /api/config`
 - `GET /api/home/bootstrap`
@@ -332,9 +331,7 @@ Public API routes:
 
 Protected API routes:
 
-- `GET|PUT /api/library`
-- `GET|POST /api/debug/cache`
-- `GET /api/debug/sports`
+- `GET /api/library`
 - `GET /api/twitch/stream`
 - `GET /api/live/hls.m3u8`
 - `GET /api/live/hls-resource`
@@ -347,12 +344,6 @@ Protected API routes:
 - `GET /api/tmdb/search`
 - `GET /api/tmdb/details`
 - `GET /api/tmdb/tv/season`
-- `POST /api/upload/infer`
-- `POST /api/upload`
-- `POST /api/upload/session/start`
-- `POST /api/upload/session/chunk?sessionId=...`
-- `POST /api/upload/session/finish`
-- `POST /api/gallery/save-stream`
 - `GET /api/resolve/sources`
 - `GET /api/resolve/movie`
 - `GET /api/resolve/tv`
@@ -372,6 +363,18 @@ Protected API routes:
 - `GET|PUT|DELETE /api/user/continue-watching`
 - `GET|PUT /api/user/my-list`
 - `POST /api/user/sync`
+
+Administrator API routes:
+
+- `PUT /api/library`
+- `GET|POST /api/debug/cache`
+- `GET /api/debug/sports`
+- `POST /api/upload/infer`
+- `POST /api/upload`
+- `POST /api/upload/session/start`
+- `POST /api/upload/session/chunk?sessionId=...`
+- `POST /api/upload/session/finish`
+- `POST /api/gallery/save-stream`
 
 Common resolver query params:
 
@@ -433,6 +436,9 @@ Server:
 
 - `HOST` - default `127.0.0.1`.
 - `PORT` - default `5173`.
+- `OPEN_SIGNUP` - public registration, disabled by default. Keep it `0` in production.
+- `SIGNUP_INVITE_CODE` - optional secret that permits viewer registration while public sign-up is closed.
+- `BOOTSTRAP_ADMIN_EMAIL` - optional admin-bootstrap email. Bootstrap requires the matching email and `SIGNUP_INVITE_CODE`; remove this setting once the admin exists.
 - `OUTBOUND_HTTP_PROXY` - optional HTTP/SOCKS proxy for server outbound requests.
 - `SPORTS_HTTP_PROXY` - optional HTTP/SOCKS proxy only for sports provider schedule/stream requests and sports browser HLS extraction. For Cloudflare WARP proxy mode this is typically `socks5://127.0.0.1:40000`.
 - `MAX_UPLOAD_BYTES` - default 10 GiB, clamped to at least 50 MiB.
@@ -570,6 +576,9 @@ Development and checks:
 - `bun run lint:frontend` - JavaScript syntax check for `src-ui`, `scripts`, and `vite.config.js`.
 - `bun run test:rust` - Rust tests.
 - `bun run test:frontend` - Playwright smoke test against a mocked API.
+- `bun run check:rust` - Rust formatting and Clippy with warnings denied.
+- `bun run audit:rust` - RustSec dependency audit using the locally installed advisory database.
+- `bun run check:quality` - Rust format, Clippy, and dependency security gates. Install `cargo-audit` first with `cargo install cargo-audit --locked`.
 - `bun run check:architecture` - guardrails for app shape, frontend dependencies, entrypoints, source sizes, and bundle sizes.
 - `bun run check` - frontend lint, build, architecture check, Rust tests, and frontend smoke test.
 
@@ -585,9 +594,9 @@ Mac mini:
 - `bun run mini:install-server` - install/update Caddy, backend runner, and LaunchDaemons.
 - `bun run mini:install-agents` - install/update log rotation, disk monitor, and watchdog LaunchAgents; also removes obsolete hero-preview jobs/files.
 - `bun run mini:map-ports` - create router UPnP forwards for TCP 80 and 443.
-- `CF_API_TOKEN=... bun run mini:update-dns` - update Cloudflare DNS-only A records.
+- `CF_API_TOKEN=... bun run mini:update-dns` - update Cloudflare-proxied A records with automatic TTL.
 - `bun run mini:check` - verify runtime tree, protected API auth status, Caddy, launchd, env permissions, sports WARP proxy, resolver helpers, agents, disk space, and public response.
-- `bun run mini:deploy` - build, deploy `dist`, backend binary, library metadata, images, and icons, then restart/check.
+- `bun run mini:deploy` - run quality/tests, stage a rollback-capable release, deploy `dist`, backend binary, library metadata, images, and icons, then restart/check.
 - `bun run mini:deploy -- --skip-build` - reuse existing `dist/` and release binary.
 - `bun run mini:deploy -- --video assets/videos/<file>.mp4` - copy that symlink target as a real mini video file.
 - `bun run mini:backup -- <backup-root>` - full timestamped backup.
@@ -599,6 +608,18 @@ Internal resolver helpers:
 - `scripts/resolve-streamed-hls.mjs` - Playwright helper for Streamed sports HLS extraction; mini deploy copies it to `bin/resolve-streamed-hls.mjs`.
 - `scripts/resolve-matchstream-hls.mjs` - Playwright helper for MatchStream sports HLS extraction; mini deploy copies it to `bin/resolve-matchstream-hls.mjs`.
 - `scripts/resolve-ntvs-hls.mjs` - Playwright helper for NTVS/Embed.st sports HLS extraction; mini deploy copies it to `bin/resolve-ntvs-hls.mjs`.
+
+## Mobile app
+
+The Expo app lives in `mobile/` and is checked independently in CI. From that directory:
+
+- `npm ci` - install the locked Expo SDK 56 dependency graph.
+- `npm run typecheck` - TypeScript validation.
+- `npm run lint` - Expo ESLint validation.
+- `npm test` - metadata and signing-plugin regressions.
+- `npm run doctor` - Expo project/dependency diagnostics.
+- `npm run build:ios` - produce a clean iOS Metro export (also run in CI).
+- `EXPO_IOS_DEVELOPMENT_TEAM=<team-id> npm run ios` - opt into automatic signing for a local device build. Without the variable, generated Xcode signing settings are left untouched.
 
 ## Mac Mini Infrastructure
 
@@ -614,7 +635,7 @@ Server machine:
 - Host: `hermes@m4mini.local`.
 - Runtime path: `/Users/hermes/Developer/streamarena`.
 - Public hosts: `streamarena.xyz` and `www.streamarena.xyz`.
-- Ingress: Cloudflare DNS-only A records -> home public IP -> router TCP 80/443 -> Mac mini.
+- Ingress: Cloudflare-proxied A records -> Cloudflare edge -> home public IP -> router TCP 80/443 -> Mac mini. Caddy accepts public origin traffic only from Cloudflare's published edge ranges.
 - Reverse proxy: Caddy on ports 80 and 443.
 - Backend listener: `127.0.0.1:5173`.
 - Runtime tree only:
@@ -719,7 +740,7 @@ Expected results:
 
 - Mini backend root: `200`
 - Protected `/api/library` without login: `401`
-- Public host root: `200`
+- Public host root: `302` to the login page
 - Public `/api/auth/me` without login: `401`
 
 Deploying code:
@@ -742,7 +763,7 @@ bun run mini:backup -- /Volumes/Backup/streamarena-mini
 bun run mini:backup -- --config-only ~/Backups/streamarena-mini-config
 ```
 
-Full backups include runtime assets, binary, cache, dist, secrets/config, helper scripts, and launchd plists. The script maintains a `latest` symlink and uses `rsync --link-dest` when possible.
+Full backups include runtime assets, binary, cache, dist, secrets/config, helper scripts, and launchd plists. SQLite databases are copied through consistent `.backup` snapshots and verified with `PRAGMA quick_check`; the script maintains a `latest` symlink and uses `rsync --link-dest` when possible.
 
 Restore outline:
 
@@ -753,7 +774,7 @@ Restore outline:
 5. Run `bun run mini:install-server`.
 6. Run `bun run mini:install-agents`.
 7. Run `bun run mini:map-ports` or configure router forwards manually.
-8. Verify Cloudflare DNS-only A records point at the current home public IP.
+8. Verify Cloudflare-proxied A records target the current home public IP.
 9. Run `bun run mini:check`.
 
 ## Troubleshooting

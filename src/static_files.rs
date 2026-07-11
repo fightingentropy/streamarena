@@ -446,10 +446,12 @@ mod tests {
             "/watch/movie/603",
             "/watch/live/bloomberg-tv-us",
         ] {
-            let path =
-                resolve_local_path(Path::new("/tmp/app/dist"), Path::new("/tmp/app"), route)
-                    .unwrap();
-            assert!(path.ends_with("player.html"), "route {route} should serve player.html");
+            let path = resolve_local_path(Path::new("/tmp/app/dist"), Path::new("/tmp/app"), route)
+                .unwrap();
+            assert!(
+                path.ends_with("player.html"),
+                "route {route} should serve player.html"
+            );
         }
     }
 
