@@ -79,6 +79,19 @@ const TOP_TEN_RAIL_LIMIT = 10;
 const HOME_BOOTSTRAP_FETCH_TIMEOUT_MS = 2500;
 const HOME_BOOTSTRAP_WARM_RETRY_MS = 1200;
 const HOME_BOOTSTRAP_WARM_RETRY_LIMIT = 8;
+const UNRATED_CERTIFICATION_LABEL = "Unrated";
+const MODAL_FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
+function normalizeCertification(value) {
+  return String(value || "").trim() || UNRATED_CERTIFICATION_LABEL;
+}
 
 function isWarmingHomeBootstrap(payload) {
   return String(payload?._meta?.status || "").trim() === "warming";
@@ -520,7 +533,7 @@ function createDefaultFeaturedHero() {
     mediaType: "movie",
     year: "",
     runtime: "Movie",
-    maturity: "13+",
+    maturity: UNRATED_CERTIFICATION_LABEL,
     tagline: "Discover what everyone is watching right now.",
     description: "Current top movies from around the world.",
     poster: "assets/images/thumbnail-top10-h.jpg",
@@ -577,8 +590,7 @@ function getFeaturedHeroTagline(feature) {
 }
 
 function getFeaturedHeroMaturityLabel(feature) {
-  const maturity = String(feature?.maturity || "13+").trim();
-  return maturity.replace(/\+$/, "");
+  return normalizeCertification(feature?.maturity);
 }
 
 function getPopularRowTitle(payload) {
@@ -672,7 +684,7 @@ function createFeaturedHeroFromTmdbItem(
     mediaType: "movie",
     year,
     runtime: "Movie",
-    maturity: item?.adult ? "18+" : "13+",
+    maturity: normalizeCertification(item?.certification),
     logoUrl,
     tagline: String(item?.tagline || "").trim(),
     description:
@@ -740,7 +752,7 @@ function createFeaturedHeroFromLocalEntry(entry) {
     mediaType: isSeries ? "tv" : "movie",
     year,
     runtime,
-    maturity: "13+",
+    maturity: UNRATED_CERTIFICATION_LABEL,
     tagline: isSeries
       ? isCourse
         ? "Continue a saved course from your library."
@@ -899,7 +911,7 @@ function createSearchResultDetails(item, imageBase = TMDB_IMAGE_BASE) {
     mediaType,
     year,
     runtime: mediaType === "tv" ? "Series" : "Movie",
-    maturity: item?.adult ? "18+" : "13+",
+    maturity: normalizeCertification(item?.certification),
     quality: "HD",
     audio: "Stereo",
     description,
@@ -944,7 +956,7 @@ function getCardModalData(card) {
       "assets/images/thumbnail.jpg",
     year: card.dataset.year || "2024",
     runtime: card.dataset.runtime || "1h 40m",
-    maturity: card.dataset.maturity || "16+",
+    maturity: normalizeCertification(card.dataset.maturity),
     quality: card.dataset.quality || "HD",
     audio: card.dataset.audio || "Spatial Audio",
     description: card.dataset.description || "No description available.",
@@ -1169,7 +1181,9 @@ function mapDetailsToModalPatch(rawDetails, currentDetails, mediaType) {
   return {
     ...currentDetails,
     runtime: runtime || currentDetails.runtime,
-    maturity: rawDetails.adult ? "18" : currentDetails.maturity,
+    maturity: normalizeCertification(
+      rawDetails.certification || currentDetails.maturity,
+    ),
     description: rawDetails.overview || currentDetails.description,
     cast: castList.length ? castList.join(", ") : currentDetails.cast,
     genres: genresList.length ? genresList.join(", ") : currentDetails.genres,
@@ -1233,6 +1247,7 @@ export default function HomePage() {
   let libraryEditFieldsRef;
   let navSearchInputRef;
   let detailsCloseButtonRef;
+  let detailsSheetRef;
   let accountMenuPanelRef;
   let searchContextMenuRef;
   let liveViewLoadPromise = null;
@@ -1274,7 +1289,7 @@ export default function HomePage() {
     title: "POPULAR MOVIES",
     year: "",
     runtime: "Movie",
-    maturity: "13+",
+    maturity: UNRATED_CERTIFICATION_LABEL,
     quality: "HD",
     audio: "",
     description: "Pick a title to see details.",
@@ -1952,13 +1967,96 @@ export default function HomePage() {
   }
 
   // ---- Details modal ----
+  function setDetailsModalBackgroundInert(isInert) {
+    const modal = document.getElementById("detailsModal");
+    const modalParent = modal?.parentElement;
+    if (!modal || !modalParent) {
+      return;
+    }
+    Array.from(modalParent.children).forEach((child) => {
+      if (child === modal) {
+        return;
+      }
+      child.toggleAttribute("inert", Boolean(isInert));
+    });
+  }
+
+  function getDetailsModalFocusableElements() {
+    if (!detailsSheetRef) {
+      return [];
+    }
+    return Array.from(
+      detailsSheetRef.querySelectorAll(MODAL_FOCUSABLE_SELECTOR),
+    ).filter((element) => {
+      if (!(element instanceof HTMLElement)) {
+        return false;
+      }
+      return (
+        !element.hidden &&
+        element.getAttribute("aria-hidden") !== "true" &&
+        element.getClientRects().length > 0
+      );
+    });
+  }
+
+  function trapDetailsModalFocus(event) {
+    if (event.key !== "Tab" || !detailsModalVisible()) {
+      return false;
+    }
+    const focusableElements = getDetailsModalFocusableElements();
+    if (!focusableElements.length) {
+      event.preventDefault();
+      detailsSheetRef?.focus({ preventScroll: true });
+      return true;
+    }
+    const first = focusableElements[0];
+    const last = focusableElements[focusableElements.length - 1];
+    const activeElement = document.activeElement;
+    if (event.shiftKey && (activeElement === first || !detailsSheetRef?.contains(activeElement))) {
+      event.preventDefault();
+      last.focus({ preventScroll: true });
+      return true;
+    }
+    if (!event.shiftKey && (activeElement === last || !detailsSheetRef?.contains(activeElement))) {
+      event.preventDefault();
+      first.focus({ preventScroll: true });
+      return true;
+    }
+    return false;
+  }
+
+  function applyCardCertification(card, value) {
+    if (!(card instanceof HTMLElement)) {
+      return;
+    }
+    const certification = normalizeCertification(value);
+    card.dataset.maturity = certification;
+    card.querySelectorAll(".meta-age").forEach((element) => {
+      element.textContent = certification;
+    });
+  }
+
+  function getDetailsFocusRestoreTarget(trigger) {
+    if (!(trigger instanceof HTMLElement) || !trigger.isConnected) {
+      return pageRootRef;
+    }
+    const hiddenContainer = trigger.closest('[inert], [aria-hidden="true"]');
+    if (!hiddenContainer && trigger.getClientRects().length > 0) {
+      return trigger;
+    }
+    const cardAction = trigger
+      .closest(".card")
+      ?.querySelector(":scope > .card-primary-action");
+    return cardAction instanceof HTMLElement ? cardAction : pageRootRef;
+  }
+
   function populateDetailsModal(details) {
     setDetailsData({
       thumb: details.thumb || DEFAULT_LOCAL_THUMBNAIL,
       title: (details.title || "").toUpperCase(),
       year: details.year || "2023",
       runtime: details.runtime || "2h 40m",
-      maturity: details.maturity || "18",
+      maturity: normalizeCertification(details.maturity),
       quality: details.quality || "HD",
       audio: details.audio || "Spatial Audio",
       description: details.description || "",
@@ -2013,10 +2111,9 @@ export default function HomePage() {
     const fragment = document.createDocumentFragment();
     recommendations.forEach((entry) => {
       const safeTitle = String(entry.title || "").trim() || "Untitled";
-      const item = document.createElement("article");
+      const item = document.createElement("button");
       item.className = "details-item";
-      item.tabIndex = 0;
-      item.setAttribute("role", "button");
+      item.type = "button";
       item.setAttribute("aria-label", `Open ${safeTitle}`);
       const img = document.createElement("img");
       img.src = String(entry.thumb || "").trim() || DEFAULT_LOCAL_THUMBNAIL;
@@ -2038,12 +2135,6 @@ export default function HomePage() {
       };
 
       item.addEventListener("click", openSuggestion);
-      item.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          openSuggestion();
-        }
-      });
       fragment.appendChild(item);
     });
     detailsMoreGridRef.appendChild(fragment);
@@ -2058,6 +2149,7 @@ export default function HomePage() {
     const requestVersion = ++detailsRequestVersion;
 
     if (tmdbDetailsCache.has(cacheKey)) {
+      applyCardCertification(card, tmdbDetailsCache.get(cacheKey)?.maturity);
       activeDetails = {
         ...activeDetails,
         ...tmdbDetailsCache.get(cacheKey),
@@ -2075,6 +2167,7 @@ export default function HomePage() {
         },
         TMDB_DETAILS_MODAL_TIMEOUT_MS,
       );
+      applyCardCertification(card, details?.certification);
 
       if (
         requestVersion !== detailsRequestVersion ||
@@ -2109,6 +2202,7 @@ export default function HomePage() {
     setDetailsMyListActive(isMyListEntryActive(activeDetails));
     renderDetailsRecommendations(card);
     setDetailsModalVisible(true);
+    setDetailsModalBackgroundInert(true);
     requestAnimationFrame(() => {
       setDetailsModalOpen(true);
     });
@@ -2122,14 +2216,16 @@ export default function HomePage() {
 
     setDetailsModalOpen(false);
 
+    const focusTrigger = detailsTrigger;
     closeModalTimer = window.setTimeout(() => {
       setDetailsModalVisible(false);
+      setDetailsModalBackgroundInert(false);
       syncBodyModalLock();
-      if (detailsTrigger) {
-        detailsTrigger.blur();
-      }
-      if (restoreFocus && pageRootRef) {
-        pageRootRef.focus({ preventScroll: true });
+      if (restoreFocus) {
+        const focusTarget = getDetailsFocusRestoreTarget(focusTrigger);
+        if (focusTarget instanceof HTMLElement && focusTarget.isConnected) {
+          focusTarget.focus({ preventScroll: true });
+        }
       }
       detailsTrigger = null;
       closeModalTimer = null;
@@ -2199,7 +2295,6 @@ export default function HomePage() {
 
     const card = document.createElement("article");
     card.className = "card";
-    card.tabIndex = 0;
     card.dataset.title = details.title;
     card.dataset.episode = details.episode;
     card.dataset.src = playableSrc;
@@ -2210,7 +2305,7 @@ export default function HomePage() {
     card.dataset.episodeIndex = String(details.episodeIndex);
     card.dataset.year = displayYear;
     card.dataset.runtime = contentTypeLabel;
-    card.dataset.maturity = "13+";
+    card.dataset.maturity = UNRATED_CERTIFICATION_LABEL;
     card.dataset.quality = "HD";
     card.dataset.audio = "Stereo";
     card.dataset.description = "Saved in My List.";
@@ -2243,7 +2338,7 @@ export default function HomePage() {
             </button>
           </div>
           <div class="card-hover-meta">
-            <span class="meta-age">13+</span>
+            <span class="meta-age">${UNRATED_CERTIFICATION_LABEL}</span>
             <span>${escapeHtml(displayYear)}</span>
             <span class="meta-chip">HD</span>
             <span class="meta-spatial">${contentTypeLabel}</span>
@@ -2322,6 +2417,23 @@ export default function HomePage() {
   }
 
   // ---- Card interactions ----
+  function ensureCardPrimaryAction(card) {
+    if (!(card instanceof HTMLElement)) {
+      return null;
+    }
+    const existing = card.querySelector(":scope > .card-primary-action");
+    if (existing instanceof HTMLButtonElement) {
+      return existing;
+    }
+    const title = String(card.dataset.title || "title").trim() || "title";
+    const action = document.createElement("button");
+    action.className = "card-primary-action";
+    action.type = "button";
+    action.setAttribute("aria-label", `Play ${title}`);
+    card.prepend(action);
+    return action;
+  }
+
   function ensureCardLibraryEditButton(card) {
     if (!card) {
       return;
@@ -2390,6 +2502,9 @@ export default function HomePage() {
       return;
     }
     card.closest(".continue-row, .popular-row")?.classList.add("is-card-hovering");
+    const hover = card.querySelector(".card-hover");
+    hover?.removeAttribute("inert");
+    hover?.setAttribute("aria-hidden", "false");
     positionCardHover(card);
     card.classList.add("is-hovering");
     requestAnimationFrame(() => positionCardHover(card));
@@ -2401,6 +2516,9 @@ export default function HomePage() {
     }
     card.classList.remove("is-hovering");
     card.closest(".continue-row, .popular-row")?.classList.remove("is-card-hovering");
+    const hover = card.querySelector(".card-hover");
+    hover?.setAttribute("inert", "");
+    hover?.setAttribute("aria-hidden", "true");
   }
 
   function shouldUseCardHover(event = null) {
@@ -2465,6 +2583,10 @@ export default function HomePage() {
     ensureCardLibraryEditButton(card);
     prepareCardTouchSurfaces(card);
     ensureCardTouchActions(card);
+    const primaryAction = ensureCardPrimaryAction(card);
+    const hover = card.querySelector(".card-hover");
+    hover?.setAttribute("inert", "");
+    hover?.setAttribute("aria-hidden", "true");
     card.dataset.interactionsBound = "true";
 
     let pointerInside = false;
@@ -2503,8 +2625,7 @@ export default function HomePage() {
     card.addEventListener("focusout", () => {
       window.setTimeout(() => {
         if (!card.matches(":focus-within")) {
-          card.classList.remove("is-hovering");
-          card.closest(".continue-row, .popular-row")?.classList.remove("is-card-hovering");
+          hideCardHover(card, { force: true });
         }
       }, 0);
     });
@@ -2516,14 +2637,9 @@ export default function HomePage() {
       openPlayerPage(getCardDetails(card));
     });
 
-    card.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        if (event.target.closest("button")) {
-          return;
-        }
-        event.preventDefault();
-        openPlayerPage(getCardDetails(card));
-      }
+    primaryAction?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openPlayerPage(getCardDetails(card));
     });
 
     const hoverPlayButton = card.querySelector(".hover-play");
@@ -2650,7 +2766,7 @@ export default function HomePage() {
       ? `${TMDB_IMAGE_BASE}/w780${backdropPath}`
       : posterUrl;
     const safeDescription = tmdbDetails?.overview || "Resume where you left off.";
-    const maturity = tmdbDetails?.adult ? "18" : "13+";
+    const maturity = normalizeCertification(tmdbDetails?.certification);
     const qualityLabel = "HD";
     const contentTypeLabel = isSeriesEntry ? "Series" : "Movie";
     const cast = (tmdbDetails?.credits?.cast || [])
@@ -2661,7 +2777,6 @@ export default function HomePage() {
 
     const card = document.createElement("article");
     card.className = "card";
-    card.tabIndex = 0;
     card.dataset.resumeSource = entry.sourceIdentity;
     card.dataset.title = title;
     card.dataset.episode = "";
@@ -2788,7 +2903,7 @@ export default function HomePage() {
     const logoPath =
       typeof item.logo_path === "string" ? item.logo_path.trim() : "";
     const logoUrl = logoPath ? `${imageBase}/w500${logoPath}` : "";
-    const maturity = item.adult ? "18" : "13+";
+    const maturity = normalizeCertification(item?.certification);
     const mediaLabel = mediaType === "tv" ? "Series" : "Movie";
     const genreNames = (item.genre_ids || [])
       .map((id) => genreMap.get(id))
@@ -2817,7 +2932,6 @@ export default function HomePage() {
 
     const card = document.createElement("article");
     card.className = isTop10 ? "card card--top10" : "card";
-    card.tabIndex = 0;
     card.dataset.title = title;
     card.dataset.episode = year || "";
     card.dataset.src = "";
@@ -2906,7 +3020,7 @@ export default function HomePage() {
         `${title} ${id} ${src}`.trim(),
       );
     const year = String(item?.year || "").trim() || "Local";
-    const maturity = "13+";
+    const maturity = normalizeCertification(tmdbDetails?.certification);
     const qualityLabel = "HD";
     const storedThumb = String(item?.thumb || "").trim();
     const sourceSpecificThumb = getFallbackThumbnailForSource(src);
@@ -2939,7 +3053,6 @@ export default function HomePage() {
 
     const card = document.createElement("article");
     card.className = "card";
-    card.tabIndex = 0;
     card.dataset.title = title;
     card.dataset.episode = year || "";
     card.dataset.src = src;
@@ -3064,7 +3177,7 @@ export default function HomePage() {
       : posterUrl;
     const safeTitle = escapeHtml(title);
     const safeYear = escapeHtml(year);
-    const maturity = tmdbDetails?.adult ? "18" : "13+";
+    const maturity = normalizeCertification(tmdbDetails?.certification);
     const genreNames = (tmdbDetails?.genres || [])
       .map((genre) => String(genre?.name || "").trim())
       .filter(Boolean)
@@ -3077,7 +3190,6 @@ export default function HomePage() {
 
     const card = document.createElement("article");
     card.className = "card";
-    card.tabIndex = 0;
     card.dataset.title = title;
     card.dataset.episode = shouldHideEpisodePrefix
       ? firstEpisodeTitle
@@ -3593,7 +3705,9 @@ export default function HomePage() {
           title: normalizeHeroTitle(details?.title || current.title),
           year,
           runtime: formatRuntime(details?.runtime) || current.runtime || "Movie",
-          maturity: details?.adult ? "18+" : current.maturity || "13+",
+          maturity: normalizeCertification(
+            details?.certification || current.maturity,
+          ),
           tagline:
             String(details?.tagline || "").trim() ||
             current.tagline ||
@@ -3888,10 +4002,9 @@ export default function HomePage() {
     const details = createSearchResultDetails(item, imageBase);
     const safeTitle = String(details.title || "").trim() || "Untitled";
 
-    const card = document.createElement("article");
+    const card = document.createElement("button");
     card.className = "search-result-card";
-    card.tabIndex = 0;
-    card.setAttribute("role", "button");
+    card.type = "button";
     card.setAttribute("aria-label", `Play ${details.title}`);
     const img = document.createElement("img");
     img.src = String(details.thumb || "").trim() || DEFAULT_LOCAL_THUMBNAIL;
@@ -3910,12 +4023,6 @@ export default function HomePage() {
     };
 
     card.addEventListener("click", openTitle);
-    card.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        openTitle();
-      }
-    });
     card.addEventListener("contextmenu", (event) => {
       openSearchContextMenu(event, details);
     });
@@ -4345,7 +4452,7 @@ export default function HomePage() {
     }
   }
 
-  function handleHeroInfo() {
+  function handleHeroInfo(event) {
     const destination = getHeroDestination();
     if (!destination) {
       return;
@@ -4355,7 +4462,7 @@ export default function HomePage() {
       ...destination,
       thumb: hero.poster || destination.thumb,
       runtime: hero.runtime || "Movie",
-      maturity: hero.maturity || "13+",
+      maturity: normalizeCertification(hero.maturity),
       quality: "HD",
       audio: "Stereo",
       description: hero.description || "No description available.",
@@ -4363,7 +4470,7 @@ export default function HomePage() {
       genres: getFeaturedHeroCallouts(hero).slice(1).join(", ") || "Popular title",
       vibe: getFeaturedHeroCallouts(hero).join(", "),
     };
-    detailsTrigger = null;
+    detailsTrigger = event?.currentTarget || null;
     populateDetailsModal(activeDetails);
     setDetailsMyListActive(isMyListEntryActive(activeDetails));
     if (detailsMoreGridRef) {
@@ -4371,28 +4478,12 @@ export default function HomePage() {
     }
     setDetailsMoreVisible(false);
     setDetailsModalVisible(true);
+    setDetailsModalBackgroundInert(true);
     requestAnimationFrame(() => {
       setDetailsModalOpen(true);
     });
     syncBodyModalLock();
     detailsCloseButtonRef?.focus({ preventScroll: true });
-  }
-
-  function handleHeroTitleClick() {
-    const destination = getHeroDestination();
-    if (destination) {
-      openPlayerPage(destination);
-    }
-  }
-
-  function handleHeroTitleKeydown(event) {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      const destination = getHeroDestination();
-      if (destination) {
-        openPlayerPage(destination);
-      }
-    }
   }
 
   // ---- Sign out ----
@@ -4748,6 +4839,9 @@ export default function HomePage() {
 
     // Global event listeners
     const handleGlobalKeydown = (event) => {
+      if (trapDetailsModalFocus(event)) {
+        return;
+      }
       if (event.key === "Escape") {
         if (searchContextMenuVisible()) {
           hideSearchContextMenu();
@@ -4983,12 +5077,6 @@ export default function HomePage() {
               <path d="M14.33 12.9 19.71 18.28a1 1 0 0 1-1.42 1.42l-5.38-5.38a8 8 0 1 1 1.42-1.42Zm-6.33 1.1a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"></path>
             </svg>
           </button>
-          <span class="kids" aria-hidden="true">Kids</span>
-          <button class="icon-btn notification-btn" type="button" aria-label="Notifications">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 22a2.6 2.6 0 0 0 2.45-1.72h-4.9A2.6 2.6 0 0 0 12 22Zm7.1-5.2-1.45-1.84V10a5.68 5.68 0 0 0-4.48-5.56V3a1.17 1.17 0 1 0-2.34 0v1.44A5.68 5.68 0 0 0 6.35 10v4.96L4.9 16.8a1 1 0 0 0 .78 1.62h12.64a1 1 0 0 0 .78-1.62Z"></path>
-            </svg>
-          </button>
           <div id="accountMenu" class="account-menu">
             <button
               id="accountAvatarButton"
@@ -5166,13 +5254,13 @@ export default function HomePage() {
                 <path d="M14 5.2v13.6a1 1 0 0 1-1.68.74L7.6 15H5a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2.6l4.72-4.54A1 1 0 0 1 14 5.2Zm6.3 3.1a1 1 0 0 1 0 1.4L18.01 12l2.3 2.3a1 1 0 0 1-1.42 1.4L16.6 13.4l-2.3 2.3a1 1 0 0 1-1.4-1.42l2.3-2.28-2.3-2.3a1 1 0 0 1 1.4-1.4l2.3 2.3 2.29-2.3a1 1 0 0 1 1.41 0Z"></path>
               </svg>
             </button>
-            <span class="hero-bottom-rating" aria-label={`Rated ${featuredHero().maturity || "13+"}`}>
+            <span class="hero-bottom-rating" aria-label={`Age rating ${normalizeCertification(featuredHero().maturity)}`}>
               {getFeaturedHeroMaturityLabel(featuredHero())}
             </span>
           </div>
           <div
             class="hero-carousel-dots"
-            role="tablist"
+            role="group"
             aria-label="Featured titles"
             hidden={featuredHeroCandidates().length <= 1}
           >
@@ -5183,7 +5271,7 @@ export default function HomePage() {
                     type="button"
                     class={`hero-carousel-dot${featuredHeroIndex() === index ? " is-active" : ""}`}
                     aria-label={`Show ${candidate.title || "featured title"}`}
-                    aria-selected={(featuredHeroIndex() === index ? "true" : "false")}
+                    aria-pressed={(featuredHeroIndex() === index ? "true" : "false")}
                     onClick={() => handleHeroCarouselDotClick(index)}
                   ></button>
                 </>)}
@@ -5197,10 +5285,6 @@ export default function HomePage() {
           <h1
             id="heroTitle"
             class={`hero-title-stacked${heroLogoSrc() ? " has-logo" : ""}`}
-            tabindex="0"
-            aria-label={`Open ${featuredHero().title || "featured movie"} player`}
-            onClick={handleHeroTitleClick}
-            onKeydown={handleHeroTitleKeydown}
           >
             {heroLogoSrc() ? (
               <img
@@ -5426,8 +5510,10 @@ export default function HomePage() {
     >
       <div class="details-backdrop" data-close-modal></div>
       <article
+        ref={(el) => (detailsSheetRef = el)}
         class="details-sheet"
         role="dialog"
+        tabindex="-1"
         aria-modal="true"
         aria-labelledby="detailsTitle"
       >
@@ -5485,15 +5571,6 @@ export default function HomePage() {
                     stroke-linecap="round"
                     stroke-linejoin="round"
                   ></path>
-                </svg>
-              </button>
-              <button
-                class="details-round"
-                type="button"
-                aria-label="Rate title"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M8 20H5.8A1.8 1.8 0 0 1 4 18.2V10a1.8 1.8 0 0 1 1.8-1.8H8V20Zm2 0h6a3.5 3.5 0 0 0 3.4-2.8l.8-4A2.5 2.5 0 0 0 17.75 10H14V6.6A2.6 2.6 0 0 0 11.4 4L10 9.3V20Z"></path>
                 </svg>
               </button>
             </div>

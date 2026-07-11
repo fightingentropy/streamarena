@@ -2055,7 +2055,7 @@ pub async fn tmdb_details_handler(
     let mut detail_params = BTreeMap::new();
     detail_params.insert(
         "append_to_response".to_owned(),
-        "credits,videos,images".to_owned(),
+        crate::tmdb::details_append_to_response(&media_type).to_owned(),
     );
     // Widen the appended image set so language-neutral ("null") title-logos come back too;
     // `select_best_logo_path` then picks the best English/most-voted wordmark.
@@ -2070,11 +2070,18 @@ pub async fn tmdb_details_handler(
     let logo_path = details
         .get("images")
         .and_then(crate::home_bootstrap::select_best_logo_path);
+    let certification = crate::tmdb::select_details_certification(&details, &media_type);
     if let Value::Object(map) = &mut details {
         map.remove("images");
+        map.remove("release_dates");
+        map.remove("content_ratings");
         if let Some(logo_path) = logo_path {
             map.insert("logo_path".to_owned(), Value::String(logo_path));
         }
+        map.insert(
+            "certification".to_owned(),
+            certification.map(Value::String).unwrap_or(Value::Null),
+        );
     }
     Ok(json_response(details))
 }

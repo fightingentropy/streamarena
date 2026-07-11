@@ -80,14 +80,6 @@
     gap: 18px;
 }
 
-.home-page .kids {
-    color: rgba(255, 255, 255, 0.92);
-    font-size: 1rem;
-    line-height: 1;
-    font-weight: 400;
-    text-decoration: none;
-}
-
 .home-page .icon-btn {
     width: 32px;
     height: 42px;
@@ -1093,8 +1085,6 @@ body.is-search-mode .home-member-footer {
         gap: 8px;
     }
 
-    .home-page .kids,
-    .home-page .notification-btn,
     .home-page #accountMenuToggle {
         display: none;
     }
@@ -1330,20 +1320,12 @@ body.modal-open {
     gap: 18px;
 }
 
-.nav-right > .icon-btn:not(.notification-btn) {
+.nav-right > .icon-btn {
     order: 1;
 }
 
-.notification-btn {
-    order: 2;
-}
-
-.kids {
-    order: 3;
-}
-
 .account-menu {
-    order: 4;
+    order: 2;
 }
 
 .nav-search-box {
@@ -2180,6 +2162,30 @@ body.is-search-mode #myListRow {
     cursor: pointer;
 }
 
+.card-primary-action {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    color: transparent;
+    cursor: pointer;
+}
+
+.card-primary-action:focus-visible {
+    outline: 3px solid #fff;
+    outline-offset: 3px;
+}
+
+.card.is-hovering .card-primary-action {
+    pointer-events: none;
+}
+
 .card-base {
     position: relative;
     border-radius: 4px;
@@ -2480,8 +2486,10 @@ body.is-search-mode #myListRow {
 }
 
 .meta-age {
-    width: 38px;
+    width: auto;
+    min-width: 38px;
     height: 38px;
+    padding: 0 8px;
     border-radius: 999px;
     border: 2px solid #fff;
     background: #d80612;
@@ -2489,6 +2497,7 @@ body.is-search-mode #myListRow {
     display: grid;
     place-items: center;
     font-weight: 700;
+    white-space: nowrap;
 }
 
 .meta-chip {
@@ -2690,6 +2699,7 @@ body.is-search-mode #myListRow {
     place-items: center;
     min-width: 34px;
     height: 34px;
+    padding: 0 8px;
     border-radius: 999px;
     border: 2px solid rgba(255, 255, 255, 0.55);
     color: #fff;
@@ -2738,8 +2748,13 @@ body.is-search-mode #myListRow {
 
 .details-item {
     margin: 0;
+    padding: 0;
+    border: 0;
     border-radius: 8px;
     background: #2a2a2a;
+    color: inherit;
+    font: inherit;
+    text-align: left;
     overflow: hidden;
     cursor: pointer;
     transition:
@@ -3508,7 +3523,8 @@ body.is-search-mode #myListRow {
 
     .home-page .top-nav nav a,
     .home-page .top-nav nav a.is-active {
-        min-height: 32px;
+        min-width: 44px;
+        min-height: 44px;
         padding: 0 4px;
         font-size: 0.72rem;
     }
@@ -3524,10 +3540,10 @@ body.is-search-mode #myListRow {
     }
 
     .home-page .icon-btn {
-        width: 30px;
-        min-width: 30px;
-        height: 40px;
-        min-height: 40px;
+        width: 44px;
+        min-width: 44px;
+        height: 44px;
+        min-height: 44px;
     }
 
     .home-page .icon-btn svg {
@@ -3538,6 +3554,17 @@ body.is-search-mode #myListRow {
     .home-page .avatar {
         width: 36px;
         height: 36px;
+    }
+
+    .home-page .account-avatar-btn {
+        width: 44px;
+        height: 44px;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .home-page .account-menu-toggle {
+        display: none;
     }
 
     body.is-search-mode .home-page .nav-left,

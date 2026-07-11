@@ -22,6 +22,73 @@ const TMDB_RESPONSE_CACHE_MAX_ENTRIES: usize = 1200;
 const TMDB_TV_METADATA_WARMUP_DELAY_SECONDS: u64 = 5;
 const TMDB_TV_METADATA_WARMUP_CANDIDATES: usize = 8;
 const TMDB_TV_METADATA_WARMUP_MAX_SEASONS: usize = 12;
+// TMDB release types: premiere (1), limited theatrical (2), theatrical (3),
+// digital (4), physical (5), and TV (6). Prefer the broad theatrical rating.
+const MOVIE_CERTIFICATION_RELEASE_TYPE_PRIORITY: [u64; 6] = [3, 2, 4, 5, 6, 1];
+
+pub(crate) fn details_append_to_response(media_type: &str) -> &'static str {
+    match media_type {
+        "tv" => "credits,videos,images,content_ratings",
+        _ => "credits,videos,images,release_dates",
+    }
+}
+
+pub(crate) fn select_details_certification(details: &Value, media_type: &str) -> Option<String> {
+    ["GB", "US"].into_iter().find_map(|country| {
+        if media_type == "tv" {
+            details
+                .get("content_ratings")
+                .and_then(|ratings| ratings.get("results"))
+                .and_then(Value::as_array)
+                .and_then(|results| {
+                    results.iter().find(|entry| {
+                        entry.get("iso_3166_1").and_then(Value::as_str) == Some(country)
+                    })
+                })
+                .and_then(|entry| entry.get("rating"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|rating| !rating.is_empty())
+                .map(ToOwned::to_owned)
+        } else if media_type == "movie" {
+            details
+                .get("release_dates")
+                .and_then(|dates| dates.get("results"))
+                .and_then(Value::as_array)
+                .and_then(|results| {
+                    results.iter().find(|entry| {
+                        entry.get("iso_3166_1").and_then(Value::as_str) == Some(country)
+                    })
+                })
+                .and_then(|entry| entry.get("release_dates"))
+                .and_then(Value::as_array)
+                .and_then(|dates| {
+                    dates
+                        .iter()
+                        .filter_map(|date| {
+                            let certification = date
+                                .get("certification")
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|certification| !certification.is_empty())?;
+                            let release_type = date.get("type").and_then(Value::as_u64);
+                            let priority = release_type
+                                .and_then(|release_type| {
+                                    MOVIE_CERTIFICATION_RELEASE_TYPE_PRIORITY
+                                        .iter()
+                                        .position(|candidate| *candidate == release_type)
+                                })
+                                .unwrap_or(MOVIE_CERTIFICATION_RELEASE_TYPE_PRIORITY.len());
+                            Some((priority, certification.to_owned()))
+                        })
+                        .min_by_key(|(priority, _)| *priority)
+                        .map(|(_, certification)| certification)
+                })
+        } else {
+            None
+        }
+    })
+}
 
 #[derive(Clone)]
 pub struct TmdbService {
@@ -489,8 +556,9 @@ mod tests {
 
     use super::{
         TMDB_RESPONSE_CACHE_TTL_DEFAULT_MS, TMDB_RESPONSE_CACHE_TTL_TV_METADATA_MS, TmdbCredential,
-        build_tmdb_response_cache_key, cache_extension_expires_at, get_tmdb_cache_ttl_ms,
-        tmdb_credential_from_config, tv_metadata_warmup_seasons,
+        build_tmdb_response_cache_key, cache_extension_expires_at, details_append_to_response,
+        get_tmdb_cache_ttl_ms, select_details_certification, tmdb_credential_from_config,
+        tv_metadata_warmup_seasons,
     };
 
     #[test]
@@ -555,5 +623,118 @@ mod tests {
             cache_extension_expires_at(Some(90_000_000), 1_000),
             Some(90_000_000)
         );
+    }
+
+    #[test]
+    fn details_request_appends_media_specific_certification_data() {
+        assert_eq!(
+            details_append_to_response("movie"),
+            "credits,videos,images,release_dates"
+        );
+        assert_eq!(
+            details_append_to_response("tv"),
+            "credits,videos,images,content_ratings"
+        );
+    }
+
+    #[test]
+    fn movie_certification_prefers_gb_then_falls_back_to_us() {
+        let details = serde_json::json!({
+            "release_dates": {
+                "results": [
+                    {
+                        "iso_3166_1": "US",
+                        "release_dates": [{ "certification": "PG-13" }]
+                    },
+                    {
+                        "iso_3166_1": "GB",
+                        "release_dates": [
+                            { "certification": "" },
+                            { "certification": " 12A " }
+                        ]
+                    }
+                ]
+            }
+        });
+        assert_eq!(
+            select_details_certification(&details, "movie").as_deref(),
+            Some("12A")
+        );
+
+        let us_only = serde_json::json!({
+            "release_dates": {
+                "results": [
+                    {
+                        "iso_3166_1": "GB",
+                        "release_dates": [{ "certification": " " }]
+                    },
+                    {
+                        "iso_3166_1": "US",
+                        "release_dates": [{ "certification": "R" }]
+                    }
+                ]
+            }
+        });
+        assert_eq!(
+            select_details_certification(&us_only, "movie").as_deref(),
+            Some("R")
+        );
+    }
+
+    #[test]
+    fn tv_certification_prefers_gb_then_falls_back_to_us() {
+        let details = serde_json::json!({
+            "content_ratings": {
+                "results": [
+                    { "iso_3166_1": "US", "rating": "TV-MA" },
+                    { "iso_3166_1": "GB", "rating": " 15 " }
+                ]
+            }
+        });
+        assert_eq!(
+            select_details_certification(&details, "tv").as_deref(),
+            Some("15")
+        );
+
+        let us_only = serde_json::json!({
+            "content_ratings": {
+                "results": [
+                    { "iso_3166_1": "GB", "rating": "" },
+                    { "iso_3166_1": "US", "rating": "TV-14" }
+                ]
+            }
+        });
+        assert_eq!(
+            select_details_certification(&us_only, "tv").as_deref(),
+            Some("TV-14")
+        );
+    }
+
+    #[test]
+    fn movie_certification_prefers_theatrical_release_type() {
+        let details = serde_json::json!({
+            "release_dates": {
+                "results": [{
+                    "iso_3166_1": "GB",
+                    "release_dates": [
+                        { "certification": "18", "type": 4 },
+                        { "certification": "12A", "type": 2 },
+                        { "certification": "15", "type": 3 }
+                    ]
+                }]
+            }
+        });
+        assert_eq!(
+            select_details_certification(&details, "movie").as_deref(),
+            Some("15")
+        );
+    }
+
+    #[test]
+    fn details_certification_is_absent_for_missing_or_unsupported_data() {
+        let details = serde_json::json!({});
+        assert_eq!(select_details_certification(&details, "movie"), None);
+        assert_eq!(select_details_certification(&details, "tv"), None);
+        assert_eq!(select_details_certification(&details, "person"), None);
     }
 }

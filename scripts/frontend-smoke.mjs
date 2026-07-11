@@ -186,7 +186,16 @@ function apiPayload(url, method) {
   }
   if (path === "/api/tmdb/popular-movies") return { results: [] };
   if (path === "/api/tmdb/search") return { results: [] };
-  if (path === "/api/tmdb/details") return { title: "Smoke Movie", year: "1975" };
+  if (path === "/api/tmdb/details") {
+    return {
+      title: "Smoke Movie",
+      release_date: "1975-01-01",
+      runtime: 95,
+      certification: "PG",
+      genres: [{ id: 28, name: "Action" }],
+      credits: { cast: [{ name: "Smoke Actor" }] },
+    };
+  }
   if (path === "/api/tmdb/tv/season") return { episodes: [] };
   if (path === "/api/resolve/sources") {
     // The player auto-selects sourceSwitchHashB (4K HDR) as the default playback
@@ -334,7 +343,11 @@ const pages = [
   },
   { path: "/live.html", selector: ".live-page" },
   { path: "/sports", selector: ".sports-page", expectSportsTabs: true },
-  { path: "/index.html", selector: ".home-page" },
+  {
+    path: "/index.html",
+    selector: ".home-page",
+    expectHomeAccessibility: true,
+  },
   {
     path: "/index.html",
     selector: ".home-page",
@@ -774,6 +787,132 @@ async function runSmoke() {
 
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
 
+      if (pageSpec.expectHomeAccessibility) {
+        await page.waitForSelector(".card-primary-action", { timeout: 8_000 });
+        const accessibilityState = await page.evaluate(() => {
+          const cards = [...document.querySelectorAll("article.card")];
+          const heroTitle = document.querySelector("#heroTitle");
+          const carousel = document.querySelector(".hero-carousel-dots");
+          const carouselButtons = [...(carousel?.querySelectorAll("button") || [])];
+          return {
+            deadControlCount: document.querySelectorAll(
+              '.kids, [aria-label="Notifications"], [aria-label="Rate title"]',
+            ).length,
+            cardCount: cards.length,
+            cardsWithTabIndex: cards.filter((card) => card.hasAttribute("tabindex")).length,
+            cardPrimaryActionCount: cards.filter(
+              (card) => card.querySelector(":scope > button.card-primary-action"),
+            ).length,
+            hiddenHoverCount: cards.filter((card) => {
+              const hover = card.querySelector(".card-hover");
+              return hover?.hasAttribute("inert") && hover.getAttribute("aria-hidden") === "true";
+            }).length,
+            heroTitleTabIndex: heroTitle?.getAttribute("tabindex") ?? null,
+            carouselRole: carousel?.getAttribute("role") || "",
+            carouselUsesSelectionState: carouselButtons.some((button) =>
+              button.hasAttribute("aria-selected"),
+            ),
+            carouselPressedCount: carouselButtons.filter((button) =>
+              button.hasAttribute("aria-pressed"),
+            ).length,
+            carouselButtonCount: carouselButtons.length,
+          };
+        });
+        if (
+          accessibilityState.deadControlCount !== 0 ||
+          accessibilityState.cardCount < 1 ||
+          accessibilityState.cardsWithTabIndex !== 0 ||
+          accessibilityState.cardPrimaryActionCount !== accessibilityState.cardCount ||
+          accessibilityState.hiddenHoverCount !== accessibilityState.cardCount ||
+          accessibilityState.heroTitleTabIndex !== null ||
+          accessibilityState.carouselRole !== "group" ||
+          accessibilityState.carouselUsesSelectionState ||
+          accessibilityState.carouselPressedCount !== accessibilityState.carouselButtonCount
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nHome accessibility semantics regressed.\n${JSON.stringify(accessibilityState)}`,
+          );
+        }
+
+        const heroInfo = page.locator("#heroInfo");
+        await heroInfo.click();
+        await page.waitForSelector(".details-modal.is-open", { timeout: 8_000 });
+        await page.waitForFunction(
+          () => document.querySelector("#detailsMaturity")?.textContent?.trim() === "PG",
+          null,
+          { timeout: 8_000 },
+        );
+        const openModalState = await page.evaluate(() => {
+          const modal = document.querySelector("#detailsModal");
+          const sheet = modal?.querySelector(".details-sheet");
+          const siblings = [...(modal?.parentElement?.children || [])].filter(
+            (element) => element !== modal,
+          );
+          return {
+            activeElementId: document.activeElement?.id || "",
+            focusInsideDialog: Boolean(sheet?.contains(document.activeElement)),
+            backgroundIsInert: siblings.length > 0 && siblings.every(
+              (element) => element.hasAttribute("inert"),
+            ),
+            certification: document.querySelector("#detailsMaturity")?.textContent?.trim() || "",
+          };
+        });
+        if (
+          openModalState.activeElementId !== "detailsClose" ||
+          !openModalState.focusInsideDialog ||
+          !openModalState.backgroundIsInert ||
+          openModalState.certification !== "PG"
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nDetails dialog did not initialize accessibly.\n${JSON.stringify(openModalState)}`,
+          );
+        }
+
+        await page.keyboard.press("Shift+Tab");
+        const trappedFocus = await page.evaluate(() =>
+          Boolean(document.querySelector(".details-sheet")?.contains(document.activeElement)),
+        );
+        if (!trappedFocus) {
+          throw new Error(`${pageSpec.path}\nDetails dialog did not contain reverse Tab focus.`);
+        }
+        await page.keyboard.press("Escape");
+        await page.waitForSelector(".details-modal", { state: "hidden", timeout: 8_000 });
+        await page.waitForFunction(() => document.activeElement?.id === "heroInfo", null, {
+          timeout: 8_000,
+        });
+        const closedModalState = await page.evaluate(() => ({
+          activeElementId: document.activeElement?.id || "",
+          inertBackgroundCount: document.querySelectorAll(
+            ".home-page > [inert]",
+          ).length,
+        }));
+        if (
+          closedModalState.activeElementId !== "heroInfo" ||
+          closedModalState.inertBackgroundCount !== 0
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nDetails dialog did not restore focus and background state.\n${JSON.stringify(closedModalState)}`,
+          );
+        }
+
+        const firstCard = page.locator("article.card").first();
+        const cardPrimaryAction = firstCard.locator(":scope > .card-primary-action");
+        await firstCard.hover();
+        await page.waitForFunction(() =>
+          document.querySelector("article.card")?.classList.contains("is-hovering"),
+          null,
+          { timeout: 8_000 },
+        );
+        await firstCard.locator(".hover-details").click();
+        await page.waitForSelector(".details-modal.is-open", { timeout: 8_000 });
+        await page.locator("#detailsClose").click();
+        await page.waitForSelector(".details-modal", { state: "hidden", timeout: 8_000 });
+        await page.waitForFunction(() => {
+          const card = document.querySelector("article.card");
+          return document.activeElement === card?.querySelector(":scope > .card-primary-action");
+        }, null, { timeout: 8_000 });
+      }
+
       if (pageSpec.expectTouchCardActions || pageSpec.expectNarrowNavigation) {
         await page.waitForSelector(".card-touch-actions", { timeout: 8_000 });
         const responsiveState = await page.evaluate(() => {
@@ -795,6 +934,21 @@ async function runSmoke() {
               width: rect.width,
             };
           });
+          const navigationTargets = [
+            ...(nav?.querySelectorAll("nav a") || []),
+            nav?.querySelector("#openSearchButton"),
+            nav?.querySelector(".account-avatar-btn"),
+          ]
+            .filter(Boolean)
+            .map((target) => {
+              const rect = target.getBoundingClientRect();
+              return {
+                label: target.getAttribute("aria-label") || target.textContent?.trim() || "target",
+                height: rect.height,
+                width: rect.width,
+              };
+            })
+            .filter((target) => target.height > 0 && target.width > 0);
           return {
             viewportWidth: window.innerWidth,
             coarsePointer: window.matchMedia("(hover: none) and (pointer: coarse)").matches,
@@ -813,6 +967,7 @@ async function runSmoke() {
               actionRect.bottom <= cardRect.bottom + 0.5
             ),
             actionButtons,
+            navigationTargets,
           };
         });
         if (
@@ -828,6 +983,10 @@ async function runSmoke() {
           responsiveState.actionButtons.length !== 2 ||
           responsiveState.actionButtons.some(
             (button) => button.display === "none" || button.width < 43 || button.height < 43,
+          ) ||
+          responsiveState.navigationTargets.length < 3 ||
+          responsiveState.navigationTargets.some(
+            (target) => target.width < 43 || target.height < 43,
           )
         ) {
           throw new Error(
@@ -847,6 +1006,11 @@ async function runSmoke() {
         }
         await touchDetailsButton.click();
         await page.waitForSelector(".details-modal.is-open", { timeout: 8_000 });
+        await page.waitForFunction(
+          () => document.querySelector("#detailsMaturity")?.textContent?.trim() === "Unrated",
+          null,
+          { timeout: 8_000 },
+        );
         if (!page.url().endsWith("/index.html")) {
           throw new Error(`${pageSpec.path}\nTouch Details action unexpectedly started playback.`);
         }
