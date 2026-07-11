@@ -1,6 +1,15 @@
 import { onMount, onCleanup } from "solid-js";
 import { parseWebVttCues } from "../player/subtitles.js";
 import {
+  getAudioTrackDisplayLabel,
+  getAudioTrackDisplayParts,
+  getLanguageDisplayLabel,
+  getSubtitleTrackDisplayLabel,
+  getSubtitleTrackDisplayParts,
+  getUnknownAudioTrackDisplayLabel,
+  isLikelyForcedSubtitleTrack,
+} from "../player/media-track-labels.js";
+import {
   SUBTITLE_OFFSET_STEP_MS,
   createSubtitleOffsetController,
 } from "../player/subtitle-offset.js";
@@ -818,31 +827,6 @@ const SUBTITLE_MATTE_TOP_PADDING_PX = 6;
 const SUBTITLE_MATTE_BOTTOM_PADDING_PX = 14;
 const SUBTITLE_MATTE_BOTTOM_TARGET_OFFSET_PX = 82;
 const SUBTITLE_MATTE_TOP_GUARD_RATIO = 0.35;
-const subtitleLanguageNames = {
-  off: "Off",
-  un: "English",
-  und: "English",
-  en: "English",
-  fr: "French",
-  es: "Spanish",
-  de: "German",
-  it: "Italian",
-  no: "Norwegian",
-  pt: "Portuguese",
-  uk: "Ukrainian",
-  ja: "Japanese",
-  ko: "Korean",
-  zh: "Chinese",
-  el: "Greek",
-  sq: "Albanian",
-  tr: "Turkish",
-  ru: "Russian",
-  ar: "Arabic",
-  pl: "Polish",
-  nl: "Dutch",
-  ro: "Romanian",
-};
-
 // Benchmark API is deferred to onMount (needs video ref)
 let playbackBenchmark = null;
 
@@ -2298,136 +2282,6 @@ async function localLibraryPlaybackSourceExists(value) {
   }
 }
 
-function getLanguageDisplayLabel(langCode) {
-  const normalized = String(langCode || "")
-    .trim()
-    .toLowerCase();
-  if (!normalized) {
-    return "Unknown";
-  }
-  if (normalized in subtitleLanguageNames) {
-    return subtitleLanguageNames[normalized];
-  }
-  return normalized.toUpperCase();
-}
-
-function isGenericSubtitleLabel(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "");
-  if (!normalized) {
-    return true;
-  }
-  return (
-    normalized === "subtitlehandler" ||
-    normalized === "subtitles" ||
-    normalized === "subtitle" ||
-    normalized === "texthandler" ||
-    normalized === "text"
-  );
-}
-
-function getSubtitleTrackSourceLabel(track) {
-  if (!track?.isExternal) {
-    return "";
-  }
-
-  const vttUrl = String(track?.vttUrl || "").trim();
-  if (vttUrl.includes("/api/subtitles.opensubtitles.vtt")) {
-    return "OpenSubtitles";
-  }
-  if (vttUrl.includes("/api/subtitles.vtt")) {
-    return "Local file";
-  }
-  if (vttUrl.includes("/api/subtitles.external.vtt")) {
-    return "External";
-  }
-  return "External";
-}
-
-function getSubtitleTrackDisplayLabel(track) {
-  return getLanguageDisplayLabel(track?.language || "en");
-}
-
-function getSubtitleTrackDisplayParts(track) {
-  const languageLabel = getLanguageDisplayLabel(track?.language || "en");
-  const primary = languageLabel;
-  const secondaryParts = [];
-  if (isLikelyForcedSubtitleTrack(track)) {
-    secondaryParts.push("Forced");
-  }
-  return {
-    primary,
-    secondary: secondaryParts.join(" • "),
-  };
-}
-
-function isGenericAudioLabel(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "");
-  if (!normalized) {
-    return true;
-  }
-  return (
-    normalized === "soundhandler" ||
-    normalized === "audiohandler" ||
-    normalized === "stereomix" ||
-    normalized === "audio" ||
-    normalized === "track"
-  );
-}
-
-function formatAudioChannelLabel(channels) {
-  const safeChannels = Number(channels);
-  if (!Number.isFinite(safeChannels) || safeChannels <= 0) {
-    return "";
-  }
-  if (safeChannels === 1) {
-    return "Mono";
-  }
-  if (safeChannels === 2) {
-    return "Stereo";
-  }
-  if (safeChannels === 6) {
-    return "5.1";
-  }
-  if (safeChannels === 8) {
-    return "7.1";
-  }
-  return `${Math.floor(safeChannels)}ch`;
-}
-
-function getAudioTrackDisplayLabel(track) {
-  const { primary } = getAudioTrackDisplayParts(track);
-  return primary;
-}
-
-function getAudioTrackDisplayParts(track) {
-  const languageLabel = getLanguageDisplayLabel(track?.language || "und");
-  return {
-    primary: languageLabel,
-    secondary: "",
-  };
-}
-
-function getAudioTrackBadgeLabel(track) {
-  const languageCode = String(track?.language || "")
-    .trim()
-    .toUpperCase();
-  if (/^[A-Z]{2,3}$/.test(languageCode)) {
-    return languageCode.slice(0, 3);
-  }
-  const languageLabel = getLanguageDisplayLabel(track?.language || "und");
-  return languageLabel.slice(0, 2).toUpperCase();
-}
-
-function getUnknownAudioTrackDisplayLabel() {
-  return "Default";
-}
-
 function appendSubtitleOptionContent(button, primaryLabel, secondaryLabel = "") {
   button.textContent = "";
 
@@ -3389,17 +3243,6 @@ function syncSubtitleTrackVisibility() {
   }
   hideAllSubtitleTracks();
   setCustomSubtitleText("");
-}
-
-function isLikelyForcedSubtitleTrack(track) {
-  const labelText = String(track?.label || "").toLowerCase();
-  const titleText = String(track?.title || "").toLowerCase();
-  const combined = `${labelText} ${titleText}`;
-  return (
-    combined.includes("forced") ||
-    combined.includes("foreign") ||
-    combined.includes("sign")
-  );
 }
 
 function isPlayableSubtitleTrack(track) {
