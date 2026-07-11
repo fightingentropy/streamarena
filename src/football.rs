@@ -1217,11 +1217,27 @@ fn sports_schedule_team_pair(match_item: &Value) -> Option<(String, String)> {
 
 fn normalize_sports_schedule_name(value: &str) -> String {
     value
+        .replace('.', "")
         .split(|ch: char| !ch.is_alphanumeric())
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .map(|part| part.to_lowercase())
-        .filter(|part| !matches!(part.as_str(), "fc" | "afc" | "cf" | "sc" | "club"))
+        .filter(|part| {
+            !matches!(
+                part.as_str(),
+                "fc" | "afc"
+                    | "cf"
+                    | "sc"
+                    | "ac"
+                    | "aif"
+                    | "bk"
+                    | "if"
+                    | "is"
+                    | "fk"
+                    | "sk"
+                    | "club"
+            )
+        })
         .map(|part| {
             if part == "utd" {
                 "united".to_owned()
@@ -4883,11 +4899,11 @@ mod tests {
         is_supported_streamed_stream_url, live_stream_source_candidates,
         matchstream_live_stream_source_candidates, merge_sports_schedule_payloads,
         normalize_espn_football_match, normalize_matchstream_link, normalize_ntvs_fetch_url,
-        parse_espn_start_ms, parse_fallback_stream_urls, parse_ntvs_hesgoaler_player_source,
-        remove_streamed_sources_by_index, resolve_ntvs_candidate_url,
-        sports_live_stream_source_candidates, sports_schedule_fresh_ttl_ms,
-        sports_stream_provider_id, sports_stream_resolve_cache_key, streamed_match_is_live,
-        streamed_source_stream_api_url,
+        normalize_sports_schedule_name, parse_espn_start_ms, parse_fallback_stream_urls,
+        parse_ntvs_hesgoaler_player_source, remove_streamed_sources_by_index,
+        resolve_ntvs_candidate_url, sports_live_stream_source_candidates,
+        sports_schedule_fresh_ttl_ms, sports_stream_provider_id, sports_stream_resolve_cache_key,
+        streamed_match_is_live, streamed_source_stream_api_url,
     };
     use crate::utils::now_ms;
     use serde_json::json;
@@ -5029,6 +5045,26 @@ mod tests {
         assert_eq!(matches[0]["streams"][0]["provider"], "streamed");
         assert_eq!(combined["sourceProvider"], "auto");
         assert_eq!(combined["fetchedAt"], 200);
+    }
+
+    #[test]
+    fn schedule_team_names_ignore_common_club_prefixes_and_suffixes() {
+        assert_eq!(
+            normalize_sports_schedule_name("Mjällby AIF"),
+            normalize_sports_schedule_name("Mjällby")
+        );
+        assert_eq!(
+            normalize_sports_schedule_name("Örgryte IS"),
+            normalize_sports_schedule_name("Örgryte")
+        );
+        assert_eq!(
+            normalize_sports_schedule_name("BK Häcken"),
+            normalize_sports_schedule_name("Häcken")
+        );
+        assert_eq!(
+            normalize_sports_schedule_name("Manta F.C."),
+            normalize_sports_schedule_name("Manta")
+        );
     }
 
     #[test]
