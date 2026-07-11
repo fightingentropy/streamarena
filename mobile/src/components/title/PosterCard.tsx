@@ -31,7 +31,7 @@ export const PosterCard = memo(function PosterCard({
   return (
     <PressableScale
       onPress={onPress ?? (() => router.push(titleHref(title.mediaType, title.id)))}
-      accessibilityLabel={title.title}
+      accessibilityLabel={`Open ${title.title}`}
       style={{ width }}
     >
       <PosterImage

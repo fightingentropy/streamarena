@@ -177,6 +177,7 @@ export default function TitleDetailScreen() {
                 year={year}
                 runtimeMinutes={runtimeMinutes}
                 rating={details.vote_average}
+                certification={details.certification}
                 seasons={mediaType === "tv" ? details.number_of_seasons : undefined}
               />
             </View>

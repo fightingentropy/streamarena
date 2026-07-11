@@ -2,7 +2,7 @@
   "name": "streamarena-app",
   "private": true,
   "type": "module",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "scripts": {
     "dev": "./scripts/dev-rust.sh",
     "dev:rust": "cargo run",

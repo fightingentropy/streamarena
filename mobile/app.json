@@ -2,7 +2,7 @@
   "expo": {
     "name": "StreamArena",
     "slug": "streamarena-mobile",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "streamarena",
@@ -11,6 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "xyz.streamarena.app",
+      "buildNumber": "2",
       "infoPlist": {
         "CFBundleDisplayName": "StreamArena",
         "UIBackgroundModes": ["audio", "fetch"],
@@ -21,6 +22,7 @@
     },
     "android": {
       "package": "xyz.streamarena.app",
+      "versionCode": 2,
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.FOREGROUND_SERVICE",

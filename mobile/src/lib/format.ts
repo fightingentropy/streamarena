@@ -37,3 +37,9 @@ export function formatRating(vote: number | null | undefined): string {
   if (!vote || vote <= 0) return "";
   return vote.toFixed(1);
 }
+
+// Locale-aware age certification returned by the StreamArena details endpoint.
+// The backend prefers GB, then US; missing data must never become an invented age.
+export function formatCertification(value: string | null | undefined): string {
+  return String(value ?? "").trim() || "Unrated";
+}

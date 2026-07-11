@@ -1,6 +1,6 @@
 import { Text, View } from "react-native";
 import { Star } from "lucide-react-native";
-import { formatRating, formatRuntime } from "@/lib/format";
+import { formatCertification, formatRating, formatRuntime } from "@/lib/format";
 import { colors } from "@/theme";
 
 // The compact meta line under a title's hero: year · runtime · seasons, plus a
@@ -9,11 +9,13 @@ export function MetaRow({
   year,
   runtimeMinutes,
   rating,
+  certification,
   seasons,
 }: {
   year?: string;
   runtimeMinutes?: number;
   rating?: number;
+  certification?: string | null;
   seasons?: number;
 }) {
   const parts: string[] = [];
@@ -22,6 +24,7 @@ export function MetaRow({
   if (runtime) parts.push(runtime);
   if (seasons && seasons > 0) parts.push(seasons === 1 ? "1 Season" : `${seasons} Seasons`);
   const ratingLabel = formatRating(rating);
+  const certificationLabel = formatCertification(certification);
 
   return (
     <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
@@ -36,6 +39,13 @@ export function MetaRow({
           <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "700" }}>{ratingLabel}</Text>
         </View>
       ) : null}
+      <View
+        accessible
+        accessibilityLabel={`Age rating ${certificationLabel}`}
+        style={{ borderWidth: 1, borderColor: colors.line, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 }}
+      >
+        <Text style={{ color: colors.foreground, fontSize: 11, fontWeight: "800" }}>{certificationLabel}</Text>
+      </View>
       <View style={{ borderWidth: 1, borderColor: colors.line, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
         <Text style={{ color: colors.muted, fontSize: 10, fontWeight: "800", letterSpacing: 0.5 }}>HD</Text>
       </View>

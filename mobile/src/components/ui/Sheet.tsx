@@ -116,6 +116,7 @@ export function Sheet({
     // that froze every control (you could still hear audio but couldn't tap anything).
     <View
       pointerEvents={visible ? "auto" : "none"}
+      accessibilityViewIsModal={visible}
       style={[StyleSheet.absoluteFill, { zIndex, elevation: zIndex, justifyContent: "flex-end", alignItems: landscape ? "center" : "stretch" }]}
     >
       {/* backdrop: tap to close. A real Pressable (not raw onTouchEnd, which fired for

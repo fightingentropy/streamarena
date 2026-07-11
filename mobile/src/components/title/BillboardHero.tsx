@@ -50,8 +50,9 @@ export function BillboardHero({
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 16 }}>
           <PressableScale
             onPress={onPlay}
+            accessibilityLabel={`Play ${title.title}`}
             className="flex-row items-center rounded-md"
-            style={{ backgroundColor: colors.white, paddingHorizontal: 22, paddingVertical: 10, gap: 8 }}
+            style={{ minHeight: 44, backgroundColor: colors.white, paddingHorizontal: 22, paddingVertical: 10, gap: 8 }}
           >
             <Play size={18} color="#000" fill="#000" />
             <Text style={{ color: "#000", fontWeight: "800", fontSize: 15 }}>Play</Text>
@@ -61,8 +62,9 @@ export function BillboardHero({
 
           <PressableScale
             onPress={onInfo}
+            accessibilityLabel={`More information about ${title.title}`}
             className="flex-row items-center rounded-md"
-            style={{ backgroundColor: "rgba(255,255,255,0.18)", paddingHorizontal: 16, paddingVertical: 10, gap: 8 }}
+            style={{ minHeight: 44, backgroundColor: "rgba(255,255,255,0.18)", paddingHorizontal: 16, paddingVertical: 10, gap: 8 }}
           >
             <Info size={18} color="#fff" />
             <Text style={{ color: "#fff", fontWeight: "700", fontSize: 15 }}>Info</Text>
