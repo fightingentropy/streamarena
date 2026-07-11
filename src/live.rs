@@ -53,10 +53,13 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "liveprodeuwest.akamaized.net",
     "vs-hls-push-ww-live.akamaized.net",
     "jmp2.uk",
-    // jmp2.uk's Sky News entry redirects to Pluto's stitcher, then serves all
-    // child playlists and media segments from the same host. Keep this scoped
-    // to the HLS stitcher rather than allowing every pluto.tv subdomain.
+    // jmp2.uk's Sky News entry redirects to Pluto's stitcher, which serves the
+    // child playlists. Keep this scoped to the HLS stitcher rather than
+    // allowing every pluto.tv subdomain.
     "stitcher-ipv4.pluto.tv",
+    // The stitcher currently emits Sky's AES keys, captions, and MPEG-TS
+    // segments from this dedicated media CDN host.
+    "mcdn-01.plutotv.net",
     "www.bloomberg.com",
     "28585519.net",
     "antennaplus.gr",
@@ -3260,6 +3263,10 @@ mod tests {
         let sky_news_redirect: url::Url = "https://stitcher-ipv4.pluto.tv/v2/stitch/embed/hls/channel/55b285cd2665de274553d66f/master.m3u8"
             .parse()
             .expect("sky news redirect url");
+        let sky_news_segment: url::Url =
+            "https://mcdn-01.plutotv.net/live/v1/prd/SkyNews/ts_aes/video/720p/segment.ts"
+                .parse()
+                .expect("sky news segment url");
         let ert1: url::Url = "https://ert-ucdn.broadpeak-aas.com/bpk-tv/ERT1/default/index.m3u8"
             .parse()
             .expect("ert1 url");
@@ -3333,6 +3340,7 @@ mod tests {
         assert!(is_allowed_live_hls_url(&bloomberg_eu_variant));
         assert!(is_allowed_live_hls_url(&sky_news));
         assert!(is_allowed_live_hls_url(&sky_news_redirect));
+        assert!(is_allowed_live_hls_url(&sky_news_segment));
         assert!(is_allowed_live_hls_url(&ert1));
         assert!(is_allowed_live_hls_url(&mega_news));
         assert!(is_allowed_live_hls_url(&ant1));
