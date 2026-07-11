@@ -90,12 +90,16 @@ rsync_remote_dir() {
 }
 
 remote_db_snapshot=""
-cleanup_remote_db_snapshot() {
+remote_caddy_snapshot=""
+cleanup_remote_snapshots() {
   if [[ "$remote_db_snapshot" == /tmp/streamarena-db-backup.* ]]; then
     "${SSH_BASE[@]}" "$MINI_HOST" "rm -rf -- '$remote_db_snapshot'" >/dev/null 2>&1 || true
   fi
+  if [[ "$remote_caddy_snapshot" == /tmp/streamarena-caddy-backup.* ]]; then
+    "${SSH_BASE[@]}" "$MINI_HOST" "rm -rf -- '$remote_caddy_snapshot'" >/dev/null 2>&1 || true
+  fi
 }
-trap cleanup_remote_db_snapshot EXIT
+trap cleanup_remote_snapshots EXIT
 
 previous=""
 if [[ -L "$backup_root/latest" ]]; then
@@ -135,14 +139,32 @@ REMOTE
     --exclude='users.sqlite*' --exclude='resolver-cache.sqlite*'
   rsync_remote "$remote_db_snapshot/users.sqlite" "$snapshot/runtime/cache/users.sqlite"
   rsync_remote "$remote_db_snapshot/resolver-cache.sqlite" "$snapshot/runtime/cache/resolver-cache.sqlite"
-  cleanup_remote_db_snapshot
+  cleanup_remote_snapshots
   remote_db_snapshot=""
   rsync_remote_dir "$REMOTE_APP/dist" "$snapshot/runtime/dist" "${previous:+$previous/runtime/dist}"
 fi
 
 mkdir -p "$snapshot/config" "$snapshot/caddy" "$snapshot/local-bin" "$snapshot/plists"
 rsync_remote "/Users/hermes/.config/streamarena/env" "$snapshot/config/env"
-rsync -a --exclude='*.log' --exclude='*.err.log' -e "$RSYNC_SSH" "$MINI_HOST:/Users/hermes/.config/caddy/" "$snapshot/caddy/"
+# Caddy's production config is intentionally root-owned and 0600. Stage a
+# short-lived, hermes-readable copy on the mini so rsync can back it up without
+# weakening the live file's permissions or requiring a privileged rsync daemon.
+remote_caddy_snapshot="$("${SSH_BASE[@]}" "$MINI_HOST" 'bash -s' <<'REMOTE'
+set -euo pipefail
+umask 077
+snapshot_dir="$(mktemp -d /tmp/streamarena-caddy-backup.XXXXXX)"
+trap 'rm -rf "$snapshot_dir"' ERR
+sudo cp -R "$HOME/.config/caddy/." "$snapshot_dir/"
+sudo chown -R "$(id -u):$(id -g)" "$snapshot_dir"
+find "$snapshot_dir" -type d -exec chmod 700 {} +
+find "$snapshot_dir" -type f -exec chmod 600 {} +
+trap - ERR
+printf '%s\n' "$snapshot_dir"
+REMOTE
+)"
+rsync_remote_dir "$remote_caddy_snapshot" "$snapshot/caddy"
+cleanup_remote_snapshots
+remote_caddy_snapshot=""
 rsync_remote "/Users/hermes/.local/bin/streamarena-run-backend" "$snapshot/local-bin/streamarena-run-backend"
 rsync_remote "/Users/hermes/.local/bin/streamarena-rotate-logs" "$snapshot/local-bin/streamarena-rotate-logs"
 rsync_remote "/Users/hermes/.local/bin/streamarena-disk-monitor" "$snapshot/local-bin/streamarena-disk-monitor"
