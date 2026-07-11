@@ -156,7 +156,7 @@ Live and sports flow:
 1. `/live` renders static live channels from `src-ui/lib/live-channels.js`.
 2. HLS live channel playlists and segments are proxied through protected `/api/live/hls.m3u8` and `/api/live/hls-resource` with an allowlist in `src/live.rs`.
 3. Twitch-backed live sources resolve through protected `/api/twitch/stream`.
-4. `/sports` fetches schedules for football, basketball, tennis, hockey, baseball, American football, and cricket through `src/football.rs`. Football uses ESPN's broad scoreboard as its fixture list, then merges matching sources from Streamed, MatchStream, NTVS, and cdnlivetv; a match can therefore appear before any stream is available.
+4. `/sports` fetches schedules for football, basketball, tennis, hockey, baseball, American football, and cricket through `src/football.rs`. Football uses ESPN's broad scoreboard as its fixture list, merges matching sources from Streamed, MatchStream, NTVS, and cdnlivetv, then shows only fixtures from the top five European leagues, major UEFA/FIFA competitions, and their leading domestic cups. A retained match can therefore appear before any stream is available.
 5. Live sports streams still resolve only through protected `/api/sports/stream`; fixture metadata never becomes a playback URL. The server uses short-lived HLS resolution caching and bounded Playwright concurrency for the stream providers.
 
 ## Features

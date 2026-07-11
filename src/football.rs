@@ -1088,8 +1088,9 @@ async fn auto_football_matches_response(
         )));
     }
 
+    let payload = merge_sports_schedule_payloads(payloads, sport_name);
     Ok(schedule_response(
-        merge_sports_schedule_payloads(payloads, sport_name),
+        filter_marquee_football_schedule(payload),
         "aggregate",
     ))
 }
@@ -1160,6 +1161,18 @@ fn merge_sports_schedule_payloads(payloads: Vec<Value>, sport_name: &'static str
         "fetchedAt": fetched_at_ms,
         "matches": matches
     })
+}
+
+fn filter_marquee_football_schedule(mut payload: Value) -> Value {
+    if let Some(matches) = payload.get_mut("matches").and_then(Value::as_array_mut) {
+        matches.retain(|match_item| {
+            match_item
+                .get("league")
+                .and_then(Value::as_str)
+                .is_some_and(is_marquee_football_competition)
+        });
+    }
+    payload
 }
 
 fn sports_schedule_matches_refer_to_same_fixture(left: &Value, right: &Value) -> bool {
@@ -1523,19 +1536,7 @@ fn normalize_espn_football_match(event: &Value, now: i64) -> Option<Value> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("Football");
-    let league_lower = league.to_ascii_lowercase();
-    let important = [
-        "world cup",
-        "champions league",
-        "europa league",
-        "premier league",
-        "la liga",
-        "bundesliga",
-        "serie a",
-        "ligue 1",
-    ]
-    .iter()
-    .any(|needle| league_lower.contains(needle));
+    let important = is_marquee_football_competition(league);
 
     Some(json!({
         "id": format!("espn-{event_id}"),
@@ -1560,6 +1561,47 @@ fn normalize_espn_football_match(event: &Value, now: i64) -> Option<Value> {
         "provider": ESPN_SOURCE_ID,
         "providers": [ESPN_SOURCE_ID]
     }))
+}
+
+fn is_marquee_football_competition(league: &str) -> bool {
+    let competition = league
+        .split(',')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    matches!(
+        competition.as_str(),
+        // Europe's five biggest domestic leagues.
+        "english premier league"
+            | "laliga"
+            | "bundesliga"
+            | "serie a"
+            | "ligue 1"
+            // Major UEFA and FIFA competitions.
+            | "uefa champions league"
+            | "uefa women's champions league"
+            | "uefa europa league"
+            | "uefa conference league"
+            | "uefa european championship"
+            | "uefa women's european championship"
+            | "uefa nations league"
+            | "fifa world cup"
+            | "fifa women's world cup"
+            | "fifa club world cup"
+            | "copa américa"
+            | "copa america"
+            | "africa cup of nations"
+            // The main cups belonging to the five domestic leagues above.
+            | "english fa cup"
+            | "english carabao cup"
+            | "english league cup"
+            | "copa del rey"
+            | "coppa italia"
+            | "german cup"
+            | "coupe de france"
+    )
 }
 
 fn espn_event_team(event: &Value, home_away: &str) -> Option<String> {
@@ -4890,11 +4932,12 @@ mod tests {
         StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
         build_ntvs_football_matches_payload, build_streamed_football_matches_payload,
         extract_matchstream_matches, extract_ntvs_candidate_urls,
-        extract_streamed_watch_embed_streams, is_streamed_watch_url,
-        is_supported_matchstream_hls_url, is_supported_matchstream_player_url,
-        is_supported_matchstream_stream_url, is_supported_ntvs_channel_url,
-        is_supported_ntvs_embed_url, is_supported_ntvs_hesgoaler_player_url,
-        is_supported_ntvs_hls_url, is_supported_ntvs_stream_url, is_supported_ntvs_watch_url,
+        extract_streamed_watch_embed_streams, filter_marquee_football_schedule,
+        is_marquee_football_competition, is_streamed_watch_url, is_supported_matchstream_hls_url,
+        is_supported_matchstream_player_url, is_supported_matchstream_stream_url,
+        is_supported_ntvs_channel_url, is_supported_ntvs_embed_url,
+        is_supported_ntvs_hesgoaler_player_url, is_supported_ntvs_hls_url,
+        is_supported_ntvs_stream_url, is_supported_ntvs_watch_url,
         is_supported_ntvs_wrapper_embed_url, is_supported_streamed_hls_url,
         is_supported_streamed_stream_url, live_stream_source_candidates,
         matchstream_live_stream_source_candidates, merge_sports_schedule_payloads,
@@ -4977,8 +5020,73 @@ mod tests {
         assert_eq!(normalized["league"], "FIFA World Cup, Quarterfinals");
         assert_eq!(normalized["startTimestamp"], start);
         assert_eq!(normalized["provider"], "espn");
+        assert_eq!(normalized["important"], true);
         assert_eq!(normalized["linkCount"], 0);
         assert!(normalized["streams"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn marquee_football_competitions_exclude_similarly_named_smaller_leagues() {
+        for league in [
+            "English Premier League",
+            "LALIGA",
+            "Bundesliga",
+            "Serie A",
+            "Ligue 1",
+            "UEFA Champions League, Quarterfinals",
+            "FIFA World Cup, Quarterfinals",
+            "English FA Cup, Final",
+        ] {
+            assert!(
+                is_marquee_football_competition(league),
+                "expected {league:?} to be included"
+            );
+        }
+
+        for league in [
+            "LALIGA 2",
+            "2. Bundesliga",
+            "Brazil Serie A",
+            "Northern Premier League",
+            "AFC Champions League Elite",
+            "FIFA U-17 World Cup, Final",
+            "Scottish League Cup, Group A",
+            "Club Friendly",
+        ] {
+            assert!(
+                !is_marquee_football_competition(league),
+                "expected {league:?} to be excluded"
+            );
+        }
+    }
+
+    #[test]
+    fn football_schedule_keeps_only_matches_in_marquee_competitions() {
+        let payload = json!({
+            "sport": "Football",
+            "matches": [
+                {
+                    "id": "premier-league",
+                    "league": "English Premier League",
+                    "important": false
+                },
+                {
+                    "id": "league-two",
+                    "league": "England League Two",
+                    "important": true
+                },
+                {
+                    "id": "friendly",
+                    "league": "Club Friendly",
+                    "important": true
+                }
+            ]
+        });
+
+        let filtered = filter_marquee_football_schedule(payload);
+        let matches = filtered["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["id"], "premier-league");
     }
 
     #[test]
