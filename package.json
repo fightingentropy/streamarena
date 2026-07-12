@@ -10,7 +10,7 @@
     "test:rust": "cargo test",
     "test:worker": "node --test workers/live-hls-proxy/test/*.test.mjs",
     "lint:frontend": "node ./scripts/check-js-syntax.mjs",
-    "test:frontend:unit": "node ./scripts/auth-local-state-test.mjs && node ./scripts/subtitle-offset-test.mjs && node ./scripts/offline-artwork-test.mjs && node ./scripts/media-track-labels-test.mjs && node ./scripts/source-menu-tabs-test.mjs && node ./scripts/initial-resume-test.mjs && node ./scripts/manual-source-switch-test.mjs && node ./scripts/hls-autoplay-test.mjs && node ./scripts/live-iframe-playback-clock-test.mjs && node ./scripts/local-cache-upgrade-watch-test.mjs",
+    "test:frontend:unit": "node ./scripts/auth-local-state-test.mjs && node ./scripts/subtitle-offset-test.mjs && node ./scripts/offline-artwork-test.mjs && node ./scripts/media-track-labels-test.mjs && node ./scripts/source-menu-tabs-test.mjs && node ./scripts/hover-resolve-prewarm-test.mjs && node ./scripts/initial-resume-test.mjs && node ./scripts/manual-source-switch-test.mjs && node ./scripts/hls-autoplay-test.mjs && node ./scripts/live-iframe-playback-clock-test.mjs && node ./scripts/local-cache-upgrade-watch-test.mjs",
     "test:frontend": "bun run test:frontend:unit && node ./scripts/frontend-smoke.mjs",
     "test": "bun run test:rust && bun run test:worker && bun run test:frontend",
     "check:rust": "cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings",

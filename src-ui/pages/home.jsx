@@ -17,7 +17,10 @@ import {
 } from "../shared.js";
 import {
   supportedAudioLangs,
+  DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
+  DEFAULT_STREAM_QUALITY_PREFERENCE,
   getStoredAudioLangForTmdbMovie,
+  normalizeDefaultAudioLanguage,
 } from "../lib/preferences.js";
 import { hydrateFromServer, SERVER_HYDRATED_EVENT, signOut } from "../lib/auth.js";
 import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
@@ -30,6 +33,7 @@ import {
   slugifyTitle,
 } from "../lib/watch-params.js";
 import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
+import { createMovieResolvePrewarmer } from "../lib/hover-resolve-prewarm.js";
 import {
   CONTINUE_WATCHING_META_KEY,
   DEFAULT_LOCAL_THUMBNAIL,
@@ -1337,6 +1341,43 @@ export default function HomePage() {
   let isSavingLibraryEdit = false;
   let activeLibraryEditCategory = "title";
   let homeBrowseContentReady = false;
+  const movieResolvePrewarmer = createMovieResolvePrewarmer({
+    fetchFn: (url, options) => fetch(url, options),
+  });
+
+  function prewarmCardMovieSource(card) {
+    const details = getCardDetails(card);
+    const tmdbId = String(details.tmdbId || "").trim();
+    if (
+      details.mediaType !== "movie" ||
+      !tmdbId ||
+      String(details.src || details.librarySrc || "").trim()
+    ) {
+      return false;
+    }
+    let audioLang = "en";
+    let subtitleLang = "";
+    try {
+      audioLang = normalizeDefaultAudioLanguage(
+        localStorage.getItem(DEFAULT_AUDIO_LANGUAGE_PREF_KEY),
+      );
+      const storedMovieAudioLang = getStoredAudioLangForTmdbMovie(tmdbId);
+      if (storedMovieAudioLang !== "auto") audioLang = storedMovieAudioLang;
+      subtitleLang = String(
+        localStorage.getItem(`streamarena-subtitle-lang:movie:${tmdbId}`) || "",
+      ).trim();
+    } catch {
+      // Storage can be unavailable in privacy modes; resolver defaults remain safe.
+    }
+    return movieResolvePrewarmer.prewarm({
+      tmdbId,
+      title: details.title,
+      year: details.year,
+      audioLang,
+      subtitleLang,
+      quality: DEFAULT_STREAM_QUALITY_PREFERENCE,
+    });
+  }
 
   function markHomeBrowseContentReady() {
     homeBrowseContentReady = true;
@@ -2507,6 +2548,7 @@ export default function HomePage() {
     hover?.setAttribute("aria-hidden", "false");
     positionCardHover(card);
     card.classList.add("is-hovering");
+    prewarmCardMovieSource(card);
     requestAnimationFrame(() => positionCardHover(card));
   }
 

@@ -347,6 +347,7 @@ const pages = [
     path: "/index.html",
     selector: ".home-page",
     expectHomeAccessibility: true,
+    expectHoverResolvePrewarm: true,
   },
   {
     path: "/index.html",
@@ -455,6 +456,7 @@ async function runSmoke() {
       let liveStreamHlsInputs = [];
       let hlsBundleRequested = false;
       let hlsBundleReleased = false;
+      const hoverResolvePrewarmRequests = [];
       const realDebridUpdateBodies = [];
 
       let hlsBundleHoldActive = false;
@@ -550,6 +552,12 @@ async function runSmoke() {
         }
         if (url.pathname === "/api/remux") {
           sawRemuxRequest = true;
+        }
+        if (
+          pageSpec.expectHoverResolvePrewarm &&
+          url.pathname === "/api/resolve/movie"
+        ) {
+          hoverResolvePrewarmRequests.push(Object.fromEntries(url.searchParams));
         }
         if (
           (pageSpec.expectSourceSwitch ||
@@ -961,6 +969,32 @@ async function runSmoke() {
           const card = document.querySelector("article.card");
           return document.activeElement === card?.querySelector(":scope > .card-primary-action");
         }, null, { timeout: 8_000 });
+
+        if (pageSpec.expectHoverResolvePrewarm) {
+          const tmdbMovieCard = page.locator(
+            '#cardsContainer article.card[data-tmdb-id="1"]',
+          );
+          if (await tmdbMovieCard.count() !== 1) {
+            throw new Error(`${pageSpec.path}\nTMDB movie hover target is missing or ambiguous.`);
+          }
+          await tmdbMovieCard.hover();
+          for (let attempt = 0; attempt < 80 && !hoverResolvePrewarmRequests.length; attempt += 1) {
+            await delay(50);
+          }
+          const warmRequest = hoverResolvePrewarmRequests[0] || {};
+          if (
+            warmRequest.tmdbId !== "1" ||
+            warmRequest.resolverProvider !== "fastest" ||
+            warmRequest.sourceLang !== "en" ||
+            warmRequest.sourceAudioProfile !== "single" ||
+            Object.prototype.hasOwnProperty.call(warmRequest, "sourceHash") ||
+            !page.url().endsWith("/index.html")
+          ) {
+            throw new Error(
+              `${pageSpec.path}\nMovie hover did not start an unpinned HLS prewarm before navigation.\n${JSON.stringify({ warmRequest, url: page.url() })}`,
+            );
+          }
+        }
       }
 
       if (pageSpec.expectTouchCardActions || pageSpec.expectNarrowNavigation) {
