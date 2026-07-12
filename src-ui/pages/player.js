@@ -5663,7 +5663,7 @@ function syncVolumeSliderState() {
   const volumePercent = Math.round(visibleVolume * 100);
   volumeSlider.value = String(volumePercent);
   setRuntimeStyleRule(".volume-slider", {
-    background: `linear-gradient(to right, #ff1408 0%, #ff1408 ${volumePercent}%, rgba(255, 255, 255, 0.08) ${volumePercent}%, rgba(255, 255, 255, 0.08) 100%)`,
+    background: `linear-gradient(to right, rgba(255, 255, 255, 0.96) 0%, rgba(255, 255, 255, 0.96) ${volumePercent}%, rgba(255, 255, 255, 0.28) ${volumePercent}%, rgba(255, 255, 255, 0.28) 100%)`,
   });
 }
 

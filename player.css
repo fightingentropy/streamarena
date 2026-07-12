@@ -675,7 +675,8 @@ body {
     position: relative;
     display: inline-flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
+    height: 62px;
 }
 
 .episode-label {
@@ -877,34 +878,37 @@ body {
 }
 
 .volume-slider-popover {
-    position: absolute;
-    left: 50%;
-    bottom: calc(100% + 14px);
-    width: 74px;
-    height: 264px;
-    padding: 20px 0;
+    position: relative;
+    width: 0;
+    height: 40px;
+    margin-left: -6px;
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 6px;
-    background: rgba(43, 43, 43, 0.94);
-    box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42);
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(12, 12, 12, 0.72);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+    backdrop-filter: blur(12px);
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
-    transform: translate(-50%, 10px);
+    transform: translateX(-8px);
     transition:
-        opacity 140ms ease,
-        transform 140ms ease,
-        visibility 140ms ease;
+        width 180ms ease 650ms,
+        opacity 120ms ease 650ms,
+        transform 180ms ease 650ms,
+        visibility 0s linear 830ms;
 }
 
 .volume-control:hover .volume-slider-popover,
 .volume-control:focus-within .volume-slider-popover {
+    width: 138px;
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
-    transform: translate(-50%, 0);
+    transform: translateX(0);
+    transition-delay: 0s;
 }
 
 .volume-control:hover .control-btn,
@@ -915,25 +919,25 @@ body {
 .volume-slider {
     appearance: none;
     -webkit-appearance: none;
-    width: 194px;
-    height: 14px;
-    margin: 0;
+    flex: 0 0 108px;
+    width: 108px;
+    height: 16px;
+    margin: 0 12px 0 16px;
     border-radius: 999px;
     border: 0;
     outline: none;
     background: linear-gradient(
         to right,
-        #ff1408 0%,
-        #ff1408 100%,
-        rgba(255, 255, 255, 0.08) 100%,
-        rgba(255, 255, 255, 0.08) 100%
+        rgba(255, 255, 255, 0.96) 0%,
+        rgba(255, 255, 255, 0.96) 100%,
+        rgba(255, 255, 255, 0.28) 100%,
+        rgba(255, 255, 255, 0.28) 100%
     );
-    cursor: ns-resize;
-    transform: rotate(-90deg);
+    cursor: pointer;
 }
 
 .volume-slider::-webkit-slider-runnable-track {
-    height: 14px;
+    height: 4px;
     border-radius: 999px;
     background: transparent;
 }
@@ -941,29 +945,37 @@ body {
 .volume-slider::-webkit-slider-thumb {
     appearance: none;
     -webkit-appearance: none;
-    width: 34px;
-    height: 34px;
-    margin-top: -10px;
+    width: 14px;
+    height: 14px;
+    margin-top: -5px;
     border: 0;
     border-radius: 50%;
-    background: #ff1408;
-    box-shadow: none;
+    background: #fff;
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.55);
 }
 
 .volume-slider::-moz-range-track {
-    height: 14px;
+    height: 4px;
     border-radius: 999px;
     border: 0;
     background: transparent;
 }
 
 .volume-slider::-moz-range-thumb {
-    width: 34px;
-    height: 34px;
+    width: 14px;
+    height: 14px;
     border: 0;
     border-radius: 50%;
-    background: #ff1408;
-    box-shadow: none;
+    background: #fff;
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.55);
+}
+
+.volume-slider:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.24), 0 1px 5px rgba(0, 0, 0, 0.55);
+}
+
+.volume-slider:focus-visible::-moz-range-thumb {
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.24), 0 1px 5px rgba(0, 0, 0, 0.55);
 }
 
 #toggleMutePlayer .icon-volume-off {

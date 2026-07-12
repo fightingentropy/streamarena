@@ -126,19 +126,6 @@ export function renderPlayerShell({
                   />
                 </button>
                 <div id="volumeControl" ref={refs.volumeControl} class="volume-control">
-                  <div class="volume-slider-popover">
-                    <input
-                      id="volumeSlider"
-                      ref={refs.volumeSlider}
-                      class="volume-slider"
-                      type="range"
-                      min="0"
-                      max="100"
-                      value="100"
-                      step="1"
-                      aria-label="Volume"
-                    />
-                  </div>
                   <button
                     id="toggleMutePlayer"
                     ref={refs.toggleMutePlayer}
@@ -155,6 +142,19 @@ export function renderPlayerShell({
                       <path d="M14 5.2v13.6a1 1 0 0 1-1.68.74L7.6 15H5a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2.6l4.72-4.54A1 1 0 0 1 14 5.2Zm6.3 3.1a1 1 0 0 1 0 1.4L18.01 12l2.3 2.3a1 1 0 0 1-1.42 1.4L16.6 13.4l-2.3 2.3a1 1 0 0 1-1.4-1.42l2.3-2.28-2.3-2.3a1 1 0 0 1 1.4-1.4l2.3 2.3 2.29-2.3a1 1 0 0 1 1.41 0Z"></path>
                     </svg>
                   </button>
+                  <div class="volume-slider-popover">
+                    <input
+                      id="volumeSlider"
+                      ref={refs.volumeSlider}
+                      class="volume-slider"
+                      type="range"
+                      min="0"
+                      max="100"
+                      value="100"
+                      step="1"
+                      aria-label="Volume"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
