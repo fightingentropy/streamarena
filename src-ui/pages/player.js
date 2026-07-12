@@ -34,6 +34,7 @@ import {
   sortSourcesBySeeders,
   isBrowserSafeAudioCodec,
 } from "../player/sources.js";
+import { buildSourceMenuView, createSourceOptionButton, syncSourceMenuTabs } from "../player/source-menu-tabs.js";
 import {
   readContinueWatchingMetaMap,
 } from "../shared.js";
@@ -228,6 +229,7 @@ let selectedSubtitleStreamIndex = -1;
 let availableAudioTracks = [];
 let availableSubtitleTracks = [];
 let availablePlaybackSources = [];
+let activeSourceTypeTab = "";
 let isFetchingPlaybackSources = false;
 let playbackSourcesRequestToken = 0;
 let resolverFailedSourceHashes = new Set();
@@ -2640,6 +2642,14 @@ function renderSourceOptionButtons() {
   }
 
   sourceOptionsContainer.innerHTML = "";
+  const sourceView = buildSourceMenuView({
+    sources: availablePlaybackSources,
+    selectedSourceHash,
+    requestedTab: activeSourceTypeTab,
+    torrentsEnabled: userLocalTorrentEnabled || userRealDebridConfigured,
+  });
+  activeSourceTypeTab = sourceView.activeTab;
+  syncSourceMenuTabs(sourceMenu?.querySelector(".source-type-tabs"), sourceView);
 
   if (!availablePlaybackSources.length) {
     const emptyState = document.createElement("p");
@@ -2659,12 +2669,12 @@ function renderSourceOptionButtons() {
   const seenHashes = new Set();
   const displayedSources = [];
   const fragment = document.createDocumentFragment();
-  const rankedSources = sortSourcesBySeeders(availablePlaybackSources, {
+  const rankedSources = sortSourcesBySeeders(sourceView.sources, {
     preferContainer: getSourceListPreferredContainer(),
   });
   const sourceDisplayLimit = Math.max(
     preferredSourceResultsLimit,
-    rankedSources.filter((option) => isSourceOptionEmbed(option)).length,
+    sourceView.sources.filter((option) => isSourceOptionEmbed(option)).length,
   );
   const selectedSourceIndex = rankedSources.findIndex(
     (option) =>
@@ -2687,48 +2697,12 @@ function renderSourceOptionButtons() {
     }
     seenHashes.add(sourceHash);
 
-    const sourceOptionButton = document.createElement("button");
-    sourceOptionButton.className = "audio-option source-option";
-    sourceOptionButton.type = "button";
-    sourceOptionButton.setAttribute("role", "option");
-    sourceOptionButton.dataset.sourceHash = sourceHash;
-    sourceOptionButton.setAttribute(
-      "aria-selected",
-      sourceHash === selectedSourceHash ? "true" : "false",
-    );
-
-    const iconBadge = document.createElement("span");
-    iconBadge.className = "source-option-icon";
-    iconBadge.setAttribute("aria-hidden", "true");
-    iconBadge.innerHTML = SOURCE_OPTION_ICON_SVG;
-
-    const textWrap = document.createElement("span");
-    textWrap.className = "source-option-text";
-
-    const nameLine = document.createElement("span");
-    nameLine.className = "source-option-name";
-    nameLine.textContent = getSourceDisplayName(option);
-    textWrap.appendChild(nameLine);
-
-    const hintText = getSourceDisplayHint(option);
-    const metaText = getSourceDisplayMeta(option);
-
-    if (hintText) {
-      const hintLine = document.createElement("span");
-      hintLine.className = "source-option-hint";
-      hintLine.textContent = hintText;
-      textWrap.appendChild(hintLine);
-    }
-
-    if (metaText) {
-      const metaLine = document.createElement("span");
-      metaLine.className = "source-option-meta";
-      metaLine.textContent = metaText;
-      textWrap.appendChild(metaLine);
-    }
-
-    sourceOptionButton.append(iconBadge, textWrap);
-    fragment.appendChild(sourceOptionButton);
+    fragment.appendChild(createSourceOptionButton({
+      iconSvg: SOURCE_OPTION_ICON_SVG,
+      option,
+      selectedSourceHash,
+      sourceHash,
+    }));
     displayedSources.push(option);
   }
 
@@ -2736,7 +2710,7 @@ function renderSourceOptionButtons() {
   if (!seenHashes.size) {
     const emptyState = document.createElement("p");
     emptyState.className = "source-option-empty";
-    emptyState.textContent = "No alternate sources available yet.";
+    emptyState.textContent = sourceView.emptyMessage;
     sourceOptionsContainer.appendChild(emptyState);
     if (sourceOptionDetails) {
       sourceOptionDetails.hidden = true;
@@ -2748,15 +2722,17 @@ function renderSourceOptionButtons() {
   const preferredDefaultSourceHash =
     getPreferredDefaultSourceHash(displayedSources);
   const normalizedSelectedSourceHash = normalizeSourceHash(selectedSourceHash);
-  const hasSelectedInOptions =
+  const hasSelectedSource =
     normalizedSelectedSourceHash &&
-    seenHashes.has(normalizedSelectedSourceHash);
-  if (sourceSelectionPinned && !hasSelectedInOptions) {
+    availablePlaybackSources.some(
+      (option) => normalizeSourceHash(option?.sourceHash || option?.infoHash || "") === normalizedSelectedSourceHash,
+    );
+  if (sourceSelectionPinned && !hasSelectedSource) {
     sourceSelectionPinned = false;
   }
   if (
     preferredDefaultSourceHash &&
-    (!normalizedSelectedSourceHash || !hasSelectedInOptions)
+    (!normalizedSelectedSourceHash || !hasSelectedSource)
   ) {
     selectedSourceHash = preferredDefaultSourceHash;
     applyPreferredSourceAudioSync(selectedSourceHash);
@@ -10877,8 +10853,16 @@ if (audioTabSources) trackListener(audioTabSources, "click", () => {
   });
 });
 
-if (sourceOptionsContainer) trackListener(sourceOptionsContainer, "click", (event) => {
+if (sourceMenu) trackListener(sourceMenu, "click", (event) => {
   if (!(event.target instanceof Element)) {
+    return;
+  }
+
+  const sourceTab = event.target.closest("[data-source-tab]");
+  if (sourceTab instanceof HTMLButtonElement) {
+    activeSourceTypeTab = String(sourceTab.dataset.sourceTab || "");
+    renderSourceOptionButtons();
+    sourceTab.focus({ preventScroll: true });
     return;
   }
 

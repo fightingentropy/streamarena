@@ -192,14 +192,36 @@ export function renderPlayerShell({
                     id="sourceMenu"
                     ref={refs.sourceMenu}
                     class="speed-popover source-popover"
-                    role="listbox"
+                    role="dialog"
                     aria-label="Server"
                   >
                     <p class="speed-popover-title source-popover-title">Server</p>
+                    <div class="source-type-tabs" role="tablist" aria-label="Source type" hidden>
+                      <button
+                        id="sourceTabHls"
+                        class="source-type-tab"
+                        type="button"
+                        role="tab"
+                        data-source-tab="hls"
+                        aria-controls="sourceOptions"
+                        aria-selected="true"
+                      >HLS</button>
+                      <button
+                        id="sourceTabTorrents"
+                        class="source-type-tab"
+                        type="button"
+                        role="tab"
+                        data-source-tab="torrents"
+                        aria-controls="sourceOptions"
+                        aria-selected="false"
+                        tabindex="-1"
+                      >Torrents</button>
+                    </div>
                     <div
                       id="sourceOptions"
                       ref={refs.sourceOptionsContainer}
                       class="audio-options source-options source-popover-options"
+                      role="listbox"
                       aria-label="Playback servers"
                     ></div>
                   </div>
