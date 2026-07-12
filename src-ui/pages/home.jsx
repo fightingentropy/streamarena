@@ -943,6 +943,7 @@ function getCardDetails(card) {
     libraryType: card.dataset.libraryType || "",
     libraryId: card.dataset.libraryId || "",
     librarySrc: card.dataset.librarySrc || "",
+    resumeSource: card.dataset.resumeSource || "",
     episodeIndex: Number.isFinite(rawEpisodeIndex) ? rawEpisodeIndex : -1,
     seasonNumber: Number.isFinite(rawSeasonNumber) ? rawSeasonNumber : 0,
     episodeNumber: Number.isFinite(rawEpisodeNumber) ? rawEpisodeNumber : 0,
@@ -1351,6 +1352,7 @@ export default function HomePage() {
     if (
       details.mediaType !== "movie" ||
       !tmdbId ||
+      details.resumeSource ||
       String(details.src || details.librarySrc || "").trim()
     ) {
       return false;
@@ -1407,6 +1409,7 @@ export default function HomePage() {
     episodeIndex,
     seasonNumber,
     episodeNumber,
+    resumeSource,
     saveToGallery = false,
   }) {
     const normalizePlaybackSource = (value) => {
@@ -1470,6 +1473,9 @@ export default function HomePage() {
 
     if (saveToGallery === true) {
       params.set("saveToGallery", "1");
+    }
+    if (String(resumeSource || "").trim()) {
+      params.set("resumePlayback", "1");
     }
 
     if (isSeriesLaunch && normalizedSeriesId) {

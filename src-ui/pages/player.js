@@ -34,7 +34,7 @@ import {
   sortSourcesBySeeders,
   isBrowserSafeAudioCodec,
 } from "../player/sources.js";
-import { buildSourceMenuView, createSourceOptionButton, syncSourceMenuTabs } from "../player/source-menu-tabs.js";
+import { buildSourceMenuView, createSourceOptionButton, shouldIgnoreRememberedTorrentSource, syncSourceMenuTabs } from "../player/source-menu-tabs.js";
 import {
   readContinueWatchingMetaMap,
 } from "../shared.js";
@@ -757,6 +757,7 @@ const subtitleLangParam = (params.get("subtitleLang") || "")
   .trim()
   .toLowerCase();
 const sourceHashParam = (params.get("sourceHash") || "").trim().toLowerCase();
+const shouldResumeRememberedPlayback = /^(1|true|yes|on)$/.test(String(params.get("resumePlayback") || "").trim().toLowerCase());
 const hasDirectSourceHashParam = new URLSearchParams(window.location.search).has(
   "sourceHash",
 );
@@ -1374,11 +1375,9 @@ function shouldIgnoreRememberedTmdbSourcePinForIframeFirst(remembered) {
     return true;
   }
   if (isTorrentResolverProvider(remembered.resolverProvider)) {
-    return true;
+    return shouldIgnoreRememberedTorrentSource(shouldResumeRememberedPlayback, isTorrentResolverProviderEnabledForPlayback(remembered.resolverProvider));
   }
-  if (remembered.resolverProvider === "external-embed") {
-    return false;
-  }
+  if (remembered.resolverProvider === "external-embed") return false;
   if (
     isTorrentResolverProvider(preferredResolverProvider) &&
     isTorrentResolverProviderEnabledForPlayback(preferredResolverProvider)

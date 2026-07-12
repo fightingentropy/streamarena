@@ -994,6 +994,26 @@ async function runSmoke() {
               `${pageSpec.path}\nMovie hover did not start an unpinned HLS prewarm before navigation.\n${JSON.stringify({ warmRequest, url: page.url() })}`,
             );
           }
+
+          const continueAction = page.locator(
+            "#continueCards article.card > .card-primary-action",
+          );
+          if (await continueAction.count() !== 1) {
+            throw new Error(`${pageSpec.path}\nContinue Watching action is missing or ambiguous.`);
+          }
+          await continueAction.click();
+          await page.waitForURL(
+            (nextUrl) =>
+              nextUrl.pathname.startsWith("/watch") ||
+              nextUrl.pathname.includes("player"),
+            { timeout: 8_000 },
+          );
+          const continueUrl = new URL(page.url());
+          if (continueUrl.searchParams.get("resumePlayback") !== "1") {
+            throw new Error(
+              `${pageSpec.path}\nContinue Watching did not preserve source-resume intent.\n${continueUrl.toString()}`,
+            );
+          }
         }
       }
 
