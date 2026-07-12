@@ -62,6 +62,8 @@ const TORRENTIO_CACHE_MAX_AGE_DEFAULT_SECONDS: i64 = 60 * 60;
 const TORRENTIO_CACHE_STALE_WINDOW_DEFAULT_SECONDS: i64 = 4 * 60 * 60;
 const TORZNAB_CACHE_MAX_AGE_SECONDS: i64 = 30 * 60;
 const TORZNAB_CACHE_STALE_WINDOW_SECONDS: i64 = 2 * 60 * 60;
+const TORZNAB_DOWNLOAD_MAGNET_CACHE_SECONDS: i64 = 24 * 60 * 60;
+const TORZNAB_DOWNLOAD_LINK_HYDRATE_LIMIT: usize = 12;
 const RD_TORRENT_CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const SOURCE_HEALTH_AVOID_SCORE: i64 = -6_000;
 const RD_SELECTED_FILE_MISMATCH_ERROR: &str =
@@ -283,6 +285,8 @@ struct DiscoveryStream {
     magnetUrl: String,
     #[serde(default)]
     discoveryProvider: String,
+    #[serde(skip)]
+    downloadUrl: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3804,7 +3808,7 @@ impl ResolverService {
         if let Some((payload, _, next_validation_at)) = cached.as_ref()
             && *next_validation_at > now
         {
-            return parse_torznab_streams_payload(payload);
+            return self.parse_and_hydrate_torznab_streams(payload).await;
         }
 
         let request_url = build_torznab_request_url(
@@ -3836,7 +3840,7 @@ impl ResolverService {
                     if let Some((payload, expires_at, _)) = cached
                         && expires_at > now_ms()
                     {
-                        return parse_torznab_streams_payload(&payload);
+                        return self.parse_and_hydrate_torznab_streams(&payload).await;
                     }
                     return Err(ApiError::bad_gateway(format!(
                         "Torznab request failed ({status})."
@@ -3852,17 +3856,115 @@ impl ResolverService {
                         next_validation_at,
                     )
                     .await?;
-                parse_torznab_streams_payload(&payload)
+                self.parse_and_hydrate_torznab_streams(&payload).await
             }
             Err(error) => {
                 if let Some((payload, expires_at, _)) = cached
                     && expires_at > now_ms()
                 {
-                    return parse_torznab_streams_payload(&payload);
+                    return self.parse_and_hydrate_torznab_streams(&payload).await;
                 }
                 Err(map_reqwest_error(error, "Torznab request timed out."))
             }
         }
+    }
+
+    async fn parse_and_hydrate_torznab_streams(
+        &self,
+        payload: &Value,
+    ) -> AppResult<Vec<DiscoveryStream>> {
+        let streams = parse_torznab_streams_payload(payload)?;
+        Ok(self.hydrate_torznab_download_links(streams).await)
+    }
+
+    async fn hydrate_torznab_download_links(
+        &self,
+        mut streams: Vec<DiscoveryStream>,
+    ) -> Vec<DiscoveryStream> {
+        let redirect_client = match reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .timeout(Duration::from_millis(self.config.torznab_timeout_ms))
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => return streams,
+        };
+        let mut unresolved = streams
+            .iter()
+            .enumerate()
+            .filter(|(_, stream)| {
+                discovery_stream_info_hash(stream).is_none()
+                    && torznab_download_url_allowed(
+                        &self.config.torznab_api_url,
+                        &stream.downloadUrl,
+                    )
+            })
+            .map(|(index, stream)| (index, parse_seed_count(&stream.title)))
+            .collect::<Vec<_>>();
+        unresolved.sort_by(|left, right| right.1.cmp(&left.1));
+        unresolved.truncate(TORZNAB_DOWNLOAD_LINK_HYDRATE_LIMIT);
+
+        let mut pending = FuturesUnordered::new();
+        for (index, _) in unresolved {
+            let download_url = streams[index].downloadUrl.clone();
+            let client = redirect_client.clone();
+            pending.push(async move {
+                let magnet = self
+                    .resolve_torznab_download_magnet(&client, &download_url)
+                    .await;
+                (index, magnet)
+            });
+        }
+        while let Some((index, magnet_url)) = pending.next().await {
+            if let Some(magnet_url) = magnet_url {
+                streams[index].infoHash = extract_info_hash_from_magnet(&magnet_url);
+                streams[index].magnetUrl = magnet_url;
+            }
+        }
+        streams.retain(|stream| discovery_stream_info_hash(stream).is_some());
+        streams
+    }
+
+    async fn resolve_torznab_download_magnet(
+        &self,
+        client: &reqwest::Client,
+        download_url: &str,
+    ) -> Option<String> {
+        if !torznab_download_url_allowed(&self.config.torznab_api_url, download_url) {
+            return None;
+        }
+        let cache_key = build_torznab_download_cache_key(download_url);
+        if let Ok(Some((payload, _, next_validation_at))) =
+            self.db.get_resolved_stream_cache(cache_key.clone()).await
+            && next_validation_at > now_ms()
+            && let Some(magnet_url) = payload.get("magnet").and_then(Value::as_str)
+            && let Some(normalized) = normalize_magnet_url(magnet_url)
+        {
+            return Some(normalized);
+        }
+
+        let response = client.get(download_url).send().await.ok()?;
+        if !response.status().is_redirection() {
+            return None;
+        }
+        let magnet_url = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(normalize_magnet_url)?;
+        let now = now_ms();
+        let expires_at = now + TORZNAB_DOWNLOAD_MAGNET_CACHE_SECONDS * 1_000;
+        let _ = self
+            .db
+            .set_resolved_stream_cache(
+                cache_key,
+                json!({ "magnet": magnet_url }),
+                expires_at,
+                expires_at,
+            )
+            .await;
+        Some(magnet_url)
     }
 
     fn is_torznab_configured(&self) -> bool {
@@ -7513,6 +7615,28 @@ fn build_torznab_stream_cache_key(base_url: &str, params: &[(&str, String)]) -> 
     )
 }
 
+fn build_torznab_download_cache_key(download_url: &str) -> String {
+    format!(
+        "torznab-download:{}",
+        sanitize_torznab_base_url_for_cache(download_url)
+    )
+}
+
+fn torznab_download_url_allowed(api_url: &str, download_url: &str) -> bool {
+    let Ok(api_url) = Url::parse(api_url.trim()) else {
+        return false;
+    };
+    let Ok(download_url) = Url::parse(download_url.trim()) else {
+        return false;
+    };
+    matches!(download_url.scheme(), "http" | "https")
+        && download_url.username().is_empty()
+        && download_url.password().is_none()
+        && api_url.scheme() == download_url.scheme()
+        && api_url.host_str() == download_url.host_str()
+        && api_url.port_or_known_default() == download_url.port_or_known_default()
+}
+
 fn sanitize_torznab_base_url_for_cache(base_url: &str) -> String {
     let trimmed = base_url.trim();
     let Ok(mut url) = url::Url::parse(trimmed) else {
@@ -7520,7 +7644,9 @@ fn sanitize_torznab_base_url_for_cache(base_url: &str) -> String {
     };
     let retained_pairs = url
         .query_pairs()
-        .filter(|(key, _)| !key.eq_ignore_ascii_case("apikey"))
+        .filter(|(key, _)| {
+            !key.eq_ignore_ascii_case("apikey") && !key.eq_ignore_ascii_case("jackett_apikey")
+        })
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect::<Vec<_>>();
     url.set_query(None);
@@ -7804,6 +7930,10 @@ fn torznab_item_to_stream(item: TorznabItem) -> Option<DiscoveryStream> {
     .into_iter()
     .find_map(normalize_magnet_url)
     .unwrap_or_default();
+    let candidate_download_url = [item.link.as_str(), item.enclosure_url.as_str()]
+        .into_iter()
+        .find_map(normalize_torznab_download_url)
+        .unwrap_or_default();
     let info_hash = [
         item.info_hash.as_str(),
         candidate_magnet.as_str(),
@@ -7813,7 +7943,7 @@ fn torznab_item_to_stream(item: TorznabItem) -> Option<DiscoveryStream> {
     .into_iter()
     .find_map(extract_info_hash_from_source)
     .unwrap_or_default();
-    if info_hash.is_empty() && candidate_magnet.is_empty() {
+    if info_hash.is_empty() && candidate_magnet.is_empty() && candidate_download_url.is_empty() {
         return None;
     }
 
@@ -7844,7 +7974,13 @@ fn torznab_item_to_stream(item: TorznabItem) -> Option<DiscoveryStream> {
         sources: Vec::new(),
         magnetUrl: candidate_magnet,
         discoveryProvider: "torznab".to_owned(),
+        downloadUrl: candidate_download_url,
     })
+}
+
+fn normalize_torznab_download_url(value: &str) -> Option<String> {
+    let url = Url::parse(value.trim()).ok()?;
+    matches!(url.scheme(), "http" | "https").then(|| url.to_string())
 }
 
 fn normalize_magnet_url(value: &str) -> Option<String> {
@@ -8976,7 +9112,8 @@ mod tests {
         build_external_embed_source_summaries, build_movie_resolve_lock_key,
         build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
         build_scoped_rd_torrent_cache_key, build_torrentio_stream_cache_key,
-        build_torznab_request_url, build_torznab_stream_cache_key, build_tv_resolve_lock_key,
+        build_torznab_download_cache_key, build_torznab_request_url,
+        build_torznab_stream_cache_key, build_tv_resolve_lock_key,
         build_user_scoped_playback_session_key_for_metadata, collect_episode_signatures,
         compute_external_embed_rank_health_score, compute_source_health_score,
         compute_torrentio_cache_deadlines, default_external_embed_source,
@@ -8999,7 +9136,7 @@ mod tests {
         should_prefer_software_decode_source, should_skip_playback_session_reuse,
         sort_movie_candidates, stream_list_contains_hash, stremio_addon_stream_url,
         summarize_stream_candidate_for_client, torrent_playback_enabled,
-        user_facing_real_debrid_error,
+        torznab_download_url_allowed, user_facing_real_debrid_error,
     };
 
     use std::sync::Mutex as StdMutex;
@@ -10187,6 +10324,30 @@ mod tests {
         assert!(cache_key.contains("imdbid=tt1234567"));
         assert!(!cache_key.contains("apikey"));
         assert!(!cache_key.contains("old-key"));
+
+        let download_cache_key = build_torznab_download_cache_key(
+            "http://127.0.0.1:9117/dl/rutracker/?jackett_apikey=secret&path=topic",
+        );
+        assert!(download_cache_key.contains("path=topic"));
+        assert!(!download_cache_key.contains("jackett_apikey"));
+        assert!(!download_cache_key.contains("secret"));
+    }
+
+    #[test]
+    fn limits_torznab_download_hydration_to_the_configured_origin() {
+        let api_url = "http://127.0.0.1:9117/api/v2.0/indexers/all/results/torznab/api";
+        assert!(torznab_download_url_allowed(
+            api_url,
+            "http://127.0.0.1:9117/dl/rutracker/123?path=topic"
+        ));
+        assert!(!torznab_download_url_allowed(
+            api_url,
+            "http://127.0.0.1:9696/dl/rutracker/123"
+        ));
+        assert!(!torznab_download_url_allowed(
+            api_url,
+            "https://attacker.example/dl/rutracker/123"
+        ));
     }
 
     #[test]
@@ -10221,7 +10382,7 @@ mod tests {
             </rss>
         "#;
         let streams = parse_torznab_xml(xml).expect("parse torznab");
-        assert_eq!(streams.len(), 1);
+        assert_eq!(streams.len(), 2);
         let stream = &streams[0];
         assert_eq!(stream.infoHash, "abcdef0123456789abcdef0123456789abcdef01");
         assert_eq!(stream.name, "Torznab - ExampleIndexer");
@@ -10230,6 +10391,8 @@ mod tests {
         assert_eq!(parse_seed_count(&stream.title), 321);
         assert!(stream.title.contains("💾 1.5 GB"));
         assert!(stream.title.contains("⚙ GROUP"));
+        assert_eq!(streams[1].downloadUrl, "https://example.com/file.torrent");
+        assert!(streams[1].infoHash.is_empty());
     }
 
     #[test]

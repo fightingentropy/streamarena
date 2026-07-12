@@ -460,7 +460,10 @@ When Torznab is configured, its unique results supplement Torrentio in the
 torrent source list and remain available as a resolver fallback. For Jackett,
 configure only indexers that pass a real title search, then use the aggregate
 `/api/v2.0/indexers/all/results/torznab/api` endpoint. A custom BitSearch
-definition is included at `config/jackett/bitsearch.yml`.
+definition is included at `config/jackett/bitsearch.yml`. Authenticated
+indexers such as RuTracker may return same-origin Jackett download links;
+StreamArena resolves those redirects to magnets server-side and rejects links
+that leave the configured Torznab origin.
 
 Server:
 

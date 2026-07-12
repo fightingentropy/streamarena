@@ -98,6 +98,8 @@ torznab_key=$(awk -F= '/^TORZNAB_API_KEY=/ {print substr($0, length($1) + 2); ex
 torznab_configured=$([[ -n "$torznab_url" && -n "$torznab_key" ]] && echo yes || echo no)
 jackett_listener=$(lsof -nP -iTCP:9117 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
 jackett_launch_state=$(launchctl print "gui/$(id -u)/com.fightingentropy.jackett" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
+jackett_indexers_mode=$(stat -f '%Lp' "$HOME/Library/Application Support/Jackett/Indexers" 2>/dev/null || echo missing)
+rutracker_config_mode=$(stat -f '%Lp' "$HOME/Library/Application Support/Jackett/Indexers/rutracker.json" 2>/dev/null || echo missing)
 torznab_search_http=skipped
 torznab_search_items=0
 if [[ "$torznab_configured" == "yes" ]]; then
@@ -214,6 +216,8 @@ printf 'sports_proxy_matches_expected=%s\n' "$sports_proxy_matches_expected"
 printf 'torznab_configured=%s\n' "$torznab_configured"
 printf 'jackett_listener=%s\n' "${jackett_listener:-missing}"
 printf 'jackett_launch_state=%s\n' "${jackett_launch_state:-missing}"
+printf 'jackett_indexers_mode=%s\n' "$jackett_indexers_mode"
+printf 'rutracker_config_mode=%s\n' "$rutracker_config_mode"
 printf 'torznab_search_http=%s\n' "$torznab_search_http"
 printf 'torznab_search_items=%s\n' "$torznab_search_items"
 printf 'espn_football_event_count=%s\n' "$espn_football_event_count"
@@ -289,6 +293,8 @@ sports_proxy_matches_expected=$(value_for sports_proxy_matches_expected)
 torznab_configured=$(value_for torznab_configured)
 jackett_listener=$(value_for jackett_listener)
 jackett_launch_state=$(value_for jackett_launch_state)
+jackett_indexers_mode=$(value_for jackett_indexers_mode)
+rutracker_config_mode=$(value_for rutracker_config_mode)
 torznab_search_http=$(value_for torznab_search_http)
 torznab_search_items=$(value_for torznab_search_items)
 espn_football_event_count=$(value_for espn_football_event_count)
@@ -366,6 +372,8 @@ fi
 if [[ "$torznab_configured" == "yes" ]]; then
   [[ "$jackett_listener" == "127.0.0.1:9117" ]] && pass "Jackett listens on localhost only" || bad "Jackett listener is '$jackett_listener'"
   [[ "$jackett_launch_state" == "running" ]] && pass "Jackett launchd state is running" || bad "Jackett launchd state is $jackett_launch_state"
+  [[ "$jackett_indexers_mode" == "700" ]] && pass "Jackett indexer configuration directory is private" || bad "Jackett indexer configuration directory mode is $jackett_indexers_mode"
+  [[ "$rutracker_config_mode" == "600" ]] && pass "RuTracker credential configuration is private" || bad "RuTracker credential configuration mode is $rutracker_config_mode"
   [[ "$torznab_search_http" == "200" ]] && pass "Torznab aggregate search returns HTTP 200" || bad "Torznab aggregate search returned HTTP $torznab_search_http"
   [[ "$torznab_search_items" =~ ^[1-9][0-9]*$ ]] && pass "Torznab aggregate search returned $torznab_search_items items" || bad "Torznab aggregate search returned no items"
 fi
