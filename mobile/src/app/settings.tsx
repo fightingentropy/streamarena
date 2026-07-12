@@ -1,10 +1,13 @@
-import { ScrollView, Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, ScrollView, Switch, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import Constants from "expo-constants";
-import { ChevronRight, HardDrive, SlidersHorizontal } from "lucide-react-native";
+import { ChevronRight, HardDrive, Magnet, SlidersHorizontal } from "lucide-react-native";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { useAuth } from "@/lib/auth";
 import { API_ORIGIN } from "@/lib/config";
+import { selectionAsync } from "@/lib/haptics";
+import { getTorrentSettings, setTorrentStreamingEnabled } from "@/lib/streamarena";
 import { colors } from "@/theme";
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -38,6 +41,39 @@ function NavRow({ icon, label, sublabel, onPress }: { icon: React.ReactNode; lab
 export default function SettingsScreen() {
   const { user, signOut } = useAuth();
   const router = useRouter();
+  const [torrentEnabled, setTorrentEnabled] = useState<boolean | null>(null);
+  const [torrentSaving, setTorrentSaving] = useState(false);
+  const [torrentError, setTorrentError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void getTorrentSettings()
+      .then((settings) => {
+        if (!cancelled) setTorrentEnabled(settings.localTorrentEnabled);
+      })
+      .catch((error) => {
+        if (!cancelled) setTorrentError(error instanceof Error ? error.message : "Couldn’t load torrent settings.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggleTorrentStreaming = (enabled: boolean) => {
+    if (torrentEnabled == null || torrentSaving) return;
+    const previous = torrentEnabled;
+    selectionAsync();
+    setTorrentEnabled(enabled);
+    setTorrentSaving(true);
+    setTorrentError("");
+    void setTorrentStreamingEnabled(enabled)
+      .then((settings) => setTorrentEnabled(settings.localTorrentEnabled))
+      .catch((error) => {
+        setTorrentEnabled(previous);
+        setTorrentError(error instanceof Error ? error.message : "Couldn’t update torrent streaming.");
+      })
+      .finally(() => setTorrentSaving(false));
+  };
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingVertical: 12 }}>
@@ -62,6 +98,27 @@ export default function SettingsScreen() {
         sublabel="Wi-Fi-only, storage limit, manage files"
         onPress={() => router.push("/settings/storage")}
       />
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 20, paddingVertical: 14 }}>
+        <View style={{ width: 30, alignItems: "center" }}>
+          <Magnet size={20} color={colors.foreground} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: colors.foreground, fontSize: 15, fontWeight: "600" }}>Torrent streaming</Text>
+          <Text style={{ color: torrentError ? colors.accent : colors.muted, fontSize: 12, marginTop: 1 }}>
+            {torrentError || "Find magnets and stream them through your Mini"}
+          </Text>
+        </View>
+        {torrentEnabled == null || torrentSaving ? (
+          <ActivityIndicator size="small" color={colors.muted} />
+        ) : (
+          <Switch
+            value={torrentEnabled}
+            onValueChange={toggleTorrentStreaming}
+            trackColor={{ true: colors.accent, false: "#3a3a3a" }}
+            accessibilityLabel="Torrent streaming"
+          />
+        )}
+      </View>
 
       <Text className="px-5 pb-2 pt-6 text-xs font-semibold uppercase" style={{ color: colors.muted }}>
         Connection

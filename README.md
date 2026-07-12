@@ -26,7 +26,7 @@ The repository is a single full-stack app:
 - Backend: Rust 2024, Axum 0.8, Tokio, Reqwest 0.13, and SQLite via `rusqlite` 0.40.
 - Frontend: SolidJS with Vite 8 in multi-page app mode.
 - Player: custom HTML5 video UI with direct playback, remux, HLS, subtitles, live streams, and source switching.
-- Discovery: TMDB metadata, selected external embed fallbacks, and user-enabled Torrentio/Torznab plus Real-Debrid torrent resolution.
+- Discovery: TMDB metadata, selected external embed fallbacks, and user-enabled Torrentio/Torznab magnet resolution with optional Real-Debrid acceleration.
 - Local library: `assets/library.json` plus uploaded/managed videos under `assets/videos`.
 - Persistence: two SQLite files — durable accounts/user data in `cache/users.sqlite`, and regenerable cache/resolver state in `cache/resolver-cache.sqlite` (the latter self-heals if corrupt; the former is never auto-wiped).
 - Production target: a Mac mini runtime tree served locally on `127.0.0.1:5173` and exposed through Caddy.
@@ -131,12 +131,12 @@ Playback flow for TMDB titles:
 3. It calls `/api/resolve/movie` or `/api/resolve/tv`.
 4. For default unpinned TMDB playback, the resolver ranks native HLS providers by quality and learned health, starts with VidLink on a neutral install, then quickly rotates through VidRock, NoTorrent, VixSrc, LordFlix, and VidEasy sources when a provider fails. Providers with poor health are skipped from auto-fallback; Icefy remains manually selectable only.
 5. The player probes tracks when needed through `/api/media/tracks`, selects audio/subtitle streams, and chooses direct, HLS, remux, local torrent, or local cache playback.
-6. If the external HLS path fails in the browser, the player retries with `skipExternalEmbed=1`; Torrentio/Torznab torrent sources are only considered when the current user has saved a Real-Debrid API token in Settings, and local torrent/cache playback stays off unless the user also enables Local torrent cache in Settings.
+6. If the external HLS path fails in the browser, the player retries with `skipExternalEmbed=1`. Torrentio/Torznab sources are considered whenever the user enables Torrent streaming or has saved a Real-Debrid token. Standalone Torrent streaming resolves magnets through the Mini's local torrent engine; Real-Debrid remains an optional direct-download accelerator.
 7. Playback progress is stored locally for responsiveness and synced to `/api/user/watch-progress`, `/api/user/continue-watching`, and `/api/session/progress` when enabled.
 
 External movie/TV embed stack:
 
-- Default neutral order: VidLink native HLS -> VidRock native HLS -> NoTorrent native HLS -> VixSrc native HLS -> LordFlix native HLS -> VidEasy native HLS. Provider/source health is recorded from resolver and playback success/failure events, so healthier sources move up over time and unhealthy ones are skipped from auto-fallback. Torrent sources require a Real-Debrid API token in Settings; local torrent/cache additionally requires the Local torrent cache setting.
+- Default neutral order: VidLink native HLS -> VidRock native HLS -> NoTorrent native HLS -> VixSrc native HLS -> LordFlix native HLS -> VidEasy native HLS. Provider/source health is recorded from resolver and playback success/failure events, so healthier sources move up over time and unhealthy ones are skipped from auto-fallback. Enabling Torrent streaming makes Torrentio/Torznab magnet sources eligible without Real-Debrid and prioritizes the Mini's local torrent engine for automatic playback.
 - Selectable sources include VidLink, VidRock, NoTorrent, VixSrc, LordFlix, Icefy, the VidEasy default source, and VidEasy server sources Yoru, Neon, Cypher, Sage, Breach, Vyse, and Raze, with original/alternate audio hints shown in the player server menu. Selected movie/TV external sources must resolve to native HLS; the resolver does not hand off to the provider iframe.
 - VidEasy embeds are built from `https://player.videasy.to/movie/...` or `/tv/...`; the legacy `player.videasy.net` redirect is still accepted by the resolver. Extracted HLS playlists are accepted on public HTTPS hosts discovered by the trusted resolver.
 - VidLink embeds are built from `https://vidlink.pro/movie/...` or `/tv/...`; extracted HLS playlist hosts include `storm.vodvidl.site` and `typhoontigertribe.net`.
@@ -360,6 +360,7 @@ Protected API routes:
 - `GET /api/subtitles.external.vtt`
 - `GET /api/auth/me`
 - `GET|PUT /api/user/preferences`
+- `GET|PUT /api/user/torrent-settings`
 - `GET|PUT|DELETE /api/user/watch-progress`
 - `GET|PUT|DELETE /api/user/continue-watching`
 - `GET|PUT /api/user/my-list`
@@ -418,8 +419,8 @@ Required for TMDB browsing and external embed playback:
 
 Per-user Settings:
 
-- Real-Debrid API token - enables Torrentio/Torznab torrent source discovery and Real-Debrid resolution for that user.
-- Local torrent cache - separately enables local torrent/cache playback for that user, and still requires a saved Real-Debrid API token.
+- Torrent streaming - enables magnet discovery and local torrent/cache playback through the Mini without requiring Real-Debrid.
+- Real-Debrid API token - optional; when configured, `fastest` tries its direct-download path before falling back to local torrent streaming.
 
 Real-Debrid tokens are encrypted at rest with AES-256-GCM. Configure an
 operator-managed key ring before a user saves a token:
@@ -516,7 +517,7 @@ Resolver/local cache:
 
 Torznab behavior:
 
-- Torrentio remains the primary torrent discovery source when the current user has a Real-Debrid API token saved.
+- Torrentio remains the primary torrent discovery source when the user enables Torrent streaming or saves a Real-Debrid API token.
 - Torznab is a fallback for missing/failed Torrentio results or pinned hashes absent from Torrentio.
 - Torznab is discovery only. Real-Debrid or user-enabled local torrent/cache still supplies the playable media path.
 - Prefer filtered Prowlarr/Jackett endpoints over broad `all` endpoints.
@@ -848,7 +849,7 @@ Resolver errors:
 
 - Check `TMDB_API_KEY`, the user's Real-Debrid token in Settings, and network access.
 - If using Torznab, check `TORZNAB_API_URL`, `TORZNAB_API_KEY`, category IDs, and timeout.
-- If local torrent is selected or auto-used, check the Local torrent cache setting, local disk budget, and `cache/local-torrents`.
+- If local torrent is selected or auto-used, check the Torrent streaming setting, local disk budget, and `cache/local-torrents`.
 
 Movie/TV external embed fails:
 

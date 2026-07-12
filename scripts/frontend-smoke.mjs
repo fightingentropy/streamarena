@@ -603,7 +603,7 @@ async function runSmoke() {
         }
         if (
           pageSpec.expectRealDebridLoadFailureNoOverwrite &&
-          url.pathname === "/api/user/real-debrid"
+          url.pathname === "/api/user/torrent-settings"
         ) {
           if (request.method() === "GET") {
             await route.fulfill(jsonResponse({ error: "Temporary failure." }, 503));

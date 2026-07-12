@@ -987,7 +987,7 @@ impl StreamingService {
             let segment_duration = remaining.max(0.5).min(HLS_SEGMENT_DURATION_SECONDS as f64);
             let segment_url = format!(
                 "/api/hls/segment.ts?input={}&index={}&audioStream={}",
-                byte_serialize(source_input.as_bytes()).collect::<String>(),
+                byte_serialize(input.trim().as_bytes()).collect::<String>(),
                 index,
                 safe_audio_stream
             );

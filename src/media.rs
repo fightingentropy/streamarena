@@ -1372,7 +1372,11 @@ fn local_backend_url(config: &Config, path_and_query: &str) -> String {
         "" | "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
         host => host,
     };
-    format!("http://{host}:{}{}", config.port, path_and_query.trim())
+    let signed_path = crate::local_torrent::with_internal_stream_access(
+        path_and_query.trim(),
+        &config.live_hls_proxy_secret,
+    );
+    format!("http://{host}:{}{signed_path}", config.port)
 }
 
 fn is_allowed_remote_transcode_url(url: &Url) -> bool {

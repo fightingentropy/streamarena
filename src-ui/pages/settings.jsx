@@ -354,16 +354,10 @@ export default function SettingsPage() {
     const nextValue = String(e.target.value || "");
     setRealDebridApiKeyInput(nextValue);
     setRealDebridApiKeyDirty(Boolean(nextValue.trim()));
-    if (!realDebridConfigured() && !nextValue.trim()) {
-      setLocalTorrentEnabled(false);
-    }
   }
 
   function canToggleLocalTorrentCache() {
-    return (
-      (realDebridLoadState() === "loaded" && realDebridConfigured()) ||
-      Boolean(String(realDebridApiKeyInput() || "").trim())
-    );
+    return realDebridLoadState() !== "loading";
   }
 
   function handleLocalTorrentEnabledChange(e) {
@@ -401,7 +395,7 @@ export default function SettingsPage() {
     setRealDebridLoadState("loading");
     setRealDebridStatus("Loading…");
     try {
-      const response = await fetch("/api/user/real-debrid", { cache: "no-store" });
+      const response = await fetch("/api/user/torrent-settings", { cache: "no-store" });
       if (handleAuthFailureResponse(response)) return;
       if (!response.ok) {
         throw new Error(`Unable to load Real-Debrid settings (${response.status}).`);
@@ -438,7 +432,7 @@ export default function SettingsPage() {
     }
 
     setRealDebridStatus("Saving...");
-    const response = await fetch("/api/user/real-debrid", {
+    const response = await fetch("/api/user/torrent-settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -464,10 +458,10 @@ export default function SettingsPage() {
   async function handleClearRealDebridApiKey() {
     setRealDebridStatus("Clearing...");
     try {
-      const response = await fetch("/api/user/real-debrid", {
+      const response = await fetch("/api/user/torrent-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: "", localTorrentEnabled: false }),
+        body: JSON.stringify({ apiKey: "" }),
       });
       const payload = await response.json().catch(() => ({}));
       if (handleAuthFailureResponse(response)) {
@@ -479,7 +473,6 @@ export default function SettingsPage() {
       setRealDebridConfigured(false);
       setRealDebridMaskedApiKey("");
       setRealDebridApiKeyInput("");
-      setLocalTorrentEnabled(false);
       setRealDebridApiKeyDirty(false);
       setLocalTorrentDirty(false);
       setRealDebridLoadState("loaded");
@@ -664,7 +657,7 @@ export default function SettingsPage() {
               <section class="settings-list-row settings-list-row--debrid">
                 <span class="settings-row-icon settings-row-icon--torrent" aria-hidden="true"></span>
                 <div class="settings-row-copy">
-                  <h3>Local torrent cache</h3>
+                  <h3>Torrent streaming</h3>
                   <p>{getLocalTorrentStatusLabel(localTorrentEnabled(), realDebridLoadState())}</p>
                 </div>
                 <div class="settings-row-control local-torrent-controls">

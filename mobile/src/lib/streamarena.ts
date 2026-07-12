@@ -244,6 +244,22 @@ export function useSeason(tmdbId: string | number, seasonNumber: number, enabled
 
 // ─────────────────────────── Sources / resolve / play ───────────────────────────
 
+export type TorrentSettings = {
+  configured: boolean;
+  maskedApiKey: string;
+  localTorrentEnabled: boolean;
+};
+
+export function getTorrentSettings(): Promise<TorrentSettings> {
+  return getJson<TorrentSettings>("/api/user/torrent-settings", { timeoutMs: 15_000 });
+}
+
+export function setTorrentStreamingEnabled(enabled: boolean): Promise<TorrentSettings> {
+  return mutateJson<TorrentSettings>("/api/user/torrent-settings", "PUT", {
+    localTorrentEnabled: enabled,
+  });
+}
+
 export type SourceSummary = {
   sourceHash: string;
   infoHash?: string;
@@ -344,7 +360,7 @@ export function getSources(p: ResolveParams, signal?: AbortSignal): Promise<Sour
 
 export function resolveTitle(p: ResolveParams, signal?: AbortSignal): Promise<ResolvedSource> {
   const endpoint = p.mediaType === "tv" ? "/api/resolve/tv" : "/api/resolve/movie";
-  return getJson<ResolvedSource>(`${endpoint}?${resolveQuery(p)}`, { timeoutMs: 60_000, signal });
+  return getJson<ResolvedSource>(`${endpoint}?${resolveQuery(p)}`, { timeoutMs: 180_000, signal });
 }
 
 export function sessionKeyOf(resolved: ResolvedSource): string | undefined {

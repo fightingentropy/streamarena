@@ -127,9 +127,9 @@ impl Config {
             2 * 1024 * 1024 * 1024 * 1024,
         );
         let local_torrent_metadata_timeout_ms =
-            parse_u64_env("LOCAL_TORRENT_METADATA_TIMEOUT_MS", 20_000, 5_000, 180_000);
+            parse_u64_env("LOCAL_TORRENT_METADATA_TIMEOUT_MS", 60_000, 5_000, 180_000);
         let local_torrent_ready_timeout_ms =
-            parse_u64_env("LOCAL_TORRENT_READY_TIMEOUT_MS", 15_000, 5_000, 300_000);
+            parse_u64_env("LOCAL_TORRENT_READY_TIMEOUT_MS", 45_000, 5_000, 300_000);
         let torznab_limit = parse_usize_env("TORZNAB_LIMIT", 50, 1, 100);
         let torznab_timeout_ms = parse_u64_env("TORZNAB_TIMEOUT_MS", 15_000, 3_000, 65_000);
         let hls_max_transcode_jobs = parse_usize_env("HLS_MAX_TRANSCODE_JOBS", 1, 1, 8);

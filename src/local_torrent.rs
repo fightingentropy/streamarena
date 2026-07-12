@@ -9,13 +9,17 @@ use axum::http::header::{
     ACCEPT_RANGES, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, HeaderValue, RANGE,
 };
 use axum::http::{HeaderMap, Method, Response, StatusCode};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dashmap::DashMap;
+use hmac::{Hmac, Mac};
 use librqbit::api::TorrentIdOrHash;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session, SessionOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::Sha256;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::{Mutex, OnceCell};
 use tokio::time::timeout;
@@ -32,11 +36,70 @@ const LOCAL_TORRENT_RECENT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const LOCAL_TORRENT_ACCESS_MARKER: &str = ".last-accessed";
 const CACHE_CONTROL_STREAM: &str = "no-store";
 const DIRECT_FILE_CACHE_FOLDER: &str = "direct";
+const INTERNAL_STREAM_ACCESS_PARAM: &str = "internalAccess";
+const INTERNAL_STREAM_ACCESS_CONTEXT: &[u8] = b"streamarena-local-torrent-internal-v1";
+type HmacSha256 = Hmac<Sha256>;
 /// Direct-cache downloads only ever target Real-Debrid unrestricted
 /// links. Restricting the host prevents this server-side fetch from being
 /// pointed at internal/metadata endpoints (SSRF).
 const DIRECT_CACHE_ALLOWED_DOWNLOAD_HOSTS: &[&str] =
     &["download.real-debrid.com", "real-debrid.com"];
+
+fn internal_stream_access_token(secret: &str, protected_target: &str) -> String {
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts keys of any length");
+    mac.update(INTERNAL_STREAM_ACCESS_CONTEXT);
+    mac.update(b"\0");
+    mac.update(protected_target.as_bytes());
+    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
+pub(crate) fn with_internal_stream_access(path_and_query: &str, secret: &str) -> String {
+    let protected_target = path_and_query.trim();
+    let separator = if protected_target.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
+    format!(
+        "{protected_target}{separator}{INTERNAL_STREAM_ACCESS_PARAM}={}",
+        internal_stream_access_token(secret, protected_target)
+    )
+}
+
+pub(crate) fn is_internal_stream_request(secret: &str, uri: &axum::http::Uri) -> bool {
+    if !matches!(
+        uri.path(),
+        "/api/local-torrent/stream" | "/api/local-cache/stream"
+    ) {
+        return false;
+    }
+    let path_and_query = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or_else(|| uri.path());
+    let separator = format!("&{INTERNAL_STREAM_ACCESS_PARAM}=");
+    let first_separator = format!("?{INTERNAL_STREAM_ACCESS_PARAM}=");
+    let Some((protected_target, encoded_token)) = path_and_query
+        .rsplit_once(&separator)
+        .or_else(|| path_and_query.rsplit_once(&first_separator))
+    else {
+        return false;
+    };
+    if encoded_token.is_empty() || encoded_token.contains('&') {
+        return false;
+    }
+    let Ok(token) = URL_SAFE_NO_PAD.decode(encoded_token) else {
+        return false;
+    };
+    let Ok(mut mac) = HmacSha256::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(INTERNAL_STREAM_ACCESS_CONTEXT);
+    mac.update(b"\0");
+    mac.update(protected_target.as_bytes());
+    mac.verify_slice(&token).is_ok()
+}
 
 #[derive(Clone)]
 pub struct LocalTorrentService {
@@ -1248,11 +1311,35 @@ fn system_time_ms(value: SystemTime) -> i64 {
 mod tests {
     use super::{
         DirectFileCacheEntry, LocalTorrentFileCandidate, direct_file_cache_key,
-        direct_file_entry_to_resolved_source, direct_file_stream_url, local_torrent_cache_key,
-        normalize_direct_file_id, parse_stream_range, pick_local_torrent_video_file,
-        sanitize_cache_filename, validate_direct_file_stream_params,
-        validate_local_torrent_stream_params,
+        direct_file_entry_to_resolved_source, direct_file_stream_url, is_internal_stream_request,
+        local_torrent_cache_key, normalize_direct_file_id, parse_stream_range,
+        pick_local_torrent_video_file, sanitize_cache_filename, validate_direct_file_stream_params,
+        validate_local_torrent_stream_params, with_internal_stream_access,
     };
+
+    #[test]
+    fn internal_stream_access_is_scoped_and_authenticated() {
+        let secret = "test-internal-stream-secret";
+        let signed = with_internal_stream_access(
+            "/api/local-torrent/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=1",
+            secret,
+        );
+        let uri = signed.parse().expect("signed local stream URI");
+        assert!(is_internal_stream_request(secret, &uri));
+        assert!(!is_internal_stream_request("wrong-secret", &uri));
+
+        let wrong_path = signed
+            .replacen("/api/local-torrent/stream", "/api/media/tracks", 1)
+            .parse()
+            .expect("wrong-path URI");
+        assert!(!is_internal_stream_request(secret, &wrong_path));
+
+        let wrong_file = signed
+            .replacen("fileId=1", "fileId=2", 1)
+            .parse()
+            .expect("wrong-file URI");
+        assert!(!is_internal_stream_request(secret, &wrong_file));
+    }
 
     #[test]
     fn validates_stream_params() {

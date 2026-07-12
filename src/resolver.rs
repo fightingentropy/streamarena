@@ -48,7 +48,7 @@ const REAL_DEBRID_API_BASE: &str = "https://api.real-debrid.com/rest/1.0";
 const SOURCE_LANGUAGE_FILTER_DEFAULT: &str = "en";
 const SOURCE_AUDIO_PROFILE_DEFAULT: &str = "single";
 const RESOLVE_MAX_MS: i64 = 90_000;
-const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 40_000;
+const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 150_000;
 const FASTEST_RESOLVE_MAX_MS: i64 = 45_000;
 #[cfg(test)]
 const FASTEST_PARALLEL_CANDIDATES: usize = 4;
@@ -663,11 +663,43 @@ impl RealDebridRequestContext {
     }
 }
 
+fn torrent_playback_enabled(
+    real_debrid: Option<&RealDebridRequestContext>,
+    local_torrent_enabled: bool,
+) -> bool {
+    real_debrid.is_some() || local_torrent_enabled
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolverProvider {
     RealDebrid,
     LocalTorrent,
     Fastest,
+}
+
+fn automatic_default_resolver_provider(
+    resolver_provider: ResolverProvider,
+    real_debrid_configured: bool,
+    local_torrent_enabled: bool,
+) -> ResolverProvider {
+    if !real_debrid_configured && local_torrent_enabled && resolver_provider.is_fastest() {
+        ResolverProvider::LocalTorrent
+    } else {
+        resolver_provider
+    }
+}
+
+fn cache_reuse_provider_for_context(
+    resolver_provider: ResolverProvider,
+    real_debrid_configured: bool,
+    local_torrent_enabled: bool,
+) -> ResolverProvider {
+    automatic_default_resolver_provider(
+        resolver_provider,
+        real_debrid_configured,
+        local_torrent_enabled,
+    )
+    .cache_reuse_provider()
 }
 
 impl ResolverProvider {
@@ -851,6 +883,7 @@ impl ResolverService {
         &self,
         user_id: i64,
         real_debrid_api_key: &str,
+        local_torrent_enabled: bool,
         tmdb_id: &str,
         media_type: &str,
         title_fallback: &str,
@@ -920,7 +953,7 @@ impl ResolverService {
             let has_external_sources = !external_sources.is_empty();
             let pinned_external_source =
                 external_embed_source_for_source_hash(&metadata, &normalized_source_hash).is_some();
-            if real_debrid.is_none() {
+            if !torrent_playback_enabled(real_debrid.as_ref(), local_torrent_enabled) {
                 return Ok(json!({
                     "mediaType": "tv",
                     "tmdbId": tmdb_id.trim(),
@@ -1063,7 +1096,7 @@ impl ResolverService {
         let has_external_sources = !external_sources.is_empty();
         let pinned_external_source =
             external_embed_source_for_source_hash(&metadata, &normalized_source_hash).is_some();
-        if real_debrid.is_none() {
+        if !torrent_playback_enabled(real_debrid.as_ref(), local_torrent_enabled) {
             return Ok(json!({
                 "mediaType": "movie",
                 "tmdbId": tmdb_id.trim(),
@@ -1386,7 +1419,7 @@ impl ResolverService {
         }
         let pinned_external_source =
             external_embed_source_for_source_hash(&metadata, &filters.source_hash);
-        let external_embed_only = real_debrid.is_none();
+        let external_embed_only = !torrent_playback_enabled(real_debrid, local_torrent_enabled);
         let effective_skip_external_embed = skip_external_embed && !external_embed_only;
         let default_external_filters = if external_embed_only {
             ResolveFilters {
@@ -1397,11 +1430,11 @@ impl ResolverService {
         } else {
             filters.clone()
         };
-        let default_external_resolver_provider = if external_embed_only {
-            ResolverProvider::Fastest
-        } else {
-            resolver_provider
-        };
+        let default_external_resolver_provider = automatic_default_resolver_provider(
+            resolver_provider,
+            real_debrid.is_some(),
+            local_torrent_enabled,
+        );
         if !effective_skip_external_embed
             && let Some(provider) = pinned_external_source
             && is_external_embed_hls_capable_source(provider)
@@ -1451,13 +1484,20 @@ impl ResolverService {
         {
             return Ok(payload);
         }
-        if real_debrid.is_none() {
+        if resolver_provider.is_real_debrid() && real_debrid.is_none() {
+            return Err(real_debrid_api_key_required_error());
+        }
+        if real_debrid.is_none() && !local_torrent_enabled {
             return Err(external_embed_hls_unavailable_error());
         }
         if resolver_provider == ResolverProvider::LocalTorrent && !local_torrent_enabled {
             return Err(local_torrent_required_error());
         }
-        let cache_reuse_provider = resolver_provider.cache_reuse_provider();
+        let cache_reuse_provider = cache_reuse_provider_for_context(
+            resolver_provider,
+            real_debrid.is_some(),
+            local_torrent_enabled,
+        );
         if let Some(reused) = self
             .try_reuse_playback_session(
                 user_id,
@@ -1787,7 +1827,7 @@ impl ResolverService {
         }
         let pinned_external_source =
             external_embed_source_for_source_hash(&metadata, &filters.source_hash);
-        let external_embed_only = real_debrid.is_none();
+        let external_embed_only = !torrent_playback_enabled(real_debrid, local_torrent_enabled);
         let effective_skip_external_embed = skip_external_embed && !external_embed_only;
         let default_external_filters = if external_embed_only {
             ResolveFilters {
@@ -1798,11 +1838,11 @@ impl ResolverService {
         } else {
             filters.clone()
         };
-        let default_external_resolver_provider = if external_embed_only {
-            ResolverProvider::Fastest
-        } else {
-            resolver_provider
-        };
+        let default_external_resolver_provider = automatic_default_resolver_provider(
+            resolver_provider,
+            real_debrid.is_some(),
+            local_torrent_enabled,
+        );
         if !effective_skip_external_embed
             && let Some(provider) = pinned_external_source
             && is_external_embed_hls_capable_source(provider)
@@ -1852,13 +1892,20 @@ impl ResolverService {
         {
             return Ok(payload);
         }
-        if real_debrid.is_none() {
+        if resolver_provider.is_real_debrid() && real_debrid.is_none() {
+            return Err(real_debrid_api_key_required_error());
+        }
+        if real_debrid.is_none() && !local_torrent_enabled {
             return Err(external_embed_hls_unavailable_error());
         }
         if resolver_provider == ResolverProvider::LocalTorrent && !local_torrent_enabled {
             return Err(local_torrent_required_error());
         }
-        let cache_reuse_provider = resolver_provider.cache_reuse_provider();
+        let cache_reuse_provider = cache_reuse_provider_for_context(
+            resolver_provider,
+            real_debrid.is_some(),
+            local_torrent_enabled,
+        );
         if let Some(reused) = self
             .try_reuse_playback_session(
                 user_id,
@@ -2100,34 +2147,15 @@ impl ResolverService {
         user_id: i64,
         local_torrent_enabled: bool,
     ) -> AppResult<Value> {
-        let Some(real_debrid) = real_debrid else {
-            return Err(real_debrid_api_key_required_error());
-        };
-        let real_debrid_result = self
-            .resolve_movie_candidates_with_provider(
-                candidates.clone(),
-                CandidateResolutionContext {
-                    metadata,
-                    preferences,
-                    resolver_provider: ResolverProvider::RealDebrid,
-                    real_debrid: Some(real_debrid),
-                    user_id,
-                    local_torrent_enabled,
-                },
-            )
-            .await;
-        if !local_torrent_enabled {
-            return real_debrid_result;
-        }
-        match real_debrid_result {
-            Ok(result) => Ok(result),
-            Err(real_debrid_error) => match self
+        let mut real_debrid_error = None;
+        if let Some(real_debrid) = real_debrid {
+            match self
                 .resolve_movie_candidates_with_provider(
-                    candidates,
+                    candidates.clone(),
                     CandidateResolutionContext {
                         metadata,
                         preferences,
-                        resolver_provider: ResolverProvider::LocalTorrent,
+                        resolver_provider: ResolverProvider::RealDebrid,
                         real_debrid: Some(real_debrid),
                         user_id,
                         local_torrent_enabled,
@@ -2135,16 +2163,39 @@ impl ResolverService {
                 )
                 .await
             {
-                Ok(result) => Ok(result),
-                Err(local_torrent_error) => Err(
-                    if is_persistent_source_resolve_error(&local_torrent_error) {
-                        local_torrent_error
-                    } else {
-                        real_debrid_error
-                    },
-                ),
-            },
+                Ok(result) => return Ok(result),
+                Err(error) => real_debrid_error = Some(error),
+            }
         }
+
+        if local_torrent_enabled {
+            return match self
+                .resolve_movie_candidates_with_provider(
+                    candidates,
+                    CandidateResolutionContext {
+                        metadata,
+                        preferences,
+                        resolver_provider: ResolverProvider::LocalTorrent,
+                        real_debrid,
+                        user_id,
+                        local_torrent_enabled,
+                    },
+                )
+                .await
+            {
+                Ok(result) => Ok(result),
+                Err(local_torrent_error) => Err(match real_debrid_error {
+                    Some(real_debrid_error)
+                        if !is_persistent_source_resolve_error(&local_torrent_error) =>
+                    {
+                        real_debrid_error
+                    }
+                    _ => local_torrent_error,
+                }),
+            };
+        }
+
+        Err(real_debrid_error.unwrap_or_else(real_debrid_api_key_required_error))
     }
 
     async fn resolve_episode_candidates(
@@ -2252,34 +2303,15 @@ impl ResolverService {
         user_id: i64,
         local_torrent_enabled: bool,
     ) -> AppResult<Value> {
-        let Some(real_debrid) = real_debrid else {
-            return Err(real_debrid_api_key_required_error());
-        };
-        let real_debrid_result = self
-            .resolve_episode_candidates_with_provider(
-                candidates.clone(),
-                CandidateResolutionContext {
-                    metadata,
-                    preferences,
-                    resolver_provider: ResolverProvider::RealDebrid,
-                    real_debrid: Some(real_debrid),
-                    user_id,
-                    local_torrent_enabled,
-                },
-            )
-            .await;
-        if !local_torrent_enabled {
-            return real_debrid_result;
-        }
-        match real_debrid_result {
-            Ok(result) => Ok(result),
-            Err(real_debrid_error) => match self
+        let mut real_debrid_error = None;
+        if let Some(real_debrid) = real_debrid {
+            match self
                 .resolve_episode_candidates_with_provider(
-                    candidates,
+                    candidates.clone(),
                     CandidateResolutionContext {
                         metadata,
                         preferences,
-                        resolver_provider: ResolverProvider::LocalTorrent,
+                        resolver_provider: ResolverProvider::RealDebrid,
                         real_debrid: Some(real_debrid),
                         user_id,
                         local_torrent_enabled,
@@ -2287,16 +2319,39 @@ impl ResolverService {
                 )
                 .await
             {
-                Ok(result) => Ok(result),
-                Err(local_torrent_error) => Err(
-                    if is_persistent_source_resolve_error(&local_torrent_error) {
-                        local_torrent_error
-                    } else {
-                        real_debrid_error
-                    },
-                ),
-            },
+                Ok(result) => return Ok(result),
+                Err(error) => real_debrid_error = Some(error),
+            }
         }
+
+        if local_torrent_enabled {
+            return match self
+                .resolve_episode_candidates_with_provider(
+                    candidates,
+                    CandidateResolutionContext {
+                        metadata,
+                        preferences,
+                        resolver_provider: ResolverProvider::LocalTorrent,
+                        real_debrid,
+                        user_id,
+                        local_torrent_enabled,
+                    },
+                )
+                .await
+            {
+                Ok(result) => Ok(result),
+                Err(local_torrent_error) => Err(match real_debrid_error {
+                    Some(real_debrid_error)
+                        if !is_persistent_source_resolve_error(&local_torrent_error) =>
+                    {
+                        real_debrid_error
+                    }
+                    _ => local_torrent_error,
+                }),
+            };
+        }
+
+        Err(real_debrid_error.unwrap_or_else(real_debrid_api_key_required_error))
     }
 
     /// Backfill external subtitle tracks on resolved payloads that have none.
@@ -7951,9 +8006,7 @@ fn selected_external_embed_hls_unavailable_error() -> ApiError {
 }
 
 fn local_torrent_required_error() -> ApiError {
-    ApiError::failed_dependency(
-        "Enable Local torrent cache in Settings to use local torrent sources.",
-    )
+    ApiError::failed_dependency("Enable Torrent streaming in Settings to use magnet sources.")
 }
 
 fn is_real_debrid_blocked_source_message(message: &str) -> bool {
@@ -8970,6 +9023,7 @@ mod tests {
     use super::race_staggered_first_success;
     use super::{
         CachedResolvedEmbed, EXTERNAL_EMBED_HEDGE_STAGGER_MS, ResolvedEmbedCache,
+        automatic_default_resolver_provider, cache_reuse_provider_for_context,
         compute_external_embed_provider_rank_health_score, external_embed_resolve_cache_key,
     };
     use super::{
@@ -9002,7 +9056,7 @@ mod tests {
         should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
         should_prefer_software_decode_source, should_skip_playback_session_reuse,
         should_try_torznab_discovery, sort_movie_candidates, stream_list_contains_hash,
-        stremio_addon_stream_url, summarize_stream_candidate_for_client,
+        stremio_addon_stream_url, summarize_stream_candidate_for_client, torrent_playback_enabled,
         user_facing_real_debrid_error,
     };
 
@@ -9894,6 +9948,32 @@ mod tests {
         assert!(ResolverProvider::RealDebrid.is_real_debrid());
         assert!(!ResolverProvider::LocalTorrent.is_real_debrid());
         assert!(ResolverProvider::Fastest.is_fastest());
+    }
+
+    #[test]
+    fn local_torrent_enables_torrent_playback_without_real_debrid() {
+        assert!(!torrent_playback_enabled(None, false));
+        assert!(torrent_playback_enabled(None, true));
+        assert_eq!(
+            automatic_default_resolver_provider(ResolverProvider::Fastest, false, true),
+            ResolverProvider::LocalTorrent
+        );
+        assert_eq!(
+            automatic_default_resolver_provider(ResolverProvider::Fastest, true, true),
+            ResolverProvider::Fastest
+        );
+        assert_eq!(
+            automatic_default_resolver_provider(ResolverProvider::RealDebrid, false, true),
+            ResolverProvider::RealDebrid
+        );
+        assert_eq!(
+            cache_reuse_provider_for_context(ResolverProvider::Fastest, false, true),
+            ResolverProvider::LocalTorrent
+        );
+
+        let real_debrid =
+            super::RealDebridRequestContext::for_user(7, "token").expect("real-debrid context");
+        assert!(torrent_playback_enabled(Some(&real_debrid), false));
     }
 
     #[test]

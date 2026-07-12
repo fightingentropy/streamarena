@@ -1285,10 +1285,9 @@ function isTorrentResolverProviderEnabledForPlayback(value) {
   if (!isTorrentResolverProvider(normalized)) {
     return true;
   }
-  if (!userRealDebridSettingsLoaded || !userRealDebridConfigured) {
-    return false;
-  }
-  return normalized !== "local-torrent" || userLocalTorrentEnabled;
+  if (!userRealDebridSettingsLoaded) return false;
+  if (normalized === "local-torrent") return userLocalTorrentEnabled;
+  return userRealDebridConfigured;
 }
 
 async function loadUserRealDebridPlaybackSettings() {
@@ -1299,7 +1298,7 @@ async function loadUserRealDebridPlaybackSettings() {
     await userRealDebridSettingsPromise;
     return;
   }
-  userRealDebridSettingsPromise = fetchUserApi("/api/user/real-debrid", {
+  userRealDebridSettingsPromise = fetchUserApi("/api/user/torrent-settings", {
     cache: "no-store",
   })
     .then(async (response) => (response.ok ? response.json() : {}))
@@ -8690,7 +8689,9 @@ function isSourceFallbackResolveError(error) {
 
 async function requestResolveJson(
   url,
-  timeoutMs = preferredResolverProvider === "real-debrid" ? 95000 : 50000,
+  timeoutMs = userLocalTorrentEnabled
+    ? 180000
+    : preferredResolverProvider === "real-debrid" ? 95000 : 50000,
 ) {
   const retryDelays =
     preferredResolverProvider === "real-debrid" ? [900, 1800] : [];
