@@ -29,6 +29,10 @@ export function buildResumeHref(item: ContinueWatchingItem, seasonCount?: number
   if (item.title) extra.title = item.title;
   if (item.year) extra.year = item.year;
   if (item.thumb) extra.poster = item.thumb;
+  // Continue Watching is the one entry point that should preserve the exact server the
+  // viewer chose. Fresh title opens intentionally omit sourceHash so the backend can use
+  // the faster HLS-first default.
+  if (item.sourceHash) extra.sourceHash = item.sourceHash;
   if (mediaType === "tv") {
     const se = tvSeasonEpisode(item);
     if (!se) return titleHref(mediaType, item.tmdbId);

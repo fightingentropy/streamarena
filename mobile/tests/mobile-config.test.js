@@ -7,8 +7,8 @@ const withSigning = require("../plugins/withSigning");
 test("the native app is branded as StreamArena with valid SDK 56 config", () => {
   assert.equal(appConfig.expo.name, "StreamArena");
   assert.equal(appConfig.expo.version, "1.0.1");
-  assert.equal(appConfig.expo.ios.buildNumber, "2");
-  assert.equal(appConfig.expo.android.versionCode, 2);
+  assert.equal(appConfig.expo.ios.buildNumber, "3");
+  assert.equal(appConfig.expo.android.versionCode, 3);
   assert.equal(appConfig.expo.extra.apiOrigin, "https://streamarena.xyz");
   assert.equal(appConfig.expo.ios.infoPlist.CFBundleDisplayName, "StreamArena");
   assert.equal(Object.hasOwn(appConfig.expo, "newArchEnabled"), false);

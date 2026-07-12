@@ -47,6 +47,7 @@ export default function WatchScreen() {
     seasonCount?: string;
     live?: string;
     subtitle?: string;
+    sourceHash?: string;
   }>();
   const router = useRouter();
   const scope = useAccountScopeOrNull();
@@ -130,14 +131,14 @@ export default function WatchScreen() {
       if (liveReq) void usePlayerStore.getState().openLive(liveReq);
       else usePlayerStore.setState({ status: "error", error: "This live channel is unavailable." });
     } else {
-      void usePlayerStore.getState().open(request, scope);
+      void usePlayerStore.getState().open(request, scope, { sourceHash: params.sourceHash });
     }
     return () => {
       clearSeek(seekFn);
       usePlayerStore.getState().close();
       void lockPortrait();
     };
-  }, [request, scope, isLive]);
+  }, [request, scope, isLive, params.sourceHash]);
 
   const close = () => {
     if (router.canGoBack()) router.back();

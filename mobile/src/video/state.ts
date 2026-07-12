@@ -70,12 +70,23 @@ function clearStallTimer() {
     stallTimer = null;
   }
 }
-function armStallTimer() {
+function armStallTimer(delayMs = STALL_FALLBACK_MS) {
   clearStallTimer();
   lastProgressSample = null;
   sawBufferingSinceArm = false;
   stallExtensions = 0;
-  stallTimer = setTimeout(() => usePlayerStore.getState().onStall(), STALL_FALLBACK_MS);
+  stallTimer = setTimeout(() => usePlayerStore.getState().onStall(), delayMs);
+}
+
+// Local torrent startup includes swarm discovery and the initial sequential buffer. Give
+// it the same one-minute startup budget as the web player so a deliberate torrent choice
+// is not mistaken for a dead source and silently replaced with the first HLS result.
+function startupTimeoutFor(resolved: ResolvedSource): number {
+  const provider = String(resolved.resolverProvider || "").trim().toLowerCase();
+  const playable = String(resolved.playableUrl || "").toLowerCase();
+  if (provider === "local-torrent" || playable.includes("/api/local-torrent/")) return 60_000;
+  if (provider === "real-debrid") return 30_000;
+  return STALL_FALLBACK_MS;
 }
 // Re-arm for a shorter follow-on window after a stall fired while the source was still
 // loading. Keeps the progress baseline (lastProgressSample) and the buffering flag so real
@@ -124,7 +135,7 @@ type PlayerState = {
   // opens within a session. Brightness is OS-level (expo-brightness), so it isn't stored here.
   volume: number;
 
-  open: (req: PlayRequest, scope?: string | null) => Promise<void>;
+  open: (req: PlayRequest, scope?: string | null, opts?: { sourceHash?: string }) => Promise<void>;
   openLive: (req: LivePlayRequest) => Promise<void>;
   switchLiveSource: (sourceId: string) => void;
   reopenWith: (opts: { audioStreamIndex?: number; sourceHash?: string }) => void;
@@ -178,7 +189,7 @@ async function runResolve(
       selectedAudioStreamIndex: extra.audioStreamIndex ?? resolved.selectedAudioStreamIndex,
       selectedSourceHash: extra.sourceHash ?? resolved.sourceHash,
     });
-    armStallTimer();
+    armStallTimer(startupTimeoutFor(resolved));
   } catch (e) {
     if (ac.signal.aborted) return;
     set({ status: "error", error: (e as Error)?.message || "Couldn't find a source for this title.", buffering: false });
@@ -329,7 +340,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     selectedLiveSourceId: null,
     volume: 1,
 
-    async open(req, scope = null) {
+    async open(req, scope = null, opts = {}) {
       resolveAbort?.abort();
       const ac = new AbortController();
       resolveAbort = ac;
@@ -394,7 +405,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         return;
       }
 
-      await runResolve(req, scope, { refresh: false }, ac, set);
+      await runResolve(req, scope, { refresh: false, sourceHash: opts.sourceHash }, ac, set);
     },
 
     // Re-resolve the current title with a different audio stream or source, keeping the

@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "xyz.streamarena.app",
-      "buildNumber": "2",
+      "buildNumber": "3",
       "infoPlist": {
         "CFBundleDisplayName": "StreamArena",
         "UIBackgroundModes": ["audio", "fetch"],
@@ -22,7 +22,7 @@
     },
     "android": {
       "package": "xyz.streamarena.app",
-      "versionCode": 2,
+      "versionCode": 3,
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.FOREGROUND_SERVICE",
