@@ -1374,7 +1374,7 @@ function shouldIgnoreRememberedTmdbSourcePinForIframeFirst(remembered) {
     return true;
   }
   if (isTorrentResolverProvider(remembered.resolverProvider)) {
-    return !isTorrentResolverProviderEnabledForPlayback(remembered.resolverProvider);
+    return true;
   }
   if (remembered.resolverProvider === "external-embed") {
     return false;
