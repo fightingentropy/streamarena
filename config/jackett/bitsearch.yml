@@ -1,0 +1,50 @@
+---
+id: bitsearch
+name: BitSearch
+description: "BitSearch is a public torrent search engine"
+type: public
+language: en-US
+encoding: UTF-8
+links:
+  - https://bitsearch.eu/
+
+caps:
+  categorymappings:
+    - {id: Movies, cat: Movies, desc: Movies}
+    - {id: TV, cat: TV, desc: TV}
+    - {id: Anime, cat: TV/Anime, desc: Anime}
+    - {id: Other/Video, cat: Movies/Other, desc: Other/Video}
+
+  modes:
+    search: [q]
+
+search:
+  paths:
+    - path: "search?q={{ if .Keywords }}{{ .Keywords }}{{ else }}test{{ end }}"
+
+  rows:
+    selector: "div.space-y-4[data-impression-ids] > div.bg-white"
+
+  fields:
+    title:
+      selector: "h3 a[href^=\"/torrent/\"]"
+    details:
+      selector: "h3 a[href^=\"/torrent/\"]"
+      attribute: href
+    download:
+      selector: "a[href^=\"magnet:?xt=\"]"
+      attribute: href
+    size:
+      selector: "div.text-gray-600 i.fa-download + span"
+    seeders:
+      selector: "span.text-green-600 span.font-medium"
+    leechers:
+      selector: "span.text-red-600 span.font-medium"
+    date:
+      selector: "div.text-gray-600 i.fa-calendar + span"
+    category:
+      selector: "div.text-gray-600 i.fa-file + span, div.text-gray-600 i.fa-video + span"
+    downloadvolumefactor:
+      text: 0
+    uploadvolumefactor:
+      text: 1

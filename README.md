@@ -456,6 +456,12 @@ Optional integrations:
 - `TORZNAB_LIMIT`
 - `TORZNAB_TIMEOUT_MS`
 
+When Torznab is configured, its unique results supplement Torrentio in the
+torrent source list and remain available as a resolver fallback. For Jackett,
+configure only indexers that pass a real title search, then use the aggregate
+`/api/v2.0/indexers/all/results/torznab/api` endpoint. A custom BitSearch
+definition is included at `config/jackett/bitsearch.yml`.
+
 Server:
 
 - `HOST` - default `127.0.0.1`.
@@ -848,7 +854,7 @@ Home is empty or only shows local titles:
 Resolver errors:
 
 - Check `TMDB_API_KEY`, the user's Real-Debrid token in Settings, and network access.
-- If using Torznab, check `TORZNAB_API_URL`, `TORZNAB_API_KEY`, category IDs, and timeout.
+- If using Torznab, check `TORZNAB_API_URL`, `TORZNAB_API_KEY`, category IDs, timeout, and that every configured aggregate indexer passes a real title search.
 - If local torrent is selected or auto-used, check the Torrent streaming setting, local disk budget, and `cache/local-torrents`.
 
 Movie/TV external embed fails:
