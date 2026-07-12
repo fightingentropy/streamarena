@@ -82,7 +82,10 @@ import {
   resolvePendingDirectSeekSeconds,
   withRemuxResumeStart,
 } from "../player/resume-start.js";
-import { createManualSourceSwitchController } from "../player/manual-source-switch.js";
+import {
+  createManualSourceSwitchController,
+  getManualSourceSwitchTimeouts,
+} from "../player/manual-source-switch.js";
 import { createLocalCacheUpgradeWatch } from "../player/local-cache-upgrade-watch.js";
 import { createLiveIframePlaybackClock } from "../player/live-iframe-playback-clock.js";
 import {
@@ -179,7 +182,6 @@ const LIVE_WORKING_STREAM_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const LIVE_WORKING_STREAM_CACHE_STORAGE_PREFIX = "streamarena-live-working-stream:";
 const LIVE_SOURCE_PREFERENCE_STORAGE_KEY = "streamarena-live-source-preferences";
 const LIVE_SOURCE_PREFERENCE_TTL_MS = 24 * 60 * 60 * 1000;
-const MANUAL_SOURCE_SWITCH_TIMEOUT_MS = 6000;
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
@@ -10714,10 +10716,18 @@ async function handleSourceOptionSelection(nextSourceHash) {
     return;
   }
 
+  const nextSourceOption = getSourceOptionByHash(normalizedNextSourceHash);
+  const sourceSwitchTimeouts = getManualSourceSwitchTimeouts({
+    isEmbed: Boolean(nextSourceOption && isSourceOptionEmbed(nextSourceOption)),
+    localTorrentEnabled: userLocalTorrentEnabled,
+    realDebridConfigured: userRealDebridConfigured,
+    resolverProvider: preferredResolverProvider,
+  });
   const resumeFrom = getEffectiveCurrentTime();
   const wasPaused = isLiveIframePlaybackActive() ? liveIframePlaybackClock.isPaused() : video.paused;
   const sourceSwitchRequest = manualSourceSwitch.begin({
     targetSourceHash: normalizedNextSourceHash,
+    startupTimeoutMs: sourceSwitchTimeouts.startupTimeoutMs,
     baseline: captureManualSourceSwitchBaseline({
       resumeSeconds: resumeFrom,
       wasPaused,
@@ -10742,7 +10752,7 @@ async function handleSourceOptionSelection(nextSourceHash) {
       applyPlayback: false,
       requiredSourceHash: normalizedNextSourceHash,
       requestSourceHash: normalizedNextSourceHash,
-      resolveTimeoutMs: MANUAL_SOURCE_SWITCH_TIMEOUT_MS,
+      resolveTimeoutMs: sourceSwitchTimeouts.resolveTimeoutMs,
       startSeconds: resumeFrom,
     });
     if (

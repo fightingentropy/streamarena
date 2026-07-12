@@ -1,3 +1,24 @@
+export function getManualSourceSwitchTimeouts({
+  isEmbed = false,
+  localTorrentEnabled = false,
+  realDebridConfigured = false,
+  resolverProvider = "",
+} = {}) {
+  if (isEmbed) {
+    return { resolveTimeoutMs: 30_000, startupTimeoutMs: 12_000 };
+  }
+  if (localTorrentEnabled) {
+    return { resolveTimeoutMs: 180_000, startupTimeoutMs: 60_000 };
+  }
+  if (
+    realDebridConfigured ||
+    String(resolverProvider || "").trim().toLowerCase() === "real-debrid"
+  ) {
+    return { resolveTimeoutMs: 95_000, startupTimeoutMs: 30_000 };
+  }
+  return { resolveTimeoutMs: 50_000, startupTimeoutMs: 30_000 };
+}
+
 /**
  * Coordinates a manual source change without depending on player globals or DOM
  * APIs. The controller keeps the last confirmed playback snapshot until a new
@@ -120,7 +141,7 @@ export function createManualSourceSwitchController({
       }
 
       request.noProgressTicks += 1;
-      if (request.noProgressTicks >= safeNoProgressLimit) {
+      if (request.noProgressTicks >= request.noProgressLimit) {
         void fail(request, "Source startup timed out.");
         return;
       }
@@ -128,7 +149,11 @@ export function createManualSourceSwitchController({
     }, safeProgressIntervalMs);
   }
 
-  function begin({ targetSourceHash = "", baseline = null } = {}) {
+  function begin({
+    targetSourceHash = "",
+    baseline = null,
+    startupTimeoutMs = 0,
+  } = {}) {
     if (disposed) {
       throw new Error("Manual source-switch controller has been disposed.");
     }
@@ -143,6 +168,11 @@ export function createManualSourceSwitchController({
       currentRequest.phase = "superseded";
     }
 
+    const normalizedStartupTimeoutMs = Number(startupTimeoutMs);
+    const requestNoProgressLimit =
+      Number.isFinite(normalizedStartupTimeoutMs) && normalizedStartupTimeoutMs > 0
+        ? Math.max(1, Math.ceil(normalizedStartupTimeoutMs / safeProgressIntervalMs))
+        : safeNoProgressLimit;
     const request = {
       generation: ++nextGeneration,
       targetSourceHash: normalizeSourceHash(targetSourceHash),
@@ -155,6 +185,7 @@ export function createManualSourceSwitchController({
       failureStarted: false,
       progressBaseline: null,
       noProgressTicks: 0,
+      noProgressLimit: requestNoProgressLimit,
       sawLoadProgress: false,
       commitData: null,
       watchdogTimeout: null,

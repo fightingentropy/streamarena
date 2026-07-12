@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { createManualSourceSwitchController } from "../src-ui/player/manual-source-switch.js";
+import {
+  createManualSourceSwitchController,
+  getManualSourceSwitchTimeouts,
+} from "../src-ui/player/manual-source-switch.js";
 
 const HASH_A = "a".repeat(40);
 const HASH_B = "b".repeat(40);
@@ -91,6 +94,42 @@ function run(label, test) {
     .then(test)
     .then(() => console.log(`✓ ${label}`));
 }
+
+await run("uses source-specific resolve and startup timeouts", () => {
+  assert.deepEqual(
+    getManualSourceSwitchTimeouts({
+      isEmbed: true,
+      localTorrentEnabled: true,
+    }),
+    { resolveTimeoutMs: 30_000, startupTimeoutMs: 12_000 },
+  );
+  assert.deepEqual(
+    getManualSourceSwitchTimeouts({ localTorrentEnabled: true }),
+    { resolveTimeoutMs: 180_000, startupTimeoutMs: 60_000 },
+  );
+  assert.deepEqual(
+    getManualSourceSwitchTimeouts({ realDebridConfigured: true }),
+    { resolveTimeoutMs: 95_000, startupTimeoutMs: 30_000 },
+  );
+});
+
+await run("honors a per-request startup timeout", async () => {
+  const { clock, controller, state } = createHarness();
+  const request = controller.begin({
+    targetSourceHash: HASH_B,
+    baseline: { source: "A" },
+    startupTimeoutMs: 60,
+  });
+  controller.arm(request);
+
+  clock.advance(40);
+  assert.equal(state.rollbacks.length, 0);
+  assert.equal(controller.isPending(), true);
+  clock.advance(20);
+  await request.rollbackPromise;
+  assert.equal(state.rollbacks.length, 1);
+  assert.equal(state.rollbacks[0].context.reason, "Source startup timed out.");
+});
 
 await run("tracks resolving and armed request states", () => {
   const { clock, controller } = createHarness();
