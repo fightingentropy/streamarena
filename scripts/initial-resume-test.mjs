@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   RESUME_CLEAR_AT_END_THRESHOLD_SECONDS,
   createInitialResumeController,
+  resolvePendingDirectSeekSeconds,
 } from "../src-ui/player/resume-start.js";
 
 function createFakeClock() {
@@ -97,6 +98,13 @@ function run(label, test) {
 
 run("exports the shared near-end threshold", () => {
   assert.equal(RESUME_CLEAR_AT_END_THRESHOLD_SECONDS, 8);
+});
+
+run("carries a requested seek across a direct-source recovery", () => {
+  assert.equal(resolvePendingDirectSeekSeconds(2700.9, null), 2700);
+  assert.equal(resolvePendingDirectSeekSeconds(1800, 2700), 1800);
+  assert.equal(resolvePendingDirectSeekSeconds(0, 2700.9), 2700);
+  assert.equal(resolvePendingDirectSeekSeconds(0, null), null);
 });
 
 run("applies a standard-source resume and reads later target changes", () => {

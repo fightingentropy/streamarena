@@ -5,6 +5,15 @@ export function normalizeResumeStartSeconds(value) {
   return Number.isFinite(seconds) && seconds > 1 ? Math.floor(seconds) : 0;
 }
 
+export function resolvePendingDirectSeekSeconds(
+  requestedStartSeconds,
+  pendingSeekSeconds,
+) {
+  const requested = normalizeResumeStartSeconds(requestedStartSeconds);
+  if (requested) return requested;
+  return normalizeResumeStartSeconds(pendingSeekSeconds) || null;
+}
+
 export function withRemuxResumeStart(source, startSeconds, baseUrl) {
   const safeStart = normalizeResumeStartSeconds(startSeconds);
   if (!safeStart) {

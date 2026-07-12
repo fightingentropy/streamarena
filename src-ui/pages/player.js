@@ -78,6 +78,7 @@ import {
   RESUME_CLEAR_AT_END_THRESHOLD_SECONDS,
   createInitialResumeController,
   normalizeResumeStartSeconds,
+  resolvePendingDirectSeekSeconds,
   withRemuxResumeStart,
 } from "../player/resume-start.js";
 import { createManualSourceSwitchController } from "../player/manual-source-switch.js";
@@ -3630,9 +3631,7 @@ function setVideoSource(
   nextSource,
   { resetInitialResume = true, startSeconds = 0, autoplay = true } = {},
 ) {
-  if (!nextSource) {
-    return;
-  }
+  if (!nextSource) return;
   const requestedStartSeconds = normalizeResumeStartSeconds(startSeconds);
   const iframeSource = parseLiveIframePlaybackSource(nextSource);
   if (iframeSource) {
@@ -3754,6 +3753,7 @@ function setVideoSource(
     return;
   }
 
+  pendingRecoverySeekSeconds = resolvePendingDirectSeekSeconds(requestedStartSeconds, pendingRecoverySeekSeconds);
   video.setAttribute("src", absoluteSource);
   video.load();
   scheduleStreamStallRecovery();
