@@ -29,9 +29,6 @@ export default defineConfig({
     proxy: {
       "/api": "http://127.0.0.1:5173",
     },
-    watch: {
-      ignored: ["**/.claude/**"],
-    },
   },
   plugins: [
     solid(),

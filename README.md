@@ -662,7 +662,7 @@ The Expo app lives in `mobile/` and is checked independently in CI. From that di
 
 Development machine:
 
-- Checkout: `/Users/erlinhoxha/Developer/streamarena`.
+- Checkout: `~/Developer/streamarena`.
 - Source of truth is the git checkout.
 - Large media should not be committed.
 - `assets/videos` should contain symlinks or local-only files in development.
