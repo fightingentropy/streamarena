@@ -84,9 +84,60 @@ body {
 }
 
 .player-shell.live-iframe-active .player-video,
-.player-shell.live-iframe-active .custom-subtitle-overlay,
-.player-shell.live-iframe-active .controls-panel {
+.player-shell.live-iframe-active .custom-subtitle-overlay {
     display: none;
+}
+
+/* Embedded sports feeds own their playback controls, but StreamArena must keep
+   its source picker reachable so viewers can switch between the exact numbered
+   Kobra feeds. Pin the picker above the iframe instead of restoring the full
+   native seek/audio control bar. */
+.player-shell.live-iframe-active .controls-panel {
+    position: absolute;
+    z-index: 48;
+    top: calc(18px + env(safe-area-inset-top));
+    right: calc(24px + env(safe-area-inset-right));
+    bottom: auto;
+    left: auto;
+    display: block;
+    padding: 0;
+    pointer-events: none;
+}
+
+.player-shell.live-iframe-active .seek-row,
+.player-shell.live-iframe-active .controls-left,
+.player-shell.live-iframe-active .episode-label,
+.player-shell.live-iframe-active .controls-right > .controls-cluster > :not(.live-stream-menu-wrap) {
+    display: none !important;
+}
+
+.player-shell.live-iframe-active .controls-row,
+.player-shell.live-iframe-active .controls-right,
+.player-shell.live-iframe-active .controls-right > .controls-cluster {
+    position: static;
+    display: block;
+    margin: 0;
+}
+
+.player-shell.live-iframe-active .live-stream-menu-wrap:not([hidden]) {
+    display: block;
+    pointer-events: auto;
+}
+
+.player-shell.live-iframe-active .live-stream-btn {
+    min-width: 46px;
+    height: 46px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 999px;
+    background: rgba(10, 10, 10, 0.76);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+    backdrop-filter: blur(10px);
+}
+
+.player-shell.live-iframe-active .live-stream-popover {
+    top: calc(100% + 8px);
+    right: 0;
+    bottom: auto;
 }
 
 .player-shell.live-iframe-active .player-ui {
@@ -94,7 +145,18 @@ body {
 }
 
 .player-shell.live-iframe-active.controls-hidden .player-ui {
+    opacity: 1;
     pointer-events: none;
+}
+
+.player-shell.live-iframe-active.controls-hidden,
+.player-shell.live-iframe-active.controls-hidden * {
+    cursor: auto !important;
+}
+
+.player-shell.live-iframe-active.controls-hidden .live-stream-btn,
+.player-shell.live-iframe-active.controls-hidden .live-stream-option {
+    cursor: pointer !important;
 }
 
 .player-shell.live-iframe-active .top-row-actions {

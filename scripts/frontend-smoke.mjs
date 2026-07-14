@@ -9,6 +9,7 @@ const rootDir = resolve(new URL("..", import.meta.url).pathname);
 const port = Number(process.env.FRONTEND_SMOKE_PORT || 4174);
 const baseUrl = `http://127.0.0.1:${port}`;
 const liveIframeEmbedUrl = `${baseUrl}/offline.html`;
+const liveIframeAltUrl = `${baseUrl}/privacy.html`;
 const viteBin = resolve(rootDir, "node_modules/.bin/vite");
 const smokeVideo = "assets/videos/fantozzi-1975-1080p-h264-aac-4k-restored.mp4";
 const hevcSmokeVideo = "assets/videos/project-hail-mary-2026-2160p-hevc.mp4";
@@ -50,6 +51,34 @@ const liveStreamSwitchParams = new URLSearchParams({
   liveStreams: JSON.stringify(liveStreamSwitchStreams),
 });
 const liveStreamSwitchPath = `/player.html?${liveStreamSwitchParams.toString()}`;
+const liveIframeSwitchStreams = [
+  {
+    id: "iframe-main",
+    label: "Kobra main",
+    source: `live-iframe:${encodeURIComponent("/offline.html")}`,
+    provider: "ntvs",
+    playbackType: "iframe",
+    quality: "HD",
+  },
+  {
+    id: "iframe-alt",
+    label: "Kobra backup",
+    source: `live-iframe:${encodeURIComponent("/privacy.html")}`,
+    provider: "ntvs",
+    playbackType: "iframe",
+    quality: "HD",
+  },
+];
+const liveIframeSwitchParams = new URLSearchParams({
+  src: liveIframeSwitchStreams[0].source,
+  title: "Live Iframe",
+  live: "1",
+  liveEmbed: "1",
+  liveResolver: "sports",
+  liveStreamId: liveIframeSwitchStreams[0].id,
+  liveStreams: JSON.stringify(liveIframeSwitchStreams),
+});
+const liveIframeSwitchPath = `/player.html?${liveIframeSwitchParams.toString()}`;
 
 if (!existsSync(viteBin)) {
   console.error("Missing Vite binary. Run bun install first.");
@@ -427,9 +456,10 @@ const pages = [
     expectMobileFullscreenToggle: true,
   },
   {
-    path: `/player.html?src=${encodeURIComponent(`live-iframe:${encodeURIComponent("/offline.html")}`)}&live=1&title=Live%20Iframe`,
+    path: liveIframeSwitchPath,
     selector: ".player-shell",
     expectLiveIframeUnsandboxed: true,
+    expectLiveIframeSourceSwitch: true,
   },
   {
     path: liveStreamSwitchPath,
@@ -1478,6 +1508,60 @@ async function runSmoke() {
         await clickIframePlayToggle();
         if ((await readIframePlayLabel()) !== "Pause") {
           throw new Error(`${pageSpec.path}\nLive iframe did not resume play intent.`);
+        }
+
+        if (pageSpec.expectLiveIframeSourceSwitch) {
+          await page.evaluate(() => {
+            document.querySelector(".player-shell")?.classList.add("controls-hidden");
+          });
+          const pickerState = await page.evaluate(() => {
+            const picker = document.querySelector("#toggleLiveStream");
+            const rect = picker?.getBoundingClientRect();
+            return {
+              hidden: picker?.closest("#liveStreamControl")?.hidden ?? true,
+              width: rect?.width || 0,
+              height: rect?.height || 0,
+              visibility: picker ? getComputedStyle(picker).visibility : "missing",
+              playerUiOpacity: getComputedStyle(
+                document.querySelector(".player-ui"),
+              ).opacity,
+            };
+          });
+          if (
+            pickerState.hidden ||
+            pickerState.width < 40 ||
+            pickerState.height < 40 ||
+            pickerState.visibility !== "visible" ||
+            pickerState.playerUiOpacity !== "1"
+          ) {
+            throw new Error(
+              `${pageSpec.path}\nLive iframe source picker should remain visible after controls hide.\n${JSON.stringify(pickerState)}`,
+            );
+          }
+
+          await page.click("#toggleLiveStream");
+          await page.click(
+            `.live-stream-option[data-stream-id="${liveIframeSwitchStreams[1].id}"]`,
+          );
+          await page.waitForFunction(
+            ({ expectedId, expectedSrc }) => {
+              const frame = document.querySelector("#liveEmbedFrame");
+              const selected = document.querySelector(
+                ".live-stream-option[aria-selected='true']",
+              );
+              return (
+                frame?.src === expectedSrc &&
+                selected?.dataset.streamId === expectedId &&
+                new URL(window.location.href).searchParams.get("liveStreamId") ===
+                  expectedId
+              );
+            },
+            {
+              expectedId: liveIframeSwitchStreams[1].id,
+              expectedSrc: liveIframeAltUrl,
+            },
+            { timeout: 8_000 },
+          );
         }
       }
 
