@@ -17,6 +17,7 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use url::Url;
+use url::form_urlencoded::byte_serialize;
 
 use crate::error::{ApiError, AppResult, json_response};
 use crate::provider_registry;
@@ -4658,6 +4659,13 @@ fn is_supported_ntvs_embed_url(url: &Url) -> bool {
     matches!(host.as_str(), "embed.st" | "www.embed.st") && url.path().starts_with("/embed/")
 }
 
+fn live_iframe_playback_source(url: &Url) -> String {
+    format!(
+        "live-iframe:{}",
+        byte_serialize(url.as_str().as_bytes()).collect::<String>()
+    )
+}
+
 fn is_supported_ntvs_hesgoaler_player_url(url: &Url) -> bool {
     if url.scheme() != "https" && url.scheme() != "http" {
         return false;
@@ -4889,13 +4897,14 @@ fn normalize_streamed_sport_match(
             label_parts.push(format!("Stream {}", stream.stream_no));
             let label = label_parts.join(" · ");
             let quality = if stream.hd { "HD" } else { "SD" };
+            let playback_source = live_iframe_playback_source(url);
             languages.insert(language.to_owned());
             streams.push(json!({
                 "id": format!("ntvs-{}-{}", row_source.to_ascii_lowercase(), stream.stream_no),
                 "label": label,
-                "source": url.as_str(),
+                "source": playback_source,
                 "provider": NTVS_SOURCE_ID,
-                "playbackType": "hls",
+                "playbackType": "iframe",
                 "quality": quality
             }));
             channels.push(json!({
@@ -5151,10 +5160,18 @@ fn normalize_ntvs_sport_match(
 
     if !match_item.expanded_streams.is_empty() {
         // These are the exact numbered feeds shown by ntv.cx's Kobra selector.
-        // Preserve each opaque wrapper URL and its language/broadcaster label so
-        // every TSN/FOX/ITV/DAZN/etc. option remains individually selectable
-        // instead of being collapsed to the first stream in its source group.
+        // Play them in the browser-native iframe mode used by the source site:
+        // embed.st's HLS token is bound to the browser session that minted it,
+        // so resolving it in a separate backend browser produces a 403 later.
         for stream in &match_item.expanded_streams {
+            let Ok(embed_url) = Url::parse(stream.embed_url.trim()) else {
+                continue;
+            };
+            if !is_supported_ntvs_wrapper_embed_url(&embed_url)
+                && !is_supported_ntvs_embed_url(&embed_url)
+            {
+                continue;
+            }
             let source_name = stream.source.trim();
             let source_id = source_name.to_ascii_lowercase();
             let display_source = source_name.to_ascii_uppercase();
@@ -5173,13 +5190,14 @@ fn normalize_ntvs_sport_match(
             label_parts.push(format!("Stream {}", stream.stream_no));
             let label = label_parts.join(" · ");
             let quality = if stream.hd { "HD" } else { "SD" };
+            let playback_source = live_iframe_playback_source(&embed_url);
             languages.insert(language.to_owned());
             streams.push(json!({
                 "id": format!("ntvs-{source_id}-{}", stream.stream_no),
                 "label": label,
-                "source": stream.embed_url,
+                "source": playback_source,
                 "provider": NTVS_SOURCE_ID,
-                "playbackType": "hls",
+                "playbackType": "iframe",
                 "quality": quality
             }));
             channels.push(json!({
@@ -5566,9 +5584,9 @@ mod tests {
                 "streams": [{
                     "id": "ntvs-admin-1",
                     "label": "NTV Kobra · ADMIN · English · TSN · Stream 1",
-                    "source": "https://embed.st/embed/admin/ppv-france-vs-spain/1",
+                    "source": "live-iframe:https%3A%2F%2Fembed.st%2Fembed%2Fadmin%2Fppv-france-vs-spain%2F1",
                     "provider": "ntvs",
-                    "playbackType": "hls",
+                    "playbackType": "iframe",
                     "quality": "HD"
                 }],
                 "languages": ["English"],
@@ -5592,9 +5610,9 @@ mod tests {
                 "streams": [{
                     "id": "ntvs-admin-1",
                     "label": "NTV Kobra · ADMIN · English · TSN · Stream 1",
-                    "source": "https://ntv.cx/embed?t=OpaqueWrapperToken",
+                    "source": "live-iframe:https%3A%2F%2Fntv.cx%2Fembed%3Ft%3DOpaqueWrapperToken",
                     "provider": "ntvs",
-                    "playbackType": "hls",
+                    "playbackType": "iframe",
                     "quality": "HD"
                 }],
                 "languages": ["English"],
@@ -5608,7 +5626,7 @@ mod tests {
         assert_eq!(streams.len(), 1);
         assert_eq!(
             streams[0]["source"],
-            "https://embed.st/embed/admin/ppv-france-vs-spain/1"
+            "live-iframe:https%3A%2F%2Fembed.st%2Fembed%2Fadmin%2Fppv-france-vs-spain%2F1"
         );
     }
 
@@ -5942,6 +5960,11 @@ mod tests {
             "NTV Kobra · ADMIN · English · TSN · Stream 1"
         );
         assert_eq!(streams[0]["quality"], "HD");
+        assert_eq!(streams[0]["playbackType"], "iframe");
+        assert_eq!(
+            streams[0]["source"],
+            "live-iframe:https%3A%2F%2Fembed.st%2Fembed%2Fadmin%2Fppv-france-vs-spain%2F1"
+        );
         assert_eq!(streams[1]["quality"], "SD");
         assert_eq!(
             streams[6]["label"],
@@ -6545,6 +6568,11 @@ mod tests {
             "NTV Kobra · ADMIN · English · TSN · Stream 1"
         );
         assert_eq!(streams[0]["quality"], "HD");
+        assert_eq!(streams[0]["playbackType"], "iframe");
+        assert_eq!(
+            streams[0]["source"],
+            "live-iframe:https%3A%2F%2Fembed.st%2Fembed%2Fadmin%2Fppv-france-vs-spain%2F1"
+        );
         assert_eq!(streams[1]["quality"], "SD");
         assert_eq!(
             streams[6]["label"],
