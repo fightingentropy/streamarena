@@ -462,6 +462,13 @@ const pages = [
     expectLiveIframeSourceSwitch: true,
   },
   {
+    path: liveIframeSwitchPath,
+    selector: ".player-shell",
+    contextOptions: devices["iPhone 13"],
+    expectLiveIframeUnsandboxed: true,
+    expectLiveIframeSourceSwitch: true,
+  },
+  {
     path: liveStreamSwitchPath,
     selector: ".player-shell",
     expectLiveStreamSwitch: true,

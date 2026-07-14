@@ -134,10 +134,12 @@ body {
     backdrop-filter: blur(10px);
 }
 
-.player-shell.live-iframe-active .live-stream-popover {
-    top: calc(100% + 8px);
-    right: 0;
-    bottom: auto;
+@media (min-width: 921px) {
+    .player-shell.live-iframe-active .live-stream-popover {
+        top: calc(100% + 8px);
+        right: 0;
+        bottom: auto;
+    }
 }
 
 .player-shell.live-iframe-active .player-ui {
