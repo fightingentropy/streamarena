@@ -7,7 +7,7 @@ import {
   getSubtitleTrackDisplayLabel,
   getSubtitleTrackDisplayParts,
   getUnknownAudioTrackDisplayLabel,
-  isLikelyForcedSubtitleTrack,
+  isLikelyForcedSubtitleTrack, shouldPreferResolvedTranslatedSubtitleTrack,
 } from "../player/media-track-labels.js";
 import {
   SUBTITLE_OFFSET_STEP_MS,
@@ -4133,6 +4133,7 @@ function applyStoredSubtitleSelectionPreference() {
         storedSubtitleStreamPreference.streamIndex &&
       isPlayableSubtitleTrack(track),
   );
+  if (shouldPreferResolvedTranslatedSubtitleTrack(exactTrack, getSubtitleTrackByStreamIndex(selectedSubtitleStreamIndex))) return;
   if (exactTrack) {
     selectedSubtitleStreamIndex = Number(exactTrack.streamIndex);
     const exactLanguage = normalizeSubtitlePreference(

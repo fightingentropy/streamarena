@@ -35,3 +35,10 @@ export function buildTextTracks(resolved: ResolvedSource | null): PlayerTextTrac
   }
   return out;
 }
+
+export function findSelectedTextTrackIndex(resolved: ResolvedSource | null): number | null {
+  const selectedStreamIndex = Number(resolved?.selectedSubtitleStreamIndex);
+  if (!Number.isInteger(selectedStreamIndex) || selectedStreamIndex < 0) return null;
+  const selectedIndex = buildTextTracks(resolved).findIndex((track) => track.streamIndex === selectedStreamIndex);
+  return selectedIndex >= 0 ? selectedIndex : null;
+}

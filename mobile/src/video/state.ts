@@ -7,6 +7,7 @@ import { buildFallbackCandidates } from "./refresh";
 import { beginReporting, reportNow, reportPlaybackError, reportProgress, stopReporting } from "./report";
 import { resolveAndRoute } from "./resolve";
 import { loadResumeSeconds } from "./resume";
+import { findSelectedTextTrackIndex } from "./tracks";
 import type { PlayRequest, PlayerStatus, VideoSource } from "./types";
 
 // The <Video> ref lives in the watch screen; the store reaches it for imperative seeks
@@ -186,6 +187,7 @@ async function runResolve(
       resolved,
       source,
       buffering: true,
+      selectedSubtitle: findSelectedTextTrackIndex(resolved),
       selectedAudioStreamIndex: extra.audioStreamIndex ?? resolved.selectedAudioStreamIndex,
       selectedSourceHash: extra.sourceHash ?? resolved.sourceHash,
     });

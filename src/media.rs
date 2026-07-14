@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, LazyLock};
@@ -9,6 +9,7 @@ use axum::http::{Response, StatusCode, header};
 use dashmap::DashMap;
 use encoding_rs::{UTF_8, WINDOWS_1252};
 use flate2::read::GzDecoder;
+use futures_util::{StreamExt, stream};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -29,7 +30,12 @@ const OPENSUBTITLES_API_BASE: &str = "https://api.opensubtitles.com/api/v1";
 const OPENSUBTITLES_TRACK_LIMIT: usize = 5;
 const STREMIO_OPENSUBTITLES_ADDON_BASE: &str = "https://opensubtitles-v3.strem.io";
 const STREMIO_SUBTITLE_SEARCH_TIMEOUT_SECONDS: u64 = 5;
+const STREMIO_SUBTITLE_CONTENT_RANK_TIMEOUT_SECONDS: u64 = 5;
+const STREMIO_SUBTITLE_CONTENT_RANK_MAX_CANDIDATES: usize = 12;
+const STREMIO_SUBTITLE_CONTENT_RANK_MAX_CONCURRENT: usize = 6;
+const STREMIO_SUBTITLE_CUE_ALIGNMENT_TOLERANCE_MS: u64 = 2_000;
 const STREMIO_SUBTITLE_SEARCH_CACHE_TTL_MS: u64 = 6 * 60 * 60 * 1000;
+const STREMIO_SUBTITLE_PARTIAL_CACHE_TTL_MS: u64 = 5 * 60 * 1000;
 const STREMIO_SUBTITLE_SEARCH_CACHE_MAX_ENTRIES: usize = 512;
 const STREMIO_SUBTITLE_STREAM_INDEX_BASE: i64 = 3_000_000_000;
 const STREMIO_SUBTITLE_PREFERRED_TRACK_LIMIT: usize = 3;
@@ -61,6 +67,22 @@ static SIMPLE_HTML_TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static SRT_TIMESTAMP_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(\d{2}:\d{2}(?::\d{2})?),(\d{3})").expect("valid subtitle timestamp regex")
+});
+static SUBTITLE_CONTENT_MARKUP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<[^>]+>|\[[^\]]*\]|\([^)]*\)|\{[^}]*\}")
+        .expect("valid subtitle content markup regex")
+});
+static SUBTITLE_SPOKEN_LANGUAGE_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?is)(?:\[[^\]]*\b(?:speak|speaks|speaking)\b[^\]]*\]|\([^)]*\b(?:speak|speaks|speaking)\b[^)]*\))",
+    )
+    .expect("valid spoken-language subtitle marker regex")
+});
+static SUBTITLE_FANTASY_LANGUAGE_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:dothraki|valyrian|klingon|elvish|sindarin|quenya|huttese|parseltongue|vulcan|orcish|belter|chakobsa|fremen|foreign language|alien language|fictional language)\b|\bna'?vi\b|\bblack speech\b",
+    )
+    .expect("valid fantasy-language subtitle marker regex")
 });
 
 #[allow(non_snake_case)]
@@ -105,6 +127,43 @@ pub struct SubtitleTrack {
     pub vttUrl: String,
 }
 
+#[derive(Debug, Clone)]
+struct StremioSubtitleCandidate {
+    original_order: usize,
+    language: String,
+    subtitle_id: i64,
+    download_url: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct EnglishSubtitleQuality {
+    translated_dialogue_cues: usize,
+    untranslated_dialogue_cues: usize,
+    cue_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct EnglishSubtitleCue {
+    start_ms: u64,
+    end_ms: u64,
+    normalized_text: String,
+    english_anchor_count: usize,
+    has_spoken_language_marker: bool,
+    looks_phonetic: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct EnglishSubtitleContent {
+    cues: Vec<EnglishSubtitleCue>,
+}
+
+#[derive(Debug, Clone)]
+struct StremioSubtitleCacheEntry {
+    stored_at_ms: u64,
+    ttl_ms: u64,
+    tracks: Vec<SubtitleTrack>,
+}
+
 #[derive(Clone)]
 pub struct MediaService {
     config: Config,
@@ -119,7 +178,7 @@ pub struct MediaService {
     // this on every playback start (including embed-cache fast hits), so the
     // addon lookup must not cost a network round-trip each time. Empty results
     // are cached too.
-    stremio_subtitle_cache: Arc<DashMap<String, (u64, Vec<SubtitleTrack>)>>,
+    stremio_subtitle_cache: Arc<DashMap<String, StremioSubtitleCacheEntry>>,
 }
 
 impl MediaService {
@@ -522,9 +581,9 @@ impl MediaService {
             .map(|elapsed| elapsed.as_millis() as u64)
             .unwrap_or_default();
         if let Some(entry) = self.stremio_subtitle_cache.get(&cache_key)
-            && now_ms.saturating_sub(entry.0) < STREMIO_SUBTITLE_SEARCH_CACHE_TTL_MS
+            && now_ms.saturating_sub(entry.stored_at_ms) < entry.ttl_ms
         {
-            return entry.1.clone();
+            return entry.tracks.clone();
         }
 
         let request_url = if season_number > 0 && episode_number > 0 {
@@ -560,18 +619,80 @@ impl MediaService {
             // Transient failures are not cached so the next resolve retries.
             return Vec::new();
         };
-        let tracks = build_stremio_subtitle_tracks_from_payload(&payload, preferred_language);
+        let (content_qualities, content_analysis_complete) = self
+            .analyze_stremio_english_subtitle_candidates(&payload, preferred_language)
+            .await;
+        let tracks = build_stremio_subtitle_tracks_from_payload(
+            &payload,
+            preferred_language,
+            &content_qualities,
+        );
         if self.stremio_subtitle_cache.len() >= STREMIO_SUBTITLE_SEARCH_CACHE_MAX_ENTRIES {
-            self.stremio_subtitle_cache.retain(|_, (stored_at_ms, _)| {
-                now_ms.saturating_sub(*stored_at_ms) < STREMIO_SUBTITLE_SEARCH_CACHE_TTL_MS
-            });
+            self.stremio_subtitle_cache
+                .retain(|_, entry| now_ms.saturating_sub(entry.stored_at_ms) < entry.ttl_ms);
             if self.stremio_subtitle_cache.len() >= STREMIO_SUBTITLE_SEARCH_CACHE_MAX_ENTRIES {
                 self.stremio_subtitle_cache.clear();
             }
         }
-        self.stremio_subtitle_cache
-            .insert(cache_key, (now_ms, tracks.clone()));
+        let cache_ttl_ms = if content_analysis_complete {
+            STREMIO_SUBTITLE_SEARCH_CACHE_TTL_MS
+        } else {
+            STREMIO_SUBTITLE_PARTIAL_CACHE_TTL_MS
+        };
+        self.stremio_subtitle_cache.insert(
+            cache_key,
+            StremioSubtitleCacheEntry {
+                stored_at_ms: now_ms,
+                ttl_ms: cache_ttl_ms,
+                tracks: tracks.clone(),
+            },
+        );
         tracks
+    }
+
+    async fn analyze_stremio_english_subtitle_candidates(
+        &self,
+        payload: &Value,
+        preferred_language: &str,
+    ) -> (HashMap<i64, EnglishSubtitleQuality>, bool) {
+        let normalized_preference = normalize_subtitle_preference(preferred_language);
+        let preferred = if normalized_preference.is_empty() || normalized_preference == "off" {
+            "en"
+        } else {
+            normalized_preference.as_str()
+        };
+        if preferred != "en" {
+            return (HashMap::new(), true);
+        }
+
+        let candidates = parse_stremio_subtitle_candidates(payload)
+            .into_iter()
+            .filter(|candidate| candidate.language == "en")
+            .take(STREMIO_SUBTITLE_CONTENT_RANK_MAX_CANDIDATES)
+            .collect::<Vec<_>>();
+        let candidate_count = candidates.len();
+
+        let mut pending = stream::iter(candidates)
+            .map(|candidate| async move {
+                let subtitle_text = self
+                    .fetch_external_subtitle_payload(&candidate.download_url)
+                    .await
+                    .ok()?;
+                let content = analyze_english_subtitle_content(&subtitle_text)?;
+                Some((candidate.subtitle_id, content))
+            })
+            .buffer_unordered(STREMIO_SUBTITLE_CONTENT_RANK_MAX_CONCURRENT)
+            .boxed();
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_secs(STREMIO_SUBTITLE_CONTENT_RANK_TIMEOUT_SECONDS);
+        let mut contents = HashMap::new();
+        while let Ok(Some(result)) = tokio::time::timeout_at(deadline, pending.next()).await {
+            if let Some((subtitle_id, content)) = result {
+                contents.insert(subtitle_id, content);
+            }
+        }
+        let complete = contents.len() == candidate_count;
+        (build_english_subtitle_qualities(&contents), complete)
     }
 
     pub fn find_local_sidecar_subtitle_tracks(&self, source_input: &str) -> Vec<SubtitleTrack> {
@@ -1611,9 +1732,366 @@ fn stremio_subtitle_language_menu_rank(language: &str, preferred_language: &str)
         .unwrap_or(usize::MAX)
 }
 
+fn parse_stremio_subtitle_candidates(payload: &Value) -> Vec<StremioSubtitleCandidate> {
+    let mut seen_subtitle_ids = HashSet::new();
+    payload
+        .get("subtitles")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(original_order, item)| {
+            let download_url = item
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            if !is_allowed_external_subtitle_download_url(&download_url) {
+                return None;
+            }
+            let language = normalize_iso_language(
+                item.get("lang").and_then(Value::as_str).unwrap_or_default(),
+            );
+            if !STREMIO_SUBTITLE_LANGUAGE_MENU.contains(&language.as_str()) {
+                return None;
+            }
+            let subtitle_id = item
+                .get("id")
+                .and_then(|value| {
+                    value.as_i64().or_else(|| {
+                        value
+                            .as_str()
+                            .and_then(|raw| raw.trim().parse::<i64>().ok())
+                    })
+                })
+                .unwrap_or_default();
+            if subtitle_id <= 0 || !seen_subtitle_ids.insert(subtitle_id) {
+                return None;
+            }
+            Some(StremioSubtitleCandidate {
+                original_order,
+                language,
+                subtitle_id,
+                download_url,
+            })
+        })
+        .collect()
+}
+
+fn is_english_subtitle_anchor(token: &str) -> bool {
+    matches!(
+        token,
+        "a" | "about"
+            | "after"
+            | "again"
+            | "all"
+            | "am"
+            | "an"
+            | "and"
+            | "any"
+            | "are"
+            | "as"
+            | "at"
+            | "away"
+            | "back"
+            | "be"
+            | "because"
+            | "been"
+            | "before"
+            | "but"
+            | "by"
+            | "can"
+            | "come"
+            | "could"
+            | "dead"
+            | "did"
+            | "do"
+            | "does"
+            | "don"
+            | "for"
+            | "from"
+            | "get"
+            | "give"
+            | "go"
+            | "good"
+            | "had"
+            | "has"
+            | "have"
+            | "he"
+            | "her"
+            | "here"
+            | "him"
+            | "his"
+            | "how"
+            | "i"
+            | "if"
+            | "in"
+            | "into"
+            | "is"
+            | "it"
+            | "know"
+            | "let"
+            | "like"
+            | "look"
+            | "make"
+            | "me"
+            | "more"
+            | "must"
+            | "my"
+            | "no"
+            | "not"
+            | "now"
+            | "of"
+            | "off"
+            | "on"
+            | "one"
+            | "only"
+            | "or"
+            | "our"
+            | "out"
+            | "please"
+            | "say"
+            | "see"
+            | "she"
+            | "should"
+            | "so"
+            | "some"
+            | "stop"
+            | "take"
+            | "tell"
+            | "than"
+            | "that"
+            | "the"
+            | "their"
+            | "them"
+            | "then"
+            | "there"
+            | "they"
+            | "this"
+            | "to"
+            | "tonight"
+            | "too"
+            | "up"
+            | "upon"
+            | "us"
+            | "want"
+            | "was"
+            | "we"
+            | "were"
+            | "what"
+            | "when"
+            | "where"
+            | "which"
+            | "who"
+            | "why"
+            | "will"
+            | "with"
+            | "would"
+            | "yes"
+            | "you"
+            | "your"
+    )
+}
+
+fn english_subtitle_anchor_count(words: &[String]) -> usize {
+    words
+        .iter()
+        .filter(|word| is_english_subtitle_anchor(word))
+        .count()
+}
+
+fn parse_subtitle_timestamp_ms(value: &str) -> Option<u64> {
+    let value = value.split_whitespace().next()?.replace(',', ".");
+    let (clock, fraction) = value.split_once('.').unwrap_or((&value, "0"));
+    let parts = clock
+        .split(':')
+        .map(|part| part.parse::<u64>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (hours, minutes, seconds) = match parts.as_slice() {
+        [minutes, seconds] => (0, *minutes, *seconds),
+        [hours, minutes, seconds] => (*hours, *minutes, *seconds),
+        _ => return None,
+    };
+    let milliseconds = format!("{fraction:0<3}")
+        .chars()
+        .take(3)
+        .collect::<String>()
+        .parse::<u64>()
+        .ok()?;
+    Some(((hours * 60 * 60 + minutes * 60 + seconds) * 1_000) + milliseconds)
+}
+
+fn parse_subtitle_cue_timing(block: &str) -> Option<(u64, u64)> {
+    let timeline = block.lines().find(|line| line.contains("-->"))?;
+    let (start, end) = timeline.split_once("-->")?;
+    let start_ms = parse_subtitle_timestamp_ms(start)?;
+    let end_ms = parse_subtitle_timestamp_ms(end)?;
+    (end_ms >= start_ms).then_some((start_ms, end_ms))
+}
+
+fn subtitle_cues_align(left: &EnglishSubtitleCue, right: &EnglishSubtitleCue) -> bool {
+    left.start_ms
+        <= right
+            .end_ms
+            .saturating_add(STREMIO_SUBTITLE_CUE_ALIGNMENT_TOLERANCE_MS)
+        && right.start_ms
+            <= left
+                .end_ms
+                .saturating_add(STREMIO_SUBTITLE_CUE_ALIGNMENT_TOLERANCE_MS)
+}
+
+fn subtitle_contents_have_compatible_timing(
+    left: &EnglishSubtitleContent,
+    right: &EnglishSubtitleContent,
+) -> bool {
+    let shorter_cue_count = left.cues.len().min(right.cues.len());
+    if shorter_cue_count <= 3 {
+        return true;
+    }
+    let required_matches = (shorter_cue_count / 20).clamp(3, 24);
+    let mut used_right_cues = vec![false; right.cues.len()];
+    let mut matches = 0;
+    for left_cue in &left.cues {
+        let Some((right_index, _)) = right.cues.iter().enumerate().find(|(index, right_cue)| {
+            !used_right_cues[*index]
+                && left_cue.normalized_text.len() >= 4
+                && left_cue.normalized_text == right_cue.normalized_text
+                && subtitle_cues_align(left_cue, right_cue)
+        }) else {
+            continue;
+        };
+        used_right_cues[right_index] = true;
+        matches += 1;
+        if matches >= required_matches {
+            return true;
+        }
+    }
+    false
+}
+
+fn analyze_english_subtitle_content(text: &str) -> Option<EnglishSubtitleContent> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut content = EnglishSubtitleContent::default();
+    for block in normalized
+        .split("\n\n")
+        .filter(|block| block.contains("-->"))
+    {
+        let Some((start_ms, end_ms)) = parse_subtitle_cue_timing(block) else {
+            continue;
+        };
+        let cue_text = block
+            .lines()
+            .filter(|line| {
+                !line.contains("-->") && !line.trim().chars().all(|ch| ch.is_ascii_digit())
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        if cue_text.trim().is_empty() {
+            continue;
+        }
+
+        let lower = cue_text.to_lowercase();
+        let has_spoken_language_marker = SUBTITLE_SPOKEN_LANGUAGE_MARKER_RE
+            .find_iter(&lower)
+            .any(|marker| SUBTITLE_FANTASY_LANGUAGE_NAME_RE.is_match(marker.as_str()));
+        let cleaned = SUBTITLE_CONTENT_MARKUP_RE.replace_all(&lower, " ");
+        let words = cleaned
+            .split(|ch: char| !ch.is_alphabetic())
+            .filter(|word| word.chars().count() >= 2)
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let english_anchor_count = english_subtitle_anchor_count(&words);
+        content.cues.push(EnglishSubtitleCue {
+            start_ms,
+            end_ms,
+            normalized_text: words.join(" "),
+            english_anchor_count,
+            has_spoken_language_marker,
+            looks_phonetic: lower.contains("<i>") && words.len() >= 4 && english_anchor_count == 0,
+        });
+    }
+
+    (!content.cues.is_empty()).then_some(content)
+}
+
+fn build_english_subtitle_qualities(
+    contents: &HashMap<i64, EnglishSubtitleContent>,
+) -> HashMap<i64, EnglishSubtitleQuality> {
+    let content_entries = contents.iter().collect::<Vec<_>>();
+    let mut compatible_pairs = HashSet::new();
+    for (index, (left_id, left_content)) in content_entries.iter().enumerate() {
+        for (right_id, right_content) in content_entries.iter().skip(index + 1) {
+            if subtitle_contents_have_compatible_timing(left_content, right_content) {
+                compatible_pairs.insert((**left_id, **right_id));
+                compatible_pairs.insert((**right_id, **left_id));
+            }
+        }
+    }
+
+    contents
+        .iter()
+        .map(|(subtitle_id, content)| {
+            let mut quality = EnglishSubtitleQuality {
+                cue_count: content.cues.len(),
+                ..EnglishSubtitleQuality::default()
+            };
+            for cue in &content.cues {
+                if cue.has_spoken_language_marker {
+                    if cue.english_anchor_count >= 2 {
+                        quality.translated_dialogue_cues += 1;
+                    } else {
+                        quality.untranslated_dialogue_cues += 1;
+                    }
+                    continue;
+                }
+
+                let mut aligned_cues = contents
+                    .iter()
+                    .filter(|(other_id, _)| compatible_pairs.contains(&(*subtitle_id, **other_id)))
+                    .flat_map(|(_, other_content)| other_content.cues.iter())
+                    .filter(|other_cue| subtitle_cues_align(cue, other_cue));
+                if cue.english_anchor_count >= 2
+                    && aligned_cues
+                        .clone()
+                        .any(|other_cue| other_cue.looks_phonetic)
+                {
+                    quality.translated_dialogue_cues += 1;
+                } else if cue.looks_phonetic
+                    && aligned_cues.any(|other_cue| other_cue.english_anchor_count >= 2)
+                {
+                    quality.untranslated_dialogue_cues += 1;
+                }
+            }
+            (*subtitle_id, quality)
+        })
+        .collect()
+}
+
+fn english_subtitle_quality_rank(
+    quality: EnglishSubtitleQuality,
+    max_english_cue_count: usize,
+) -> (bool, bool, i64) {
+    let content_rank = quality.translated_dialogue_cues as i64 * 30
+        - quality.untranslated_dialogue_cues as i64 * 12;
+    let has_full_caption_coverage =
+        max_english_cue_count > 0 && quality.cue_count.saturating_mul(2) >= max_english_cue_count;
+    (
+        has_confident_english_translation(quality),
+        has_full_caption_coverage,
+        content_rank,
+    )
+}
+
+fn has_confident_english_translation(quality: EnglishSubtitleQuality) -> bool {
+    quality.translated_dialogue_cues > quality.untranslated_dialogue_cues
+}
+
 fn build_stremio_subtitle_tracks_from_payload(
     payload: &Value,
     preferred_language: &str,
+    content_qualities: &HashMap<i64, EnglishSubtitleQuality>,
 ) -> Vec<SubtitleTrack> {
     let normalized_preference = normalize_subtitle_preference(preferred_language);
     let preferred = if normalized_preference.is_empty() || normalized_preference == "off" {
@@ -1622,44 +2100,49 @@ fn build_stremio_subtitle_tracks_from_payload(
         normalized_preference
     };
 
-    let mut seen_subtitle_ids = HashSet::new();
-    let mut per_language_counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    let mut selected: Vec<(String, i64, String)> = Vec::new();
-    for item in payload
-        .get("subtitles")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-    {
-        let download_url = item
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
-        if !is_allowed_external_subtitle_download_url(&download_url) {
-            continue;
-        }
-        let language =
-            normalize_iso_language(item.get("lang").and_then(Value::as_str).unwrap_or_default());
-        if !STREMIO_SUBTITLE_LANGUAGE_MENU.contains(&language.as_str()) {
-            continue;
-        }
-        let subtitle_id = item
-            .get("id")
-            .and_then(|value| {
-                value.as_i64().or_else(|| {
-                    value
-                        .as_str()
-                        .and_then(|raw| raw.trim().parse::<i64>().ok())
-                })
+    let max_english_cue_count = content_qualities
+        .values()
+        .map(|quality| quality.cue_count)
+        .max()
+        .unwrap_or_default();
+    let mut candidates = parse_stremio_subtitle_candidates(payload);
+    candidates.sort_by(|left, right| {
+        stremio_subtitle_language_menu_rank(&left.language, &preferred)
+            .cmp(&stremio_subtitle_language_menu_rank(
+                &right.language,
+                &preferred,
+            ))
+            .then_with(|| {
+                if left.language != "en" || right.language != "en" {
+                    return std::cmp::Ordering::Equal;
+                }
+                let left_quality = content_qualities
+                    .get(&left.subtitle_id)
+                    .copied()
+                    .unwrap_or_default();
+                let right_quality = content_qualities
+                    .get(&right.subtitle_id)
+                    .copied()
+                    .unwrap_or_default();
+                english_subtitle_quality_rank(right_quality, max_english_cue_count)
+                    .cmp(&english_subtitle_quality_rank(
+                        left_quality,
+                        max_english_cue_count,
+                    ))
+                    .then_with(|| {
+                        content_qualities
+                            .contains_key(&right.subtitle_id)
+                            .cmp(&content_qualities.contains_key(&left.subtitle_id))
+                    })
             })
-            .unwrap_or_default();
-        if subtitle_id <= 0 || !seen_subtitle_ids.insert(subtitle_id) {
-            continue;
-        }
-        let quota = if language == preferred {
+            .then_with(|| left.original_order.cmp(&right.original_order))
+    });
+
+    let mut per_language_counts: HashMap<String, usize> = HashMap::new();
+    let mut selected = Vec::new();
+    for candidate in candidates {
+        let language = &candidate.language;
+        let quota = if language.as_str() == preferred {
             STREMIO_SUBTITLE_PREFERRED_TRACK_LIMIT
         } else if language == "en" {
             STREMIO_SUBTITLE_ENGLISH_FALLBACK_TRACK_LIMIT
@@ -1671,21 +2154,40 @@ fn build_stremio_subtitle_tracks_from_payload(
             continue;
         }
         *language_count += 1;
-        selected.push((language, subtitle_id, download_url));
+        selected.push(candidate);
     }
 
-    selected
-        .sort_by_key(|(language, _, _)| stremio_subtitle_language_menu_rank(language, &preferred));
+    let translated_track_id = selected
+        .iter()
+        .find(|candidate| candidate.language == "en")
+        .and_then(|candidate| {
+            let best = content_qualities.get(&candidate.subtitle_id)?;
+            has_confident_english_translation(*best).then_some(candidate.subtitle_id)
+        });
+    let translated_track_is_forced = translated_track_id
+        .and_then(|subtitle_id| content_qualities.get(&subtitle_id))
+        .is_some_and(|quality| {
+            max_english_cue_count > 0 && quality.cue_count.saturating_mul(2) < max_english_cue_count
+        });
 
-    let mut label_counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+    let mut label_counts: HashMap<String, usize> = HashMap::new();
     selected
         .into_iter()
-        .map(|(language, subtitle_id, download_url)| {
+        .map(|candidate| {
+            let StremioSubtitleCandidate {
+                language,
+                subtitle_id,
+                download_url,
+                ..
+            } = candidate;
             let language_label = get_subtitle_language_display_name(&language);
             let label_count = label_counts.entry(language.clone()).or_insert(0);
             *label_count += 1;
-            let label = if *label_count > 1 {
+            let label = if translated_track_id == Some(subtitle_id) && translated_track_is_forced {
+                format!("{language_label} Translated Forced (OpenSubtitles)")
+            } else if translated_track_id == Some(subtitle_id) {
+                format!("{language_label} Translated (OpenSubtitles)")
+            } else if *label_count > 1 {
                 format!("{language_label} (OpenSubtitles) {label_count}")
             } else {
                 format!("{language_label} (OpenSubtitles)")
@@ -2164,6 +2666,7 @@ fn json_number(value: &Value) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2171,7 +2674,8 @@ mod tests {
     use url::Url;
 
     use super::{
-        AudioTrack, MediaProbe, SubtitleTrack, build_stremio_subtitle_tracks_from_payload,
+        AudioTrack, MediaProbe, SubtitleTrack, analyze_english_subtitle_content,
+        build_english_subtitle_qualities, build_stremio_subtitle_tracks_from_payload,
         choose_audio_track_from_probe, choose_subtitle_track_from_probe,
         extract_sidecar_subtitle_suffix, infer_sidecar_subtitle_language,
         is_allowed_external_subtitle_download_url, is_allowed_remote_transcode_url,
@@ -2278,7 +2782,7 @@ mod tests {
             ]
         });
 
-        let tracks = build_stremio_subtitle_tracks_from_payload(&payload, "");
+        let tracks = build_stremio_subtitle_tracks_from_payload(&payload, "", &HashMap::new());
 
         // English is the implicit preference: first three eligible English
         // entries kept, preferred quota applied, off-host and unknown-language
@@ -2312,7 +2816,8 @@ mod tests {
 
         // Explicit non-English preference reorders that language first and
         // keeps English as a capped fallback.
-        let spanish_first = build_stremio_subtitle_tracks_from_payload(&payload, "es");
+        let spanish_first =
+            build_stremio_subtitle_tracks_from_payload(&payload, "es", &HashMap::new());
         assert_eq!(spanish_first[0].language, "es");
         assert_eq!(
             spanish_first
@@ -2321,6 +2826,212 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn ranks_english_translation_above_phonetic_fantasy_dialogue() {
+        let payload = serde_json::json!({
+            "subtitles": [
+                {"id": "201", "url": "https://subs5.strem.io/file/201", "lang": "eng"},
+                {"id": "202", "url": "https://subs5.strem.io/file/202", "lang": "eng"},
+                {"id": "203", "url": "https://subs5.strem.io/file/203", "lang": "eng"},
+                {"id": "204", "url": "https://subs5.strem.io/file/204", "lang": "eng"}
+            ]
+        });
+        let phonetic = analyze_english_subtitle_content(
+            "1\n00:40:52,731 --> 00:40:57,401\n<i>Ajjalan anha zalat\nvitiherat yer hatif.</i>\n",
+        )
+        .expect("phonetic content");
+        let translated = analyze_english_subtitle_content(
+            "1\n00:40:55,745 --> 00:40:58,705\nTonight I would look upon your face!\n",
+        )
+        .expect("translated content");
+
+        let contents = HashMap::from([
+            (201, phonetic.clone()),
+            (202, phonetic.clone()),
+            (203, phonetic),
+            (204, translated),
+        ]);
+        let qualities = build_english_subtitle_qualities(&contents);
+        assert!(
+            qualities[&201].untranslated_dialogue_cues > qualities[&204].untranslated_dialogue_cues
+        );
+        let tracks = build_stremio_subtitle_tracks_from_payload(&payload, "en", &qualities);
+
+        assert_eq!(tracks.len(), 3);
+        assert_eq!(tracks[0].streamIndex, 3_000_000_000 + 204);
+        assert_eq!(tracks[0].label, "English Translated (OpenSubtitles)");
+        assert!(
+            tracks
+                .iter()
+                .all(|track| track.streamIndex != 3_000_000_000 + 203)
+        );
+    }
+
+    #[test]
+    fn recognizes_explicit_english_gloss_after_fantasy_dialogue() {
+        let phonetic = analyze_english_subtitle_content(
+            "1\n00:36:05,282 --> 00:36:07,818\nAnnakhas dozgosores.\n",
+        )
+        .expect("phonetic content");
+        let translated = analyze_english_subtitle_content(
+            "1\n00:36:05,999 --> 00:36:08,418\n[Jorah speaks Dothraki] {Annakhas dozgosores}\n- Stop the horde\n",
+        )
+        .expect("translated content");
+        let qualities =
+            build_english_subtitle_qualities(&HashMap::from([(301, phonetic), (302, translated)]));
+        let phonetic = qualities[&301];
+        let translated = qualities[&302];
+
+        assert_eq!(translated.translated_dialogue_cues, 1);
+        assert_eq!(translated.untranslated_dialogue_cues, 0);
+        assert!(translated.translated_dialogue_cues > phonetic.translated_dialogue_cues);
+    }
+
+    #[test]
+    fn ignores_ordinary_speaking_annotations_as_translation_evidence() {
+        let english_annotation = analyze_english_subtitle_content(
+            "1\n00:10:00,000 --> 00:10:02,000\n(Speaks English) We should go now.\n",
+        )
+        .expect("English annotation content");
+        let action_annotation = analyze_english_subtitle_content(
+            "1\n00:11:00,000 --> 00:11:02,000\n[John speaks softly] We should go.\n",
+        )
+        .expect("action annotation content");
+        let qualities = build_english_subtitle_qualities(&HashMap::from([
+            (351, english_annotation),
+            (352, action_annotation),
+        ]));
+
+        assert_eq!(qualities[&351].translated_dialogue_cues, 0);
+        assert_eq!(qualities[&352].translated_dialogue_cues, 0);
+    }
+
+    #[test]
+    fn prefers_forced_translation_when_full_tracks_are_phonetic() {
+        let payload = serde_json::json!({
+            "subtitles": [
+                {"id": "701", "url": "https://subs5.strem.io/file/701", "lang": "eng"},
+                {"id": "702", "url": "https://subs5.strem.io/file/702", "lang": "eng"},
+                {"id": "703", "url": "https://subs5.strem.io/file/703", "lang": "eng"},
+                {"id": "704", "url": "https://subs5.strem.io/file/704", "lang": "eng"}
+            ]
+        });
+        let full_phonetic = analyze_english_subtitle_content(
+            "1\n00:10:00,000 --> 00:10:03,000\n<i>Ajjalan anha zalat vitiherat yer hatif.</i>\n\n2\n00:20:00,000 --> 00:20:02,000\nWe should go now.\n\n3\n00:30:00,000 --> 00:30:02,000\nThis is the place.\n\n4\n00:40:00,000 --> 00:40:02,000\nTell me what happened.\n",
+        )
+        .expect("full phonetic content");
+        let forced_translation = analyze_english_subtitle_content(
+            "1\n00:10:00,000 --> 00:10:03,000\nTonight I would look upon your face!\n",
+        )
+        .expect("forced translation content");
+        let qualities = build_english_subtitle_qualities(&HashMap::from([
+            (701, full_phonetic.clone()),
+            (702, full_phonetic.clone()),
+            (703, full_phonetic),
+            (704, forced_translation),
+        ]));
+        let tracks = build_stremio_subtitle_tracks_from_payload(&payload, "en", &qualities);
+
+        assert_eq!(tracks[0].streamIndex, 3_000_000_000 + 704);
+        assert_eq!(tracks[0].label, "English Translated Forced (OpenSubtitles)");
+    }
+
+    #[test]
+    fn translation_label_requires_more_translated_than_phonetic_cues() {
+        let payload = serde_json::json!({
+            "subtitles": [
+                {"id": "801", "url": "https://subs5.strem.io/file/801", "lang": "eng"}
+            ]
+        });
+        let qualities = HashMap::from([(
+            801,
+            super::EnglishSubtitleQuality {
+                translated_dialogue_cues: 1,
+                untranslated_dialogue_cues: 2,
+                cue_count: 100,
+            },
+        )]);
+        let tracks = build_stremio_subtitle_tracks_from_payload(&payload, "en", &qualities);
+
+        assert!(!tracks[0].label.contains("Translated"));
+    }
+
+    #[test]
+    fn does_not_treat_omitted_fantasy_dialogue_as_a_translation() {
+        let phonetic = analyze_english_subtitle_content(
+            "1\n00:40:52,731 --> 00:40:57,401\n<i>Ajjalan anha zalat\nvitiherat yer hatif.</i>\n",
+        )
+        .expect("phonetic content");
+        let omitted = analyze_english_subtitle_content(
+            "1\n00:39:00,000 --> 00:39:02,000\nThe camp is quiet.\n\n2\n00:42:00,000 --> 00:42:02,000\nWe should go.\n",
+        )
+        .expect("omitted-dialogue content");
+        let translated = analyze_english_subtitle_content(
+            "1\n00:39:00,000 --> 00:39:02,000\nThe camp is quiet.\n\n2\n00:40:55,745 --> 00:40:58,705\nTonight I would look upon your face!\n\n3\n00:42:00,000 --> 00:42:02,000\nWe should go.\n",
+        )
+        .expect("translated content");
+        let qualities = build_english_subtitle_qualities(&HashMap::from([
+            (401, phonetic),
+            (402, omitted),
+            (403, translated),
+        ]));
+
+        assert_eq!(qualities[&402].translated_dialogue_cues, 0);
+        assert_eq!(qualities[&403].translated_dialogue_cues, 1);
+
+        let omission_only_payload = serde_json::json!({
+            "subtitles": [
+                {"id": "401", "url": "https://subs5.strem.io/file/401", "lang": "eng"},
+                {"id": "402", "url": "https://subs5.strem.io/file/402", "lang": "eng"}
+            ]
+        });
+        let omission_tracks =
+            build_stremio_subtitle_tracks_from_payload(&omission_only_payload, "en", &qualities);
+        assert!(
+            omission_tracks
+                .iter()
+                .all(|track| !track.label.contains("Translated"))
+        );
+    }
+
+    #[test]
+    fn does_not_treat_ordinary_italic_english_as_fantasy_dialogue() {
+        let italic = analyze_english_subtitle_content(
+            "1\n00:10:00,000 --> 00:10:02,000\n<i>Winter is coming.</i>\n",
+        )
+        .expect("italic English content");
+        let plain = analyze_english_subtitle_content(
+            "1\n00:10:00,000 --> 00:10:02,000\nWinter is coming.\n",
+        )
+        .expect("plain English content");
+        let qualities =
+            build_english_subtitle_qualities(&HashMap::from([(501, italic), (502, plain)]));
+
+        assert_eq!(qualities[&501].translated_dialogue_cues, 0);
+        assert_eq!(qualities[&501].untranslated_dialogue_cues, 0);
+        assert_eq!(qualities[&502].translated_dialogue_cues, 0);
+        assert_eq!(qualities[&502].untranslated_dialogue_cues, 0);
+    }
+
+    #[test]
+    fn does_not_compare_subtitle_releases_with_incompatible_timing() {
+        let shifted_english = analyze_english_subtitle_content(
+            "1\n00:00:10,000 --> 00:00:12,000\nWe should go now.\n\n2\n00:00:20,000 --> 00:00:22,000\nThis is the place.\n\n3\n00:00:30,000 --> 00:00:32,000\nTell me what happened.\n\n4\n00:00:40,000 --> 00:00:43,000\nTonight I would look upon your face!\n",
+        )
+        .expect("shifted English content");
+        let differently_timed_phonetic = analyze_english_subtitle_content(
+            "1\n00:00:40,000 --> 00:00:43,000\n<i>Ajjalan anha zalat vitiherat yer hatif.</i>\n\n2\n00:01:40,000 --> 00:01:42,000\nWe should go now.\n\n3\n00:01:50,000 --> 00:01:52,000\nThis is the place.\n\n4\n00:02:00,000 --> 00:02:02,000\nTell me what happened.\n",
+        )
+        .expect("differently timed phonetic content");
+        let qualities = build_english_subtitle_qualities(&HashMap::from([
+            (601, shifted_english),
+            (602, differently_timed_phonetic),
+        ]));
+
+        assert_eq!(qualities[&601].translated_dialogue_cues, 0);
+        assert_eq!(qualities[&602].untranslated_dialogue_cues, 0);
     }
 
     #[test]

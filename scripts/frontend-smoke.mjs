@@ -16,6 +16,9 @@ const sourceSwitchHashA = "a".repeat(40);
 const sourceSwitchHashB = "b".repeat(40);
 const hlsManagedTmdbId = "273240";
 const emptyTracksTmdbId = "empty-tracks-tv";
+const translatedSubtitleTmdbId = "translated-subtitle-tv";
+const staleEnglishSubtitleStreamIndex = 3_000_000_101;
+const translatedEnglishSubtitleStreamIndex = 3_000_000_102;
 const hlsManagedSourceHash = "3b77214a7852eace6248758affc3ed060579a216";
 const hlsManagedSourceInput =
   "https://example.test/Off.Campus.2026.S01E01.720p.HEVC.x265-MeGusta.mkv";
@@ -231,6 +234,45 @@ function apiPayload(url, method) {
   }
   if (path === "/api/resolve/tv") {
     const tmdbId = url.searchParams.get("tmdbId") || "";
+    if (tmdbId === translatedSubtitleTmdbId) {
+      return {
+        sourceHash: "d".repeat(40),
+        sourceInput: smokeVideo,
+        playableUrl: smokeVideo,
+        fallbackUrls: [],
+        tracks: {
+          audioTracks: [],
+          subtitleTracks: [
+            {
+              streamIndex: staleEnglishSubtitleStreamIndex,
+              language: "en",
+              isTextBased: true,
+              isExternal: true,
+              label: "English (OpenSubtitles)",
+              vttUrl: "/api/subtitles.external.vtt?track=stale",
+            },
+            {
+              streamIndex: translatedEnglishSubtitleStreamIndex,
+              language: "en",
+              isTextBased: true,
+              isExternal: true,
+              label: "English Translated (OpenSubtitles)",
+              vttUrl: "/api/subtitles.external.vtt?track=translated",
+            },
+          ],
+        },
+        selectedAudioStreamIndex: -1,
+        selectedSubtitleStreamIndex: translatedEnglishSubtitleStreamIndex,
+        preferences: { audioLang: "en", subtitleLang: "en" },
+        metadata: {
+          displayTitle: "Translated Subtitle",
+          seasonNumber: 1,
+          episodeNumber: 2,
+          episodeTitle: "Regression",
+          runtimeSeconds: 3600,
+        },
+      };
+    }
     if (tmdbId === emptyTracksTmdbId) {
       return {
         sourceHash: "e".repeat(40),
@@ -406,6 +448,11 @@ const pages = [
     path: `/player.html?tmdbId=${emptyTracksTmdbId}&mediaType=tv&title=Empty%20Tracks&seasonNumber=1&episodeNumber=1&audioLang=en`,
     selector: ".player-shell",
     expectUnknownAudioFallback: true,
+  },
+  {
+    path: `/player.html?tmdbId=${translatedSubtitleTmdbId}&mediaType=tv&title=Translated%20Subtitle&seasonNumber=1&episodeNumber=2`,
+    selector: ".player-shell",
+    expectTranslatedSubtitleMigration: true,
   },
   {
     path: `/watch?tmdbId=${hlsManagedTmdbId}&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1`,
@@ -672,6 +719,14 @@ async function runSmoke() {
           });
           return;
         }
+        if (url.pathname === "/api/subtitles.external.vtt") {
+          await route.fulfill({
+            status: 200,
+            contentType: "text/vtt; charset=utf-8",
+            body: "WEBVTT\n\n",
+          });
+          return;
+        }
         await route.fulfill(jsonResponse(payload));
       });
 
@@ -696,6 +751,18 @@ async function runSmoke() {
             }),
           );
         });
+      }
+
+      if (pageSpec.expectTranslatedSubtitleMigration) {
+        await context.addInitScript(
+          ({ storageKey, staleStreamIndex }) => {
+            localStorage.setItem(storageKey, String(staleStreamIndex));
+          },
+          {
+            storageKey: `streamarena-subtitle-stream:tv:${translatedSubtitleTmdbId}:s1:e2`,
+            staleStreamIndex: staleEnglishSubtitleStreamIndex,
+          },
+        );
       }
 
       if (pageSpec.expectSourceSwitch || pageSpec.expectSourceSwitchFailureRestore) {
@@ -1252,6 +1319,57 @@ async function runSmoke() {
         ) {
           throw new Error(
             `${pageSpec.path}\nUnknown audio tracks should render one honest Default option.\n${JSON.stringify(audioFallbackState)}`,
+          );
+        }
+      }
+
+      if (pageSpec.expectTranslatedSubtitleMigration) {
+        const storageKey =
+          `streamarena-subtitle-stream:tv:${translatedSubtitleTmdbId}:s1:e2`;
+        await page.waitForFunction(
+          ({ expectedStreamIndex, expectedStorageKey }) => {
+            const selected = document.querySelector(
+              "#subtitleOptions .subtitle-option[aria-selected='true']",
+            );
+            return (
+              Number(selected?.dataset.subtitleStream) === expectedStreamIndex &&
+              Number(localStorage.getItem(expectedStorageKey)) === expectedStreamIndex
+            );
+          },
+          {
+            expectedStreamIndex: translatedEnglishSubtitleStreamIndex,
+            expectedStorageKey: storageKey,
+          },
+          { timeout: 8_000 },
+        );
+        const subtitleState = await page.evaluate((expectedStorageKey) => {
+          const options = [...document.querySelectorAll(
+            "#subtitleOptions .subtitle-option",
+          )].map((option) => ({
+            streamIndex: Number(option.dataset.subtitleStream),
+            selected: option.getAttribute("aria-selected") === "true",
+            text: option.textContent?.trim() || "",
+          }));
+          return {
+            options,
+            storedStreamIndex: Number(localStorage.getItem(expectedStorageKey)),
+          };
+        }, storageKey);
+        const selected = subtitleState.options.find((option) => option.selected);
+        const availableTracks = subtitleState.options.filter(
+          (option) => option.streamIndex >= 0,
+        );
+        if (
+          availableTracks.length !== 2 ||
+          !availableTracks.some(
+            (option) => option.streamIndex === staleEnglishSubtitleStreamIndex,
+          ) ||
+          selected?.streamIndex !== translatedEnglishSubtitleStreamIndex ||
+          !selected.text.includes("Translated dialogue") ||
+          subtitleState.storedStreamIndex !== translatedEnglishSubtitleStreamIndex
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nA stale English OpenSubtitles id overrode the newly ranked translated track.\n${JSON.stringify(subtitleState)}`,
           );
         }
       }

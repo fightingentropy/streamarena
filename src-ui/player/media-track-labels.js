@@ -55,6 +55,32 @@ export function isLikelyForcedSubtitleTrack(track) {
   );
 }
 
+export function isLikelyTranslatedSubtitleTrack(track) {
+  const labelText = String(track?.label || "").toLowerCase();
+  const titleText = String(track?.title || "").toLowerCase();
+  const combined = `${labelText} ${titleText}`;
+  return combined.includes("translated") || combined.includes("translation");
+}
+
+export function shouldPreferResolvedTranslatedSubtitleTrack(storedTrack, resolvedTrack) {
+  const isEnglishOpenSubtitlesTrack = (track) =>
+    Boolean(
+      track &&
+        String(track.language || "")
+          .trim()
+          .toLowerCase() === "en" &&
+        `${track.label || ""} ${track.title || ""}`
+          .toLowerCase()
+          .includes("opensubtitles"),
+    );
+  return (
+    isEnglishOpenSubtitlesTrack(storedTrack) &&
+    isEnglishOpenSubtitlesTrack(resolvedTrack) &&
+    !isLikelyTranslatedSubtitleTrack(storedTrack) &&
+    isLikelyTranslatedSubtitleTrack(resolvedTrack)
+  );
+}
+
 export function getSubtitleTrackDisplayLabel(track) {
   return getLanguageDisplayLabel(track?.language || "en");
 }
@@ -62,6 +88,9 @@ export function getSubtitleTrackDisplayLabel(track) {
 export function getSubtitleTrackDisplayParts(track) {
   const languageLabel = getLanguageDisplayLabel(track?.language || "en");
   const secondaryParts = [];
+  if (isLikelyTranslatedSubtitleTrack(track)) {
+    secondaryParts.push("Translated dialogue");
+  }
   if (isLikelyForcedSubtitleTrack(track)) {
     secondaryParts.push("Forced");
   }

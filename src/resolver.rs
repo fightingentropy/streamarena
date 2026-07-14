@@ -3892,7 +3892,7 @@ impl ResolverService {
             })
             .map(|(index, stream)| (index, parse_seed_count(&stream.title)))
             .collect::<Vec<_>>();
-        unresolved.sort_by(|left, right| right.1.cmp(&left.1));
+        unresolved.sort_by_key(|right| std::cmp::Reverse(right.1));
         unresolved.truncate(TORZNAB_DOWNLOAD_LINK_HYDRATE_LIMIT);
 
         let mut pending = FuturesUnordered::new();
