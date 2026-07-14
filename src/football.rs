@@ -72,6 +72,7 @@ const NTVS_DEFAULT_DURATION_MINUTES: i64 = 180;
 const ESPN_DEFAULT_DURATION_MINUTES: i64 = 180;
 const ESPN_MATCH_MERGE_TOLERANCE_MS: i64 = 2 * 60 * 60 * 1000;
 const FOOTBALL_SCHEDULE_PROVIDER_TIMEOUT_MS: u64 = 3_500;
+const NTVS_SCHEDULE_PROVIDER_TIMEOUT_MS: u64 = 5_000;
 const NTVS_EMBED_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-ntvs-hls.mjs";
 const NTVS_EMBED_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-ntvs-hls.mjs";
 const NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
@@ -81,6 +82,13 @@ const NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
 const NTVS_EMBED_MIN_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-embed-min.mjs";
 const NTVS_EMBED_MIN_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-embed-min.mjs";
 const NTVS_EMBED_MIN_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 12;
+// The NTV watch page expands each coarse search source (admin/delta/golf) into
+// individually labelled broadcaster feeds. Hydrate only live fixtures and keep
+// this best-effort expansion comfortably inside the NTV schedule's 5 s budget.
+const NTVS_LIVE_SOURCE_EXPANSION_TIMEOUT_MS: u64 = 2_500;
+const NTVS_LIVE_SOURCE_EXPANSION_MAX_CONCURRENT: usize = 4;
+const NTVS_LIVE_SOURCE_EXPANSION_MAX_MATCHES: usize = 4;
+const NTVS_LIVE_SOURCE_EXPANSION_MAX_STREAMS: usize = 32;
 // cdnlivetv.tv is the channel/IPTV upstream behind streamsports99.su: one schedule
 // (`/events/sports/`) maps each game to a set of broadcast channels, each playable
 // via a per-channel player page that mints a short-lived tokenized HLS URL. It's an
@@ -161,7 +169,7 @@ struct StreamedMatch {
     sources: Vec<StreamedSource>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct StreamedEmbedStream {
     #[serde(
         default,
@@ -177,6 +185,10 @@ struct StreamedEmbedStream {
         deserialize_with = "deserialize_default_on_null"
     )]
     embed_url: String,
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
+    language: String,
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
+    source: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -221,6 +233,8 @@ struct NtvsMatch {
     teams: StreamedTeams,
     #[serde(default, deserialize_with = "deserialize_streamed_sources")]
     sources: Vec<StreamedSource>,
+    #[serde(default, skip_deserializing)]
+    expanded_streams: Vec<StreamedEmbedStream>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1102,12 +1116,17 @@ async fn sports_schedule_provider_with_timeout<F>(
 where
     F: Future<Output = AppResult<Response<Body>>>,
 {
-    timeout(
-        Duration::from_millis(FOOTBALL_SCHEDULE_PROVIDER_TIMEOUT_MS),
-        future,
-    )
-    .await
-    .map_err(|_| ApiError::gateway_timeout(format!("{provider} schedule timed out.")))?
+    let timeout_ms = if provider == NTVS_SOURCE_ID {
+        // NTVS additionally fetches the live event's labelled source selector.
+        // Keep other providers on the tighter budget while leaving enough room
+        // for that one bounded page request to complete on the WARP route.
+        NTVS_SCHEDULE_PROVIDER_TIMEOUT_MS
+    } else {
+        FOOTBALL_SCHEDULE_PROVIDER_TIMEOUT_MS
+    };
+    timeout(Duration::from_millis(timeout_ms), future)
+        .await
+        .map_err(|_| ApiError::gateway_timeout(format!("{provider} schedule timed out.")))?
 }
 
 async fn sports_schedule_payload_from_response(response: Response<Body>) -> AppResult<Value> {
@@ -1385,12 +1404,23 @@ fn sports_schedule_array_identity(value: &Value, field: &str) -> String {
     if field.is_empty() {
         return value.as_str().unwrap_or_default().trim().to_lowercase();
     }
-    value
+    let raw_value = value
         .get(field)
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .trim()
-        .to_lowercase()
+        .trim();
+    if field != "source" {
+        return raw_value.to_lowercase();
+    }
+    let Ok(mut url) = Url::parse(raw_value) else {
+        return raw_value.to_owned();
+    };
+    if let Some(host) = url.host_str().map(|host| host.to_ascii_lowercase()) {
+        let _ = url.set_host(Some(&host));
+    }
+    // URL paths and query values may be opaque, case-sensitive source tokens.
+    // Normalize only the host so distinct NTV wrapper tokens cannot collapse.
+    url.to_string()
 }
 
 fn api_error_message(error: &ApiError) -> &str {
@@ -2139,7 +2169,7 @@ async fn fetch_ntvs_sport_matches_payload(
         )));
     }
 
-    let payload = response
+    let mut payload = response
         .json::<NtvsSearchPayload>()
         .await
         .map_err(|error| {
@@ -2156,11 +2186,60 @@ async fn fetch_ntvs_sport_matches_payload(
         }));
     }
 
+    expand_ntvs_live_sources(state, &mut payload.data, sport_name, now_ms()).await;
+
     Ok(build_ntvs_sport_matches_payload(
         payload.data,
         &source_url,
         sport_name,
     ))
+}
+
+async fn expand_ntvs_live_sources(
+    state: &AppState,
+    source_matches: &mut [NtvsMatch],
+    sport_name: &'static str,
+    now: i64,
+) {
+    let mut probes = source_matches
+        .iter()
+        .enumerate()
+        .filter(|(_, match_item)| ntvs_match_is_live(match_item, sport_name, now))
+        .filter_map(|(match_index, match_item)| {
+            let source_url = ntvs_watch_page_url(match_item.id.trim())?;
+            Url::parse(&source_url)
+                .ok()
+                .map(|url| (match_index, match_item.popular, url))
+        })
+        .collect::<Vec<_>>();
+    probes.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    probes.truncate(NTVS_LIVE_SOURCE_EXPANSION_MAX_MATCHES);
+    if probes.is_empty() {
+        return;
+    }
+
+    let expanded_matches = stream::iter(probes)
+        .map(|(match_index, _, source_url)| async move {
+            let html = timeout(
+                Duration::from_millis(NTVS_LIVE_SOURCE_EXPANSION_TIMEOUT_MS),
+                fetch_ntvs_html(state, &source_url, NTVS_REFERER),
+            )
+            .await
+            .ok()?
+            .ok()?;
+            let streams = extract_ntvs_watch_page_sources(&html, &source_url);
+            (!streams.is_empty()).then_some((match_index, streams))
+        })
+        .buffer_unordered(NTVS_LIVE_SOURCE_EXPANSION_MAX_CONCURRENT)
+        .collect::<Vec<_>>()
+        .await;
+
+    for (match_index, streams) in expanded_matches.into_iter().flatten() {
+        let Some(match_item) = source_matches.get_mut(match_index) else {
+            continue;
+        };
+        match_item.expanded_streams = streams;
+    }
 }
 
 fn ntvs_search_url(query: &str, server: &str) -> String {
@@ -3924,6 +4003,8 @@ fn extract_streamed_watch_embed_streams(html: &str, base_url: &Url) -> Vec<Strea
             stream_no: parse_embed_stream_number(&url).unwrap_or(1),
             hd: true,
             embed_url: url.to_string(),
+            language: String::new(),
+            source: String::new(),
         })
         .collect()
 }
@@ -4048,6 +4129,124 @@ async fn fetch_ntvs_html(state: &AppState, url: &Url, referer: &str) -> AppResul
         .text()
         .await
         .map_err(|error| ApiError::bad_gateway(format!("Failed to read NTVS stream page: {error}")))
+}
+
+fn extract_ntvs_watch_page_sources(html: &str, base_url: &Url) -> Vec<StreamedEmbedStream> {
+    let Ok(select_pattern) = Regex::new(r#"(?is)<select\b([^>]*)>(.*?)</select>"#) else {
+        return Vec::new();
+    };
+    let Ok(option_pattern) = Regex::new(r#"(?is)<option\b([^>]*)>(.*?)</option>"#) else {
+        return Vec::new();
+    };
+    let mut sources = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for select in select_pattern.captures_iter(html) {
+        let attributes = select
+            .get(1)
+            .map(|value| value.as_str())
+            .unwrap_or_default();
+        let is_source_selector = extract_html_attribute_values(attributes, "id")
+            .into_iter()
+            .any(|value| value.eq_ignore_ascii_case("sourceSelect"));
+        if !is_source_selector {
+            continue;
+        }
+        let options_html = select
+            .get(2)
+            .map(|value| value.as_str())
+            .unwrap_or_default();
+        for option in option_pattern.captures_iter(options_html) {
+            if sources.len() >= NTVS_LIVE_SOURCE_EXPANSION_MAX_STREAMS {
+                break;
+            }
+            let attributes = option
+                .get(1)
+                .map(|value| value.as_str())
+                .unwrap_or_default();
+            let Some(raw_value) = extract_html_attribute_values(attributes, "value")
+                .into_iter()
+                .next()
+            else {
+                continue;
+            };
+            let Some(source_url) = resolve_ntvs_candidate_url(base_url, &raw_value) else {
+                continue;
+            };
+            if !is_supported_ntvs_wrapper_embed_url(&source_url) {
+                continue;
+            }
+            let canonical_url = source_url.to_string();
+            if !seen.insert(canonical_url.clone()) {
+                continue;
+            }
+            let raw_label = option
+                .get(2)
+                .map(|value| value.as_str())
+                .unwrap_or_default();
+            let label = normalize_ntvs_option_text(raw_label);
+            let Some((source, language, stream_no, hd)) = parse_ntvs_option_label(&label) else {
+                continue;
+            };
+            sources.push(StreamedEmbedStream {
+                stream_no,
+                hd,
+                embed_url: canonical_url,
+                language,
+                source,
+            });
+        }
+        // There is only one playback selector. Ignoring unrelated selects also
+        // avoids treating embed-code textarea values as phantom sources.
+        break;
+    }
+
+    sources
+}
+
+fn normalize_ntvs_option_text(value: &str) -> String {
+    let mut text = String::with_capacity(value.len());
+    let mut inside_tag = false;
+    for character in value.chars() {
+        match character {
+            '<' => inside_tag = true,
+            '>' => inside_tag = false,
+            _ if !inside_tag => text.push(character),
+            _ => {}
+        }
+    }
+    decode_basic_html_entities(&text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_ntvs_option_label(label: &str) -> Option<(String, String, i64, bool)> {
+    let parts = label
+        .split(" - ")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 4 || !parts.first()?.to_ascii_lowercase().starts_with("server ") {
+        return None;
+    }
+    let source = parts.get(1)?.trim();
+    let stream_label = parts.last()?.trim();
+    let stream_no = stream_label
+        .split(|character: char| !character.is_ascii_digit())
+        .find(|part| !part.is_empty())?
+        .parse::<i64>()
+        .ok()?;
+    let language = parts[2..parts.len() - 1].join(" - ");
+    if source.is_empty() || language.is_empty() || stream_no <= 0 {
+        return None;
+    }
+    Some((
+        source.to_ascii_lowercase(),
+        language,
+        stream_no,
+        label.to_ascii_lowercase().contains("[hd]"),
+    ))
 }
 
 fn extract_ntvs_candidate_urls(html: &str, base_url: &Url) -> Vec<Url> {
@@ -4743,7 +4942,21 @@ fn ntvs_category_matches(category: &str, default_sport_name: &str) -> bool {
     category.trim().is_empty() || category.trim().eq_ignore_ascii_case(default_sport_name)
 }
 
+fn ntvs_match_is_live(match_item: &NtvsMatch, default_sport_name: &str, now: i64) -> bool {
+    match_item.date > 0
+        && match_item.date <= now
+        && ntvs_category_matches(match_item.category.trim(), default_sport_name)
+        && ntvs_match_link_count(match_item) > 0
+        && match_item
+            .date
+            .saturating_add(NTVS_DEFAULT_DURATION_MINUTES.saturating_mul(60_000))
+            > now
+}
+
 fn ntvs_match_link_count(match_item: &NtvsMatch) -> usize {
+    if !match_item.expanded_streams.is_empty() {
+        return match_item.expanded_streams.len();
+    }
     match_item
         .sources
         .iter()
@@ -4798,55 +5011,96 @@ fn normalize_ntvs_sport_match(
     };
     let mut streams = Vec::new();
     let mut channels = Vec::new();
+    let mut languages = BTreeSet::new();
 
-    // ntv.cx is a reskin of the streamed.su backend — its source slugs are
-    // byte-identical, so resolve each source through the streamed /api/stream
-    // endpoint instead of a hardcoded embed.st/<server>/<slug>/1. That endpoint
-    // enumerates every numbered stream with its `hd` flag, letting the streamed
-    // resolver pick the HD variant; the old /1 URL silently played whatever
-    // quality stream 1 happened to be (often SD). ntv.cx's own host only exposes
-    // /api/search (no /api/stream), so we point these at streamed.pk.
-    let mut indexed_sources = match_item
-        .sources
-        .iter()
-        .enumerate()
-        .filter_map(|(index, source)| {
-            let source_url = streamed_source_stream_api_url(source)?;
+    if !match_item.expanded_streams.is_empty() {
+        // These are the exact numbered feeds shown by ntv.cx's Kobra selector.
+        // Preserve each opaque wrapper URL and its language/broadcaster label so
+        // every TSN/FOX/ITV/DAZN/etc. option remains individually selectable
+        // instead of being collapsed to the first stream in its source group.
+        for stream in &match_item.expanded_streams {
+            let source_name = stream.source.trim();
+            let source_id = source_name.to_ascii_lowercase();
+            let display_source = source_name.to_ascii_uppercase();
+            let language_parts = stream
+                .language
+                .split(" - ")
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>();
+            let language = language_parts.first().copied().unwrap_or("Unknown");
+            let mut label_parts = vec!["NTV Kobra".to_owned()];
+            if !display_source.is_empty() {
+                label_parts.push(display_source);
+            }
+            label_parts.extend(language_parts.iter().map(|part| (*part).to_owned()));
+            label_parts.push(format!("Stream {}", stream.stream_no));
+            let label = label_parts.join(" · ");
+            let quality = if stream.hd { "HD" } else { "SD" };
+            languages.insert(language.to_owned());
+            streams.push(json!({
+                "id": format!("ntvs-{source_id}-{}", stream.stream_no),
+                "label": label,
+                "source": stream.embed_url,
+                "provider": NTVS_SOURCE_ID,
+                "playbackType": "hls",
+                "quality": quality
+            }));
+            channels.push(json!({
+                "name": label,
+                "language": language,
+                "linkCount": 1
+            }));
+        }
+    } else {
+        // Best-effort expansion can time out without removing the fixture. In
+        // that case retain the coarse source-group URLs so playback still has
+        // the same resilient fallback path it had before this enrichment.
+        let mut indexed_sources = match_item
+            .sources
+            .iter()
+            .enumerate()
+            .filter_map(|(index, source)| {
+                let source_url = streamed_source_stream_api_url(source)?;
+                let source_name = source.source.trim();
+                Some((
+                    sports_embed_source_priority(source_name),
+                    index,
+                    source,
+                    source_url,
+                ))
+            })
+            .collect::<Vec<_>>();
+        indexed_sources
+            .sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+        for (index, source, source_url) in indexed_sources
+            .into_iter()
+            .map(|(_, index, source, source_url)| (index, source, source_url))
+        {
             let source_name = source.source.trim();
-            Some((
-                sports_embed_source_priority(source_name),
-                index,
-                source,
-                source_url,
-            ))
-        })
-        .collect::<Vec<_>>();
-    indexed_sources.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-
-    for (index, source, source_url) in indexed_sources
-        .into_iter()
-        .map(|(_, index, source, source_url)| (index, source, source_url))
-    {
-        let source_name = source.source.trim();
-        let display_source = title_case_ascii(source_name);
-        streams.push(json!({
-            "id": format!("ntvs-{source_name}-{index}"),
-            "label": format!("NTVS {display_source}"),
-            "source": source_url,
-            "provider": NTVS_SOURCE_ID,
-            "playbackType": "hls",
-            "quality": "HD"
-        }));
-        channels.push(json!({
-            "name": format!("NTVS {display_source}"),
-            "language": "HD",
-            "linkCount": 1
-        }));
+            let display_source = title_case_ascii(source_name);
+            let label = format!("NTVS {display_source}");
+            streams.push(json!({
+                "id": format!("ntvs-{source_name}-{index}"),
+                "label": label,
+                "source": source_url,
+                "provider": NTVS_SOURCE_ID,
+                "playbackType": "hls",
+                "quality": "HD"
+            }));
+            channels.push(json!({
+                "name": label,
+                "language": "HD",
+                "linkCount": 1
+            }));
+        }
+        languages.insert("HD".to_owned());
     }
 
     // Keep ntv.cx's own "Kobra" watch page as a last-resort fallback *after* the
-    // HD embed sources. It resolves via ntv.cx directly (so it still works when
-    // streamed.pk is unreachable) but is typically lower quality, so it must
+    // numbered embed sources. It resolves via ntv.cx directly (so it still works
+    // when streamed.pk is unreachable) and refreshes the live option set, but must
     // never be the default: the mobile picker plays streams[0] and the web picker
     // sorts /watch/ pages last.
     let primary_channel = channels
@@ -4861,11 +5115,11 @@ fn normalize_ntvs_sport_match(
             "source": watch_page_url,
             "provider": NTVS_SOURCE_ID,
             "playbackType": "hls",
-            "quality": "SD"
+            "quality": "HD"
         }));
         channels.push(json!({
             "name": "NTVS Kobra",
-            "language": "SD",
+            "language": "Auto",
             "linkCount": 1
         }));
     }
@@ -4893,7 +5147,7 @@ fn normalize_ntvs_sport_match(
         "channelCount": channels.len(),
         "channels": channels,
         "streams": streams,
-        "languages": ["HD"],
+        "languages": languages.into_iter().collect::<Vec<_>>(),
         "provider": NTVS_SOURCE_ID
     })
 }
@@ -4928,10 +5182,10 @@ mod tests {
         SPORTS_SCHEDULE_FUTURE_CACHE_TTL_MS, SPORTS_SCHEDULE_STALE_IF_ERROR_MS,
         SPORTS_STREAM_RESOLVE_CACHE_TTL_MS, SPORTS_STREAM_RESOLVE_FAILURE_TTL_MS,
         STREAMED_FOOTBALL_MATCHES_URL, STREAMED_SOURCE_ID, SportsScheduleCache,
-        SportsScheduleSource, SportsStreamResolveCache, StreamedMatch, StreamedSource,
-        StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
+        SportsScheduleSource, SportsStreamResolveCache, StreamedEmbedStream, StreamedMatch,
+        StreamedSource, StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
         build_ntvs_football_matches_payload, build_streamed_football_matches_payload,
-        extract_matchstream_matches, extract_ntvs_candidate_urls,
+        extract_matchstream_matches, extract_ntvs_candidate_urls, extract_ntvs_watch_page_sources,
         extract_streamed_watch_embed_streams, filter_marquee_football_schedule,
         is_marquee_football_competition, is_streamed_watch_url, is_supported_matchstream_hls_url,
         is_supported_matchstream_player_url, is_supported_matchstream_stream_url,
@@ -4945,8 +5199,8 @@ mod tests {
         normalize_sports_schedule_name, parse_espn_start_ms, parse_fallback_stream_urls,
         parse_ntvs_hesgoaler_player_source, remove_streamed_sources_by_index,
         resolve_ntvs_candidate_url, sports_live_stream_source_candidates,
-        sports_schedule_fresh_ttl_ms, sports_stream_provider_id, sports_stream_resolve_cache_key,
-        streamed_match_is_live, streamed_source_stream_api_url,
+        sports_schedule_array_identity, sports_schedule_fresh_ttl_ms, sports_stream_provider_id,
+        sports_stream_resolve_cache_key, streamed_match_is_live, streamed_source_stream_api_url,
     };
     use crate::utils::now_ms;
     use serde_json::json;
@@ -5377,6 +5631,7 @@ mod tests {
                     id: "kosovo-vs-andorra-football-1545036".to_owned(),
                 },
             ],
+            expanded_streams: Vec::new(),
         }]);
         let matches = payload["matches"].as_array().unwrap();
 
@@ -5403,6 +5658,185 @@ mod tests {
             "https://ntv.cx/watch/kobra/kosovo-vs-andorra-2472554"
         );
         assert_eq!(matches[0]["streams"][2]["label"], "NTVS Kobra");
+    }
+
+    #[test]
+    fn builds_ntvs_payload_with_every_numbered_kobra_source() {
+        let admin_rows = [
+            (1, "English - TSN", true),
+            (2, "English - TSN", false),
+            (3, "English - FOX", true),
+            (4, "English - FOX", false),
+            (5, "English - ITV1", true),
+            (6, "English - ITV1", false),
+            (7, "Spanish - DAZN Spain", true),
+            (8, "Spanish - DAZN Spain", false),
+            (9, "Spanish - Telemundo", true),
+            (10, "Spanish - Telemundo", false),
+        ];
+        let mut expanded_streams = admin_rows
+            .into_iter()
+            .map(|(stream_no, language, hd)| StreamedEmbedStream {
+                stream_no,
+                hd,
+                embed_url: format!("https://embed.st/embed/admin/ppv-france-vs-spain/{stream_no}"),
+                language: language.to_owned(),
+                source: "admin".to_owned(),
+            })
+            .collect::<Vec<_>>();
+        expanded_streams.extend((1..=6).map(|stream_no| StreamedEmbedStream {
+            stream_no,
+            hd: true,
+            embed_url: format!(
+                "https://embed.st/embed/delta/live-world-cup-france-spain/{stream_no}"
+            ),
+            language: "English".to_owned(),
+            source: "delta".to_owned(),
+        }));
+        expanded_streams.extend((1..=2).map(|stream_no| StreamedEmbedStream {
+            stream_no,
+            hd: true,
+            embed_url: format!("https://embed.st/embed/golf/23742/{stream_no}"),
+            language: "English".to_owned(),
+            source: "golf".to_owned(),
+        }));
+
+        let (payload, _) = build_ntvs_football_matches_payload(vec![NtvsMatch {
+            id: "france-vs-spain-2528031".to_owned(),
+            title: "France vs Spain".to_owned(),
+            category: "football".to_owned(),
+            date: now_ms() + 60_000,
+            popular: true,
+            teams: StreamedTeams {
+                home: Some(StreamedTeam {
+                    name: "France".to_owned(),
+                }),
+                away: Some(StreamedTeam {
+                    name: "Spain".to_owned(),
+                }),
+            },
+            sources: vec![StreamedSource {
+                source: "admin".to_owned(),
+                id: "ppv-france-vs-spain".to_owned(),
+            }],
+            expanded_streams,
+        }]);
+        let game = &payload["matches"][0];
+        let streams = game["streams"].as_array().unwrap();
+
+        assert_eq!(game["linkCount"], 19);
+        assert_eq!(streams.len(), 19);
+        assert_eq!(streams[0]["id"], "ntvs-admin-1");
+        assert_eq!(
+            streams[0]["label"],
+            "NTV Kobra · ADMIN · English · TSN · Stream 1"
+        );
+        assert_eq!(streams[0]["quality"], "HD");
+        assert_eq!(streams[1]["quality"], "SD");
+        assert_eq!(
+            streams[6]["label"],
+            "NTV Kobra · ADMIN · Spanish · DAZN Spain · Stream 7"
+        );
+        assert_eq!(streams[10]["id"], "ntvs-delta-1");
+        assert_eq!(streams[16]["id"], "ntvs-golf-1");
+        assert_eq!(streams[17]["id"], "ntvs-golf-2");
+        assert_eq!(streams[18]["label"], "NTVS Kobra");
+        assert_eq!(
+            streams[18]["source"],
+            "https://ntv.cx/watch/kobra/france-vs-spain-2528031"
+        );
+        assert_eq!(game["languages"], json!(["English", "Spanish"]));
+    }
+
+    #[test]
+    fn extracts_every_source_from_the_ntvs_selector_only() {
+        let mut options = String::new();
+        let admin = [
+            (1, "English - TSN", true),
+            (2, "English - TSN", false),
+            (3, "English - FOX", true),
+            (4, "English - FOX", false),
+            (5, "English - ITV1", true),
+            (6, "English - ITV1", false),
+            (7, "Spanish - DAZN Spain", true),
+            (8, "Spanish - DAZN Spain", false),
+            (9, "Spanish - Telemundo", true),
+            (10, "Spanish - Telemundo", false),
+        ];
+        for (stream_no, language, hd) in admin {
+            let quality = if hd { " [HD]" } else { "" };
+            options.push_str(&format!(
+                "<option value='/embed?t=Admin{stream_no}'>Server Kobra - ADMIN - {language} - Stream {stream_no}{quality}</option>"
+            ));
+        }
+        for stream_no in 1..=6 {
+            options.push_str(&format!(
+                "<option value='/embed?t=Delta{stream_no}'>Server Kobra - DELTA - English - Stream {stream_no} [HD]</option>"
+            ));
+        }
+        for stream_no in 1..=2 {
+            options.push_str(&format!(
+                "<option value='/embed?t=Golf{stream_no}'>Server Kobra - GOLF - English - Stream {stream_no} [HD]</option>"
+            ));
+        }
+        options.push_str(
+            "<option value='/embed?t=Admin1'>Duplicate</option>\
+             <option value='https://example.test/embed?t=evil'>Off domain</option>",
+        );
+        let html = format!(
+            "<select id='other'><option value='/embed?t=phantom'>Ignore</option></select>\
+             <select class='server-picker' id='sourceSelect'>{options}</select>\
+             <textarea><option value='/embed?t=textarea'>Ignore</option></textarea>"
+        );
+        let base = Url::parse("https://ntv.cx/watch/kobra/france-vs-spain-2528031").unwrap();
+        let sources = extract_ntvs_watch_page_sources(&html, &base);
+
+        assert_eq!(sources.len(), 18);
+        assert_eq!(sources.iter().filter(|stream| stream.hd).count(), 13);
+        assert_eq!(sources[0].source, "admin");
+        assert_eq!(sources[0].language, "English - TSN");
+        assert_eq!(sources[0].stream_no, 1);
+        assert_eq!(sources[0].embed_url, "https://ntv.cx/embed?t=Admin1");
+        assert_eq!(sources[9].language, "Spanish - Telemundo");
+        assert_eq!(sources[10].source, "delta");
+        assert_eq!(sources[16].source, "golf");
+        assert_eq!(sources[17].stream_no, 2);
+    }
+
+    #[test]
+    fn sports_source_identity_preserves_case_sensitive_tokens() {
+        let upper_token = json!({"source": "https://NTV.cx/embed?t=AbC123"});
+        let lower_token = json!({"source": "https://ntv.cx/embed?t=aBc123"});
+
+        assert_eq!(
+            sports_schedule_array_identity(&upper_token, "source"),
+            "https://ntv.cx/embed?t=AbC123"
+        );
+        assert_ne!(
+            sports_schedule_array_identity(&upper_token, "source"),
+            sports_schedule_array_identity(&lower_token, "source")
+        );
+    }
+
+    #[test]
+    fn parses_numbered_ntvs_stream_metadata() {
+        let stream: StreamedEmbedStream = serde_json::from_value(json!({
+            "streamNo": 1,
+            "language": "English - TSN",
+            "hd": true,
+            "embedUrl": "https://embed.st/embed/admin/ppv-france-vs-spain/1",
+            "source": "admin"
+        }))
+        .unwrap();
+
+        assert_eq!(stream.stream_no, 1);
+        assert_eq!(stream.language, "English - TSN");
+        assert!(stream.hd);
+        assert_eq!(
+            stream.embed_url,
+            "https://embed.st/embed/admin/ppv-france-vs-spain/1"
+        );
+        assert_eq!(stream.source, "admin");
     }
 
     #[test]
