@@ -111,7 +111,31 @@ const SPORTS_HTTP_PROXY_ENV: &str = "SPORTS_HTTP_PROXY";
 const SPORTS_HTTP_CLIENT_TIMEOUT_SECONDS: u64 = 30;
 const MAX_LIVE_STREAM_CANDIDATES: usize = 12;
 const STREAMED_SOURCE_PREFLIGHT_MAX_CONCURRENT: usize = 8;
-const STREAMED_SOURCE_PREFLIGHT_TIMEOUT_SECONDS: u64 = 6;
+const STREAMED_SOURCE_PREFLIGHT_TIMEOUT_MS: u64 = 2_000;
+const STREAMED_SOURCE_PREFLIGHT_BUDGET_MS: u64 = 2_500;
+// Kobra can expose provider groups that its backing Streamed schedule omits.
+// Keep page-specific additions scoped by event id; the normal preflight below
+// validates them and drops them automatically once their stream rows disappear.
+const NTVS_LINKED_SOURCE_OVERRIDES: &[(&str, i64, &str, &str)] = &[
+    (
+        "france-vs-spain-2528031",
+        1_784_055_600_000,
+        "admin",
+        "ppv-france-vs-spain",
+    ),
+    (
+        "france-vs-spain-2528031",
+        1_784_055_600_000,
+        "delta",
+        "live_world-cup-knockout-stage_france-spain-live-streaming-538120800",
+    ),
+    (
+        "france-vs-spain-2528031",
+        1_784_055_600_000,
+        "golf",
+        "23742",
+    ),
+];
 // Max candidate sources resolved at once during a first-watch preflight. Bounds
 // concurrent (potentially browser-backed) resolves so it can't overload the box.
 const SPORTS_PREFLIGHT_MAX_CONCURRENT: usize = 4;
@@ -149,6 +173,8 @@ struct StreamedSource {
     source: String,
     #[serde(default, deserialize_with = "deserialize_default_on_null")]
     id: String,
+    #[serde(default, skip_deserializing)]
+    expanded_streams: Vec<StreamedEmbedStream>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1412,6 +1438,24 @@ fn sports_schedule_array_identity(value: &Value, field: &str) -> String {
     if field != "source" {
         return raw_value.to_lowercase();
     }
+    let provider = value
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let stream_id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if provider.eq_ignore_ascii_case(NTVS_SOURCE_ID)
+        && stream_id.to_ascii_lowercase().starts_with("ntvs-")
+    {
+        // The Kobra page's opaque wrappers and Streamed's canonical embed rows
+        // describe the same numbered feed. Payloads are merged in canonical-row
+        // order, so semantic ids suppress the later wrapper duplicate.
+        return format!("ntvs-id:{}", stream_id.to_ascii_lowercase());
+    }
     let Ok(mut url) = Url::parse(raw_value) else {
         return raw_value.to_owned();
     };
@@ -1741,12 +1785,33 @@ async fn fetch_streamed_sport_matches_payload(
                 "Failed to parse Streamed {sport_name} schedule: {error}"
             ))
         })?;
+    add_ntvs_linked_source_overrides(&mut source_matches);
     filter_empty_live_streamed_sources(state, &mut source_matches, now_ms()).await?;
     Ok(build_streamed_sport_matches_payload(
         source_matches,
         &source_url,
         sport_name,
     ))
+}
+
+fn add_ntvs_linked_source_overrides(source_matches: &mut [StreamedMatch]) {
+    for (match_id, start_timestamp, source_name, source_id) in NTVS_LINKED_SOURCE_OVERRIDES {
+        let Some(match_item) = source_matches.iter_mut().find(|match_item| {
+            match_item.id.trim() == *match_id && match_item.date == *start_timestamp
+        }) else {
+            continue;
+        };
+        let already_present = match_item.sources.iter().any(|source| {
+            source.source.trim().eq_ignore_ascii_case(source_name) && source.id.trim() == *source_id
+        });
+        if !already_present {
+            match_item.sources.push(StreamedSource {
+                source: (*source_name).to_owned(),
+                id: (*source_id).to_owned(),
+                expanded_streams: Vec::new(),
+            });
+        }
+    }
 }
 
 fn streamed_matches_url(streamed_category: &str) -> String {
@@ -1833,49 +1898,74 @@ async fn filter_empty_live_streamed_sources(
     }
 
     let client = sports_http_client(state)?;
-    let empty_sources = stream::iter(probes)
+    let pending = stream::iter(probes)
         .map(|(match_index, source_index, source_url)| {
             let client = client.clone();
             async move {
-                match fetch_streamed_source_has_embeds(&client, &source_url).await {
-                    Some(false) => Some((match_index, source_index)),
-                    _ => None,
-                }
+                timeout(
+                    Duration::from_millis(STREAMED_SOURCE_PREFLIGHT_TIMEOUT_MS),
+                    fetch_streamed_source_embeds(&client, &source_url),
+                )
+                .await
+                .ok()
+                .flatten()
+                .map(|streams| (match_index, source_index, streams))
             }
         })
-        .buffer_unordered(STREAMED_SOURCE_PREFLIGHT_MAX_CONCURRENT)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+        .buffer_unordered(STREAMED_SOURCE_PREFLIGHT_MAX_CONCURRENT);
+    tokio::pin!(pending);
+    let mut source_results = Vec::new();
+    let collect_results = async {
+        while let Some(result) = pending.next().await {
+            if let Some(result) = result {
+                source_results.push(result);
+            }
+        }
+    };
+    // Retain every completed probe when one source stalls. The remaining
+    // coarse URLs stay selectable because incomplete probes are not removed.
+    let _ = timeout(
+        Duration::from_millis(STREAMED_SOURCE_PREFLIGHT_BUDGET_MS),
+        collect_results,
+    )
+    .await;
+    source_results.sort_by_key(|(match_index, source_index, _)| (*match_index, *source_index));
+
+    let mut empty_sources = Vec::new();
+    for (match_index, source_index, streams) in source_results {
+        if streams.is_empty() {
+            empty_sources.push((match_index, source_index));
+            continue;
+        }
+        let Some(source) = source_matches
+            .get_mut(match_index)
+            .and_then(|match_item| match_item.sources.get_mut(source_index))
+        else {
+            continue;
+        };
+        source.expanded_streams = streams;
+    }
 
     remove_streamed_sources_by_index(source_matches, &empty_sources);
     Ok(())
 }
 
-async fn fetch_streamed_source_has_embeds(
+async fn fetch_streamed_source_embeds(
     client: &reqwest::Client,
     source_url: &str,
-) -> Option<bool> {
+) -> Option<Vec<StreamedEmbedStream>> {
     let response = client
         .get(source_url)
         .header(reqwest::header::USER_AGENT, STREAMED_USER_AGENT)
         .header(reqwest::header::REFERER, STREAMED_REFERER)
-        .send();
-    let response_result = timeout(
-        Duration::from_secs(STREAMED_SOURCE_PREFLIGHT_TIMEOUT_SECONDS),
-        response,
-    )
-    .await
-    .ok()?;
-    let response = response_result.ok()?;
+        .send()
+        .await
+        .ok()?;
     if !response.status().is_success() {
         return None;
     }
 
-    let streams = response.json::<Vec<StreamedEmbedStream>>().await.ok()?;
-    Some(!streams.is_empty())
+    response.json::<Vec<StreamedEmbedStream>>().await.ok()
 }
 
 fn remove_streamed_sources_by_index(
@@ -4759,39 +4849,85 @@ fn normalize_streamed_sport_match(
             Some((
                 sports_embed_source_priority(source_name),
                 index,
-                source_name,
+                source,
                 source_url,
             ))
         })
         .collect::<Vec<_>>();
     indexed_sources.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    let streams = indexed_sources
-        .into_iter()
-        .map(|(_, index, source_name, source_url)| {
+    let mut streams = Vec::new();
+    let mut channels = Vec::new();
+    let mut languages = BTreeSet::new();
+    for (_, index, source, source_url) in indexed_sources {
+        let source_name = source.source.trim();
+        let mut direct_rows = source
+            .expanded_streams
+            .iter()
+            .filter_map(|stream| {
+                let url = Url::parse(stream.embed_url.trim()).ok()?;
+                is_supported_ntvs_embed_url(&url).then_some((stream, url))
+            })
+            .collect::<Vec<_>>();
+        direct_rows.sort_by_key(|(stream, _)| stream.stream_no);
+
+        for (stream, url) in &direct_rows {
+            let row_source = stream.source.trim();
+            let row_source = if row_source.is_empty() {
+                source_name
+            } else {
+                row_source
+            };
+            let language_parts = stream
+                .language
+                .split(" - ")
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>();
+            let language = language_parts.first().copied().unwrap_or("Unknown");
+            let mut label_parts = vec!["NTV Kobra".to_owned(), row_source.to_ascii_uppercase()];
+            label_parts.extend(language_parts.iter().map(|part| (*part).to_owned()));
+            label_parts.push(format!("Stream {}", stream.stream_no));
+            let label = label_parts.join(" · ");
+            let quality = if stream.hd { "HD" } else { "SD" };
+            languages.insert(language.to_owned());
+            streams.push(json!({
+                "id": format!("ntvs-{}-{}", row_source.to_ascii_lowercase(), stream.stream_no),
+                "label": label,
+                "source": url.as_str(),
+                "provider": NTVS_SOURCE_ID,
+                "playbackType": "hls",
+                "quality": quality
+            }));
+            channels.push(json!({
+                "name": label,
+                "language": language,
+                "linkCount": 1
+            }));
+        }
+
+        // A failed probe leaves no rows; a mixed response may contain embed
+        // hosts that are only safe behind Streamed's group resolver. Preserve
+        // that coarse endpoint whenever exact direct rows are unavailable or
+        // could not represent the complete response.
+        if direct_rows.is_empty() || direct_rows.len() != source.expanded_streams.len() {
             let display_source = title_case_ascii(source_name);
-            json!({
+            let label = format!("Streamed {display_source}");
+            streams.push(json!({
                 "id": format!("streamed-{source_name}-{index}"),
-                "label": format!("Streamed {display_source}"),
+                "label": label,
                 "source": source_url,
                 "provider": STREAMED_SOURCE_ID,
                 "playbackType": "hls",
                 "quality": "HD"
-            })
-        })
-        .collect::<Vec<_>>();
-    let channels = match_item
-        .sources
-        .iter()
-        .filter_map(|source| {
-            let source_name = source.source.trim();
-            let _ = streamed_source_stream_api_url(source)?;
-            Some(json!({
-                "name": format!("Streamed {}", title_case_ascii(source_name)),
+            }));
+            channels.push(json!({
+                "name": label,
                 "language": "HD",
                 "linkCount": 1
-            }))
-        })
-        .collect::<Vec<_>>();
+            }));
+            languages.insert("HD".to_owned());
+        }
+    }
     let ends_at_timestamp = match_item
         .date
         .saturating_add(STREAMED_DEFAULT_DURATION_MINUTES.saturating_mul(60_000));
@@ -4815,7 +4951,7 @@ fn normalize_streamed_sport_match(
         "channelCount": channels.len(),
         "channels": channels,
         "streams": streams,
-        "languages": ["HD"],
+        "languages": languages.into_iter().collect::<Vec<_>>(),
         "provider": "streamed"
     })
 }
@@ -5183,9 +5319,10 @@ mod tests {
         SPORTS_STREAM_RESOLVE_CACHE_TTL_MS, SPORTS_STREAM_RESOLVE_FAILURE_TTL_MS,
         STREAMED_FOOTBALL_MATCHES_URL, STREAMED_SOURCE_ID, SportsScheduleCache,
         SportsScheduleSource, SportsStreamResolveCache, StreamedEmbedStream, StreamedMatch,
-        StreamedSource, StreamedTeam, StreamedTeams, build_matchstream_football_matches_payload,
-        build_ntvs_football_matches_payload, build_streamed_football_matches_payload,
-        extract_matchstream_matches, extract_ntvs_candidate_urls, extract_ntvs_watch_page_sources,
+        StreamedSource, StreamedTeam, StreamedTeams, add_ntvs_linked_source_overrides,
+        build_matchstream_football_matches_payload, build_ntvs_football_matches_payload,
+        build_streamed_football_matches_payload, extract_matchstream_matches,
+        extract_ntvs_candidate_urls, extract_ntvs_watch_page_sources,
         extract_streamed_watch_embed_streams, filter_marquee_football_schedule,
         is_marquee_football_competition, is_streamed_watch_url, is_supported_matchstream_hls_url,
         is_supported_matchstream_player_url, is_supported_matchstream_stream_url,
@@ -5410,6 +5547,72 @@ mod tests {
     }
 
     #[test]
+    fn combined_schedule_deduplicates_ntv_wrapper_and_canonical_rows() {
+        let start = 1_784_055_600_000i64;
+        let canonical = json!({
+            "sourceProvider": "streamed",
+            "fetchedAt": 100,
+            "matches": [{
+                "id": "streamed-france-spain",
+                "title": "France vs Spain",
+                "sport": "Football",
+                "team1": "France",
+                "team2": "Spain",
+                "startTimestamp": start,
+                "endsAtTimestamp": start + 10_800_000,
+                "linkCount": 1,
+                "channelCount": 1,
+                "channels": [],
+                "streams": [{
+                    "id": "ntvs-admin-1",
+                    "label": "NTV Kobra · ADMIN · English · TSN · Stream 1",
+                    "source": "https://embed.st/embed/admin/ppv-france-vs-spain/1",
+                    "provider": "ntvs",
+                    "playbackType": "hls",
+                    "quality": "HD"
+                }],
+                "languages": ["English"],
+                "provider": "streamed"
+            }]
+        });
+        let wrapper = json!({
+            "sourceProvider": "ntvs",
+            "fetchedAt": 200,
+            "matches": [{
+                "id": "ntvs-france-spain",
+                "title": "France vs Spain",
+                "sport": "Football",
+                "team1": "France",
+                "team2": "Spain",
+                "startTimestamp": start,
+                "endsAtTimestamp": start + 10_800_000,
+                "linkCount": 1,
+                "channelCount": 1,
+                "channels": [],
+                "streams": [{
+                    "id": "ntvs-admin-1",
+                    "label": "NTV Kobra · ADMIN · English · TSN · Stream 1",
+                    "source": "https://ntv.cx/embed?t=OpaqueWrapperToken",
+                    "provider": "ntvs",
+                    "playbackType": "hls",
+                    "quality": "HD"
+                }],
+                "languages": ["English"],
+                "provider": "ntvs"
+            }]
+        });
+
+        let combined = merge_sports_schedule_payloads(vec![canonical, wrapper], "Football");
+        let streams = combined["matches"][0]["streams"].as_array().unwrap();
+
+        assert_eq!(streams.len(), 1);
+        assert_eq!(
+            streams[0]["source"],
+            "https://embed.st/embed/admin/ppv-france-vs-spain/1"
+        );
+    }
+
+    #[test]
     fn schedule_team_names_ignore_common_club_prefixes_and_suffixes() {
         assert_eq!(
             normalize_sports_schedule_name("Mjällby AIF"),
@@ -5512,10 +5715,12 @@ mod tests {
             StreamedSource {
                 source: "echo".to_owned(),
                 id: "morocco-vs-madagascar-football-1545264".to_owned(),
+                expanded_streams: Vec::new(),
             },
             StreamedSource {
                 source: "admin".to_owned(),
                 id: "ppv-morocco-vs-madagascar".to_owned(),
+                expanded_streams: Vec::new(),
             },
         ])];
 
@@ -5538,6 +5743,7 @@ mod tests {
         let mut source_matches = vec![sample_streamed_match(vec![StreamedSource {
             source: "echo".to_owned(),
             id: "morocco-vs-madagascar-football-1545264".to_owned(),
+            expanded_streams: Vec::new(),
         }])];
 
         remove_streamed_sources_by_index(&mut source_matches, &[(0, 0)]);
@@ -5552,6 +5758,7 @@ mod tests {
         let live_match = sample_streamed_match(vec![StreamedSource {
             source: "echo".to_owned(),
             id: "morocco-vs-madagascar-football-1545264".to_owned(),
+            expanded_streams: Vec::new(),
         }]);
         let future_match = StreamedMatch {
             date: now.saturating_add(60_000),
@@ -5625,10 +5832,12 @@ mod tests {
                 StreamedSource {
                     source: "admin".to_owned(),
                     id: "ppv-kosovo-vs-andorra".to_owned(),
+                    expanded_streams: Vec::new(),
                 },
                 StreamedSource {
                     source: "echo".to_owned(),
                     id: "kosovo-vs-andorra-football-1545036".to_owned(),
+                    expanded_streams: Vec::new(),
                 },
             ],
             expanded_streams: Vec::new(),
@@ -5718,6 +5927,7 @@ mod tests {
             sources: vec![StreamedSource {
                 source: "admin".to_owned(),
                 id: "ppv-france-vs-spain".to_owned(),
+                expanded_streams: Vec::new(),
             }],
             expanded_streams,
         }]);
@@ -6192,6 +6402,7 @@ mod tests {
             sources: vec![StreamedSource {
                 source: "admin".to_owned(),
                 id: "ppv-crystal-palace-vs-arsenal".to_owned(),
+                expanded_streams: Vec::new(),
             }],
         }]);
         let matches = payload["matches"].as_array().unwrap();
@@ -6202,6 +6413,179 @@ mod tests {
         assert_eq!(
             matches[0]["streams"][0]["source"],
             "https://streamed.pk/api/stream/admin/ppv-crystal-palace-vs-arsenal"
+        );
+    }
+
+    #[test]
+    fn linked_ntvs_override_is_scoped_and_deduplicated() {
+        let mut intended = sample_streamed_match(vec![StreamedSource {
+            source: "delta".to_owned(),
+            id: "live_world-cup-knockout-stage_france-spain-live-streaming-538120800".to_owned(),
+            expanded_streams: Vec::new(),
+        }]);
+        intended.id = "france-vs-spain-2528031".to_owned();
+        intended.date = 1_784_055_600_000;
+        let mut wrong_date = sample_streamed_match(Vec::new());
+        wrong_date.id = "france-vs-spain-2528031".to_owned();
+        wrong_date.date = 1_784_055_600_001;
+        let mut matches = vec![intended, wrong_date];
+
+        add_ntvs_linked_source_overrides(&mut matches);
+        add_ntvs_linked_source_overrides(&mut matches);
+
+        let mut source_groups = matches[0]
+            .sources
+            .iter()
+            .map(|source| (source.source.as_str(), source.id.as_str()))
+            .collect::<Vec<_>>();
+        source_groups.sort_unstable();
+        assert_eq!(
+            source_groups,
+            vec![
+                ("admin", "ppv-france-vs-spain"),
+                (
+                    "delta",
+                    "live_world-cup-knockout-stage_france-spain-live-streaming-538120800"
+                ),
+                ("golf", "23742"),
+            ]
+        );
+        assert!(matches[1].sources.is_empty());
+    }
+
+    #[test]
+    fn streamed_payload_exposes_all_linked_kobra_rows() {
+        let admin_languages = [
+            "English - TSN",
+            "English - TSN",
+            "English - FOX",
+            "English - FOX",
+            "English - ITV1",
+            "English - ITV1",
+            "Spanish - DAZN Spain",
+            "Spanish - DAZN Spain",
+            "Spanish - Telemundo",
+            "Spanish - Telemundo",
+        ];
+        let admin_rows = admin_languages
+            .into_iter()
+            .enumerate()
+            .map(|(index, language)| StreamedEmbedStream {
+                stream_no: (index + 1) as i64,
+                hd: index % 2 == 0,
+                embed_url: format!(
+                    "https://embed.st/embed/admin/ppv-france-vs-spain/{}",
+                    index + 1
+                ),
+                language: language.to_owned(),
+                source: "admin".to_owned(),
+            })
+            .collect::<Vec<_>>();
+        let delta_rows = (1..=6)
+            .map(|stream_no| StreamedEmbedStream {
+                stream_no,
+                hd: true,
+                embed_url: format!(
+                    "https://embed.st/embed/delta/live_world-cup-knockout-stage_france-spain-live-streaming-538120800/{stream_no}"
+                ),
+                language: "English".to_owned(),
+                source: "delta".to_owned(),
+            })
+            .collect::<Vec<_>>();
+        let golf_rows = (1..=2)
+            .map(|stream_no| StreamedEmbedStream {
+                stream_no,
+                hd: true,
+                embed_url: format!("https://embed.st/embed/golf/23742/{stream_no}"),
+                language: "English".to_owned(),
+                source: "golf".to_owned(),
+            })
+            .collect::<Vec<_>>();
+        let (payload, _) = build_streamed_football_matches_payload(vec![StreamedMatch {
+            id: "france-vs-spain-2528031".to_owned(),
+            title: "France vs Spain".to_owned(),
+            category: "football".to_owned(),
+            date: now_ms().saturating_sub(60_000),
+            popular: true,
+            teams: StreamedTeams {
+                home: Some(StreamedTeam {
+                    name: "France".to_owned(),
+                }),
+                away: Some(StreamedTeam {
+                    name: "Spain".to_owned(),
+                }),
+            },
+            sources: vec![
+                StreamedSource {
+                    source: "admin".to_owned(),
+                    id: "ppv-france-vs-spain".to_owned(),
+                    expanded_streams: admin_rows,
+                },
+                StreamedSource {
+                    source: "delta".to_owned(),
+                    id: "live_world-cup-knockout-stage_france-spain-live-streaming-538120800"
+                        .to_owned(),
+                    expanded_streams: delta_rows,
+                },
+                StreamedSource {
+                    source: "golf".to_owned(),
+                    id: "23742".to_owned(),
+                    expanded_streams: golf_rows,
+                },
+            ],
+        }]);
+        let game = &payload["matches"][0];
+        let streams = game["streams"].as_array().unwrap();
+
+        assert_eq!(streams.len(), 18);
+        assert_eq!(game["linkCount"], 18);
+        assert_eq!(streams[0]["id"], "ntvs-admin-1");
+        assert_eq!(
+            streams[0]["label"],
+            "NTV Kobra · ADMIN · English · TSN · Stream 1"
+        );
+        assert_eq!(streams[0]["quality"], "HD");
+        assert_eq!(streams[1]["quality"], "SD");
+        assert_eq!(
+            streams[6]["label"],
+            "NTV Kobra · ADMIN · Spanish · DAZN Spain · Stream 7"
+        );
+        assert_eq!(streams[10]["id"], "ntvs-delta-1");
+        assert_eq!(streams[16]["id"], "ntvs-golf-1");
+        assert_eq!(streams[17]["id"], "ntvs-golf-2");
+        assert!(
+            streams
+                .iter()
+                .all(|stream| stream["provider"] == NTVS_SOURCE_ID)
+        );
+        assert_eq!(game["languages"], json!(["English", "Spanish"]));
+    }
+
+    #[test]
+    fn streamed_payload_keeps_coarse_fallback_for_non_direct_rows() {
+        let (payload, _) =
+            build_streamed_football_matches_payload(vec![sample_streamed_match(vec![
+                StreamedSource {
+                    source: "admin".to_owned(),
+                    id: "ppv-morocco-vs-madagascar".to_owned(),
+                    expanded_streams: vec![StreamedEmbedStream {
+                        stream_no: 1,
+                        hd: true,
+                        embed_url: "https://embedsports.top/embed/admin/legacy/1".to_owned(),
+                        language: "English".to_owned(),
+                        source: "admin".to_owned(),
+                    }],
+                },
+            ])]);
+
+        assert_eq!(payload["matches"][0]["linkCount"], 1);
+        assert_eq!(
+            payload["matches"][0]["streams"][0]["source"],
+            "https://streamed.pk/api/stream/admin/ppv-morocco-vs-madagascar"
+        );
+        assert_eq!(
+            payload["matches"][0]["streams"][0]["provider"],
+            STREAMED_SOURCE_ID
         );
     }
 
