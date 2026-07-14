@@ -43,6 +43,37 @@ const ANT1 = "https://pcdn.antennaplus.gr/live/media0/antenna-gr/HLS/index.m3u8"
 const ALPHA_TV = "https://alphatvlive2.siliconweb.com/alphatvlive/live_abr/playlist.m3u8";
 const TOP_NEWS_TWITCH = "https://player.twitch.tv/?channel=topmedia_topnews&parent=top-channel.tv";
 
+const NTV_CDN_LIVE_BASE_URL = "https://ntv.cx/channel-cdnlive";
+
+export const ntvCdnLiveChannelUrl = (channelSlug: string, countryCode = "us") =>
+  `${NTV_CDN_LIVE_BASE_URL}/${encodeURIComponent(channelSlug)}?code=${encodeURIComponent(countryCode)}`;
+
+const NTV_CDN_LIVE_CHANNELS: LiveChannel[] = (
+  [
+    { id: "bbc-us", route: "BBC", title: "BBC America", genre: "General", region: "US" },
+    { id: "cnn", route: "CNN", title: "CNN", genre: "News", region: "US" },
+    { id: "fox-news", route: "FOX-News", title: "FOX News", genre: "News", region: "US" },
+    { id: "espn-2-us", route: "ESPN-2", title: "ESPN 2 (US)", genre: "Sports", region: "US" },
+    { id: "hbo", route: "HBO", title: "HBO", genre: "General", region: "Poland · Multi-audio" },
+    { id: "discovery-channel", route: "Discovery-Channel", title: "Discovery Channel", genre: "General", region: "UK" },
+    { id: "national-geographic", route: "National-Geographic", title: "National Geographic", genre: "General", region: "UK" },
+  ] as const
+).map(({ id, route, title, genre, region }) => {
+  const source = ntvCdnLiveChannelUrl(route);
+  return {
+    id,
+    title,
+    source,
+    defaultStreamId: "ntv-titan",
+    streams: [{ id: "ntv-titan", label: `${title} · NTV Titan`, source, quality: "Live HLS" }],
+    liveEmbed: true,
+    liveResolver: "sports",
+    genre,
+    region,
+    quality: "Live HLS",
+  };
+});
+
 // Nova Sports 1–6 + the UK premium-sports lineup all resolve through
 // hesgoaler.com/stream.php (same token POST → lovetier.bz HLS sports resolver).
 const hesgoalerUrl = (code: string) => `https://hesgoaler.com/stream.php?ch=${code}`;
@@ -189,6 +220,7 @@ export const LIVE_CHANNELS: LiveChannel[] = [
     region: "UK",
     quality: "720p HLS",
   },
+  ...NTV_CDN_LIVE_CHANNELS,
   {
     id: "ert1",
     title: "ERT World",

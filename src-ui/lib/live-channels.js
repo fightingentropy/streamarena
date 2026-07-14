@@ -29,12 +29,118 @@ const LIVE_CHANNEL_ARTWORK = Object.freeze({
   bloomberg: "assets/images/live-thumbs/bloomberg-tv-us.png",
   bbcNews: "assets/images/live-thumbs/bbc-news.jpg",
   skyNews: "assets/images/live-thumbs/sky-news.png",
+  bbcUs: "assets/images/live-thumbs/bbc-us.svg",
+  cnn: "assets/images/live-thumbs/cnn.svg",
+  foxNews: "assets/images/live-thumbs/fox-news.svg",
+  espn2Us: "assets/images/live-thumbs/espn-2-us.svg",
+  hbo: "assets/images/live-thumbs/hbo.svg",
+  discoveryChannel: "assets/images/live-thumbs/discovery-channel.svg",
+  nationalGeographic: "assets/images/live-thumbs/national-geographic.svg",
   ert1: "assets/images/live-thumbs/ert1.jpg",
   megaNews: "assets/images/live-thumbs/mega-news.jpg",
   ant1: "assets/images/live-thumbs/ant1.svg",
   alphaTv: "assets/images/live-thumbs/alpha-tv.png",
   topNews: "assets/images/live-thumbs/top-news.jpg",
 });
+
+const NTV_CDN_LIVE_BASE_URL = "https://ntv.cx/channel-cdnlive";
+const NTV_BBC_AMERICA_PHOENIX_URL = "https://ntvs.cx/channel/305";
+
+export function ntvCdnLiveChannelUrl(channelSlug, countryCode = "us") {
+  return `${NTV_CDN_LIVE_BASE_URL}/${encodeURIComponent(channelSlug)}?code=${encodeURIComponent(countryCode)}`;
+}
+
+function liveIframeSource(url) {
+  return `live-iframe:${encodeURIComponent(url)}`;
+}
+
+function ntvCdnLiveChannel({ id, route, title, genre, region, artwork, fallbacks = [] }) {
+  const source = ntvCdnLiveChannelUrl(route);
+  const streams = [
+    {
+      id: "ntv-titan",
+      label: `${title} · NTV Titan`,
+      source,
+      quality: "Live HLS",
+    },
+    ...fallbacks,
+  ];
+  return {
+    id,
+    title,
+    source,
+    defaultStreamId: "ntv-titan",
+    streams,
+    liveEmbed: true,
+    liveResolver: "sports",
+    artwork,
+    genre,
+    region,
+    quality: "Live HLS",
+  };
+}
+
+const NTV_CDN_LIVE_CHANNELS = Object.freeze(
+  [
+    {
+      id: "bbc-us",
+      route: "BBC",
+      title: "BBC America",
+      genre: "General",
+      region: "US",
+      artwork: LIVE_CHANNEL_ARTWORK.bbcUs,
+      fallbacks: [
+        {
+          id: "ntv-phoenix",
+          label: "BBC America · NTV Phoenix",
+          source: liveIframeSource(NTV_BBC_AMERICA_PHOENIX_URL),
+          quality: "Live mirror",
+        },
+      ],
+    },
+    { id: "cnn", route: "CNN", title: "CNN", genre: "News", region: "US", artwork: LIVE_CHANNEL_ARTWORK.cnn },
+    {
+      id: "fox-news",
+      route: "FOX-News",
+      title: "FOX News",
+      genre: "News",
+      region: "US",
+      artwork: LIVE_CHANNEL_ARTWORK.foxNews,
+    },
+    {
+      id: "espn-2-us",
+      route: "ESPN-2",
+      title: "ESPN 2 (US)",
+      genre: "Sports",
+      region: "US",
+      artwork: LIVE_CHANNEL_ARTWORK.espn2Us,
+    },
+    {
+      id: "hbo",
+      route: "HBO",
+      title: "HBO",
+      genre: "General",
+      region: "Poland · Multi-audio",
+      artwork: LIVE_CHANNEL_ARTWORK.hbo,
+    },
+    {
+      id: "discovery-channel",
+      route: "Discovery-Channel",
+      title: "Discovery Channel",
+      genre: "General",
+      region: "UK",
+      artwork: LIVE_CHANNEL_ARTWORK.discoveryChannel,
+    },
+    {
+      id: "national-geographic",
+      route: "National-Geographic",
+      title: "National Geographic",
+      genre: "General",
+      region: "UK",
+      artwork: LIVE_CHANNEL_ARTWORK.nationalGeographic,
+    },
+  ].map(ntvCdnLiveChannel),
+);
 
 // ntvs.cx retired its hesgoales/"Falcon" channels in June 2026 — the
 // /channel-hesgoales/NOVASPORTS-N wrapper now 302-redirects to /channels, so
@@ -254,6 +360,7 @@ export const LIVE_CHANNELS = Object.freeze([
     region: "UK",
     quality: "720p HLS",
   },
+  ...NTV_CDN_LIVE_CHANNELS,
   {
     // Keeps the legacy "ert1" ids so saved /watch URLs and continue-watching
     // state keep resolving to this channel.

@@ -251,6 +251,8 @@ Live TV:
 - Bloomberg TV US.
 - BBC News with official and Roku stream options.
 - Sky News.
+- NTV/CDNLive channels: BBC America, CNN, FOX News, ESPN 2, HBO, Discovery Channel,
+  and National Geographic.
 - ERT1.
 - MEGA News.
 - ANT1.

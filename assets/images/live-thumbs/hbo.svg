@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180" width="320" height="180" role="img" aria-label="HBO live channel">
+  <title>HBO</title>
+  <defs><radialGradient id="bg" cx="50%" cy="45%" r="70%"><stop stop-color="#3b3542"/><stop offset="1" stop-color="#070708"/></radialGradient></defs>
+  <rect width="320" height="180" fill="url(#bg)"/>
+  <text x="160" y="117" text-anchor="middle" font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="78" font-weight="900" letter-spacing="-7" fill="#fff">HBO</text>
+  <circle cx="209" cy="91" r="10" fill="#111"/>
+</svg>

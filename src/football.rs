@@ -3663,6 +3663,9 @@ async fn resolve_ntvs_player_hls_url(state: &AppState, player_url: &Url) -> Opti
     if is_supported_ntvs_hesgoaler_player_url(player_url) {
         return resolve_ntvs_hesgoaler_hls_url(state, player_url).await;
     }
+    if is_supported_cdnlivetv_stream_url(player_url) {
+        return resolve_cdnlivetv_hls_url(player_url).await;
+    }
     None
 }
 
@@ -4139,6 +4142,10 @@ async fn ntvs_player_page_candidates(state: &AppState, source_url: &Url) -> AppR
             push_unique_stream_candidate(&mut candidates, &mut seen, url);
             continue;
         }
+        if is_supported_cdnlivetv_stream_url(&url) {
+            push_unique_stream_candidate(&mut candidates, &mut seen, url);
+            continue;
+        }
         if !is_supported_ntvs_wrapper_embed_url(&url) {
             continue;
         }
@@ -4179,6 +4186,13 @@ async fn fetch_ntvs_direct_embed_candidates(
             continue;
         }
         if is_supported_ntvs_hesgoaler_player_url(&url) {
+            push_unique_stream_candidate(&mut candidates, &mut seen, url);
+            if candidates.len() >= MAX_LIVE_STREAM_CANDIDATES {
+                break;
+            }
+            continue;
+        }
+        if is_supported_cdnlivetv_stream_url(&url) {
             push_unique_stream_candidate(&mut candidates, &mut seen, url);
             if candidates.len() >= MAX_LIVE_STREAM_CANDIDATES {
                 break;
@@ -4351,6 +4365,7 @@ fn extract_ntvs_candidate_urls(html: &str, base_url: &Url) -> Vec<Url> {
             is_supported_ntvs_wrapper_embed_url(url)
                 || is_supported_ntvs_embed_url(url)
                 || is_supported_ntvs_hesgoaler_player_url(url)
+                || is_supported_cdnlivetv_stream_url(url)
         })
     {
         let key = url.as_str().trim_end_matches('/').to_owned();
@@ -4376,6 +4391,7 @@ fn extract_ntvs_script_candidate_urls(html: &str, base_url: &Url) -> Vec<Url> {
         r#"(?i)/stream\.php\?ch=[^"'`\s>]+"#,
         r#"(?i)https?://[^"'`\s>]+/embed\.st/embed/[^"'`\s>]+"#,
         r#"(?i)https?://[^"'`\s>]+/stream\.php\?ch=[^"'`\s>]+"#,
+        r#"(?i)https?://(?:[^/]+\.)?(?:cdnlivetv\.tv|cdn-live\.tv)/api/v1/channels/player/[^"'`\s>]+"#,
     ];
 
     for pattern in script_candidate_patterns {
@@ -4392,7 +4408,8 @@ fn extract_ntvs_script_candidate_urls(html: &str, base_url: &Url) -> Vec<Url> {
         if let Some(url) = resolve_ntvs_candidate_url(base_url, &value)
             && (is_supported_ntvs_wrapper_embed_url(&url)
                 || is_supported_ntvs_embed_url(&url)
-                || is_supported_ntvs_hesgoaler_player_url(&url))
+                || is_supported_ntvs_hesgoaler_player_url(&url)
+                || is_supported_cdnlivetv_stream_url(&url))
         {
             candidates.push(url);
         }
@@ -4632,7 +4649,14 @@ fn is_supported_ntvs_channel_url(url: &Url) -> bool {
         return false;
     }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    is_ntvs_host(&host) && url.path().starts_with("/channel-hesgoales/")
+    let path = url.path();
+    is_ntvs_host(&host)
+        && (path
+            .strip_prefix("/channel-hesgoales/")
+            .is_some_and(|slug| !slug.is_empty())
+            || path
+                .strip_prefix("/channel-cdnlive/")
+                .is_some_and(|slug| !slug.is_empty()))
 }
 
 fn is_supported_ntvs_wrapper_embed_url(url: &Url) -> bool {
@@ -6080,6 +6104,14 @@ mod tests {
             url::Url::parse("https://ntv.cx/watch/kobra/kosovo-vs-andorra-2472554").unwrap();
         let channel = url::Url::parse("https://ntvs.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
         let ntv_channel = url::Url::parse("https://ntv.cx/channel-hesgoales/NOVASPORTS-1").unwrap();
+        let cdnlive_channel =
+            url::Url::parse("https://ntvs.cx/channel-cdnlive/BBC?code=us").unwrap();
+        let ntv_cdnlive_channel =
+            url::Url::parse("https://ntv.cx/channel-cdnlive/BBC?code=us").unwrap();
+        let empty_cdnlive_channel =
+            url::Url::parse("https://ntvs.cx/channel-cdnlive/?code=us").unwrap();
+        let lookalike_cdnlive_channel =
+            url::Url::parse("https://ntvs.cx/channel-cdnlive.evil/BBC?code=us").unwrap();
         let wrapper = url::Url::parse("https://ntvs.cx/embed?t=abc123").unwrap();
         let ntv_wrapper = url::Url::parse("https://ntv.cx/embed?t=abc123").unwrap();
         let hesgoaler = url::Url::parse("https://hesgoaler.com/stream.php?ch=NOVASPORTS1").unwrap();
@@ -6099,6 +6131,10 @@ mod tests {
         assert!(is_supported_ntvs_watch_url(&ntv_watch));
         assert!(is_supported_ntvs_channel_url(&channel));
         assert!(is_supported_ntvs_channel_url(&ntv_channel));
+        assert!(is_supported_ntvs_channel_url(&cdnlive_channel));
+        assert!(is_supported_ntvs_channel_url(&ntv_cdnlive_channel));
+        assert!(!is_supported_ntvs_channel_url(&empty_cdnlive_channel));
+        assert!(!is_supported_ntvs_channel_url(&lookalike_cdnlive_channel));
         assert!(is_supported_ntvs_wrapper_embed_url(&wrapper));
         assert!(is_supported_ntvs_wrapper_embed_url(&ntv_wrapper));
         assert!(is_supported_ntvs_embed_url(&embed));
@@ -6107,6 +6143,12 @@ mod tests {
         assert!(is_supported_ntvs_stream_url(&ntv_watch));
         assert!(is_supported_ntvs_stream_url(&channel));
         assert!(is_supported_ntvs_stream_url(&ntv_channel));
+        assert!(is_supported_ntvs_stream_url(&cdnlive_channel));
+        assert!(is_supported_ntvs_stream_url(&ntv_cdnlive_channel));
+        assert_eq!(
+            sports_stream_provider_id(&cdnlive_channel),
+            Some(NTVS_SOURCE_ID)
+        );
         assert!(is_supported_ntvs_stream_url(&embed));
         assert!(is_supported_ntvs_stream_url(&hesgoaler));
         assert_eq!(sports_stream_provider_id(&embed), Some(NTVS_SOURCE_ID));
@@ -6170,6 +6212,30 @@ mod tests {
         ];
         expected.sort();
         assert_eq!(candidates, expected);
+    }
+
+    #[test]
+    fn extracts_cdnlivetv_player_from_ntvs_channel_wrapper() {
+        let base = url::Url::parse("https://ntv.cx/embed?t=opaque-token").unwrap();
+        let html = r#"
+            <iframe
+                src="https://cdnlivetv.tv/api/v1/channels/player/?name=FOX%20News&amp;code=us&amp;user=ntvstream&amp;plan=free"
+            ></iframe>
+            <iframe src="https://example.test/api/v1/channels/player/?name=FOX%20News"></iframe>
+        "#;
+
+        let candidates = extract_ntvs_candidate_urls(html, &base)
+            .into_iter()
+            .map(|url| url.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            candidates,
+            vec![
+                "https://cdnlivetv.tv/api/v1/channels/player/?name=FOX%20News&code=us&user=ntvstream&plan=free"
+                    .to_owned(),
+            ]
+        );
     }
 
     #[test]
@@ -6260,6 +6326,7 @@ mod tests {
             "https://ntv.cx/embed?t=OFd0cFZIcCtUQ3NleURxSUs1SW9VTHRKb2tpMjlQWXN2Y29SM2E0UDdvOFo5K2I4MWdPWHgvSVZxZDB3YnNjSw~~",
         )
         .unwrap();
+        let ntv_cdnlive = url::Url::parse("https://ntv.cx/channel-cdnlive/BBC?code=us").unwrap();
 
         assert_eq!(
             normalize_ntvs_fetch_url(&ntv_channel).as_str(),
@@ -6268,6 +6335,10 @@ mod tests {
         assert_eq!(
             normalize_ntvs_fetch_url(&ntv_embed).as_str(),
             "https://ntvs.cx/embed?t=OFd0cFZIcCtUQ3NleURxSUs1SW9VTHRKb2tpMjlQWXN2Y29SM2E0UDdvOFo5K2I4MWdPWHgvSVZxZDB3YnNjSw~~"
+        );
+        assert_eq!(
+            normalize_ntvs_fetch_url(&ntv_cdnlive).as_str(),
+            "https://ntvs.cx/channel-cdnlive/BBC?code=us"
         );
     }
 
