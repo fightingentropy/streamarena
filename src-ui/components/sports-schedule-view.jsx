@@ -65,6 +65,7 @@ const SPORTS_SCHEDULE_SOURCES = Object.freeze([
   "cdnlivetv",
 ]);
 const FOOTBALL_SCHEDULE_SOURCES = Object.freeze(["auto"]);
+const SPORTS_EARLY_PLAYBACK_WINDOW_MS = 10 * 60_000;
 // Sources that only carry football (the backend rejects them for other sports).
 const FOOTBALL_ONLY_SPORTS_SOURCES = Object.freeze(["ntvs", "cdnlivetv"]);
 const SPORTS_SOURCE_LABELS = Object.freeze({
@@ -345,6 +346,14 @@ function isLive(match, now) {
   return match.startTimestamp <= now && now < match.endsAtTimestamp;
 }
 
+function isPlayable(match, now) {
+  return (
+    match.startTimestamp - SPORTS_EARLY_PLAYBACK_WINDOW_MS <= now &&
+    now < match.endsAtTimestamp &&
+    match.streams.length > 0
+  );
+}
+
 function isUpcoming(match, now) {
   return match.endsAtTimestamp > now;
 }
@@ -430,7 +439,7 @@ function renderCard(match, nowAccessor, config, railTitle) {
   const cardLeague = leagueLabel && leagueLabel !== railTitle ? leagueLabel : "";
   const streamsLabel = `${match.linkCount} ${match.linkCount === 1 ? "stream" : "streams"}`;
   const live = () => isLive(match, nowAccessor());
-  const playable = () => live() && match.streams.length > 0;
+  const playable = () => isPlayable(match, nowAccessor());
 
   return <>
     <article class={`sports-card sport-${config.slugFallback}${live() ? " is-live" : ""}`}>
@@ -447,7 +456,7 @@ function renderCard(match, nowAccessor, config, railTitle) {
             ? "Play in StreamArena"
             : live()
               ? "No stream available yet"
-              : "Available when live"
+              : "Available 10 minutes before start"
         }
       >
         <span class="sports-card-art">

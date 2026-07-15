@@ -80,6 +80,35 @@ const liveIframeSwitchParams = new URLSearchParams({
 });
 const liveIframeSwitchPath = `/player.html?${liveIframeSwitchParams.toString()}`;
 
+function sportsEarlyPlaybackMatches() {
+  const now = Date.now();
+  const buildMatch = ({ id, title, startsInMinutes }) => ({
+    id,
+    title,
+    league: "Smoke League",
+    sport: "Football",
+    startTimestamp: now + startsInMinutes * 60_000,
+    endsAtTimestamp: now + (startsInMinutes + 120) * 60_000,
+    linkCount: 1,
+    channelCount: 1,
+    streams: [
+      {
+        id: `${id}-stream`,
+        label: `${title} stream`,
+        source: `https://sports.example.test/${id}`,
+        provider: "streamed",
+        playbackType: "hls",
+        quality: "HD",
+      },
+    ],
+    provider: "streamed",
+  });
+  return [
+    buildMatch({ id: "early-window", title: "Early Window Match", startsInMinutes: 5 }),
+    buildMatch({ id: "outside-window", title: "Outside Window Match", startsInMinutes: 11 }),
+  ];
+}
+
 if (!existsSync(viteBin)) {
   console.error("Missing Vite binary. Run bun install first.");
   process.exit(1);
@@ -388,7 +417,9 @@ function apiPayload(url, method) {
       },
     };
   }
-  if (path === "/api/football/matches") return { matches: [] };
+  if (path === "/api/football/matches") {
+    return { matches: sportsEarlyPlaybackMatches(), sourceProvider: "streamed" };
+  }
   if (path === "/api/football/stream") return { streams: [] };
   if (path === "/api/basketball/matches") return { matches: [] };
   if (path === "/api/basketball/stream") return { streams: [] };
@@ -413,6 +444,7 @@ const pages = [
     expectHydratedPreferencesBeforeMount: true,
   },
   { path: "/live.html", selector: ".live-page" },
+  { path: "/sports", selector: ".sports-page", expectSportsEarlyPlayback: true },
   { path: "/sports", selector: ".sports-page", expectSportsTabs: true },
   {
     path: "/index.html",
@@ -1467,6 +1499,43 @@ async function runSmoke() {
               url: page.url(),
               sawSportsBasketballMatches,
             })}`,
+          );
+        }
+      }
+
+      if (pageSpec.expectSportsEarlyPlayback) {
+        const earlyButton = page.getByRole("button", {
+          name: "Play Early Window Match in StreamArena",
+        });
+        const outsideButton = page.getByRole("button", { name: "Outside Window Match" });
+        await earlyButton.waitFor({ state: "visible" });
+        const playbackState = {
+          earlyDisabled: await earlyButton.isDisabled(),
+          outsideDisabled: await outsideButton.isDisabled(),
+          earlyTitle: await earlyButton.getAttribute("title"),
+          outsideTitle: await outsideButton.getAttribute("title"),
+        };
+        if (
+          playbackState.earlyDisabled ||
+          !playbackState.outsideDisabled ||
+          playbackState.earlyTitle !== "Play in StreamArena" ||
+          playbackState.outsideTitle !== "Available 10 minutes before start"
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nSports matches should become playable exactly 10 minutes before kickoff.\n${JSON.stringify(playbackState)}`,
+          );
+        }
+        await earlyButton.click();
+        await page.waitForURL((url) => url.pathname === "/watch", { timeout: 8_000 });
+        const playerUrl = new URL(page.url());
+        if (
+          playerUrl.origin !== baseUrl ||
+          playerUrl.pathname !== "/watch" ||
+          playerUrl.searchParams.get("src") !==
+            "https://sports.example.test/early-window"
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nEarly sports playback must navigate only to StreamArena's internal player.\n${playerUrl}`,
           );
         }
       }

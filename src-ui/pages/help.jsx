@@ -75,7 +75,7 @@ const TOPICS = [
       },
       {
         q: "How do I watch a live match?",
-        a: "Open the Sports tab for the schedule. Live events show a Play button while they're on air; upcoming ones show their start time.",
+        a: "Open the Sports tab for the schedule. Events with streams become playable 10 minutes before their scheduled start; upcoming ones show their start time.",
       },
       {
         q: "A live channel or match isn't loading",
