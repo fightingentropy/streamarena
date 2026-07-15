@@ -32,6 +32,10 @@ const LIVE_HLS_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS 
 const LIVE_HLS_BROWSER_FETCH_SCRIPT: &str = "scripts/fetch-browser-live-hls.mjs";
 const LIVE_HLS_BROWSER_FETCH_RUNTIME_SCRIPT: &str = "bin/fetch-browser-live-hls.mjs";
 const LIVE_HLS_BROWSER_FETCH_TIMEOUT_SECONDS: u64 = 26;
+const LIVE_HLS_BROWSER_RELAY_FRAGMENT_PREFIX: &str = "streamarena-browser-relay=";
+const LIVE_HLS_BROWSER_RELAY_TIMEOUT_SECONDS: u64 = 18;
+const LIVE_HLS_BROWSER_RELAY_MAX_PLAYLIST_BYTES: usize = 5 * 1024 * 1024;
+const LIVE_HLS_BROWSER_RELAY_FINAL_URL_HEADER: &str = "x-streamarena-final-url";
 const LIVE_HLS_EXTERNAL_EMBED_PARAM: &str = "externalEmbed";
 const LIVE_HLS_SIGNATURE_PARAM: &str = "sig";
 const LIVE_HLS_SIGNATURE_V2_PARAM: &str = "sigV2";
@@ -1587,6 +1591,100 @@ fn browser_bound_live_hls_page_url(referer: Option<&str>) -> Option<String> {
     referer.and_then(normalize_hls_referer)
 }
 
+fn browser_live_hls_relay_url(referer: Option<&str>) -> Option<Url> {
+    let referer = Url::parse(referer?).ok()?;
+    let referer_host = referer.host_str()?.to_ascii_lowercase();
+    if !matches!(referer_host.as_str(), "embed.st" | "www.embed.st") {
+        return None;
+    }
+    let encoded = referer
+        .fragment()?
+        .strip_prefix(LIVE_HLS_BROWSER_RELAY_FRAGMENT_PREFIX)?;
+    let decoded = URL_SAFE_NO_PAD.decode(encoded.as_bytes()).ok()?;
+    let relay = Url::parse(std::str::from_utf8(&decoded).ok()?).ok()?;
+    let valid = relay.scheme() == "http"
+        && relay.host_str() == Some("127.0.0.1")
+        && relay.port().is_some()
+        && relay.username().is_empty()
+        && relay.password().is_none()
+        && relay.path() == "/fetch"
+        && relay.query_pairs().any(|(key, value)| {
+            key == "token"
+                && value.len() == 64
+                && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        });
+    valid.then_some(relay)
+}
+
+async fn fetch_live_hls_playlist_via_session_relay(
+    live_request: &LiveHlsRequest,
+) -> AppResult<LiveHlsPlaylistFetch> {
+    if !is_browser_bound_live_hls_upstream(&live_request.source_url) {
+        return Err(ApiError::bad_gateway(
+            "Browser HLS relay rejected an unsupported upstream host.",
+        ));
+    }
+    let mut relay = browser_live_hls_relay_url(live_request.referer.as_deref())
+        .ok_or_else(|| ApiError::bad_gateway("Browser HLS relay session is unavailable."))?;
+    relay
+        .query_pairs_mut()
+        .append_pair("url", live_request.source_url.as_str());
+
+    // Never inherit the sports egress proxy for a loopback request: the relay
+    // is deliberately private to the Mac mini process namespace.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(LIVE_HLS_BROWSER_RELAY_TIMEOUT_SECONDS))
+        .build()
+        .map_err(|_| ApiError::bad_gateway("Browser HLS relay client could not start."))?;
+    let response = timeout(
+        Duration::from_secs(LIVE_HLS_BROWSER_RELAY_TIMEOUT_SECONDS + 2),
+        client.get(relay).send(),
+    )
+    .await
+    .map_err(|_| ApiError::bad_gateway("Browser HLS relay request timed out."))?
+    .map_err(|_| ApiError::bad_gateway("Browser HLS relay request failed."))?;
+    if !response.status().is_success() {
+        return Err(ApiError::bad_gateway(format!(
+            "Browser HLS relay request failed with status {}.",
+            response.status()
+        )));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > LIVE_HLS_BROWSER_RELAY_MAX_PLAYLIST_BYTES as u64)
+    {
+        return Err(ApiError::bad_gateway(
+            "Browser HLS relay playlist was too large.",
+        ));
+    }
+    let final_url_text = response
+        .headers()
+        .get(LIVE_HLS_BROWSER_RELAY_FINAL_URL_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or(live_request.source_url.as_str());
+    let final_url = Url::parse(final_url_text)
+        .or_else(|_| live_request.source_url.join(final_url_text))
+        .map_err(|_| ApiError::bad_gateway("Browser HLS relay returned an invalid URL."))?;
+    ensure_allowed_live_hls_final_url(&final_url, live_request, LiveHlsRequestKind::Playlist)?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| ApiError::bad_gateway("Browser HLS relay response could not be read."))?;
+    if bytes.len() > LIVE_HLS_BROWSER_RELAY_MAX_PLAYLIST_BYTES {
+        return Err(ApiError::bad_gateway(
+            "Browser HLS relay playlist was too large.",
+        ));
+    }
+    let body = String::from_utf8_lossy(&bytes).into_owned();
+    if !body.trim_start().starts_with("#EXTM3U") {
+        return Err(ApiError::bad_gateway(
+            "Browser HLS relay did not return an HLS playlist.",
+        ));
+    }
+    Ok(LiveHlsPlaylistFetch { final_url, body })
+}
+
 fn live_hls_browser_fetch_script_path() -> String {
     if let Some(value) = std::env::var("BROWSER_LIVE_HLS_FETCH_SCRIPT")
         .ok()
@@ -1623,6 +1721,11 @@ async fn fetch_live_hls_playlist_upstream(
     state: &AppState,
     live_request: &LiveHlsRequest,
 ) -> AppResult<LiveHlsPlaylistFetch> {
+    if live_request.trusted_external_embed
+        && browser_live_hls_relay_url(live_request.referer.as_deref()).is_some()
+    {
+        return fetch_live_hls_playlist_via_session_relay(live_request).await;
+    }
     if is_curl_fetch_live_hls_upstream(&live_request.source_url) {
         return fetch_live_hls_playlist_via_curl(live_request).await;
     }
@@ -1646,6 +1749,20 @@ async fn fetch_live_hls_resource_upstream(
     state: &AppState,
     live_request: &LiveHlsRequest,
 ) -> AppResult<LiveHlsResourceFetch> {
+    if live_request.trusted_external_embed
+        && live_request
+            .source_url
+            .path()
+            .to_ascii_lowercase()
+            .ends_with(".m3u8")
+        && browser_live_hls_relay_url(live_request.referer.as_deref()).is_some()
+    {
+        let playlist = fetch_live_hls_playlist_via_session_relay(live_request).await?;
+        return Ok(LiveHlsResourceFetch {
+            content_type: "application/vnd.apple.mpegurl".to_owned(),
+            bytes: playlist.body.into_bytes(),
+        });
+    }
     if is_curl_fetch_live_hls_upstream(&live_request.source_url) {
         return fetch_live_hls_resource_via_curl(live_request).await;
     }
@@ -2938,13 +3055,46 @@ fn find_hls_attribute_start(line: &str, attribute: &str) -> Option<usize> {
 mod tests {
     use super::{
         LiveHlsRequestKind, audio_codec_needs_live_transcode,
-        browser_bound_live_hls_referer_header, build_sports_live_hls_playback_source,
-        build_trusted_external_embed_hls_playback_source, host_matches_allowed_live_hls_host,
-        is_allowed_live_hls_url, is_browser_bound_live_hls_upstream, is_live_ts_segment,
+        browser_bound_live_hls_referer_header, browser_live_hls_relay_url,
+        build_sports_live_hls_playback_source, build_trusted_external_embed_hls_playback_source,
+        host_matches_allowed_live_hls_host, is_allowed_live_hls_url,
+        is_browser_bound_live_hls_upstream, is_live_ts_segment,
         is_public_external_embed_hls_proxy_url, is_trusted_external_embed_hls_request,
         live_audio_stream_key, normalize_hls_referer, png_prefixed_ts_strip_offset, query_pairs,
         rewrite_live_hls_playlist, strip_video_only_stream_inf_codecs,
     };
+
+    #[test]
+    fn browser_hls_relay_accepts_only_encoded_loopback_session_urls() {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        let relay = "http://127.0.0.1:53421/fetch?token=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let encoded = URL_SAFE_NO_PAD.encode(relay.as_bytes());
+        let referer =
+            format!("https://embed.st/embed/admin/game/1#streamarena-browser-relay={encoded}");
+        assert_eq!(
+            browser_live_hls_relay_url(Some(&referer))
+                .as_ref()
+                .map(url::Url::as_str),
+            Some(relay)
+        );
+        assert!(
+            browser_live_hls_relay_url(Some(
+                "https://embed.st/embed/admin/game/1#streamarena-browser-relay=aW52YWxpZA"
+            ))
+            .is_none()
+        );
+        let external = URL_SAFE_NO_PAD.encode(
+            b"http://192.168.1.20:53421/fetch?token=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        assert!(
+            browser_live_hls_relay_url(Some(&format!(
+                "https://embed.st/embed/admin/game/1#streamarena-browser-relay={external}"
+            )))
+            .is_none()
+        );
+    }
 
     #[test]
     fn first_live_resource_input_extracts_segment_url() {

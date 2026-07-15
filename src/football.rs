@@ -2,22 +2,25 @@ use std::collections::BTreeSet;
 use std::env;
 use std::future::Future;
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::{Body, to_bytes};
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, Response, StatusCode};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dashmap::DashMap;
 use futures_util::stream::{self, StreamExt};
 use regex::Regex;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use url::Url;
-use url::form_urlencoded::byte_serialize;
 
 use crate::error::{ApiError, AppResult, json_response};
 use crate::provider_registry;
@@ -83,6 +86,10 @@ const NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 24;
 const NTVS_EMBED_MIN_HLS_RESOLVER_SCRIPT: &str = "scripts/resolve-embed-min.mjs";
 const NTVS_EMBED_MIN_HLS_RESOLVER_RUNTIME_SCRIPT: &str = "bin/resolve-embed-min.mjs";
 const NTVS_EMBED_MIN_HLS_RESOLVE_TIMEOUT_SECONDS: u64 = 12;
+const NTVS_BROWSER_HLS_SESSION_SCRIPT: &str = "scripts/serve-browser-hls-session.mjs";
+const NTVS_BROWSER_HLS_SESSION_RUNTIME_SCRIPT: &str = "bin/serve-browser-hls-session.mjs";
+const NTVS_BROWSER_HLS_SESSION_RESOLVE_TIMEOUT_SECONDS: u64 = 30;
+const NTVS_BROWSER_HLS_RELAY_FRAGMENT_PREFIX: &str = "streamarena-browser-relay=";
 // The NTV watch page expands each coarse search source (admin/delta/golf) into
 // individually labelled broadcaster feeds. Hydrate only live fixtures and keep
 // this best-effort expansion comfortably inside the NTV schedule's 5 s budget.
@@ -272,6 +279,8 @@ struct NtvsHlsResolverOutput {
     player_page: String,
     #[serde(default)]
     referer: String,
+    #[serde(default, rename = "relayUrl")]
+    relay_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3427,7 +3436,7 @@ async fn resolve_verified_streamed_live_stream_uncached(
             }
         };
         if let Some((playback_url, player_page_url)) =
-            resolve_streamed_embed_playback_url(&embed_url).await
+            resolve_streamed_embed_playback_url(state, &embed_url).await
         {
             return Ok(ResolvedLiveStream {
                 source_url: source_url.clone(),
@@ -3451,7 +3460,10 @@ async fn resolve_verified_streamed_live_stream_uncached(
     )))
 }
 
-async fn resolve_streamed_embed_playback_url(embed_url: &Url) -> Option<(Url, Url)> {
+async fn resolve_streamed_embed_playback_url(
+    state: &AppState,
+    embed_url: &Url,
+) -> Option<(Url, Url)> {
     if is_supported_streamed_embed_url(embed_url) {
         let playback_url = resolve_streamed_embed_hls_url(embed_url).await?;
         let player_page_url =
@@ -3460,7 +3472,7 @@ async fn resolve_streamed_embed_playback_url(embed_url: &Url) -> Option<(Url, Ur
     }
 
     if is_supported_ntvs_embed_url(embed_url) {
-        return resolve_ntvs_embed_st_hls_url(embed_url).await;
+        return resolve_ntvs_embed_st_hls_url(state, embed_url).await;
     }
 
     None
@@ -3658,7 +3670,7 @@ async fn resolve_matchstream_hls_url(source_url: &Url) -> Option<(Url, Url)> {
 
 async fn resolve_ntvs_player_hls_url(state: &AppState, player_url: &Url) -> Option<(Url, Url)> {
     if is_supported_ntvs_embed_url(player_url) {
-        return resolve_ntvs_embed_st_hls_url(player_url).await;
+        return resolve_ntvs_embed_st_hls_url(state, player_url).await;
     }
     if is_supported_ntvs_hesgoaler_player_url(player_url) {
         return resolve_ntvs_hesgoaler_hls_url(state, player_url).await;
@@ -3669,7 +3681,23 @@ async fn resolve_ntvs_player_hls_url(state: &AppState, player_url: &Url) -> Opti
     None
 }
 
-async fn resolve_ntvs_embed_st_hls_url(embed_url: &Url) -> Option<(Url, Url)> {
+async fn resolve_ntvs_embed_st_hls_url(_state: &AppState, embed_url: &Url) -> Option<(Url, Url)> {
+    // Preferred path: a loopback-only relay retains the exact hidden Chromium
+    // context that minted the strmd token. The opaque relay URL is carried in
+    // the signed referer fragment so every rewritten child playlist keeps the
+    // same session without exposing provider UI to the client.
+    let session_script = ntvs_browser_hls_session_script_path();
+    if !is_disabled_resolver_script(&session_script)
+        && let Some(resolved) = run_ntvs_browser_hls_session_script(
+            &session_script,
+            embed_url,
+            NTVS_BROWSER_HLS_SESSION_RESOLVE_TIMEOUT_SECONDS,
+        )
+        .await
+    {
+        return Some(resolved);
+    }
+
     // Fast path: minimal-browser resolver (stub page + the site's lock.js WASM
     // recipe — no bundle-jw.js/clappr/ads). Short budget; falls back on miss.
     let min_script = ntvs_embed_min_hls_resolver_script_path();
@@ -3695,6 +3723,101 @@ async fn resolve_ntvs_embed_st_hls_url(embed_url: &Url) -> Option<(Url, Url)> {
         NTVS_EMBED_HLS_RESOLVE_TIMEOUT_SECONDS,
     )
     .await
+}
+
+async fn run_ntvs_browser_hls_session_script(
+    script_path: &str,
+    embed_url: &Url,
+    inner_timeout_seconds: u64,
+) -> Option<(Url, Url)> {
+    let mut command = Command::new("node");
+    command
+        .arg(script_path)
+        .arg(embed_url.as_str())
+        .env(
+            "EMBED_MIN_RESOLVE_TIMEOUT_MS",
+            (inner_timeout_seconds * 1000).to_string(),
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+
+    // This process intentionally stays alive after its first stdout line: it
+    // owns the browser context and a loopback relay. Do not use output() or
+    // kill_on_drop(), both of which would destroy the session we need.
+    let mut child = command.spawn().ok()?;
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.start_kill();
+            return None;
+        }
+    };
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    let bytes_read = match timeout(
+        Duration::from_secs(inner_timeout_seconds + 4),
+        reader.read_line(&mut line),
+    )
+    .await
+    {
+        Ok(Ok(bytes_read)) => bytes_read,
+        _ => {
+            let _ = child.start_kill();
+            return None;
+        }
+    };
+    if bytes_read == 0 {
+        return None;
+    }
+
+    let resolver_output = match serde_json::from_str::<NtvsHlsResolverOutput>(line.trim()) {
+        Ok(output) => output,
+        Err(_) => {
+            let _ = child.start_kill();
+            return None;
+        }
+    };
+    let playback_url = match Url::parse(resolver_output.playback_url.trim()) {
+        Ok(url) => url,
+        Err(_) => {
+            let _ = child.start_kill();
+            return None;
+        }
+    };
+    if !is_supported_ntvs_hls_url(&playback_url) {
+        let _ = child.start_kill();
+        return None;
+    }
+    let relay_url = match Url::parse(resolver_output.relay_url.trim()) {
+        Ok(url) => url,
+        Err(_) => {
+            let _ = child.start_kill();
+            return None;
+        }
+    };
+    if !is_supported_browser_hls_relay_url(&relay_url) {
+        let _ = child.start_kill();
+        return None;
+    }
+
+    let encoded_relay = URL_SAFE_NO_PAD.encode(relay_url.as_str().as_bytes());
+    let mut player_page_url = embed_url.clone();
+    player_page_url.set_fragment(Some(&format!(
+        "{NTVS_BROWSER_HLS_RELAY_FRAGMENT_PREFIX}{encoded_relay}"
+    )));
+    Some((playback_url, player_page_url))
+}
+
+fn is_supported_browser_hls_relay_url(url: &Url) -> bool {
+    url.scheme() == "http"
+        && url.host_str() == Some("127.0.0.1")
+        && url.port().is_some()
+        && url.path() == "/fetch"
+        && url.query_pairs().any(|(key, value)| {
+            key == "token"
+                && value.len() == 64
+                && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
 }
 
 fn is_disabled_resolver_script(script_path: &str) -> bool {
@@ -3880,6 +4003,22 @@ fn ntvs_embed_min_hls_resolver_script_path() -> String {
     }
 
     NTVS_EMBED_MIN_HLS_RESOLVER_RUNTIME_SCRIPT.to_owned()
+}
+
+fn ntvs_browser_hls_session_script_path() -> String {
+    if let Some(value) = std::env::var("NTVS_BROWSER_HLS_SESSION_SCRIPT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        return value;
+    }
+
+    if Path::new(NTVS_BROWSER_HLS_SESSION_SCRIPT).is_file() {
+        return NTVS_BROWSER_HLS_SESSION_SCRIPT.to_owned();
+    }
+
+    NTVS_BROWSER_HLS_SESSION_RUNTIME_SCRIPT.to_owned()
 }
 
 fn sports_live_stream_source_candidates(
@@ -4683,13 +4822,6 @@ fn is_supported_ntvs_embed_url(url: &Url) -> bool {
     matches!(host.as_str(), "embed.st" | "www.embed.st") && url.path().starts_with("/embed/")
 }
 
-fn live_iframe_playback_source(url: &Url) -> String {
-    format!(
-        "live-iframe:{}",
-        byte_serialize(url.as_str().as_bytes()).collect::<String>()
-    )
-}
-
 fn is_supported_ntvs_hesgoaler_player_url(url: &Url) -> bool {
     if url.scheme() != "https" && url.scheme() != "http" {
         return false;
@@ -4921,14 +5053,13 @@ fn normalize_streamed_sport_match(
             label_parts.push(format!("Stream {}", stream.stream_no));
             let label = label_parts.join(" · ");
             let quality = if stream.hd { "HD" } else { "SD" };
-            let playback_source = live_iframe_playback_source(url);
             languages.insert(language.to_owned());
             streams.push(json!({
                 "id": format!("ntvs-{}-{}", row_source.to_ascii_lowercase(), stream.stream_no),
                 "label": label,
-                "source": playback_source,
+                "source": url.as_str(),
                 "provider": NTVS_SOURCE_ID,
-                "playbackType": "iframe",
+                "playbackType": "hls",
                 "quality": quality
             }));
             channels.push(json!({
@@ -5184,9 +5315,8 @@ fn normalize_ntvs_sport_match(
 
     if !match_item.expanded_streams.is_empty() {
         // These are the exact numbered feeds shown by ntv.cx's Kobra selector.
-        // Play them in the browser-native iframe mode used by the source site:
-        // embed.st's HLS token is bound to the browser session that minted it,
-        // so resolving it in a separate backend browser produces a 403 later.
+        // They resolve through the Mac mini's session-preserving hidden-browser
+        // relay, so the client receives internal HLS instead of a provider iframe.
         for stream in &match_item.expanded_streams {
             let Ok(embed_url) = Url::parse(stream.embed_url.trim()) else {
                 continue;
@@ -5214,14 +5344,13 @@ fn normalize_ntvs_sport_match(
             label_parts.push(format!("Stream {}", stream.stream_no));
             let label = label_parts.join(" · ");
             let quality = if stream.hd { "HD" } else { "SD" };
-            let playback_source = live_iframe_playback_source(&embed_url);
             languages.insert(language.to_owned());
             streams.push(json!({
                 "id": format!("ntvs-{source_id}-{}", stream.stream_no),
                 "label": label,
-                "source": playback_source,
+                "source": embed_url.as_str(),
                 "provider": NTVS_SOURCE_ID,
-                "playbackType": "iframe",
+                "playbackType": "hls",
                 "quality": quality
             }));
             channels.push(json!({
@@ -5608,9 +5737,9 @@ mod tests {
                 "streams": [{
                     "id": "ntvs-admin-1",
                     "label": "NTV Kobra · ADMIN · English · TSN · Stream 1",
-                    "source": "live-iframe:https%3A%2F%2Fembed.st%2Fembed%2Fadmin%2Fppv-france-vs-spain%2F1",
+                    "source": "https://embed.st/embed/admin/ppv-france-vs-spain/1",
                     "provider": "ntvs",
-                    "playbackType": "iframe",
+                    "playbackType": "hls",
                     "quality": "HD"
                 }],
                 "languages": ["English"],
@@ -5634,9 +5763,9 @@ mod tests {
                 "streams": [{
                     "id": "ntvs-admin-1",
                     "label": "NTV Kobra · ADMIN · English · TSN · Stream 1",
-                    "source": "live-iframe:https%3A%2F%2Fntv.cx%2Fembed%3Ft%3DOpaqueWrapperToken",
+                    "source": "https://ntv.cx/embed?t=OpaqueWrapperToken",
                     "provider": "ntvs",
-                    "playbackType": "iframe",
+                    "playbackType": "hls",
                     "quality": "HD"
                 }],
                 "languages": ["English"],
@@ -5650,7 +5779,7 @@ mod tests {
         assert_eq!(streams.len(), 1);
         assert_eq!(
             streams[0]["source"],
-            "live-iframe:https%3A%2F%2Fembed.st%2Fembed%2Fadmin%2Fppv-france-vs-spain%2F1"
+            "https://embed.st/embed/admin/ppv-france-vs-spain/1"
         );
     }
 
@@ -5984,10 +6113,10 @@ mod tests {
             "NTV Kobra · ADMIN · English · TSN · Stream 1"
         );
         assert_eq!(streams[0]["quality"], "HD");
-        assert_eq!(streams[0]["playbackType"], "iframe");
+        assert_eq!(streams[0]["playbackType"], "hls");
         assert_eq!(
             streams[0]["source"],
-            "live-iframe:https%3A%2F%2Fembed.st%2Fembed%2Fadmin%2Fppv-france-vs-spain%2F1"
+            "https://embed.st/embed/admin/ppv-france-vs-spain/1"
         );
         assert_eq!(streams[1]["quality"], "SD");
         assert_eq!(
@@ -6639,10 +6768,10 @@ mod tests {
             "NTV Kobra · ADMIN · English · TSN · Stream 1"
         );
         assert_eq!(streams[0]["quality"], "HD");
-        assert_eq!(streams[0]["playbackType"], "iframe");
+        assert_eq!(streams[0]["playbackType"], "hls");
         assert_eq!(
             streams[0]["source"],
-            "live-iframe:https%3A%2F%2Fembed.st%2Fembed%2Fadmin%2Fppv-france-vs-spain%2F1"
+            "https://embed.st/embed/admin/ppv-france-vs-spain/1"
         );
         assert_eq!(streams[1]["quality"], "SD");
         assert_eq!(

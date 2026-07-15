@@ -142,6 +142,7 @@ hls_resolver=$(test -f "$app/bin/resolve-external-embed-hls.mjs" && echo yes || 
 streamed_hls_resolver=$(test -f "$app/bin/resolve-streamed-hls.mjs" && echo yes || echo no)
 matchstream_hls_resolver=$(test -f "$app/bin/resolve-matchstream-hls.mjs" && echo yes || echo no)
 ntvs_hls_resolver=$(test -f "$app/bin/resolve-ntvs-hls.mjs" && echo yes || echo no)
+browser_hls_session_relay=$(test -f "$app/bin/serve-browser-hls-session.mjs" && echo yes || echo no)
 cdnlivetv_hls_resolver=$(test -f "$app/bin/resolve-cdnlivetv-hls.mjs" && echo yes || echo no)
 node_bin=$(command -v node || true)
 bun_bin=$(command -v bun || true)
@@ -245,6 +246,7 @@ printf 'hls_resolver=%s\n' "$hls_resolver"
 printf 'streamed_hls_resolver=%s\n' "$streamed_hls_resolver"
 printf 'matchstream_hls_resolver=%s\n' "$matchstream_hls_resolver"
 printf 'ntvs_hls_resolver=%s\n' "$ntvs_hls_resolver"
+printf 'browser_hls_session_relay=%s\n' "$browser_hls_session_relay"
 printf 'cdnlivetv_hls_resolver=%s\n' "$cdnlivetv_hls_resolver"
 printf 'node_bin=%s\n' "${node_bin:-missing}"
 printf 'bun_bin=%s\n' "${bun_bin:-missing}"
@@ -320,6 +322,7 @@ hls_resolver=$(value_for hls_resolver)
 streamed_hls_resolver=$(value_for streamed_hls_resolver)
 matchstream_hls_resolver=$(value_for matchstream_hls_resolver)
 ntvs_hls_resolver=$(value_for ntvs_hls_resolver)
+browser_hls_session_relay=$(value_for browser_hls_session_relay)
 cdnlivetv_hls_resolver=$(value_for cdnlivetv_hls_resolver)
 node_bin=$(value_for node_bin)
 bun_bin=$(value_for bun_bin)
@@ -349,6 +352,7 @@ ntvs_proxy_http=$(value_for ntvs_proxy_http)
 [[ "$streamed_hls_resolver" == "yes" ]] && pass "Streamed sports HLS resolver script is deployed" || bad "Streamed sports HLS resolver script is missing"
 [[ "$matchstream_hls_resolver" == "yes" ]] && pass "MatchStream sports HLS resolver script is deployed" || bad "MatchStream sports HLS resolver script is missing"
 [[ "$ntvs_hls_resolver" == "yes" ]] && pass "NTVS sports HLS resolver script is deployed" || bad "NTVS sports HLS resolver script is missing"
+[[ "$browser_hls_session_relay" == "yes" ]] && pass "browser HLS session relay script is deployed" || bad "browser HLS session relay script is missing"
 [[ "$cdnlivetv_hls_resolver" == "yes" ]] && pass "cdnlivetv sports HLS resolver script is deployed" || bad "cdnlivetv sports HLS resolver script is missing"
 [[ "$node_bin" != "missing" ]] && pass "Node is available for resolver helpers ($node_bin)" || bad "Node is missing for resolver helpers"
 [[ "$bun_bin" != "missing" ]] && pass "Bun is available for resolver dependency installs ($bun_bin)" || bad "Bun is missing for resolver dependency installs"

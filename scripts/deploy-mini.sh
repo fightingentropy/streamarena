@@ -160,6 +160,7 @@ rsync -a -e "$RSYNC_SSH" scripts/resolve-ntvs-hls.mjs "$MINI_HOST:$REMOTE_STAGE/
 rsync -a -e "$RSYNC_SSH" scripts/resolve-cdnlivetv-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-cdnlivetv-hls.mjs"
 rsync -a -e "$RSYNC_SSH" scripts/fetch-browser-live-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/fetch-browser-live-hls.mjs"
 rsync -a -e "$RSYNC_SSH" scripts/resolve-embed-min.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-embed-min.mjs"
+rsync -a -e "$RSYNC_SSH" scripts/serve-browser-hls-session.mjs "$MINI_HOST:$REMOTE_STAGE/bin/serve-browser-hls-session.mjs"
 "${SSH_BASE[@]}" "$MINI_HOST" "chmod 755 '$REMOTE_STAGE/bin/'*"
 
 rsync -a -e "$RSYNC_SSH" assets/library.json "$MINI_HOST:$REMOTE_STAGE/assets/library.json"
