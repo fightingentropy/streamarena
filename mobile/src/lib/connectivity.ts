@@ -103,7 +103,8 @@ export function isMeteredConnection(): boolean {
 
 // Subscribe to online/offline edges (airplane-mode toggles, Wi-Fi drops) that the
 // native listener reports even while the app stays foregrounded. Returns an
-// unsubscribe fn. The download pump uses this to pause on drop / resume on recovery.
+// unsubscribe fn. The download pump uses this to resume queued work and enforce its
+// Wi-Fi-only preference when the transport changes.
 export function subscribeOnline(callback: (online: boolean) => void): () => void {
   ensureInit();
   onlineSubscribers.add(callback);

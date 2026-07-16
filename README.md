@@ -660,6 +660,13 @@ The Expo app lives in `mobile/` and is checked independently in CI. From that di
 - `npm run build:ios` - produce a clean iOS Metro export (also run in CI).
 - `EXPO_IOS_DEVELOPMENT_TEAM=<team-id> npm run ios` - opt into automatic signing for a local device build. Without the variable, generated Xcode signing settings are left untouched.
 
+Offline movie and episode downloads use an iOS background URL session, so an active
+transfer continues while the app is backgrounded or the screen is locked. Returning to
+the app reconciles completion and advances deferred queue work. Only the transfer already
+handed to iOS is covered; additional queued episodes start when the app runs again. A user
+force-quit stops background transfers by iOS policy, process termination may require a
+restart from byte zero, and the live fragmented-MP4 export has no byte-range resume.
+
 ## Mac Mini Infrastructure
 
 Development machine:

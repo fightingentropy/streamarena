@@ -379,10 +379,10 @@ export function buildSubtitleUrl(input: string, streamIndex: number): string {
   return `/api/subtitles.vtt?${new URLSearchParams({ input, streamIndex: String(streamIndex) }).toString()}`;
 }
 
-// Build the offline-export URL. The backend muxes a complete `+faststart` MP4 for the
-// given source `input` (a resolved `sourceInput`/`playableUrl`) with the chosen audio
-// language baked in, served with Range support. URLSearchParams encodes `input`
-// exactly once; toAbsoluteApiUrl later only prepends the origin (never re-encodes).
+// Build the offline-export URL. The backend streams a fragmented MP4 for the given
+// source `input` (a resolved `sourceInput`/`playableUrl`) with the chosen audio language
+// baked in. The live export has no byte-range resume support; URLSearchParams encodes
+// `input` exactly once and toAbsoluteApiUrl only prepends the origin.
 export function buildExportUrl(input: string, audioStreamIndex?: number): string {
   const params = new URLSearchParams({ input });
   if (audioStreamIndex != null && audioStreamIndex >= 0) params.set("audioStream", String(audioStreamIndex));

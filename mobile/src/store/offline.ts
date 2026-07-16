@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { AppState, type AppStateStatus } from "react-native";
+import { AppState } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
 import { create } from "zustand";
 import { toAbsoluteApiUrl } from "@/lib/config";
@@ -23,7 +23,7 @@ import { storage } from "@/lib/storage";
 
 // Offline downloads for video. Ports the proven Spotify offline engine (serial pump,
 // expo-file-system createDownloadResumable, ref-counted scopes, account scoping,
-// launch verify, orphan purge, pause/resume on background+offline) to a video record,
+// launch verify, orphan purge, and transport-aware queueing) to a video record,
 // and adds three things the audio store lacked: a Wi-Fi-only gate, a storage cap, and
 // light per-download auto-retry. Files: file:// MP4 + sidecars in documentDirectory.
 
@@ -65,9 +65,9 @@ export type OfflineDownloadRecord = {
   addedAt: number;
   updatedAt: number;
   error?: string;
-  // NSURLSession resume blob captured on a deliberate pause (offline/background). Next
-  // attempt resumeAsync()s the partial. In-memory only — omitted from recordToRow,
-  // because a foreground-session blob is valid only within this process.
+  // NSURLSession resume blob captured on a deliberate pause (for example, when a
+  // Wi-Fi-only transfer moves to cellular). The next attempt resumeAsync()s the partial.
+  // In-memory only — omitted from recordToRow because it is valid only in this process.
   resumeData?: string;
 };
 
@@ -82,9 +82,6 @@ const MAX_STORAGE_KEY = "streamarena_max_storage_bytes";
 // nothing), which means the source couldn't be remuxed. Even a few seconds of video is
 // hundreds of KB, so 32 KB never rejects legitimate content.
 const MIN_VALID_VIDEO_BYTES = 32 * 1024;
-
-// Whether the app is foregrounded; the pump only runs while foreground + online.
-let isForeground = true;
 
 // --- Account scope -----------------------------------------------------------
 let accountScope = "anonymous";
@@ -221,6 +218,21 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
     });
   };
 
+  // Serial download pump — one asset at a time.
+  let pumping = false;
+  let activeDownload: { resumable: FileSystem.DownloadResumable; key: string } | null = null;
+  let pausedKey: string | null = null;
+
+  const cancelActiveDownload = async (key?: string) => {
+    const active = activeDownload;
+    if (!active || (key && active.key !== key)) return;
+    activeDownload = null;
+    if (pausedKey === active.key) pausedKey = null;
+    try {
+      await active.resumable.cancelAsync();
+    } catch {}
+  };
+
   const removeRecord = async (record: OfflineDownloadRecord) => {
     const key = keyFor(record.accountScope, record.assetId);
     clearProgress(key);
@@ -229,16 +241,15 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
       delete next[key];
       return { records: next };
     });
+    // A background URLSession outlives React state. Cancel it explicitly before deleting
+    // its destination so removing a download never leaves a hidden transfer running.
+    await cancelActiveDownload(key);
     await dbDeleteRow(key).catch(() => {});
     try {
       await FileSystem.deleteAsync(`${OFFLINE_DIR}${safeName(record.assetId)}/`, { idempotent: true });
     } catch {}
   };
 
-  // Serial download pump — one asset at a time.
-  let pumping = false;
-  let activeDownload: { resumable: FileSystem.DownloadResumable; key: string } | null = null;
-  let pausedKey: string | null = null;
   // Per-asset retry counter for the current process (not persisted): a transient failure
   // re-queues up to MAX_DOWNLOAD_RETRIES before it sticks as "error".
   const retryCounts: Record<string, number> = {};
@@ -251,10 +262,11 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
         await FileSystem.makeDirectoryAsync(OFFLINE_DIR, { intermediates: true });
       } catch {}
       while (true) {
-        // Gate: foreground + online (offline → instant-fail; background → re-launch into
-        // suspension). Plus the Wi-Fi-only gate: on a metered link, hold queued downloads
-        // until Wi-Fi (the connectivity listener re-kicks the pump on the transport edge).
-        if (!getIsOnline() || !isForeground) break;
+        // The iOS download uses a background NSURLSession, so do not gate the pump on
+        // AppState: the active transfer can continue while the screen is locked or the
+        // app is suspended. Keep the connectivity and Wi-Fi-only gates before starting
+        // queued work; the background session itself waits through temporary outages.
+        if (!getIsOnline()) break;
         if (get().wifiOnly && isMeteredConnection()) break;
         const queued = Object.values(get().records).find(
           (r) => r.accountScope === accountScope && r.status === "queued",
@@ -283,7 +295,7 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
           const resumable = FileSystem.createDownloadResumable(
             downloadUrl,
             videoPath,
-            {},
+            { sessionType: FileSystem.FileSystemSessionType.BACKGROUND },
             ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
               const frac = totalBytesExpectedToWrite > 0 ? totalBytesWritten / totalBytesExpectedToWrite : 0;
               setProgress(key, frac, totalBytesWritten);
@@ -294,7 +306,7 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
           const result = resumeData ? await resumable.resumeAsync() : await resumable.downloadAsync();
           activeDownload = null;
           if (!result) {
-            // Deliberate pause (offline/background) — already re-queued with a blob.
+            // Deliberate Wi-Fi-only pause — already re-queued with a resume blob.
             pausedKey = null;
             clearProgress(key);
             continue;
@@ -595,17 +607,16 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
         verificationError: null,
         storageLimited: false,
       });
-      void (async () => {
-        for (const record of records) {
-          await dbDeleteRow(keyFor(record.accountScope, record.assetId)).catch(() => {});
-          await FileSystem.deleteAsync(`${OFFLINE_DIR}${safeName(record.assetId)}/`, { idempotent: true }).catch(
-            () => {},
-          );
-        }
-        await purgeOrphanedDownloadArtifacts();
-        void refreshStorage();
-      })();
-      void refreshStorage();
+      const activeKey = activeDownload?.key;
+      if (activeKey && keys.includes(activeKey)) await cancelActiveDownload(activeKey);
+      for (const record of records) {
+        await dbDeleteRow(keyFor(record.accountScope, record.assetId)).catch(() => {});
+        await FileSystem.deleteAsync(`${OFFLINE_DIR}${safeName(record.assetId)}/`, { idempotent: true }).catch(
+          () => {},
+        );
+      }
+      await purgeOrphanedDownloadArtifacts();
+      await refreshStorage();
     },
 
     refreshStorage,
@@ -616,7 +627,11 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
         storage.setItem(WIFI_ONLY_KEY, enabled ? "1" : "0");
       } catch {}
       set({ wifiOnly: enabled });
-      if (!enabled) void runPump(); // disabling the gate may release held downloads
+      if (enabled && isMeteredConnection()) {
+        void pauseActiveDownload();
+      } else if (!enabled) {
+        void runPump(); // disabling the gate may release held downloads
+      }
     },
 
     setMaxStorageBytes: (bytes) => {
@@ -675,27 +690,11 @@ function kickPump(): void {
   if (first) void useOfflineStore.getState().queueDownload(first.meta, first.scopes[0] ?? "manual");
 }
 
-// Reclaim interrupted-download debris: orphaned NSURLSession partials + offline-media
-// folders with no backing "ready" record. Best-effort, idempotent; never breaks launch.
+// Reclaim only app-owned offline-media folders with no backing "ready" record.
+// NSURLSession's Library/Caches data is system-managed and may belong to an active
+// background transfer, so it must never be traversed or deleted here.
+// Best-effort, idempotent; never breaks launch.
 async function purgeOrphanedDownloadArtifacts(): Promise<void> {
-  const doc = FileSystem.documentDirectory;
-  if (doc) {
-    try {
-      const containerRoot = doc.replace(/Documents\/?$/, "");
-      const downloadsRoot = `${containerRoot}Library/Caches/com.apple.nsurlsessiond/Downloads/`;
-      const info = await FileSystem.getInfoAsync(downloadsRoot);
-      if (info.exists) {
-        const subdirs = await FileSystem.readDirectoryAsync(downloadsRoot);
-        for (const sub of subdirs) {
-          const subPath = `${downloadsRoot}${sub}/`;
-          const files = await FileSystem.readDirectoryAsync(subPath).catch(() => [] as string[]);
-          await Promise.all(
-            files.map((f) => FileSystem.deleteAsync(`${subPath}${f}`, { idempotent: true }).catch(() => {})),
-          );
-        }
-      }
-    } catch {}
-  }
   try {
     const info = await FileSystem.getInfoAsync(OFFLINE_DIR);
     if (info.exists) {
@@ -716,27 +715,22 @@ async function purgeOrphanedDownloadArtifacts(): Promise<void> {
   } catch {}
 }
 
-// Subscribe to AppState + connectivity edges to pause/resume downloads. Returns an
-// unsubscribe fn; the root layout owns the single call site.
+// Keep the active background NSURLSession running across AppState and temporary offline
+// changes. iOS waits and retries background transfers itself. Returning to the foreground
+// re-kicks deferred queue work; transport edges also enforce the Wi-Fi-only preference.
+// Returns an unsubscribe fn; the root layout owns the single call site.
 export function initOfflineSync(): () => void {
-  let previous: AppStateStatus = AppState.currentState;
-  isForeground = AppState.currentState === "active";
   void useOfflineStore.getState().hydrate();
-  const subscription = AppState.addEventListener("change", (next: AppStateStatus) => {
-    const cameToForeground = previous.match(/inactive|background/) && next === "active";
-    const wentToBackground = next === "background";
-    previous = next;
-    if (cameToForeground) {
-      isForeground = true;
-      kickPump();
-    } else if (wentToBackground) {
-      isForeground = false;
-      void useOfflineStore.getState().pauseActiveDownload();
-    }
+  const subscription = AppState.addEventListener("change", (next) => {
+    if (next === "active") kickPump();
   });
   const unsubscribeOnline = subscribeOnline((isOnline) => {
-    if (isOnline) kickPump();
-    else void useOfflineStore.getState().pauseActiveDownload();
+    const state = useOfflineStore.getState();
+    if (state.wifiOnly && isMeteredConnection()) {
+      void state.pauseActiveDownload();
+    } else if (isOnline) {
+      kickPump();
+    }
   });
   return () => {
     subscription.remove();

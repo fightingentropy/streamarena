@@ -26,7 +26,8 @@ const headerOptions = {
 void SplashScreen.preventAutoHideAsync();
 
 // Scope offline downloads to the signed-in account and mount the download pump's
-// AppState/connectivity listeners (hydrate + pause-on-background + resume-on-foreground).
+// AppState/connectivity listeners. Active iOS transfers remain system-managed while
+// the app is backgrounded; foreground/network edges re-kick any deferred queue work.
 function OfflineBootstrap() {
   const scope = useAccountScopeOrNull();
   useEffect(() => {
