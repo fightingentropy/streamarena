@@ -471,7 +471,7 @@ Server:
 
 - `HOST` - default `127.0.0.1`.
 - `PORT` - default `5173`.
-- `OPEN_SIGNUP` - public registration, disabled by default. Keep it `0` in production.
+- `OPEN_SIGNUP` - public registration, disabled when the setting is missing. The public StreamArena deployment sets it to `1`; use `0` for invite-only deployments.
 - `SIGNUP_INVITE_CODE` - optional secret that permits viewer registration while public sign-up is closed.
 - `BOOTSTRAP_ADMIN_EMAIL` - optional admin-bootstrap email. Bootstrap requires the matching email and `SIGNUP_INVITE_CODE`; remove this setting once the admin exists.
 - `REAL_DEBRID_TOKEN_ENCRYPTION_KEYS` - comma-separated `key-id:base64url-key` ring for per-user Real-Debrid tokens. Each key is 32 random bytes; the first entry is active and retained entries support rotation.
@@ -634,7 +634,7 @@ Mac mini:
 - `bun run mini:install-agents` - install/update log rotation, disk monitor, and watchdog LaunchAgents; also removes obsolete hero-preview jobs/files.
 - `bun run mini:map-ports` - create router UPnP forwards for TCP 80 and 443.
 - `CF_API_TOKEN=... bun run mini:update-dns` - update Cloudflare-proxied A records with automatic TTL.
-- `bun run mini:check` - verify runtime tree, protected API auth status, Caddy, launchd, env permissions, sports WARP proxy, resolver helpers, agents, disk space, and public response.
+- `bun run mini:check` - verify runtime tree, protected API auth status, Caddy, launchd, env permissions, public sign-up (`OPEN_SIGNUP=1` by default; override with `EXPECTED_OPEN_SIGNUP=0` for invite-only deployments), sports WARP proxy, resolver helpers, agents, disk space, and public response.
 - `bun run mini:deploy` - run quality/tests, stage a release while retaining the previous artifacts, deploy `dist`, backend binary, library metadata, images, and icons, then restart/check. Failed post-restart verification leaves the new binary active because database migrations can be forward-only; the retained artifacts are for deliberate, schema-aware recovery only.
 - `bun run mini:deploy -- --skip-build` - reuse existing `dist/` and release binary.
 - `bun run mini:deploy -- --video assets/videos/<file>.mp4` - copy that symlink target as a real mini video file.

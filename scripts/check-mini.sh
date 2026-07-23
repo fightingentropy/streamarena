@@ -10,6 +10,7 @@ MAX_DISK_PERCENT="${MAX_DISK_PERCENT:-90}"
 MIN_FREE_GB="${MIN_FREE_GB:-50}"
 PROTECTED_ENDPOINT_STATUS="${PROTECTED_ENDPOINT_STATUS:-401}"
 SPORTS_PROXY_EXPECTED="${SPORTS_PROXY_EXPECTED:-http://127.0.0.1:40000}"
+EXPECTED_OPEN_SIGNUP="${EXPECTED_OPEN_SIGNUP:-1}"
 
 SSH_OPTS=(
   -i "$SSH_KEY"
@@ -363,7 +364,9 @@ ntvs_proxy_http=$(value_for ntvs_proxy_http)
 [[ "$cache_mode" == "700" ]] && pass "runtime cache permissions are 700" || bad "runtime cache permissions are $cache_mode"
 [[ "$users_db_mode" == "600" ]] && pass "users database permissions are 600" || bad "users database permissions are $users_db_mode"
 [[ "$users_db_quick_check" == "ok" ]] && pass "users database quick_check is ok" || bad "users database quick_check is $users_db_quick_check"
-[[ "$effective_open_signup" == "0" ]] && pass "public signup is closed" || bad "OPEN_SIGNUP is $effective_open_signup (expected 0)"
+[[ "$effective_open_signup" == "$EXPECTED_OPEN_SIGNUP" ]] \
+  && pass "OPEN_SIGNUP is $effective_open_signup" \
+  || bad "OPEN_SIGNUP is $effective_open_signup (expected $EXPECTED_OPEN_SIGNUP)"
 [[ "$rd_token_encryption_configured" == "yes" ]] && pass "Real-Debrid token encryption key ring is configured" || bad "REAL_DEBRID_TOKEN_ENCRYPTION_KEYS is missing or malformed"
 if [[ "$env_in_app" == "no" ]]; then
   pass "deploy tree has no .env (secrets stay in the canonical env file)"
