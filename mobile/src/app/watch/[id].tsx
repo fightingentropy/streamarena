@@ -1,5 +1,5 @@
 import { type ComponentProps, type RefObject, useEffect, useMemo, useRef } from "react";
-import { StatusBar, StyleSheet, View } from "react-native";
+import { Platform, StatusBar, StyleSheet, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
 import Video, {
@@ -150,6 +150,19 @@ export default function WatchScreen() {
     : request.mediaType === "tv" && request.seasonNumber != null && request.episodeNumber != null
       ? `S${request.seasonNumber} · E${request.episodeNumber}`
       : request.year || undefined;
+  const nativeVideoSource = useMemo<ComponentProps<typeof Video>["source"]>(
+    () => ({
+      uri: source?.uri,
+      metadata: {
+        title: request.title || (isLive ? "Live channel" : "StreamArena"),
+        subtitle,
+        artist: isLive ? "Live on StreamArena" : "StreamArena",
+        imageUri: request.poster,
+      },
+    }),
+    [source?.uri, request.title, request.poster, subtitle, isLive],
+  );
+  const iosBackgroundPlayback = Platform.OS === "ios";
 
   return (
     <View style={{ flex: 1, backgroundColor: "#000" }}>
@@ -171,13 +184,20 @@ export default function WatchScreen() {
           ) : (
             <Video
               ref={videoRef as RefObject<VideoRef>}
-              source={{ uri: source.uri }}
+              source={nativeVideoSource}
               style={StyleSheet.absoluteFill}
               paused={paused}
               volume={volume}
               resizeMode="contain"
               progressUpdateInterval={1000}
               ignoreSilentSwitch="ignore"
+              playInBackground={iosBackgroundPlayback}
+              playWhenInactive={iosBackgroundPlayback}
+              enterPictureInPictureOnLeave={iosBackgroundPlayback}
+              showNotificationControls={iosBackgroundPlayback}
+              onRestoreUserInterfaceForPictureInPictureStop={() =>
+                (videoRef.current as VideoRef | null)?.restoreUserInterfaceForPictureInPictureStopCompleted(true)
+              }
               textTracks={videoTextTracks}
               selectedTextTrack={
                 selectedSubtitle == null

@@ -17,6 +17,7 @@ declare module "react-native-vlc-media-player" {
     source: VLCPlayerSource;
     paused?: boolean;
     autoplay?: boolean;
+    playInBackground?: boolean;
     muted?: boolean;
     rate?: number;
     volume?: number;

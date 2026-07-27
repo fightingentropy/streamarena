@@ -1,20 +1,94 @@
 diff --git a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.h b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.h
-index e027268..b6d2990 100755
+index e027268..4010c79 100755
 --- a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.h
 +++ b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.h
-@@ -27,6 +27,7 @@
+@@ -27,6 +27,8 @@
  
  - (instancetype)initWithEventDispatcher:(RCTEventDispatcher *)eventDispatcher NS_DESIGNATED_INITIALIZER;
  - (void)setMuted:(BOOL)value;
 +- (void)setVolume:(float)value;
++- (void)setPlayInBackground:(BOOL)value;
  - (void)startRecording:(NSString*)path;
  - (void)stopRecording;
  - (void)stopPlayer;
 diff --git a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.m b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.m
-index 54e29ee..0adf0aa 100755
+index 54e29ee..f802ece 100755
 --- a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.m
 +++ b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayer.m
-@@ -237,7 +237,17 @@ - (void)mediaPlayerStateChanged:(NSNotification *)aNotification
+@@ -34,12 +34,31 @@ @implementation RCTVLCPlayer
+     BOOL _paused;
+     BOOL _autoplay;
+     BOOL _acceptInvalidCertificates;
++    BOOL _playInBackground;
++}
++
++- (void)configureBackgroundAudioSession
++{
++    if (!_playInBackground) {
++        return;
++    }
++
++    AVAudioSession *audioSession = [AVAudioSession sharedInstance];
++    NSError *categoryError = nil;
++    [audioSession setCategory:AVAudioSessionCategoryPlayback
++                         mode:AVAudioSessionModeMoviePlayback
++                      options:0
++                        error:&categoryError];
++    if (!categoryError) {
++        [audioSession setActive:YES error:nil];
++    }
+ }
+ 
+ - (instancetype)initWithEventDispatcher:(RCTEventDispatcher *)eventDispatcher
+ {
+     if ((self = [super init])) {
+         _eventDispatcher = eventDispatcher;
++        _playInBackground = NO;
+ 
+         [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(applicationWillResignActive:)
+@@ -58,14 +77,17 @@ - (instancetype)initWithEventDispatcher:(RCTEventDispatcher *)eventDispatcher
+ 
+ - (void)applicationWillEnterForeground:(NSNotification *)notification
+ {
+-    if (!_paused)
++    if (!_paused) {
+         [self play];
++    }
+ }
+ 
+ - (void)applicationWillResignActive:(NSNotification *)notification
+ {
+-    if (!_paused)
++    if (!_paused) {
++        [self configureBackgroundAudioSession];
+         [self play];
++    }
+ }
+ 
+ - (void)play
+@@ -125,7 +147,11 @@ - (void)setSource:(NSDictionary *)source
+     if (_autoplay)
+         [_player play];
+     
+-    [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
++    if (_playInBackground) {
++        [self configureBackgroundAudioSession];
++    } else {
++        [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
++    }
+ }
+ 
+ - (void)setAutoplay:(BOOL)autoplay
+@@ -141,6 +167,7 @@ - (void)setPaused:(BOOL)paused
+     _paused = paused;
+ 
+     if (!paused) {
++        [self configureBackgroundAudioSession];
+         [self play];
+     } else {
+         [self pause];
+@@ -237,7 +264,17 @@ - (void)mediaPlayerStateChanged:(NSNotification *)aNotification
                  break;
              case VLCMediaPlayerStateError:
                  NSLog(@"VLCMediaPlayerStateError %i", _player.numberOfAudioTracks);
@@ -33,7 +107,7 @@ index 54e29ee..0adf0aa 100755
                  [self _release];
                  break;
              default:
-@@ -430,6 +440,16 @@ - (void)setMuted:(BOOL)value
+@@ -430,6 +467,22 @@ - (void)setMuted:(BOOL)value
      }
  }
  
@@ -47,14 +121,28 @@ index 54e29ee..0adf0aa 100755
 +    }
 +}
 +
++- (void)setPlayInBackground:(BOOL)value
++{
++    _playInBackground = value;
++    [self configureBackgroundAudioSession];
++}
++
  #pragma mark - VLCCustomDialogRendererProtocol
  
  - (void)showErrorWithTitle:(NSString *)title message:(NSString *)message {
 diff --git a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayerManager.m b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayerManager.m
-index 971e823..d735e04 100755
+index 971e823..5a0885e 100755
 --- a/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayerManager.m
 +++ b/node_modules/react-native-vlc-media-player/ios/RCTVLCPlayer/RCTVLCPlayerManager.m
-@@ -46,6 +46,10 @@ - (dispatch_queue_t)methodQueue
+@@ -36,6 +36,7 @@ - (dispatch_queue_t)methodQueue
+ RCT_EXPORT_VIEW_PROPERTY(source, NSDictionary);
+ RCT_EXPORT_VIEW_PROPERTY(subtitleUri, NSString);
+ RCT_EXPORT_VIEW_PROPERTY(paused, BOOL);
++RCT_EXPORT_VIEW_PROPERTY(playInBackground, BOOL);
+ RCT_EXPORT_VIEW_PROPERTY(seek, float);
+ RCT_EXPORT_VIEW_PROPERTY(rate, float);
+ RCT_EXPORT_VIEW_PROPERTY(resume, BOOL);
+@@ -46,6 +47,10 @@ - (dispatch_queue_t)methodQueue
      BOOL isMuted = [RCTConvert BOOL:json];
      [view setMuted:isMuted];
  };

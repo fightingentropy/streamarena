@@ -667,6 +667,11 @@ handed to iOS is covered; additional queued episodes start when the app runs aga
 force-quit stops background transfers by iOS policy, process termination may require a
 restart from byte zero, and the live fragmented-MP4 export has no byte-range resume.
 
+While a live channel, movie, or episode is playing on iOS, audio continues when the app
+is backgrounded or the device is locked. Native AVPlayer sources also enter Picture in
+Picture when the user leaves the app and publish title/playback controls on the lock
+screen. VLC fallback sources continue audio in the background but cannot provide PiP.
+
 ## Mac Mini Infrastructure
 
 Development machine:

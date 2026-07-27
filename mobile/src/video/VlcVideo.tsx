@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { StyleSheet, type StyleProp, type ViewStyle } from "react-native";
+import { Platform, StyleSheet, type StyleProp, type ViewStyle } from "react-native";
 import { VLCPlayer } from "react-native-vlc-media-player";
 
 // Imperative handle mirroring the slice of react-native-video's VideoRef the watch screen
@@ -87,6 +87,7 @@ export const VlcVideo = forwardRef<VlcVideoRef, VlcVideoProps>(function VlcVideo
       source={{ uri, initOptions: INIT_OPTIONS }}
       paused={paused}
       volume={Math.max(0, Math.min(1, volume))}
+      playInBackground={Platform.OS === "ios"}
       autoplay
       onLoad={(e) => {
         const dur = (Number(e?.duration) || 0) / 1000;
