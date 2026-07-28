@@ -6,8 +6,8 @@ import { colors } from "@/theme";
 export type LiveTab = "sports" | "tv";
 
 const TABS: { id: LiveTab; label: string }[] = [
-  { id: "sports", label: "Sports" },
   { id: "tv", label: "Live TV" },
+  { id: "sports", label: "Sports" },
 ];
 
 // A flat, leading-aligned switcher keeps the hierarchy close to a native
