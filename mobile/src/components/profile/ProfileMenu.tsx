@@ -1,10 +1,10 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { Image, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useRouter } from "expo-router";
-import { Download, LogOut, Settings } from "lucide-react-native";
+import { Download, LogOut, Settings, UserRound } from "lucide-react-native";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { useAuth } from "@/lib/auth";
 import { useUiStore } from "@/store/ui";
@@ -102,6 +102,8 @@ export function ProfileMenu() {
               bottom: 0,
               width: panelW,
               backgroundColor: colors.surface,
+              borderLeftWidth: 0.5,
+              borderLeftColor: colors.hairline,
               paddingTop: insets.top + 12,
               paddingBottom: insets.bottom + 12,
             },
@@ -109,8 +111,19 @@ export function ProfileMenu() {
           ]}
         >
           <View className="flex-row items-center gap-3 px-5 py-3">
-            <View className="h-14 w-14 overflow-hidden rounded-full" style={{ backgroundColor: "#2a2a2a" }}>
-              <Image source={require("../../../assets/images/avatar.jpg")} style={{ width: 56, height: 56 }} />
+            <View
+              style={{
+                width: 56,
+                height: 56,
+                borderRadius: 28,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: colors.card,
+                borderWidth: 0.5,
+                borderColor: colors.hairline,
+              }}
+            >
+              <UserRound size={28} color={colors.foreground} strokeWidth={1.8} />
             </View>
             <View className="min-w-0 flex-1">
               <Text numberOfLines={1} className="text-xl font-bold" style={{ color: colors.foreground }}>

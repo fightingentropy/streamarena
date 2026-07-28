@@ -89,7 +89,7 @@ export function DownloadButton({ assetId, getMeta, variant = "action", scope = "
     label = "Downloaded";
     active = true;
   } else if (dl.status === "error") {
-    icon = <AlertCircle size={variant === "icon" ? 20 : 26} color="#f5a524" />;
+    icon = <AlertCircle size={variant === "icon" ? 20 : 26} color={colors.warning} />;
     label = "Retry";
   } else {
     icon = <Download size={variant === "icon" ? 20 : 26} color={colors.foreground} />;

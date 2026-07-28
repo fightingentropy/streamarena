@@ -1,54 +1,66 @@
-// Design-system tokens for non-className contexts (icon colors, gradients,
-// reanimated, video player chrome). Mirror of tailwind.config.js.
+// Design-system tokens for non-className contexts (icon colors, artwork scrims,
+// reanimated motion, and player chrome). Mirror of tailwind.config.js.
 //
-// StreamArena is a Netflix-flavored skin of the Spotify port: dark base, a single
-// red accent. The legacy `green`/`emerald` keys are kept (aliased to the red
-// accent) so components ported verbatim from spotify/mobile compile and render
-// in-brand without per-file edits.
+// The app chrome is deliberately monochrome: artwork is the expressive colour,
+// while red is reserved for live/destructive semantics. The legacy
+// `green`/`emerald` aliases remain so older ported components keep compiling while
+// inheriting the neutral selection colour.
 
 export const colors = {
-  background: "#0a0a0a",
-  surface: "#181818",
-  foreground: "#ffffff",
-  muted: "#b3b3b3",
-  dim: "rgba(255,255,255,0.46)",
-  // Netflix red.
-  accent: "#e50914",
-  accentPressed: "#b20710",
-  // Legacy aliases (ported Spotify components reference these).
-  green: "#e50914",
-  emerald: "#e50914",
-  emeraldDarkCheck: "#2b0a0a",
-  card: "rgba(255,255,255,0.08)",
-  cardHover: "rgba(255,255,255,0.09)",
-  cardActive: "rgba(255,255,255,0.12)",
-  line: "rgba(255,255,255,0.10)",
-  iconIdle: "rgba(255,255,255,0.70)",
-  backdrop: "rgba(0,0,0,0.60)",
-  // Gradient scrim stops over backdrops/posters.
-  scrimTop: "rgba(10,10,10,0)",
-  scrimMid: "rgba(10,10,10,0.55)",
-  scrimBottom: "rgba(10,10,10,0.97)",
-  skeletonBase: "rgba(255,255,255,0.08)",
-  skeletonShimmer: "rgba(255,255,255,0.13)",
+  background: "#000000",
+  surface: "#0c0c0d",
+  surfaceRaised: "#151516",
+  foreground: "#f2f2f2",
+  muted: "rgba(255,255,255,0.60)",
+  dim: "rgba(255,255,255,0.40)",
+  accent: "#f2f2f2",
+  accentPressed: "#d8d8da",
+  live: "#ff453a",
+  danger: "#ff6961",
+  warning: "#ff9f0a",
+  // Legacy aliases used by a few ported components.
+  green: "#f2f2f2",
+  emerald: "#f2f2f2",
+  emeraldDarkCheck: "#111113",
+  card: "rgba(255,255,255,0.045)",
+  cardHover: "rgba(255,255,255,0.065)",
+  cardActive: "rgba(255,255,255,0.09)",
+  line: "rgba(255,255,255,0.08)",
+  hairline: "rgba(255,255,255,0.12)",
+  iconIdle: "rgba(255,255,255,0.58)",
+  backdrop: "rgba(0,0,0,0.66)",
+  // Functional artwork/video scrim stops.
+  scrimTop: "rgba(0,0,0,0)",
+  scrimMid: "rgba(0,0,0,0.46)",
+  scrimBottom: "rgba(0,0,0,0.96)",
+  skeletonBase: "rgba(255,255,255,0.055)",
+  skeletonShimmer: "rgba(255,255,255,0.09)",
   white: "#ffffff",
+  black: "#000000",
 } as const;
 
 export const layout = {
-  mobileNavHeight: 52, // bottom tab bar
+  mobileNavHeight: 58, // bottom tab bar
   listRowMinHeight: 64,
   // Poster (2:3) geometry for rails/grids.
-  posterWidth: 120,
-  posterHeight: 180,
-  posterWidthLg: 140,
-  posterHeightLg: 210,
+  posterWidth: 132,
+  posterHeight: 198,
+  posterWidthLg: 148,
+  posterHeightLg: 222,
   // Landscape still (16:9-ish) for continue-watching / episodes.
-  stillWidth: 220,
-  stillHeight: 124,
-  heroHeight: 520, // billboard hero
+  stillWidth: 240,
+  stillHeight: 135,
+  heroHeight: 528, // cinematic billboard hero
   // Legacy aliases used by ported components.
   cardWidthSm: 144,
   cardWidthMd: 160,
+} as const;
+
+export const radius = {
+  control: 12,
+  card: 14,
+  artwork: 16,
+  sheet: 28,
 } as const;
 
 // Easing curves (cubic-bezier control points) for Reanimated `Easing.bezier(...)`.

@@ -6,6 +6,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { ChevronLeft } from "lucide-react-native";
 import { GlassHeader } from "@/components/nav/GlassHeader";
 import { PosterImage } from "@/components/PosterImage";
+import { GlassSurface } from "@/components/ui/GlassSurface";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { Scrim } from "@/components/ui/Scrim";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -26,28 +27,37 @@ import { resolveOfflineMeta } from "@/video/download";
 import { progressIdentity } from "@/video/identity";
 import type { PlayRequest } from "@/video/types";
 import { buildMyListItem } from "@/store/mylist";
-import { colors } from "@/theme";
+import { colors, radius } from "@/theme";
 
-const HERO_HEIGHT = 440;
+const HERO_HEIGHT = 468;
 
 function BackButton() {
   const router = useRouter();
   return (
-    <PressableScale
-      onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))}
-      accessibilityLabel="Back"
-      hitSlop={8}
+    <GlassSurface
+      fallbackColor="rgba(8,8,9,0.68)"
+      tintColor="rgba(8,8,9,0.42)"
+      glassStyle="clear"
+      interactive
+      blurIntensity={30}
       style={{
-        width: 36,
-        height: 36,
-        borderRadius: 18,
-        backgroundColor: "rgba(0,0,0,0.45)",
-        alignItems: "center",
-        justifyContent: "center",
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        overflow: "hidden",
+        borderWidth: 0.5,
+        borderColor: colors.hairline,
       }}
     >
-      <ChevronLeft size={24} color="#fff" />
-    </PressableScale>
+      <PressableScale
+        onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))}
+        accessibilityLabel="Back"
+        hitSlop={8}
+        style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
+      >
+        <ChevronLeft size={24} color={colors.foreground} />
+      </PressableScale>
+    </GlassSurface>
   );
 }
 
@@ -170,9 +180,20 @@ export default function TitleDetailScreen() {
             stops={["transparent", "transparent", colors.scrimBottom, colors.background]}
             locations={[0, 0.45, 0.9, 1]}
           />
-          <View style={{ position: "absolute", left: 0, right: 0, bottom: 14, paddingHorizontal: 16 }}>
-            <Text style={{ color: colors.white, fontSize: 28, fontWeight: "800", letterSpacing: 0.2 }}>{title}</Text>
-            <View style={{ marginTop: 10 }}>
+          <View style={{ position: "absolute", left: 0, right: 0, bottom: 18, paddingHorizontal: 16 }}>
+            <Text
+              numberOfLines={2}
+              style={{
+                color: colors.foreground,
+                fontSize: 30,
+                lineHeight: 34,
+                fontWeight: "800",
+                letterSpacing: -0.6,
+              }}
+            >
+              {title}
+            </Text>
+            <View style={{ marginTop: 12 }}>
               <MetaRow
                 year={year}
                 runtimeMinutes={runtimeMinutes}
@@ -185,7 +206,7 @@ export default function TitleDetailScreen() {
         </View>
 
         {/* Actions */}
-        <View style={{ marginTop: 6 }}>
+        <View style={{ marginTop: 10 }}>
           <ActionRow onPlay={() => play(mediaType === "tv" ? (seasonNumber ?? 1) : undefined, mediaType === "tv" ? 1 : undefined)}>
             <MyListButton item={myItem} />
             {mediaType === "movie" ? (
@@ -196,27 +217,53 @@ export default function TitleDetailScreen() {
 
         {/* Overview */}
         {details.tagline ? (
-          <Text style={{ color: colors.muted, fontStyle: "italic", fontSize: 13, paddingHorizontal: 16, marginTop: 20 }}>
+          <Text
+            style={{
+              color: colors.muted,
+              fontStyle: "italic",
+              fontSize: 13.5,
+              lineHeight: 19,
+              paddingHorizontal: 16,
+              marginTop: 20,
+            }}
+          >
             {details.tagline}
           </Text>
         ) : null}
         {details.overview ? (
-          <Text style={{ color: colors.foreground, fontSize: 14, lineHeight: 21, paddingHorizontal: 16, marginTop: details.tagline ? 8 : 20 }}>
+          <Text
+            style={{
+              color: colors.foreground,
+              fontSize: 15,
+              lineHeight: 22,
+              paddingHorizontal: 16,
+              marginTop: details.tagline ? 8 : 20,
+            }}
+          >
             {details.overview}
           </Text>
         ) : null}
 
         {/* Genres */}
         {genres.length ? (
-          <View style={{ paddingHorizontal: 16, marginTop: 18 }}>
+          <View style={{ paddingHorizontal: 16, marginTop: 16 }}>
             <GenreChips genres={genres} />
           </View>
         ) : null}
 
         {/* TV: seasons + episodes */}
         {mediaType === "tv" && realSeasons.length ? (
-          <View style={{ marginTop: 26 }}>
-            <Text style={{ color: colors.foreground, fontSize: 17, fontWeight: "700", paddingHorizontal: 16, marginBottom: 12 }}>
+          <View style={{ marginTop: 34 }}>
+            <Text
+              style={{
+                color: colors.foreground,
+                fontSize: 22,
+                fontWeight: "700",
+                letterSpacing: -0.35,
+                paddingHorizontal: 16,
+                marginBottom: 8,
+              }}
+            >
               Episodes
             </Text>
             <SeasonPicker
@@ -224,11 +271,11 @@ export default function TitleDetailScreen() {
               selected={seasonNumber ?? realSeasons[0].season_number}
               onSelect={setSeasonNumber}
             />
-            <View style={{ marginTop: 8 }}>
+            <View style={{ marginTop: 6 }}>
               {seasonLoading && !season ? (
-                <View style={{ paddingHorizontal: 16, gap: 16, paddingVertical: 8 }}>
+                <View style={{ paddingHorizontal: 16, gap: 12, paddingVertical: 10 }}>
                   {Array.from({ length: 4 }).map((_, i) => (
-                    <Skeleton key={i} width={undefined} height={74} radius={8} />
+                    <Skeleton key={i} width={undefined} height={79} radius={radius.control} />
                   ))}
                 </View>
               ) : seasonError ? (
@@ -266,7 +313,7 @@ export default function TitleDetailScreen() {
         ) : null}
 
         {/* Cast */}
-        <View style={{ marginTop: 26 }}>
+        <View style={{ marginTop: 34 }}>
           <CastRail cast={details.credits?.cast} />
         </View>
       </Animated.ScrollView>
@@ -282,7 +329,7 @@ function DetailSkeleton() {
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Skeleton width={undefined} height={HERO_HEIGHT} radius={0} />
       <View style={{ paddingHorizontal: 16, marginTop: 16, gap: 12 }}>
-        <Skeleton width={undefined} height={48} radius={8} />
+        <Skeleton width={undefined} height={50} radius={radius.control} />
         <Skeleton width={180} height={14} radius={4} />
         <Skeleton width={260} height={14} radius={4} />
         <Skeleton width={220} height={14} radius={4} />

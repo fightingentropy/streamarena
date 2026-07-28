@@ -3,11 +3,12 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, Vi
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Captions, Layers, Pause, Play, Radio, RotateCcw, RotateCw, SkipForward, X } from "lucide-react-native";
+import { GlassSurface } from "@/components/ui/GlassSurface";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { notificationError, selectionAsync } from "@/lib/haptics";
 import { usePlayerStore } from "@/video/state";
 import type { PlayerTextTrack } from "@/video/tracks";
-import { colors } from "@/theme";
+import { colors, radius } from "@/theme";
 import { LiveSourcesSheet } from "./LiveSourcesSheet";
 import { PlayerSettingsSheet } from "./PlayerSettingsSheet";
 import { Scrubber } from "./Scrubber";
@@ -30,25 +31,69 @@ type Props = {
 function CircleButton({
   onPress,
   size = 40,
-  bg = "rgba(0,0,0,0.5)",
+  bg = "rgba(8,8,9,0.64)",
+  active = false,
+  solid = false,
   accessibilityLabel,
   children,
 }: {
   onPress: () => void;
   size?: number;
   bg?: string;
+  active?: boolean;
+  solid?: boolean;
   accessibilityLabel: string;
   children: React.ReactNode;
 }) {
-  return (
+  const button = (
     <PressableScale
       onPress={onPress}
       accessibilityLabel={accessibilityLabel}
       hitSlop={10}
-      style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: bg, alignItems: "center", justifyContent: "center" }}
+      style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
     >
       {children}
     </PressableScale>
+  );
+
+  if (solid) {
+    return (
+      <PressableScale
+        onPress={onPress}
+        accessibilityLabel={accessibilityLabel}
+        hitSlop={10}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          backgroundColor: bg,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        {children}
+      </PressableScale>
+    );
+  }
+
+  return (
+    <GlassSurface
+      fallbackColor={active ? "rgba(255,255,255,0.20)" : bg}
+      tintColor={active ? "rgba(255,255,255,0.15)" : "rgba(8,8,9,0.42)"}
+      glassStyle="clear"
+      interactive
+      blurIntensity={30}
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        overflow: "hidden",
+        borderWidth: 0.5,
+        borderColor: active ? "rgba(255,255,255,0.28)" : colors.hairline,
+      }}
+    >
+      {button}
+    </GlassSurface>
   );
 }
 
@@ -62,13 +107,15 @@ function SkipButton({ direction, onPress }: { direction: "back" | "forward"; onP
       hitSlop={12}
       style={{ width: 56, height: 56, alignItems: "center", justifyContent: "center" }}
     >
-      <Icon size={40} color="#fff" strokeWidth={1.5} />
-      <Text style={{ position: "absolute", color: "#fff", fontSize: 11, fontWeight: "800" }}>{SKIP_SECONDS}</Text>
+      <Icon size={40} color={colors.foreground} strokeWidth={1.5} />
+      <Text style={{ position: "absolute", color: colors.foreground, fontSize: 11, fontWeight: "800" }}>
+        {SKIP_SECONDS}
+      </Text>
     </PressableScale>
   );
 }
 
-// Glass player chrome: gradient scrims top & bottom, auto-hiding after 3.5s of
+// Sparse glass player chrome: functional video scrims top & bottom, auto-hiding after 3.5s of
 // playback, with a tap-anywhere toggle. Reads/writes the video store directly so it
 // can be dropped over the <Video> without prop threading. Shows a spinner while
 // resolving/buffering and an error overlay (with retry) on failure.
@@ -82,6 +129,10 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
   // scrubber hug the edges; fall back to the real insets in portrait.
   const topPad = landscape ? 10 : insets.top + 6;
   const bottomPad = landscape ? 16 : insets.bottom + 12;
+  // The rotated full-screen modal can retain portrait insets on iOS. Keep a
+  // conservative side gutter so controls clear the Dynamic Island and rounded
+  // display corners even when left/right report zero.
+  const horizontalPad = landscape ? Math.max(insets.left, insets.right, 48) : 16;
   const status = usePlayerStore((s) => s.status);
   const paused = usePlayerStore((s) => s.paused);
   const buffering = usePlayerStore((s) => s.buffering);
@@ -187,17 +238,33 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
             <PressableScale
               onPress={() => usePlayerStore.getState().retry()}
               accessibilityLabel="Retry"
-              style={{ backgroundColor: colors.accent, paddingHorizontal: 22, paddingVertical: 11, borderRadius: 8 }}
+              style={{
+                minHeight: 44,
+                backgroundColor: colors.foreground,
+                paddingHorizontal: 22,
+                justifyContent: "center",
+                borderRadius: radius.control,
+                borderCurve: "continuous",
+              }}
             >
-              <Text style={{ color: "#fff", fontSize: 14, fontWeight: "700" }}>Try again</Text>
+              <Text style={{ color: colors.black, fontSize: 14, fontWeight: "700" }}>Try again</Text>
             </PressableScale>
           ) : null}
           <PressableScale
             onPress={onClose}
             accessibilityLabel="Close"
-            style={{ backgroundColor: "rgba(255,255,255,0.14)", paddingHorizontal: 22, paddingVertical: 11, borderRadius: 8 }}
+            style={{
+              minHeight: 44,
+              backgroundColor: colors.cardActive,
+              borderWidth: 0.5,
+              borderColor: colors.hairline,
+              paddingHorizontal: 22,
+              justifyContent: "center",
+              borderRadius: radius.control,
+              borderCurve: "continuous",
+            }}
           >
-            <Text style={{ color: "#fff", fontSize: 14, fontWeight: "700" }}>Close</Text>
+            <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "700" }}>Close</Text>
           </PressableScale>
         </View>
       </View>
@@ -211,7 +278,7 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
 
       {showSpinner ? (
         <View style={[StyleSheet.absoluteFill, { alignItems: "center", justifyContent: "center" }]} pointerEvents="none">
-          <ActivityIndicator size="large" color="#fff" />
+          <ActivityIndicator size="large" color={colors.foreground} />
           {status === "resolving" ? (
             <Text style={{ color: colors.muted, fontSize: 13, marginTop: 14 }}>Finding a source…</Text>
           ) : null}
@@ -223,16 +290,19 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
           {/* Top scrim + title bar */}
           <LinearGradient
             colors={["rgba(0,0,0,0.75)", "transparent"]}
-            style={{ position: "absolute", top: 0, left: 0, right: 0, paddingTop: topPad, paddingHorizontal: 14, paddingBottom: 28 }}
+            style={{ position: "absolute", top: 0, left: 0, right: 0, paddingTop: topPad, paddingHorizontal: horizontalPad, paddingBottom: 28 }}
             pointerEvents="box-none"
           >
             <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }} pointerEvents="box-none">
               <CircleButton onPress={onClose} accessibilityLabel="Close player">
-                <X size={22} color="#fff" />
+                <X size={21} color={colors.foreground} />
               </CircleButton>
               <View style={{ flex: 1 }}>
                 {title ? (
-                  <Text numberOfLines={1} style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>
+                  <Text
+                    numberOfLines={1}
+                    style={{ color: colors.foreground, fontSize: 17, fontWeight: "700", letterSpacing: -0.2 }}
+                  >
                     {title}
                   </Text>
                 ) : null}
@@ -250,7 +320,7 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
                   }}
                   accessibilityLabel="Next episode"
                 >
-                  <SkipForward size={19} color="#fff" fill="#fff" />
+                  <SkipForward size={19} color={colors.foreground} fill={colors.foreground} />
                 </CircleButton>
               ) : null}
               {live ? (
@@ -262,7 +332,7 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
                     }}
                     accessibilityLabel="Switch stream source"
                   >
-                    <Radio size={20} color="#fff" />
+                    <Radio size={20} color={colors.foreground} />
                   </CircleButton>
                 ) : null
               ) : (
@@ -274,7 +344,7 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
                     }}
                     accessibilityLabel="Switch source"
                   >
-                    <Layers size={20} color="#fff" />
+                    <Layers size={20} color={colors.foreground} />
                   </CircleButton>
                   <CircleButton
                     onPress={() => {
@@ -282,8 +352,9 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
                       setSettingsOpen(true);
                     }}
                     accessibilityLabel="Subtitles and playback settings"
+                    active={subtitleOn}
                   >
-                    <Captions size={20} color={subtitleOn ? colors.accent : "#fff"} />
+                    <Captions size={20} color={colors.foreground} />
                   </CircleButton>
                 </>
               )}
@@ -297,8 +368,18 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
               pointerEvents="box-none"
             >
               {!live ? <SkipButton direction="back" onPress={() => onSkip(-SKIP_SECONDS)} /> : null}
-              <CircleButton onPress={onPlayPause} size={72} bg="rgba(0,0,0,0.45)" accessibilityLabel={paused ? "Play" : "Pause"}>
-                {paused ? <Play size={34} color="#fff" fill="#fff" /> : <Pause size={34} color="#fff" fill="#fff" />}
+              <CircleButton
+                onPress={onPlayPause}
+                size={72}
+                bg={colors.foreground}
+                solid
+                accessibilityLabel={paused ? "Play" : "Pause"}
+              >
+                {paused ? (
+                  <Play size={34} color={colors.black} fill={colors.black} />
+                ) : (
+                  <Pause size={34} color={colors.black} fill={colors.black} />
+                )}
               </CircleButton>
               {!live ? <SkipButton direction="forward" onPress={() => onSkip(SKIP_SECONDS)} /> : null}
             </View>
@@ -307,7 +388,7 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
           {/* Bottom scrim + scrubber */}
           <LinearGradient
             colors={["transparent", "rgba(0,0,0,0.88)"]}
-            style={{ position: "absolute", bottom: 0, left: 0, right: 0, paddingTop: 36, paddingHorizontal: 16, paddingBottom: bottomPad }}
+            style={{ position: "absolute", bottom: 0, left: 0, right: 0, paddingTop: 36, paddingHorizontal: horizontalPad, paddingBottom: bottomPad }}
             pointerEvents="box-none"
           >
             <Scrubber position={position} duration={duration} onSeek={onSeek} onScrubbing={onScrubbing} live={live} />

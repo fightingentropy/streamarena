@@ -1,11 +1,11 @@
 import { memo } from "react";
-import { PixelRatio } from "react-native";
+import { PixelRatio, Text } from "react-native";
 import { useRouter } from "expo-router";
 import { PosterImage } from "@/components/PosterImage";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { titleHref } from "@/lib/nav";
 import { type Title, tmdbImage } from "@/lib/streamarena";
-import { layout } from "@/theme";
+import { colors, layout, radius } from "@/theme";
 
 // A 2:3 poster tile used in rails and grids. Tapping it opens the title detail.
 // Memoized: rails/grids render many of these, and the parent re-renders on scroll/state
@@ -16,12 +16,14 @@ export const PosterCard = memo(function PosterCard({
   width = layout.posterWidth,
   priority,
   onPress,
+  showLabel = true,
 }: {
   title: Title;
   imageBase?: string;
   width?: number;
   priority?: "low" | "normal" | "high";
   onPress?: () => void;
+  showLabel?: boolean;
 }) {
   const router = useRouter();
   const height = Math.round(width * 1.5);
@@ -38,8 +40,29 @@ export const PosterCard = memo(function PosterCard({
         uri={tmdbImage(title.posterPath, size, imageBase)}
         recyclingKey={`${title.mediaType}-${title.id}`}
         priority={priority}
-        style={{ width, height, borderRadius: 8, backgroundColor: "#1a1a1a" }}
+        style={{
+          width,
+          height,
+          borderRadius: radius.card,
+          backgroundColor: colors.surfaceRaised,
+        }}
       />
+      {showLabel ? (
+        <>
+          <Text
+            numberOfLines={1}
+            style={{ color: colors.foreground, fontSize: 14.5, lineHeight: 19, fontWeight: "600", marginTop: 8 }}
+          >
+            {title.title}
+          </Text>
+          <Text
+            numberOfLines={1}
+            style={{ color: colors.dim, fontSize: 11.5, lineHeight: 16, fontWeight: "500", marginTop: 1 }}
+          >
+            {[title.year, title.mediaType === "tv" ? "Series" : "Film"].filter(Boolean).join(" · ")}
+          </Text>
+        </>
+      ) : null}
     </PressableScale>
   );
 });

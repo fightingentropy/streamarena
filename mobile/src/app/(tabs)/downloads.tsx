@@ -3,6 +3,7 @@ import { ActivityIndicator, Alert, ScrollView, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { AlertCircle, Check, HardDrive, Play, Settings2, Trash2 } from "lucide-react-native";
 import { PosterImage } from "@/components/PosterImage";
+import { ScreenHeader } from "@/components/nav/ScreenHeader";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { Screen, CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
 import { EmptyState } from "@/components/ui/States";
@@ -14,7 +15,7 @@ import {
   type OfflineDownloadRecord,
   useOfflineStore,
 } from "@/store/offline";
-import { colors } from "@/theme";
+import { colors, radius } from "@/theme";
 
 function statusLine(record: OfflineDownloadRecord, liveBytes: number | undefined): string {
   switch (record.status) {
@@ -66,14 +67,22 @@ function DownloadRow({ record }: { record: OfflineDownloadRecord }) {
   }
 
   const statusColor =
-    record.status === "ready" ? colors.muted : record.status === "error" ? "#f5a524" : colors.accent;
+    record.status === "ready" ? colors.muted : record.status === "error" ? colors.warning : colors.foreground;
 
   return (
     <PressableScale
       onPress={onRowPress}
-      style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, paddingVertical: 10 }}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        borderBottomWidth: 0.5,
+        borderBottomColor: colors.line,
+      }}
     >
-      <View style={{ width: 110, height: 62, borderRadius: 8, overflow: "hidden", backgroundColor: "#1a1a1a" }}>
+      <View style={{ width: 110, height: 62, borderRadius: radius.control, overflow: "hidden", backgroundColor: colors.surfaceRaised }}>
         <PosterImage uri={thumb} recyclingKey={record.assetId} style={{ width: 110, height: 62 }} contentFit="cover" />
         {record.status === "ready" ? (
           <View style={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center" }}>
@@ -99,11 +108,11 @@ function DownloadRow({ record }: { record: OfflineDownloadRecord }) {
         ) : null}
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
           {record.status === "queued" ? (
-            <ActivityIndicator size="small" color={colors.accent} />
+            <ActivityIndicator size="small" color={colors.foreground} />
           ) : record.status === "ready" ? (
             <Check size={13} color={colors.muted} />
           ) : record.status === "error" ? (
-            <AlertCircle size={13} color="#f5a524" />
+            <AlertCircle size={13} color={colors.warning} />
           ) : null}
           <Text style={{ color: statusColor, fontSize: 12, fontWeight: "600" }}>{statusLine(record, liveBytes)}</Text>
         </View>
@@ -136,12 +145,14 @@ export default function DownloadsScreen() {
 
   return (
     <Screen>
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 }}>
-        <Text style={{ color: colors.foreground, fontSize: 28, fontWeight: "800" }}>Downloads</Text>
-        <PressableScale onPress={() => router.push("/settings/storage")} hitSlop={8} accessibilityLabel="Storage settings" style={{ padding: 6 }}>
-          <Settings2 size={22} color={colors.foreground} />
-        </PressableScale>
-      </View>
+      <ScreenHeader
+        title="Downloads"
+        right={
+          <PressableScale onPress={() => router.push("/settings/storage")} hitSlop={8} accessibilityLabel="Storage settings" style={{ padding: 6 }}>
+            <Settings2 size={22} color={colors.foreground} />
+          </PressableScale>
+        }
+      />
 
       {items.length === 0 ? (
         <EmptyState title="No downloads yet" subtitle="Tap Download on any movie or episode to watch it offline." />
@@ -152,15 +163,17 @@ export default function DownloadsScreen() {
             <Text style={{ color: colors.muted, fontSize: 13 }}>{formatBytes(storageBytes)} used by downloads</Text>
           </View>
           {storageLimited ? (
-            <View style={{ marginHorizontal: 16, marginBottom: 8, padding: 12, borderRadius: 10, backgroundColor: "rgba(245,165,36,0.12)" }}>
-              <Text style={{ color: "#f5a524", fontSize: 13, fontWeight: "600" }}>
+            <View style={{ marginHorizontal: 16, marginBottom: 12, padding: 12, borderRadius: radius.control, backgroundColor: colors.card, borderWidth: 0.5, borderColor: colors.hairline }}>
+              <Text style={{ color: colors.warning, fontSize: 13, fontWeight: "600" }}>
                 Storage limit reached — free space or raise the limit to continue downloading.
               </Text>
             </View>
           ) : null}
-          {items.map((record) => (
-            <DownloadRow key={record.assetId} record={record} />
-          ))}
+          <View style={{ borderTopWidth: 0.5, borderTopColor: colors.line }}>
+            {items.map((record) => (
+              <DownloadRow key={record.assetId} record={record} />
+            ))}
+          </View>
         </ScrollView>
       )}
     </Screen>

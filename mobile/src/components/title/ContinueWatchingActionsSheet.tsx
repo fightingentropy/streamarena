@@ -23,7 +23,7 @@ import { buildMyListItem, myListIdentity, useIsSaved, useMyListStore } from "@/s
 import { useOfflineStore, useTitleDownload } from "@/store/offline";
 import { resolveOfflineMeta } from "@/video/download";
 import { progressIdentity } from "@/video/identity";
-import { colors } from "@/theme";
+import { colors, radius } from "@/theme";
 
 type Props = {
   item: ContinueWatchingItem | null;
@@ -155,7 +155,7 @@ function MenuContent({ item, onClose, onRemove }: { item: ContinueWatchingItem }
     dlLabel = "Downloaded";
     dlSub = "tap to delete";
   } else if (dl.status === "error") {
-    dlIcon = <DownloadIcon size={22} color="#f5a524" />;
+    dlIcon = <DownloadIcon size={22} color={colors.warning} />;
     dlLabel = "Retry download";
   }
 
@@ -176,10 +176,10 @@ function MenuContent({ item, onClose, onRemove }: { item: ContinueWatchingItem }
         style={{
           width: panelWidth,
           backgroundColor: colors.surface,
-          borderTopLeftRadius: 18,
-          borderTopRightRadius: 18,
-          borderBottomLeftRadius: landscape ? 18 : 0,
-          borderBottomRightRadius: landscape ? 18 : 0,
+          borderTopLeftRadius: radius.sheet,
+          borderTopRightRadius: radius.sheet,
+          borderBottomLeftRadius: landscape ? radius.sheet : 0,
+          borderBottomRightRadius: landscape ? radius.sheet : 0,
           marginBottom: landscape ? insets.bottom + 12 : 0,
           paddingBottom: landscape ? 8 : insets.bottom + 8,
           overflow: "hidden",
@@ -191,7 +191,7 @@ function MenuContent({ item, onClose, onRemove }: { item: ContinueWatchingItem }
 
         {/* Header: poster + title */}
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 18, paddingVertical: 12 }}>
-          <View style={{ width: 46, height: 64, borderRadius: 6, overflow: "hidden", backgroundColor: "#1a1a1a" }}>
+          <View style={{ width: 46, height: 64, borderRadius: 10, overflow: "hidden", backgroundColor: colors.surfaceRaised }}>
             <PosterImage uri={item.thumb || item.src} style={{ width: 46, height: 64 }} />
           </View>
           <View style={{ flex: 1 }}>
@@ -204,7 +204,7 @@ function MenuContent({ item, onClose, onRemove }: { item: ContinueWatchingItem }
           </View>
         </View>
 
-        <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: "rgba(255,255,255,0.08)", marginBottom: 4 }} />
+        <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: colors.line, marginBottom: 4 }} />
 
         {resumeHref ? (
           <MenuRow icon={<Play size={22} color={colors.foreground} fill={colors.foreground} />} label="Resume" onPress={onResume} />
@@ -218,7 +218,7 @@ function MenuContent({ item, onClose, onRemove }: { item: ContinueWatchingItem }
         {req ? <MenuRow icon={dlIcon} label={dlLabel} sublabel={dlSub} onPress={onDownload} /> : null}
         <MenuRow icon={<Info size={22} color={colors.foreground} />} label="View details" onPress={onDetails} />
         <MenuRow
-          icon={<Trash2 size={22} color={colors.accent} />}
+          icon={<Trash2 size={22} color={colors.danger} />}
           label="Remove from this list"
           destructive
           onPress={() => {
@@ -256,7 +256,7 @@ function MenuRow({
     >
       <View style={{ width: 24, alignItems: "center" }}>{icon}</View>
       <View style={{ flex: 1 }}>
-        <Text style={{ color: destructive ? colors.accent : colors.foreground, fontSize: 16, fontWeight: "600" }}>{label}</Text>
+        <Text style={{ color: destructive ? colors.danger : colors.foreground, fontSize: 16, fontWeight: "600" }}>{label}</Text>
         {sublabel ? <Text style={{ color: colors.muted, fontSize: 12, marginTop: 1 }}>{sublabel}</Text> : null}
       </View>
     </Pressable>

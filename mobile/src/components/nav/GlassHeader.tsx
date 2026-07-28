@@ -7,14 +7,13 @@ import Animated, {
   type SharedValue,
   useAnimatedStyle,
 } from "react-native-reanimated";
-import { BlurView } from "expo-blur";
 import { colors } from "@/theme";
 
-const HEADER_HEIGHT = 48;
+const HEADER_HEIGHT = 52;
 
-// Top app bar whose blurred background + title fade in as the screen scrolls under
-// it (over a hero/billboard). Pass the screen's scrollY SharedValue; without one it
-// renders a static glass bar. `left`/`right` are slots (wordmark, profile button).
+// Scroll-edge header for screens with artwork under the status bar. The chrome is
+// a quiet solid functional layer rather than decorative blur; native Liquid Glass
+// is reserved for small focused controls elsewhere.
 export function GlassHeader({
   scrollY,
   title,
@@ -49,10 +48,23 @@ export function GlassHeader({
       pointerEvents="box-none"
       style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 50, paddingTop: insets.top }}
     >
-      <Animated.View style={[StyleSheet.absoluteFill, bgStyle]}>
-        <BlurView intensity={32} tint="dark" style={StyleSheet.absoluteFill} />
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(10,10,10,0.4)" }]} />
-        <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 1, backgroundColor: colors.line }} />
+      <Animated.View
+        style={[
+          StyleSheet.absoluteFill,
+          { backgroundColor: "rgba(0,0,0,0.96)" },
+          bgStyle,
+        ]}
+      >
+        <View
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: 0.5,
+            backgroundColor: colors.hairline,
+          }}
+        />
       </Animated.View>
 
       <View
@@ -68,7 +80,15 @@ export function GlassHeader({
           {left}
           {title ? (
             <Animated.View style={titleStyle}>
-              <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 18, fontWeight: "700" }}>
+              <Text
+                numberOfLines={1}
+                style={{
+                  color: colors.foreground,
+                  fontSize: 17,
+                  fontWeight: "700",
+                  letterSpacing: -0.25,
+                }}
+              >
                 {title}
               </Text>
             </Animated.View>

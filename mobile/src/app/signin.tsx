@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { KeyboardAvoidingView, Platform, Text, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
+import { Wordmark } from "@/components/brand/Wordmark";
 import { Screen } from "@/components/ui/Screen";
 import { PressableScale } from "@/components/ui/PressableScale";
-import { ErrorText } from "@/components/ui/States";
 import { useAuth } from "@/lib/auth";
 import { colors } from "@/theme";
 
@@ -28,54 +28,113 @@ export default function SignInScreen() {
     }
   };
 
-  const inputStyle = { color: colors.foreground, height: 52, fontSize: 16, paddingHorizontal: 14 } as const;
+  const disabled = busy || !email || !password;
+  const inputStyle = {
+    height: 54,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    borderCurve: "continuous",
+    borderWidth: 0.5,
+    borderColor: colors.hairline,
+    backgroundColor: colors.surface,
+    color: colors.foreground,
+    fontSize: 16,
+  } as const;
 
   return (
     <Screen>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
-        <View className="flex-1 justify-center px-6" style={{ gap: 16 }}>
-          <Text className="text-4xl font-extrabold tracking-tight" style={{ color: colors.accent }}>
-            NETFLIX
-          </Text>
-          <Text className="mb-2 text-2xl font-bold" style={{ color: colors.foreground }}>
-            Sign in
-          </Text>
-          <TextInput
-            value={email}
-            onChangeText={setEmail}
-            placeholder="Email"
-            placeholderTextColor={colors.muted}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            autoComplete="email"
-            style={[inputStyle, { backgroundColor: "#1f1f1f", borderRadius: 8 }]}
-          />
-          <TextInput
-            value={password}
-            onChangeText={setPassword}
-            placeholder="Password"
-            placeholderTextColor={colors.muted}
-            secureTextEntry
-            autoComplete="password"
-            onSubmitEditing={submit}
-            style={[inputStyle, { backgroundColor: "#1f1f1f", borderRadius: 8 }]}
-          />
-          {error ? <ErrorText>{error}</ErrorText> : null}
-          <PressableScale
-            onPress={submit}
-            disabled={busy || !email || !password}
-            className="items-center rounded-full py-3.5"
-            style={{ backgroundColor: colors.accent, opacity: busy || !email || !password ? 0.6 : 1 }}
-          >
-            <Text className="text-base font-bold text-white">{busy ? "Signing in…" : "Sign in"}</Text>
-          </PressableScale>
-          <PressableScale onPress={() => router.replace("/register")} className="items-center py-2">
-            <Text style={{ color: colors.muted }}>
-              Don&apos;t have an account?{" "}
-              <Text style={{ color: colors.foreground, fontWeight: "600" }}>Register</Text>
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+          contentContainerStyle={{
+            flexGrow: 1,
+            justifyContent: "center",
+            paddingHorizontal: 24,
+            paddingTop: 40,
+            paddingBottom: 48,
+          }}
+        >
+          <View style={{ marginBottom: 30 }}>
+            <Wordmark size={32} style={{ marginBottom: 22 }} />
+            <Text
+              style={{
+                color: colors.foreground,
+                fontSize: 36,
+                lineHeight: 40,
+                fontWeight: "700",
+                letterSpacing: -1,
+              }}
+            >
+              Welcome back.
             </Text>
-          </PressableScale>
-        </View>
+            <Text style={{ color: colors.muted, fontSize: 15, lineHeight: 22, marginTop: 10, maxWidth: 330 }}>
+              Sign in to continue watching across all your devices.
+            </Text>
+          </View>
+
+          <View style={{ gap: 12 }}>
+            <TextInput
+              value={email}
+              onChangeText={setEmail}
+              placeholder="Email"
+              placeholderTextColor={colors.dim}
+              selectionColor={colors.foreground}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              autoComplete="email"
+              accessibilityLabel="Email"
+              style={inputStyle}
+            />
+            <TextInput
+              value={password}
+              onChangeText={setPassword}
+              placeholder="Password"
+              placeholderTextColor={colors.dim}
+              selectionColor={colors.foreground}
+              secureTextEntry
+              autoComplete="password"
+              onSubmitEditing={() => void submit()}
+              returnKeyType="go"
+              accessibilityLabel="Password"
+              style={inputStyle}
+            />
+            {error ? (
+              <Text accessibilityRole="alert" style={{ color: colors.danger, fontSize: 13, lineHeight: 18 }}>
+                {error}
+              </Text>
+            ) : null}
+            <PressableScale
+              onPress={() => void submit()}
+              disabled={disabled}
+              accessibilityLabel="Sign in"
+              accessibilityState={{ disabled, busy }}
+              style={{
+                height: 54,
+                alignItems: "center",
+                justifyContent: "center",
+                borderRadius: 14,
+                borderCurve: "continuous",
+                backgroundColor: colors.foreground,
+                opacity: disabled ? 0.46 : 1,
+              }}
+            >
+              <Text style={{ color: colors.background, fontSize: 16, fontWeight: "700" }}>
+                {busy ? "Signing in…" : "Sign in"}
+              </Text>
+            </PressableScale>
+            <PressableScale
+              onPress={() => router.replace("/register")}
+              accessibilityLabel="Don’t have an account? Register"
+              style={{ alignItems: "center", paddingVertical: 11 }}
+            >
+              <Text style={{ color: colors.muted, fontSize: 14 }}>
+                Don&apos;t have an account?{" "}
+                <Text style={{ color: colors.foreground, fontWeight: "600" }}>Register</Text>
+              </Text>
+            </PressableScale>
+          </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </Screen>
   );

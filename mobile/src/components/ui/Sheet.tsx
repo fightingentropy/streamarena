@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
+import { BackHandler, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
@@ -10,7 +10,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
-import { colors, motion } from "@/theme";
+import { colors, motion, radius } from "@/theme";
 
 const DRAG_CLOSE_THRESHOLD = 120;
 
@@ -83,6 +83,15 @@ export function Sheet({
     }
   }, [visible, mounted, progress, dragY, unmount]);
 
+  useEffect(() => {
+    if (!mounted || !visible) return undefined;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      onClose();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [mounted, onClose, visible]);
+
   const backdropStyle = useAnimatedStyle(() => ({ opacity: progress.value }));
 
   const panelStyle = useAnimatedStyle(() => {
@@ -117,6 +126,8 @@ export function Sheet({
     <View
       pointerEvents={visible ? "auto" : "none"}
       accessibilityViewIsModal={visible}
+      importantForAccessibility={visible ? "yes" : "no-hide-descendants"}
+      onAccessibilityEscape={onClose}
       style={[StyleSheet.absoluteFill, { zIndex, elevation: zIndex, justifyContent: "flex-end", alignItems: landscape ? "center" : "stretch" }]}
     >
       {/* backdrop: tap to close. A real Pressable (not raw onTouchEnd, which fired for
@@ -133,24 +144,46 @@ export function Sheet({
             {
               height: panelH,
               width: panelW,
-              backgroundColor: colors.background,
-              borderTopLeftRadius: 20,
-              borderTopRightRadius: 20,
-              overflow: "hidden",
+              borderTopLeftRadius: radius.sheet,
+              borderTopRightRadius: radius.sheet,
+              borderCurve: "continuous",
+              shadowColor: colors.black,
+              shadowOpacity: 0.22,
+              shadowRadius: 16,
+              shadowOffset: { width: 0, height: -5 },
+              elevation: 16,
             },
             panelStyle,
           ]}
         >
-          {backgroundGradient ? (
-            <LinearGradient colors={backgroundGradient} style={StyleSheet.absoluteFill} />
-          ) : null}
-          {/* grab handle */}
-          <View style={{ alignItems: "center", paddingTop: 10, paddingBottom: 4 }}>
-            <View
-              style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: "rgba(255,255,255,0.3)" }}
-            />
+          <View
+            style={{
+              flex: 1,
+              overflow: "hidden",
+              backgroundColor: colors.surface,
+              borderTopLeftRadius: radius.sheet,
+              borderTopRightRadius: radius.sheet,
+              borderCurve: "continuous",
+              borderWidth: 0.5,
+              borderColor: colors.hairline,
+            }}
+          >
+            {backgroundGradient ? (
+              <LinearGradient colors={backgroundGradient} style={StyleSheet.absoluteFill} />
+            ) : null}
+            {/* grab handle */}
+            <View style={{ alignItems: "center", paddingTop: 11, paddingBottom: 5 }}>
+              <View
+                style={{
+                  width: 36,
+                  height: 4,
+                  borderRadius: 2,
+                  backgroundColor: "rgba(255,255,255,0.28)",
+                }}
+              />
+            </View>
+            <View style={{ flex: 1 }}>{children}</View>
           </View>
-          <View style={{ flex: 1 }}>{children}</View>
         </Animated.View>
       </GestureDetector>
     </View>

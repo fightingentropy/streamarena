@@ -74,6 +74,7 @@ const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "strmd.st",
     "lovetier.bz",
     "strmd.top",
+    "cdn.bluetier.top",
     "zohanayaan.com",
     "easy.speedsterwave.app",
     "easy.nightspeedster.app",
@@ -3453,6 +3454,9 @@ mod tests {
             "https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8?token=abc"
                 .parse()
                 .expect("ntvs hesgoaler url");
+        let ntvs_fawanews: url::Url = "https://cdn.bluetier.top/NOVASPORTS1/index.m3u8?token=abc"
+            .parse()
+            .expect("ntvs fawanews url");
         let matchstream_sports: url::Url =
             "https://cdn6.zohanayaan.com:1686/hls/do6.m3u8?md5=abc&expires=1780252412"
                 .parse()
@@ -3501,6 +3505,7 @@ mod tests {
         assert!(is_allowed_live_hls_url(&streamed_sports));
         assert!(is_allowed_live_hls_url(&ntvs_sports));
         assert!(is_allowed_live_hls_url(&ntvs_hesgoaler));
+        assert!(is_allowed_live_hls_url(&ntvs_fawanews));
         assert!(is_allowed_live_hls_url(&matchstream_sports));
         assert!(is_allowed_live_hls_url(&videasy_hls));
         assert!(is_allowed_live_hls_url(&videasy_new_hls));

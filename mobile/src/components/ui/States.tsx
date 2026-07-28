@@ -1,11 +1,11 @@
 import { useRouter } from "expo-router";
 import { Text, View } from "react-native";
 import { PressableScale } from "@/components/ui/PressableScale";
-import { colors } from "@/theme";
+import { colors, radius } from "@/theme";
 
 export function ErrorText({ children }: { children: string }) {
   return (
-    <Text style={{ color: "#f87171" }} className="text-sm">
+    <Text style={{ color: colors.danger }} className="text-sm">
       {children}
     </Text>
   );
@@ -35,11 +35,11 @@ export function EmptyState({
       {actionLabel && onAction ? (
         <PressableScale
           onPress={onAction}
-          className="mt-5 rounded-full px-6 py-3"
-          style={{ backgroundColor: colors.accent }}
+          className="mt-5 px-6 py-3"
+          style={{ backgroundColor: colors.accent, borderRadius: radius.control }}
           accessibilityLabel={actionLabel}
         >
-          <Text className="font-semibold text-white">{actionLabel}</Text>
+          <Text className="font-semibold text-black">{actionLabel}</Text>
         </PressableScale>
       ) : null}
     </View>
@@ -55,10 +55,10 @@ export function SignedOutPrompt({ message }: { message: string }) {
       </Text>
       <PressableScale
         onPress={() => router.push("/signin")}
-        className="rounded-full px-6 py-3"
-        style={{ backgroundColor: colors.accent }}
+        className="px-6 py-3"
+        style={{ backgroundColor: colors.accent, borderRadius: radius.control }}
       >
-        <Text className="font-semibold text-white">Sign in</Text>
+        <Text className="font-semibold text-black">Sign in</Text>
       </PressableScale>
     </View>
   );

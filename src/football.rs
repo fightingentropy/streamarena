@@ -3878,6 +3878,18 @@ async fn resolve_ntvs_hesgoaler_hls_url(state: &AppState, player_url: &Url) -> O
     let html = fetch_ntvs_html(state, player_url, player_url.as_str())
         .await
         .ok()?;
+
+    // Hesgoaler's current player is a thin wrapper around fawanews. Follow only
+    // that exact player host, then validate the HLS URL it publishes against the
+    // exact CDN host below. Keep the legacy inline-token path as a fallback so a
+    // provider rollback does not break channels again.
+    if let Some(fawanews_url) = parse_ntvs_hesgoaler_fawanews_url(&html, player_url)
+        && let Some(resolved) =
+            resolve_ntvs_fawanews_hls_url(state, &fawanews_url, player_url).await
+    {
+        return Some(resolved);
+    }
+
     let (channel, playlist_url) = parse_ntvs_hesgoaler_player_source(&html)?;
     let token = fetch_ntvs_hesgoaler_token(state, player_url, &channel).await?;
     let mut playback_url = Url::parse(&playlist_url)
@@ -3891,6 +3903,21 @@ async fn resolve_ntvs_hesgoaler_hls_url(state: &AppState, player_url: &Url) -> O
     if !is_supported_ntvs_hls_url(&playback_url) {
         return None;
     }
+    Some((playback_url, player_url.clone()))
+}
+
+async fn resolve_ntvs_fawanews_hls_url(
+    state: &AppState,
+    player_url: &Url,
+    referer_url: &Url,
+) -> Option<(Url, Url)> {
+    if !is_supported_ntvs_fawanews_player_url(player_url) {
+        return None;
+    }
+    let html = fetch_ntvs_html(state, player_url, referer_url.as_str())
+        .await
+        .ok()?;
+    let playback_url = parse_ntvs_fawanews_stream_url(&html)?;
     Some((playback_url, player_url.clone()))
 }
 
@@ -3923,6 +3950,25 @@ async fn fetch_ntvs_hesgoaler_token(
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(ToString::to_string)
+}
+
+fn parse_ntvs_hesgoaler_fawanews_url(html: &str, base_url: &Url) -> Option<Url> {
+    ["src", "data-src"]
+        .into_iter()
+        .flat_map(|attribute| extract_html_attribute_values(html, attribute))
+        .filter_map(|value| resolve_html_url(base_url, &value))
+        .find(is_supported_ntvs_fawanews_player_url)
+}
+
+fn parse_ntvs_fawanews_stream_url(html: &str) -> Option<Url> {
+    let stream_url_re =
+        Regex::new(r#"(?is)\bstreamUrl\s*:\s*"([^"]+)"|\bstreamUrl\s*:\s*'([^']+)'"#).ok()?;
+    let value = stream_url_re
+        .captures(html)
+        .and_then(|captures| captures.get(1).or_else(|| captures.get(2)))?;
+    let decoded = normalize_ntvs_inline_value(value.as_str().trim());
+    let playback_url = Url::parse(&decoded).ok()?;
+    is_supported_ntvs_hls_url(&playback_url).then_some(playback_url)
 }
 
 fn parse_ntvs_hesgoaler_player_source(html: &str) -> Option<(String, String)> {
@@ -4831,12 +4877,35 @@ fn is_supported_ntvs_hesgoaler_player_url(url: &Url) -> bool {
         && url.path().starts_with("/stream.php")
 }
 
+fn is_supported_ntvs_fawanews_player_url(url: &Url) -> bool {
+    if url.scheme() != "https"
+        || !url
+            .host_str()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("m.fawanews.news")
+        || url.path() != "/"
+    {
+        return false;
+    }
+    url.query_pairs().any(|(key, value)| {
+        key.eq_ignore_ascii_case("channel")
+            && !value.is_empty()
+            && value.len() <= 64
+            && value.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+            })
+    })
+}
+
 fn is_supported_ntvs_hls_url(url: &Url) -> bool {
     if url.scheme() != "https" && url.scheme() != "http" {
         return false;
     }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    (host == "strmd.st" || host.ends_with(".strmd.st") || host.ends_with(".lovetier.bz"))
+    (host == "strmd.st"
+        || host.ends_with(".strmd.st")
+        || host.ends_with(".lovetier.bz")
+        || host == "cdn.bluetier.top")
         && url.path().to_ascii_lowercase().ends_with(".m3u8")
 }
 
@@ -5498,13 +5567,14 @@ mod tests {
         is_marquee_football_competition, is_streamed_watch_url, is_supported_matchstream_hls_url,
         is_supported_matchstream_player_url, is_supported_matchstream_stream_url,
         is_supported_ntvs_channel_url, is_supported_ntvs_embed_url,
-        is_supported_ntvs_hesgoaler_player_url, is_supported_ntvs_hls_url,
-        is_supported_ntvs_stream_url, is_supported_ntvs_watch_url,
+        is_supported_ntvs_fawanews_player_url, is_supported_ntvs_hesgoaler_player_url,
+        is_supported_ntvs_hls_url, is_supported_ntvs_stream_url, is_supported_ntvs_watch_url,
         is_supported_ntvs_wrapper_embed_url, is_supported_streamed_hls_url,
         is_supported_streamed_stream_url, live_stream_source_candidates,
         matchstream_live_stream_source_candidates, merge_sports_schedule_payloads,
         normalize_espn_football_match, normalize_matchstream_link, normalize_ntvs_fetch_url,
         normalize_sports_schedule_name, parse_espn_start_ms, parse_fallback_stream_urls,
+        parse_ntvs_fawanews_stream_url, parse_ntvs_hesgoaler_fawanews_url,
         parse_ntvs_hesgoaler_player_source, remove_streamed_sources_by_index,
         resolve_ntvs_candidate_url, sports_live_stream_source_candidates,
         sports_schedule_array_identity, sports_schedule_fresh_ttl_ms, sports_stream_provider_id,
@@ -6406,6 +6476,59 @@ mod tests {
                 "NOVASPORTS1".to_owned(),
                 "https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8".to_owned()
             ))
+        );
+    }
+
+    #[test]
+    fn follows_current_hesgoaler_fawanews_player_only() {
+        let base = url::Url::parse("https://hesgoaler.com/stream.php?ch=NOVASPORTS1").unwrap();
+        let html = r#"
+            <iframe src="https://m.fawanews.news/?channel=NOVASPORTS1"></iframe>
+            <iframe src="https://m.fawanews.news.evil.test/?channel=NOVASPORTS1"></iframe>
+        "#;
+        let player = parse_ntvs_hesgoaler_fawanews_url(html, &base).expect("fawanews player");
+        assert_eq!(
+            player.as_str(),
+            "https://m.fawanews.news/?channel=NOVASPORTS1"
+        );
+        assert!(is_supported_ntvs_fawanews_player_url(&player));
+        assert!(!is_supported_ntvs_fawanews_player_url(
+            &url::Url::parse("https://m.fawanews.news.evil.test/?channel=NOVASPORTS1").unwrap()
+        ));
+        assert!(!is_supported_ntvs_fawanews_player_url(
+            &url::Url::parse("https://m.fawanews.news/?channel=../../private").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parses_current_fawanews_hls_and_rejects_rotated_lookalikes() {
+        let html = r#"
+            <script>
+                const config = {
+                    streamUrl: "https:\/\/cdn.bluetier.top\/NOVASPORTS1\/index.m3u8?token=abc",
+                    channelName: "NOVASPORTS1"
+                };
+            </script>
+        "#;
+        assert_eq!(
+            parse_ntvs_fawanews_stream_url(html)
+                .as_ref()
+                .map(url::Url::as_str),
+            Some("https://cdn.bluetier.top/NOVASPORTS1/index.m3u8?token=abc")
+        );
+        assert!(parse_ntvs_fawanews_stream_url(
+            r#"const config = { streamUrl: 'https://cdn.bluetier.top/SkySportsF1/index.m3u8?token=abc' };"#
+        )
+        .is_some());
+        assert!(parse_ntvs_fawanews_stream_url(
+            r#"const config = { streamUrl: "https://cdn.bluetier.top.evil.test/NOVASPORTS1/index.m3u8" };"#
+        )
+        .is_none());
+        assert!(
+            parse_ntvs_fawanews_stream_url(
+                r#"const config = { streamUrl: "https://cdn.bluetier.top/NOVASPORTS1/index.ts" };"#
+            )
+            .is_none()
         );
     }
 

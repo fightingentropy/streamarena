@@ -9,7 +9,7 @@ type Hud = { kind: "brightness" | "volume"; value: number };
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
-// Wraps the player content and adds Netflix-style vertical-pan gestures: drag the LEFT
+// Wraps the player content and adds full-screen vertical-pan gestures: drag the LEFT
 // half to change screen brightness (expo-brightness), the RIGHT half to change player
 // volume. The pan only claims dominant vertical drags (activeOffsetY) and yields to
 // horizontal swipes (failOffsetX), so the scrubber, skip buttons, and tap-to-toggle

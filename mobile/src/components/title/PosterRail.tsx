@@ -26,9 +26,17 @@ export function PosterRail({
   const keyExtractor = useCallback((t: Title) => `${t.mediaType}-${t.id}`, []);
   if (!items.length) return null;
   return (
-    <View style={{ marginBottom: 22 }}>
+    <View style={{ marginBottom: 34 }}>
       <Text
-        style={{ color: colors.foreground, fontSize: 17, fontWeight: "700", paddingHorizontal: 16, marginBottom: 10 }}
+        style={{
+          color: colors.foreground,
+          fontSize: 22,
+          lineHeight: 27,
+          fontWeight: "700",
+          letterSpacing: -0.35,
+          paddingHorizontal: 16,
+          marginBottom: 12,
+        }}
       >
         {title}
       </Text>
@@ -38,7 +46,7 @@ export function PosterRail({
         renderItem={renderItem}
         keyExtractor={keyExtractor}
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ paddingHorizontal: 16, gap: 10 }}
+        contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
         initialNumToRender={6}
         windowSize={5}
         removeClippedSubviews
@@ -51,11 +59,15 @@ export function PosterRail({
 export function PosterRailSkeleton() {
   const height = Math.round(layout.posterWidth * 1.5);
   return (
-    <View style={{ marginBottom: 22 }}>
-      <Skeleton width={160} height={18} radius={4} style={{ marginHorizontal: 16, marginBottom: 12 }} />
-      <ScrollView horizontal scrollEnabled={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 10 }}>
+    <View style={{ marginBottom: 34 }}>
+      <Skeleton width={168} height={23} radius={6} style={{ marginHorizontal: 16, marginBottom: 12 }} />
+      <ScrollView horizontal scrollEnabled={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}>
         {Array.from({ length: 5 }).map((_, i) => (
-          <Skeleton key={i} width={layout.posterWidth} height={height} radius={8} />
+          <View key={i} style={{ width: layout.posterWidth }}>
+            <Skeleton width={layout.posterWidth} height={height} radius={14} />
+            <Skeleton width={layout.posterWidth * 0.72} height={14} radius={4} style={{ marginTop: 8 }} />
+            <Skeleton width={layout.posterWidth * 0.48} height={11} radius={4} style={{ marginTop: 5 }} />
+          </View>
         ))}
       </ScrollView>
     </View>

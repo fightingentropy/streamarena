@@ -2,7 +2,7 @@ import { type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { Play } from "lucide-react-native";
 import { PressableScale } from "@/components/ui/PressableScale";
-import { colors } from "@/theme";
+import { colors, radius } from "@/theme";
 
 // A labelled vertical action (icon over a caption) used for the secondary actions
 // under the Play button (My List, Download). `active` brightens the caption.
@@ -24,10 +24,17 @@ export function DetailAction({
       onPress={disabled ? undefined : onPress}
       accessibilityLabel={label}
       accessibilityState={{ selected: active, disabled }}
-      style={{ alignItems: "center", width: 76, opacity: disabled ? 0.4 : 1 }}
+      style={{ alignItems: "center", width: 72, opacity: disabled ? 0.4 : 1 }}
     >
-      <View style={{ height: 30, alignItems: "center", justifyContent: "center" }}>{icon}</View>
-      <Text style={{ color: active ? colors.foreground : colors.muted, fontSize: 11, fontWeight: "600", marginTop: 5 }}>
+      <View style={{ height: 28, alignItems: "center", justifyContent: "center" }}>{icon}</View>
+      <Text
+        style={{
+          color: active ? colors.foreground : colors.muted,
+          fontSize: 11.5,
+          fontWeight: "600",
+          marginTop: 5,
+        }}
+      >
         {label}
       </Text>
     </PressableScale>
@@ -49,13 +56,22 @@ export function ActionRow({
     <View style={{ paddingHorizontal: 16 }}>
       <PressableScale
         onPress={onPlay}
-        className="flex-row items-center justify-center rounded-md"
-        style={{ backgroundColor: colors.white, paddingVertical: 12, gap: 8 }}
+        style={{
+          minHeight: 50,
+          backgroundColor: colors.foreground,
+          borderRadius: radius.control,
+          borderCurve: "continuous",
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          paddingHorizontal: 18,
+          gap: 8,
+        }}
       >
-        <Play size={20} color="#000" fill="#000" />
-        <Text style={{ color: "#000", fontWeight: "800", fontSize: 16 }}>{playLabel}</Text>
+        <Play size={20} color={colors.black} fill={colors.black} />
+        <Text style={{ color: colors.black, fontWeight: "700", fontSize: 16 }}>{playLabel}</Text>
       </PressableScale>
-      <View style={{ flexDirection: "row", marginTop: 14, gap: 6 }}>{children}</View>
+      <View style={{ flexDirection: "row", marginTop: 16, minHeight: 48, gap: 4 }}>{children}</View>
     </View>
   );
 }

@@ -38,40 +38,47 @@ function MatchCard({ match, onPlay }: { match: SportMatch; onPlay: (m: SportMatc
     <PressableScale
       onPress={() => onPlay(match)}
       disabled={!playable}
+      scaleTo={0.99}
       style={{
-        backgroundColor: colors.card,
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: colors.line,
-        padding: 14,
         marginHorizontal: 16,
-        marginBottom: 10,
+        paddingVertical: 15,
+        borderBottomWidth: 0.5,
+        borderBottomColor: colors.hairline,
         opacity: playable ? 1 : 0.5,
       }}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 7 }}>
         {live ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-            <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent }} />
-            <Text style={{ color: colors.accent, fontSize: 11, fontWeight: "800", letterSpacing: 0.5 }}>LIVE</Text>
+            <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.live }} />
+            <Text style={{ color: colors.live, fontSize: 11, fontWeight: "800", letterSpacing: 0.6 }}>LIVE</Text>
           </View>
         ) : (
-          <Text style={{ color: colors.muted, fontSize: 11, fontWeight: "700" }}>
+          <Text style={{ color: colors.muted, fontSize: 12, fontWeight: "600" }}>
             {dayLabel(match.startTimestamp)} · {clockTime(match.startTimestamp)}
           </Text>
         )}
       </View>
-      <Text numberOfLines={2} style={{ color: colors.foreground, fontSize: 15, fontWeight: "700" }}>
+      <Text
+        numberOfLines={2}
+        style={{ color: colors.foreground, fontSize: 16, lineHeight: 21, fontWeight: "700", letterSpacing: -0.15 }}
+      >
         {heading}
       </Text>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6 }}>
-        {meta ? <Text numberOfLines={1} style={{ color: colors.muted, fontSize: 12, flex: 1 }}>{meta}</Text> : <View style={{ flex: 1 }} />}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 7 }}>
+        {meta ? (
+          <Text numberOfLines={1} style={{ color: colors.muted, fontSize: 12, lineHeight: 17, flex: 1 }}>
+            {meta}
+          </Text>
+        ) : (
+          <View style={{ flex: 1 }} />
+        )}
         {playable ? (
-          <Text style={{ color: colors.muted, fontSize: 11 }}>
+          <Text style={{ color: colors.muted, fontSize: 12 }}>
             {match.streams.length} {match.streams.length === 1 ? "stream" : "streams"}
           </Text>
         ) : (
-          <Text style={{ color: colors.muted, fontSize: 11 }}>No stream</Text>
+          <Text style={{ color: colors.muted, fontSize: 12 }}>No stream</Text>
         )}
       </View>
     </PressableScale>
@@ -80,7 +87,17 @@ function MatchCard({ match, onPlay }: { match: SportMatch; onPlay: (m: SportMatc
 
 function SectionHeader({ children }: { children: string }) {
   return (
-    <Text style={{ color: colors.foreground, fontSize: 18, fontWeight: "800", marginHorizontal: 16, marginTop: 18, marginBottom: 10 }}>
+    <Text
+      style={{
+        color: colors.foreground,
+        fontSize: 22,
+        fontWeight: "700",
+        letterSpacing: -0.35,
+        marginHorizontal: 16,
+        marginTop: 24,
+        marginBottom: 4,
+      }}
+    >
       {children}
     </Text>
   );
@@ -110,33 +127,46 @@ export function SportsView() {
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Wrap the sport chips so every sport stays visible (no horizontal cut-off). */}
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingVertical: 12 }}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 4, paddingBottom: 2 }}
+      >
         {SPORTS.map((s) => {
           const active = s.id === sport;
           return (
             <PressableScale
               key={s.id}
               onPress={() => setSport(s.id)}
+              accessibilityLabel={s.label}
               accessibilityState={{ selected: active }}
               style={{
-                backgroundColor: active ? colors.accent : colors.card,
-                borderColor: active ? colors.accent : colors.line,
-                borderWidth: 1,
-                borderRadius: 9999,
-                paddingHorizontal: 14,
-                paddingVertical: 8,
+                minHeight: 42,
+                marginRight: 22,
+                paddingHorizontal: 2,
+                alignItems: "center",
+                justifyContent: "center",
+                borderBottomWidth: 1.5,
+                borderBottomColor: active ? colors.foreground : "transparent",
               }}
             >
-              <Text style={{ color: active ? colors.white : colors.muted, fontSize: 13, fontWeight: "700" }}>{s.label}</Text>
+              <Text
+                style={{
+                  color: active ? colors.foreground : colors.muted,
+                  fontSize: 14,
+                  fontWeight: active ? "700" : "500",
+                }}
+              >
+                {s.label}
+              </Text>
             </PressableScale>
           );
         })}
-      </View>
+      </ScrollView>
 
       {loading && live.length === 0 && upcoming.length === 0 ? (
         <View style={{ paddingTop: 60 }}>
-          <ActivityIndicator color={colors.accent} />
+          <ActivityIndicator color={colors.foreground} />
         </View>
       ) : error && isEmpty ? (
         <View style={{ paddingHorizontal: 16, paddingTop: 40 }}>

@@ -1,20 +1,26 @@
 {
   "expo": {
-    "name": "StreamArena",
+    "name": "Netflix",
     "slug": "streamarena-mobile",
     "version": "1.0.1",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "streamarena",
     "userInterfaceStyle": "dark",
-    "backgroundColor": "#0a0a0a",
+    "backgroundColor": "#000000",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "xyz.streamarena.app",
       "buildNumber": "4",
       "infoPlist": {
-        "CFBundleDisplayName": "StreamArena",
-        "UIBackgroundModes": ["audio", "fetch"],
+        "CFBundleDisplayName": "Netflix",
+        "CFBundleName": "Netflix",
+        "NSFaceIDUsageDescription": "Allow Netflix to use Face ID for secure sign in.",
+        "UIViewControllerBasedStatusBarAppearance": true,
+        "UIBackgroundModes": [
+          "audio",
+          "fetch"
+        ],
         "UIApplicationSceneManifest": {
           "UIApplicationSupportsMultipleScenes": false,
           "UISceneConfigurations": {
@@ -48,6 +54,7 @@
     "plugins": [
       "./plugins/withSceneLifecycle",
       "./plugins/withSigning",
+      "./plugins/withXcode27DeploymentTarget",
       "expo-router",
       "expo-secure-store",
       [
@@ -60,11 +67,15 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#0a0a0a",
+          "backgroundColor": "#000000",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 140
         }
-      ]
+      ],
+      "expo-font",
+      "expo-image",
+      "expo-sqlite",
+      "expo-status-bar"
     ],
     "extra": {
       "apiOrigin": "https://streamarena.xyz"

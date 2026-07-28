@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshControl, Text, View } from "react-native";
+import { RefreshControl, View } from "react-native";
 import Animated, { useAnimatedScrollHandler, useSharedValue } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import { getIsOnline } from "@/lib/connectivity";
+import { Wordmark } from "@/components/brand/Wordmark";
 import { GlassHeader } from "@/components/nav/GlassHeader";
 import { ProfileButton } from "@/components/profile/ProfileButton";
 import { BillboardHero } from "@/components/title/BillboardHero";
@@ -103,10 +104,6 @@ export default function HomeScreen() {
   const showSkeleton = (loading || warming) && rails.length === 0;
   const isEmpty = !showSkeleton && !hero && rails.length === 0;
 
-  const wordmark = (
-    <Text style={{ color: colors.accent, fontSize: 17, fontWeight: "900", letterSpacing: 0.5 }}>NETFLIX</Text>
-  );
-
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Animated.ScrollView
@@ -127,7 +124,7 @@ export default function HomeScreen() {
           <View style={{ height: insets.top + 56 }} />
         )}
 
-        <View style={{ marginTop: hero ? 8 : 0 }}>
+        <View style={{ marginTop: hero ? 18 : 0 }}>
           {visibleContinue.length > 0 ? (
             <ContinueWatchingRail items={visibleContinue} onItemLongPress={onItemLongPress} />
           ) : null}
@@ -165,7 +162,7 @@ export default function HomeScreen() {
         </View>
       </Animated.ScrollView>
 
-      <GlassHeader scrollY={scrollY} left={wordmark} right={<ProfileButton />} fadeStart={180} fadeEnd={380} />
+      <GlassHeader scrollY={scrollY} left={<Wordmark />} right={<ProfileButton />} fadeStart={180} fadeEnd={380} />
 
       <ContinueWatchingActionsSheet item={menuItem} onClose={() => setMenuItem(null)} onRemove={onRemoveCW} />
     </View>

@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Alert, ScrollView, Switch, Text, View } from "react-native";
 import { Check } from "lucide-react-native";
 import { PressableScale } from "@/components/ui/PressableScale";
+import { CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
 import { formatBytes, getDiskUsage, type DiskUsage } from "@/lib/disk-usage";
 import { selectionAsync } from "@/lib/haptics";
 import { useOfflineStore } from "@/store/offline";
@@ -18,24 +19,100 @@ const CAP_OPTIONS: { label: string; bytes: number }[] = [
 
 function SectionTitle({ children }: { children: string }) {
   return (
-    <Text style={{ color: colors.muted, fontSize: 12, fontWeight: "700", letterSpacing: 1, textTransform: "uppercase", marginTop: 26, marginBottom: 6, paddingHorizontal: 16 }}>
+    <Text
+      style={{
+        color: colors.dim,
+        fontSize: 11,
+        fontWeight: "600",
+        letterSpacing: 1.2,
+        textTransform: "uppercase",
+        marginTop: 26,
+        marginBottom: 8,
+        paddingHorizontal: 4,
+      }}
+    >
       {children}
     </Text>
   );
 }
 
-function Row({ label, sublabel, active, onPress, right }: { label: string; sublabel?: string; active?: boolean; onPress?: () => void; right?: React.ReactNode }) {
+function Group({ children }: { children: ReactNode }) {
   return (
-    <PressableScale
-      onPress={onPress}
-      style={{ flexDirection: "row", alignItems: "center", paddingVertical: 14, paddingHorizontal: 16, gap: 12 }}
+    <View
+      style={{
+        overflow: "hidden",
+        borderRadius: 16,
+        borderCurve: "continuous",
+        borderWidth: 0.5,
+        borderColor: colors.hairline,
+        backgroundColor: colors.surface,
+      }}
     >
-      <View style={{ flex: 1 }}>
-        <Text style={{ color: colors.foreground, fontSize: 15, fontWeight: active ? "700" : "500" }}>{label}</Text>
-        {sublabel ? <Text style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}>{sublabel}</Text> : null}
-      </View>
-      {right ?? (active ? <Check size={20} color={colors.accent} /> : null)}
-    </PressableScale>
+      {children}
+    </View>
+  );
+}
+
+function Row({
+  label,
+  sublabel,
+  active,
+  onPress,
+  right,
+  showDivider = false,
+  labelColor = colors.foreground,
+}: {
+  label: string;
+  sublabel?: string;
+  active?: boolean;
+  onPress?: () => void;
+  right?: ReactNode;
+  showDivider?: boolean;
+  labelColor?: string;
+}) {
+  return (
+    <View>
+      <PressableScale
+        scaleTo={onPress ? 0.985 : 1}
+        onPress={onPress}
+        accessibilityLabel={onPress ? (sublabel ? `${label}. ${sublabel}` : label) : undefined}
+        accessibilityState={active == null ? undefined : { selected: active }}
+        style={{
+          minHeight: 54,
+          flexDirection: "row",
+          alignItems: "center",
+          paddingVertical: 13,
+          paddingHorizontal: 16,
+          gap: 12,
+          backgroundColor: active ? colors.cardHover : "transparent",
+        }}
+      >
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: labelColor, fontSize: 15, fontWeight: active ? "600" : "500" }}>{label}</Text>
+          {sublabel ? (
+            <Text style={{ color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 2 }}>{sublabel}</Text>
+          ) : null}
+        </View>
+        {right ??
+          (active == null ? null : (
+            <View
+              style={{
+                width: 22,
+                height: 22,
+                alignItems: "center",
+                justifyContent: "center",
+                borderRadius: 11,
+                borderWidth: active ? 0 : 1,
+                borderColor: colors.hairline,
+                backgroundColor: active ? colors.foreground : "transparent",
+              }}
+            >
+              {active ? <Check size={14} color={colors.background} strokeWidth={3} /> : null}
+            </View>
+          ))}
+      </PressableScale>
+      {showDivider ? <View style={{ height: 0.5, marginLeft: 16, backgroundColor: colors.hairline }} /> : null}
+    </View>
   );
 }
 
@@ -76,54 +153,105 @@ export default function StorageSettingsScreen() {
     ]);
   }
 
+  const storageRatio = maxStorageBytes > 0 ? Math.min(storageBytes / maxStorageBytes, 1) : null;
+
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingBottom: 40 }}>
+    <ScrollView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      contentInsetAdjustmentBehavior="automatic"
+      contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 2, paddingBottom: CONTENT_BOTTOM_INSET }}
+    >
       <SectionTitle>Storage</SectionTitle>
-      <View style={{ paddingHorizontal: 16, paddingVertical: 6 }}>
-        <Text style={{ color: colors.foreground, fontSize: 15 }}>
-          {formatBytes(storageBytes)} used by downloads
-        </Text>
-        {disk?.free != null ? (
-          <Text style={{ color: colors.muted, fontSize: 12, marginTop: 3 }}>
-            {formatBytes(disk.free)} free{disk.total != null ? ` of ${formatBytes(disk.total)}` : ""} on device
+      <Group>
+        <View style={{ paddingHorizontal: 16, paddingVertical: 16 }}>
+          <Text style={{ color: colors.foreground, fontSize: 17, fontWeight: "600" }}>
+            {formatBytes(storageBytes)} used
           </Text>
-        ) : null}
-      </View>
+          <Text style={{ color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 3 }}>
+            {disk?.free != null
+              ? `${formatBytes(disk.free)} free${disk.total != null ? ` of ${formatBytes(disk.total)}` : ""} on device`
+              : "Used by downloaded movies and episodes"}
+          </Text>
+          {storageRatio != null ? (
+            <View
+              style={{
+                height: 4,
+                overflow: "hidden",
+                borderRadius: 2,
+                backgroundColor: colors.cardActive,
+                marginTop: 14,
+              }}
+            >
+              <View
+                style={{
+                  width: `${storageRatio * 100}%`,
+                  height: "100%",
+                  borderRadius: 2,
+                  backgroundColor: colors.foreground,
+                }}
+              />
+            </View>
+          ) : null}
+        </View>
+      </Group>
 
       <SectionTitle>Download over</SectionTitle>
-      <Row
-        label="Wi-Fi only"
-        sublabel="Pause downloads on cellular data"
-        right={
-          <Switch
-            value={wifiOnly}
-            onValueChange={(v) => {
-              selectionAsync();
-              setWifiOnly(v);
-            }}
-            trackColor={{ true: colors.accent, false: "#3a3a3a" }}
-          />
-        }
-      />
+      <Group>
+        <Row
+          label="Wi-Fi only"
+          sublabel="Pause downloads on cellular data"
+          right={
+            <Switch
+              value={wifiOnly}
+              onValueChange={(v) => {
+                selectionAsync();
+                setWifiOnly(v);
+              }}
+              trackColor={{ true: colors.foreground, false: colors.surfaceRaised }}
+              thumbColor={wifiOnly ? colors.background : colors.foreground}
+              ios_backgroundColor={colors.surfaceRaised}
+              accessibilityLabel="Wi-Fi only downloads"
+              accessibilityHint="Pauses downloads while using cellular data"
+            />
+          }
+        />
+      </Group>
 
       <SectionTitle>Storage limit</SectionTitle>
-      {CAP_OPTIONS.map((opt) => (
-        <Row
-          key={opt.bytes}
-          label={opt.label}
-          active={maxStorageBytes === opt.bytes}
-          onPress={() => {
-            selectionAsync();
-            setMaxStorageBytes(opt.bytes);
-          }}
-        />
-      ))}
+      <Group>
+        {CAP_OPTIONS.map((opt, index) => (
+          <Row
+            key={opt.bytes}
+            label={opt.label}
+            active={maxStorageBytes === opt.bytes}
+            showDivider={index < CAP_OPTIONS.length - 1}
+            onPress={() => {
+              selectionAsync();
+              setMaxStorageBytes(opt.bytes);
+            }}
+          />
+        ))}
+      </Group>
 
       <SectionTitle>Maintenance</SectionTitle>
-      <Row label={verifyLabel} sublabel="Check downloaded files are intact" onPress={() => void verifyDownloads()} />
-      <PressableScale onPress={confirmClear} style={{ paddingVertical: 14, paddingHorizontal: 16, marginTop: 4 }}>
-        <Text style={{ color: colors.accent, fontSize: 15, fontWeight: "700" }}>Clear all downloads</Text>
-      </PressableScale>
+      <Group>
+        <Row
+          label={verifyLabel}
+          labelColor={verificationStatus === "failed" ? colors.danger : colors.foreground}
+          sublabel="Check downloaded files are intact"
+          onPress={() => void verifyDownloads()}
+          showDivider
+        />
+        <PressableScale
+          scaleTo={1}
+          onPress={confirmClear}
+          accessibilityLabel="Clear all downloads"
+          accessibilityHint="Deletes every downloaded movie and episode from this device"
+          style={{ minHeight: 52, justifyContent: "center", paddingVertical: 13, paddingHorizontal: 16 }}
+        >
+          <Text style={{ color: colors.danger, fontSize: 15, fontWeight: "600" }}>Clear all downloads</Text>
+        </PressableScale>
+      </Group>
     </ScrollView>
   );
 }

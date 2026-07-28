@@ -13,8 +13,8 @@ export function LiveSourcesSheet({ visible, onClose }: { visible: boolean; onClo
 
   return (
     <Sheet visible={visible} onClose={onClose} heightPct={0.5} zIndex={120}>
-      <Text style={{ color: colors.foreground, fontSize: 18, fontWeight: "800", marginBottom: 4 }}>Streams</Text>
-      <Text style={{ color: colors.muted, fontSize: 12, marginBottom: 8 }}>
+      <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "700", letterSpacing: -0.25, marginHorizontal: 20, marginTop: 6, marginBottom: 4 }}>Streams</Text>
+      <Text style={{ color: colors.muted, fontSize: 13, lineHeight: 18, marginHorizontal: 20, marginBottom: 14 }}>
         Pick a source if the current one stalls or buffers.
       </Text>
       {liveSources.map((opt) => {
@@ -27,7 +27,7 @@ export function LiveSourcesSheet({ visible, onClose }: { visible: boolean; onClo
               if (!active) usePlayerStore.getState().switchLiveSource(opt.id);
               onClose();
             }}
-            style={{ flexDirection: "row", alignItems: "center", paddingVertical: 13, gap: 12 }}
+            style={{ flexDirection: "row", alignItems: "center", minHeight: 54, paddingVertical: 10, paddingHorizontal: 20, gap: 12, borderBottomWidth: 0.5, borderBottomColor: colors.line }}
             accessibilityRole="button"
             accessibilityState={{ selected: active }}
           >

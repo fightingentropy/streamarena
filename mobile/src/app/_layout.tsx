@@ -5,8 +5,7 @@ import { type ReactNode, useEffect } from "react";
 import { View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { StatusBar } from "expo-status-bar";
-import { Stack, useRouter, useSegments } from "expo-router";
+import { DarkTheme, Stack, ThemeProvider, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import * as SystemUI from "expo-system-ui";
 import { AuthProvider, useAccountScopeOrNull, useAuth } from "@/lib/auth";
@@ -20,8 +19,22 @@ const headerOptions = {
   headerStyle: { backgroundColor: colors.background },
   headerTintColor: colors.foreground,
   headerShadowVisible: false,
+  scrollEdgeEffects: { top: "soft", bottom: "soft" },
   headerBackButtonDisplayMode: "minimal",
 } as const;
+
+const streamArenaNavigationTheme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    primary: colors.foreground,
+    background: colors.background,
+    card: colors.background,
+    text: colors.foreground,
+    border: "transparent",
+    notification: colors.live,
+  },
+};
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -67,30 +80,32 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
       <SafeAreaProvider>
         <AuthProvider>
-          <StatusBar style="light" />
-          <AuthGate>
-            <Stack
-              screenOptions={{
-                headerShown: false,
-                contentStyle: { backgroundColor: colors.background },
-              }}
-            >
-              <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="signin" />
-              <Stack.Screen name="register" />
-              <Stack.Screen name="title/[mediaType]/[id]" options={{ headerShown: false }} />
-              <Stack.Screen
-                name="watch/[id]"
-                options={{ headerShown: false, presentation: "fullScreenModal", animation: "fade" }}
-              />
-              <Stack.Screen name="settings" options={{ ...headerOptions, title: "Settings" }} />
-              <Stack.Screen name="settings/playback" options={{ ...headerOptions, title: "Playback" }} />
-              <Stack.Screen name="settings/storage" options={{ ...headerOptions, title: "Storage" }} />
-            </Stack>
-            <TabBar />
-            <ProfileMenu />
-            <OfflineBootstrap />
-          </AuthGate>
+          <ThemeProvider value={streamArenaNavigationTheme}>
+            <AuthGate>
+              <Stack
+                screenOptions={{
+                  headerShown: false,
+                  contentStyle: { backgroundColor: colors.background },
+                  statusBarStyle: "light",
+                }}
+              >
+                <Stack.Screen name="(tabs)" />
+                <Stack.Screen name="signin" options={{ presentation: "modal" }} />
+                <Stack.Screen name="register" options={{ presentation: "modal" }} />
+                <Stack.Screen name="title/[mediaType]/[id]" options={{ headerShown: false }} />
+                <Stack.Screen
+                  name="watch/[id]"
+                  options={{ headerShown: false, presentation: "fullScreenModal", animation: "fade" }}
+                />
+                <Stack.Screen name="settings" options={{ ...headerOptions, title: "Settings" }} />
+                <Stack.Screen name="settings/playback" options={{ ...headerOptions, title: "Playback" }} />
+                <Stack.Screen name="settings/storage" options={{ ...headerOptions, title: "Storage" }} />
+              </Stack>
+              <TabBar />
+              <ProfileMenu />
+              <OfflineBootstrap />
+            </AuthGate>
+          </ThemeProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

@@ -154,9 +154,9 @@ export default function WatchScreen() {
     () => ({
       uri: source?.uri,
       metadata: {
-        title: request.title || (isLive ? "Live channel" : "StreamArena"),
+        title: request.title || (isLive ? "Live channel" : "Netflix"),
         subtitle,
-        artist: isLive ? "Live on StreamArena" : "StreamArena",
+        artist: isLive ? "Live on Netflix" : "Netflix",
         imageUri: request.poster,
       },
     }),

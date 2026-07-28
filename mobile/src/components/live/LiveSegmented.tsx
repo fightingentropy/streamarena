@@ -10,17 +10,16 @@ const TABS: { id: LiveTab; label: string }[] = [
   { id: "tv", label: "Live TV" },
 ];
 
-// Pill segmented control for the Live tab's two surfaces.
+// A flat, leading-aligned switcher keeps the hierarchy close to a native
+// iOS section bar without adding another filled surface.
 export function LiveSegmented({ value, onChange }: { value: LiveTab; onChange: (tab: LiveTab) => void }) {
   return (
     <View
       style={{
         flexDirection: "row",
-        backgroundColor: colors.card,
-        borderRadius: 9999,
-        padding: 4,
-        marginHorizontal: 16,
-        gap: 4,
+        paddingHorizontal: 16,
+        borderBottomWidth: 0.5,
+        borderBottomColor: colors.hairline,
       }}
     >
       {TABS.map((tab) => {
@@ -34,16 +33,28 @@ export function LiveSegmented({ value, onChange }: { value: LiveTab; onChange: (
                 onChange(tab.id);
               }
             }}
+            accessibilityRole="tab"
+            accessibilityLabel={tab.label}
             accessibilityState={{ selected: active }}
             style={{
-              flex: 1,
               alignItems: "center",
-              paddingVertical: 9,
-              borderRadius: 9999,
-              backgroundColor: active ? colors.accent : "transparent",
+              justifyContent: "center",
+              minHeight: 44,
+              marginRight: 26,
+              paddingHorizontal: 2,
+              borderBottomWidth: 2,
+              borderBottomColor: active ? colors.foreground : "transparent",
             }}
           >
-            <Text style={{ color: active ? colors.white : colors.muted, fontSize: 14, fontWeight: "700" }}>{tab.label}</Text>
+            <Text
+              style={{
+                color: active ? colors.foreground : colors.muted,
+                fontSize: 15,
+                fontWeight: active ? "700" : "500",
+              }}
+            >
+              {tab.label}
+            </Text>
           </PressableScale>
         );
       })}

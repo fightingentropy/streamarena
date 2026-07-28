@@ -18,7 +18,7 @@ function Row({ label, sublabel, active, onPress }: { label: string; sublabel?: s
   return (
     <Pressable
       onPress={onPress}
-      style={{ flexDirection: "row", alignItems: "center", paddingVertical: 13, gap: 12 }}
+      style={{ flexDirection: "row", alignItems: "center", minHeight: 54, paddingVertical: 10, gap: 12, borderBottomWidth: 0.5, borderBottomColor: colors.line }}
       accessibilityRole="button"
       accessibilityState={{ selected: active }}
     >
@@ -57,7 +57,7 @@ export function PlayerSettingsSheet({
   return (
     <Sheet visible={visible} onClose={onClose} heightPct={0.6} zIndex={200}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>
-        <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "800", marginTop: 6 }}>Playback settings</Text>
+        <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "700", letterSpacing: -0.25, marginTop: 6 }}>Playback settings</Text>
 
         <SectionTitle>Subtitles</SectionTitle>
         {isVlc ? (

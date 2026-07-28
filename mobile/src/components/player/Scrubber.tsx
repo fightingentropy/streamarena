@@ -4,9 +4,9 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { formatTime } from "@/lib/format";
 import { colors } from "@/theme";
 
-const TRACK_H = 4;
-const THUMB = 14;
-const ROW_H = 28;
+const TRACK_H = 2;
+const THUMB = 8;
+const ROW_H = 48;
 
 type Props = {
   position: number;
@@ -17,10 +17,9 @@ type Props = {
   live?: boolean;
 };
 
-// Netflix-style scrubber ported from the Spotify app: a thin track with a small flat
-// thumb, elapsed left / remaining right. Controlled (position/duration come from the
-// video store); while dragging we hold a local value so the thumb doesn't snap back to
-// the live position. For live streams there is no scrubber — a red LIVE badge shows.
+// Spotify-style scrubber: a delicate track with a small flat thumb and an
+// accessible 48pt gesture target. For live streams there is no scrubber — a
+// semantic red LIVE marker shows.
 export function Scrubber({ position, duration, onSeek, onScrubbing, live = false }: Props) {
   const [width, setWidth] = useState(0);
   const [seeking, setSeeking] = useState(false);
@@ -35,8 +34,8 @@ export function Scrubber({ position, duration, onSeek, onScrubbing, live = false
   if (live) {
     return (
       <View className="flex-row items-center gap-2 py-2">
-        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.accent }} />
-        <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "700", letterSpacing: 1 }}>LIVE</Text>
+        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.live }} />
+        <Text style={{ color: colors.muted, fontSize: 12, fontWeight: "700", letterSpacing: 0.8 }}>LIVE</Text>
       </View>
     );
   }
@@ -98,7 +97,7 @@ export function Scrubber({ position, duration, onSeek, onScrubbing, live = false
               top: (ROW_H - TRACK_H) / 2,
               height: TRACK_H,
               borderRadius: TRACK_H / 2,
-              backgroundColor: "rgba(255,255,255,0.28)",
+              backgroundColor: "rgba(255,255,255,0.18)",
             }}
           />
           <View
@@ -109,7 +108,7 @@ export function Scrubber({ position, duration, onSeek, onScrubbing, live = false
               height: TRACK_H,
               width: fillW,
               borderRadius: TRACK_H / 2,
-              backgroundColor: colors.accent,
+              backgroundColor: colors.foreground,
             }}
           />
           <View
@@ -120,19 +119,19 @@ export function Scrubber({ position, duration, onSeek, onScrubbing, live = false
               width: THUMB,
               height: THUMB,
               borderRadius: THUMB / 2,
-              backgroundColor: "#fff",
+              backgroundColor: colors.foreground,
             }}
           />
         </View>
       </GestureDetector>
       <View
         className="flex-row justify-between"
-        style={{ marginTop: 4 }}
+        style={{ marginTop: 6 }}
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
       >
-        <Text style={{ color: colors.foreground, fontSize: 12, fontVariant: ["tabular-nums"] }}>{formatTime(value)}</Text>
-        <Text style={{ color: colors.muted, fontSize: 12, fontVariant: ["tabular-nums"] }}>
+        <Text style={{ color: colors.muted, fontSize: 11, fontVariant: ["tabular-nums"] }}>{formatTime(value)}</Text>
+        <Text style={{ color: colors.muted, fontSize: 11, fontVariant: ["tabular-nums"] }}>
           {max > 0 ? `-${formatTime(Math.max(0, max - value))}` : formatTime(max)}
         </Text>
       </View>

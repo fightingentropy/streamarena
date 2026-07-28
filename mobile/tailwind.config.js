@@ -5,32 +5,34 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        // Page / surfaces — Netflix-dark
-        background: "#0a0a0a", // near-black page bg
-        surface: "#181818", // elevated card surface
-        foreground: "#ffffff", // primary text
-        muted: "#b3b3b3", // secondary text
-        dim: "rgba(255,255,255,0.46)", // captions
-        // Netflix red accent. The legacy Spotify `green`/`emerald` keys are aliased
-        // to the same red so ported components render in-brand without edits.
-        accent: "#e50914",
-        accentPressed: "#b20710",
-        green: "#e50914",
-        emerald: "#e50914",
-        emeraldDarkCheck: "#2b0a0a",
-        card: "rgba(255,255,255,0.08)",
-        cardHover: "rgba(255,255,255,0.09)",
-        cardActive: "rgba(255,255,255,0.12)",
-        line: "rgba(255,255,255,0.10)", // hairline border
-        iconIdle: "rgba(255,255,255,0.70)",
-        backdrop: "rgba(0,0,0,0.60)",
+        background: "#000000",
+        surface: "#0c0c0d",
+        surfaceRaised: "#151516",
+        foreground: "#f2f2f2",
+        muted: "rgba(255,255,255,0.60)",
+        dim: "rgba(255,255,255,0.40)",
+        accent: "#f2f2f2",
+        accentPressed: "#d8d8da",
+        live: "#ff453a",
+        danger: "#ff6961",
+        warning: "#ff9f0a",
+        green: "#f2f2f2",
+        emerald: "#f2f2f2",
+        emeraldDarkCheck: "#111113",
+        card: "rgba(255,255,255,0.045)",
+        cardHover: "rgba(255,255,255,0.065)",
+        cardActive: "rgba(255,255,255,0.09)",
+        line: "rgba(255,255,255,0.08)",
+        hairline: "rgba(255,255,255,0.12)",
+        iconIdle: "rgba(255,255,255,0.58)",
+        backdrop: "rgba(0,0,0,0.66)",
       },
       borderRadius: {
-        card: "8px",
+        card: "14px",
         row: "12px",
         art: "16px",
-        poster: "8px",
-        still: "6px",
+        poster: "14px",
+        still: "12px",
         pill: "9999px",
       },
     },

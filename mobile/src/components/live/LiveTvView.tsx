@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { Image } from "expo-image";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
@@ -26,65 +26,100 @@ function liveCategories(): string[] {
 
 function CategoryChip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
   return (
-    <PressableScale onPress={onPress} accessibilityLabel={`Filter by ${label}`}>
-      <View
+    <PressableScale
+      onPress={onPress}
+      accessibilityLabel={`Filter by ${label}`}
+      accessibilityState={{ selected: active }}
+      style={{
+        minHeight: 42,
+        marginRight: 22,
+        paddingHorizontal: 2,
+        alignItems: "center",
+        justifyContent: "center",
+        borderBottomWidth: 1.5,
+        borderBottomColor: active ? colors.foreground : "transparent",
+      }}
+    >
+      <Text
         style={{
-          paddingHorizontal: 14,
-          paddingVertical: 8,
-          borderRadius: 999,
-          borderWidth: 1,
-          backgroundColor: active ? "#fff" : "rgba(255,255,255,0.06)",
-          borderColor: active ? "#fff" : "rgba(255,255,255,0.18)",
+          color: active ? colors.foreground : colors.muted,
+          fontSize: 14,
+          fontWeight: active ? "700" : "500",
         }}
       >
-        <Text style={{ color: active ? "#0b0b0b" : colors.foreground, fontSize: 13, fontWeight: "700" }}>{label}</Text>
-      </View>
+        {label}
+      </Text>
     </PressableScale>
   );
 }
 
-function ChannelTile({ channel, onPlay }: { channel: LiveChannel; onPlay: (c: LiveChannel) => void }) {
+function ChannelTile({
+  channel,
+  onPlay,
+  width,
+}: {
+  channel: LiveChannel;
+  onPlay: (c: LiveChannel) => void;
+  width: number;
+}) {
   const logo = LIVE_LOGOS[channel.id];
   return (
-    <PressableScale onPress={() => onPlay(channel)} style={{ width: "48%" }} accessibilityLabel={`Play ${channel.title}`}>
-      <View style={{ borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.card }}>
-        {/* Logo on a dark plate (contain, like the web grid). */}
-        <View style={{ aspectRatio: 16 / 9, backgroundColor: "#0b0b0b", alignItems: "center", justifyContent: "center" }}>
-          {logo ? (
-            <Image source={logo} style={{ width: "100%", height: "100%" }} contentFit="contain" transition={150} />
-          ) : null}
-          <View
-            style={{
-              position: "absolute",
-              top: 8,
-              left: 8,
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 5,
-              backgroundColor: "rgba(0,0,0,0.55)",
-              paddingHorizontal: 7,
-              paddingVertical: 3,
-              borderRadius: 6,
-            }}
-          >
-            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.accent }} />
-            <Text style={{ color: "#fff", fontSize: 9, fontWeight: "800", letterSpacing: 0.5 }}>LIVE</Text>
-          </View>
+    <PressableScale onPress={() => onPlay(channel)} style={{ width }} accessibilityLabel={`Play ${channel.title}`}>
+      {/* The logo is the card's colour; everything around it stays neutral. */}
+      <View
+        style={{
+          aspectRatio: 16 / 9,
+          alignItems: "center",
+          justifyContent: "center",
+          overflow: "hidden",
+          borderRadius: 10,
+          borderCurve: "continuous",
+          borderWidth: 0.5,
+          borderColor: colors.hairline,
+          backgroundColor: colors.background,
+        }}
+      >
+        {logo ? (
+          <Image source={logo} style={{ width: "100%", height: "100%" }} contentFit="contain" transition={150} />
+        ) : null}
+        <View
+          style={{
+            position: "absolute",
+            top: 8,
+            left: 8,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 5,
+            paddingHorizontal: 7,
+            paddingVertical: 4,
+            borderRadius: 6,
+            borderCurve: "continuous",
+            borderWidth: 0.5,
+            borderColor: colors.hairline,
+            backgroundColor: "rgba(0,0,0,0.78)",
+          }}
+        >
+          <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.live }} />
+          <Text style={{ color: colors.live, fontSize: 9, fontWeight: "800", letterSpacing: 0.6 }}>LIVE</Text>
         </View>
-        <View style={{ paddingHorizontal: 11, paddingVertical: 9 }}>
-          <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 15, fontWeight: "800" }}>
-            {channel.title}
-          </Text>
-          <Text numberOfLines={1} style={{ color: colors.muted, fontSize: 11, marginTop: 2 }}>
-            {channel.genre} · {channel.region}
-          </Text>
-        </View>
+      </View>
+      <View style={{ paddingTop: 9, paddingHorizontal: 1 }}>
+        <Text
+          numberOfLines={1}
+          style={{ color: colors.foreground, fontSize: 15, lineHeight: 20, fontWeight: "700" }}
+        >
+          {channel.title}
+        </Text>
+        <Text numberOfLines={1} style={{ color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 1 }}>
+          {channel.genre} · {channel.region}
+        </Text>
       </View>
     </PressableScale>
   );
 }
 
 export function LiveTvView() {
+  const { width } = useWindowDimensions();
   const startLive = useStartLive();
   const onPlay = (c: LiveChannel) => startLive(liveRequestFromChannel(c));
   const categories = liveCategories();
@@ -93,12 +128,21 @@ export function LiveTvView() {
     activeCategory === "All"
       ? LIVE_CHANNELS
       : LIVE_CHANNELS.filter((channel) => channel.genre === activeCategory);
+  const columns = width >= 1024 ? 4 : width >= 700 ? 3 : 2;
+  const horizontalPadding = width >= 700 ? 20 : 16;
+  const columnGap = width >= 700 ? 16 : 12;
+  const tileWidth = Math.floor(
+    (width - horizontalPadding * 2 - columnGap * (columns - 1)) / columns,
+  );
   return (
-    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 12, paddingBottom: CONTENT_BOTTOM_INSET }}>
+    <ScrollView
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={{ paddingTop: 4, paddingBottom: CONTENT_BOTTOM_INSET }}
+    >
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingBottom: 14 }}
+        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 16 }}
       >
         {categories.map((category) => (
           <CategoryChip
@@ -109,9 +153,17 @@ export function LiveTvView() {
           />
         ))}
       </ScrollView>
-      <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", rowGap: 12, paddingHorizontal: 16 }}>
+      <View
+        style={{
+          flexDirection: "row",
+          flexWrap: "wrap",
+          columnGap,
+          rowGap: 22,
+          paddingHorizontal: horizontalPadding,
+        }}
+      >
         {channels.map((channel) => (
-          <ChannelTile key={channel.id} channel={channel} onPlay={onPlay} />
+          <ChannelTile key={channel.id} channel={channel} onPlay={onPlay} width={tileWidth} />
         ))}
       </View>
     </ScrollView>

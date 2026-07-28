@@ -5,7 +5,8 @@ import { Sheet } from "@/components/ui/Sheet";
 import { selectionAsync } from "@/lib/haptics";
 import { getSources, getTorrentSettings, type SourceSummary } from "@/lib/streamarena";
 import { usePlayerStore } from "@/video/state";
-import { colors } from "@/theme";
+import { colors, radius } from "@/theme";
+import { sourceTabForActiveSource } from "./source-selection";
 
 // In-player source switcher (VOD): a dedicated sheet listing the title's alternate
 // sources/servers, re-resolving the chosen one (reopenWith) while keeping the current
@@ -15,6 +16,7 @@ import { colors } from "@/theme";
 export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const request = usePlayerStore((s) => s.request);
   const selectedSourceHash = usePlayerStore((s) => s.selectedSourceHash);
+  const resolvedSourceHash = usePlayerStore((s) => s.resolved?.sourceHash);
   const [sources, setSources] = useState<SourceSummary[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [errored, setErrored] = useState(false);
@@ -63,17 +65,20 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
   const torrentSources = useMemo(() => (sources ?? []).filter((source) => source.isTorrent), [sources]);
   const visibleSources = torrentEnabled ? (activeTab === "torrents" ? torrentSources : hlsSources) : (sources ?? []);
 
-  // If Continue Watching restored a torrent source, open the picker on its active tab.
+  // The sheet stays mounted while hidden, so always realign its tab with the active
+  // playback source when it opens. Otherwise a previously viewed Torrents tab remains
+  // selected even after playback has switched back to HLS.
   useEffect(() => {
-    if (!visible || !torrentEnabled || !selectedSourceHash) return;
-    const selected = (sources ?? []).find((source) => source.sourceHash === selectedSourceHash);
-    if (selected?.isTorrent) setActiveTab("torrents");
-  }, [selectedSourceHash, sources, torrentEnabled, visible]);
+    if (!visible || !torrentEnabled || !sources) return;
+    setActiveTab(
+      sourceTabForActiveSource(sources, resolvedSourceHash || selectedSourceHash),
+    );
+  }, [resolvedSourceHash, selectedSourceHash, sources, torrentEnabled, visible]);
 
   return (
     <Sheet visible={visible} onClose={onClose} heightPct={0.6} zIndex={200}>
-      <Text style={{ color: colors.foreground, fontSize: 18, fontWeight: "800", marginBottom: 4 }}>Sources</Text>
-      <Text style={{ color: colors.muted, fontSize: 12, marginBottom: 8 }}>
+      <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "700", letterSpacing: -0.25, marginHorizontal: 20, marginTop: 6, marginBottom: 4 }}>Sources</Text>
+      <Text style={{ color: colors.muted, fontSize: 13, lineHeight: 18, marginHorizontal: 20, marginBottom: 14 }}>
         Switch server if the current one buffers or won’t play.
       </Text>
       {torrentEnabled && sources ? (
@@ -81,9 +86,12 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
           style={{
             flexDirection: "row",
             padding: 3,
-            borderRadius: 10,
-            backgroundColor: "rgba(255,255,255,0.06)",
-            marginBottom: 8,
+            borderRadius: radius.control,
+            backgroundColor: colors.card,
+            borderWidth: 0.5,
+            borderColor: colors.hairline,
+            marginHorizontal: 20,
+            marginBottom: 12,
           }}
         >
           {(["hls", "torrents"] as const).map((tab) => {
@@ -105,10 +113,8 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
                   justifyContent: "center",
                   gap: 7,
                   paddingVertical: 9,
-                  borderRadius: 8,
-                  backgroundColor: selected ? "rgba(255,255,255,0.10)" : "transparent",
-                  borderBottomWidth: 2,
-                  borderBottomColor: selected ? colors.accent : "transparent",
+                  borderRadius: 9,
+                  backgroundColor: selected ? colors.cardActive : "transparent",
                 }}
               >
                 <Text style={{ color: selected ? colors.foreground : colors.muted, fontSize: 14, fontWeight: "700" }}>
@@ -120,7 +126,7 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
                     paddingHorizontal: 7,
                     paddingVertical: 2,
                     borderRadius: 10,
-                    backgroundColor: selected && tab === "torrents" ? "rgba(229,9,20,0.35)" : "rgba(255,255,255,0.08)",
+                    backgroundColor: selected ? colors.hairline : colors.line,
                   }}
                 >
                   <Text style={{ color: selected ? colors.foreground : colors.muted, textAlign: "center", fontSize: 11, fontWeight: "700" }}>
@@ -132,11 +138,11 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
           })}
         </View>
       ) : null}
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>
         {sources == null ? (
           errored ? (
             <Pressable onPress={loadSources} accessibilityRole="button" style={{ paddingVertical: 14 }}>
-              <Text style={{ color: colors.accent, fontSize: 15, fontWeight: "600" }}>Couldn’t load sources — tap to retry</Text>
+              <Text style={{ color: colors.danger, fontSize: 15, fontWeight: "600" }}>Couldn’t load sources — tap to retry</Text>
             </Pressable>
           ) : (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 14 }}>
@@ -150,7 +156,10 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
           </Text>
         ) : (
           visibleSources.map((s, i) => {
-            const active = selectedSourceHash === s.sourceHash;
+            const activeSourceHash = resolvedSourceHash || selectedSourceHash;
+            const active =
+              activeSourceHash?.trim().toLowerCase() ===
+              s.sourceHash.trim().toLowerCase();
             const meta = [
               s.qualityLabel,
               s.container?.toUpperCase(),
@@ -167,7 +176,7 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
                   if (!active) usePlayerStore.getState().reopenWith({ sourceHash: s.sourceHash });
                   onClose();
                 }}
-                style={{ flexDirection: "row", alignItems: "center", paddingVertical: 13, gap: 12 }}
+                style={{ flexDirection: "row", alignItems: "center", minHeight: 54, paddingVertical: 10, gap: 12, borderBottomWidth: 0.5, borderBottomColor: colors.line }}
                 accessibilityRole="button"
                 accessibilityState={{ selected: active }}
               >

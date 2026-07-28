@@ -3,6 +3,10 @@ import { getCachedPreferences, getSources, type ResolvedSource, type SourceSumma
 import { buildOfflineResolved, getReadyOfflineRecord } from "@/store/offline";
 import { progressIdentity } from "./identity";
 import { type LivePlayRequest, type LiveSourceOption, resolveLiveSourceUrl } from "./live";
+import {
+  LIVE_HEALTHY_PLAYBACK_SECONDS,
+  shouldRefreshSingleLiveSource,
+} from "./live-recovery";
 import { buildFallbackCandidates } from "./refresh";
 import { beginReporting, reportNow, reportPlaybackError, reportProgress, stopReporting } from "./report";
 import { resolveAndRoute } from "./resolve";
@@ -32,8 +36,6 @@ const HEALTHY_PLAYBACK_SECONDS = 30;
 // window restores the fallback budget — a source that sustains this long shouldn't be
 // charged a later transient blip. (Resetting on resolve/load instead would let a row of
 // load-then-immediately-end embeds loop forever, since resolve success ≠ real playback.)
-const LIVE_HEALTHY_PLAYBACK_SECONDS = 6;
-
 // If a freshly-loaded VOD source produces no playback (no onLoad / no progress) within
 // this window, treat it as a dead/stalled server and auto-advance to the next one. This
 // catches the silent-hang case — PNG-stego embeds that never emit a clean onError, so the
@@ -189,7 +191,9 @@ async function runResolve(
       buffering: true,
       selectedSubtitle: findSelectedTextTrackIndex(resolved),
       selectedAudioStreamIndex: extra.audioStreamIndex ?? resolved.selectedAudioStreamIndex,
-      selectedSourceHash: extra.sourceHash ?? resolved.sourceHash,
+      // The backend response is authoritative: a requested source can resolve through
+      // a different fallback, and the picker must identify what is actually playing.
+      selectedSourceHash: resolved.sourceHash || extra.sourceHash,
     });
     armStallTimer(startupTimeoutFor(resolved));
   } catch (e) {
@@ -216,9 +220,44 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
   // Advance to the next live source after a resolve/playback failure, or surface the error
   // once every source has been tried once (bounded by the source count — no infinite loop).
   function failLiveSource(message?: string) {
-    const { liveSources, selectedLiveSourceId, errorCount } = get();
+    const {
+      liveSources,
+      selectedLiveSourceId,
+      errorCount,
+      position,
+      reresolved,
+    } = get();
     const attempt = errorCount + 1;
     const idx = liveSources.findIndex((s) => s.id === selectedLiveSourceId);
+    const current = idx >= 0 ? liveSources[idx] : null;
+
+    // Provider-issued live HLS tokens can expire mid-watch. If the only source
+    // genuinely played first, resolve that same logical source once to obtain a
+    // fresh token. Reset progress so it must prove itself healthy again before a
+    // later failure is eligible for another refresh.
+    if (
+      current
+      && shouldRefreshSingleLiveSource(liveSources.length, position, reresolved)
+    ) {
+      resolveAbort?.abort();
+      const ac = new AbortController();
+      resolveAbort = ac;
+      set({
+        errorCount: attempt,
+        reresolved: true,
+        status: "resolving",
+        buffering: true,
+        error: null,
+        source: null,
+        position: 0,
+        duration: 0,
+        loaded: false,
+        selectedLiveSourceId: current.id,
+      });
+      void loadLiveSource(current, ac);
+      return;
+    }
+
     const next = liveSources.length > 1 && attempt < liveSources.length ? liveSources[(idx + 1) % liveSources.length] : null;
     if (next) {
       resolveAbort?.abort();
@@ -488,7 +527,19 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       resolveAbort?.abort();
       const ac = new AbortController();
       resolveAbort = ac;
-      set({ status: "resolving", buffering: true, error: null, errorCount: 0, paused: false, source: null, selectedLiveSourceId: sourceId });
+      set({
+        status: "resolving",
+        buffering: true,
+        error: null,
+        errorCount: 0,
+        reresolved: false,
+        paused: false,
+        source: null,
+        position: 0,
+        duration: 0,
+        loaded: false,
+        selectedLiveSourceId: sourceId,
+      });
       void loadLiveSource(opt, ac);
     },
 

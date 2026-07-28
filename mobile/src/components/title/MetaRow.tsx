@@ -3,8 +3,8 @@ import { Star } from "lucide-react-native";
 import { formatCertification, formatRating, formatRuntime } from "@/lib/format";
 import { colors } from "@/theme";
 
-// The compact meta line under a title's hero: year · runtime · seasons, plus a
-// rating chip (★ 8.7) and an HD pill. Empty parts are omitted.
+// The compact meta line under a title's hero. Empty parts are omitted and every
+// badge stays monochrome so the artwork remains the only decorative colour.
 export function MetaRow({
   year,
   runtimeMinutes,
@@ -29,25 +29,40 @@ export function MetaRow({
   return (
     <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
       {parts.map((part, i) => (
-        <Text key={`${part}-${i}`} style={{ color: colors.muted, fontSize: 13, fontWeight: "600" }}>
-          {part}
-        </Text>
+        <View key={`${part}-${i}`} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          {i > 0 ? <View style={{ width: 3, height: 3, borderRadius: 1.5, backgroundColor: colors.dim }} /> : null}
+          <Text style={{ color: colors.muted, fontSize: 13, fontWeight: "600" }}>{part}</Text>
+        </View>
       ))}
       {ratingLabel ? (
         <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <Star size={13} color="#f5c518" fill="#f5c518" />
+          <Star size={13} color={colors.foreground} />
           <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "700" }}>{ratingLabel}</Text>
         </View>
       ) : null}
       <View
         accessible
         accessibilityLabel={`Age rating ${certificationLabel}`}
-        style={{ borderWidth: 1, borderColor: colors.line, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 }}
+        style={{
+          borderWidth: 0.5,
+          borderColor: colors.hairline,
+          borderRadius: 5,
+          paddingHorizontal: 6,
+          paddingVertical: 2,
+        }}
       >
-        <Text style={{ color: colors.foreground, fontSize: 11, fontWeight: "800" }}>{certificationLabel}</Text>
+        <Text style={{ color: colors.muted, fontSize: 11, fontWeight: "700" }}>{certificationLabel}</Text>
       </View>
-      <View style={{ borderWidth: 1, borderColor: colors.line, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
-        <Text style={{ color: colors.muted, fontSize: 10, fontWeight: "800", letterSpacing: 0.5 }}>HD</Text>
+      <View
+        style={{
+          borderWidth: 0.5,
+          borderColor: colors.hairline,
+          borderRadius: 5,
+          paddingHorizontal: 5,
+          paddingVertical: 2,
+        }}
+      >
+        <Text style={{ color: colors.muted, fontSize: 10, fontWeight: "700", letterSpacing: 0.45 }}>HD</Text>
       </View>
     </View>
   );

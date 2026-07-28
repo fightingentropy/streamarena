@@ -6,7 +6,7 @@ import { PosterImage } from "@/components/PosterImage";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { buildResumeHref } from "@/lib/continue-watching";
 import { type ContinueWatchingItem, type MediaType, useTitleDetails } from "@/lib/streamarena";
-import { colors, layout } from "@/theme";
+import { colors, layout, radius } from "@/theme";
 
 type CardProps = {
   item: ContinueWatchingItem;
@@ -19,7 +19,7 @@ const CardItem = memo(function CardItem({ item, onLongPress }: CardProps) {
   const h = layout.stillHeight;
   const mediaType: MediaType = item.mediaType === "tv" ? "tv" : "movie";
 
-  // Resume progress for the red seeker line. Mirrors the web (src-ui/pages/home.jsx):
+  // Resume progress for the neutral seeker line. Mirrors the web data model:
   // estimate total seconds from the TMDB runtime, then resumeSeconds / total. useApiData
   // caches + dedupes by URL, so the rail's cards reuse one fetch per title.
   const { data: details } = useTitleDetails(item.tmdbId ?? "", mediaType, !!item.tmdbId);
@@ -49,7 +49,7 @@ const CardItem = memo(function CardItem({ item, onLongPress }: CardProps) {
       style={{ width: w }}
       accessibilityLabel={`Resume ${item.title ?? ""}`}
     >
-      <View style={{ width: w, height: h, borderRadius: 6, overflow: "hidden", backgroundColor: "#1a1a1a" }}>
+      <View style={{ width: w, height: h, borderRadius: radius.control, overflow: "hidden", backgroundColor: colors.surfaceRaised }}>
         <PosterImage uri={item.thumb || item.src} style={{ width: w, height: h }} />
         <View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center" }}>
           <View
@@ -67,12 +67,11 @@ const CardItem = memo(function CardItem({ item, onLongPress }: CardProps) {
             <Play size={18} color="#fff" fill="#fff" />
           </View>
         </View>
-        {/* Netflix-style resume bar: faint track + red fill pinned to the bottom edge. */}
-        <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 3, backgroundColor: "rgba(255,255,255,0.28)" }}>
-          <View style={{ height: "100%", width: `${progressPercent}%`, backgroundColor: colors.accent }} />
+        <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 2, backgroundColor: colors.line }}>
+          <View style={{ height: "100%", width: `${progressPercent}%`, backgroundColor: colors.foreground }} />
         </View>
       </View>
-      <Text numberOfLines={1} style={{ color: colors.muted, fontSize: 12, marginTop: 6, width: w }}>
+      <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 14, lineHeight: 19, fontWeight: "600", marginTop: 8, width: w }}>
         {label}
       </Text>
     </PressableScale>
@@ -93,8 +92,8 @@ export function ContinueWatchingRail({
   const keyExtractor = useCallback((item: ContinueWatchingItem) => item.sourceIdentity, []);
   if (!items.length) return null;
   return (
-    <View style={{ marginBottom: 22 }}>
-      <Text style={{ color: colors.foreground, fontSize: 17, fontWeight: "700", paddingHorizontal: 16, marginBottom: 10 }}>
+    <View style={{ marginBottom: 34 }}>
+      <Text style={{ color: colors.foreground, fontSize: 22, lineHeight: 27, fontWeight: "700", letterSpacing: -0.35, paddingHorizontal: 16, marginBottom: 12 }}>
         Continue Watching
       </Text>
       <FlatList
@@ -103,7 +102,7 @@ export function ContinueWatchingRail({
         renderItem={renderItem}
         keyExtractor={keyExtractor}
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ paddingHorizontal: 16, gap: 10 }}
+        contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
         initialNumToRender={6}
         windowSize={5}
         removeClippedSubviews
