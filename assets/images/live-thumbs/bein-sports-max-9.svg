@@ -16,9 +16,4 @@
   <text x="160" y="100" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="800" letter-spacing="2.5" fill="#f5f5f5">beIN SPORTS</text>
   <text x="160" y="138" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="800" letter-spacing="0.5" fill="#b3127a">MAX 9</text>
   <rect x="128" y="152" width="64" height="6" rx="3" fill="url(#bar)"/>
-  <g>
-    <rect x="228" y="18" width="68" height="26" rx="13" fill="#e50914"/>
-    <circle cx="246" cy="31" r="4" fill="#ffffff"/>
-    <text x="256" y="35" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" letter-spacing="1" fill="#ffffff">LIVE</text>
-  </g>
 </svg>

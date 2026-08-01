@@ -17,8 +17,6 @@
   <rect width="1280" height="720" fill="url(#bg)"/>
   <rect x="0" y="0" width="1280" height="720" fill="#000" opacity="0.18"/>
   <path d="M0 540c138-72 278-84 420-38 168 55 312 58 474 6 166-53 276-44 386 32v180H0Z" fill="#050608" opacity="0.72"/>
-  <rect x="78" y="78" width="154" height="54" rx="27" fill="#d71920"/>
-  <text x="155" y="114" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="700" fill="#fff">LIVE</text>
   <circle cx="1068" cy="176" r="132" fill="#0072ce" opacity="0.12"/>
   <circle cx="1068" cy="176" r="82" fill="#0072ce" opacity="0.18"/>
   <circle cx="1068" cy="176" r="26" fill="#fff" opacity="0.82"/>

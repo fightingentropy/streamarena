@@ -63,4 +63,16 @@ assert.doesNotMatch(liveChannelsViewSource, /<span>Live<\/span>/);
 assert.doesNotMatch(liveChannelsViewSource, /channel\.quality/);
 assert.match(liveChannelsViewSource, /\{channel\.genre\} · \{channel\.region\}/);
 
+const svgArtwork = new Set(
+  LIVE_CHANNELS.map((channel) => channel.artwork).filter((artwork) => artwork.endsWith(".svg")),
+);
+for (const artwork of svgArtwork) {
+  const artworkSource = readFileSync(new URL(`../${artwork}`, import.meta.url), "utf8");
+  assert.doesNotMatch(
+    artworkSource,
+    />\s*LIVE\s*</i,
+    `${artwork} must not repeat the page's live status inside channel artwork`,
+  );
+}
+
 console.log("Live channel catalog and card UI tests passed (7 NTV/CDNLive channels).");
