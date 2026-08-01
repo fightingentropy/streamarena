@@ -62,6 +62,8 @@ assert.doesNotMatch(liveChannelsViewSource, /live-channel-play/);
 assert.doesNotMatch(liveChannelsViewSource, /<span>Live<\/span>/);
 assert.doesNotMatch(liveChannelsViewSource, /channel\.quality/);
 assert.match(liveChannelsViewSource, /\{channel\.genre\} · \{channel\.region\}/);
+assert.match(liveChannelsViewSource, /LIVE_CHANNEL_ARTWORK_REVISION/);
+assert.match(liveChannelsViewSource, /src=\{channelArtworkUrl\(channel\.artwork\)\}/);
 
 const svgArtwork = new Set(
   LIVE_CHANNELS.map((channel) => channel.artwork).filter((artwork) => artwork.endsWith(".svg")),

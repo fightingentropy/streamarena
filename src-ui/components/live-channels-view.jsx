@@ -8,6 +8,17 @@ import {
   saveWatchParams,
 } from "../lib/watch-params.js";
 
+const LIVE_CHANNEL_ARTWORK_REVISION = "20260801-no-live-badges";
+
+function channelArtworkUrl(value) {
+  const artwork = String(value || "").trim();
+  if (!artwork || !artwork.startsWith("assets/images/live-thumbs/")) {
+    return artwork;
+  }
+  const separator = artwork.includes("?") ? "&" : "?";
+  return `${artwork}${separator}v=${LIVE_CHANNEL_ARTWORK_REVISION}`;
+}
+
 function slugify(value) {
   return String(value || "live")
     .trim()
@@ -89,7 +100,7 @@ function buildPlayerUrl(channel) {
     params.set("liveResolver", String(channel.liveResolver));
   }
   if (channel?.artwork) {
-    params.set("thumb", channel.artwork);
+    params.set("thumb", channelArtworkUrl(channel.artwork));
   }
   params.set("episode", "Live");
   addCurrentReturnToParam(params);
@@ -117,7 +128,7 @@ function renderChannelCard(channel) {
       onClick={() => openLiveChannel(channel)}
       aria-label={`Play ${channel.title}`}
     >
-      <img src={channel.artwork} alt={`${channel.title} artwork`} loading="lazy" />
+      <img src={channelArtworkUrl(channel.artwork)} alt={`${channel.title} artwork`} loading="lazy" />
       <span class="live-channel-body">
         <span class="live-channel-title">{channel.title}</span>
         <span class="live-channel-meta">{channel.genre} · {channel.region}</span>
