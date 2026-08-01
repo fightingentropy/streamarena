@@ -1239,11 +1239,7 @@ fn live_segment_video_bitrate_for_height(video_height: Option<u32>) -> &'static 
     }
 }
 
-async fn transcode_live_segment_to_browser_safe(
-    bytes: Vec<u8>,
-    video_encoder: &str,
-    video_bitrate: &str,
-) -> Result<Vec<u8>, String> {
+fn live_segment_transcode_args(video_encoder: &str, video_bitrate: &str) -> Vec<String> {
     // Re-encode both video and audio to browser-decodable codecs. Copying the
     // video is NOT enough: some upstreams (e.g. NTVS/hesgoaler Nova Sports) ship
     // an H.264 bitstream that ffmpeg's demux/remux leaves undecodable in Chrome
@@ -1255,13 +1251,16 @@ async fn transcode_live_segment_to_browser_safe(
     // average target ~2x without a hard ceiling. `-a53cc 0` stops the encoder
     // from re-embedding closed-caption SEI side data: feeds with corrupt
     // caption SEI (Bloomberg) make that copy fail mid-segment, truncating the
-    // output ("Unexpected end of SEI NAL Unit parsing type").
+    // output ("Unexpected end of SEI NAL Unit parsing type"). `-ac 2` also
+    // downmixes multichannel upstream audio: Chromium's MSE can repeatedly
+    // reject six-channel AAC produced from Sky's E-AC-3 feeds without raising
+    // a fatal hls.js error, leaving the player stuck before its first frame.
     let max_rate = video_bitrate.to_owned();
     let buf_size = video_bitrate
         .strip_suffix('k')
         .and_then(|value| value.parse::<u64>().ok())
         .map_or_else(|| video_bitrate.to_owned(), |kbps| format!("{}k", kbps * 2));
-    let args = [
+    [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
@@ -1285,6 +1284,8 @@ async fn transcode_live_segment_to_browser_safe(
         &buf_size,
         "-c:a",
         "aac",
+        "-ac",
+        "2",
         "-b:a",
         "160k",
         "-muxpreload",
@@ -1297,7 +1298,15 @@ async fn transcode_live_segment_to_browser_safe(
     ]
     .iter()
     .map(|value| (*value).to_owned())
-    .collect::<Vec<_>>();
+    .collect()
+}
+
+async fn transcode_live_segment_to_browser_safe(
+    bytes: Vec<u8>,
+    video_encoder: &str,
+    video_bitrate: &str,
+) -> Result<Vec<u8>, String> {
+    let args = live_segment_transcode_args(video_encoder, video_bitrate);
     // Limit concurrent encodes to avoid overloading the hardware encoder.
     let _permit = LIVE_REENCODE_SEMAPHORE
         .acquire()
@@ -3061,8 +3070,9 @@ mod tests {
         host_matches_allowed_live_hls_host, is_allowed_live_hls_url,
         is_browser_bound_live_hls_upstream, is_live_ts_segment,
         is_public_external_embed_hls_proxy_url, is_trusted_external_embed_hls_request,
-        live_audio_stream_key, normalize_hls_referer, png_prefixed_ts_strip_offset, query_pairs,
-        rewrite_live_hls_playlist, strip_video_only_stream_inf_codecs,
+        live_audio_stream_key, live_segment_transcode_args, normalize_hls_referer,
+        png_prefixed_ts_strip_offset, query_pairs, rewrite_live_hls_playlist,
+        strip_video_only_stream_inf_codecs,
     };
 
     #[test]
@@ -3350,6 +3360,13 @@ mod tests {
         assert!(!audio_codec_needs_live_transcode("aac"));
         assert!(!audio_codec_needs_live_transcode("mp3"));
         assert!(!audio_codec_needs_live_transcode(""));
+    }
+
+    #[test]
+    fn live_transcode_downmixes_audio_for_browser_mse() {
+        let args = live_segment_transcode_args("libx264", "3500k");
+        assert!(args.windows(2).any(|pair| pair == ["-c:a", "aac"]));
+        assert!(args.windows(2).any(|pair| pair == ["-ac", "2"]));
     }
 
     #[test]

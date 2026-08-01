@@ -4878,11 +4878,9 @@ fn is_supported_ntvs_hesgoaler_player_url(url: &Url) -> bool {
 }
 
 fn is_supported_ntvs_fawanews_player_url(url: &Url) -> bool {
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     if url.scheme() != "https"
-        || !url
-            .host_str()
-            .unwrap_or_default()
-            .eq_ignore_ascii_case("m.fawanews.news")
+        || !matches!(host.as_str(), "j.fawanews.news" | "m.fawanews.news")
         || url.path() != "/"
     {
         return false;
@@ -6483,20 +6481,23 @@ mod tests {
     fn follows_current_hesgoaler_fawanews_player_only() {
         let base = url::Url::parse("https://hesgoaler.com/stream.php?ch=NOVASPORTS1").unwrap();
         let html = r#"
-            <iframe src="https://m.fawanews.news/?channel=NOVASPORTS1"></iframe>
-            <iframe src="https://m.fawanews.news.evil.test/?channel=NOVASPORTS1"></iframe>
+            <iframe src="https://j.fawanews.news/?channel=NOVASPORTS1"></iframe>
+            <iframe src="https://j.fawanews.news.evil.test/?channel=NOVASPORTS1"></iframe>
         "#;
         let player = parse_ntvs_hesgoaler_fawanews_url(html, &base).expect("fawanews player");
         assert_eq!(
             player.as_str(),
-            "https://m.fawanews.news/?channel=NOVASPORTS1"
+            "https://j.fawanews.news/?channel=NOVASPORTS1"
         );
         assert!(is_supported_ntvs_fawanews_player_url(&player));
-        assert!(!is_supported_ntvs_fawanews_player_url(
-            &url::Url::parse("https://m.fawanews.news.evil.test/?channel=NOVASPORTS1").unwrap()
+        assert!(is_supported_ntvs_fawanews_player_url(
+            &url::Url::parse("https://m.fawanews.news/?channel=NOVASPORTS1").unwrap()
         ));
         assert!(!is_supported_ntvs_fawanews_player_url(
-            &url::Url::parse("https://m.fawanews.news/?channel=../../private").unwrap()
+            &url::Url::parse("https://j.fawanews.news.evil.test/?channel=NOVASPORTS1").unwrap()
+        ));
+        assert!(!is_supported_ntvs_fawanews_player_url(
+            &url::Url::parse("https://j.fawanews.news/?channel=../../private").unwrap()
         ));
     }
 

@@ -142,11 +142,9 @@ const NTV_CDN_LIVE_CHANNELS = Object.freeze(
   ].map(ntvCdnLiveChannel),
 );
 
-// ntvs.cx retired its hesgoales/"Falcon" channels in June 2026 — the
-// /channel-hesgoales/NOVASPORTS-N wrapper now 302-redirects to /channels, so
-// the resolver lands on the channel list and finds no embed. Point straight at
-// hesgoaler.com, the upstream the wrapper used to proxy: the sports resolver
-// already supports hesgoaler.com/stream.php (token POST → lovetier.bz HLS).
+// Point straight at Hesgoaler's stable channel wrapper. The sports resolver
+// follows its exact FawaNews player host to the signed Bluetier HLS URL, while
+// retaining the older inline-token flow as a provider-rollback fallback.
 const HESGOALER_STREAM_BASE_URL = "https://hesgoaler.com/stream.php";
 
 function hesgoalerChannelUrl(channelCode) {
@@ -187,9 +185,8 @@ const NOVASPORTS_LIVE_CHANNELS = Object.freeze(
 
 // hesgoaler.com/stream.php also fronts a multi-region premium-sports lineup (UK
 // Sky/TNT/Premier/Eurosport/Viaplay, France beIN/Canal+/RMC, Greece Cosmote Sport,
-// Portugal Sport TV). Every channel uses the exact same token POST → lovetier.bz HLS
-// path as the Nova Sports feeds above, so they all ride the existing "sports"
-// resolver unchanged — only the ?ch= code differs.
+// Portugal Sport TV). Every channel uses the same FawaNews → Bluetier resolver
+// path as Nova Sports; only the ?ch= code differs.
 function hesgoalerSportsChannel({ slug, code, title, region, genre = "Sports" }) {
   const source = hesgoalerChannelUrl(code);
   return {

@@ -74,8 +74,8 @@ const NTV_CDN_LIVE_CHANNELS: LiveChannel[] = (
   };
 });
 
-// Nova Sports 1–6 + the UK premium-sports lineup all resolve through
-// hesgoaler.com/stream.php (same token POST → lovetier.bz HLS sports resolver).
+// Nova Sports 1–6 resolve through Hesgoaler's stable wrapper, which the sports
+// resolver follows through the exact FawaNews player host to signed Bluetier HLS.
 const hesgoalerUrl = (code: string) => `https://hesgoaler.com/stream.php?ch=${code}`;
 const novasportsUrl = (n: number) => hesgoalerUrl(`NOVASPORTS${n}`);
 const NOVASPORTS_CHANNELS: LiveChannel[] = [1, 2, 3, 4, 5, 6].map((n) => ({
@@ -93,7 +93,8 @@ const NOVASPORTS_CHANNELS: LiveChannel[] = [1, 2, 3, 4, 5, 6].map((n) => ({
 
 // Multi-region premium-sports lineup via hesgoaler.com/stream.php — UK (Sky/TNT/
 // Premier/Eurosport/Viaplay), France (beIN/Canal+/RMC), Greece (Cosmote Sport) and
-// Portugal (Sport TV). Only the ?ch= code differs from the Nova Sports feeds above.
+// Portugal (Sport TV). It shares Nova's FawaNews → Bluetier resolver path; only
+// the ?ch= code differs.
 const HESGOALER_SPORTS: LiveChannel[] = (
   [
     // United Kingdom
