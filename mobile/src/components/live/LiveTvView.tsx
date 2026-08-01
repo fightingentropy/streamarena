@@ -63,6 +63,8 @@ function ChannelTile({
   width: number;
 }) {
   const logo = LIVE_LOGOS[channel.id];
+  const usesAuthenticLogo =
+    channel.id !== "sport-tv-7" && channel.source.includes("hesgoaler.com/stream.php");
   return (
     <PressableScale onPress={() => onPlay(channel)} style={{ width }} accessibilityLabel={`Play ${channel.title}`}>
       {/* The logo is the card's colour; everything around it stays neutral. */}
@@ -80,7 +82,16 @@ function ChannelTile({
         }}
       >
         {logo ? (
-          <Image source={logo} style={{ width: "100%", height: "100%" }} contentFit="contain" transition={150} />
+          <Image
+            source={logo}
+            style={
+              usesAuthenticLogo
+                ? { width: "84%", height: "68%" }
+                : { width: "100%", height: "100%" }
+            }
+            contentFit="contain"
+            transition={150}
+          />
         ) : null}
       </View>
       <View style={{ paddingTop: 9, paddingHorizontal: 1 }}>

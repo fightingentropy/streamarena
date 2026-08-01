@@ -114,7 +114,7 @@ const HESGOALER_SPORTS: LiveChannel[] = (
     { slug: "premier-sports-2", code: "PREMIERSPORTS2", title: "Premier Sports 2", region: "UK" },
     { slug: "eurosport-1", code: "Eurosport1UK", title: "Eurosport 1", region: "UK" },
     { slug: "eurosport-2", code: "Eurosport2UK", title: "Eurosport 2", region: "UK" },
-    { slug: "viaplay-sports-la-liga", code: "ViaplayLaLigaUK", title: "Viaplay Sports La Liga", region: "UK" },
+    { slug: "viaplay-sports-la-liga", code: "ViaplayLaLigaUK", title: "LALIGA TV", region: "UK" },
     { slug: "bein-sports-1-uk", code: "BEINSPORTS1UK", title: "beIN Sports 1 UK", region: "UK" },
     { slug: "itv-1", code: "ITV1", title: "ITV1", region: "UK", genre: "General" },
     { slug: "itv-2", code: "ITV2", title: "ITV2", region: "UK", genre: "General" },

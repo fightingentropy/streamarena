@@ -176,6 +176,7 @@ const NOVASPORTS_LIVE_CHANNELS = Object.freeze(
       liveEmbed: true,
       liveResolver: "sports",
       artwork: `assets/images/live-thumbs/novasports-${channelNumber}.png`,
+      artworkPresentation: "logo",
       genre: "Sports",
       region: "Greece",
       quality: "Live HLS",
@@ -187,7 +188,14 @@ const NOVASPORTS_LIVE_CHANNELS = Object.freeze(
 // Sky/TNT/Premier/Eurosport/Viaplay, France beIN/Canal+/RMC, Greece Cosmote Sport,
 // Portugal Sport TV). Every channel uses the same FawaNews → Bluetier resolver
 // path as Nova Sports; only the ?ch= code differs.
-function hesgoalerSportsChannel({ slug, code, title, region, genre = "Sports" }) {
+function hesgoalerSportsChannel({
+  slug,
+  code,
+  title,
+  region,
+  genre = "Sports",
+  artworkPresentation = "logo",
+}) {
   const source = hesgoalerChannelUrl(code);
   return {
     id: slug,
@@ -197,7 +205,8 @@ function hesgoalerSportsChannel({ slug, code, title, region, genre = "Sports" })
     streams: [{ id: "default", label: `${title} Live`, source, quality: "Live HLS" }],
     liveEmbed: true,
     liveResolver: "sports",
-    artwork: `assets/images/live-thumbs/${slug}.svg`,
+    artwork: `assets/images/live-thumbs/${slug}.png`,
+    artworkPresentation,
     genre,
     region,
     quality: "Live HLS",
@@ -223,7 +232,7 @@ const HESGOALER_SPORTS_CHANNELS = Object.freeze(
     { slug: "premier-sports-2", code: "PREMIERSPORTS2", title: "Premier Sports 2", region: "UK" },
     { slug: "eurosport-1", code: "Eurosport1UK", title: "Eurosport 1", region: "UK" },
     { slug: "eurosport-2", code: "Eurosport2UK", title: "Eurosport 2", region: "UK" },
-    { slug: "viaplay-sports-la-liga", code: "ViaplayLaLigaUK", title: "Viaplay Sports La Liga", region: "UK" },
+    { slug: "viaplay-sports-la-liga", code: "ViaplayLaLigaUK", title: "LALIGA TV", region: "UK" },
     { slug: "bein-sports-1-uk", code: "BEINSPORTS1UK", title: "beIN Sports 1 UK", region: "UK" },
     { slug: "itv-1", code: "ITV1", title: "ITV1", region: "UK", genre: "General" },
     { slug: "itv-2", code: "ITV2", title: "ITV2", region: "UK", genre: "General" },
@@ -264,7 +273,7 @@ const HESGOALER_SPORTS_CHANNELS = Object.freeze(
     { slug: "sport-tv-4", code: "SPT4", title: "Sport TV 4", region: "Portugal" },
     { slug: "sport-tv-5", code: "SPT5", title: "Sport TV 5", region: "Portugal" },
     { slug: "sport-tv-6", code: "SPT6", title: "Sport TV 6", region: "Portugal" },
-    { slug: "sport-tv-7", code: "SPT7", title: "Sport TV 7", region: "Portugal" },
+    { slug: "sport-tv-7", code: "SPT7", title: "Sport TV 7", region: "Portugal", artworkPresentation: "thumbnail" },
     { slug: "benfica-tv", code: "BTV1", title: "Benfica TV", region: "Portugal" },
     { slug: "canal-11", code: "CANAL11", title: "Canal 11", region: "Portugal" },
     // Netherlands — ESPN + Ziggo Sport

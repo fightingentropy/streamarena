@@ -64,6 +64,29 @@ assert.doesNotMatch(liveChannelsViewSource, /channel\.quality/);
 assert.match(liveChannelsViewSource, /\{channel\.genre\} · \{channel\.region\}/);
 assert.match(liveChannelsViewSource, /LIVE_CHANNEL_ARTWORK_REVISION/);
 assert.match(liveChannelsViewSource, /src=\{channelArtworkUrl\(channel\.artwork\)\}/);
+assert.match(liveChannelsViewSource, /channel\.artworkPresentation === "logo"/);
+
+const authenticSportsLogoChannels = LIVE_CHANNELS.filter((channel) =>
+  channel.source.includes("hesgoaler.com/stream.php"),
+);
+assert.equal(authenticSportsLogoChannels.length, 73);
+
+for (const channel of authenticSportsLogoChannels) {
+  const expectedPresentation = channel.id === "sport-tv-7" ? "thumbnail" : "logo";
+  assert.equal(
+    channel.artworkPresentation,
+    expectedPresentation,
+    `${channel.id} must use the correct authentic-artwork presentation`,
+  );
+  assert.match(channel.artwork, /\.png$/, `${channel.id} must use authentic PNG artwork`);
+
+  const artwork = readFileSync(new URL(`../${channel.artwork}`, import.meta.url));
+  assert.deepEqual(
+    [...artwork.subarray(0, 8)],
+    [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+    `${channel.id} artwork must be a valid PNG`,
+  );
+}
 
 const svgArtwork = new Set(
   LIVE_CHANNELS.map((channel) => channel.artwork).filter((artwork) => artwork.endsWith(".svg")),

@@ -8,7 +8,7 @@ import {
   saveWatchParams,
 } from "../lib/watch-params.js";
 
-const LIVE_CHANNEL_ARTWORK_REVISION = "20260801-no-live-badges";
+const LIVE_CHANNEL_ARTWORK_REVISION = "20260801-authentic-sports-logos";
 
 function channelArtworkUrl(value) {
   const artwork = String(value || "").trim();
@@ -128,7 +128,12 @@ function renderChannelCard(channel) {
       onClick={() => openLiveChannel(channel)}
       aria-label={`Play ${channel.title}`}
     >
-      <img src={channelArtworkUrl(channel.artwork)} alt={`${channel.title} artwork`} loading="lazy" />
+      <img
+        class={channel.artworkPresentation === "logo" ? "live-channel-logo" : undefined}
+        src={channelArtworkUrl(channel.artwork)}
+        alt={`${channel.title} artwork`}
+        loading="lazy"
+      />
       <span class="live-channel-body">
         <span class="live-channel-title">{channel.title}</span>
         <span class="live-channel-meta">{channel.genre} · {channel.region}</span>

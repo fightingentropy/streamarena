@@ -136,6 +136,12 @@ body.live-route .page {
     background: #090909;
 }
 
+.live-channel-card img.live-channel-logo {
+    box-sizing: border-box;
+    padding: 24px 22px;
+    background: #09090b;
+}
+
 .live-channel-body {
     display: flex;
     min-height: 68px;
@@ -226,6 +232,10 @@ body.live-route .page {
 
     .live-channel-title {
         font-size: 0.91rem;
+    }
+
+    .live-channel-card img.live-channel-logo {
+        padding: 18px 15px;
     }
 }
 
