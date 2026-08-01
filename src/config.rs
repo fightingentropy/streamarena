@@ -39,6 +39,7 @@ pub struct Config {
     pub export_queue_timeout_ms: u64,
     pub export_process_timeout_seconds: u64,
     pub resolver_max_concurrent: usize,
+    pub resolver_provider_max_concurrent: usize,
     pub resolver_queue_timeout_ms: u64,
     pub sports_resolver_max_concurrent: usize,
     pub sports_resolver_queue_timeout_ms: u64,
@@ -114,6 +115,8 @@ impl Config {
             24 * 60 * 60,
         );
         let resolver_max_concurrent = parse_usize_env("RESOLVER_MAX_CONCURRENT", 2, 1, 16);
+        let resolver_provider_max_concurrent =
+            parse_usize_env("RESOLVER_PROVIDER_MAX_CONCURRENT", 1, 1, 8);
         let resolver_queue_timeout_ms =
             parse_u64_env("RESOLVER_QUEUE_TIMEOUT_MS", 3_000, 100, 120_000);
         let sports_resolver_max_concurrent =
@@ -188,6 +191,7 @@ impl Config {
             export_queue_timeout_ms,
             export_process_timeout_seconds,
             resolver_max_concurrent,
+            resolver_provider_max_concurrent,
             resolver_queue_timeout_ms,
             sports_resolver_max_concurrent,
             sports_resolver_queue_timeout_ms,

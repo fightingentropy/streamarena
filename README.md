@@ -19,6 +19,9 @@ The app serves local library titles, resolves remote movie and TV sources, plays
 11. Troubleshooting
 12. Cleanup Notes
 
+Security-sensitive module ownership, replay semantics, and network trust
+boundaries are defined in [`docs/architecture-security.md`](docs/architecture-security.md).
+
 ## Current App Shape
 
 The repository is a single full-stack app:
@@ -34,9 +37,11 @@ The repository is a single full-stack app:
 Important paths:
 
 - `src/` - Rust services, routes, static serving, auth, resolver, media processing, uploads, live/sports, persistence.
+- `src/persistence/` - append-only migration and replay-safe user-state domains behind the persistence facade.
 - `src-ui/entries/` - page entrypoints loaded by each HTML shell.
 - `src-ui/pages/` - Solid page components for home, login, player, settings, live, and sports.
 - `src-ui/player/` - player-specific helpers for sources, HLS, subtitles, episodes, fullscreen, resume, and live stream menus.
+- `src-ui/lib/replay-safe-state.js` - persistent monotonic versions for offline/retried user-state mutations.
 - `assets/library.json` - local catalog. It currently contains empty `movies` and `series` arrays in this checkout.
 - `public/` - PWA manifest, service worker, and offline page copied by Vite into `dist/`.
 - `scripts/` - development checks, benchmarks, resolver helpers, and Mac mini deployment/maintenance tools.
@@ -520,6 +525,7 @@ Remux/HLS:
 Resolver/local cache:
 
 - `RESOLVER_MAX_CONCURRENT`
+- `RESOLVER_PROVIDER_MAX_CONCURRENT` - per-upstream ceiling inside the global resolver budget; default 1.
 - `RESOLVER_QUEUE_TIMEOUT_MS`
 - `LOCAL_TORRENT_MAX_BYTES`
 - `LOCAL_TORRENT_METADATA_TIMEOUT_MS`
@@ -555,6 +561,7 @@ Server-managed files:
 - My List entries.
 - Password-reset and email-verification tokens.
 - Service-health history (health samples + restart log) backing the admin dashboard.
+- User-state deletion tombstones, preventing stale offline progress/continue-watching replays from resurrecting deleted rows.
 
 `cache/resolver-cache.sqlite` (regenerable, self-heals from corruption) stores:
 
@@ -623,10 +630,16 @@ Development and checks:
 
 Benchmarks:
 
+- `bun run bench:startup -- --samples 5 --max-p95-ms 2500` - isolated cold-start/database-scan benchmark with an enforced p95 budget.
 - `bun run bench:playback:install` - install Playwright Chromium.
-- `bun run bench:playback -- --source assets/videos/<file>.mp4` - browser playback benchmark across direct/remux/HLS strategies.
-- `bun run bench:load -- --source assets/videos/<file>.mp4` - HLS load benchmark against a running backend.
-- `bun run bench:resolve -- --tmdb-id <id>` - concurrent resolver benchmark against a running backend.
+- `bun run bench:playback -- --source assets/videos/<file>.mp4 --max-startup-ms 5000` - browser playback benchmark with a startup gate.
+- `bun run bench:load -- --source assets/videos/<file>.mp4 --max-p95-ms 5000` - concurrent HLS benchmark with a segment-latency gate.
+- `bun run bench:resolve -- --tmdb-id <id> --max-p95-ms 30000` - concurrent resolver benchmark with a latency gate.
+
+`bun run check` executes the deterministic benchmark contract check and a cold
+startup sample. Resolver and playback thresholds remain explicit live gates
+because they require a running backend, a licensed provider path, and a local
+media fixture; use the commands above before deployment.
 
 Mac mini:
 

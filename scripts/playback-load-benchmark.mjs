@@ -34,6 +34,7 @@ function parseArgs(argv) {
     skipPlaylist: false,
     json: false,
     outputPath: "",
+    maxP95Ms: 0,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -67,6 +68,8 @@ function parseArgs(argv) {
       options.json = true;
     } else if (arg === "--output") {
       options.outputPath = String(nextValue() || "").trim();
+    } else if (arg === "--max-p95-ms") {
+      options.maxP95Ms = Number(nextValue() || 0);
     } else if (arg === "--help" || arg === "-h") {
       printHelpAndExit(0);
     } else {
@@ -85,6 +88,9 @@ function parseArgs(argv) {
   }
   if (!["same", "staggered"].includes(options.pattern)) {
     throw new Error("--pattern must be one of: same, staggered.");
+  }
+  if (!Number.isFinite(options.maxP95Ms) || options.maxP95Ms < 0) {
+    throw new Error("--max-p95-ms must be zero or a positive number.");
   }
 
   options.clients = Math.max(1, Math.floor(options.clients));
@@ -117,6 +123,7 @@ function printHelpAndExit(code = 0) {
       "  --skip-playlist        Request segments without a playlist preflight",
       "  --json                 Print the full report JSON",
       "  --output <path>        Save the full report JSON",
+      "  --max-p95-ms <ms>      Fail when successful segment p95 exceeds this budget",
     ].join("\n"),
   );
   process.exit(code);
@@ -424,6 +431,24 @@ async function main() {
     hlsLimits: before.config?.hlsLimits || null,
     clientResults: clients,
   };
+  const gateViolations = [];
+  if (
+    options.maxP95Ms > 0 &&
+    (!Number.isFinite(report.segmentsSummary.p95Ms) ||
+      report.segmentsSummary.p95Ms > options.maxP95Ms)
+  ) {
+    gateViolations.push(
+      `segment p95 ${report.segmentsSummary.p95Ms ?? "n/a"}ms exceeded ${options.maxP95Ms}ms`,
+    );
+  }
+  report.gate = {
+    maxP95Ms: options.maxP95Ms || null,
+    passed:
+      report.segmentsSummary.failed === 0 &&
+      report.playlistsSummary.failed === 0 &&
+      gateViolations.length === 0,
+    violations: gateViolations,
+  };
 
   printPrettyReport(report);
 
@@ -437,7 +462,7 @@ async function main() {
     console.log(JSON.stringify(report, null, 2));
   }
 
-  if (report.segmentsSummary.failed > 0 || report.playlistsSummary.failed > 0) {
+  if (!report.gate.passed) {
     process.exitCode = 1;
   }
 }

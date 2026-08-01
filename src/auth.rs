@@ -320,6 +320,7 @@ mod tests {
             export_queue_timeout_ms: 5_000,
             export_process_timeout_seconds: 6 * 60 * 60,
             resolver_max_concurrent: 2,
+            resolver_provider_max_concurrent: 1,
             resolver_queue_timeout_ms: 3_000,
             sports_resolver_max_concurrent: 2,
             sports_resolver_queue_timeout_ms: 3_000,

@@ -3,6 +3,7 @@ import {
   readContinueWatchingMetaMap,
 } from "../shared.js";
 import { AUDIO_LANG_PREF_KEY_PREFIX } from "./preferences.js";
+import { replaySafeMutationBody } from "./replay-safe-state.js";
 
 export { CONTINUE_WATCHING_META_KEY };
 export const RESUME_STORAGE_PREFIX = "streamarena-resume:";
@@ -154,7 +155,7 @@ function removeResumeEntriesForSource(
       serverDeletes.push(fetch("/api/user/watch-progress", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: replaySafeMutationBody({
           sourceIdentity: identity,
           seriesId: normalizedSeriesId,
         }),
@@ -166,7 +167,7 @@ function removeResumeEntriesForSource(
     serverDeletes.push(fetch("/api/user/watch-progress", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: replaySafeMutationBody({
         sourceIdentity: normalizedSource,
         seriesId: normalizedSeriesId,
       }),
@@ -573,7 +574,7 @@ export async function removeContinueWatchingEntry(sourceIdentity, seriesId = "")
   serverDeletes.push(fetch("/api/user/continue-watching", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: replaySafeMutationBody({
       sourceIdentity: normalizedSource,
       seriesId: normalizedSeriesId,
     }),

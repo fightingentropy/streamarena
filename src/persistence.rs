@@ -16,6 +16,9 @@ use crate::utils::{
     normalize_session_health_state, normalize_subtitle_preference,
 };
 
+mod migrations;
+mod user_state;
+
 const TITLE_PREFERENCES_STALE_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 const PLAYBACK_SESSION_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const PLAYBACK_SESSION_VALIDATE_INTERVAL_MS: i64 = 90 * 1000;
@@ -26,6 +29,7 @@ const MEDIA_PROBE_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 // is kept long enough to reason about flapping over a month.
 const HEALTH_SAMPLE_STALE_MS: i64 = 48 * 60 * 60 * 1000;
 const SERVICE_START_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+const USER_STATE_TOMBSTONE_STALE_MS: i64 = 180 * 24 * 60 * 60 * 1000;
 const TMDB_RESPONSE_PERSIST_MAX_ENTRIES: i64 = 6000;
 const PLAYBACK_SESSION_PERSIST_MAX_ENTRIES: i64 = 2500;
 const RESOLVED_STREAM_PERSIST_MAX_ENTRIES: i64 = 6000;
@@ -2668,10 +2672,18 @@ impl Db {
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
-            let changed = connection.execute(
+            let tx = connection.unchecked_transaction()?;
+            let changed = tx.execute(
                 "UPDATE users SET is_admin = ?, updated_at = ? WHERE id = ?",
                 params![i64::from(is_admin), now_ms(), user_id],
             )?;
+            // Privilege changes rotate the authentication boundary. Existing
+            // sessions were minted under a different authorization level and
+            // must not silently inherit (or retain) administrator access.
+            if changed > 0 {
+                tx.execute("DELETE FROM auth_sessions WHERE user_id = ?", [user_id])?;
+            }
+            tx.commit()?;
             return_connection(&pool, connection);
             Ok::<usize, rusqlite::Error>(changed)
         })
@@ -3286,13 +3298,12 @@ impl Db {
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
-            connection.execute(
-                "INSERT INTO user_watch_progress (user_id, source_identity, resume_seconds, updated_at)
-                 VALUES (?, ?, ?, ?)
-                 ON CONFLICT(user_id, source_identity) DO UPDATE SET
-                   resume_seconds = excluded.resume_seconds,
-                   updated_at = excluded.updated_at",
-                params![user_id, source_identity, resume_seconds, updated_at],
+            user_state::upsert_watch_progress(
+                &connection,
+                user_id,
+                &source_identity,
+                resume_seconds,
+                updated_at,
             )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
@@ -3307,14 +3318,19 @@ impl Db {
         &self,
         user_id: i64,
         source_identity: String,
+        deleted_at: i64,
     ) -> AppResult<()> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
-            connection.execute(
-                "DELETE FROM user_watch_progress WHERE user_id = ? AND source_identity = ?",
-                params![user_id, source_identity],
+            user_state::delete_item(
+                &connection,
+                user_id,
+                user_state::WATCH_PROGRESS_DOMAIN,
+                "user_watch_progress",
+                &source_identity,
+                deleted_at,
             )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
@@ -3329,17 +3345,26 @@ impl Db {
         &self,
         user_id: i64,
         series_id: String,
+        deleted_at: i64,
     ) -> AppResult<()> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
+            let tx = connection.unchecked_transaction()?;
             let normalized_series_id = series_id.trim().to_ascii_lowercase();
             let source_prefix = format!("series:{normalized_series_id}:episode:%");
             if let Some(tmdb_id) = tmdb_tv_id_from_series_id(&normalized_series_id) {
+                user_state::tombstone_watch_progress_series(
+                    &tx,
+                    user_id,
+                    &normalized_series_id,
+                    Some(&tmdb_id),
+                    deleted_at,
+                )?;
                 let tmdb_source = format!("tmdb:tv:{tmdb_id}");
                 let tmdb_source_prefix = format!("{tmdb_source}:%");
-                connection.execute(
+                tx.execute(
                     "DELETE FROM user_watch_progress
                      WHERE user_id = ?
                        AND (
@@ -3350,12 +3375,20 @@ impl Db {
                     params![user_id, source_prefix, tmdb_source, tmdb_source_prefix],
                 )?;
             } else {
-                connection.execute(
+                user_state::tombstone_watch_progress_series(
+                    &tx,
+                    user_id,
+                    &normalized_series_id,
+                    None,
+                    deleted_at,
+                )?;
+                tx.execute(
                     "DELETE FROM user_watch_progress
                      WHERE user_id = ? AND source_identity LIKE ?",
                     params![user_id, source_prefix],
                 )?;
             }
+            tx.commit()?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
@@ -3583,7 +3616,10 @@ impl Db {
         let cache_path = self.cache_path.clone();
         let cache_pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
-            let now = now_ms();
+            let updated_at = entry
+                .get("updatedAt")
+                .and_then(Value::as_i64)
+                .unwrap_or_else(now_ms);
             let source_identity = entry
                 .get("sourceIdentity")
                 .and_then(Value::as_str)
@@ -3691,6 +3727,45 @@ impl Db {
             )?;
             return_connection(&cache_pool, cache_connection);
             let connection = take_connection(&pool, &path)?;
+            let tx = connection.unchecked_transaction()?;
+            let canonical_series_id = normalized_series_id.as_str();
+            let derived_tmdb_id = tmdb_tv_id_from_series_id(&normalized_series_id);
+            let canonical_tmdb_id =
+                if normalized_media_type == "tv" && !normalized_tmdb_id.is_empty() {
+                    Some(normalized_tmdb_id.as_str())
+                } else {
+                    derived_tmdb_id.as_deref()
+                };
+            if (!canonical_series_id.is_empty() || canonical_tmdb_id.is_some())
+                && user_state::latest_continue_series_updated_at(
+                    &tx,
+                    user_id,
+                    canonical_series_id,
+                    canonical_tmdb_id,
+                )? > updated_at
+            {
+                tx.commit()?;
+                return_connection(&pool, connection);
+                return Ok::<(), rusqlite::Error>(());
+            }
+            if user_state::mutation_is_blocked_by_tombstone(
+                &tx,
+                user_id,
+                user_state::CONTINUE_WATCHING_DOMAIN,
+                &source_identity,
+                updated_at,
+            )? {
+                tx.commit()?;
+                return_connection(&pool, connection);
+                return Ok::<(), rusqlite::Error>(());
+            }
+            user_state::clear_obsolete_tombstone(
+                &tx,
+                user_id,
+                user_state::CONTINUE_WATCHING_DOMAIN,
+                &source_identity,
+                updated_at,
+            )?;
             if let Some(reconciled) = reconciled {
                 source_hash = reconciled.source_hash;
                 session_key = reconciled.session_key;
@@ -3699,12 +3774,20 @@ impl Db {
                 filename = reconciled.filename;
             }
             if !normalized_series_id.is_empty() {
+                user_state::tombstone_continue_series(
+                    &tx,
+                    user_id,
+                    &normalized_series_id,
+                    tmdb_tv_id_from_series_id(&normalized_series_id).as_deref(),
+                    updated_at,
+                    Some(&source_identity),
+                )?;
                 let source_prefix = format!("series:{normalized_series_id}:episode:%");
                 if let Some(tmdb_id_from_series) = tmdb_tv_id_from_series_id(&normalized_series_id)
                 {
                     let tmdb_source = format!("tmdb:tv:{tmdb_id_from_series}");
                     let tmdb_source_prefix = format!("{tmdb_source}:%");
-                    connection.execute(
+                    tx.execute(
                         "DELETE FROM user_continue_watching
                          WHERE user_id = ?
                            AND source_identity <> ?
@@ -3726,7 +3809,7 @@ impl Db {
                         ],
                     )?;
                 } else {
-                    connection.execute(
+                    tx.execute(
                         "DELETE FROM user_continue_watching
                          WHERE user_id = ?
                            AND source_identity <> ?
@@ -3741,9 +3824,17 @@ impl Db {
                 }
             }
             if normalized_media_type == "tv" && !normalized_tmdb_id.is_empty() {
+                user_state::tombstone_continue_series(
+                    &tx,
+                    user_id,
+                    &format!("tmdb-tv-{normalized_tmdb_id}"),
+                    Some(&normalized_tmdb_id),
+                    updated_at,
+                    Some(&source_identity),
+                )?;
                 let tmdb_source = format!("tmdb:tv:{normalized_tmdb_id}");
                 let tmdb_source_prefix = format!("{tmdb_source}:%");
-                connection.execute(
+                tx.execute(
                     "DELETE FROM user_continue_watching
                      WHERE user_id = ?
                        AND source_identity <> ?
@@ -3761,7 +3852,7 @@ impl Db {
                     ],
                 )?;
             }
-            connection.execute(
+            tx.execute(
                 "INSERT INTO user_continue_watching
                    (user_id, source_identity, title, episode, src, tmdb_id, media_type,
                     series_id, episode_index, year, thumb, source_hash, session_key,
@@ -3783,7 +3874,8 @@ impl Db {
                    source_input = excluded.source_input,
                    filename = excluded.filename,
                    resume_seconds = excluded.resume_seconds,
-                   updated_at = excluded.updated_at",
+                   updated_at = excluded.updated_at
+                 WHERE excluded.updated_at >= user_continue_watching.updated_at",
                 params![
                     user_id,
                     source_identity,
@@ -3802,9 +3894,10 @@ impl Db {
                     source_input,
                     filename,
                     resume_seconds,
-                    now
+                    updated_at
                 ],
             )?;
+            tx.commit()?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
@@ -3818,14 +3911,19 @@ impl Db {
         &self,
         user_id: i64,
         source_identity: String,
+        deleted_at: i64,
     ) -> AppResult<()> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
-            connection.execute(
-                "DELETE FROM user_continue_watching WHERE user_id = ? AND source_identity = ?",
-                params![user_id, source_identity],
+            user_state::delete_item(
+                &connection,
+                user_id,
+                user_state::CONTINUE_WATCHING_DOMAIN,
+                "user_continue_watching",
+                &source_identity,
+                deleted_at,
             )?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
@@ -3840,17 +3938,27 @@ impl Db {
         &self,
         user_id: i64,
         series_id: String,
+        deleted_at: i64,
     ) -> AppResult<()> {
         let path = self.users_path.clone();
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
+            let tx = connection.unchecked_transaction()?;
             let normalized_series_id = series_id.trim().to_ascii_lowercase();
             let source_prefix = format!("series:{normalized_series_id}:episode:%");
             if let Some(tmdb_id) = tmdb_tv_id_from_series_id(&normalized_series_id) {
+                user_state::tombstone_continue_series(
+                    &tx,
+                    user_id,
+                    &normalized_series_id,
+                    Some(&tmdb_id),
+                    deleted_at,
+                    None,
+                )?;
                 let tmdb_source = format!("tmdb:tv:{tmdb_id}");
                 let tmdb_source_prefix = format!("{tmdb_source}:%");
-                connection.execute(
+                tx.execute(
                     "DELETE FROM user_continue_watching
                      WHERE user_id = ?
                        AND (
@@ -3870,13 +3978,22 @@ impl Db {
                     ],
                 )?;
             } else {
-                connection.execute(
+                user_state::tombstone_continue_series(
+                    &tx,
+                    user_id,
+                    &normalized_series_id,
+                    None,
+                    deleted_at,
+                    None,
+                )?;
+                tx.execute(
                     "DELETE FROM user_continue_watching
                      WHERE user_id = ?
                        AND (lower(series_id) = ? OR source_identity LIKE ?)",
                     params![user_id, normalized_series_id, source_prefix],
                 )?;
             }
+            tx.commit()?;
             return_connection(&pool, connection);
             Ok::<(), rusqlite::Error>(())
         })
@@ -4029,6 +4146,7 @@ const DURABLE_TABLES: &[&str] = &[
     "user_preferences",
     "user_watch_progress",
     "user_continue_watching",
+    "user_state_tombstones",
     "user_my_list",
     "password_reset_tokens",
     "email_verification_tokens",
@@ -4511,6 +4629,11 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          migration_id TEXT PRIMARY KEY,
+          checksum TEXT NOT NULL,
+          applied_at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS auth_sessions (
           token_hash TEXT PRIMARY KEY,
           user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -4643,6 +4766,11 @@ fn build_users_schema(path: &Path) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_live_watch_created ON live_watch_events(created_at);
         CREATE INDEX IF NOT EXISTS idx_live_watch_user ON live_watch_events(user_id);
         ",
+    )?;
+    migrations::apply_named_migration(
+        &connection,
+        "2026-08-01-user-state-tombstones-v1",
+        user_state::TOMBSTONE_MIGRATION_SQL,
     )?;
     // Feedback image attachments were added after the table first shipped, so
     // back-fill the columns on databases that already have a `feedback` table.
@@ -4989,6 +5117,10 @@ fn sweep_users_db(pool: &Pool, path: &Path) -> Result<(), rusqlite::Error> {
     connection.execute(
         "DELETE FROM service_starts WHERE started_at <= ?",
         [now - SERVICE_START_STALE_MS],
+    )?;
+    connection.execute(
+        "DELETE FROM user_state_tombstones WHERE deleted_at <= ?",
+        [now - USER_STATE_TOMBSTONE_STALE_MS],
     )?;
     return_connection(pool, connection);
     Ok(())
@@ -5691,7 +5823,7 @@ mod tests {
 
     use super::{
         Db, PLAYBACK_SESSION_VALIDATE_INTERVAL_MS, PersistPlaybackSessionInput,
-        SQLITE_BUSY_TIMEOUT_MS, open_connection, parse_movie_resolve_key_quality,
+        SQLITE_BUSY_TIMEOUT_MS, now_ms, open_connection, parse_movie_resolve_key_quality,
     };
 
     #[test]
@@ -6436,7 +6568,7 @@ mod tests {
         assert_eq!(entries[0]["resolverProvider"], "local-torrent");
         assert_eq!(entries[0]["filename"], "Euphoria.S01E02.mkv");
 
-        db.delete_user_continue_watching_for_series(user_id, "tmdb-tv-85552".to_owned())
+        db.delete_user_continue_watching_for_series(user_id, "tmdb-tv-85552".to_owned(), now_ms())
             .await
             .expect("delete series continue watching");
         assert!(
@@ -6663,6 +6795,7 @@ mod tests {
             export_queue_timeout_ms: 5_000,
             export_process_timeout_seconds: 6 * 60 * 60,
             resolver_max_concurrent: 2,
+            resolver_provider_max_concurrent: 1,
             resolver_queue_timeout_ms: 3_000,
             sports_resolver_max_concurrent: 2,
             sports_resolver_queue_timeout_ms: 3_000,
@@ -6922,6 +7055,179 @@ mod tests {
                 .await
                 .expect("load cascaded verification token")
                 .is_none()
+        );
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn privilege_changes_revoke_sessions_minted_under_the_old_role() {
+        let path = unique_temp_db_path("privilege-session-rotation");
+        let db = setup_test_playback_session_db(&path).await;
+        let user_id = db
+            .create_user(
+                "role-change@example.com".to_owned(),
+                "hash".to_owned(),
+                "Role Change".to_owned(),
+            )
+            .await
+            .expect("create user");
+
+        db.create_session("viewer-session".to_owned(), user_id, i64::MAX)
+            .await
+            .expect("create viewer session");
+        assert_eq!(
+            db.admin_set_admin(user_id, true)
+                .await
+                .expect("promote user"),
+            1
+        );
+        assert!(
+            db.get_session("viewer-session".to_owned())
+                .await
+                .expect("load promoted session")
+                .is_none(),
+            "a viewer session must not silently inherit administrator access"
+        );
+
+        db.create_session("admin-session".to_owned(), user_id, i64::MAX)
+            .await
+            .expect("create admin session");
+        assert_eq!(
+            db.admin_set_admin(user_id, false)
+                .await
+                .expect("demote user"),
+            1
+        );
+        assert!(
+            db.get_session("admin-session".to_owned())
+                .await
+                .expect("load demoted session")
+                .is_none(),
+            "an administrator session must not retain privileges after demotion"
+        );
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn durable_user_state_rejects_stale_replays_and_delete_resurrection() {
+        let path = unique_temp_db_path("user-state-replay");
+        let db = setup_test_playback_session_db(&path).await;
+        let user_id = db
+            .create_user(
+                "replay@example.com".to_owned(),
+                "hash".to_owned(),
+                "Replay".to_owned(),
+            )
+            .await
+            .expect("create replay user");
+
+        db.upsert_user_watch_progress(user_id, "movie:1".to_owned(), 80.0, 200)
+            .await
+            .expect("new progress");
+        db.upsert_user_watch_progress(user_id, "movie:1".to_owned(), 10.0, 100)
+            .await
+            .expect("stale progress replay");
+        let progress = db
+            .get_user_watch_progress(user_id)
+            .await
+            .expect("read progress");
+        assert_eq!(progress, vec![("movie:1".to_owned(), 80.0, 200)]);
+
+        db.delete_user_watch_progress(user_id, "movie:1".to_owned(), 300)
+            .await
+            .expect("delete progress");
+        db.upsert_user_watch_progress(user_id, "movie:1".to_owned(), 40.0, 250)
+            .await
+            .expect("replayed pre-delete progress");
+        assert!(
+            db.get_user_watch_progress(user_id)
+                .await
+                .expect("progress after stale replay")
+                .is_empty(),
+            "a stale offline replay must not resurrect deleted progress"
+        );
+        db.upsert_user_watch_progress(user_id, "movie:1".to_owned(), 5.0, 301)
+            .await
+            .expect("new post-delete progress");
+        assert_eq!(
+            db.get_user_watch_progress(user_id)
+                .await
+                .expect("progress after new mutation"),
+            vec![("movie:1".to_owned(), 5.0, 301)]
+        );
+
+        let continue_entry = |title: &str, updated_at: i64| {
+            json!({
+                "sourceIdentity": "movie:1",
+                "title": title,
+                "resumeSeconds": 12.0,
+                "updatedAt": updated_at
+            })
+        };
+        db.upsert_user_continue_watching(user_id, continue_entry("Newest", 500))
+            .await
+            .expect("new continue watching");
+        db.upsert_user_continue_watching(user_id, continue_entry("Stale", 400))
+            .await
+            .expect("stale continue replay");
+        assert_eq!(
+            db.get_user_continue_watching(user_id)
+                .await
+                .expect("continue watching")[0]["title"],
+            "Newest"
+        );
+        db.delete_user_continue_watching(user_id, "movie:1".to_owned(), 600)
+            .await
+            .expect("delete continue watching");
+        db.upsert_user_continue_watching(user_id, continue_entry("Resurrected", 550))
+            .await
+            .expect("stale continue replay after delete");
+        assert!(
+            db.get_user_continue_watching(user_id)
+                .await
+                .expect("continue after stale replay")
+                .is_empty()
+        );
+
+        let series_entry = |identity: &str, episode_index: i64, updated_at: i64| {
+            json!({
+                "sourceIdentity": identity,
+                "seriesId": "show",
+                "mediaType": "tv",
+                "title": "Show",
+                "episodeIndex": episode_index,
+                "resumeSeconds": 20.0,
+                "updatedAt": updated_at
+            })
+        };
+        db.upsert_user_continue_watching(user_id, series_entry("series:show:episode:0", 0, 700))
+            .await
+            .expect("first series episode");
+        db.upsert_user_continue_watching(user_id, series_entry("series:show:episode:1", 1, 800))
+            .await
+            .expect("new series episode");
+        db.upsert_user_continue_watching(user_id, series_entry("series:show:episode:0", 0, 750))
+            .await
+            .expect("stale superseded series replay");
+        let series = db
+            .get_user_continue_watching(user_id)
+            .await
+            .expect("series after stale replay");
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0]["sourceIdentity"], "series:show:episode:1");
+        db.delete_user_continue_watching_for_series(user_id, "show".to_owned(), 900)
+            .await
+            .expect("delete whole series");
+        db.upsert_user_continue_watching(user_id, series_entry("series:show:episode:1", 1, 850))
+            .await
+            .expect("stale whole-series replay");
+        assert!(
+            db.get_user_continue_watching(user_id)
+                .await
+                .expect("series after delete replay")
+                .is_empty()
         );
 
         let _ = tokio::fs::remove_file(&path).await;

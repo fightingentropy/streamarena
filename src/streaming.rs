@@ -19,6 +19,7 @@ use tokio_util::io::ReaderStream;
 use url::Url;
 use url::form_urlencoded::byte_serialize;
 
+use crate::cleanup_guard::CleanupGuard;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
 use crate::media::{MediaProbe, MediaService};
@@ -1400,6 +1401,10 @@ impl StreamingService {
         };
         let primary_encode_config = build_hls_video_encode_config(&preferred_mode);
         let partial_path = segment_path.with_extension("ts.partial");
+        let partial_cleanup_path = partial_path.clone();
+        let mut partial_cleanup = CleanupGuard::new(move || {
+            let _ = std::fs::remove_file(partial_cleanup_path);
+        });
         let render_result = run_process_to_file(
             &build_hls_on_demand_segment_args(
                 source_input,
@@ -1450,6 +1455,7 @@ impl StreamingService {
         fs::rename(&partial_path, &segment_path)
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
+        partial_cleanup.disarm();
         render_guard.mark_completed();
         Ok(segment_path)
     }

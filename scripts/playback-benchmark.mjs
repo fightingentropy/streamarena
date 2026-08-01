@@ -39,6 +39,7 @@ function parseArgs(argv) {
     outputPath: "",
     objective: DEFAULT_OBJECTIVE,
     strategies: [],
+    maxStartupMs: 0,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -86,6 +87,8 @@ function parseArgs(argv) {
       options.build = true;
     } else if (arg === "--no-build") {
       options.build = false;
+    } else if (arg === "--max-startup-ms") {
+      options.maxStartupMs = Number(nextValue() || 0);
     } else if (arg === "--help" || arg === "-h") {
       printHelpAndExit(0);
     } else {
@@ -95,6 +98,9 @@ function parseArgs(argv) {
 
   if (!Number.isFinite(options.port) || options.port <= 0) {
     throw new Error("Port must be a positive number.");
+  }
+  if (!Number.isFinite(options.maxStartupMs) || options.maxStartupMs < 0) {
+    throw new Error("--max-startup-ms must be zero or a positive number.");
   }
   if (
     !["balanced", "latency", "efficiency"].includes(options.objective)
@@ -126,6 +132,7 @@ function printHelpAndExit(code = 0) {
     "  --headed                Run Chromium headed instead of headless",
     "  --json                  Print the full report JSON to stdout",
     "  --output <path>         Write the full report JSON to disk",
+    "  --max-startup-ms <ms>   Fail when the recommended strategy exceeds this startup budget",
   ];
   console.log(lines.join("\n"));
   process.exit(code);
@@ -1193,6 +1200,24 @@ async function main() {
       strategies: strategiesReport,
       generatedAt: new Date().toISOString(),
     };
+    const recommended = successfulStrategies[0] || null;
+    const gateViolations = [];
+    if (!recommended) {
+      gateViolations.push("no playback strategy completed successfully");
+    } else if (
+      options.maxStartupMs > 0 &&
+      (!Number.isFinite(recommended.startup?.settledMs) ||
+        recommended.startup.settledMs > options.maxStartupMs)
+    ) {
+      gateViolations.push(
+        `startup ${recommended.startup?.settledMs ?? "n/a"}ms exceeded ${options.maxStartupMs}ms`,
+      );
+    }
+    report.gate = {
+      maxStartupMs: options.maxStartupMs || null,
+      passed: gateViolations.length === 0,
+      violations: gateViolations,
+    };
 
     if (options.outputPath) {
       const outputPath = resolve(ROOT_DIR, options.outputPath);
@@ -1202,6 +1227,7 @@ async function main() {
 
     if (options.json) {
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+      if (!report.gate.passed) process.exitCode = 1;
       return;
     }
 
@@ -1209,6 +1235,7 @@ async function main() {
     if (options.outputPath) {
       console.log(`Saved JSON report to ${resolve(ROOT_DIR, options.outputPath)}`);
     }
+    if (!report.gate.passed) process.exitCode = 1;
   } finally {
     await browser?.close();
     await server.stop();

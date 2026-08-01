@@ -9,6 +9,12 @@ const maxSourceLines = {
   "src-ui/pages/settings.jsx": 1_600,
 };
 const defaultPageLineLimit = 1_500;
+const backendSourceLineLimits = {
+  "src/persistence.rs": 7_350,
+  "src/routes.rs": 5_300,
+  "src/resolver.rs": 10_500,
+};
+const workerSourceLineLimit = 250;
 const maxJsBundleBytes = 700 * 1024;
 const maxCssBundleBytes = 160 * 1024;
 const forbiddenFrontendDeps = [
@@ -135,6 +141,61 @@ async function checkSourceSizes() {
     .forEach(([relPath, count]) => note(`${relPath}: ${count} nonblank lines`));
 }
 
+async function checkDomainDecomposition() {
+  for (const [relPath, limit] of Object.entries(backendSourceLineLimits)) {
+    const count = lineCount(await readText(relPath));
+    if (count > limit) {
+      fail(`${relPath} has ${count} nonblank lines, above the ${limit}-line growth guard.`);
+    }
+  }
+
+  const persistence = await readText("src/persistence.rs");
+  for (const moduleName of ["migrations", "user_state"]) {
+    if (!persistence.includes(`mod ${moduleName};`)) {
+      fail(`src/persistence.rs must keep the ${moduleName} domain module.`);
+    }
+  }
+  const main = await readText("src/main.rs");
+  for (const moduleName of ["cleanup_guard", "egress_policy", "provider_budget"]) {
+    if (!main.includes(`mod ${moduleName};`)) {
+      fail(`src/main.rs must keep the ${moduleName} trust-boundary module.`);
+    }
+    const relPath = `src/${moduleName}.rs`;
+    const count = lineCount(await readText(relPath));
+    if (count > 250) {
+      fail(`${relPath} has ${count} nonblank lines, above the 250-line domain guard.`);
+    }
+  }
+  const replaySafeClient = await readText("src-ui/lib/replay-safe-state.js");
+  if (!replaySafeClient.includes("nextUserStateMutationTimestamp")) {
+    fail("Frontend durable-state transport lost its monotonic mutation clock.");
+  }
+  for (const relPath of ["src-ui/pages/player.js", "src-ui/lib/continue-watching.js"]) {
+    if (!(await readText(relPath)).includes("replaySafeMutationBody")) {
+      fail(`${relPath} must use the shared replay-safe mutation boundary.`);
+    }
+  }
+
+  const workerDir = join(rootDir, "workers/live-hls-proxy/src");
+  const workerFiles = (await readdir(workerDir)).filter((name) => name.endsWith(".js")).sort();
+  for (const file of workerFiles) {
+    const relPath = `workers/live-hls-proxy/src/${file}`;
+    const count = lineCount(await readText(relPath));
+    if (count > workerSourceLineLimit) {
+      fail(`${relPath} has ${count} nonblank lines, above the ${workerSourceLineLimit}-line Worker domain guard.`);
+    }
+  }
+  const workerIndex = await readText("workers/live-hls-proxy/src/index.js");
+  if (lineCount(workerIndex) > 80) {
+    fail("The live-HLS Worker entrypoint must remain route dispatch only.");
+  }
+  for (const boundary of ["authorization", "origin", "playlist", "resource"]) {
+    if (!workerFiles.includes(`${boundary}.js`)) {
+      fail(`The live-HLS Worker is missing its ${boundary} trust-boundary module.`);
+    }
+  }
+}
+
 async function checkBuiltBundles() {
   const assetsDir = join(rootDir, "dist/ui-assets");
   try {
@@ -168,6 +229,7 @@ await checkPackageShape();
 await checkViteShape();
 await checkEntrypoints();
 await checkSourceSizes();
+await checkDomainDecomposition();
 await checkBuiltBundles();
 
 if (notes.length > 0) {

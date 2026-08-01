@@ -40,6 +40,7 @@ function parseArgs(argv) {
     sourceAudioProfile: "",
     json: false,
     outputPath: "",
+    maxP95Ms: 0,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -93,6 +94,8 @@ function parseArgs(argv) {
       options.json = true;
     } else if (arg === "--output") {
       options.outputPath = String(nextValue() || "").trim();
+    } else if (arg === "--max-p95-ms") {
+      options.maxP95Ms = Number(nextValue() || 0);
     } else if (arg === "--help" || arg === "-h") {
       printHelpAndExit(0);
     } else {
@@ -111,6 +114,9 @@ function parseArgs(argv) {
   }
   if (!Number.isFinite(options.waves) || options.waves <= 0) {
     throw new Error("--waves must be a positive number.");
+  }
+  if (!Number.isFinite(options.maxP95Ms) || options.maxP95Ms < 0) {
+    throw new Error("--max-p95-ms must be zero or a positive number.");
   }
 
   options.clients = Math.max(1, Math.floor(options.clients));
@@ -150,6 +156,7 @@ function printHelpAndExit(code = 0) {
       "  --source-audio-profile <p>   Source filter",
       "  --json                       Print full JSON report",
       "  --output <path>              Save full JSON report",
+      "  --max-p95-ms <ms>            Fail when successful resolve p95 exceeds this budget",
     ].join("\n"),
   );
   process.exit(code);
@@ -436,6 +443,20 @@ async function main() {
     streamingDelta: diffMetrics(after.streaming?.hls, before.streaming?.hls),
     results: waveResults,
   };
+  const gateViolations = [];
+  if (
+    options.maxP95Ms > 0 &&
+    (!Number.isFinite(report.summary.p95Ms) || report.summary.p95Ms > options.maxP95Ms)
+  ) {
+    gateViolations.push(
+      `resolve p95 ${report.summary.p95Ms ?? "n/a"}ms exceeded ${options.maxP95Ms}ms`,
+    );
+  }
+  report.gate = {
+    maxP95Ms: options.maxP95Ms || null,
+    passed: report.summary.failed === 0 && gateViolations.length === 0,
+    violations: gateViolations,
+  };
 
   printPrettyReport(report);
 
@@ -449,7 +470,7 @@ async function main() {
     console.log(JSON.stringify(report, null, 2));
   }
 
-  if (report.summary.failed > 0) {
+  if (!report.gate.passed) {
     process.exitCode = 1;
   }
 }

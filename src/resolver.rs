@@ -37,6 +37,7 @@ use crate::media::{
     merge_preferred_subtitle_tracks,
 };
 use crate::persistence::{Db, PersistPlaybackSessionInput, PlaybackSession, SourceHealthStats};
+use crate::provider_budget::ProviderConcurrencyBudgets;
 use crate::tmdb::TmdbService;
 use crate::utils::now_ms;
 use crate::utils::{
@@ -179,12 +180,14 @@ pub struct ResolverService {
     config: Config,
     db: Db,
     client: reqwest::Client,
+    provider_client: reqwest::Client,
     tmdb: TmdbService,
     media: MediaService,
     local_torrent: LocalTorrentService,
     resolve_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
     resolve_metrics: Arc<ResolverMetrics>,
     external_resolver_permits: Arc<Semaphore>,
+    provider_resolver_permits: ProviderConcurrencyBudgets,
     resolved_embed_cache: ResolvedEmbedCache,
 }
 
@@ -245,6 +248,7 @@ pub struct ResolverStats {
     lock_keys: usize,
     lock_prunes: i64,
     max_external_concurrent: usize,
+    max_provider_concurrent: usize,
     external_queue_timeout_ms: u64,
     external_active: i64,
     external_started: i64,
@@ -642,6 +646,7 @@ struct ExternalEmbedPlaybackRequest<'a> {
     health_scores: &'a HashMap<String, i64>,
     live_hls_proxy_secret: &'a str,
     live_hls_worker_base: &'a str,
+    provider_budgets: &'a ProviderConcurrencyBudgets,
     /// Resolved-payload cache + its key. Present only on the default (unpinned)
     /// path; `None` on pinned-source resolves, which are never cached.
     resolve_cache: Option<&'a ResolvedEmbedCache>,
@@ -733,21 +738,26 @@ impl ResolverService {
         config: Config,
         db: Db,
         client: reqwest::Client,
+        provider_client: reqwest::Client,
         tmdb: TmdbService,
         media: MediaService,
         local_torrent: LocalTorrentService,
     ) -> Self {
         let external_resolver_permits = Arc::new(Semaphore::new(config.resolver_max_concurrent));
+        let provider_resolver_permits =
+            ProviderConcurrencyBudgets::new(config.resolver_provider_max_concurrent);
         Self {
             config,
             db,
             client,
+            provider_client,
             tmdb,
             media,
             local_torrent,
             resolve_locks: Arc::new(DashMap::new()),
             resolve_metrics: Arc::new(ResolverMetrics::default()),
             external_resolver_permits,
+            provider_resolver_permits,
             resolved_embed_cache: ResolvedEmbedCache::new(),
         }
     }
@@ -755,6 +765,7 @@ impl ResolverService {
     /// Evict aged-out resolved-embed cache entries. Called from the periodic sweep.
     pub fn prune_resolve_cache(&self) {
         self.resolved_embed_cache.prune();
+        self.provider_resolver_permits.prune_idle();
     }
 
     pub fn stats(&self) -> ResolverStats {
@@ -766,6 +777,7 @@ impl ResolverService {
             lock_keys: self.resolve_locks.len(),
             lock_prunes: self.resolve_metrics.lock_prunes.load(Ordering::Relaxed),
             max_external_concurrent: self.config.resolver_max_concurrent,
+            max_provider_concurrent: self.config.resolver_provider_max_concurrent,
             external_queue_timeout_ms: self.config.resolver_queue_timeout_ms,
             external_active: self.resolve_metrics.external_active.load(Ordering::Relaxed),
             external_started: self
@@ -837,7 +849,7 @@ impl ResolverService {
         let mut external_guard = self.acquire_external_resolve_permit().await.ok()?;
         let payload =
             build_external_embed_resolved_playback_payload(ExternalEmbedPlaybackRequest {
-                client: &self.client,
+                client: &self.provider_client,
                 db: &self.db,
                 metadata,
                 source,
@@ -846,6 +858,7 @@ impl ResolverService {
                 health_scores,
                 live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
                 live_hls_worker_base: &self.config.live_hls_resource_worker_base,
+                provider_budgets: &self.provider_resolver_permits,
                 resolve_cache: Some(&self.resolved_embed_cache),
                 cache_key,
             })
@@ -1351,7 +1364,7 @@ impl ResolverService {
             let mut external_guard = self.acquire_external_resolve_permit().await?;
             if let Some(payload) =
                 build_external_embed_resolved_playback_payload(ExternalEmbedPlaybackRequest {
-                    client: &self.client,
+                    client: &self.provider_client,
                     db: &self.db,
                     metadata: &metadata,
                     source: provider,
@@ -1360,6 +1373,7 @@ impl ResolverService {
                     health_scores: &external_health_scores,
                     live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
                     live_hls_worker_base: &self.config.live_hls_resource_worker_base,
+                    provider_budgets: &self.provider_resolver_permits,
                     resolve_cache: None,
                     cache_key: None,
                 })
@@ -1760,7 +1774,7 @@ impl ResolverService {
             let mut external_guard = self.acquire_external_resolve_permit().await?;
             if let Some(payload) =
                 build_external_embed_resolved_playback_payload(ExternalEmbedPlaybackRequest {
-                    client: &self.client,
+                    client: &self.provider_client,
                     db: &self.db,
                     metadata: &metadata,
                     source: provider,
@@ -1769,6 +1783,7 @@ impl ResolverService {
                     health_scores: &external_health_scores,
                     live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
                     live_hls_worker_base: &self.config.live_hls_resource_worker_base,
+                    provider_budgets: &self.provider_resolver_permits,
                     resolve_cache: None,
                     cache_key: None,
                 })
@@ -5923,6 +5938,21 @@ async fn resolve_external_embed_candidate_attempt<'a>(
     candidate: ExternalEmbedSource,
     hls_deadline_ms: i64,
 ) -> Option<(ExternalEmbedSource, ExternalEmbedHlsPlaybackSource, String)> {
+    let remaining_ms = hls_deadline_ms - now_ms();
+    if remaining_ms < 1_000 {
+        return None;
+    }
+    // The outer semaphore caps all fresh resolver work; this provider-scoped
+    // permit prevents one unhealthy upstream from monopolising that capacity.
+    // Owned permits are cancellation-safe: dropping a losing hedged future
+    // releases the provider slot immediately.
+    let _provider_permit = request
+        .provider_budgets
+        .acquire(
+            candidate.provider.id,
+            Duration::from_millis(remaining_ms as u64),
+        )
+        .await?;
     let remaining_ms = hls_deadline_ms - now_ms();
     if remaining_ms < 1_000 {
         return None;

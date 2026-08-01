@@ -74,6 +74,10 @@ pub struct AppState {
     pub live_audio_transcode_cache: crate::live::LiveAudioTranscodeCache,
     pub live_hls_playlist_cache: crate::live::LiveHlsPlaylistCache,
     pub auth_rate_limiter: std::sync::Arc<crate::rate_limit::RateLimiter>,
+    /// Per-identity exponential cooldown after failed password verification.
+    /// This is separate from the broad sliding-window limiter: it slows online
+    /// guessing early without making successful logins share a global delay.
+    pub auth_failure_backoff: std::sync::Arc<crate::rate_limit::FailureBackoff>,
     /// Generous global anti-abuse backstop for signups. Per-IP limiting (via
     /// `auth_rate_limiter`) protects against single-source floods; this caps the
     /// aggregate so a distributed botnet can't create unlimited accounts. Set
@@ -482,6 +486,10 @@ pub fn build_router(state: AppState) -> Router {
         .merge(admin_api)
         .fallback(any(serve_static))
         .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::request_security::csrf_guard_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             http_metrics_middleware,
@@ -3281,21 +3289,33 @@ async fn auth_login_handler(
         ));
     }
 
-    let (user_id, db_email, password_hash, display_name) = state
-        .db
-        .get_user_by_email(email.clone())
-        .await?
-        .ok_or_else(|| ApiError::unauthorized("Invalid email or password."))?;
+    let backoff_key = format!("login:{email}");
+    if state.auth_failure_backoff.retry_after_ms(&backoff_key) > 0 {
+        return Err(ApiError::too_many_requests(
+            "Too many failed login attempts. Please wait and try again.",
+        ));
+    }
+
+    let Some((user_id, db_email, password_hash, display_name)) =
+        state.db.get_user_by_email(email.clone()).await?
+    else {
+        state.auth_failure_backoff.record_failure(&backoff_key);
+        return Err(ApiError::unauthorized("Invalid email or password."));
+    };
 
     if !auth::verify_password_async(password, password_hash).await {
+        state.auth_failure_backoff.record_failure(&backoff_key);
         return Err(ApiError::unauthorized("Invalid email or password."));
     }
 
     if let Some((_, _, _, _, is_disabled)) = state.db.get_auth_user(user_id).await?
         && is_disabled
     {
+        state.auth_failure_backoff.record_failure(&backoff_key);
         return Err(ApiError::forbidden("This account has been disabled."));
     }
+
+    state.auth_failure_backoff.record_success(&backoff_key);
 
     let token = auth::generate_session_token();
     let expires_at = now_ms() + SESSION_MAX_AGE_SECONDS * 1000;
@@ -3745,6 +3765,10 @@ fn sanitize_continue_watching_entry(
             entry.get("resumeSeconds").or(Some(entry))
         )),
     );
+    object.insert(
+        "updatedAt".to_owned(),
+        Value::Number(normalize_user_updated_at(entry.get("updatedAt")).into()),
+    );
     Some(Value::Object(object))
 }
 
@@ -4011,9 +4035,10 @@ async fn user_watch_progress_handler(
             let source_identity =
                 require_bounded_string_field(&payload, "sourceIdentity", USER_IDENTITY_MAX_BYTES)?;
             let resume_seconds = normalize_resume_seconds_value(payload.get("resumeSeconds"));
+            let updated_at = normalize_user_updated_at(payload.get("updatedAt"));
             state
                 .db
-                .upsert_user_watch_progress(user.id, source_identity, resume_seconds, now_ms())
+                .upsert_user_watch_progress(user.id, source_identity, resume_seconds, updated_at)
                 .await?;
             Ok(json_response(json!({ "ok": true })))
         }
@@ -4028,16 +4053,17 @@ async fn user_watch_progress_handler(
                 .filter(|value| !value.is_empty())
                 .map(|value| value.to_ascii_lowercase())
                 .unwrap_or_else(|| extract_series_id_from_source_identity(&source_identity));
+            let deleted_at = normalize_user_updated_at(payload.get("updatedAt"));
             if !series_id.is_empty() {
                 state
                     .db
-                    .delete_user_watch_progress_for_series(user.id, series_id)
+                    .delete_user_watch_progress_for_series(user.id, series_id, deleted_at)
                     .await?;
                 return Ok(json_response(json!({ "ok": true })));
             }
             state
                 .db
-                .delete_user_watch_progress(user.id, source_identity)
+                .delete_user_watch_progress(user.id, source_identity, deleted_at)
                 .await?;
             Ok(json_response(json!({ "ok": true })))
         }
@@ -4083,24 +4109,29 @@ async fn user_continue_watching_handler(
                 .filter(|value| !value.is_empty())
                 .map(|value| value.to_ascii_lowercase())
                 .unwrap_or_else(|| extract_series_id_from_source_identity(&source_identity));
+            let deleted_at = normalize_user_updated_at(payload.get("updatedAt"));
             if !series_id.is_empty() {
                 state
                     .db
-                    .delete_user_continue_watching_for_series(user.id, series_id.clone())
+                    .delete_user_continue_watching_for_series(
+                        user.id,
+                        series_id.clone(),
+                        deleted_at,
+                    )
                     .await?;
                 state
                     .db
-                    .delete_user_watch_progress_for_series(user.id, series_id)
+                    .delete_user_watch_progress_for_series(user.id, series_id, deleted_at)
                     .await?;
                 return Ok(json_response(json!({ "ok": true })));
             }
             state
                 .db
-                .delete_user_continue_watching(user.id, source_identity.clone())
+                .delete_user_continue_watching(user.id, source_identity.clone(), deleted_at)
                 .await?;
             state
                 .db
-                .delete_user_watch_progress(user.id, source_identity)
+                .delete_user_watch_progress(user.id, source_identity, deleted_at)
                 .await?;
             Ok(json_response(json!({ "ok": true })))
         }

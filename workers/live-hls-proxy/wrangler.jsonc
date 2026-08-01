@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "streamarena-live-hls-proxy",
   "main": "src/index.js",
-  "compatibility_date": "2026-05-23",
+  "compatibility_date": "2026-08-01",
   "workers_dev": true,
   // Two hosts on purpose. The zone-routed custom domain is the primary: only on
   // a zone route do the cf.cacheTtl/cacheEverything fetch hints in src/index.js
@@ -12,7 +12,7 @@
   // selects which host signed URLs point at via LIVE_HLS_RESOURCE_WORKER_BASE,
   // so reverting is an env-var flip on the mini, not a Worker redeploy.
   "routes": [{ "pattern": "live.streamarena.xyz", "custom_domain": true }],
-  "observability": { "enabled": true },
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
   // Public origin the playlist/viaOrigin routes relay to (the mini behind
   // Caddy). The path+query is forwarded verbatim so signatures keep validating.
   "vars": { "ORIGIN_BASE": "https://streamarena.xyz" }

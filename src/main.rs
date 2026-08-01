@@ -1,5 +1,7 @@
 mod auth;
+mod cleanup_guard;
 mod config;
+mod egress_policy;
 mod email;
 mod error;
 mod football;
@@ -12,8 +14,10 @@ mod media;
 mod persistence;
 mod playback_optimize;
 mod process;
+mod provider_budget;
 mod provider_registry;
 mod rate_limit;
+mod request_security;
 mod resolver;
 mod routes;
 mod secret_store;
@@ -205,6 +209,11 @@ async fn main() -> AppResult<()> {
     let mut http_client_builder = reqwest::Client::builder()
         .user_agent("streamarena-backend")
         .timeout(Duration::from_secs(SHARED_HTTP_CLIENT_TIMEOUT_SECONDS));
+    let mut provider_http_client_builder = crate::egress_policy::hardened_provider_client_builder(
+        reqwest::Client::builder()
+            .user_agent("streamarena-provider-egress")
+            .timeout(Duration::from_secs(SHARED_HTTP_CLIENT_TIMEOUT_SECONDS)),
+    );
     if let Some(proxy_url) = env::var("OUTBOUND_HTTP_PROXY")
         .ok()
         .map(|value| value.trim().to_owned())
@@ -221,6 +230,8 @@ async fn main() -> AppResult<()> {
             crate::error::ApiError::internal(format!("Invalid OUTBOUND_HTTP_PROXY: {error}"))
         })?;
         let bypass_hosts = crate::config::outbound_proxy_bypass_hosts();
+        let provider_proxy_target = proxy_target.clone();
+        let provider_bypass_hosts = bypass_hosts.clone();
         let proxy = reqwest::Proxy::custom(move |url| {
             let host = url.host_str()?.to_ascii_lowercase();
             if outbound_proxy_bypasses_host(&host, &bypass_hosts) {
@@ -229,9 +240,23 @@ async fn main() -> AppResult<()> {
                 Some(proxy_target.clone())
             }
         });
+        let provider_proxy = reqwest::Proxy::custom(move |url| {
+            let host = url.host_str()?.to_ascii_lowercase();
+            if outbound_proxy_bypasses_host(&host, &provider_bypass_hosts)
+                || !crate::egress_policy::provider_proxy_is_allowed_host(&host)
+            {
+                None
+            } else {
+                Some(provider_proxy_target.clone())
+            }
+        });
         http_client_builder = http_client_builder.proxy(proxy);
+        provider_http_client_builder = provider_http_client_builder.proxy(provider_proxy);
     }
     let http_client = http_client_builder
+        .build()
+        .map_err(|error| crate::error::ApiError::internal(error.to_string()))?;
+    let provider_http_client = provider_http_client_builder
         .build()
         .map_err(|error| crate::error::ApiError::internal(error.to_string()))?;
     let tmdb = TmdbService::new(config.clone(), db.clone(), http_client.clone());
@@ -242,6 +267,7 @@ async fn main() -> AppResult<()> {
         config.clone(),
         db.clone(),
         http_client.clone(),
+        provider_http_client,
         tmdb.clone(),
         media.clone(),
         local_torrent.clone(),
@@ -256,6 +282,11 @@ async fn main() -> AppResult<()> {
     );
     let auth_rate_limiter =
         std::sync::Arc::new(crate::rate_limit::RateLimiter::new(12, 15 * 60 * 1000));
+    let auth_failure_backoff = std::sync::Arc::new(crate::rate_limit::FailureBackoff::new(
+        250,
+        30_000,
+        30 * 60 * 1000,
+    ));
     // Generous global anti-abuse backstop for signups (per-IP limiting via
     // `auth_rate_limiter` is the primary control; see `auth_signup_handler`).
     // Set high enough never to throttle an organic signup surge — a botnet that
@@ -276,6 +307,7 @@ async fn main() -> AppResult<()> {
     let sweep_streaming = streaming.clone();
     let sweep_local_torrent = local_torrent.clone();
     let sweep_auth_rate_limiter = auth_rate_limiter.clone();
+    let sweep_auth_failure_backoff = auth_failure_backoff.clone();
     let sweep_signup_global_rate_limiter = signup_global_rate_limiter.clone();
     let sweep_sports_stream_rate_limiter = sports_stream_rate_limiter.clone();
     let sweep_sports_stream_resolve_cache = SportsStreamResolveCache::new(
@@ -296,6 +328,7 @@ async fn main() -> AppResult<()> {
             sweep_streaming.prune().await;
             sweep_local_torrent.prune_idle_locks();
             sweep_auth_rate_limiter.prune();
+            sweep_auth_failure_backoff.prune();
             sweep_signup_global_rate_limiter.prune();
             sweep_sports_stream_rate_limiter.prune();
             sweep_sports_stream_resolve_cache.prune();
@@ -325,6 +358,7 @@ async fn main() -> AppResult<()> {
         live_audio_transcode_cache,
         live_hls_playlist_cache,
         auth_rate_limiter,
+        auth_failure_backoff,
         signup_global_rate_limiter,
         sports_stream_rate_limiter,
         started_at_ms,

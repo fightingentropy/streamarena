@@ -95,6 +95,7 @@ import {
 } from "../player/fullscreen.js";
 import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
 import { handleAuthFailureResponse } from "../lib/auth.js";
+import { replaySafeMutationBody } from "../lib/replay-safe-state.js";
 import { renderPlayerShell } from "../player/player-shell-template.jsx";
 import {
   buildLiveWatchPath,
@@ -1730,11 +1731,10 @@ function syncContinueWatchingEntryToServer(resumeSeconds, { keepalive = false } 
   fetchUserApi("/api/user/continue-watching", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: replaySafeMutationBody({
       sourceIdentity: normalizedSource,
       resumeSeconds,
       ...metadata,
-      updatedAt: Date.now(),
     }),
     keepalive,
   }).catch(() => {});
@@ -1812,7 +1812,7 @@ function removeContinueWatchingEntry() {
   fetchUserApi("/api/user/continue-watching", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sourceIdentity: normalizedSource }),
+    body: replaySafeMutationBody({ sourceIdentity: normalizedSource }),
   }).catch(() => {});
 }
 
@@ -7872,7 +7872,7 @@ function persistResumeTime(force = false) {
       fetchUserApi("/api/user/watch-progress", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceIdentity }),
+        body: replaySafeMutationBody({ sourceIdentity }),
         keepalive: Boolean(force),
       }).catch(() => {});
       resumeTime = 0;
@@ -7920,7 +7920,7 @@ function persistResumeTime(force = false) {
     fetchUserApi("/api/user/watch-progress", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sourceIdentity, resumeSeconds: nextResumeTime }),
+      body: replaySafeMutationBody({ sourceIdentity, resumeSeconds: nextResumeTime }),
       keepalive: Boolean(force),
     }).catch(() => {});
 
@@ -11226,7 +11226,7 @@ trackListener(video, "ended", () => {
   fetchUserApi("/api/user/watch-progress", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sourceIdentity }),
+    body: replaySafeMutationBody({ sourceIdentity }),
   }).catch(() => {});
   resumeTime = 0;
   lastPersistedResumeTime = 0;

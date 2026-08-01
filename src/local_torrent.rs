@@ -25,6 +25,7 @@ use tokio::sync::{Mutex, OnceCell};
 use tokio::time::timeout;
 use tokio_util::io::ReaderStream;
 
+use crate::cleanup_guard::CleanupGuard;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
 use crate::persistence::Db;
@@ -332,6 +333,10 @@ impl LocalTorrentService {
             .map_err(|error| ApiError::internal(error.to_string()))?;
         let final_path = output_folder.join(&filename);
         let temp_path = output_folder.join(format!(".{filename}.download"));
+        let temp_cleanup_path = temp_path.clone();
+        let mut temp_cleanup = CleanupGuard::new(move || {
+            let _ = std::fs::remove_file(temp_cleanup_path);
+        });
 
         let response = self
             .http_client
@@ -384,6 +389,7 @@ impl LocalTorrentService {
         tokio::fs::rename(&temp_path, &final_path)
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
+        temp_cleanup.disarm();
 
         let optimized =
             optimize_playback_cache_file_best_effort(&final_path, &output_folder, &filename).await;
@@ -753,6 +759,18 @@ impl LocalTorrentService {
             }
         };
 
+        let cleanup_session = session.clone();
+        let cleanup_handle_id = handle.id();
+        let mut pending_handle_cleanup = CleanupGuard::new(move || {
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = cleanup_session
+                        .delete(TorrentIdOrHash::Id(cleanup_handle_id), false)
+                        .await;
+                });
+            }
+        });
+
         timeout(
             Duration::from_millis(self.config.local_torrent_ready_timeout_ms),
             handle.wait_until_initialized(),
@@ -764,6 +782,7 @@ impl LocalTorrentService {
         })?;
         self.handles
             .insert(entry.source_hash.clone(), handle.clone());
+        pending_handle_cleanup.disarm();
         Ok(handle)
     }
 
