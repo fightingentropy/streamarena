@@ -11,6 +11,10 @@ const liveSegmentedSource = readFileSync(
   join(__dirname, "../src/components/live/LiveSegmented.tsx"),
   "utf8",
 );
+const liveTvViewSource = readFileSync(
+  join(__dirname, "../src/components/live/LiveTvView.tsx"),
+  "utf8",
+);
 
 test("the Live screen defaults to Live TV unless Sports is explicitly requested", () => {
   assert.match(
@@ -31,4 +35,10 @@ test("the Live switcher shows Live TV to the left of Sports", () => {
   assert.notEqual(liveTvIndex, -1);
   assert.notEqual(sportsIndex, -1);
   assert.ok(liveTvIndex < sportsIndex);
+});
+
+test("Live TV cards rely on the page context instead of repeating a LIVE badge", () => {
+  assert.match(liveScreenSource, /<ScreenHeader title="Live" \/>/);
+  assert.match(liveSegmentedSource, /\{ id: "tv", label: "Live TV" \}/);
+  assert.doesNotMatch(liveTvViewSource, />\s*LIVE\s*<\/Text>/);
 });

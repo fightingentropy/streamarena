@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   LIVE_CHANNELS,
@@ -15,6 +16,10 @@ const expectedNtvChannels = [
   ["discovery-channel", "Discovery-Channel", "Discovery Channel", "General", "UK", 1],
   ["national-geographic", "National-Geographic", "National Geographic", "General", "UK", 1],
 ];
+const liveChannelsViewSource = readFileSync(
+  new URL("../src-ui/components/live-channels-view.jsx", import.meta.url),
+  "utf8",
+);
 
 const channelIds = LIVE_CHANNELS.map((channel) => channel.id);
 assert.equal(new Set(channelIds).size, channelIds.length, "live channel ids must be unique");
@@ -53,4 +58,9 @@ assert.equal(bbcAmerica.streams[1].source, bbcPhoenixSource);
 assert.equal(findLiveChannelIdBySource(bbcPhoenixSource), "bbc-us");
 assert.equal(LIVE_CHANNELS.filter((channel) => channel.id === "bbc-news").length, 1);
 
-console.log("Live channel catalog tests passed (7 NTV/CDNLive channels).");
+assert.doesNotMatch(liveChannelsViewSource, /live-channel-play/);
+assert.doesNotMatch(liveChannelsViewSource, /<span>Live<\/span>/);
+assert.doesNotMatch(liveChannelsViewSource, /channel\.quality/);
+assert.match(liveChannelsViewSource, /\{channel\.genre\} · \{channel\.region\}/);
+
+console.log("Live channel catalog and card UI tests passed (7 NTV/CDNLive channels).");

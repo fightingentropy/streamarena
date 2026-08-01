@@ -15,7 +15,7 @@ Use `fightingentropy <erlin.hx@gmail.com>` for author and committer identity. Do
 - **Rust:** `Cargo.toml` uses **edition 2024**. Run `rustup default stable` so `cargo` is ≥ 1.85. The image may expose an older `/usr/local/cargo/bin/cargo` until rustup’s stable toolchain is default.
 - **PATH:** `export PATH="$HOME/.bun/bin:/usr/local/cargo/bin:$PATH"` (Bun is installed under `~/.bun` on fresh VMs).
 - **System:** `ffmpeg` and `ffprobe` must be on `PATH` (used for remux/HLS/uploads).
-- **Security audit:** Install `cargo-audit` with `cargo install cargo-audit --locked` before running the full quality gate.
+- **Security audit:** Install the CI-pinned `cargo-audit` with `cargo install cargo-audit --version 0.22.2 --locked` before running the full quality gate.
 - **Config:** `cp .env.example .env` once per workspace. Full TMDB/Real-Debrid resolve needs real keys in `.env` or environment secrets; auth, health, static UI, and mocked frontend smoke work without them.
 
 ### Commands (standard scripts in `package.json`)
@@ -31,7 +31,7 @@ Use `fightingentropy <erlin.hx@gmail.com>` for author and committer identity. Do
 | Rust tests | `bun run test:rust` |
 | Frontend smoke (mock API, no Rust) | `bun run test:frontend` |
 | Rust format/lint/audit | `bun run check:quality` |
-| Full CI-style check | `bun run check:quality && bun run check` |
+| Full CI-style check | `bun run check` |
 
 ### Running the server in Cloud Agent VMs
 

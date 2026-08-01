@@ -42,16 +42,8 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
-      - name: Check Rust formatting
-        run: cargo fmt --all -- --check
-
-      - name: Lint Rust
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Audit Rust dependencies
-        uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
 
       - name: Set up Node
         uses: actions/setup-node@v5
@@ -69,7 +61,8 @@ jobs:
       - name: Install Playwright Chromium
         run: bunx playwright install --with-deps chromium
 
-      # lint:frontend && build && check:architecture && test:rust && test:worker && test:frontend
+      # Includes Rust format, Clippy, a freshly fetched advisory audit, builds,
+      # architecture validation, and all backend/Worker/frontend tests.
       - name: Run full check
         run: bun run check
 

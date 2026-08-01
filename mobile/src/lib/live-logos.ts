@@ -3,8 +3,8 @@ import { type ImageSourcePropType } from "react-native";
 // Bundled Live TV channel logos, keyed by LiveChannel id. RN/expo-image can't render
 // the SVGs the web ships, so these are PNG rasters: the first block are ported brand
 // logos; the rest are the web brand-lockup thumbs (assets/images/live-thumbs/<id>.svg)
-// rasterized to PNG with the baked-in LIVE pill stripped — the tile overlays its own
-// LIVE badge. Channels without an entry fall back to a logo-less tile.
+// rasterized to PNG with the baked-in LIVE pill stripped so the channel artwork stays
+// clean. Channels without an entry fall back to a logo-less tile.
 export const LIVE_LOGOS: Record<string, ImageSourcePropType> = {
   "bloomberg-tv-us": require("../../assets/images/live-thumbs/bloomberg-tv-us.png"),
   "bbc-news": require("../../assets/images/live-thumbs/bbc-news.jpg"),

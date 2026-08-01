@@ -82,26 +82,6 @@ function ChannelTile({
         {logo ? (
           <Image source={logo} style={{ width: "100%", height: "100%" }} contentFit="contain" transition={150} />
         ) : null}
-        <View
-          style={{
-            position: "absolute",
-            top: 8,
-            left: 8,
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 5,
-            paddingHorizontal: 7,
-            paddingVertical: 4,
-            borderRadius: 6,
-            borderCurve: "continuous",
-            borderWidth: 0.5,
-            borderColor: colors.hairline,
-            backgroundColor: "rgba(0,0,0,0.78)",
-          }}
-        >
-          <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.live }} />
-          <Text style={{ color: colors.live, fontSize: 9, fontWeight: "800", letterSpacing: 0.6 }}>LIVE</Text>
-        </View>
       </View>
       <View style={{ paddingTop: 9, paddingHorizontal: 1 }}>
         <Text

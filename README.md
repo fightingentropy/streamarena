@@ -23,7 +23,7 @@ The app serves local library titles, resolves remote movie and TV sources, plays
 
 The repository is a single full-stack app:
 
-- Backend: Rust 2024, Axum 0.8, Tokio, Reqwest 0.13, and SQLite via `rusqlite` 0.40.
+- Backend: Rust 2024, Axum 0.8, Tokio, Reqwest 0.13, and SQLite via `rusqlite` 0.39.
 - Frontend: SolidJS with Vite 8 in multi-page app mode.
 - Player: custom HTML5 video UI with direct playback, remux, HLS, subtitles, live streams, and source switching.
 - Discovery: TMDB metadata, selected external embed fallbacks, and user-enabled Torrentio/Torznab magnet resolution with optional Real-Debrid acceleration.
@@ -617,9 +617,9 @@ Development and checks:
 - `bun run test:frontend` - Playwright smoke test against a mocked API.
 - `bun run check:rust` - Rust formatting and Clippy with warnings denied.
 - `bun run audit:rust` - RustSec dependency audit using the locally installed advisory database.
-- `bun run check:quality` - Rust format, Clippy, and dependency security gates. Install `cargo-audit` first with `cargo install cargo-audit --locked`.
+- `bun run check:quality` - Rust format, Clippy, and a freshly updated dependency security audit. Install the CI-pinned tool with `cargo install cargo-audit --version 0.22.2 --locked`.
 - `bun run check:architecture` - guardrails for app shape, frontend dependencies, entrypoints, source sizes, and bundle sizes.
-- `bun run check` - frontend lint, build, architecture check, Rust tests, live-HLS Worker tests, and frontend smoke test.
+- `bun run check` - the mandatory full gate: Rust format, Clippy, dependency audit, frontend lint/build, architecture check, Rust tests, live-HLS Worker tests, and frontend smoke test.
 
 Benchmarks:
 
@@ -926,7 +926,7 @@ Stale service worker:
 Current cleanup state:
 
 - Ignored local artifacts such as `.DS_Store`, `tmp/`, `dist/`, and `target/` are disposable and can be regenerated. `cache/resolver-cache.sqlite*` is regenerable cache and safe to reset, but `cache/users.sqlite*` holds accounts/user data — do not delete it unless you intentionally want to wipe local auth/user state.
-- Vite is updated to 8.x. Direct Rust dependency baselines are current for this app: Reqwest 0.13, Quick XML 0.40, Rusqlite 0.40, and Getrandom 0.4. Cargo may still report transitive crates held behind latest by upstream constraints.
+- Vite is updated to 8.x. Direct Rust dependency baselines are current for this app: Reqwest 0.13, Quick XML 0.40, Rusqlite 0.39, and Getrandom 0.4. Cargo may still report transitive crates held behind latest by upstream constraints.
 - Live HLS, live HLS resources, and Twitch stream resolving routes are protected API routes.
 - Upstream resolver/request errors are sanitized so TMDB, Torznab, Real-Debrid, live/embed, and Twitch failures do not echo secret-bearing URLs or tokens.
 - Title track preferences are scoped by user and media type, with a migration for the old `tmdb_id`-only table.

@@ -118,17 +118,9 @@ function renderChannelCard(channel) {
       aria-label={`Play ${channel.title}`}
     >
       <img src={channel.artwork} alt={`${channel.title} artwork`} loading="lazy" />
-      <span class="live-channel-play" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
-      </span>
       <span class="live-channel-body">
         <span class="live-channel-title">{channel.title}</span>
-        <span class="live-channel-meta">
-          <span>Live</span>
-          <span>{channel.region}</span>
-          <span>{channel.genre}</span>
-          <span>{channel.quality}</span>
-        </span>
+        <span class="live-channel-meta">{channel.genre} · {channel.region}</span>
       </span>
     </button>
   </>;
