@@ -31,6 +31,24 @@ assert.equal(selectedTorrentView.activeTab, SOURCE_MENU_TORRENTS_TAB);
 assert.deepEqual(selectedTorrentView.sources, [torrentSource]);
 assert.deepEqual(selectedTorrentView.counts, { hls: 1, torrents: 1 });
 
+const selectedHlsView = buildSourceMenuView({
+  sources,
+  selectedSourceHash: hlsSource.sourceHash,
+  torrentsEnabled: true,
+});
+assert.equal(selectedHlsView.activeTab, SOURCE_MENU_HLS_TAB);
+assert.deepEqual(selectedHlsView.sources, [hlsSource]);
+
+// Empty requestedTab (menu just opened) must follow the playing source, not
+// stick to a previously browsed tab.
+const reopenOnPlayingSource = buildSourceMenuView({
+  sources,
+  selectedSourceHash: hlsSource.sourceHash,
+  requestedTab: "",
+  torrentsEnabled: true,
+});
+assert.equal(reopenOnPlayingSource.activeTab, SOURCE_MENU_HLS_TAB);
+
 const requestedHlsView = buildSourceMenuView({
   sources,
   selectedSourceHash: torrentSource.sourceHash,

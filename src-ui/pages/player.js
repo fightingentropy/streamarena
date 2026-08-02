@@ -6942,6 +6942,9 @@ function openSourcePopover() {
   closeAudioPopover();
   closeSpeedPopover(false);
   window.clearTimeout(sourcePopoverCloseTimeout);
+  // Re-open on the tab that matches the currently playing source instead of
+  // whatever tab the user last browsed while the menu was open.
+  activeSourceTypeTab = "";
   if (!availablePlaybackSources.length && !isFetchingPlaybackSources) {
     void fetchTmdbSourceOptionsViaBackend();
   }

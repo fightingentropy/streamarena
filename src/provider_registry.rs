@@ -197,15 +197,14 @@ pub fn custom_base(id: &str) -> Option<String> {
 /// per-title health still nudges the final order by a capped amount on top of
 /// this baseline.
 ///
-/// LordFlix ranks first: its segments stream to the browser directly off its CDN
-/// (tiktokcdn, CORS-open), off the mini's bandwidth-limited uplink, so it's both
-/// fastest and cheapest for our origin. VidRock shares that pipeline server-side.
-/// Both rank above the flaky ones (VidLink/VixSrc gate on TLS fingerprint, Icefy's
-/// upstream rate-limits). The Aether-backed gallic/meridian are low-tier cached
-/// third-party fallbacks. NebulaStreams (a Stremio addon, env-gated) ranks lowest:
-/// it only returns a usable direct-HLS stream for a subset of titles, so it fires
-/// last, after every first-party source misses.
+/// Meridian ranks first: it's the most reliable native-HLS path in practice
+/// (TV + movies via aether resolve, origin streamed through our live proxy).
+/// LordFlix/VidRock follow for their off-uplink CDN direct-play. Flaky TLS /
+/// rate-limited providers (VidLink/VixSrc/Icefy) sit lower. Gallic is the
+/// movie-only aether sibling. NebulaStreams (Stremio addon, env-gated) ranks
+/// lowest — usable only for a subset of titles.
 pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
+    ("meridian", 1_800),
     ("lordflix", 1_600),
     ("vidrock", 1_400),
     ("notorrent", 1_100),
@@ -214,7 +213,6 @@ pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
     ("videasy", 700),
     ("icefy", 500),
     ("gallic", 450),
-    ("meridian", 400),
     ("nebula", 380),
 ];
 

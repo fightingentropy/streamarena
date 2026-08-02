@@ -496,8 +496,9 @@ static NEBULA_ADDON_BASE: LazyLock<Option<String>> = LazyLock::new(|| {
 // the real origin URL + its Origin/Referer, and stream it through our own
 // /api/live proxy — so aether carries the title->origin lookup, never the playback
 // bandwidth. The Referer is mandatory; the endpoints Cloudflare-403 without it.
-// Ranked last (lowest availability tier) so they only fire when our own sources
-// miss a title, keeping both load on and dependency upon aether's edge minimal.
+// Meridian is the preferred native-HLS default (see EMBED_DEFAULT_RANK); Gallic
+// stays a lower movie-only aether sibling. Playback still goes through our live
+// proxy so aether only does the title→origin lookup.
 const MERIDIAN_API_BASE: &str = "https://meridian.aether.bar";
 const GALLIC_API_BASE: &str = "https://gallic.aether.bar";
 const AETHER_EMBED_REFERER: &str = "https://aether.bar/";
@@ -4938,6 +4939,9 @@ fn prioritize_candidates_by_source_hash<'a>(
         return candidates.into_iter().take(safe_limit).collect();
     }
 
+    // Manual/pinned source selection must resolve only the requested hash.
+    // Returning substitutes lets local-torrent racing (or RD fallbacks) win with
+    // a different infohash; the player then rejects the mismatch and rolls back.
     let dedup_by_hash = |list: Vec<&'a DiscoveryStream>| {
         let mut seen = HashSet::new();
         let mut output = Vec::new();
@@ -4951,30 +4955,21 @@ fn prioritize_candidates_by_source_hash<'a>(
         output
     };
 
-    let base_list = dedup_by_hash(candidates);
-    if let Some(selected) = base_list
-        .iter()
-        .copied()
+    if let Some(selected) = dedup_by_hash(candidates)
+        .into_iter()
         .find(|item| get_stream_info_hash(item) == normalized_hash)
     {
-        let mut next = vec![selected];
-        next.extend(
-            base_list
-                .into_iter()
-                .filter(|item| !std::ptr::eq(*item, selected)),
-        );
-        return next.into_iter().take(safe_limit).collect();
+        return vec![selected];
     }
 
-    let selected_from_pool = dedup_by_hash(ranked_pool)
+    if let Some(selected_from_pool) = dedup_by_hash(ranked_pool)
         .into_iter()
-        .find(|item| get_stream_info_hash(item) == normalized_hash);
-    let Some(selected_from_pool) = selected_from_pool else {
-        return base_list.into_iter().take(safe_limit).collect();
-    };
-    let mut next = vec![selected_from_pool];
-    next.extend(base_list);
-    next.into_iter().take(safe_limit).collect()
+        .find(|item| get_stream_info_hash(item) == normalized_hash)
+    {
+        return vec![selected_from_pool];
+    }
+
+    Vec::new()
 }
 
 fn apply_mp4_default_candidate_rule<'a>(
@@ -4985,6 +4980,10 @@ fn apply_mp4_default_candidate_rule<'a>(
     source_language: &str,
     health_scores: &HashMap<String, i64>,
 ) -> Vec<&'a DiscoveryStream> {
+    // Pinned resolves must stay on the selected hash; never inject/replace MP4.
+    if !normalize_source_hash(source_hash).is_empty() {
+        return candidates;
+    }
     let with_mp4 = ensure_at_least_one_container_candidate(
         candidates,
         ranked_pool.clone(),
@@ -4994,9 +4993,6 @@ fn apply_mp4_default_candidate_rule<'a>(
         health_scores,
     );
     if with_mp4.is_empty() {
-        return with_mp4;
-    }
-    if !normalize_source_hash(source_hash).is_empty() {
         return with_mp4;
     }
 
@@ -5856,7 +5852,7 @@ fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 
     // provider baseline lives in `provider_registry::EMBED_DEFAULT_RANK` (which
     // documents the tier rationale) and is admin-overridable live via the Providers
     // dashboard (`embed:<id>:rank`), so an operator can re-rank sources without a
-    // redeploy. The default LordFlix->VidRock gap (200) exceeds the +150 positive-
+    // redeploy. The default Meridian->LordFlix gap (200) exceeds the +75 positive-
     // health cap, so a transient good streak can't lift a lower tier above a higher
     // one; only a genuine per-title failure (the uncapped -6000 penalty) demotes a
     // source, at which point the staggered hedge races the next provider in.
@@ -5875,9 +5871,9 @@ fn external_embed_source_quality_score(source: ExternalEmbedSource) -> i64 {
         "vidlink" | "vidrock" | "notorrent" | "vixsrc" | "lordflix" => 400,
         "videasy" if source.server.is_none() => 400,
         "icefy" => 350,
-        // Gallic upstream advertises up to 2160p; Meridian ~1080p.
+        // Meridian ~1080p (preferred default); Gallic advertises up to 2160p.
+        "meridian" => 400,
         "gallic" => 400,
-        "meridian" => 350,
         // Lowest-tier fallback; keeps Nebula just below meridian/gallic and above
         // the flaky VidEasy server-variants in the rank ordering.
         "nebula" => 350,
@@ -9550,7 +9546,7 @@ mod tests {
     }
 
     #[test]
-    fn meridian_and_gallic_are_hls_capable_low_tier_fallbacks() {
+    fn meridian_ranks_first_and_gallic_stays_a_lower_fallback() {
         let movie = sample_resolve_metadata("movie", "872585", 0, 0);
         let meridian = external_embed_provider("meridian");
         let gallic = external_embed_provider("gallic");
@@ -9560,12 +9556,13 @@ mod tests {
             assert!(is_default_external_embed_hls_fallback_source(source));
         }
 
-        // Deliberately ranked below every first-party source (Icefy is the lowest of
-        // those) so they only fire when our own providers miss the title.
         let health = HashMap::new();
+        let meridian_rank = external_embed_source_rank_score(meridian, &movie, &health);
+        let lordflix_rank =
+            external_embed_source_rank_score(external_embed_provider("lordflix"), &movie, &health);
         let icefy_rank =
             external_embed_source_rank_score(external_embed_provider("icefy"), &movie, &health);
-        assert!(external_embed_source_rank_score(meridian, &movie, &health) < icefy_rank);
+        assert!(meridian_rank > lordflix_rank);
         assert!(external_embed_source_rank_score(gallic, &movie, &health) < icefy_rank);
     }
 
@@ -9714,52 +9711,54 @@ mod tests {
         let health_scores = HashMap::new();
         let sources = build_external_embed_source_summaries(&metadata, &health_scores);
 
-        // LordFlix (off-uplink direct-play) leads, then VidRock — both reliable
-        // native HLS — ahead of the flaky providers (VidLink/VixSrc/Icefy), with the
-        // aether-backed Meridian/Gallic fallbacks and the VidEasy variants trailing.
+        // Meridian leads, then LordFlix / VidRock, ahead of the flaky providers
+        // (VidLink/VixSrc/Icefy), with Gallic and the VidEasy variants trailing.
         assert_eq!(sources.len(), 16);
-        assert_eq!(sources[0].primary, "LordFlix");
+        assert_eq!(sources[0].primary, "Meridian");
         assert_eq!(sources[0].provider, "LivNet");
-        assert_eq!(sources[0].filename, "LordFlix embed");
+        assert_eq!(sources[0].filename, "Meridian embed");
         assert_eq!(sources[0].qualityLabel, "1080p");
         assert_eq!(sources[0].container, "hls");
         assert!(!sources[0].isTorrent);
-        assert_eq!(sources[0].releaseGroup, "Multi-server native HLS");
+        assert_eq!(sources[0].releaseGroup, "Native HLS, TV + movies");
         assert_eq!(
             normalize_source_hash(&sources[0].sourceHash),
             sources[0].sourceHash
         );
 
-        // sources[0] is LordFlix (off-uplink direct-play, the top tier).
-        let lordflix = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
+        let meridian = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
             .expect("matching external provider");
-        assert_eq!(lordflix.provider.id, "lordflix");
-        assert_eq!(lordflix.server.map(|server| server.id), None);
-        assert!(external_embed_url(lordflix, &metadata).is_some_and(|url| !url.is_empty()));
+        assert_eq!(meridian.provider.id, "meridian");
+        assert_eq!(meridian.server.map(|server| server.id), None);
+        assert!(external_embed_url(meridian, &metadata).is_some_and(|url| !url.is_empty()));
         assert_eq!(
-            external_embed_source_hash(lordflix, &metadata),
+            external_embed_source_hash(meridian, &metadata),
             sources[0].sourceHash
         );
-        // sources[1] is VidRock, whose embed URL is a stable, simple template.
-        let vidrock = external_embed_source_for_source_hash(&metadata, &sources[1].sourceHash)
+        // sources[1] is LordFlix; sources[2] VidRock (stable embed URL template).
+        let lordflix = external_embed_source_for_source_hash(&metadata, &sources[1].sourceHash)
+            .expect("matching lordflix provider");
+        assert_eq!(lordflix.provider.id, "lordflix");
+        let vidrock = external_embed_source_for_source_hash(&metadata, &sources[2].sourceHash)
             .expect("matching vidrock provider");
         assert_eq!(vidrock.provider.id, "vidrock");
         assert_eq!(
             external_embed_url(vidrock, &metadata).unwrap(),
             "https://vidrock.net/movie/1368166"
         );
-        assert_eq!(sources[1].primary, "VidRock");
-        assert_eq!(sources[2].primary, "NoTorrent");
-        assert_eq!(sources[3].primary, "VidLink");
-        assert_eq!(sources[4].primary, "VixSrc");
-        assert_eq!(sources[5].primary, "VidEasy");
-        assert_eq!(sources[5].provider, "LivNet");
-        assert_eq!(sources[5].filename, "VidEasy embed");
-        assert_eq!(sources[6].primary, "Icefy");
+        assert_eq!(sources[1].primary, "LordFlix");
+        assert_eq!(sources[2].primary, "VidRock");
+        assert_eq!(sources[3].primary, "NoTorrent");
+        assert_eq!(sources[4].primary, "VidLink");
+        assert_eq!(sources[5].primary, "VixSrc");
+        assert_eq!(sources[6].primary, "VidEasy");
         assert_eq!(sources[6].provider, "LivNet");
-        assert_eq!(sources[6].filename, "Icefy embed");
-        assert_eq!(sources[6].qualityLabel, "1080p");
-        assert_eq!(sources[6].releaseGroup, "Fast native HLS");
+        assert_eq!(sources[6].filename, "VidEasy embed");
+        assert_eq!(sources[7].primary, "Icefy");
+        assert_eq!(sources[7].provider, "LivNet");
+        assert_eq!(sources[7].filename, "Icefy embed");
+        assert_eq!(sources[7].qualityLabel, "1080p");
+        assert_eq!(sources[7].releaseGroup, "Fast native HLS");
 
         let yoru_summary = sources
             .iter()
@@ -9834,10 +9833,10 @@ mod tests {
         assert_eq!(tv_sources.len(), 15);
         assert!(tv_sources.iter().any(|source| source.primary == "Meridian"));
         assert!(!tv_sources.iter().any(|source| source.primary == "Gallic"));
-        assert_eq!(tv_sources[0].primary, "LordFlix");
+        assert_eq!(tv_sources[0].primary, "Meridian");
         assert_eq!(tv_sources[0].provider, "LivNet");
-        assert_eq!(tv_sources[1].primary, "VidRock");
-        assert_eq!(tv_sources[2].primary, "NoTorrent");
+        assert_eq!(tv_sources[1].primary, "LordFlix");
+        assert_eq!(tv_sources[2].primary, "VidRock");
     }
 
     #[test]
@@ -9846,13 +9845,13 @@ mod tests {
         let health_scores = HashMap::new();
         let source =
             default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-        assert_eq!(source.provider.id, "lordflix");
+        assert_eq!(source.provider.id, "meridian");
         assert_eq!(source.server.map(|server| server.id), None);
 
         let tv_metadata = sample_tv_metadata();
         let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
             .expect("default tv embed source");
-        assert_eq!(tv_source.provider.id, "lordflix");
+        assert_eq!(tv_source.provider.id, "meridian");
         assert_eq!(tv_source.server.map(|server| server.id), None);
 
         let filters = ResolveFilters {
@@ -9873,14 +9872,14 @@ mod tests {
     #[test]
     fn external_embed_payload_routes_playlists_via_worker_when_configured() {
         let metadata = sample_movie_metadata();
-        let health_scores = HashMap::new();
         let preferences = ResolvePreferences {
             audio_lang: "en".to_owned(),
             subtitle_lang: String::new(),
             quality: "auto".to_owned(),
         };
-        let lordflix =
-            default_external_embed_source(&metadata, &health_scores).expect("default source");
+        // LordFlix is used here as a direct-segment HLS fixture; Meridian is the
+        // current default embed, so construct the source explicitly.
+        let lordflix = external_embed_provider("lordflix");
         assert_eq!(lordflix.provider.id, "lordflix");
 
         // Worker configured + direct-segment provider: worker URLs lead, the
@@ -9966,7 +9965,7 @@ mod tests {
         let health_scores = HashMap::new();
         let source =
             default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-        assert_eq!(source.provider.id, "lordflix");
+        assert_eq!(source.provider.id, "meridian");
         assert_eq!(source.server.map(|server| server.id), None);
 
         let candidates =
@@ -9984,16 +9983,15 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(source_ids.first(), Some(&("lordflix", "default")));
-        assert_eq!(source_ids.get(1), Some(&("vidrock", "default")));
-        assert_eq!(source_ids.get(2), Some(&("notorrent", "default")));
-        assert_eq!(source_ids.get(3), Some(&("vidlink", "default")));
-        assert_eq!(source_ids.get(4), Some(&("vixsrc", "default")));
-        assert_eq!(source_ids.get(5), Some(&("videasy", "default")));
-        // aether fallbacks slot in below every primary source, above the flaky
-        // VidEasy server-variants; Gallic (movie) outranks Meridian.
-        assert_eq!(source_ids.get(6), Some(&("gallic", "default")));
-        assert_eq!(source_ids.get(7), Some(&("meridian", "default")));
+        assert_eq!(source_ids.first(), Some(&("meridian", "default")));
+        assert_eq!(source_ids.get(1), Some(&("lordflix", "default")));
+        assert_eq!(source_ids.get(2), Some(&("vidrock", "default")));
+        assert_eq!(source_ids.get(3), Some(&("notorrent", "default")));
+        assert_eq!(source_ids.get(4), Some(&("vidlink", "default")));
+        assert_eq!(source_ids.get(5), Some(&("vixsrc", "default")));
+        assert_eq!(source_ids.get(6), Some(&("videasy", "default")));
+        // Gallic (movie-only aether sibling) sits above the flaky VidEasy variants.
+        assert_eq!(source_ids.get(7), Some(&("gallic", "default")));
         assert_eq!(source_ids.get(8), Some(&("videasy", "YORU")));
         assert_eq!(source_ids.len(), 9);
 
@@ -10015,14 +10013,13 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(tv_source_ids.first(), Some(&("lordflix", "default")));
-        assert_eq!(tv_source_ids.get(1), Some(&("vidrock", "default")));
-        assert_eq!(tv_source_ids.get(2), Some(&("notorrent", "default")));
-        assert_eq!(tv_source_ids.get(3), Some(&("vidlink", "default")));
-        assert_eq!(tv_source_ids.get(4), Some(&("vixsrc", "default")));
-        assert_eq!(tv_source_ids.get(5), Some(&("videasy", "default")));
-        // TV: only Meridian (Gallic's upstream is movie-only) sits above the variants.
-        assert_eq!(tv_source_ids.get(6), Some(&("meridian", "default")));
+        assert_eq!(tv_source_ids.first(), Some(&("meridian", "default")));
+        assert_eq!(tv_source_ids.get(1), Some(&("lordflix", "default")));
+        assert_eq!(tv_source_ids.get(2), Some(&("vidrock", "default")));
+        assert_eq!(tv_source_ids.get(3), Some(&("notorrent", "default")));
+        assert_eq!(tv_source_ids.get(4), Some(&("vidlink", "default")));
+        assert_eq!(tv_source_ids.get(5), Some(&("vixsrc", "default")));
+        assert_eq!(tv_source_ids.get(6), Some(&("videasy", "default")));
         assert_eq!(tv_source_ids.get(7), Some(&("videasy", "YORU")));
         assert_eq!(tv_source_ids.len(), 8);
 
@@ -10078,17 +10075,17 @@ mod tests {
         let metadata = sample_movie_metadata();
         let mut health_scores = HashMap::new();
         for source in external_embed_sources() {
-            if source.provider.id == "lordflix" {
+            if source.provider.id == "meridian" {
                 continue;
             }
             health_scores.insert(external_embed_source_hash(source, &metadata), 150);
         }
 
-        // A max positive-health streak on every other (incl. VidRock) provider still
-        // can't lift one above the un-boosted top LordFlix tier (gap 200 > +150).
+        // A max positive-health streak on every other provider still can't lift
+        // one above the un-boosted top Meridian tier (gap 200 > +150).
         let source =
             default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-        assert_eq!(source.provider.id, "lordflix");
+        assert_eq!(source.provider.id, "meridian");
         assert_eq!(source.server.map(|server| server.id), None);
 
         let capped = compute_external_embed_rank_health_score(&SourceHealthStats {
@@ -11173,8 +11170,33 @@ mod tests {
             &HashMap::new(),
         );
 
-        assert_eq!(selected.len(), 2);
+        // Pinned selection is exclusive — no race substitutes.
+        assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].infoHash, pinned_mkv.infoHash);
+    }
+
+    #[test]
+    fn pinned_missing_hash_does_not_return_substitute_candidates() {
+        let metadata = sample_tv_metadata();
+        let available = sample_stream(
+            "Succession S01E01 Celebration 1080p AMZN WEB-DL DDP5.1 H.264-NTb.mkv\n👤 900",
+            "dddddddddddddddddddddddddddddddddddddddd",
+        );
+        let streams = vec![available];
+
+        let selected = select_top_episode_candidates(
+            &streams,
+            &metadata,
+            "en",
+            "1080p",
+            "auto",
+            "ffffffffffffffffffffffffffffffffffffffff",
+            3,
+            &sample_source_filters(),
+            &HashMap::new(),
+        );
+
+        assert!(selected.is_empty());
     }
 
     #[test]
