@@ -48,6 +48,8 @@ Options:
 
 Environment:
   MINI_HOST            Default: hermes@m4mini.local
+                       Prefer the SSH host alias from ~/.ssh/config so LAN can
+                       fall back to Tailscale when Local Network is blocked.
   SSH_KEY              Default: ~/.ssh/id_ed25519_codex_m4mini
   REMOTE_APP           Default: /Users/hermes/Developer/streamarena
   PLAYWRIGHT_VERSION   Default: ^1.54.2

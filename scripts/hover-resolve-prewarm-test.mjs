@@ -2,6 +2,8 @@
 import assert from "node:assert/strict";
 import {
   buildMovieResolvePrewarmUrl,
+  buildTvResolvePrewarmUrl,
+  buildResolvePrewarmUrl,
   createMovieResolvePrewarmer,
 } from "../src-ui/lib/hover-resolve-prewarm.js";
 
@@ -51,5 +53,42 @@ pending[1].reject(new Error("upstream unavailable"));
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(prewarmer.getStatus(movieB), "");
 assert.equal(prewarmer.prewarm(movieB), true, "failed warm-ups should be retryable");
+
+const tvEpisode = {
+  tmdbId: "1399",
+  mediaType: "tv",
+  title: "Game of Thrones",
+  year: "2011",
+  seasonNumber: 2,
+  episodeNumber: 3,
+  audioLang: "en",
+};
+const tvUrl = new URL(buildTvResolvePrewarmUrl(tvEpisode), "http://localhost");
+assert.equal(tvUrl.pathname, "/api/resolve/tv");
+assert.equal(tvUrl.searchParams.get("tmdbId"), "1399");
+assert.equal(tvUrl.searchParams.get("seasonNumber"), "2");
+assert.equal(tvUrl.searchParams.get("episodeNumber"), "3");
+assert.equal(tvUrl.searchParams.get("resolverProvider"), "fastest");
+assert.equal(buildTvResolvePrewarmUrl({ tmdbId: "bad" }), "");
+assert.equal(
+  new URL(buildTvResolvePrewarmUrl({ tmdbId: "1399" }), "http://localhost").searchParams.get(
+    "seasonNumber",
+  ),
+  "1",
+  "missing episode context should default to S01E01",
+);
+assert.equal(buildResolvePrewarmUrl(tvEpisode), buildTvResolvePrewarmUrl(tvEpisode));
+assert.equal(buildResolvePrewarmUrl(movieA), buildMovieResolvePrewarmUrl(movieA));
+
+const tvPrewarmer = createMovieResolvePrewarmer({
+  buildUrl: buildResolvePrewarmUrl,
+  fetchFn: (requestUrl) => {
+    calls.push({ requestUrl });
+    return Promise.resolve({ ok: true, status: 200 });
+  },
+});
+assert.equal(tvPrewarmer.prewarm(tvEpisode), true);
+assert.equal(tvPrewarmer.prewarm(tvEpisode), false, "duplicate TV hover should share one warm-up");
+assert.ok(calls.at(-1).requestUrl.startsWith("/api/resolve/tv?"));
 
 console.log("Hover resolve prewarm tests passed.");

@@ -46,6 +46,10 @@ pub struct Config {
     pub local_torrent_max_bytes: u64,
     pub local_torrent_metadata_timeout_ms: u64,
     pub local_torrent_ready_timeout_ms: u64,
+    /// TCP listen range for inbound BitTorrent peer connections. `None` disables
+    /// inbound peers (outbound-only, slowest swarm joins). Enabled by default;
+    /// set `LOCAL_TORRENT_LISTEN_PORT_START=0` to disable.
+    pub local_torrent_listen_port_range: Option<std::ops::Range<u16>>,
     pub hls_max_transcode_jobs: usize,
     pub hls_max_segment_renders: usize,
     pub hls_segment_queue_timeout_ms: u64,
@@ -133,6 +137,17 @@ impl Config {
             parse_u64_env("LOCAL_TORRENT_METADATA_TIMEOUT_MS", 60_000, 5_000, 180_000);
         let local_torrent_ready_timeout_ms =
             parse_u64_env("LOCAL_TORRENT_READY_TIMEOUT_MS", 45_000, 5_000, 300_000);
+        let local_torrent_listen_port_start =
+            parse_u64_env("LOCAL_TORRENT_LISTEN_PORT_START", 42_501, 0, 65_534);
+        let local_torrent_listen_port_end =
+            parse_u64_env("LOCAL_TORRENT_LISTEN_PORT_END", 42_521, 1, 65_535);
+        let local_torrent_listen_port_range = if local_torrent_listen_port_start == 0 {
+            None
+        } else {
+            let start = local_torrent_listen_port_start as u16;
+            let end = (local_torrent_listen_port_end as u16).max(start.saturating_add(1));
+            Some(start..end)
+        };
         let torznab_limit = parse_usize_env("TORZNAB_LIMIT", 50, 1, 100);
         let torznab_timeout_ms = parse_u64_env("TORZNAB_TIMEOUT_MS", 15_000, 3_000, 65_000);
         let hls_max_transcode_jobs = parse_usize_env("HLS_MAX_TRANSCODE_JOBS", 1, 1, 8);
@@ -198,6 +213,7 @@ impl Config {
             local_torrent_max_bytes,
             local_torrent_metadata_timeout_ms,
             local_torrent_ready_timeout_ms,
+            local_torrent_listen_port_range,
             hls_max_transcode_jobs,
             hls_max_segment_renders,
             hls_segment_queue_timeout_ms,

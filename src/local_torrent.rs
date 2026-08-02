@@ -615,11 +615,19 @@ impl LocalTorrentService {
                     .map_err(|error| ApiError::internal(error.to_string()))?;
                 let options = SessionOptions {
                     disable_dht: false,
-                    disable_dht_persistence: true,
+                    // Keep the DHT routing table across restarts so the first
+                    // resolve after a server bounce doesn't rebuild peer
+                    // discovery from zero.
+                    disable_dht_persistence: false,
                     fastresume: false,
-                    listen_port_range: None,
+                    // Accept inbound peer connections (in addition to outbound)
+                    // so well-connected peers can reach us too. UPnP stays off;
+                    // forward the port on the router for full effect.
+                    listen_port_range: self.config.local_torrent_listen_port_range.clone(),
                     enable_upnp_port_forwarding: false,
-                    concurrent_init_limit: Some(1),
+                    // Raced resolve candidates (up to 4) initialize in
+                    // parallel; the loser handles are cheap to keep around.
+                    concurrent_init_limit: Some(3),
                     disable_upload: true,
                     ..Default::default()
                 };

@@ -33,7 +33,7 @@ import {
   slugifyTitle,
 } from "../lib/watch-params.js";
 import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
-import { createMovieResolvePrewarmer } from "../lib/hover-resolve-prewarm.js";
+import { createMovieResolvePrewarmer, buildResolvePrewarmUrl } from "../lib/hover-resolve-prewarm.js";
 import {
   CONTINUE_WATCHING_META_KEY,
   DEFAULT_LOCAL_THUMBNAIL,
@@ -1344,13 +1344,15 @@ export default function HomePage() {
   let homeBrowseContentReady = false;
   const movieResolvePrewarmer = createMovieResolvePrewarmer({
     fetchFn: (url, options) => fetch(url, options),
+    buildUrl: buildResolvePrewarmUrl,
   });
 
   function prewarmCardMovieSource(card) {
     const details = getCardDetails(card);
     const tmdbId = String(details.tmdbId || "").trim();
+    const mediaType = String(details.mediaType || "").trim();
     if (
-      details.mediaType !== "movie" ||
+      (mediaType !== "movie" && mediaType !== "tv") ||
       !tmdbId ||
       details.resumeSource ||
       String(details.src || details.librarySrc || "").trim()
@@ -1363,18 +1365,23 @@ export default function HomePage() {
       audioLang = normalizeDefaultAudioLanguage(
         localStorage.getItem(DEFAULT_AUDIO_LANGUAGE_PREF_KEY),
       );
-      const storedMovieAudioLang = getStoredAudioLangForTmdbMovie(tmdbId);
-      if (storedMovieAudioLang !== "auto") audioLang = storedMovieAudioLang;
-      subtitleLang = String(
-        localStorage.getItem(`streamarena-subtitle-lang:movie:${tmdbId}`) || "",
-      ).trim();
+      if (mediaType === "movie") {
+        const storedMovieAudioLang = getStoredAudioLangForTmdbMovie(tmdbId);
+        if (storedMovieAudioLang !== "auto") audioLang = storedMovieAudioLang;
+        subtitleLang = String(
+          localStorage.getItem(`streamarena-subtitle-lang:movie:${tmdbId}`) || "",
+        ).trim();
+      }
     } catch {
       // Storage can be unavailable in privacy modes; resolver defaults remain safe.
     }
     return movieResolvePrewarmer.prewarm({
       tmdbId,
+      mediaType,
       title: details.title,
       year: details.year,
+      seasonNumber: details.seasonNumber || 1,
+      episodeNumber: details.episodeNumber || 1,
       audioLang,
       subtitleLang,
       quality: DEFAULT_STREAM_QUALITY_PREFERENCE,

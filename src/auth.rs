@@ -327,6 +327,7 @@ mod tests {
             local_torrent_max_bytes: 1024 * 1024 * 1024,
             local_torrent_metadata_timeout_ms: 45_000,
             local_torrent_ready_timeout_ms: 90_000,
+            local_torrent_listen_port_range: None,
             hls_max_transcode_jobs: 1,
             hls_max_segment_renders: 2,
             hls_segment_queue_timeout_ms: 2_000,

@@ -29,12 +29,55 @@ export function buildMovieResolvePrewarmUrl({
   return `/api/resolve/movie?${params.toString()}`;
 }
 
+export function buildTvResolvePrewarmUrl({
+  tmdbId = "",
+  title = "",
+  year = "",
+  seasonNumber = 1,
+  episodeNumber = 1,
+  audioLang = "en",
+  subtitleLang = "",
+  quality = DEFAULT_STREAM_QUALITY_PREFERENCE,
+} = {}) {
+  const normalizedTmdbId = String(tmdbId || "").trim();
+  if (!/^\d+$/.test(normalizedTmdbId)) {
+    return "";
+  }
+  const safeSeason = Math.max(1, Math.floor(Number(seasonNumber) || 1));
+  const safeEpisode = Math.max(1, Math.floor(Number(episodeNumber) || 1));
+  const params = new URLSearchParams({
+    tmdbId: normalizedTmdbId,
+    title: String(title || "").trim(),
+    year: String(year || "").trim(),
+    seasonNumber: String(safeSeason),
+    episodeNumber: String(safeEpisode),
+    audioLang: String(audioLang || "en").trim() || "en",
+    quality: String(quality || DEFAULT_STREAM_QUALITY_PREFERENCE).trim(),
+    resolverProvider: "fastest",
+    sourceLang: "en",
+    sourceAudioProfile: "single",
+  });
+  const normalizedSubtitleLang = String(subtitleLang || "").trim();
+  if (normalizedSubtitleLang) {
+    params.set("subtitleLang", normalizedSubtitleLang);
+  }
+  return `/api/resolve/tv?${params.toString()}`;
+}
+
+export function buildResolvePrewarmUrl(details = {}) {
+  return String(details.mediaType || "").trim() === "tv"
+    ? buildTvResolvePrewarmUrl(details)
+    : buildMovieResolvePrewarmUrl(details);
+}
+
 export function createMovieResolvePrewarmer({
   fetchFn,
+  buildUrl = buildMovieResolvePrewarmUrl,
   maxConcurrent = 2,
   maxRemembered = 48,
 } = {}) {
   const requestFetch = typeof fetchFn === "function" ? fetchFn : globalThis.fetch;
+  const buildRequestUrl = typeof buildUrl === "function" ? buildUrl : buildMovieResolvePrewarmUrl;
   const safeMaxConcurrent = Math.max(1, Math.floor(Number(maxConcurrent) || 1));
   const safeMaxRemembered = Math.max(1, Math.floor(Number(maxRemembered) || 1));
   const requests = new Map();
@@ -49,7 +92,7 @@ export function createMovieResolvePrewarmer({
   }
 
   function prewarm(details = {}) {
-    const url = buildMovieResolvePrewarmUrl(details);
+    const url = buildRequestUrl(details);
     if (!url || typeof requestFetch !== "function" || requests.has(url)) {
       return false;
     }
@@ -87,6 +130,6 @@ export function createMovieResolvePrewarmer({
   return {
     prewarm,
     getActiveCount: () => activeCount,
-    getStatus: (details = {}) => requests.get(buildMovieResolvePrewarmUrl(details)) || "",
+    getStatus: (details = {}) => requests.get(buildRequestUrl(details)) || "",
   };
 }

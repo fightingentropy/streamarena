@@ -51,6 +51,11 @@ const SOURCE_AUDIO_PROFILE_DEFAULT: &str = "single";
 const RESOLVE_MAX_MS: i64 = 90_000;
 const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 150_000;
 const FASTEST_RESOLVE_MAX_MS: i64 = 45_000;
+/// How many top-ranked local-torrent candidates race (staggered hedge) for the
+/// first successful resolve. One dead or swarm-slow torrent used to serialize
+/// the whole resolve behind its 60s metadata timeout; racing caps that cost.
+const LOCAL_TORRENT_RACE_CANDIDATES: usize = 4;
+const LOCAL_TORRENT_RACE_STAGGER: Duration = Duration::from_secs(6);
 #[cfg(test)]
 const FASTEST_PARALLEL_CANDIDATES: usize = 4;
 const FASTEST_CANDIDATE_POOL_LIMIT: usize = 40;
@@ -76,6 +81,14 @@ const DEFAULT_TRACKERS: &[&str] = &[
     "udp://open.stealth.si:80/announce",
     "udp://tracker.torrent.eu.org:451/announce",
     "udp://explodie.org:6969/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://tracker.dler.org:6969/announce",
+    "udp://opentracker.i2p.rocks:6969/announce",
+    "udp://tracker.tiny-vps.com:6969/announce",
+    "udp://tracker.moeking.me:6969/announce",
+    "udp://tracker.cyberia.is:6969/announce",
+    "udp://tracker.dump.cl:6969/announce",
 ];
 const TORRENT_FATAL_STATUSES: &[&str] =
     &["error", "magnet_error", "virus", "dead", "invalid_magnet"];
@@ -127,6 +140,17 @@ static X_SEASON_EPISODE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b0*(\d{1,2})x0*(\d{1,3})\b").expect("valid x episode regex"));
 static EPISODE_ONLY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:e|ep|episode)\s*[-_. ]?0*(\d{1,3})\b").expect("valid episode-only regex")
+});
+/// Matches season-level (pack) releases with no usable episode signature, e.g.
+/// "Show Season 2", "Show.S02.1080p", "Show S02 Complete", "Seasons 1-5".
+/// Only consulted when NO episode signature was found in the text, so true
+/// single-episode releases (which carry SxxExx / NxN / "Episode N") and
+/// signature-less generic releases never hit the bare `sNN` alternative.
+static SEASON_PACK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\b(?:seasons?\s*0*\d{1,2}|s0*\d{1,2}|complete\s+(?:season|series)|full\s+season|season\s+complete)\b",
+    )
+    .expect("valid season pack regex")
 });
 static HMS_RUNTIME_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b").expect("valid hms runtime regex")
@@ -2010,6 +2034,23 @@ impl ResolverService {
                 "No stream candidates were returned for this movie.",
             ));
         }
+        if context.resolver_provider == ResolverProvider::LocalTorrent {
+            let fallback_name = normalize_whitespace(
+                format!(
+                    "{} {}",
+                    context.metadata.display_title, context.metadata.display_year
+                )
+                .trim(),
+            );
+            return self
+                .resolve_local_torrent_candidates_raced(
+                    candidates,
+                    context,
+                    fallback_name,
+                    validate_resolved_movie_source,
+                )
+                .await;
+        }
         let resolution_started_at = now_ms();
         let resolve_max_ms = context.resolver_provider.resolve_max_ms();
         let mut last_error = None;
@@ -2157,6 +2198,32 @@ impl ResolverService {
                 "No stream candidates were returned for this episode.",
             ));
         }
+        if context.resolver_provider == ResolverProvider::LocalTorrent {
+            let fallback_name = if context.metadata.episode_title.is_empty() {
+                format!(
+                    "{} S{:02}E{:02}",
+                    context.metadata.display_title,
+                    context.metadata.season_number,
+                    context.metadata.episode_number
+                )
+            } else {
+                format!(
+                    "{} S{:02}E{:02} {}",
+                    context.metadata.display_title,
+                    context.metadata.season_number,
+                    context.metadata.episode_number,
+                    context.metadata.episode_title
+                )
+            };
+            return self
+                .resolve_local_torrent_candidates_raced(
+                    candidates,
+                    context,
+                    fallback_name,
+                    validate_resolved_episode_source,
+                )
+                .await;
+        }
         let resolution_started_at = now_ms();
         let resolve_max_ms = context.resolver_provider.resolve_max_ms();
         let mut last_error = None;
@@ -2220,6 +2287,133 @@ impl ResolverService {
         }
 
         Err(last_error.unwrap_or_else(|| ApiError::internal("All stream candidates failed.")))
+    }
+
+    /// Local-torrent candidate resolution with a staggered hedge: the top
+    /// LOCAL_TORRENT_RACE_CANDIDATES race in parallel (next launched on fast
+    /// failure or after LOCAL_TORRENT_RACE_STAGGER), first valid resolve wins
+    /// and the losers are dropped. One dead/swarm-slow torrent can no longer
+    /// serialize the whole resolve behind its metadata timeout. Remaining
+    /// candidates fall back to the sequential walk below.
+    async fn resolve_local_torrent_candidates_raced(
+        &self,
+        candidates: Vec<&DiscoveryStream>,
+        context: CandidateResolutionContext<'_>,
+        fallback_name: String,
+        validate: fn(ResolvedSource, &ResolveMetadata) -> AppResult<ResolvedSource>,
+    ) -> AppResult<Value> {
+        let resolution_started_at = now_ms();
+        let resolve_max_ms = context.resolver_provider.resolve_max_ms();
+        let metadata = context.metadata;
+        let provider = context.resolver_provider;
+        let real_debrid = context.real_debrid;
+        let local_torrent_enabled = context.local_torrent_enabled;
+        let fallback_name = Arc::new(fallback_name);
+
+        let race_count = LOCAL_TORRENT_RACE_CANDIDATES.min(candidates.len());
+        let (raced, rest) = candidates.split_at(race_count);
+        let attempts = raced
+            .iter()
+            .copied()
+            .map(|candidate| {
+                let fallback_name = fallback_name.clone();
+                async move {
+                    let attempt = timeout(
+                        Duration::from_millis(resolve_max_ms.max(1) as u64),
+                        self.resolve_candidate_stream(
+                            candidate,
+                            &fallback_name,
+                            provider,
+                            real_debrid,
+                            local_torrent_enabled,
+                        ),
+                    )
+                    .await;
+                    match attempt {
+                        Ok(Ok(resolved)) => match validate(resolved, metadata) {
+                            Ok(resolved) => Some(resolved),
+                            Err(error) => {
+                                self.record_source_resolve_failure(candidate, &error).await;
+                                None
+                            }
+                        },
+                        Ok(Err(error)) => {
+                            self.record_source_resolve_failure(candidate, &error).await;
+                            None
+                        }
+                        Err(_) => {
+                            let error = ApiError::bad_gateway("Resolving stream timed out.");
+                            self.record_source_resolve_failure(candidate, &error).await;
+                            None
+                        }
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let raced = timeout(
+            Duration::from_millis(resolve_max_ms.max(1) as u64),
+            race_staggered_first_success(attempts, LOCAL_TORRENT_RACE_STAGGER),
+        )
+        .await;
+        if let Ok(Some((_index, resolved))) = raced {
+            return self
+                .build_resolved_response(
+                    resolved,
+                    context.metadata.clone(),
+                    context.preferences.clone(),
+                    context.resolver_provider,
+                    context.user_id,
+                    true,
+                )
+                .await;
+        }
+
+        let mut last_error = None;
+        for candidate in rest.iter().copied() {
+            let elapsed_ms = now_ms() - resolution_started_at;
+            if elapsed_ms >= resolve_max_ms {
+                break;
+            }
+            let remaining_ms = (resolve_max_ms - elapsed_ms).max(1) as u64;
+            let resolved_result = match timeout(
+                Duration::from_millis(remaining_ms),
+                self.resolve_candidate_stream(
+                    candidate,
+                    &fallback_name,
+                    context.resolver_provider,
+                    context.real_debrid,
+                    context.local_torrent_enabled,
+                ),
+            )
+            .await
+            {
+                Ok(result) => result.and_then(|resolved| validate(resolved, context.metadata)),
+                Err(_) => Err(ApiError::bad_gateway("Resolving stream timed out.")),
+            };
+            match resolved_result {
+                Ok(resolved) => {
+                    return self
+                        .build_resolved_response(
+                            resolved,
+                            context.metadata.clone(),
+                            context.preferences.clone(),
+                            context.resolver_provider,
+                            context.user_id,
+                            true,
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    self.record_source_resolve_failure(candidate, &error).await;
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            ApiError::bad_gateway("All local torrent stream candidates failed.")
+        }))
     }
 
     async fn resolve_episode_candidates_auto(
@@ -5143,6 +5337,14 @@ fn score_stream_episode_match(
     let target_signature = build_episode_signature(season_number, episode_number);
     let signatures = collect_episode_signatures(&stream_text, Some(season_number));
     if signatures.is_empty() {
+        // No episode signature anywhere: exact single-episode releases always
+        // carry one, so this is either a season pack or a bare/generic release.
+        // Packs start playback much slower (large multi-file metadata, swarm
+        // spread across many files), so push them below generic releases while
+        // still keeping them as a fallback when nothing better exists.
+        if SEASON_PACK_RE.is_match(&stream_text) {
+            return -1800;
+        }
         return 0;
     }
     if signatures.contains(&target_signature) {
@@ -9158,11 +9360,12 @@ mod tests {
         parse_torznab_xml, playback_session_key_allowed_for_user,
         playback_session_matches_preferred_container, playback_session_matches_preferred_quality,
         playback_session_matches_source_hash, ready_info_has_selected_file_id,
-        select_fastest_race_candidates, select_top_episode_candidates, select_top_movie_candidates,
-        should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
-        should_prefer_software_decode_source, should_resolve_torrent_candidates,
-        should_skip_playback_session_reuse, sort_movie_candidates, stream_list_contains_hash,
-        stremio_addon_stream_url, summarize_stream_candidate_for_client, torrent_playback_enabled,
+        score_stream_episode_match, select_fastest_race_candidates, select_top_episode_candidates,
+        select_top_movie_candidates, should_allow_latest_playback_session_fallback,
+        should_prefer_default_external_embed, should_prefer_software_decode_source,
+        should_resolve_torrent_candidates, should_skip_playback_session_reuse,
+        sort_movie_candidates, stream_list_contains_hash, stremio_addon_stream_url,
+        summarize_stream_candidate_for_client, torrent_playback_enabled,
         torznab_download_url_allowed, user_facing_real_debrid_error,
     };
 
@@ -10307,6 +10510,48 @@ mod tests {
             collect_episode_signatures("Show.S02E07.1080p", Some(2)),
             vec!["2x7"]
         );
+    }
+
+    #[test]
+    fn season_packs_score_below_generic_and_episode_matched_releases() {
+        let make_stream = |title: &str, filename: &str| DiscoveryStream {
+            infoHash: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            name: "Torrentio".to_owned(),
+            title: title.to_owned(),
+            description: String::new(),
+            behaviorHints: DiscoveryBehaviorHints {
+                filename: filename.to_owned(),
+            },
+            sources: Vec::new(),
+            ..DiscoveryStream::default()
+        };
+
+        let episode = make_stream(
+            "Game Of Thrones S02E03 What Is Dead May Never Die",
+            "Game Of Thrones S02E03 What Is Dead May Never Die.mp4",
+        );
+        let pack = make_stream(
+            "Game of Thrones Season 2 Complete 1080p",
+            "Game.of.Thrones.S02.Complete.1080p",
+        );
+        let bare_pack = make_stream(
+            "Game.Of.Thrones.S02.1080p.BluRay.x264",
+            "Game.Of.Thrones.S02.1080p.BluRay.x264",
+        );
+        let generic = make_stream(
+            "What Is Dead May Never Die 1080p",
+            "What.Is.Dead.May.Never.Die.1080p.mp4",
+        );
+        let wrong_episode = make_stream(
+            "Game Of Thrones S02E04 Garden of Bones",
+            "Game Of Thrones S02E04 Garden of Bones.mp4",
+        );
+
+        assert_eq!(score_stream_episode_match(&episode, 2, 3), 2800);
+        assert_eq!(score_stream_episode_match(&pack, 2, 3), -1800);
+        assert_eq!(score_stream_episode_match(&bare_pack, 2, 3), -1800);
+        assert_eq!(score_stream_episode_match(&generic, 2, 3), 0);
+        assert_eq!(score_stream_episode_match(&wrong_episode, 2, 3), -3400);
     }
 
     #[test]
