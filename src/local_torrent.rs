@@ -663,7 +663,11 @@ impl LocalTorrentService {
             ),
         )
         .await
-        .map_err(|_| ApiError::gateway_timeout("Local torrent metadata timed out."))?
+        .map_err(|_| {
+            ApiError::gateway_timeout(
+                "Selected torrent did not start in time (no metadata from peers). Try another source.",
+            )
+        })?
         .map_err(|error| {
             ApiError::bad_gateway(format!("Local torrent metadata failed: {error}"))
         })?;

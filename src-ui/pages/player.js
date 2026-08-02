@@ -10811,12 +10811,11 @@ async function handleSourceOptionSelection(nextSourceHash) {
       completeManualSourceSwitchIfActive();
     }
   } catch (error) {
+    const message = error?.message || "Unable to switch source.";
     if (manualSourceSwitch.isCurrent(sourceSwitchRequest)) {
-      await manualSourceSwitch.fail(
-        sourceSwitchRequest,
-        error?.message || "Unable to switch source.",
-      );
+      await manualSourceSwitch.fail(sourceSwitchRequest, message);
     }
+    showResolverError(message, "Unable to switch source.");
   } finally {
     manualSourceSwitch.finish(sourceSwitchRequest);
   }

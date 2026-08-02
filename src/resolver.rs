@@ -1505,28 +1505,27 @@ impl ResolverService {
                 );
                 let pinned_missing = !filters.source_hash.is_empty()
                     && !stream_list_contains_hash(&streams, &filters.source_hash);
-                if pinned_missing {
-                    let torznab_streams = self.fetch_torznab_movie_streams(&metadata).await?;
-                    if stream_list_contains_hash(&torznab_streams, &filters.source_hash) {
-                        let health_scores =
-                            self.compute_source_health_scores(&torznab_streams).await?;
-                        let torznab_candidates = select_top_movie_candidates(
-                            &torznab_streams,
-                            &metadata,
-                            &preferences.audio_lang,
-                            &preferences.quality,
-                            &filters.source_hash,
-                            candidate_limit,
-                            &filters.source_filters,
-                            &health_scores,
-                        );
-                        if let Ok(result) = self
-                            .resolve_movie_candidates(torznab_candidates, candidate_context)
-                            .await
-                        {
-                            external_guard.mark_completed();
-                            return Ok(result);
-                        }
+                if pinned_missing
+                    && let Ok(torznab_streams) = self.fetch_torznab_movie_streams(&metadata).await
+                    && stream_list_contains_hash(&torznab_streams, &filters.source_hash)
+                {
+                    let health_scores = self.compute_source_health_scores(&torznab_streams).await?;
+                    let torznab_candidates = select_top_movie_candidates(
+                        &torznab_streams,
+                        &metadata,
+                        &preferences.audio_lang,
+                        &preferences.quality,
+                        &filters.source_hash,
+                        candidate_limit,
+                        &filters.source_filters,
+                        &health_scores,
+                    );
+                    if let Ok(result) = self
+                        .resolve_movie_candidates(torznab_candidates, candidate_context)
+                        .await
+                    {
+                        external_guard.mark_completed();
+                        return Ok(result);
                     }
                 }
                 if !candidates.is_empty() {
@@ -1549,34 +1548,52 @@ impl ResolverService {
             Err(error) => last_error = Some(error),
         }
 
-        let torznab_streams = self.fetch_torznab_movie_streams(&metadata).await?;
-        if !torznab_streams.is_empty() {
-            let health_scores = self.compute_source_health_scores(&torznab_streams).await?;
-            let candidate_limit = if resolver_provider.is_fastest() {
-                FASTEST_CANDIDATE_POOL_LIMIT
-            } else {
-                10
-            };
-            let torznab_candidates = select_top_movie_candidates(
-                &torznab_streams,
-                &metadata,
-                &preferences.audio_lang,
-                &preferences.quality,
-                &filters.source_hash,
-                candidate_limit,
-                &filters.source_filters,
-                &health_scores,
-            );
-            if !torznab_candidates.is_empty() {
-                match self
-                    .resolve_movie_candidates(torznab_candidates, candidate_context)
-                    .await
-                {
-                    Ok(result) => {
-                        external_guard.mark_completed();
-                        return Ok(result);
+        // Pinned selections already targeted one exact torrent. Torznab cannot
+        // substitute a different hash, and a Torznab outage must not mask the
+        // real local-torrent / torrentio failure the player should surface.
+        if !filters.source_hash.is_empty() {
+            return Err(last_error.unwrap_or_else(|| {
+                ApiError::bad_gateway(
+                    "Selected torrent source is unavailable right now. Try another source.",
+                )
+            }));
+        }
+
+        match self.fetch_torznab_movie_streams(&metadata).await {
+            Ok(torznab_streams) if !torznab_streams.is_empty() => {
+                let health_scores = self.compute_source_health_scores(&torznab_streams).await?;
+                let candidate_limit = if resolver_provider.is_fastest() {
+                    FASTEST_CANDIDATE_POOL_LIMIT
+                } else {
+                    10
+                };
+                let torznab_candidates = select_top_movie_candidates(
+                    &torznab_streams,
+                    &metadata,
+                    &preferences.audio_lang,
+                    &preferences.quality,
+                    &filters.source_hash,
+                    candidate_limit,
+                    &filters.source_filters,
+                    &health_scores,
+                );
+                if !torznab_candidates.is_empty() {
+                    match self
+                        .resolve_movie_candidates(torznab_candidates, candidate_context)
+                        .await
+                    {
+                        Ok(result) => {
+                            external_guard.mark_completed();
+                            return Ok(result);
+                        }
+                        Err(error) => last_error = Some(error),
                     }
-                    Err(error) => last_error = Some(error),
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                if last_error.is_none() {
+                    last_error = Some(error);
                 }
             }
         }
@@ -1923,29 +1940,28 @@ impl ResolverService {
                 );
                 let pinned_missing = !filters.source_hash.is_empty()
                     && !stream_list_contains_hash(&streams, &filters.source_hash);
-                if pinned_missing {
-                    let torznab_streams = self.fetch_torznab_episode_streams(&metadata).await?;
-                    if stream_list_contains_hash(&torznab_streams, &filters.source_hash) {
-                        let health_scores =
-                            self.compute_source_health_scores(&torznab_streams).await?;
-                        let torznab_candidates = select_top_episode_candidates(
-                            &torznab_streams,
-                            &metadata,
-                            &preferences.audio_lang,
-                            &preferences.quality,
-                            &normalized_preferred_container,
-                            &filters.source_hash,
-                            candidate_limit,
-                            &filters.source_filters,
-                            &health_scores,
-                        );
-                        if let Ok(result) = self
-                            .resolve_episode_candidates(torznab_candidates, candidate_context)
-                            .await
-                        {
-                            external_guard.mark_completed();
-                            return Ok(result);
-                        }
+                if pinned_missing
+                    && let Ok(torznab_streams) = self.fetch_torznab_episode_streams(&metadata).await
+                    && stream_list_contains_hash(&torznab_streams, &filters.source_hash)
+                {
+                    let health_scores = self.compute_source_health_scores(&torznab_streams).await?;
+                    let torznab_candidates = select_top_episode_candidates(
+                        &torznab_streams,
+                        &metadata,
+                        &preferences.audio_lang,
+                        &preferences.quality,
+                        &normalized_preferred_container,
+                        &filters.source_hash,
+                        candidate_limit,
+                        &filters.source_filters,
+                        &health_scores,
+                    );
+                    if let Ok(result) = self
+                        .resolve_episode_candidates(torznab_candidates, candidate_context)
+                        .await
+                    {
+                        external_guard.mark_completed();
+                        return Ok(result);
                     }
                 }
                 if !candidates.is_empty() {
@@ -1968,35 +1984,53 @@ impl ResolverService {
             Err(error) => last_error = Some(error),
         }
 
-        let torznab_streams = self.fetch_torznab_episode_streams(&metadata).await?;
-        if !torznab_streams.is_empty() {
-            let health_scores = self.compute_source_health_scores(&torznab_streams).await?;
-            let candidate_limit = if resolver_provider.is_fastest() {
-                FASTEST_CANDIDATE_POOL_LIMIT
-            } else {
-                10
-            };
-            let torznab_candidates = select_top_episode_candidates(
-                &torznab_streams,
-                &metadata,
-                &preferences.audio_lang,
-                &preferences.quality,
-                &normalized_preferred_container,
-                &filters.source_hash,
-                candidate_limit,
-                &filters.source_filters,
-                &health_scores,
-            );
-            if !torznab_candidates.is_empty() {
-                match self
-                    .resolve_episode_candidates(torznab_candidates, candidate_context)
-                    .await
-                {
-                    Ok(result) => {
-                        external_guard.mark_completed();
-                        return Ok(result);
+        // Pinned selections already targeted one exact torrent. Torznab cannot
+        // substitute a different hash, and a Torznab outage must not mask the
+        // real local-torrent / torrentio failure the player should surface.
+        if !filters.source_hash.is_empty() {
+            return Err(last_error.unwrap_or_else(|| {
+                ApiError::bad_gateway(
+                    "Selected torrent source is unavailable right now. Try another source.",
+                )
+            }));
+        }
+
+        match self.fetch_torznab_episode_streams(&metadata).await {
+            Ok(torznab_streams) if !torznab_streams.is_empty() => {
+                let health_scores = self.compute_source_health_scores(&torznab_streams).await?;
+                let candidate_limit = if resolver_provider.is_fastest() {
+                    FASTEST_CANDIDATE_POOL_LIMIT
+                } else {
+                    10
+                };
+                let torznab_candidates = select_top_episode_candidates(
+                    &torznab_streams,
+                    &metadata,
+                    &preferences.audio_lang,
+                    &preferences.quality,
+                    &normalized_preferred_container,
+                    &filters.source_hash,
+                    candidate_limit,
+                    &filters.source_filters,
+                    &health_scores,
+                );
+                if !torznab_candidates.is_empty() {
+                    match self
+                        .resolve_episode_candidates(torznab_candidates, candidate_context)
+                        .await
+                    {
+                        Ok(result) => {
+                            external_guard.mark_completed();
+                            return Ok(result);
+                        }
+                        Err(error) => last_error = Some(error),
                     }
-                    Err(error) => last_error = Some(error),
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                if last_error.is_none() {
+                    last_error = Some(error);
                 }
             }
         }
