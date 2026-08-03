@@ -184,6 +184,37 @@ if [[ "$TLS_MODE" == "internal" ]]; then
   tls_line="  tls internal"
 fi
 
+# Caddy is shared with Spotify on this host. Spotify owns its route inside an
+# explicit managed block; retain that block when regenerating StreamArena's
+# portion of the config so a StreamArena deploy cannot remove Spotify's TLS
+# certificate and streaming routes.
+preserved_spotify_caddy="$(mktemp)"
+if [[ -f "$caddy_config_dir/Caddyfile" ]]; then
+  sudo python3 - "$caddy_config_dir/Caddyfile" "$preserved_spotify_caddy" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text()
+destination = Path(sys.argv[2])
+begin = "# BEGIN SPOTIFY DIRECT CADDY"
+end = "# END SPOTIFY DIRECT CADDY"
+
+if begin not in source:
+    destination.write_text("")
+    raise SystemExit(0)
+
+matches = re.findall(
+    rf"(?ms)^\s*{re.escape(begin)}\s*$.*?^\s*{re.escape(end)}\s*$",
+    source,
+)
+if len(matches) != 1:
+    raise SystemExit("Spotify Caddy block is incomplete or duplicated")
+
+destination.write_text(matches[0].strip() + "\n")
+PY
+fi
+
 tmp_caddy_config="$(mktemp)"
 cat > "$tmp_caddy_config" <<CADDY
 {
@@ -223,6 +254,11 @@ $tls_line
   import streamarena_proxy
 }
 CADDY
+if [[ -s "$preserved_spotify_caddy" ]]; then
+  printf '\n' >> "$tmp_caddy_config"
+  cat "$preserved_spotify_caddy" >> "$tmp_caddy_config"
+fi
+rm -f "$preserved_spotify_caddy"
 "$caddy_bin" fmt --overwrite "$tmp_caddy_config"
 caddy_config_changed=1
 if [[ -f "$caddy_config_dir/Caddyfile" ]] && cmp -s "$tmp_caddy_config" "$caddy_config_dir/Caddyfile"; then
