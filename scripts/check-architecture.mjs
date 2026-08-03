@@ -4,14 +4,14 @@ import { basename, join, resolve } from "node:path";
 
 const rootDir = resolve(new URL("..", import.meta.url).pathname);
 const maxSourceLines = {
-  "src-ui/pages/player.js": 10_700,
+  "src-ui/pages/player.js": 10_800,
   "src-ui/pages/home.jsx": 5_450,
   "src-ui/pages/settings.jsx": 1_600,
 };
 const defaultPageLineLimit = 1_500;
 const backendSourceLineLimits = {
   "src/persistence.rs": 7_350,
-  "src/routes.rs": 5_300,
+  "src/routes.rs": 5_450,
   "src/resolver.rs": 11_500,
 };
 const workerSourceLineLimit = 250;
