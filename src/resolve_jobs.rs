@@ -91,9 +91,8 @@ impl ResolveJobStore {
 
     pub fn prune(&self) {
         let now = now_ms();
-        self.jobs.retain(|_, entry| {
-            now.saturating_sub(entry.created_at_ms) <= RESOLVE_JOB_TTL_MS
-        });
+        self.jobs
+            .retain(|_, entry| now.saturating_sub(entry.created_at_ms) <= RESOLVE_JOB_TTL_MS);
         while self.jobs.len() > RESOLVE_JOB_MAX_ENTRIES {
             let oldest = self
                 .jobs
