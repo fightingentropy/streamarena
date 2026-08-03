@@ -8,7 +8,8 @@ export function getManualSourceSwitchTimeouts({
     return { resolveTimeoutMs: 30_000, startupTimeoutMs: 12_000 };
   }
   if (localTorrentEnabled) {
-    return { resolveTimeoutMs: 180_000, startupTimeoutMs: 60_000 };
+    // Match the backend cold-torrent budget (metadata + ready + first byte).
+    return { resolveTimeoutMs: 300_000, startupTimeoutMs: 120_000 };
   }
   if (
     realDebridConfigured ||

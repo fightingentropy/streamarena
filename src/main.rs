@@ -18,6 +18,7 @@ mod provider_budget;
 mod provider_registry;
 mod rate_limit;
 mod request_security;
+mod resolve_jobs;
 mod resolver;
 mod routes;
 mod secret_store;
@@ -46,6 +47,7 @@ use crate::local_torrent::LocalTorrentService;
 use crate::media::MediaService;
 use crate::persistence::Db;
 use crate::process::RuntimeServices;
+use crate::resolve_jobs::ResolveJobStore;
 use crate::resolver::ResolverService;
 use crate::routes::{AppState, build_router};
 use crate::streaming::StreamingService;
@@ -319,6 +321,8 @@ async fn main() -> AppResult<()> {
     let sweep_live_audio_transcode_cache = live_audio_transcode_cache.clone();
     let live_hls_playlist_cache = crate::live::LiveHlsPlaylistCache::new();
     let sweep_live_hls_playlist_cache = live_hls_playlist_cache.clone();
+    let resolve_jobs = ResolveJobStore::new();
+    let sweep_resolve_jobs = resolve_jobs.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
@@ -336,6 +340,7 @@ async fn main() -> AppResult<()> {
             sweep_live_hls_playlist_cache.prune();
             crate::live::prune_live_proxy_statics();
             sweep_resolver.prune_resolve_cache();
+            sweep_resolve_jobs.prune();
         }
     });
 
@@ -348,6 +353,7 @@ async fn main() -> AppResult<()> {
         http_client,
         local_torrent,
         resolver,
+        resolve_jobs,
         streaming,
         upload,
         runtime,

@@ -49,7 +49,9 @@ const REAL_DEBRID_API_BASE: &str = "https://api.real-debrid.com/rest/1.0";
 const SOURCE_LANGUAGE_FILTER_DEFAULT: &str = "en";
 const SOURCE_AUDIO_PROFILE_DEFAULT: &str = "single";
 const RESOLVE_MAX_MS: i64 = 90_000;
-const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 150_000;
+// Cold pinned torrents often need a long metadata wait plus ready/first-byte.
+// Keep this above metadata + 2× ready (see local_torrent timeouts).
+const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 300_000;
 const FASTEST_RESOLVE_MAX_MS: i64 = 45_000;
 /// How many top-ranked local-torrent candidates race (staggered hedge) for the
 /// first successful resolve. One dead or swarm-slow torrent used to serialize
@@ -2347,11 +2349,13 @@ impl ResolverService {
 
         let race_count = LOCAL_TORRENT_RACE_CANDIDATES.min(candidates.len());
         let (raced, rest) = candidates.split_at(race_count);
+        let race_errors = Arc::new(tokio::sync::Mutex::new(Vec::<ApiError>::new()));
         let attempts = raced
             .iter()
             .copied()
             .map(|candidate| {
                 let fallback_name = fallback_name.clone();
+                let race_errors = race_errors.clone();
                 async move {
                     let attempt = timeout(
                         Duration::from_millis(resolve_max_ms.max(1) as u64),
@@ -2368,17 +2372,34 @@ impl ResolverService {
                         Ok(Ok(resolved)) => match validate(resolved, metadata) {
                             Ok(resolved) => Some(resolved),
                             Err(error) => {
+                                tracing::warn!(
+                                    hash = %get_stream_info_hash(candidate),
+                                    error = error.message().unwrap_or("validation failed"),
+                                    "local torrent candidate failed validation"
+                                );
                                 self.record_source_resolve_failure(candidate, &error).await;
+                                race_errors.lock().await.push(error);
                                 None
                             }
                         },
                         Ok(Err(error)) => {
+                            tracing::warn!(
+                                hash = %get_stream_info_hash(candidate),
+                                error = error.message().unwrap_or("resolve failed"),
+                                "local torrent candidate failed resolve"
+                            );
                             self.record_source_resolve_failure(candidate, &error).await;
+                            race_errors.lock().await.push(error);
                             None
                         }
                         Err(_) => {
                             let error = ApiError::bad_gateway("Resolving stream timed out.");
+                            tracing::warn!(
+                                hash = %get_stream_info_hash(candidate),
+                                "local torrent candidate timed out"
+                            );
                             self.record_source_resolve_failure(candidate, &error).await;
+                            race_errors.lock().await.push(error);
                             None
                         }
                     }
@@ -2404,7 +2425,7 @@ impl ResolverService {
                 .await;
         }
 
-        let mut last_error = None;
+        let mut last_error = race_errors.lock().await.pop();
         for candidate in rest.iter().copied() {
             let elapsed_ms = now_ms() - resolution_started_at;
             if elapsed_ms >= resolve_max_ms {
@@ -8410,34 +8431,75 @@ enum PlayableUrlVerification {
     Uncertain,
 }
 
-fn build_magnet_uri(stream: &DiscoveryStream, fallback_name: &str) -> AppResult<String> {
-    if let Some(magnet_url) = normalize_magnet_url(&stream.magnetUrl) {
-        return Ok(magnet_url);
+fn push_unique_tracker(trackers: &mut Vec<String>, tracker: &str) {
+    let trimmed = tracker.trim();
+    if trimmed.is_empty() {
+        return;
     }
-    let info_hash = get_stream_info_hash(stream);
+    if trackers
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+    {
+        return;
+    }
+    trackers.push(trimmed.to_owned());
+}
+
+fn build_magnet_uri(stream: &DiscoveryStream, fallback_name: &str) -> AppResult<String> {
+    let normalized_magnet = normalize_magnet_url(&stream.magnetUrl);
+    let info_hash = {
+        let from_stream = get_stream_info_hash(stream);
+        if !from_stream.is_empty() {
+            from_stream
+        } else if let Some(magnet_url) = normalized_magnet.as_deref() {
+            extract_info_hash_from_magnet(magnet_url)
+        } else {
+            String::new()
+        }
+    };
     if info_hash.is_empty() {
         return Err(ApiError::internal("Missing torrent info hash."));
     }
-    let source_trackers = stream
-        .sources
-        .iter()
-        .filter_map(|source| source.strip_prefix("tracker:"))
-        .filter(|tracker| !tracker.trim().is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    let mut trackers = source_trackers;
-    for tracker in DEFAULT_TRACKERS {
-        if !trackers.iter().any(|existing| existing == tracker) {
-            trackers.push((*tracker).to_owned());
+
+    let mut trackers = Vec::new();
+    if let Some(magnet_url) = normalized_magnet.as_deref()
+        && let Ok(url) = url::Url::parse(magnet_url)
+    {
+        for (key, value) in url.query_pairs() {
+            if key == "tr" {
+                push_unique_tracker(&mut trackers, value.as_ref());
+            }
         }
     }
+    for source in &stream.sources {
+        if let Some(tracker) = source.strip_prefix("tracker:") {
+            push_unique_tracker(&mut trackers, tracker);
+        }
+    }
+    for tracker in DEFAULT_TRACKERS {
+        push_unique_tracker(&mut trackers, tracker);
+    }
+
+    let display_name = {
+        let fallback = fallback_name.trim();
+        if !fallback.is_empty() {
+            fallback.to_owned()
+        } else if let Some(magnet_url) = normalized_magnet.as_deref()
+            && let Ok(url) = url::Url::parse(magnet_url)
+        {
+            url.query_pairs()
+                .find_map(|(key, value)| (key == "dn").then(|| value.into_owned()))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        }
+    };
 
     let mut parts = vec![format!("xt=urn:btih:{info_hash}")];
-    if !fallback_name.trim().is_empty() {
+    if !display_name.is_empty() {
         parts.push(format!(
             "dn={}",
-            url::form_urlencoded::byte_serialize(fallback_name.trim().as_bytes())
-                .collect::<String>()
+            url::form_urlencoded::byte_serialize(display_name.as_bytes()).collect::<String>()
         ));
     }
     for tracker in trackers {

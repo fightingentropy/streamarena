@@ -355,7 +355,7 @@ impl StreamingService {
         manual_audio_sync_ms: i64,
         preferred_video_mode: &str,
     ) -> AppResult<Response<Body>> {
-        let source = self.media.resolve_transcode_input(input)?;
+        let source = self.media.resolve_remux_input(input).await?;
         let permit = match timeout(
             Duration::from_millis(self.config.remux_queue_timeout_ms),
             self.remux_permits.clone().acquire_owned(),
@@ -533,6 +533,9 @@ impl StreamingService {
                 (safe_start_seconds, 0)
             };
 
+        // Keep the remux probe window small so fMP4 init/first fragment can
+        // flush before browsers give up. Live-HLS export paths keep larger
+        // probesizes elsewhere.
         let mut ffmpeg_args = vec![
             "ffmpeg".to_owned(),
             "-v".to_owned(),
@@ -540,9 +543,9 @@ impl StreamingService {
             "-fflags".to_owned(),
             "+genpts+igndts+discardcorrupt".to_owned(),
             "-analyzeduration".to_owned(),
-            "100M".to_owned(),
+            "5M".to_owned(),
             "-probesize".to_owned(),
-            "100M".to_owned(),
+            "5M".to_owned(),
         ];
         if fast_seek_seconds > 0 {
             ffmpeg_args.push("-ss".to_owned());
@@ -630,8 +633,10 @@ impl StreamingService {
             "make_zero".to_owned(),
             "-movflags".to_owned(),
             "frag_keyframe+empty_moov+default_base_moof".to_owned(),
+            // 1s fragments flush playable media much sooner than the old 5s
+            // window, which mattered for local-torrent remux startups.
             "-frag_duration".to_owned(),
-            "5000000".to_owned(),
+            "1000000".to_owned(),
             "-f".to_owned(),
             "mp4".to_owned(),
             "pipe:1".to_owned(),
@@ -1671,13 +1676,12 @@ fn get_fallback_audio_stream_index(probe: &MediaProbe) -> i64 {
 }
 
 fn should_force_normalize_video_for_browser(probe: &MediaProbe, _source: &str) -> bool {
-    // MP4/MOV containers use edit lists (elst atoms) to trim B-frame lead-in
-    // and keep audio/video in sync.  Fragmented MP4 output (used by the remux
-    // endpoint) cannot carry edit lists, so the raw video PTS is exposed and
-    // the first presentable frame starts later than audio.  The remux endpoint
-    // always re-encodes audio to AAC, so force normalize mode whenever B-frames
-    // are present and setpts=PTS-STARTPTS can eliminate the gap.
-    probe.videoBFrames > 0
+    // Prefer `-c:v copy` for remux. Forcing normalize whenever B-frames exist
+    // re-encodes the whole video and routinely stalls local-torrent switches
+    // past the browser startup watchdog. Audio is already re-encoded to AAC
+    // with aresample/adelay, which is enough for browser A/V sync on fMP4.
+    let _ = probe;
+    false
 }
 
 fn should_force_accurate_seek_for_remux(
@@ -1685,7 +1689,11 @@ fn should_force_accurate_seek_for_remux(
     requested_video_mode: &str,
     resolved_video_mode: &str,
 ) -> bool {
-    start_seconds > 0 && requested_video_mode == "auto" && resolved_video_mode == "copy"
+    // Fast input seeking (`-ss` before `-i` with copy) starts playback quickly.
+    // Accurate normalize re-encode for mid-title seeks is too slow for torrent
+    // source switches; the player reseeks once media is ready.
+    let _ = (start_seconds, requested_video_mode, resolved_video_mode);
+    false
 }
 
 fn build_hls_video_encode_config(hwaccel_mode: &str) -> VideoEncodeConfig {
@@ -2382,7 +2390,7 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_remux_when_b_frames_are_present_with_safe_audio() {
+    fn keeps_video_copy_when_b_frames_are_present_with_safe_audio() {
         let probe = MediaProbe {
             videoBFrames: 2,
             audioTracks: vec![AudioTrack {
@@ -2392,15 +2400,15 @@ mod tests {
             ..MediaProbe::default()
         };
 
-        assert!(should_force_normalize_video_for_browser(
+        assert!(!should_force_normalize_video_for_browser(
             &probe,
             "movie.mp4"
         ));
     }
 
     #[test]
-    fn normalizes_auto_remux_seeks_for_accurate_av_cuts() {
-        assert!(should_force_accurate_seek_for_remux(2579, "auto", "copy"));
+    fn prefers_fast_copy_seeks_over_accurate_normalize_reencode() {
+        assert!(!should_force_accurate_seek_for_remux(2579, "auto", "copy"));
         assert!(!should_force_accurate_seek_for_remux(0, "auto", "copy"));
         assert!(!should_force_accurate_seek_for_remux(2579, "copy", "copy"));
         assert!(!should_force_accurate_seek_for_remux(

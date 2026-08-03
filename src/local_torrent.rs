@@ -15,7 +15,8 @@ use dashmap::DashMap;
 use hmac::{Hmac, Mac};
 use librqbit::api::TorrentIdOrHash;
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session, SessionOptions,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, PeerConnectionOptions,
+    Session, SessionOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -35,9 +36,45 @@ use crate::utils::now_ms;
 
 const LOCAL_TORRENT_RECENT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const LOCAL_TORRENT_ACCESS_MARKER: &str = ".last-accessed";
+/// Persisted BitTorrent metainfo so resolves after restart don't wait on peers
+/// for metadata that was already fetched once.
+const LOCAL_TORRENT_METAINFO_FILENAME: &str = ".meta.torrent";
+/// Short HTTP hedge when local metainfo is missing; magnet peer metadata is the
+/// fallback and can take the full LOCAL_TORRENT_METADATA_TIMEOUT_MS.
+const LOCAL_TORRENT_METAINFO_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 const CACHE_CONTROL_STREAM: &str = "no-store";
 const DIRECT_FILE_CACHE_FOLDER: &str = "direct";
 const INTERNAL_STREAM_ACCESS_PARAM: &str = "internalAccess";
+// Keep in sync with resolver::DEFAULT_TRACKERS so cold magnets still get peers
+// even when the provider magnet omits public trackers.
+const LOCAL_TORRENT_SESSION_TRACKERS: &[&str] = &[
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://explodie.org:6969/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://tracker.dler.org:6969/announce",
+    "udp://opentracker.i2p.rocks:6969/announce",
+    "udp://tracker.tiny-vps.com:6969/announce",
+    "udp://tracker.moeking.me:6969/announce",
+    "udp://tracker.cyberia.is:6969/announce",
+    "udp://tracker.dump.cl:6969/announce",
+];
+
+fn session_tracker_urls() -> HashSet<url::Url> {
+    LOCAL_TORRENT_SESSION_TRACKERS
+        .iter()
+        .filter_map(|tracker| url::Url::parse(tracker).ok())
+        .collect()
+}
+
+fn add_torrent_tracker_list() -> Vec<String> {
+    LOCAL_TORRENT_SESSION_TRACKERS
+        .iter()
+        .map(|tracker| (*tracker).to_owned())
+        .collect()
+}
 const INTERNAL_STREAM_ACCESS_CONTEXT: &[u8] = b"streamarena-local-torrent-internal-v1";
 type HmacSha256 = Hmac<Sha256>;
 /// Direct-cache downloads only ever target Real-Debrid unrestricted
@@ -613,13 +650,20 @@ impl LocalTorrentService {
                 tokio::fs::create_dir_all(&self.config.local_torrent_cache_dir)
                     .await
                     .map_err(|error| ApiError::internal(error.to_string()))?;
+                let session_persistence_folder =
+                    self.config.local_torrent_cache_dir.join(".session");
                 let options = SessionOptions {
                     disable_dht: false,
                     // Keep the DHT routing table across restarts so the first
                     // resolve after a server bounce doesn't rebuild peer
                     // discovery from zero.
                     disable_dht_persistence: false,
-                    fastresume: false,
+                    // Restore in-progress torrents quickly after restart using
+                    // piece bitfields written under `.session/`.
+                    fastresume: true,
+                    persistence: Some(librqbit::SessionPersistenceConfig::Json {
+                        folder: Some(session_persistence_folder),
+                    }),
                     // Accept inbound peer connections (in addition to outbound)
                     // so well-connected peers can reach us too. UPnP stays off;
                     // forward the port on the router for full effect.
@@ -627,7 +671,15 @@ impl LocalTorrentService {
                     enable_upnp_port_forwarding: false,
                     // Raced resolve candidates (up to 4) initialize in
                     // parallel; the loser handles are cheap to keep around.
-                    concurrent_init_limit: Some(3),
+                    concurrent_init_limit: Some(4),
+                    // Give cold swarms longer to establish peer sockets while
+                    // metadata is still being fetched.
+                    peer_opts: Some(PeerConnectionOptions {
+                        connect_timeout: Some(Duration::from_secs(20)),
+                        read_write_timeout: Some(Duration::from_secs(20)),
+                        keep_alive_interval: None,
+                    }),
+                    trackers: session_tracker_urls(),
                     disable_upload: true,
                     ..Default::default()
                 };
@@ -649,18 +701,36 @@ impl LocalTorrentService {
         request: &LocalTorrentResolveRequest,
         output_folder: &Path,
     ) -> AppResult<Vec<LocalTorrentFileCandidate>> {
+        let source_hash = normalize_torrent_hash(&request.info_hash);
+        let add = self
+            .resolve_add_torrent(&source_hash, &request.magnet_uri, output_folder)
+            .await?;
+        // List-only still asks librqbit for an output folder and may touch
+        // placeholder files. Keep that scratch space away from the real cache
+        // so metadata probes cannot wipe or conflict with warm downloads.
+        let list_folder = self
+            .config
+            .local_torrent_cache_dir
+            .join(".list-only")
+            .join(&source_hash);
+        tokio::fs::create_dir_all(&list_folder)
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?;
         let options = AddTorrentOptions {
             list_only: true,
-            output_folder: Some(output_folder.to_string_lossy().to_string()),
+            output_folder: Some(list_folder.to_string_lossy().to_string()),
             overwrite: true,
+            trackers: Some(add_torrent_tracker_list()),
+            peer_opts: Some(PeerConnectionOptions {
+                connect_timeout: Some(Duration::from_secs(20)),
+                read_write_timeout: Some(Duration::from_secs(20)),
+                keep_alive_interval: None,
+            }),
             ..Default::default()
         };
         let list_response = timeout(
             Duration::from_millis(self.config.local_torrent_metadata_timeout_ms),
-            session.add_torrent(
-                AddTorrent::from_url(request.magnet_uri.clone()),
-                Some(options),
-            ),
+            session.add_torrent(add, Some(options)),
         )
         .await
         .map_err(|_| {
@@ -677,6 +747,9 @@ impl LocalTorrentService {
                 "Local torrent metadata could not be listed.",
             ));
         };
+        self.persist_metainfo_bytes(output_folder, &list.torrent_bytes)
+            .await;
+        let _ = tokio::fs::remove_dir_all(&list_folder).await;
         list.info
             .iter_file_details()
             .map_err(|error| {
@@ -695,6 +768,144 @@ impl LocalTorrentService {
                 })
             })
             .collect()
+    }
+
+    async fn resolve_add_torrent(
+        &self,
+        source_hash: &str,
+        magnet_uri: &str,
+        output_folder: &Path,
+    ) -> AppResult<AddTorrent<'static>> {
+        if let Some(bytes) = self.load_metainfo_bytes(output_folder).await {
+            return Ok(AddTorrent::from_bytes(bytes));
+        }
+        if let Some(bytes) = self.fetch_metainfo_bytes(source_hash).await {
+            self.persist_metainfo_bytes(output_folder, &bytes).await;
+            return Ok(AddTorrent::from_bytes(bytes));
+        }
+        Ok(AddTorrent::from_url(magnet_uri.to_owned()))
+    }
+
+    fn metainfo_path(output_folder: &Path) -> PathBuf {
+        output_folder.join(LOCAL_TORRENT_METAINFO_FILENAME)
+    }
+
+    async fn load_metainfo_bytes(&self, output_folder: &Path) -> Option<Vec<u8>> {
+        let path = Self::metainfo_path(output_folder);
+        let bytes = tokio::fs::read(&path).await.ok()?;
+        if looks_like_torrent_metainfo(&bytes) {
+            Some(bytes)
+        } else {
+            let _ = tokio::fs::remove_file(&path).await;
+            None
+        }
+    }
+
+    async fn persist_metainfo_bytes(&self, output_folder: &Path, bytes: &[u8]) {
+        if !looks_like_torrent_metainfo(bytes) {
+            return;
+        }
+        if let Err(error) = tokio::fs::create_dir_all(output_folder).await {
+            tracing::warn!(
+                error = %error,
+                path = %output_folder.display(),
+                "failed to create local torrent folder for metainfo"
+            );
+            return;
+        }
+        let path = Self::metainfo_path(output_folder);
+        let tmp = path.with_extension("torrent.tmp");
+        if let Err(error) = tokio::fs::write(&tmp, bytes).await {
+            tracing::warn!(
+                error = %error,
+                path = %tmp.display(),
+                "failed to write local torrent metainfo"
+            );
+            return;
+        }
+        if let Err(error) = tokio::fs::rename(&tmp, &path).await {
+            tracing::warn!(
+                error = %error,
+                path = %path.display(),
+                "failed to persist local torrent metainfo"
+            );
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
+    }
+
+    async fn fetch_metainfo_bytes(&self, source_hash: &str) -> Option<Vec<u8>> {
+        let hash = normalize_torrent_hash(source_hash);
+        if hash.len() != 40 {
+            return None;
+        }
+        // Hardcoded public metainfo cache — not user-controlled (no SSRF).
+        let url = format!("https://itorrents.org/torrent/{hash}.torrent");
+        let response = timeout(
+            LOCAL_TORRENT_METAINFO_FETCH_TIMEOUT,
+            self.http_client.get(url).send(),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let bytes = timeout(LOCAL_TORRENT_METAINFO_FETCH_TIMEOUT, response.bytes())
+            .await
+            .ok()?
+            .ok()?;
+        let bytes = bytes.to_vec();
+        if looks_like_torrent_metainfo(&bytes) {
+            Some(bytes)
+        } else {
+            None
+        }
+    }
+
+    async fn persist_handle_metainfo(&self, handle: &ManagedTorrent, output_folder: &Path) {
+        let Ok(bytes) = handle.with_metadata(|metadata| metadata.torrent_bytes.to_vec()) else {
+            return;
+        };
+        self.persist_metainfo_bytes(output_folder, &bytes).await;
+    }
+
+    async fn cleanup_unselected_placeholders(&self, output_folder: &Path, keep_relative: &str) {
+        let keep_path = output_folder.join(keep_relative);
+        let Ok(mut stack) = tokio::fs::read_dir(output_folder).await else {
+            return;
+        };
+        let mut pending = vec![];
+        while let Ok(Some(entry)) = stack.next_entry().await {
+            pending.push(entry.path());
+        }
+        while let Some(path) = pending.pop() {
+            let Ok(metadata) = tokio::fs::metadata(&path).await else {
+                continue;
+            };
+            if metadata.is_dir() {
+                if let Ok(mut child) = tokio::fs::read_dir(&path).await {
+                    while let Ok(Some(entry)) = child.next_entry().await {
+                        pending.push(entry.path());
+                    }
+                }
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            if name == LOCAL_TORRENT_ACCESS_MARKER || name == LOCAL_TORRENT_METAINFO_FILENAME {
+                continue;
+            }
+            if path == keep_path {
+                continue;
+            }
+            // Only remove empty placeholders. Non-empty siblings (partial
+            // downloads of other titles in a pack) are left alone.
+            if metadata.len() == 0 {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        }
     }
 
     async fn ensure_handle(
@@ -718,17 +929,28 @@ impl LocalTorrentService {
         tokio::fs::create_dir_all(&output_folder)
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
+        let add = self
+            .resolve_add_torrent(&entry.source_hash, &entry.magnet_uri, &output_folder)
+            .await?;
+        // Drop leftover zero-byte placeholders from older full-pack adds so the
+        // cache stays lean. librqbit's overwrite=true opens existing files with
+        // truncate=false, so warm selected bytes are preserved.
+        self.cleanup_unselected_placeholders(&output_folder, &entry.file_path)
+            .await;
         let options = AddTorrentOptions {
             only_files: Some(vec![entry.file_id]),
             output_folder: Some(output_folder.to_string_lossy().to_string()),
             overwrite: true,
+            trackers: Some(add_torrent_tracker_list()),
+            peer_opts: Some(PeerConnectionOptions {
+                connect_timeout: Some(Duration::from_secs(20)),
+                read_write_timeout: Some(Duration::from_secs(20)),
+                keep_alive_interval: None,
+            }),
             ..Default::default()
         };
         let response = session
-            .add_torrent(
-                AddTorrent::from_url(entry.magnet_uri.clone()),
-                Some(options),
-            )
+            .add_torrent(add, Some(options))
             .await
             .map_err(|error| ApiError::bad_gateway(format!("Local torrent add failed: {error}")))?;
         let handle = match response {
@@ -741,17 +963,25 @@ impl LocalTorrentService {
                         .map_err(|error| {
                             ApiError::bad_gateway(format!("Local torrent reload failed: {error}"))
                         })?;
+                    let retry_add = self
+                        .resolve_add_torrent(&entry.source_hash, &entry.magnet_uri, &output_folder)
+                        .await?;
+                    self.cleanup_unselected_placeholders(&output_folder, &entry.file_path)
+                        .await;
                     let retry_options = AddTorrentOptions {
                         only_files: Some(vec![entry.file_id]),
                         output_folder: Some(output_folder.to_string_lossy().to_string()),
                         overwrite: true,
+                        trackers: Some(add_torrent_tracker_list()),
+                        peer_opts: Some(PeerConnectionOptions {
+                            connect_timeout: Some(Duration::from_secs(20)),
+                            read_write_timeout: Some(Duration::from_secs(20)),
+                            keep_alive_interval: None,
+                        }),
                         ..Default::default()
                     };
                     session
-                        .add_torrent(
-                            AddTorrent::from_url(entry.magnet_uri.clone()),
-                            Some(retry_options),
-                        )
+                        .add_torrent(retry_add, Some(retry_options))
                         .await
                         .map_err(|error| {
                             ApiError::bad_gateway(format!("Local torrent add failed: {error}"))
@@ -792,6 +1022,7 @@ impl LocalTorrentService {
         .map_err(|error| {
             ApiError::bad_gateway(format!("Local torrent initialization failed: {error}"))
         })?;
+        self.persist_handle_metainfo(&handle, &output_folder).await;
         self.handles
             .insert(entry.source_hash.clone(), handle.clone());
         pending_handle_cleanup.disarm();
@@ -1143,6 +1374,11 @@ fn local_torrent_cache_key(source_hash: &str, file_id: usize) -> String {
     )
 }
 
+fn looks_like_torrent_metainfo(bytes: &[u8]) -> bool {
+    // BitTorrent metainfo is a bencoded dict and is never tiny.
+    bytes.len() >= 64 && bytes.starts_with(b"d")
+}
+
 fn direct_file_cache_key(source_hash: &str, file_id: &str) -> String {
     format!(
         "local-file:{}:{}",
@@ -1343,10 +1579,21 @@ mod tests {
     use super::{
         DirectFileCacheEntry, LocalTorrentFileCandidate, direct_file_cache_key,
         direct_file_entry_to_resolved_source, direct_file_stream_url, is_internal_stream_request,
-        local_torrent_cache_key, normalize_direct_file_id, parse_stream_range,
-        pick_local_torrent_video_file, sanitize_cache_filename, validate_direct_file_stream_params,
-        validate_local_torrent_stream_params, with_internal_stream_access,
+        local_torrent_cache_key, looks_like_torrent_metainfo, normalize_direct_file_id,
+        parse_stream_range, pick_local_torrent_video_file, sanitize_cache_filename,
+        validate_direct_file_stream_params, validate_local_torrent_stream_params,
+        with_internal_stream_access,
     };
+
+    #[test]
+    fn detects_torrent_metainfo_bytes() {
+        assert!(looks_like_torrent_metainfo(
+            b"d8:announce9:http://x/4:infod6:lengthi1e4:name1:a12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee"
+        ));
+        assert!(!looks_like_torrent_metainfo(b""));
+        assert!(!looks_like_torrent_metainfo(b"<html>not a torrent"));
+        assert!(!looks_like_torrent_metainfo(b"d"));
+    }
 
     #[test]
     fn internal_stream_access_is_scoped_and_authenticated() {

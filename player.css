@@ -1923,6 +1923,42 @@ body {
     font-size: 1.18rem;
 }
 
+.audio-option.source-option.is-loading::before {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.85);
+}
+
+.source-option-status {
+    position: absolute;
+    right: 16px;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    transform: translateY(-50%);
+    pointer-events: none;
+}
+
+.source-option-spinner {
+    display: none;
+    box-sizing: border-box;
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid rgba(255, 255, 255, 0.22);
+    border-top-color: rgba(255, 255, 255, 0.82);
+    border-radius: 50%;
+    animation: source-option-spin 0.7s linear infinite;
+}
+
+.audio-option.source-option.is-loading .source-option-spinner {
+    display: block;
+}
+
+@keyframes source-option-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
 .source-option-icon {
     flex: 0 0 auto;
     display: inline-flex;

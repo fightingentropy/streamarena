@@ -85,16 +85,21 @@ export function createSourceOptionButton({
   option,
   selectedSourceHash,
   sourceHash,
+  loadingSourceHash = "",
 }) {
   const button = document.createElement("button");
   button.className = "audio-option source-option";
   button.type = "button";
   button.setAttribute("role", "option");
   button.dataset.sourceHash = sourceHash;
+  const isLoading =
+    Boolean(loadingSourceHash) && sourceHash === loadingSourceHash;
+  button.classList.toggle("is-loading", isLoading);
   button.setAttribute(
     "aria-selected",
-    sourceHash === selectedSourceHash ? "true" : "false",
+    !isLoading && sourceHash === selectedSourceHash ? "true" : "false",
   );
+  button.setAttribute("aria-busy", isLoading ? "true" : "false");
 
   const iconBadge = document.createElement("span");
   iconBadge.className = "source-option-icon";
@@ -119,6 +124,13 @@ export function createSourceOptionButton({
     textWrap.appendChild(line);
   });
 
-  button.append(iconBadge, textWrap);
+  const status = document.createElement("span");
+  status.className = "source-option-status";
+  status.setAttribute("aria-hidden", "true");
+  const spinner = document.createElement("span");
+  spinner.className = "source-option-spinner";
+  status.appendChild(spinner);
+
+  button.append(iconBadge, textWrap, status);
   return button;
 }

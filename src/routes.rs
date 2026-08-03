@@ -64,6 +64,7 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub local_torrent: LocalTorrentService,
     pub resolver: ResolverService,
+    pub resolve_jobs: crate::resolve_jobs::ResolveJobStore,
     pub streaming: StreamingService,
     pub upload: UploadService,
     pub runtime: RuntimeServices,
@@ -395,6 +396,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/resolve/sources", any(resolve_sources_handler))
         .route("/api/resolve/movie", any(resolve_movie_handler))
         .route("/api/resolve/tv", any(resolve_tv_handler))
+        .route("/api/resolve/job/{job_id}", any(resolve_job_handler))
         .route(
             "/api/resolve/local-upgrade",
             any(resolve_local_upgrade_handler),
@@ -2378,6 +2380,35 @@ pub async fn resolve_sources_handler(
     Ok(json_response(payload))
 }
 
+fn truthy_query_flag(params: &BTreeMap<String, String>, key: &str) -> bool {
+    params.get(key).is_some_and(|value| {
+        let normalized = value.trim();
+        normalized == "1" || normalized.eq_ignore_ascii_case("true")
+    })
+}
+
+pub async fn resolve_job_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    AxumPath(job_id): AxumPath<String>,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed."));
+    }
+    let user = auth::require_auth(&state.db, &headers).await?;
+    let normalized_job_id = job_id.trim();
+    if normalized_job_id.is_empty() {
+        return Err(ApiError::bad_request("Missing resolve job id."));
+    }
+    let payload = state
+        .resolve_jobs
+        .snapshot(normalized_job_id, user.id)
+        .await
+        .ok_or_else(|| ApiError::not_found("Resolve job not found."))?;
+    Ok(json_response(payload))
+}
+
 pub async fn resolve_movie_handler(
     State(state): State<AppState>,
     method: Method,
@@ -2394,19 +2425,99 @@ pub async fn resolve_movie_handler(
             "Missing or invalid tmdbId query parameter.",
         ));
     }
-    let skip_external_embed = params.get("skipExternalEmbed").is_some_and(|value| {
-        let normalized = value.trim();
-        normalized == "1" || normalized.eq_ignore_ascii_case("true")
-    });
+    let skip_external_embed = truthy_query_flag(&params, "skipExternalEmbed");
     // Set by the player when re-resolving after a playback failure: bypass + evict
     // any cached resolved source so a stale/dead upstream URL can't be re-served.
-    let refresh_resolve = params.get("refreshResolve").is_some_and(|value| {
-        let normalized = value.trim();
-        normalized == "1" || normalized.eq_ignore_ascii_case("true")
-    });
+    let refresh_resolve = truthy_query_flag(&params, "refreshResolve");
     let user = auth::require_auth(&state.db, &headers).await?;
     let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
+    if truthy_query_flag(&params, "async") {
+        let job_id = state.resolve_jobs.create(user.id);
+        let job_state = state.clone();
+        let job_id_for_task = job_id.clone();
+        let real_debrid_api_key = real_debrid_api_key.clone();
+        let params = params.clone();
+        tokio::spawn(async move {
+            let result = job_state
+                .resolver
+                .resolve_movie(
+                    user.id,
+                    &real_debrid_api_key,
+                    local_torrent_enabled,
+                    params.get("tmdbId").map(String::as_str).unwrap_or_default(),
+                    params.get("title").map(String::as_str).unwrap_or_default(),
+                    params.get("year").map(String::as_str).unwrap_or_default(),
+                    params
+                        .get("audioLang")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("quality")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("subtitleLang")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("sourceHash")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("sessionKey")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("minSeeders")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("allowedFormats")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("sourceLang")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("sourceAudioProfile")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("resolverProvider")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    skip_external_embed,
+                    refresh_resolve,
+                )
+                .await;
+            match result {
+                Ok(payload) => {
+                    job_state
+                        .resolve_jobs
+                        .complete(&job_id_for_task, payload)
+                        .await;
+                }
+                Err(error) => {
+                    job_state
+                        .resolve_jobs
+                        .fail(
+                            &job_id_for_task,
+                            error
+                                .message()
+                                .unwrap_or("Unable to resolve this stream.")
+                                .to_owned(),
+                        )
+                        .await;
+                }
+            }
+        });
+        return Ok(json_response(json!({
+            "jobId": job_id,
+            "status": "pending",
+        })));
+    }
     let payload = state
         .resolver
         .resolve_movie(
@@ -2538,19 +2649,116 @@ pub async fn resolve_tv_handler(
             "Missing or invalid tmdbId query parameter.",
         ));
     }
-    let skip_external_embed = params.get("skipExternalEmbed").is_some_and(|value| {
-        let normalized = value.trim();
-        normalized == "1" || normalized.eq_ignore_ascii_case("true")
-    });
+    let skip_external_embed = truthy_query_flag(&params, "skipExternalEmbed");
     // Set by the player when re-resolving after a playback failure: bypass + evict
     // any cached resolved source so a stale/dead upstream URL can't be re-served.
-    let refresh_resolve = params.get("refreshResolve").is_some_and(|value| {
-        let normalized = value.trim();
-        normalized == "1" || normalized.eq_ignore_ascii_case("true")
-    });
+    let refresh_resolve = truthy_query_flag(&params, "refreshResolve");
     let user = auth::require_auth(&state.db, &headers).await?;
     let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
+    if truthy_query_flag(&params, "async") {
+        let job_id = state.resolve_jobs.create(user.id);
+        let job_state = state.clone();
+        let job_id_for_task = job_id.clone();
+        let real_debrid_api_key = real_debrid_api_key.clone();
+        let params = params.clone();
+        tokio::spawn(async move {
+            let result = job_state
+                .resolver
+                .resolve_tv(
+                    user.id,
+                    &real_debrid_api_key,
+                    local_torrent_enabled,
+                    params.get("tmdbId").map(String::as_str).unwrap_or_default(),
+                    params.get("title").map(String::as_str).unwrap_or_default(),
+                    params.get("year").map(String::as_str).unwrap_or_default(),
+                    params
+                        .get("seasonNumber")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params.get("season").map(String::as_str).unwrap_or_default(),
+                    params
+                        .get("episodeNumber")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("episodeOrdinal")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("audioLang")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("quality")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("subtitleLang")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("preferredContainer")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("sourceHash")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("sessionKey")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("minSeeders")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("allowedFormats")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("sourceLang")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("sourceAudioProfile")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    params
+                        .get("resolverProvider")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    skip_external_embed,
+                    refresh_resolve,
+                )
+                .await;
+            match result {
+                Ok(payload) => {
+                    job_state
+                        .resolve_jobs
+                        .complete(&job_id_for_task, payload)
+                        .await;
+                }
+                Err(error) => {
+                    job_state
+                        .resolve_jobs
+                        .fail(
+                            &job_id_for_task,
+                            error
+                                .message()
+                                .unwrap_or("Unable to resolve this stream.")
+                                .to_owned(),
+                        )
+                        .await;
+                }
+            }
+        });
+        return Ok(json_response(json!({
+            "jobId": job_id,
+            "status": "pending",
+        })));
+    }
     let payload = state
         .resolver
         .resolve_tv(

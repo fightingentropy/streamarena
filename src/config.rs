@@ -134,9 +134,9 @@ impl Config {
             2 * 1024 * 1024 * 1024 * 1024,
         );
         let local_torrent_metadata_timeout_ms =
-            parse_u64_env("LOCAL_TORRENT_METADATA_TIMEOUT_MS", 60_000, 5_000, 180_000);
+            parse_u64_env("LOCAL_TORRENT_METADATA_TIMEOUT_MS", 120_000, 5_000, 300_000);
         let local_torrent_ready_timeout_ms =
-            parse_u64_env("LOCAL_TORRENT_READY_TIMEOUT_MS", 45_000, 5_000, 300_000);
+            parse_u64_env("LOCAL_TORRENT_READY_TIMEOUT_MS", 90_000, 5_000, 300_000);
         let local_torrent_listen_port_start =
             parse_u64_env("LOCAL_TORRENT_LISTEN_PORT_START", 42_501, 0, 65_534);
         let local_torrent_listen_port_end =

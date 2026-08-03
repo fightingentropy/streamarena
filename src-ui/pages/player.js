@@ -831,6 +831,7 @@ const SUBTITLE_MATTE_TOP_GUARD_RATIO = 0.35;
 let playbackBenchmark = null;
 
 let selectedSourceHash = normalizeSourceHash(sourceHashParam);
+let pendingSourceSwitchHash = "";
 let currentTmdbPlaybackSessionKey = "";
 let currentTmdbResolverProvider = "";
 let currentTmdbResolvedFilename = "";
@@ -2621,6 +2622,7 @@ function syncSourceSelectionState() {
   }
 
   const normalizedHash = normalizeSourceHash(selectedSourceHash);
+  const loadingHash = normalizeSourceHash(pendingSourceSwitchHash);
   const optionButtons = Array.from(
     sourceOptionsContainer.querySelectorAll(".source-option"),
   );
@@ -2628,13 +2630,25 @@ function syncSourceSelectionState() {
     const optionHash = normalizeSourceHash(
       optionButton.dataset.sourceHash || "",
     );
+    const isLoading =
+      Boolean(loadingHash) && Boolean(optionHash) && optionHash === loadingHash;
+    optionButton.classList.toggle("is-loading", isLoading);
+    optionButton.setAttribute("aria-busy", isLoading ? "true" : "false");
     optionButton.setAttribute(
       "aria-selected",
-      optionHash && normalizedHash && optionHash === normalizedHash
+      !isLoading &&
+        optionHash &&
+        normalizedHash &&
+        optionHash === normalizedHash
         ? "true"
         : "false",
     );
   });
+}
+
+function setPendingSourceSwitchHash(nextHash = "") {
+  pendingSourceSwitchHash = normalizeSourceHash(nextHash);
+  syncSourceSelectionState();
 }
 
 function renderSourceOptionButtons() {
@@ -2703,6 +2717,7 @@ function renderSourceOptionButtons() {
       option,
       selectedSourceHash,
       sourceHash,
+      loadingSourceHash: pendingSourceSwitchHash,
     }));
     displayedSources.push(option);
   }
@@ -3780,6 +3795,7 @@ function captureManualSourceSwitchBaseline({
     restoreWasPaused: Boolean(wasPaused),
     selectedSourceHash,
     sourceSelectionPinned,
+    preferredResolverProvider,
     currentTmdbPlaybackSessionKey,
     currentTmdbResolverProvider,
     currentTmdbResolvedFilename,
@@ -3859,6 +3875,9 @@ async function rollbackManualSourceSwitchPlayback(
 
   selectedSourceHash = restoreState.selectedSourceHash;
   sourceSelectionPinned = restoreState.sourceSelectionPinned;
+  if (restoreState.preferredResolverProvider) {
+    preferredResolverProvider = restoreState.preferredResolverProvider;
+  }
   currentTmdbPlaybackSessionKey = restoreState.currentTmdbPlaybackSessionKey;
   currentTmdbResolverProvider = restoreState.currentTmdbResolverProvider;
   currentTmdbResolvedFilename = restoreState.currentTmdbResolvedFilename;
@@ -3896,6 +3915,7 @@ async function rollbackManualSourceSwitchPlayback(
   persistSourceHashInUrl();
   rebuildTrackOptionButtons();
   syncAudioState();
+  setPendingSourceSwitchHash("");
   syncSourceSelectionState();
   renderSelectedSourceDetails();
   hideSeekLoadingIndicator();
@@ -3983,9 +4003,15 @@ function markManualSourceSwitchPlaybackRequested(sourceHash = "") {
 }
 
 function completeManualSourceSwitchIfActive(activePlaybackSource = "") {
-  return manualSourceSwitch.completeIfActive(undefined, {
+  const completed = manualSourceSwitch.completeIfActive(undefined, {
     activePlaybackSource,
   });
+  if (completed) {
+    setPendingSourceSwitchHash("");
+    syncSourceSelectionState();
+    closeSourcePopover(false, { force: true });
+  }
+  return completed;
 }
 
 function failPendingManualSourceSwitch(message) {
@@ -6973,9 +6999,18 @@ function closeSourcePopover(withDelay = false, { force = false } = {}) {
     return;
   }
 
+  // Keep the Server menu open while a row is resolving so the inline spinner
+  // stays visible next to the chosen source.
+  if (!force && pendingSourceSwitchHash) {
+    return;
+  }
+
   window.clearTimeout(sourcePopoverCloseTimeout);
 
   const close = () => {
+    if (!force && pendingSourceSwitchHash) {
+      return;
+    }
     if (!force && sourceControl.matches(":hover, :focus-within")) {
       return;
     }
@@ -8668,19 +8703,60 @@ function isSourceFallbackResolveError(error) {
   );
 }
 
-async function requestResolveJson(
-  url,
-  timeoutMs = userLocalTorrentEnabled
-    ? 180000
-    : preferredResolverProvider === "real-debrid" ? 95000 : 50000,
-) {
+async function requestResolveJsonAsync(url, timeoutMs) {
+  const asyncUrl = String(url || "").includes("?")
+    ? `${url}&async=1`
+    : `${url}?async=1`;
+  const started = await requestJson(asyncUrl, {}, 20_000);
+  if (started?.playableUrl || (started?.sourceHash && !started?.jobId)) {
+    return started;
+  }
+  const jobId = String(started?.jobId || "").trim();
+  if (!jobId) {
+    throw new Error("Unable to start async resolve.");
+  }
+
+  const deadline = Date.now() + Math.max(1, Number(timeoutMs) || 1);
+  while (Date.now() < deadline) {
+    await sleep(2_000);
+    const status = await requestJson(`/api/resolve/job/${encodeURIComponent(jobId)}`, {}, 20_000);
+    const state = String(status?.status || "").trim().toLowerCase();
+    if (state === "done" && status?.result) {
+      return status.result;
+    }
+    if (state === "error") {
+      throw new Error(
+        String(status?.error || status?.message || "Unable to resolve this stream."),
+      );
+    }
+  }
+  throw new Error("Resolving stream timed out.");
+}
+
+async function requestResolveJson(url, timeoutMs) {
   const retryDelays =
     preferredResolverProvider === "real-debrid" ? [900, 1800] : [];
+  // Only an explicit timeout opts into the long async path. Passing `undefined`
+  // must NOT inherit a 300s default — that turned every page-load "fastest"
+  // resolve into a competing async job and starved torrent switches.
+  const hasExplicitTimeout =
+    Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0;
+  const effectiveTimeoutMs = hasExplicitTimeout
+    ? Math.floor(Number(timeoutMs))
+    : preferredResolverProvider === "real-debrid"
+      ? 95_000
+      : 50_000;
+  // Cloudflare proxied requests die around 100s; long local-torrent budgets
+  // must poll a short-lived async job instead of holding one HTTP request open.
+  const useAsyncResolve = hasExplicitTimeout && effectiveTimeoutMs > 90_000;
   let lastError = null;
 
   for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
     try {
-      return await requestJson(url, {}, timeoutMs);
+      if (useAsyncResolve) {
+        return await requestResolveJsonAsync(url, effectiveTimeoutMs);
+      }
+      return await requestJson(url, {}, effectiveTimeoutMs);
     } catch (error) {
       lastError = error;
       if (attempt >= retryDelays.length || !isTransientResolveError(error)) {
@@ -10703,7 +10779,10 @@ async function handleSourceOptionSelection(nextSourceHash) {
     return;
   }
 
-  if (normalizedNextSourceHash === selectedSourceHash) {
+  if (
+    normalizedNextSourceHash === selectedSourceHash &&
+    !pendingSourceSwitchHash
+  ) {
     syncSourceSelectionState();
     renderSelectedSourceDetails();
     closeSourcePopover(false, { force: true });
@@ -10720,14 +10799,18 @@ async function handleSourceOptionSelection(nextSourceHash) {
   }
 
   const nextSourceOption = getSourceOptionByHash(normalizedNextSourceHash);
+  const switchingToEmbed = Boolean(
+    nextSourceOption && isSourceOptionEmbed(nextSourceOption),
+  );
   const sourceSwitchTimeouts = getManualSourceSwitchTimeouts({
-    isEmbed: Boolean(nextSourceOption && isSourceOptionEmbed(nextSourceOption)),
+    isEmbed: switchingToEmbed,
     localTorrentEnabled: userLocalTorrentEnabled,
     realDebridConfigured: userRealDebridConfigured,
     resolverProvider: preferredResolverProvider,
   });
   const resumeFrom = getEffectiveCurrentTime();
   const wasPaused = isLiveIframePlaybackActive() ? liveIframePlaybackClock.isPaused() : video.paused;
+  const previousPreferredResolverProvider = preferredResolverProvider;
   const sourceSwitchRequest = manualSourceSwitch.begin({
     targetSourceHash: normalizedNextSourceHash,
     startupTimeoutMs: sourceSwitchTimeouts.startupTimeoutMs,
@@ -10736,19 +10819,27 @@ async function handleSourceOptionSelection(nextSourceHash) {
       wasPaused,
     }),
   });
+  if (!switchingToEmbed) {
+    if (userLocalTorrentEnabled) {
+      preferredResolverProvider = "local-torrent";
+    } else if (userRealDebridConfigured) {
+      preferredResolverProvider = "real-debrid";
+    }
+  }
   const playbackRequestToken = ++tmdbPlaybackRequestToken;
   stopLocalCacheUpgradeWatch();
   localCacheUpgradeWatch.setHasUpgraded(false);
-  selectedSourceHash = normalizedNextSourceHash;
   sourceSelectionPinned = true;
-  applyPreferredSourceAudioSync(selectedSourceHash);
+  setPendingSourceSwitchHash(normalizedNextSourceHash);
+  applyPreferredSourceAudioSync(normalizedNextSourceHash);
   syncAudioState();
-  syncSourceSelectionState();
   renderSelectedSourceDetails();
   tmdbResolveRetries = 0;
   closeAudioPopover(false, { force: true });
-  closeSourcePopover(false, { force: true });
-  showResolver("Checking source...");
+  // Keep Server menu open with an understated row spinner (no full overlay).
+  if (sourceControl && !sourceControl.classList.contains("is-open")) {
+    openSourcePopover();
+  }
   try {
     const result = await resolveTmdbSourcesAndPlay({
       allowSourceFallback: false,
@@ -10765,13 +10856,17 @@ async function handleSourceOptionSelection(nextSourceHash) {
       return;
     }
     if (result?.nativeLaunched) {
+      selectedSourceHash = normalizedNextSourceHash;
+      setPendingSourceSwitchHash("");
       manualSourceSwitch.clear();
       persistSourceHashInUrl();
+      closeSourcePopover(false, { force: true });
       return;
     }
     sourceSelectionPinned = true;
+    selectedSourceHash = normalizedNextSourceHash;
+    syncSourceSelectionState();
     manualSourceSwitch.arm(sourceSwitchRequest);
-    showResolver("Switching source...");
     const applied = await applyResolvedTmdbPlayback(result.resolved, {
       resolvedSourceHash: result.resolvedSourceHash || normalizedNextSourceHash,
       startSeconds: resumeFrom,
@@ -10799,6 +10894,8 @@ async function handleSourceOptionSelection(nextSourceHash) {
         manualSourceSwitch.clear();
         commitManualSourceSwitchPlayback(sourceSwitchRequest.commitData);
       }
+      setPendingSourceSwitchHash("");
+      closeSourcePopover(false, { force: true });
       return;
     }
     if (resumeFrom > 1 && !isTranscodeSourceActive()) {
@@ -10810,12 +10907,23 @@ async function handleSourceOptionSelection(nextSourceHash) {
     ) {
       completeManualSourceSwitchIfActive();
     }
+    // Otherwise leave the row spinner up until startup completes or rolls back.
   } catch (error) {
     const message = error?.message || "Unable to switch source.";
     if (manualSourceSwitch.isCurrent(sourceSwitchRequest)) {
       await manualSourceSwitch.fail(sourceSwitchRequest, message);
+    } else {
+      preferredResolverProvider = previousPreferredResolverProvider;
+      setPendingSourceSwitchHash("");
     }
-    showResolverError(message, "Unable to switch source.");
+    syncSourceSelectionState();
+    renderSelectedSourceDetails();
+    // Stay on the stream that was already playing — do not hunt a new HLS.
+    if (sourceOptionDetails instanceof HTMLElement) {
+      sourceOptionDetails.hidden = false;
+      sourceOptionDetails.textContent =
+        "Couldn't start that source — kept your current stream.";
+    }
   } finally {
     manualSourceSwitch.finish(sourceSwitchRequest);
   }
