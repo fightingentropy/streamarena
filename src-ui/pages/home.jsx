@@ -59,6 +59,16 @@ import {
   queueOfflineArtworkFromElement,
 } from "../lib/offline-artwork.js";
 import { liveNavClass, sportsNavLinkClass } from "../lib/browse-nav.js";
+import {
+  HERO_PREVIEW_EMBED_ORIGIN,
+  HERO_PREVIEW_MESSAGE_ORIGINS,
+  HERO_PREVIEW_REDUCED_MOTION_QUERY,
+  buildYoutubeTrailerEmbedUrl,
+  getFeaturedHeroCallouts,
+  getFeaturedHeroMetaItems,
+  normalizeYoutubeVideoKey,
+  selectFeaturedHeroTrailerKey,
+} from "../lib/featured-hero.js";
 import FeedbackNav from "../components/feedback-nav.jsx";
 import BrandWordmark from "../components/brand-wordmark.jsx";
 
@@ -71,12 +81,6 @@ const SEARCH_RESULTS_LIMIT = 40;
 const STALE_HERO_PREVIEW_MUTED_PREF_KEY = "streamarena-hero-trailer-muted-v2";
 const HERO_PREVIEW_ENTER_VISIBLE_RATIO = 0.3;
 const HERO_PREVIEW_LEAVE_VISIBLE_RATIO = 0.08;
-const HERO_PREVIEW_EMBED_ORIGIN = "https://www.youtube-nocookie.com";
-const HERO_PREVIEW_MESSAGE_ORIGINS = new Set([
-  HERO_PREVIEW_EMBED_ORIGIN,
-  "https://www.youtube.com",
-]);
-const HERO_PREVIEW_REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 const FEATURED_HERO_ROTATION_MS = 24 * 60 * 60 * 1000;
 const FEATURED_HERO_CAROUSEL_MS = 20000;
 const FEATURED_HERO_STORAGE_KEY = "streamarena-featured-hero-v2";
@@ -566,70 +570,6 @@ function normalizeHeroTitleKey(value) {
   return normalizeHeroTitle(value).toLowerCase();
 }
 
-function normalizeYoutubeVideoKey(value) {
-  const key = String(value || "").trim();
-  return /^[A-Za-z0-9_-]{6,32}$/.test(key) ? key : "";
-}
-
-function selectFeaturedHeroTrailerKey(details) {
-  const videos = Array.isArray(details?.videos?.results)
-    ? details.videos.results
-    : [];
-  const candidates = videos.filter((video) => {
-    const site = String(video?.site || "").trim().toLowerCase();
-    return site === "youtube" && Boolean(normalizeYoutubeVideoKey(video?.key));
-  });
-  if (!candidates.length) {
-    return "";
-  }
-
-  const scoreVideo = (video) => {
-    const type = String(video?.type || "").trim().toLowerCase();
-    const name = String(video?.name || "").trim().toLowerCase();
-    const language = String(video?.iso_639_1 || "").trim().toLowerCase();
-    let score = 0;
-    if (type === "trailer") score += 50;
-    if (video?.official) score += 20;
-    if (name.includes("official trailer")) score += 15;
-    if (name.includes("trailer")) score += 8;
-    if (type === "teaser") score += 4;
-    if (language === "en") score += 3;
-    return score;
-  };
-
-  const selected = [...candidates].sort(
-    (left, right) => scoreVideo(right) - scoreVideo(left),
-  )[0];
-  return normalizeYoutubeVideoKey(selected?.key);
-}
-
-function buildYoutubeTrailerEmbedUrl(key) {
-  const trailerKey = normalizeYoutubeVideoKey(key);
-  if (!trailerKey) {
-    return "";
-  }
-  const params = new URLSearchParams({
-    autoplay: "1",
-    cc_load_policy: "0",
-    controls: "0",
-    disablekb: "1",
-    enablejsapi: "1",
-    fs: "0",
-    iv_load_policy: "3",
-    loop: "1",
-    mute: "1",
-    playsinline: "1",
-    playlist: trailerKey,
-    rel: "0",
-  });
-  try {
-    params.set("origin", window.location.origin);
-  } catch {
-    // The embed still works without API commands in non-window test contexts.
-  }
-  return `${HERO_PREVIEW_EMBED_ORIGIN}/embed/${encodeURIComponent(trailerKey)}?${params.toString()}`;
-}
-
 function getFeaturedHeroDisplayTitle(feature) {
   return normalizeHeroTitle(feature?.title || "Popular Movies").toUpperCase();
 }
@@ -714,43 +654,6 @@ function findLocalMovieForTmdbId(localLibrary, tmdbId) {
       (movie) => String(movie?.tmdbId || "").trim() === normalizedTmdbId,
     ) || null
   );
-}
-
-function getFeaturedHeroCallouts(feature) {
-  const values = Array.isArray(feature?.callouts) ? feature.callouts : [];
-  return values
-    .map((value) => String(value || "").trim())
-    .filter(Boolean)
-    .slice(0, 2);
-}
-
-function getFeaturedHeroMetaItems(feature) {
-  const mediaType = String(feature?.mediaType || "").trim().toLowerCase();
-  const runtime = String(feature?.runtime || "").trim();
-  const typeLabel =
-    runtime.toLowerCase() === "course"
-      ? "Course"
-      : mediaType === "tv" || runtime.toLowerCase() === "series"
-        ? "Series"
-        : "Film";
-  const genreLabel = getFeaturedHeroCallouts(feature)[1] || "";
-  const year = String(feature?.year || "").trim();
-  const values = [typeLabel, genreLabel, year, runtime];
-  const seen = new Set();
-  return values.filter((value) => {
-    const normalized = String(value || "").trim();
-    const key = normalized.toLowerCase();
-    if (
-      !normalized ||
-      seen.has(key) ||
-      key === "movie" ||
-      key === "popular now"
-    ) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
 }
 
 function createFeaturedHeroFromTmdbItem(
