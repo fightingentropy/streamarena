@@ -64,8 +64,10 @@ import {
   HERO_PREVIEW_MESSAGE_ORIGINS,
   HERO_PREVIEW_REDUCED_MOTION_QUERY,
   buildYoutubeTrailerEmbedUrl,
+  getFeaturedHeroAutoAdvanceDelay,
   getFeaturedHeroCallouts,
   getFeaturedHeroMetaItems,
+  getFeaturedHeroTitleLines,
   normalizeYoutubeVideoKey,
   selectFeaturedHeroTrailerKey,
 } from "../lib/featured-hero.js";
@@ -82,7 +84,6 @@ const STALE_HERO_PREVIEW_MUTED_PREF_KEY = "streamarena-hero-trailer-muted-v2";
 const HERO_PREVIEW_ENTER_VISIBLE_RATIO = 0.3;
 const HERO_PREVIEW_LEAVE_VISIBLE_RATIO = 0.08;
 const FEATURED_HERO_ROTATION_MS = 24 * 60 * 60 * 1000;
-const FEATURED_HERO_CAROUSEL_MS = 20000;
 const FEATURED_HERO_STORAGE_KEY = "streamarena-featured-hero-v2";
 const FEATURED_HERO_CANDIDATE_LIMIT = 10;
 const BLOCKED_FEATURED_HERO_TITLE_KEYS = new Set(["your heart will be broken"]);
@@ -568,40 +569,6 @@ function normalizeHeroTitle(value) {
 
 function normalizeHeroTitleKey(value) {
   return normalizeHeroTitle(value).toLowerCase();
-}
-
-function getFeaturedHeroDisplayTitle(feature) {
-  return normalizeHeroTitle(feature?.title || "Popular Movies").toUpperCase();
-}
-
-function getFeaturedHeroTitleLines(feature) {
-  const words = getFeaturedHeroDisplayTitle(feature)
-    .split(/\s+/)
-    .map((word) => word.trim())
-    .filter(Boolean);
-  if (words.length <= 2) {
-    return words.length ? words : ["POPULAR", "MOVIES"];
-  }
-  const maxLines = words.length > 4 ? 3 : 2;
-  const lines = [];
-  let cursor = 0;
-  while (cursor < words.length && lines.length < maxLines) {
-    const remainingWords = words.length - cursor;
-    const remainingLines = maxLines - lines.length;
-    const take = Math.ceil(remainingWords / remainingLines);
-    lines.push(words.slice(cursor, cursor + take).join(" "));
-    cursor += take;
-  }
-  return lines;
-}
-
-function getFeaturedHeroTagline(feature) {
-  const tagline = String(feature?.tagline || "").trim();
-  if (tagline) {
-    return tagline;
-  }
-  const callouts = getFeaturedHeroCallouts(feature);
-  return callouts[0] || "";
 }
 
 function getFeaturedHeroMaturityLabel(feature) {
@@ -1338,6 +1305,7 @@ export default function HomePage() {
   let activeSearchRequestToken = 0;
   let featuredHeroDetailsRequestVersion = 0;
   let heroCarouselTimer = null;
+  let heroPreviewStartedTrailerKey = "";
   let searchAbortController = null;
   let searchContextTarget = null;
   let searchBoxHideTimer = null;
@@ -3666,6 +3634,7 @@ export default function HomePage() {
       ((Number(index) % candidates.length) + candidates.length) % candidates.length;
     setFeaturedHeroIndex(normalizedIndex);
     applyFeaturedHeroCandidate(candidates[normalizedIndex]);
+    startHeroCarouselTimer();
   }
 
   function advanceFeaturedHeroCarousel() {
@@ -3678,7 +3647,7 @@ export default function HomePage() {
 
   function stopHeroCarouselTimer() {
     if (heroCarouselTimer) {
-      window.clearInterval(heroCarouselTimer);
+      window.clearTimeout(heroCarouselTimer);
       heroCarouselTimer = null;
     }
   }
@@ -3688,17 +3657,21 @@ export default function HomePage() {
     if (featuredHeroCandidates().length <= 1) {
       return;
     }
-    heroCarouselTimer = window.setInterval(() => {
+    const delay = getFeaturedHeroAutoAdvanceDelay(featuredHero(), {
+      reducedMotion: prefersReducedHeroMotion(),
+    });
+    heroCarouselTimer = window.setTimeout(() => {
+      heroCarouselTimer = null;
       if (activeView() !== "home" || showSearchExperience() || document.hidden) {
+        startHeroCarouselTimer();
         return;
       }
       advanceFeaturedHeroCarousel();
-    }, FEATURED_HERO_CAROUSEL_MS);
+    }, delay);
   }
 
   function handleHeroCarouselDotClick(index) {
     selectFeaturedHeroByIndex(index);
-    startHeroCarouselTimer();
   }
 
   function applyFeaturedHeroFromPopularPayload(
@@ -3786,6 +3759,7 @@ export default function HomePage() {
           ready: true,
         };
       });
+      startHeroCarouselTimer();
       if (canPlayHeroPreview()) {
         playHeroPreview();
       } else {
@@ -4431,6 +4405,8 @@ export default function HomePage() {
     }
     syncHeroPreviewAudio();
     sendHeroPreviewCommand("playVideo");
+    heroPreviewStartedTrailerKey = getHeroTrailerKey();
+    stopHeroCarouselTimer();
     setHeroPreviewPlaying(true);
   }
 
@@ -4459,6 +4435,11 @@ export default function HomePage() {
       sendHeroPreviewCommand("playVideo");
       return;
     }
+    if (payload.event === "onError") {
+      stopHeroPreview();
+      advanceFeaturedHeroCarousel();
+      return;
+    }
     const playerState = Number(
       payload.event === "onStateChange"
         ? payload.info
@@ -4469,8 +4450,20 @@ export default function HomePage() {
       Number.isFinite(playerState)
     ) {
       if (playerState === 1) {
+        heroPreviewStartedTrailerKey = getHeroTrailerKey();
+        stopHeroCarouselTimer();
         setHeroPreviewPlaying(true);
-      } else if (playerState === 0 || playerState === 2 || playerState === 5) {
+      } else if (playerState === 0) {
+        const finishedTrailerKey = getHeroTrailerKey();
+        const didFinishCurrentTrailer =
+          Boolean(finishedTrailerKey) &&
+          heroPreviewStartedTrailerKey === finishedTrailerKey;
+        heroPreviewStartedTrailerKey = "";
+        setHeroPreviewPlaying(false);
+        if (didFinishCurrentTrailer) {
+          advanceFeaturedHeroCarousel();
+        }
+      } else if (playerState === 2 || playerState === 5) {
         setHeroPreviewPlaying(false);
       }
     }
@@ -4478,6 +4471,7 @@ export default function HomePage() {
 
   function stopHeroPreview() {
     const frame = getHeroPreviewFrame();
+    heroPreviewStartedTrailerKey = "";
     sendHeroPreviewCommand("stopVideo");
     frame?.removeAttribute("src");
     setHeroPreviewActive(false);

@@ -224,10 +224,16 @@ function apiPayload(url, method) {
       vote_average: 8.1,
       adult: false,
     };
+    const secondSampleMovie = {
+      ...sampleMovie,
+      id: 2,
+      title: "Second Smoke Movie",
+      release_date: "1976-01-01",
+    };
     return {
       imageBase: "https://image.tmdb.org/t/p",
       genres: [{ id: 28, name: "Action" }],
-      popular: { results: [sampleMovie] },
+      popular: { results: [sampleMovie, secondSampleMovie] },
       trending: { results: [sampleMovie] },
       nowPlaying: { results: [sampleMovie] },
       topRated: { results: [sampleMovie] },
@@ -1034,6 +1040,8 @@ async function runSmoke() {
         });
         if (
           !heroState.frameSrc.startsWith("https://www.youtube-nocookie.com/embed/") ||
+          heroState.frameSrc.includes("loop=1") ||
+          heroState.frameSrc.includes("playlist=") ||
           heroState.insetLeft < 20 ||
           heroState.insetRight < 20 ||
           heroState.borderRadius < 16 ||
@@ -1054,6 +1062,29 @@ async function runSmoke() {
         if (unmutedLabel !== "Mute preview") {
           throw new Error(`${pageSpec.path}\nVideo hero mute control did not toggle.`);
         }
+        const activeHeroBeforeEnd = await page
+          .locator(".hero-carousel-dot.is-active")
+          .getAttribute("aria-label");
+        const heroFrame = page.frames().find(
+          (frame) => frame.url().includes(`/${heroTrailerKey}`),
+        );
+        if (!heroFrame || !activeHeroBeforeEnd) {
+          throw new Error(`${pageSpec.path}\nVideo hero carousel state was unavailable.`);
+        }
+        await heroFrame.evaluate(() => {
+          parent.postMessage(
+            JSON.stringify({ event: "onStateChange", info: 0 }),
+            "*",
+          );
+        });
+        await page.waitForFunction(
+          (previousLabel) =>
+            document
+              .querySelector(".hero-carousel-dot.is-active")
+              ?.getAttribute("aria-label") !== previousLabel,
+          activeHeroBeforeEnd,
+          { timeout: 8_000 },
+        );
       }
 
       if (pageSpec.expectHomeAccessibility) {
