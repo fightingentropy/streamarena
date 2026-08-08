@@ -122,10 +122,10 @@ const SECURITY_STRICT_TRANSPORT_SECURITY: &str = "max-age=31536000; includeSubDo
 const SECURITY_PERMISSIONS_POLICY: &str = concat!(
     "accelerometer=(), ",
     "ambient-light-sensor=(), ",
-    "autoplay=(self), ",
+    "autoplay=(self \"https://www.youtube-nocookie.com\"), ",
     "camera=(), ",
     "display-capture=(), ",
-    "encrypted-media=(self), ",
+    "encrypted-media=(self \"https://www.youtube-nocookie.com\"), ",
     "fullscreen=(self), ",
     "geolocation=(), ",
     "gyroscope=(), ",
@@ -5397,6 +5397,17 @@ mod tests {
                 .and_then(|value| value.to_str().ok())
                 .expect("permissions policy")
                 .contains("camera=()")
+        );
+        let permissions_policy = headers
+            .get("permissions-policy")
+            .and_then(|value| value.to_str().ok())
+            .expect("permissions policy");
+        assert!(
+            permissions_policy.contains("autoplay=(self \"https://www.youtube-nocookie.com\")")
+        );
+        assert!(
+            permissions_policy
+                .contains("encrypted-media=(self \"https://www.youtube-nocookie.com\")")
         );
         assert_eq!(
             headers

@@ -20,6 +20,7 @@ const emptyTracksTmdbId = "empty-tracks-tv";
 const translatedSubtitleTmdbId = "translated-subtitle-tv";
 const staleEnglishSubtitleStreamIndex = 3_000_000_101;
 const translatedEnglishSubtitleStreamIndex = 3_000_000_102;
+const heroTrailerKey = "smokeTrailer1";
 const hlsManagedSourceHash = "3b77214a7852eace6248758affc3ed060579a216";
 const hlsManagedSourceInput =
   "https://example.test/Off.Campus.2026.S01E01.720p.HEVC.x265-MeGusta.mkv";
@@ -255,6 +256,18 @@ function apiPayload(url, method) {
       certification: "PG",
       genres: [{ id: 28, name: "Action" }],
       credits: { cast: [{ name: "Smoke Actor" }] },
+      videos: {
+        results: [
+          {
+            key: heroTrailerKey,
+            site: "YouTube",
+            type: "Trailer",
+            name: "Official Trailer",
+            official: true,
+            iso_639_1: "en",
+          },
+        ],
+      },
     };
   }
   if (path === "/api/tmdb/tv/season") return { episodes: [] };
@@ -450,6 +463,7 @@ const pages = [
     path: "/index.html",
     selector: ".home-page",
     expectHomeAccessibility: true,
+    expectVideoHero: true,
     expectHoverResolvePrewarm: true,
   },
   {
@@ -660,6 +674,17 @@ async function runSmoke() {
         });
       }
 
+      await page.route("https://www.youtube-nocookie.com/**", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "text/html",
+          body: `<!doctype html><script>
+            parent.postMessage(JSON.stringify({ event: "onReady" }), "*");
+            parent.postMessage(JSON.stringify({ event: "infoDelivery", info: { playerState: 1 } }), "*");
+          </script>`,
+        });
+      });
+
       await page.route("**/api/**", async (route) => {
         const request = route.request();
         const url = new URL(request.url());
@@ -801,6 +826,7 @@ async function runSmoke() {
 
       if (pageSpec.expectServerContinueWatchingTruth) {
         await context.addInitScript(() => {
+          if (window.top !== window) return;
           const staleSource = "tmdb:movie:999999";
           const user = { id: 1, email: "smoke@example.com", displayName: "Smoke User" };
           localStorage.setItem("streamarena-user-state-owner-v1", "1");
@@ -980,6 +1006,55 @@ async function runSmoke() {
       }
 
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+
+      if (pageSpec.expectVideoHero) {
+        await page.waitForSelector(
+          `#heroPreview[src*="${heroTrailerKey}"]`,
+          { timeout: 8_000 },
+        );
+        await page.waitForFunction(
+          () => document.querySelector(".featured-hero")?.classList.contains("is-preview-playing"),
+          null,
+          { timeout: 8_000 },
+        );
+        const heroState = await page.evaluate(() => {
+          const hero = document.querySelector(".featured-hero");
+          const frame = document.querySelector("#heroPreview");
+          const mute = document.querySelector("#muteToggle");
+          const rect = hero?.getBoundingClientRect();
+          return {
+            frameSrc: frame?.getAttribute("src") || "",
+            insetLeft: rect?.left || 0,
+            insetRight: rect ? window.innerWidth - rect.right : 0,
+            borderRadius: Number.parseFloat(getComputedStyle(hero).borderRadius || "0"),
+            metadata: document.querySelector(".hero-meta")?.textContent?.replace(/\s+/g, " ").trim() || "",
+            muteDisabled: Boolean(mute?.disabled),
+            muteLabel: mute?.getAttribute("aria-label") || "",
+          };
+        });
+        if (
+          !heroState.frameSrc.startsWith("https://www.youtube-nocookie.com/embed/") ||
+          heroState.insetLeft < 20 ||
+          heroState.insetRight < 20 ||
+          heroState.borderRadius < 16 ||
+          !heroState.metadata.includes("Film") ||
+          !heroState.metadata.includes("Action") ||
+          !heroState.metadata.includes("1975") ||
+          !heroState.metadata.includes("1h 35m") ||
+          !heroState.metadata.includes("PG") ||
+          heroState.muteDisabled ||
+          heroState.muteLabel !== "Unmute preview"
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nVideo hero did not initialize with the intended cinematic shell.\n${JSON.stringify(heroState)}`,
+          );
+        }
+        await page.locator("#muteToggle").click();
+        const unmutedLabel = await page.locator("#muteToggle").getAttribute("aria-label");
+        if (unmutedLabel !== "Mute preview") {
+          throw new Error(`${pageSpec.path}\nVideo hero mute control did not toggle.`);
+        }
+      }
 
       if (pageSpec.expectHomeAccessibility) {
         await page.waitForSelector(".card-primary-action", { timeout: 8_000 });
