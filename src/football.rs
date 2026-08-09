@@ -4903,7 +4903,8 @@ fn is_supported_ntvs_hls_url(url: &Url) -> bool {
     (host == "strmd.st"
         || host.ends_with(".strmd.st")
         || host.ends_with(".lovetier.bz")
-        || host == "cdn.bluetier.top")
+        || host == "bluetier.top"
+        || host.ends_with(".bluetier.top"))
         && url.path().to_ascii_lowercase().ends_with(".m3u8")
 }
 
@@ -6319,6 +6320,8 @@ mod tests {
                 .unwrap();
         let hls2 =
             url::Url::parse("https://lovely.lovetier.bz/NOVASPORTS1/index.m3u8?token=abc").unwrap();
+        let hls3 =
+            url::Url::parse("https://ds164.bluetier.top/NOVASPORTS1/index.m3u8?token=abc").unwrap();
         let segment =
             url::Url::parse("https://lb10.strmd.st/secure/token/rtmp/stream/id/1/segment.ts")
                 .unwrap();
@@ -6351,6 +6354,7 @@ mod tests {
         assert_eq!(sports_stream_provider_id(&embed), Some(NTVS_SOURCE_ID));
         assert!(is_supported_ntvs_hls_url(&hls));
         assert!(is_supported_ntvs_hls_url(&hls2));
+        assert!(is_supported_ntvs_hls_url(&hls3));
         assert!(!is_supported_ntvs_hls_url(&segment));
         assert!(!is_supported_ntvs_stream_url(&other));
     }
@@ -6506,7 +6510,7 @@ mod tests {
         let html = r#"
             <script>
                 const config = {
-                    streamUrl: "https:\/\/cdn.bluetier.top\/NOVASPORTS1\/index.m3u8?token=abc",
+                    streamUrl: "https:\/\/ds164.bluetier.top\/NOVASPORTS1\/index.m3u8?token=abc",
                     channelName: "NOVASPORTS1"
                 };
             </script>
@@ -6515,7 +6519,7 @@ mod tests {
             parse_ntvs_fawanews_stream_url(html)
                 .as_ref()
                 .map(url::Url::as_str),
-            Some("https://cdn.bluetier.top/NOVASPORTS1/index.m3u8?token=abc")
+            Some("https://ds164.bluetier.top/NOVASPORTS1/index.m3u8?token=abc")
         );
         assert!(parse_ntvs_fawanews_stream_url(
             r#"const config = { streamUrl: 'https://cdn.bluetier.top/SkySportsF1/index.m3u8?token=abc' };"#
