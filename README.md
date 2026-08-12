@@ -489,7 +489,8 @@ Embed/live resolver helpers:
 - `EXTERNAL_EMBED_HLS_RESOLVER_SCRIPT` - default `scripts/resolve-external-embed-hls.mjs` when present, otherwise `bin/resolve-external-embed-hls.mjs`; set to `0`/`off` to disable native external HLS extraction.
 - `EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS` - per-provider timeout budget for native HLS resolution; default 8000. Direct API providers are capped lower internally for quick rotation.
 - `EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS` - total native HLS extraction budget before falling back to the normal resolver stack; default 26000. Movie/TV external embeds that do not expose native HLS are not returned as iframes.
-- `LIVE_HLS_PROXY_SECRET` - optional shared signing secret for dynamic external HLS proxy URLs; generated at startup when omitted. Set this for multi-instance deployments and to the same Worker secret. Signed URLs use a four-hour TTL; backend and Worker allow 60 seconds of clock skew and reject expiries more than six hours in the future.
+- `LIVE_HLS_PROXY_SECRET` - shared signing secret for dynamic external HLS proxy URLs (32+ characters). Required when `LIVE_HLS_RESOURCE_WORKER_BASE` is set or `REQUIRE_LIVE_HLS_PROXY_SECRET=1`. Local `cargo run` still generates an ephemeral secret when both are unset. Pin this on the Mini and to the same Worker secret. Signed URLs use a four-hour TTL; backend and Worker allow 60 seconds of clock skew and reject expiries more than six hours in the future.
+- `REQUIRE_LIVE_HLS_PROXY_SECRET` - `1` refuses startup unless `LIVE_HLS_PROXY_SECRET` is pinned. Default `0` for local development.
 - `LIVE_HLS_EMIT_LEGACY_SIGNATURE` - deployment-transition switch only. `1` emits both the old v1 `sig` and expiry-bound `sigV2`; default `0` emits only expiry-bound v2 in `sig`.
 - `LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL` - deployment-transition deadline only, expressed as absolute Unix seconds. Missing-expiry v1 URLs are rejected by default; when set, the deadline must be no more than six hours ahead and acceptance stops automatically after it (plus clock skew).
 - `VIDLINK_NATIVE_ASSET_CACHE_TTL_MS` - TTL for cached VidLink native token assets fetched by the Node resolver; default 7200000.
@@ -665,7 +666,7 @@ Internal resolver helpers:
 
 The Expo app lives in `mobile/` and is checked independently in CI. From that directory:
 
-- `npm ci` - install the locked Expo SDK 56 dependency graph.
+- `npm ci` - install the locked Expo SDK 57 dependency graph.
 - `npm run typecheck` - TypeScript validation.
 - `npm run lint` - Expo ESLint validation.
 - `npm test` - metadata and signing-plugin regressions.

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
+import catalog from "../shared/live-channels.json" with { type: "json" };
 import {
   LIVE_CHANNELS,
   findLiveChannelIdBySource,
@@ -99,5 +100,27 @@ for (const artwork of svgArtwork) {
     `${artwork} must not repeat the page's live status inside channel artwork`,
   );
 }
+
+const catalogIds = catalog.channels.map((channel) => channel.id);
+assert.deepEqual(catalogIds, channelIds, "web LIVE_CHANNELS must match shared/live-channels.json");
+for (const channel of catalog.channels) {
+  const webChannel = LIVE_CHANNELS.find((entry) => entry.id === channel.id);
+  assert.equal(webChannel.source, channel.source, `${channel.id} source must match the shared catalog`);
+  assert.equal(webChannel.streams.length, channel.streams.length, `${channel.id} stream count must match`);
+}
+
+const mobileLiveChannelsSource = readFileSync(
+  new URL("../mobile/src/lib/live-channels.ts", import.meta.url),
+  "utf8",
+);
+assert.match(mobileLiveChannelsSource, /streamarena-shared\/live-channels\.json/);
+assert.match(mobileLiveChannelsSource, /export function loadLiveChannelOverrides/);
+assert.match(
+  readFileSync(new URL("../mobile/src/app/_layout.tsx", import.meta.url), "utf8"),
+  /loadLiveChannelOverrides/,
+);
+
+const bbcAmericaCatalog = catalog.channels.find((channel) => channel.id === "bbc-us");
+assert.equal(bbcAmericaCatalog.streams.length, 2, "shared catalog must keep BBC America Phoenix fallback");
 
 console.log("Live channel catalog and card UI tests passed (7 NTV/CDNLive channels).");

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { loadPlaywright } from "./lib/load-playwright.mjs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,32 +7,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import vm from "node:vm";
 
-async function loadPlaywright() {
-  try {
-    return await import("playwright");
-  } catch (error) {
-    const fallbackDirs = [
-      process.env.PLAYWRIGHT_NODE_MODULES,
-      process.env.STREAMARENA_NODE_DEPS_DIR,
-      process.env.HOME ? join(process.env.HOME, ".local/share/streamarena-node") : "",
-    ].filter(Boolean);
-
-    for (const dir of fallbackDirs) {
-      const normalizedDir = String(dir).replace(/\/+$/, "");
-      const nodeModulesDir = normalizedDir.endsWith("/node_modules")
-        ? normalizedDir
-        : join(normalizedDir, "node_modules");
-      try {
-        return await import(
-          pathToFileURL(join(nodeModulesDir, "playwright", "index.mjs")).href
-        );
-      } catch {
-        // Try the next configured module directory.
-      }
-    }
-    throw error;
-  }
-}
 
 async function loadSodium() {
   try {

@@ -7,6 +7,7 @@ mod error;
 mod football;
 mod health;
 mod home_bootstrap;
+mod key_lock;
 mod library;
 mod live;
 mod local_torrent;

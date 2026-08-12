@@ -8,7 +8,7 @@ cd "$ROOT_DIR"
 MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
 REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/streamarena}"
-PLAYWRIGHT_VERSION="${PLAYWRIGHT_VERSION:-^1.54.2}"
+PLAYWRIGHT_VERSION="${PLAYWRIGHT_VERSION:-^1.60.0}"
 LIBSODIUM_WRAPPERS_VERSION="${LIBSODIUM_WRAPPERS_VERSION:-^0.8.4}"
 
 SKIP_BUILD=0
@@ -52,7 +52,7 @@ Environment:
                        fall back to Tailscale when Local Network is blocked.
   SSH_KEY              Default: ~/.ssh/id_ed25519_codex_m4mini
   REMOTE_APP           Default: /Users/hermes/Developer/streamarena
-  PLAYWRIGHT_VERSION   Default: ^1.54.2
+  PLAYWRIGHT_VERSION   Default: ^1.60.0
   LIBSODIUM_WRAPPERS_VERSION
                        Default: ^0.8.4
 USAGE

@@ -90,6 +90,16 @@ if printf '%s\n' "$rd_token_keyring" \
   rd_token_encryption_configured=yes
 fi
 unset rd_token_keyring
+live_hls_proxy_secret=$(
+  awk -F= '/^LIVE_HLS_PROXY_SECRET=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true
+)
+live_hls_proxy_secret="${live_hls_proxy_secret#"${live_hls_proxy_secret%%[![:space:]]*}"}"
+live_hls_proxy_secret="${live_hls_proxy_secret%"${live_hls_proxy_secret##*[![:space:]]}"}"
+live_hls_proxy_secret_configured=no
+if [[ ${#live_hls_proxy_secret} -ge 32 ]]; then
+  live_hls_proxy_secret_configured=yes
+fi
+unset live_hls_proxy_secret
 sports_http_proxy=$(
   awk -F= '/^SPORTS_HTTP_PROXY=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true
 )
@@ -214,6 +224,7 @@ printf 'users_db_mode=%s\n' "$users_db_mode"
 printf 'users_db_quick_check=%s\n' "$users_db_quick_check"
 printf 'effective_open_signup=%s\n' "$effective_open_signup"
 printf 'rd_token_encryption_configured=%s\n' "$rd_token_encryption_configured"
+printf 'live_hls_proxy_secret_configured=%s\n' "$live_hls_proxy_secret_configured"
 printf 'sports_proxy_matches_expected=%s\n' "$sports_proxy_matches_expected"
 printf 'torznab_configured=%s\n' "$torznab_configured"
 printf 'jackett_listener=%s\n' "${jackett_listener:-missing}"
@@ -292,6 +303,7 @@ users_db_mode=$(value_for users_db_mode)
 users_db_quick_check=$(value_for users_db_quick_check)
 effective_open_signup=$(value_for effective_open_signup)
 rd_token_encryption_configured=$(value_for rd_token_encryption_configured)
+live_hls_proxy_secret_configured=$(value_for live_hls_proxy_secret_configured)
 sports_proxy_matches_expected=$(value_for sports_proxy_matches_expected)
 torznab_configured=$(value_for torznab_configured)
 jackett_listener=$(value_for jackett_listener)
@@ -368,6 +380,7 @@ ntvs_proxy_http=$(value_for ntvs_proxy_http)
   && pass "OPEN_SIGNUP is $effective_open_signup" \
   || bad "OPEN_SIGNUP is $effective_open_signup (expected $EXPECTED_OPEN_SIGNUP)"
 [[ "$rd_token_encryption_configured" == "yes" ]] && pass "Real-Debrid token encryption key ring is configured" || bad "REAL_DEBRID_TOKEN_ENCRYPTION_KEYS is missing or malformed"
+[[ "$live_hls_proxy_secret_configured" == "yes" ]] && pass "LIVE_HLS_PROXY_SECRET is pinned (32+ characters)" || bad "LIVE_HLS_PROXY_SECRET is missing or shorter than 32 characters"
 if [[ "$env_in_app" == "no" ]]; then
   pass "deploy tree has no .env (secrets stay in the canonical env file)"
 elif [[ "$app_env_mode" == "600" ]]; then

@@ -9,6 +9,7 @@ import { DarkTheme, Stack, ThemeProvider, useRouter, useSegments } from "expo-ro
 import * as SplashScreen from "expo-splash-screen";
 import * as SystemUI from "expo-system-ui";
 import { AuthProvider, useAccountScopeOrNull, useAuth } from "@/lib/auth";
+import { loadLiveChannelOverrides } from "@/lib/live-channels";
 import { TabBar } from "@/components/nav/TabBar";
 import { ProfileMenu } from "@/components/profile/ProfileMenu";
 import { initOfflineSync, setOfflineAccountScope } from "@/store/offline";
@@ -41,6 +42,15 @@ void SplashScreen.preventAutoHideAsync();
 // Scope offline downloads to the signed-in account and mount the download pump's
 // AppState/connectivity listeners. Active iOS transfers remain system-managed while
 // the app is backgrounded; foreground/network edges re-kick any deferred queue work.
+function LiveCatalogBootstrap() {
+  const { status } = useAuth();
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    void loadLiveChannelOverrides();
+  }, [status]);
+  return null;
+}
+
 function OfflineBootstrap() {
   const scope = useAccountScopeOrNull();
   useEffect(() => {
@@ -104,6 +114,7 @@ export default function RootLayout() {
               <TabBar />
               <ProfileMenu />
               <OfflineBootstrap />
+              <LiveCatalogBootstrap />
             </AuthGate>
           </ThemeProvider>
         </AuthProvider>

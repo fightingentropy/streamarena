@@ -1,5 +1,5 @@
 import { onMount, onCleanup } from "solid-js";
-import { parseWebVttCues } from "../player/subtitles.js";
+import { createCustomSubtitleOverlay } from "../player/custom-subtitle-overlay.js";
 import {
   getAudioTrackDisplayLabel,
   getAudioTrackDisplayParts,
@@ -36,15 +36,39 @@ import {
 } from "../player/sources.js";
 import { buildSourceMenuView, createSourceOptionButton, shouldIgnoreRememberedTorrentSource, syncSourceMenuTabs } from "../player/source-menu-tabs.js";
 import {
-  readContinueWatchingMetaMap,
-} from "../shared.js";
+  isTorrentResolverProvider,
+  mergeRememberedServerContinueWatchingEntry,
+  readRememberedContinueWatchingSourceState,
+  removeContinueWatchingMeta,
+  shouldIgnoreRememberedTmdbSourcePin as shouldIgnoreRememberedTmdbSourcePinForState,
+  writeContinueWatchingEntry,
+} from "../player/continue-watching-pin.js";
 import {
   supportedAudioLangs,
   DEFAULT_STREAM_QUALITY_PREFERENCE,
   DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
   SUBTITLE_COLOR_PREF_KEY,
-  normalizeDefaultAudioLanguage,
 } from "../lib/preferences.js";
+import {
+  getLocalSubtitlePreferenceSourceKey as buildLocalSubtitlePreferenceSourceKey,
+  getStoredAudioLangForTmdbMovie,
+  getStoredDefaultAudioLanguage,
+  getStoredSubtitleLangForTarget,
+  getStoredSubtitleStreamPreferenceForTarget,
+  getTvSubtitlePreferenceKey as buildTvSubtitlePreferenceKey,
+  isRecognizedAudioLang,
+  normalizePreferredQuality,
+  normalizeSubtitlePreference,
+  persistAudioLangPreference as persistAudioLangPreferenceForMovie,
+  persistSubtitleLangPreferenceForTarget,
+  persistSubtitleStreamPreferenceForTarget,
+  resolveSubtitlePreferenceStorageTarget,
+  shouldIncludePreferredQualityInUrl,
+} from "../player/playback-preferences.js";
+import {
+  createResolverOverlayController,
+  normalizeResolverFailureMessage as formatResolverFailureMessage,
+} from "../player/resolver-overlay.js";
 import {
   LIVE_CHANNEL_PLAYBACK_FALLBACKS,
   findLiveChannelIdBySource,
@@ -62,6 +86,24 @@ import {
   syncLiveStreamControls as syncLiveStreamControlsDom,
   SOURCE_OPTION_ICON_SVG,
 } from "../player/live-streams.js";
+import {
+  createLiveStreamCache,
+  normalizeLiveStreamPreferenceProvider,
+} from "../player/live-stream-cache.js";
+import { createLivePlaybackHealthWatch } from "../player/live-playback-health.js";
+import {
+  LIVE_EDGE_PIN_RATIO,
+  LIVE_EDGE_REJOIN_TOLERANCE_SECONDS,
+  clampLiveSeekTargetSeconds as clampLiveSeekTargetSecondsInWindow,
+  getLiveEdgeTargetSeconds as getLiveEdgeTargetSecondsFromWindow,
+  getLiveSeekableWindow as getLiveSeekableWindowFromVideo,
+  getSeekTargetSecondsFromRatio as getSeekTargetSecondsFromRatioForWindow,
+  shouldPinLiveEdgeFromTarget,
+} from "../player/live-seek.js";
+import {
+  computeSubtitleLinePercentInBottomMatte as computeSubtitleLinePercentFromDimensions,
+  nudgeSubtitleTrackPlacementUp as applySubtitleTrackPlacement,
+} from "../player/subtitle-placement.js";
 import { createHlsPlaybackController } from "../player/hls-controller.js";
 import { createHlsQualityControls } from "../player/hls-quality-controls.js";
 import {
@@ -142,7 +184,6 @@ const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const controlsHideDelayMs = 3000;
 const popoverAutoOpenGraceMs = 650;
 const singleClickToggleDelayMs = 220;
-const seekLoadingTimeoutMs = 9000;
 const SEEK_JUMP_SECONDS = 10;
 const playbackRecoveryStallDelayMs = 8000;
 const playbackRecoveryServerTimeoutMs = 3500;
@@ -155,34 +196,14 @@ const audioDecodeRecoveryMaxAttempts = 2;
 const audioDecodeGraceAfterSourceChangeMs = 6000;
 const audioDecodeGraceAfterSeekMs = 6000;
 const audioDecodeVideoAdvanceThresholdSeconds = 6;
-const LIVE_EDGE_PIN_RATIO = 0.985;
-const LIVE_EDGE_PLAYBACK_OFFSET_SECONDS = 0.5;
-const LIVE_EDGE_REJOIN_TOLERANCE_SECONDS = 2.5;
 const LIVE_EMBED_FALLBACK_SOURCE_LIMIT = 5;
 const LIVE_IFRAME_SOURCE_PREFIX = "live-iframe:";
 const LIVE_IFRAME_ALLOW_POLICY = "autoplay; fullscreen; picture-in-picture; encrypted-media";
-const LIVE_VISUAL_HEALTH_GRACE_MS = 6000;
-const LIVE_VISUAL_HEALTH_INTERVAL_MS = 2000;
-const LIVE_VISUAL_HEALTH_SAMPLE_WIDTH = 32;
-const LIVE_VISUAL_HEALTH_SAMPLE_HEIGHT = 18;
-const LIVE_VISUAL_HEALTH_MAX_BLANK_SAMPLES = 4;
-const LIVE_VISUAL_HEALTH_MAX_AVG_LUMA = 8;
-const LIVE_VISUAL_HEALTH_MIN_BRIGHT_PIXEL_RATIO = 0.012;
-// If a live source has not started playing within this window, give up on it
-// and fail over to the next source. Kept short so a dead/stalled source is
-// abandoned quickly instead of making the viewer wait (or click through).
-const LIVE_STARTUP_HEALTH_TIMEOUT_MS = 6000;
 // When auto-failover has tried every source without success, keep retrying the
 // whole set on this cadence (bounded by max cycles) instead of giving up — so
 // the viewer never has to click "Retry" while a source is still coming online.
 const LIVE_FALLBACK_RETRY_DELAY_MS = 6000;
 const LIVE_FALLBACK_RETRY_MAX_CYCLES = 3;
-const LIVE_FAILED_STREAM_CACHE_TTL_MS = 5 * 60 * 1000;
-const LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX = "streamarena-live-failed-streams:";
-const LIVE_WORKING_STREAM_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-const LIVE_WORKING_STREAM_CACHE_STORAGE_PREFIX = "streamarena-live-working-stream:";
-const LIVE_SOURCE_PREFERENCE_STORAGE_KEY = "streamarena-live-source-preferences";
-const LIVE_SOURCE_PREFERENCE_TTL_MS = 24 * 60 * 60 * 1000;
 
 let isDraggingSeek = false;
 let speedPopoverCloseTimeout = null;
@@ -203,7 +224,6 @@ let playbackRecoverySequence = 0;
 let pendingRecoverySeekSeconds = null;
 let controlsHideTimeout = null;
 let singleClickPlaybackToggleTimeout = null;
-let seekLoadingTimeout = null;
 let unavailableEpisodeResolverHideTimeout = null;
 let audioDecodeRecoveryResetTimeout = null;
 let subtitleRestoreAfterSourceChangeTimeout = null;
@@ -237,12 +257,22 @@ let isFetchingPlaybackSources = false;
 let playbackSourcesRequestToken = 0;
 let resolverFailedSourceHashes = new Set();
 let subtitleTrackElement = null;
-let customSubtitleCues = [];
-let customSubtitleCueCursor = 0;
-let customSubtitleLoadToken = 0;
-let subtitleRafId = 0;
-let lastRenderedSubtitleCueIndex = -1;
 const subtitleOffset = createSubtitleOffsetController();
+const {
+  setText: setCustomSubtitleText,
+  clear: clearCustomSubtitleOverlay,
+  invalidateRenderedCue,
+  render: renderCustomSubtitleOverlay,
+  startRafLoop: startSubtitleRafLoop,
+  stopRafLoop: stopSubtitleRafLoop,
+  loadFromTrack: loadCustomSubtitleFromTrack,
+} = createCustomSubtitleOverlay({
+  getOverlay: () => subtitleOverlay,
+  getSelectedSubtitleStreamIndex: () => selectedSubtitleStreamIndex,
+  getCurrentTimeSeconds: () => getEffectiveCurrentTime(),
+  getOffsetSeconds: () => subtitleOffset.getOffsetSeconds(),
+  isVideoPlaying: () => Boolean(video && !video.paused && !video.ended),
+});
 let resolvedTrackPreferenceAudio = "auto";
 let preferredSubtitleLang = "";
 let audioOptions = [];
@@ -285,22 +315,52 @@ const liveIframePlaybackClock = createLiveIframePlaybackClock({
   isActive: () => isLiveIframePlaybackActive(),
   isVisible: () => document.visibilityState !== "hidden",
 });
-let liveVisualHealthInterval = null;
-let liveVisualHealthCanvas = null;
-let liveVisualBlankSampleCount = 0;
-let liveStartupHealthTimeout = null;
-let liveStartupWatchArmed = false;
+const {
+  clearVisual: clearLiveVisualHealthWatch,
+  clearStartup: clearLiveStartupHealthWatch,
+  startVisual: startLiveVisualHealthWatch,
+  armStartup: armLiveStartupHealthWatch,
+  hasPlaybackStarted: hasLivePlaybackStarted,
+  isStartupArmed,
+} = createLivePlaybackHealthWatch({
+  isLivePlayback: () => isLivePlayback,
+  isIframePlayback: () => isLiveIframePlaybackActive(),
+  getStreamOptionCount: () => liveStreamOptions.length,
+  isAutoFallbackInFlight: () => liveAutoFallbackInFlight,
+  hasRecoverablePlaybackSource,
+  hasActiveSource,
+  isVideoPaused: () => Boolean(video?.paused),
+  isDocumentHidden: () => document.visibilityState === "hidden",
+  getVideo: () => video,
+  getCurrentTimeSeconds: () => getEffectiveCurrentTime(),
+  getCurrentSource: () =>
+    lastRequestedAbsolutePlaybackSource ||
+    lastRequestedPlaybackSource ||
+    video?.currentSrc ||
+    video?.getAttribute?.("src") ||
+    "",
+  getSelectedStreamId: () => selectedLiveStreamId,
+  getLastSourceSetAt: () => lastPlaybackSourceSetAt,
+  onVisualFailover: () => {
+    void attemptAutomaticLiveStreamFallback();
+  },
+  onStartupFailover: () => {
+    void attemptAutomaticLiveStreamFallback(
+      "Live stream did not start. Trying another source...",
+    );
+  },
+});
 let liveAutoFallbackInFlight = false;
 let liveAutoFallbackAttemptedStreamIds = new Set();
 const liveFallbackRetry = createBoundedRetryController({
   maxCycles: LIVE_FALLBACK_RETRY_MAX_CYCLES,
   delayMs: LIVE_FALLBACK_RETRY_DELAY_MS,
 });
-let liveFailedStreamCacheKey = "";
-let liveFailedStreamStatuses = new Map();
-let liveWorkingStreamCacheKey = "";
-let liveWorkingStreamEntry = null;
-let liveSourcePreferenceEntries = null;
+const liveStreamCache = createLiveStreamCache({
+  getEventSlug: () => getLiveStreamCacheEventSlug(),
+  getStreamOptions: () => liveStreamOptions,
+  isLivePlayback: () => isLivePlayback,
+});
 
 const _cleanups = [];
 function trackListener(target, event, handler, options) {
@@ -790,17 +850,9 @@ let isTmdbTvPlayback = Boolean(
   !hasExplicitSource && tmdbId && mediaType === "tv",
 );
 let isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
-const AUDIO_LANG_PREF_KEY_PREFIX = "streamarena-audio-lang:movie:";
-const SUBTITLE_LANG_PREF_KEY_PREFIX = "streamarena-subtitle-lang:movie:";
-const SUBTITLE_STREAM_PREF_KEY_PREFIX = "streamarena-subtitle-stream:movie:";
-const TV_SUBTITLE_LANG_PREF_KEY_PREFIX = "streamarena-subtitle-lang:tv:";
-const TV_SUBTITLE_STREAM_PREF_KEY_PREFIX = "streamarena-subtitle-stream:tv:";
-const LOCAL_SUBTITLE_LANG_PREF_KEY_PREFIX = "streamarena-subtitle-lang:local:";
-const LOCAL_SUBTITLE_STREAM_PREF_KEY_PREFIX = "streamarena-subtitle-stream:local:";
 const SOURCE_AUDIO_SYNC_PREF_KEY_PREFIX = "streamarena-source-audio-sync:";
 const DEFAULT_SOURCE_RESULTS_LIMIT = 20;
 const SOURCE_FETCH_BATCH_LIMIT = 20;
-const supportedQualityPreferences = new Set(["auto", "2160p", "1080p", "720p"]);
 const supportedSourceFormats = ["mp4", "mkv"];
 const supportedSourceFormatSet = new Set(supportedSourceFormats);
 const DEFAULT_SOURCE_MIN_SEEDERS = 0;
@@ -816,17 +868,6 @@ const RESUME_SAVE_MIN_DELTA_SECONDS = 1.5;
 const RESUME_FLUSH_INTERVAL_MS = 1000;
 const LOCAL_CACHE_UPGRADE_POLL_MS = 20_000;
 const LOCAL_CACHE_UPGRADE_INITIAL_DELAY_MS = 8_000;
-const CONTINUE_WATCHING_META_KEY = "streamarena-continue-watching-meta";
-const SUBTITLE_LINE_FROM_BOTTOM = -4;
-const SUBTITLE_FALLBACK_LINE_PERCENT = 80;
-const SUBTITLE_CUE_SIZE_PERCENT = 88;
-const SUBTITLE_CUE_POSITION_PERCENT = 50;
-const SUBTITLE_MATTE_LINE_LIFT_PERCENT = 8;
-const SUBTITLE_MATTE_MIN_HEIGHT_PX = 18;
-const SUBTITLE_MATTE_TOP_PADDING_PX = 6;
-const SUBTITLE_MATTE_BOTTOM_PADDING_PX = 14;
-const SUBTITLE_MATTE_BOTTOM_TARGET_OFFSET_PX = 82;
-const SUBTITLE_MATTE_TOP_GUARD_RATIO = 0.35;
 // Benchmark API is deferred to onMount (needs video ref)
 let playbackBenchmark = null;
 
@@ -853,325 +894,65 @@ function getPinnedSessionKeyForRequests() {
   return String(currentTmdbPlaybackSessionKey || "").trim();
 }
 
-function getAudioLangPreferenceStorageKey(movieTmdbId) {
-  return `${AUDIO_LANG_PREF_KEY_PREFIX}${String(movieTmdbId || "").trim()}`;
-}
-
-
-function getStoredDefaultAudioLanguage() {
-  try {
-    return normalizeDefaultAudioLanguage(
-      localStorage.getItem(DEFAULT_AUDIO_LANGUAGE_PREF_KEY),
-    );
-  } catch {
-    return "en";
-  }
-}
-
-function normalizePreferredQuality(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (!normalized) return DEFAULT_STREAM_QUALITY_PREFERENCE;
-  if (normalized === "4k" || normalized === "uhd") return "2160p";
-  if (normalized === "2160") return "2160p";
-  if (normalized === "1080") return "1080p";
-  if (normalized === "720") return "720p";
-  if (supportedQualityPreferences.has(normalized)) {
-    return normalized;
-  }
-  return DEFAULT_STREAM_QUALITY_PREFERENCE;
-}
-
-function shouldIncludePreferredQualityInUrl(value) {
-  return Boolean(
-    value &&
-    value !== "auto" &&
-    value !== DEFAULT_STREAM_QUALITY_PREFERENCE,
-  );
-}
-
-function isRecognizedAudioLang(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  return normalized === "auto" || /^[a-z]{2}$/.test(normalized);
-}
-
-function normalizeSubtitlePreference(value) {
-  const raw = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (!raw || raw === "auto") {
-    return "";
-  }
-  if (raw === "off" || raw === "none" || raw === "disabled") {
-    return "off";
-  }
-  if (/^[a-z]{2}$/.test(raw)) {
-    return raw;
-  }
-  return raw.slice(0, 2);
-}
-
-function getSubtitleLangPreferenceStorageKey(movieTmdbId) {
-  return `${SUBTITLE_LANG_PREF_KEY_PREFIX}${String(movieTmdbId || "").trim()}`;
-}
-
-function getSubtitleStreamPreferenceStorageKey(movieTmdbId) {
-  return `${SUBTITLE_STREAM_PREF_KEY_PREFIX}${String(movieTmdbId || "").trim()}`;
-}
 
 function getTvSubtitlePreferenceKey() {
-  const safeTmdbId = String(tmdbId || "").trim();
-  if (!safeTmdbId) {
-    return "";
-  }
-  const safeSeason = Math.max(1, Math.floor(Number(seasonNumber) || 1));
-  const safeEpisode = Math.max(1, Math.floor(Number(episodeNumber) || 1));
-  return `${safeTmdbId}:s${safeSeason}:e${safeEpisode}`;
-}
-
-function getTvSubtitleLangPreferenceStorageKey(tvKey) {
-  return `${TV_SUBTITLE_LANG_PREF_KEY_PREFIX}${String(tvKey || "").trim()}`;
-}
-
-function getTvSubtitleStreamPreferenceStorageKey(tvKey) {
-  return `${TV_SUBTITLE_STREAM_PREF_KEY_PREFIX}${String(tvKey || "").trim()}`;
+  return buildTvSubtitlePreferenceKey(tmdbId, seasonNumber, episodeNumber);
 }
 
 function getLocalSubtitlePreferenceSourceKey() {
-  if (!isExplicitLocalUploadSource) {
-    return "";
-  }
-  if (isSeriesPlayback && activeSeries?.id) {
-    return `series:${String(activeSeries.id).trim().toLowerCase()}:episode:${Math.max(0, Math.floor(Number(seriesEpisodeIndex) || 0))}`;
-  }
-  return String(src || "").trim();
-}
-
-function getLocalSubtitleLangPreferenceStorageKey(sourceKey) {
-  return `${LOCAL_SUBTITLE_LANG_PREF_KEY_PREFIX}${String(sourceKey || "").trim()}`;
-}
-
-function getLocalSubtitleStreamPreferenceStorageKey(sourceKey) {
-  return `${LOCAL_SUBTITLE_STREAM_PREF_KEY_PREFIX}${String(sourceKey || "").trim()}`;
+  return buildLocalSubtitlePreferenceSourceKey({
+    isExplicitLocalUploadSource,
+    isSeriesPlayback,
+    activeSeries,
+    seriesEpisodeIndex,
+    src,
+  });
 }
 
 function getSubtitlePreferenceStorageTarget() {
-  if (isTmdbMoviePlayback && tmdbId) {
-    return { scope: "movie", key: String(tmdbId || "").trim() };
-  }
-
-  if (isTmdbTvPlayback && tmdbId) {
-    const tvKey = getTvSubtitlePreferenceKey();
-    if (tvKey) {
-      return { scope: "tv", key: tvKey };
-    }
-  }
-
-  const localSourceKey = getLocalSubtitlePreferenceSourceKey();
-  if (localSourceKey) {
-    return { scope: "local", key: localSourceKey };
-  }
-
-  return null;
-}
-
-function getSubtitleLangPreferenceStorageKeyForTarget(target) {
-  if (!target?.key) {
-    return "";
-  }
-  if (target.scope === "movie") {
-    return getSubtitleLangPreferenceStorageKey(target.key);
-  }
-  if (target.scope === "tv") {
-    return getTvSubtitleLangPreferenceStorageKey(target.key);
-  }
-  return getLocalSubtitleLangPreferenceStorageKey(target.key);
-}
-
-function getSubtitleStreamPreferenceStorageKeyForTarget(target) {
-  if (!target?.key) {
-    return "";
-  }
-  if (target.scope === "movie") {
-    return getSubtitleStreamPreferenceStorageKey(target.key);
-  }
-  if (target.scope === "tv") {
-    return getTvSubtitleStreamPreferenceStorageKey(target.key);
-  }
-  return getLocalSubtitleStreamPreferenceStorageKey(target.key);
-}
-
-function getStoredSubtitleStreamPreferenceForTarget(target) {
-  if (!target?.key) {
-    return { mode: "unset", streamIndex: -1 };
-  }
-  const key = getSubtitleStreamPreferenceStorageKeyForTarget(target);
-  if (!key) {
-    return { mode: "unset", streamIndex: -1 };
-  }
-
-  try {
-    const raw = String(localStorage.getItem(key) || "")
-      .trim()
-      .toLowerCase();
-    if (!raw) {
-      return { mode: "unset", streamIndex: -1 };
-    }
-    if (raw === "off" || raw === "-1") {
-      return { mode: "off", streamIndex: -1 };
-    }
-    const parsed = Number(raw);
-    if (Number.isInteger(parsed) && parsed >= 0) {
-      return { mode: "on", streamIndex: parsed };
-    }
-  } catch {
-    // Ignore storage access issues.
-  }
-
-  return { mode: "unset", streamIndex: -1 };
-}
-
-function getStoredSubtitleLangForTarget(target) {
-  if (!target?.key) {
-    return "";
-  }
-  const key = getSubtitleLangPreferenceStorageKeyForTarget(target);
-  if (!key) {
-    return "";
-  }
-
-  try {
-    return normalizeSubtitlePreference(localStorage.getItem(key));
-  } catch {
-    // Ignore storage access issues.
-  }
-  return "";
-}
-
-function getStoredSubtitleStreamPreferenceForTmdbMovie(movieTmdbId) {
-  const normalizedTmdbId = String(movieTmdbId || "").trim();
-  if (!normalizedTmdbId) {
-    return { mode: "unset", streamIndex: -1 };
-  }
-  return getStoredSubtitleStreamPreferenceForTarget({
-    scope: "movie",
-    key: normalizedTmdbId,
+  return resolveSubtitlePreferenceStorageTarget({
+    isTmdbMoviePlayback,
+    isTmdbTvPlayback,
+    tmdbId,
+    seasonNumber,
+    episodeNumber,
+    isExplicitLocalUploadSource,
+    isSeriesPlayback,
+    activeSeries,
+    seriesEpisodeIndex,
+    src,
   });
 }
 
 function getStoredSubtitleStreamPreferenceForCurrentPlayback() {
-  const target = getSubtitlePreferenceStorageTarget();
-  return getStoredSubtitleStreamPreferenceForTarget(target);
-}
-
-function getStoredSubtitleLangForTmdbMovie(movieTmdbId) {
-  const normalizedTmdbId = String(movieTmdbId || "").trim();
-  if (!normalizedTmdbId) {
-    return "";
-  }
-  return getStoredSubtitleLangForTarget({
-    scope: "movie",
-    key: normalizedTmdbId,
-  });
+  return getStoredSubtitleStreamPreferenceForTarget(
+    getSubtitlePreferenceStorageTarget(),
+  );
 }
 
 function getStoredSubtitleLangForCurrentPlayback() {
-  const target = getSubtitlePreferenceStorageTarget();
-  return getStoredSubtitleLangForTarget(target);
+  return getStoredSubtitleLangForTarget(getSubtitlePreferenceStorageTarget());
 }
 
 function persistSubtitleLangPreference(lang) {
-  const target = getSubtitlePreferenceStorageTarget();
-  if (!target?.key) {
-    return;
-  }
-
-  const normalizedLang = normalizeSubtitlePreference(lang);
-  const key = getSubtitleLangPreferenceStorageKeyForTarget(target);
-  if (!key) {
-    return;
-  }
-  try {
-    if (!normalizedLang) {
-      localStorage.removeItem(key);
-      return;
-    }
-    localStorage.setItem(key, normalizedLang);
-  } catch {
-    // Ignore storage access issues.
-  }
+  persistSubtitleLangPreferenceForTarget(
+    getSubtitlePreferenceStorageTarget(),
+    lang,
+  );
 }
 
 function persistSubtitleStreamPreference(streamIndex) {
-  const target = getSubtitlePreferenceStorageTarget();
-  if (!target?.key) {
-    return;
-  }
-
-  const key = getSubtitleStreamPreferenceStorageKeyForTarget(target);
-  if (!key) {
-    return;
-  }
-  const normalizedStreamIndex = Number.isInteger(Number(streamIndex))
-    ? Number(streamIndex)
-    : -1;
-  try {
-    if (normalizedStreamIndex < 0) {
-      localStorage.setItem(key, "off");
-      return;
-    }
-    localStorage.setItem(key, String(normalizedStreamIndex));
-  } catch {
-    // Ignore storage access issues.
-  }
-}
-
-function getStoredAudioLangForTmdbMovie(movieTmdbId) {
-  const normalizedTmdbId = String(movieTmdbId || "").trim();
-  if (!normalizedTmdbId) {
-    return "auto";
-  }
-
-  try {
-    const raw = String(
-      localStorage.getItem(
-        getAudioLangPreferenceStorageKey(normalizedTmdbId),
-      ) || "",
-    )
-      .trim()
-      .toLowerCase();
-    if (isRecognizedAudioLang(raw)) {
-      return raw;
-    }
-  } catch {
-    // Ignore storage access issues.
-  }
-
-  return "auto";
+  persistSubtitleStreamPreferenceForTarget(
+    getSubtitlePreferenceStorageTarget(),
+    streamIndex,
+  );
 }
 
 function persistAudioLangPreference(lang) {
   if (!isTmdbMoviePlayback || !tmdbId) {
     return;
   }
-
-  const normalizedLang = isRecognizedAudioLang(String(lang || "").toLowerCase())
-    ? String(lang).toLowerCase()
-    : "auto";
-  const key = getAudioLangPreferenceStorageKey(tmdbId);
-
-  try {
-    if (normalizedLang === "auto") {
-      localStorage.removeItem(key);
-      return;
-    }
-    localStorage.setItem(key, normalizedLang);
-  } catch {
-    // Ignore storage access issues.
-  }
+  persistAudioLangPreferenceForMovie(tmdbId, lang);
 }
 
 let preferredAudioLang = hasAudioLangParam
@@ -1231,8 +1012,6 @@ let lastPersistedResumeTime = 0;
 let lastPersistedResumeAt = 0;
 let resumeFlushIntervalId = 0;
 
-function emptyRememberedTmdbSourceState() { return { sourceHash: "", sessionKey: "", resolverProvider: "", sourceInput: "", filename: "" }; }
-
 function shouldPreferMobileLightTmdbSources() {
   return Boolean(isTmdbResolvedPlayback && isMobileOrTabletVideoEnvironment());
 }
@@ -1267,23 +1046,6 @@ function clearRememberedTmdbSourcePinForFreshResolve() {
   preferredResolverProvider = DEFAULT_RESOLVER_PROVIDER;
   tmdbSkipExternalEmbed = false;
   applyPreferredSourceAudioSync(selectedSourceHash);
-}
-
-function normalizeRememberedResolverProvider(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (normalized === "real-debrid" || normalized === "local-torrent" || normalized === "external-embed") {
-    return normalized;
-  }
-  return "";
-}
-
-function isTorrentResolverProvider(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  return normalized === "real-debrid" || normalized === "local-torrent";
 }
 
 function isTorrentResolverProviderEnabledForPlayback(value) {
@@ -1347,122 +1109,28 @@ function shouldAllowTorrentResolveFallback() {
   return Boolean(userRealDebridSettingsLoaded && userRealDebridConfigured);
 }
 
-function isRememberedIframeOnlyExternalEmbed(remembered) {
-  if (remembered?.resolverProvider !== "external-embed") {
-    return false;
-  }
-  const sourceText = `${remembered.sourceInput || ""} ${remembered.filename || ""}`
-    .trim()
-    .toLowerCase();
-  if (!sourceText || sourceText.includes("iframe") || sourceText.includes("live-iframe:")) {
-    return true;
-  }
-  return !(
-    sourceText.includes("player.videasy.net") ||
-    sourceText.includes("vidlink.pro")
-  );
-}
-
-function shouldIgnoreRememberedTmdbSourcePinForIframeFirst(remembered) {
-  const hasRememberedPin = Boolean(
-    normalizeSourceHash(selectedSourceHash) ||
-      remembered.sourceHash ||
-      remembered.sessionKey ||
-      remembered.resolverProvider,
-  );
-  if (!hasRememberedPin || hasDirectSourceHashParam) {
-    return false;
-  }
-  if (isRememberedIframeOnlyExternalEmbed(remembered)) {
-    return true;
-  }
-  if (isTorrentResolverProvider(remembered.resolverProvider)) {
-    return shouldIgnoreRememberedTorrentSource(shouldResumeRememberedPlayback, isTorrentResolverProviderEnabledForPlayback(remembered.resolverProvider));
-  }
-  if (remembered.resolverProvider === "external-embed") return false;
-  if (
-    isTorrentResolverProvider(preferredResolverProvider) &&
-    isTorrentResolverProviderEnabledForPlayback(preferredResolverProvider)
-  ) {
-    return false;
-  }
-  return true;
-}
-
 function getRememberedContinueWatchingSourceState() {
-  const normalizedSource = String(sourceIdentity || "").trim();
-  if (!normalizedSource) {
-    return emptyRememberedTmdbSourceState();
-  }
-  try {
-    const metaMap = readContinueWatchingMetaMap();
-    const entry = metaMap?.[normalizedSource];
-    if (!entry || typeof entry !== "object") {
-      return emptyRememberedTmdbSourceState();
-    }
-    return {
-      sourceHash: normalizeSourceHash(entry.sourceHash || ""),
-      sessionKey: String(entry.sessionKey || "").trim(),
-      resolverProvider: normalizeRememberedResolverProvider(entry.resolverProvider),
-      sourceInput: String(entry.sourceInput || "").trim(),
-      filename: String(entry.filename || "").trim(),
-    };
-  } catch {
-    return emptyRememberedTmdbSourceState();
-  }
+  return readRememberedContinueWatchingSourceState(sourceIdentity);
 }
 
 function rememberServerContinueWatchingEntry(entry) {
-  const normalizedSource = String(sourceIdentity || "").trim();
-  const sourceFromEntry = String(entry?.sourceIdentity || "").trim();
-  if (!normalizedSource || sourceFromEntry !== normalizedSource) {
-    return false;
-  }
+  return mergeRememberedServerContinueWatchingEntry(sourceIdentity, entry);
+}
 
-  try {
-    const metaMap = readContinueWatchingMetaMap();
-    const existing =
-      metaMap?.[normalizedSource] && typeof metaMap[normalizedSource] === "object"
-        ? metaMap[normalizedSource]
-        : {};
-    const nextEntry = {
-      ...existing,
-      ...entry,
-      sourceIdentity: normalizedSource,
-      sourceHash: normalizeSourceHash(
-        Object.prototype.hasOwnProperty.call(entry, "sourceHash")
-          ? entry.sourceHash
-          : existing.sourceHash || "",
-      ),
-      sessionKey: String(
-        Object.prototype.hasOwnProperty.call(entry, "sessionKey")
-          ? entry.sessionKey
-          : existing.sessionKey || "",
-      ).trim(),
-      resolverProvider: normalizeRememberedResolverProvider(
-        Object.prototype.hasOwnProperty.call(entry, "resolverProvider")
-          ? entry.resolverProvider
-          : existing.resolverProvider,
-      ),
-      sourceInput: String(
-        Object.prototype.hasOwnProperty.call(entry, "sourceInput")
-          ? entry.sourceInput
-          : existing.sourceInput || "",
-      ).trim(),
-      filename: String(
-        Object.prototype.hasOwnProperty.call(entry, "filename")
-          ? entry.filename
-          : existing.filename || "",
-      ).trim(),
-      resumeSeconds: Number(entry.resumeSeconds || existing.resumeSeconds || 0),
-      updatedAt: Number(entry.updatedAt || existing.updatedAt || Date.now()),
-    };
-    metaMap[normalizedSource] = nextEntry;
-    localStorage.setItem(CONTINUE_WATCHING_META_KEY, JSON.stringify(metaMap));
-    return true;
-  } catch {
-    return false;
-  }
+function shouldIgnoreRememberedTmdbSourcePinForIframeFirst(remembered) {
+  return shouldIgnoreRememberedTmdbSourcePinForState({
+    remembered,
+    selectedSourceHash,
+    hasDirectSourceHashParam,
+    shouldResumeRememberedPlayback,
+    torrentProviderEnabled: isTorrentResolverProviderEnabledForPlayback(
+      remembered.resolverProvider,
+    ),
+    preferredResolverProvider,
+    preferredTorrentEnabled: isTorrentResolverProviderEnabledForPlayback(
+      preferredResolverProvider,
+    ),
+  });
 }
 
 function applyRememberedTmdbSourcePin({ force = false } = {}) {
@@ -1624,98 +1292,13 @@ function getCanonicalContinueWatchingMetadata() {
   };
 }
 
-function parseTmdbTvSourceIdentity(value) {
-  const match = /^tmdb:tv:(\d+)(?::s(\d+):e(\d+))?$/i.exec(
-    String(value || "").trim(),
-  );
-  return match
-    ? {
-        tmdbId: String(match[1] || "").trim(),
-        seasonNumber: Number(match[2] || 0) || 0,
-        episodeNumber: Number(match[3] || 0) || 0,
-      }
-    : { tmdbId: "", seasonNumber: 0, episodeNumber: 0 };
-}
-
-function getContinueWatchingSeriesKey(sourceValue, metadata = {}) {
-  const seriesId = String(metadata?.seriesId || "")
-    .trim()
-    .toLowerCase();
-  if (seriesId) {
-    return `series:${seriesId}`;
-  }
-  const tmdbId = String(metadata?.tmdbId || "").trim();
-  const mediaType = String(metadata?.mediaType || "")
-    .trim()
-    .toLowerCase();
-  if (mediaType === "tv" && tmdbId) {
-    return `tmdb:tv:${tmdbId}`;
-  }
-  const parsedTmdbSource = parseTmdbTvSourceIdentity(sourceValue);
-  if (parsedTmdbSource.tmdbId) {
-    return `tmdb:tv:${parsedTmdbSource.tmdbId}`;
-  }
-  const seriesMatch = /^series:([^:]+):episode:\d+$/i.exec(
-    String(sourceValue || "").trim(),
-  );
-  return seriesMatch
-    ? `series:${String(seriesMatch[1] || "").trim().toLowerCase()}`
-    : "";
-}
 
 function persistContinueWatchingEntry(resumeSeconds) {
-  const normalizedSource = String(sourceIdentity || "").trim();
-  if (
-    !normalizedSource ||
-    !Number.isFinite(resumeSeconds) ||
-    resumeSeconds < 1
-  ) {
-    return;
-  }
-
-  try {
-    const metadata = getCanonicalContinueWatchingMetadata();
-    const metaMap = readContinueWatchingMetaMap();
-    const nextSeriesKey = getContinueWatchingSeriesKey(
-      normalizedSource,
-      metadata,
-    );
-    if (nextSeriesKey) {
-      Object.keys(metaMap).forEach((storedSource) => {
-        if (
-          storedSource !== normalizedSource &&
-          getContinueWatchingSeriesKey(storedSource, metaMap[storedSource]) ===
-            nextSeriesKey
-        ) {
-          delete metaMap[storedSource];
-        }
-      });
-    }
-    metaMap[normalizedSource] = {
-      sourceIdentity: normalizedSource,
-      title: metadata.title,
-      episode: metadata.episode,
-      src: metadata.src,
-      tmdbId: metadata.tmdbId,
-      mediaType: metadata.mediaType,
-      seriesId: metadata.seriesId,
-      episodeIndex: metadata.episodeIndex,
-      seasonNumber: metadata.seasonNumber,
-      episodeNumber: metadata.episodeNumber,
-      year: metadata.year,
-      thumb: metadata.thumb,
-      sourceHash: metadata.sourceHash,
-      sessionKey: metadata.sessionKey,
-      resolverProvider: metadata.resolverProvider,
-      sourceInput: metadata.sourceInput,
-      filename: metadata.filename,
-      resumeSeconds: Number(resumeSeconds),
-      updatedAt: Date.now(),
-    };
-    localStorage.setItem(CONTINUE_WATCHING_META_KEY, JSON.stringify(metaMap));
-  } catch {
-    // Ignore storage access issues.
-  }
+  writeContinueWatchingEntry(
+    sourceIdentity,
+    resumeSeconds,
+    getCanonicalContinueWatchingMetadata(),
+  );
 }
 
 function syncContinueWatchingEntryToServer(resumeSeconds, { keepalive = false } = {}) {
@@ -1791,23 +1374,7 @@ function removeContinueWatchingEntry() {
     return;
   }
 
-  try {
-    const metaMap = readContinueWatchingMetaMap();
-    if (metaMap && typeof metaMap === "object") {
-      delete metaMap[normalizedSource];
-      const hasEntries = Object.keys(metaMap).length > 0;
-      if (hasEntries) {
-        localStorage.setItem(
-          CONTINUE_WATCHING_META_KEY,
-          JSON.stringify(metaMap),
-        );
-      } else {
-        localStorage.removeItem(CONTINUE_WATCHING_META_KEY);
-      }
-    }
-  } catch {
-    // Ignore storage access issues.
-  }
+  removeContinueWatchingMeta(normalizedSource);
 
   // Sync deletion to server in background
   fetchUserApi("/api/user/continue-watching", {
@@ -1854,192 +1421,35 @@ function stripAudioSyncFromPageUrl() {
   replaceReproducibleWatchUrl();
 }
 
-function isResolvingSource() {
-  return Boolean(
-    resolverOverlay &&
-    !resolverOverlay.hidden &&
-    !resolverOverlay.classList.contains("is-error"),
-  );
-}
 
-function clearSeekLoadingTimeout() {
-  if (seekLoadingTimeout !== null) {
-    window.clearTimeout(seekLoadingTimeout);
-    seekLoadingTimeout = null;
-  }
-}
+const {
+  isResolvingSource,
+  clearSeekLoadingTimeout,
+  showSeekLoadingIndicator,
+  hideSeekLoadingIndicator,
+  showResolver,
+  hideResolver,
+} = createResolverOverlayController({
+  getOverlay: () => resolverOverlay,
+  getStatus: () => resolverStatus,
+  getTitle: () => resolverTitle,
+  getDetail: () => resolverDetail,
+  getCountdown: () => resolverCountdown,
+  getRetryButton: () => resolverRetryButton,
+  getAlternateButton: () => resolverAlternateButton,
+  getLoader: () => resolverLoader,
+  getSeekLoadingOverlay: () => seekLoadingOverlay,
+  hasExplicitSource: () => hasExplicitSource,
+  isLiveIframePlaybackActive,
+  scheduleControlsHide,
+});
 
-function showSeekLoadingIndicator() {
-  if (!seekLoadingOverlay || isResolvingSource()) {
-    return;
-  }
-  seekLoadingOverlay.hidden = false;
-  clearSeekLoadingTimeout();
-  seekLoadingTimeout = window.setTimeout(() => {
-    seekLoadingTimeout = null;
-    hideSeekLoadingIndicator();
-  }, seekLoadingTimeoutMs);
-}
-
-function hideSeekLoadingIndicator() {
-  if (!seekLoadingOverlay) {
-    return;
-  }
-  clearSeekLoadingTimeout();
-  seekLoadingOverlay.hidden = true;
-}
-
-function showResolver(
-  message,
-  {
-    isError = false,
-    showStatus = isError,
-    isRecovery = false,
-    title = "",
-    detail = "",
-    countdown = "",
-    showRetry = false,
-    showAlternate = false,
-  } = {},
-) {
-  if (hasExplicitSource && !showStatus && !isError) {
-    hideResolver();
-    return;
-  }
-
-  if (!resolverOverlay) {
-    return;
-  }
-
-  const shouldShowStatus = showStatus || isError || isRecovery;
-  if (resolverStatus) {
-    resolverStatus.textContent =
-      String(message || "").trim() || "Unable to load this video.";
-    resolverStatus.hidden = !shouldShowStatus;
-  }
-  if (resolverTitle) {
-    resolverTitle.textContent = String(title || "").trim();
-    resolverTitle.hidden = !isRecovery || !resolverTitle.textContent;
-  }
-  if (resolverDetail) {
-    resolverDetail.textContent = String(detail || "").trim();
-    resolverDetail.hidden = !isRecovery || !resolverDetail.textContent;
-  }
-  if (resolverCountdown) {
-    resolverCountdown.textContent = String(countdown || "").trim();
-    resolverCountdown.hidden = !isRecovery || !resolverCountdown.textContent;
-  }
-  const shouldShowRetry = (isRecovery || isError) && showRetry;
-  const shouldShowAlternate = (isRecovery || isError) && showAlternate;
-  if (resolverRetryButton) {
-    resolverRetryButton.hidden = !shouldShowRetry;
-  }
-  if (resolverAlternateButton) {
-    resolverAlternateButton.hidden = !shouldShowAlternate;
-  }
-  if (resolverLoader) {
-    resolverLoader.hidden = shouldShowStatus;
-  }
-  hideSeekLoadingIndicator();
-  resolverOverlay.hidden = false;
-  resolverOverlay.classList.toggle("is-error", isError);
-  resolverOverlay.classList.toggle("is-recovery", isRecovery);
-  resolverOverlay.classList.toggle("has-status", shouldShowStatus);
-  resolverOverlay.classList.toggle(
-    "has-actions",
-    shouldShowRetry || shouldShowAlternate,
-  );
-}
-
-function hideResolver() {
-  if (!resolverOverlay) {
-    return;
-  }
-
-  resolverOverlay.hidden = true;
-  resolverOverlay.classList.remove("is-error");
-  resolverOverlay.classList.remove("is-recovery");
-  resolverOverlay.classList.remove("has-status");
-  resolverOverlay.classList.remove("has-actions");
-  if (resolverLoader) {
-    resolverLoader.hidden = false;
-  }
-  if (resolverStatus) {
-    resolverStatus.hidden = true;
-  }
-  if (resolverTitle) {
-    resolverTitle.hidden = true;
-  }
-  if (resolverDetail) {
-    resolverDetail.hidden = true;
-  }
-  if (resolverCountdown) {
-    resolverCountdown.hidden = true;
-  }
-  if (resolverRetryButton) {
-    resolverRetryButton.hidden = true;
-  }
-  if (resolverAlternateButton) {
-    resolverAlternateButton.hidden = true;
-  }
-  if (isLiveIframePlaybackActive()) {
-    scheduleControlsHide();
-  }
-}
-
-function normalizeResolverFailureMessage(
-  errorOrMessage,
-  fallbackMessage = "Unable to resolve this stream.",
-) {
-  const rawMessage =
-    typeof errorOrMessage === "string"
-      ? errorOrMessage
-      : errorOrMessage?.message;
-  const message = String(rawMessage || fallbackMessage || "")
-    .trim()
-    .replace(/\s+/g, " ");
-  const normalized = message.toLowerCase();
-
-  if (
-    normalized.includes("add a real-debrid api key") ||
-    normalized.includes("enable local torrent cache")
-  ) {
-    return message;
-  }
-
-  if (
-    normalized.includes("pipelinestatus::") ||
-    normalized.includes("ffmpegdemuxer") ||
-    normalized.includes("demuxer_error") ||
-    normalized.includes("open context failed") ||
-    normalized.includes("error opening input") ||
-    normalized.includes("no such file or directory") ||
-    normalized.includes("media_err_src_not_supported")
-  ) {
-    if (isExplicitLocalUploadSource || /^\/?assets\//i.test(src)) {
-      return "This local video file could not be opened. It may be missing from the library or unsupported.";
-    }
-    return "This video could not be opened. Try another source.";
-  }
-
-  if (
-    preferredResolverProvider !== "real-debrid" &&
-    (normalized.includes("resolving stream timed out") ||
-      normalized.includes("request timed out") ||
-      normalized.includes("local torrent") ||
-      normalized.includes("metadata") ||
-      normalized.includes("first byte") ||
-      normalized.includes("peer") ||
-      normalized.includes("bad gateway") ||
-      normalized.includes("502"))
-  ) {
-    if (preferredResolverProvider === "fastest") {
-      return "This source could not start quickly enough. Try another source.";
-    }
-    return "Local torrent could not start this source quickly enough. Try another source.";
-  }
-
-  return message || fallbackMessage || "Unable to resolve this stream.";
+function normalizeResolverFailureMessage(errorOrMessage, fallbackMessage) {
+  return formatResolverFailureMessage(errorOrMessage, fallbackMessage, {
+    isExplicitLocalUploadSource,
+    src,
+    preferredResolverProvider,
+  });
 }
 
 function clearPendingVideoSource() {
@@ -2183,65 +1593,6 @@ function appendSubtitleOptionContent(button, primaryLabel, secondaryLabel = "") 
   button.appendChild(meta);
 }
 
-// parseVttTimestampToSeconds, decodeSubtitleHtmlEntities, isVttTimingLine,
-// parseWebVttCues — imported from ./src-ui/player/subtitles.js
-
-function setCustomSubtitleText(value) {
-  if (!subtitleOverlay) {
-    return;
-  }
-  const normalized = String(value || "").replace(/\r/g, "").trim();
-  if (!normalized) {
-    subtitleOverlay.hidden = true;
-    subtitleOverlay.textContent = "";
-    return;
-  }
-
-  subtitleOverlay.hidden = false;
-  subtitleOverlay.textContent = "";
-  let lines = normalized
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (lines.length > 2) {
-    lines = [lines.slice(0, -1).join(" "), lines[lines.length - 1]];
-  }
-  lines.forEach((line, lineIndex) => {
-    const span = document.createElement("span");
-    span.textContent = line;
-    subtitleOverlay.appendChild(span);
-    if (lineIndex < lines.length - 1) {
-      subtitleOverlay.appendChild(document.createElement("br"));
-    }
-  });
-}
-
-function clearCustomSubtitleOverlay({ invalidateToken = false } = {}) {
-  if (invalidateToken) {
-    customSubtitleLoadToken += 1;
-  }
-  customSubtitleCues = [];
-  customSubtitleCueCursor = 0;
-  lastRenderedSubtitleCueIndex = -1;
-  setCustomSubtitleText("");
-}
-
-function startSubtitleRafLoop() {
-  if (subtitleRafId) return;
-  function tick() {
-    renderCustomSubtitleOverlay();
-    subtitleRafId = requestAnimationFrame(tick);
-  }
-  subtitleRafId = requestAnimationFrame(tick);
-}
-
-function stopSubtitleRafLoop() {
-  if (subtitleRafId) {
-    cancelAnimationFrame(subtitleRafId);
-    subtitleRafId = 0;
-  }
-}
-
 function restoreSelectedSubtitleTrackAfterSourceChange() {
   if (selectedSubtitleStreamIndex < 0) {
     setCustomSubtitleText("");
@@ -2255,139 +1606,6 @@ function restoreSelectedSubtitleTrackAfterSourceChange() {
   }
 
   applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
-}
-
-function findSubtitleCueAtTime(cues, timeSeconds) {
-  let lo = 0;
-  let hi = cues.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >>> 1;
-    const cue = cues[mid];
-    if (timeSeconds < cue.startSeconds) {
-      hi = mid - 1;
-    } else if (timeSeconds > cue.endSeconds) {
-      lo = mid + 1;
-    } else {
-      return mid;
-    }
-  }
-  return -1;
-}
-
-function renderCustomSubtitleOverlay() {
-  if (!subtitleOverlay || selectedSubtitleStreamIndex < 0) {
-    if (lastRenderedSubtitleCueIndex !== -1) {
-      lastRenderedSubtitleCueIndex = -1;
-      setCustomSubtitleText("");
-    }
-    return;
-  }
-  if (!customSubtitleCues.length) {
-    if (lastRenderedSubtitleCueIndex !== -1) {
-      lastRenderedSubtitleCueIndex = -1;
-      setCustomSubtitleText("");
-    }
-    return;
-  }
-
-  const currentTimeSeconds = Number(getEffectiveCurrentTime() || 0);
-  if (!Number.isFinite(currentTimeSeconds) || currentTimeSeconds < 0) {
-    return;
-  }
-  // Honour the viewer's subtitle delay: a positive offset makes cues appear
-  // later, so we look them up against an earlier-shifted clock.
-  const lookupSeconds = currentTimeSeconds - subtitleOffset.getOffsetSeconds();
-
-  // Fast path: check if cursor still matches.
-  let cueIndex =
-    customSubtitleCueCursor >= 0 &&
-    customSubtitleCueCursor < customSubtitleCues.length
-      ? customSubtitleCueCursor
-      : -1;
-  if (
-    cueIndex >= 0 &&
-    lookupSeconds >= customSubtitleCues[cueIndex].startSeconds &&
-    lookupSeconds <= customSubtitleCues[cueIndex].endSeconds
-  ) {
-    if (lastRenderedSubtitleCueIndex !== cueIndex) {
-      lastRenderedSubtitleCueIndex = cueIndex;
-      setCustomSubtitleText(customSubtitleCues[cueIndex].text);
-    }
-    return;
-  }
-
-  // Check next cue (common sequential advance).
-  const nextIndex = (customSubtitleCueCursor || 0) + 1;
-  if (
-    nextIndex < customSubtitleCues.length &&
-    lookupSeconds >= customSubtitleCues[nextIndex].startSeconds &&
-    lookupSeconds <= customSubtitleCues[nextIndex].endSeconds
-  ) {
-    customSubtitleCueCursor = nextIndex;
-    if (lastRenderedSubtitleCueIndex !== nextIndex) {
-      lastRenderedSubtitleCueIndex = nextIndex;
-      setCustomSubtitleText(customSubtitleCues[nextIndex].text);
-    }
-    return;
-  }
-
-  // Binary search for arbitrary position (seek, skip, etc.).
-  cueIndex = findSubtitleCueAtTime(customSubtitleCues, lookupSeconds);
-  if (cueIndex >= 0) {
-    customSubtitleCueCursor = cueIndex;
-    if (lastRenderedSubtitleCueIndex !== cueIndex) {
-      lastRenderedSubtitleCueIndex = cueIndex;
-      setCustomSubtitleText(customSubtitleCues[cueIndex].text);
-    }
-    return;
-  }
-
-  if (lastRenderedSubtitleCueIndex !== -1) {
-    lastRenderedSubtitleCueIndex = -1;
-    setCustomSubtitleText("");
-  }
-}
-
-async function loadCustomSubtitleFromTrack(track) {
-  const vttUrl = String(track?.vttUrl || "").trim();
-  if (!vttUrl) {
-    clearCustomSubtitleOverlay({ invalidateToken: true });
-    return false;
-  }
-
-  const requestToken = customSubtitleLoadToken + 1;
-  customSubtitleLoadToken = requestToken;
-  customSubtitleCues = [];
-  customSubtitleCueCursor = 0;
-  setCustomSubtitleText("");
-  if (subtitleOverlay) {
-    subtitleOverlay.lang = String(track?.language || "en").trim() || "en";
-  }
-
-  try {
-    const requestUrl = `${vttUrl}${vttUrl.includes("?") ? "&" : "?"}ts=${Date.now()}`;
-    const response = await fetch(requestUrl, { cache: "no-store" });
-    if (!response.ok) {
-      return false;
-    }
-    const rawVtt = await response.text();
-    if (requestToken !== customSubtitleLoadToken) {
-      return false;
-    }
-    customSubtitleCues = parseWebVttCues(rawVtt);
-    customSubtitleCueCursor = 0;
-    lastRenderedSubtitleCueIndex = -1;
-    renderCustomSubtitleOverlay();
-    if (!video.paused && !video.ended) {
-      startSubtitleRafLoop();
-    }
-    return customSubtitleCues.length > 0;
-  } catch {
-    if (requestToken === customSubtitleLoadToken) {
-      clearCustomSubtitleOverlay();
-    }
-    return false;
-  }
 }
 
 // normalizeSourceHash — imported from ./src-ui/player/sources.js
@@ -2946,97 +2164,16 @@ function hideAllSubtitleTracks() {
 }
 
 function computeSubtitleLinePercentInBottomMatte() {
-  const viewportWidth = Number(video.clientWidth || 0);
-  const viewportHeight = Number(video.clientHeight || 0);
-  const mediaWidth = Number(video.videoWidth || 0);
-  const mediaHeight = Number(video.videoHeight || 0);
-  if (
-    viewportWidth <= 0 ||
-    viewportHeight <= 0 ||
-    mediaWidth <= 0 ||
-    mediaHeight <= 0
-  ) {
-    return null;
-  }
-
-  const scale = Math.min(
-    viewportWidth / mediaWidth,
-    viewportHeight / mediaHeight,
-  );
-  if (!Number.isFinite(scale) || scale <= 0) {
-    return null;
-  }
-  const renderedHeight = mediaHeight * scale;
-  const matteHeight = Math.max(0, (viewportHeight - renderedHeight) / 2);
-  if (
-    !Number.isFinite(matteHeight) ||
-    matteHeight < SUBTITLE_MATTE_MIN_HEIGHT_PX
-  ) {
-    return null;
-  }
-
-  const bottomMatteTop = viewportHeight - matteHeight;
-  const matteTopBoundary = bottomMatteTop + SUBTITLE_MATTE_TOP_PADDING_PX;
-  const matteBottomBoundary = viewportHeight - SUBTITLE_MATTE_BOTTOM_PADDING_PX;
-  if (matteBottomBoundary <= matteTopBoundary) {
-    return null;
-  }
-
-  const guardedTopTarget =
-    matteTopBoundary + matteHeight * SUBTITLE_MATTE_TOP_GUARD_RATIO;
-  const preferredBottomTarget =
-    viewportHeight - SUBTITLE_MATTE_BOTTOM_TARGET_OFFSET_PX;
-  const targetY = Math.min(
-    matteBottomBoundary,
-    Math.max(
-      matteTopBoundary,
-      Math.max(guardedTopTarget, preferredBottomTarget),
-    ),
-  );
-  const linePercent = (targetY / viewportHeight) * 100;
-  return Math.max(0, Math.min(100, Number(linePercent.toFixed(2))));
+  return computeSubtitleLinePercentFromDimensions({
+    viewportWidth: Number(video.clientWidth || 0),
+    viewportHeight: Number(video.clientHeight || 0),
+    mediaWidth: Number(video.videoWidth || 0),
+    mediaHeight: Number(video.videoHeight || 0),
+  });
 }
 
 function nudgeSubtitleTrackPlacementUp(textTrack) {
-  if (!textTrack || !textTrack.cues) {
-    return;
-  }
-  const matteCenteredLinePercent = computeSubtitleLinePercentInBottomMatte();
-  const resolvedLinePercent =
-    matteCenteredLinePercent !== null
-      ? Math.max(
-          0,
-          Math.min(100, matteCenteredLinePercent - SUBTITLE_MATTE_LINE_LIFT_PERCENT),
-        )
-      : SUBTITLE_FALLBACK_LINE_PERCENT;
-
-  Array.from(textTrack.cues).forEach((cue) => {
-    if (!cue) {
-      return;
-    }
-
-    try {
-      if ("snapToLines" in cue) {
-        cue.snapToLines = false;
-      }
-      if ("line" in cue) {
-        cue.line = Number(resolvedLinePercent.toFixed(2));
-      } else {
-        cue.line = SUBTITLE_LINE_FROM_BOTTOM;
-      }
-      if ("position" in cue) {
-        cue.position = SUBTITLE_CUE_POSITION_PERCENT;
-      }
-      if ("size" in cue) {
-        cue.size = SUBTITLE_CUE_SIZE_PERCENT;
-      }
-      if ("align" in cue) {
-        cue.align = "center";
-      }
-    } catch {
-      // Ignore cue positioning failures for unsupported cue types.
-    }
-  });
+  applySubtitleTrackPlacement(textTrack, computeSubtitleLinePercentInBottomMatte());
 }
 
 function refreshActiveSubtitlePlacement() {
@@ -3392,75 +2529,23 @@ function getEffectiveCurrentTime() {
 }
 
 function getLiveSeekableWindow() {
-  if (!isLivePlayback || !video) {
-    return null;
-  }
-
-  const seekable = video.seekable;
-  if (seekable?.length > 0) {
-    for (let index = seekable.length - 1; index >= 0; index -= 1) {
-      try {
-        const start = Number(seekable.start(index));
-        const end = Number(seekable.end(index));
-        if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
-          return { start, end, duration: end - start };
-        }
-      } catch {
-        // Continue to older ranges if the browser invalidated this one.
-      }
-    }
-  }
-
-  const duration = Number(video.duration);
-  if (Number.isFinite(duration) && duration > 0) {
-    return { start: 0, end: duration, duration };
-  }
-
-  return null;
+  return getLiveSeekableWindowFromVideo(video, isLivePlayback);
 }
 
 function getLiveEdgeTargetSeconds(liveWindow = getLiveSeekableWindow()) {
-  if (!liveWindow) {
-    return null;
-  }
-  return Math.max(
-    liveWindow.start,
-    liveWindow.end - LIVE_EDGE_PLAYBACK_OFFSET_SECONDS,
-  );
+  return getLiveEdgeTargetSecondsFromWindow(liveWindow);
 }
 
 function clampLiveSeekTargetSeconds(targetSeconds) {
-  const target = Number(targetSeconds);
-  if (!Number.isFinite(target)) {
-    return 0;
-  }
-
-  const liveWindow = getLiveSeekableWindow();
-  if (!liveWindow) {
-    return Math.max(0, target);
-  }
-
-  return Math.max(liveWindow.start, Math.min(liveWindow.end, target));
+  return clampLiveSeekTargetSecondsInWindow(targetSeconds, getLiveSeekableWindow());
 }
 
 function getSeekTargetSecondsFromRatio(ratio, fallbackDurationSeconds) {
-  const clampedRatio = Math.max(0, Math.min(1, Number(ratio) || 0));
-  if (isLivePlayback) {
-    const liveWindow = getLiveSeekableWindow();
-    if (liveWindow) {
-      const liveEdgeTarget = getLiveEdgeTargetSeconds(liveWindow);
-      if (
-        clampedRatio >= LIVE_EDGE_PIN_RATIO &&
-        Number.isFinite(liveEdgeTarget)
-      ) {
-        return liveEdgeTarget;
-      }
-      return liveWindow.start + clampedRatio * liveWindow.duration;
-    }
-  }
-
-  const duration = Number(fallbackDurationSeconds);
-  return clampedRatio * (Number.isFinite(duration) && duration > 0 ? duration : 0);
+  return getSeekTargetSecondsFromRatioForWindow(ratio, {
+    isLivePlayback,
+    liveWindow: getLiveSeekableWindow(),
+    fallbackDurationSeconds,
+  });
 }
 
 function updateLiveEdgePinFromTarget(targetSeconds) {
@@ -3468,15 +2553,10 @@ function updateLiveEdgePinFromTarget(targetSeconds) {
     liveEdgePinned = false;
     return;
   }
-
-  const liveEdgeTarget = getLiveEdgeTargetSeconds();
-  if (!Number.isFinite(liveEdgeTarget)) {
-    liveEdgePinned = true;
-    return;
-  }
-
-  liveEdgePinned =
-    Number(targetSeconds) >= liveEdgeTarget - LIVE_EDGE_REJOIN_TOLERANCE_SECONDS;
+  liveEdgePinned = shouldPinLiveEdgeFromTarget(
+    targetSeconds,
+    getLiveEdgeTargetSeconds(),
+  );
 }
 
 function getFallbackPlayerReturnPath() {
@@ -5777,466 +4857,32 @@ function getLiveStreamCacheEventSlug() {
   return slugify(eventLabel) || "stream";
 }
 
-function getLiveFailureCacheStorageKey() {
-  const eventSlug = getLiveStreamCacheEventSlug();
-  return eventSlug ? `${LIVE_FAILED_STREAM_CACHE_STORAGE_PREFIX}${eventSlug}` : "";
-}
-
-function getLiveWorkingCacheStorageKey() {
-  const eventSlug = getLiveStreamCacheEventSlug();
-  return eventSlug ? `${LIVE_WORKING_STREAM_CACHE_STORAGE_PREFIX}${eventSlug}` : "";
-}
-
-function getLiveStreamFailureEntry(streamOption, now = Date.now()) {
-  const streamId = String(streamOption?.id || "").trim();
-  if (!streamId) {
-    return null;
-  }
-  const entry = liveFailedStreamStatuses.get(streamId) || null;
-  if (!entry || Number(entry.expiresAt || 0) <= now) {
-    return null;
-  }
-  const optionSource = normalizePlaybackSourceValue(streamOption?.source);
-  if (entry.source && optionSource && entry.source !== optionSource) {
-    return null;
-  }
-  return entry;
-}
-
 function isLiveStreamRecentlyFailed(streamOption, now = Date.now()) {
-  return Boolean(getLiveStreamFailureEntry(streamOption, now));
+  return liveStreamCache.isRecentlyFailed(streamOption, now);
 }
 
 function getLiveStreamOptionStatus(streamOption) {
-  const entry = getLiveStreamFailureEntry(streamOption);
-  if (!entry) {
-    return null;
-  }
-  return {
-    state: "skipped",
-    label: "Skipped",
-    detail: "Recently failed. Select it manually to retry.",
-  };
-}
-
-function pruneLiveFailureCache(now = Date.now()) {
-  let changed = false;
-  const validSourcesById = new Map(
-    liveStreamOptions.map((option) => [
-      option.id,
-      normalizePlaybackSourceValue(option.source),
-    ]),
-  );
-  liveFailedStreamStatuses.forEach((entry, streamId) => {
-    const validSource = validSourcesById.get(streamId);
-    if (
-      !entry ||
-      Number(entry.expiresAt || 0) <= now ||
-      (validSource && entry.source && entry.source !== validSource)
-    ) {
-      liveFailedStreamStatuses.delete(streamId);
-      changed = true;
-    }
-  });
-  return changed;
-}
-
-function persistLiveFailureCache() {
-  const cacheKey = liveFailedStreamCacheKey || getLiveFailureCacheStorageKey();
-  if (!cacheKey) {
-    return;
-  }
-  try {
-    pruneLiveFailureCache();
-    const entries = Array.from(liveFailedStreamStatuses.entries()).map(
-      ([streamId, entry]) => ({
-        streamId,
-        source: entry.source,
-        expiresAt: entry.expiresAt,
-        reason: entry.reason || "",
-      }),
-    );
-    if (!entries.length) {
-      localStorage.removeItem(cacheKey);
-      return;
-    }
-    localStorage.setItem(cacheKey, JSON.stringify(entries));
-  } catch {
-    // Skipped-source caching is a convenience only.
-  }
-}
-
-function loadLiveFailureCacheForCurrentEvent() {
-  const cacheKey = getLiveFailureCacheStorageKey();
-  if (!cacheKey || cacheKey === liveFailedStreamCacheKey) {
-    pruneLiveFailureCache();
-    return;
-  }
-
-  liveFailedStreamCacheKey = cacheKey;
-  liveFailedStreamStatuses = new Map();
-
-  try {
-    const parsed = JSON.parse(localStorage.getItem(cacheKey) || "[]");
-    const entries = Array.isArray(parsed) ? parsed : [];
-    const now = Date.now();
-    entries.forEach((entry) => {
-      const streamId = String(entry?.streamId || "").trim();
-      const expiresAt = Number(entry?.expiresAt || 0);
-      if (!streamId || expiresAt <= now) {
-        return;
-      }
-      liveFailedStreamStatuses.set(streamId, {
-        source: normalizePlaybackSourceValue(entry?.source),
-        expiresAt,
-        reason: String(entry?.reason || "").trim(),
-      });
-    });
-    if (pruneLiveFailureCache(now)) {
-      persistLiveFailureCache();
-    }
-  } catch {
-    liveFailedStreamStatuses = new Map();
-  }
+  return liveStreamCache.getOptionStatus(streamOption);
 }
 
 function rememberLiveStreamFailure(streamOption, reason = "") {
-  const streamId = String(streamOption?.id || "").trim();
-  const source = normalizePlaybackSourceValue(streamOption?.source);
-  if (!streamId || !source) {
-    return;
-  }
-  if (!liveFailedStreamCacheKey) {
-    loadLiveFailureCacheForCurrentEvent();
-  }
-  clearLiveStreamSuccess(streamOption);
-  recordLiveSourcePreference(streamOption, -2);
-  liveFailedStreamStatuses.set(streamId, {
-    source,
-    expiresAt: Date.now() + LIVE_FAILED_STREAM_CACHE_TTL_MS,
-    reason: String(reason || "").trim(),
-  });
-  persistLiveFailureCache();
-  renderLiveStreamOptions();
-}
-
-function clearLiveStreamFailure(streamOption) {
-  const streamId = String(streamOption?.id || "").trim();
-  if (!streamId) {
-    return;
-  }
-  if (liveFailedStreamStatuses.delete(streamId)) {
-    persistLiveFailureCache();
+  if (liveStreamCache.rememberFailure(streamOption, reason)) {
     renderLiveStreamOptions();
   }
 }
 
-function normalizeLiveStreamPreferenceProvider(streamOption = {}) {
-  const explicitProvider = String(streamOption?.provider || "")
-    .trim()
-    .toLowerCase();
-  if (explicitProvider) {
-    return explicitProvider;
+function clearLiveStreamFailure(streamOption) {
+  if (liveStreamCache.clearFailure(streamOption)) {
+    renderLiveStreamOptions();
   }
-  try {
-    const host = new URL(
-      normalizePlaybackSourceValue(streamOption?.source),
-      window.location.origin,
-    ).hostname.toLowerCase();
-    if (host.includes("streamed.pk")) {
-      return "streamed";
-    }
-    if (
-      host === "ntvs.cx" ||
-      host === "www.ntvs.cx" ||
-      host === "ntv.cx" ||
-      host === "www.ntv.cx" ||
-      host === "embed.st" ||
-      host === "www.embed.st" ||
-      host === "hesgoaler.com" ||
-      host.endsWith(".hesgoaler.com") ||
-      host.endsWith(".lovetier.bz")
-    ) {
-      return "ntvs";
-    }
-    if (
-      host.includes("matchstream") ||
-      host.endsWith(".st") ||
-      host.endsWith(".to") ||
-      host.endsWith(".link")
-    ) {
-      return "matchstream";
-    }
-  } catch {
-    // Provider inference is best effort.
-  }
-  return "live";
-}
-
-function getLiveStreamSourceHost(streamOption = {}) {
-  try {
-    return new URL(
-      normalizePlaybackSourceValue(streamOption?.source),
-      window.location.origin,
-    ).hostname.toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-function getLiveStreamLabelSlot(streamOption = {}) {
-  const label = String(streamOption?.label || "").trim();
-  const match = /#\s*(\d+)\s*$/i.exec(label);
-  return match ? match[1] : "";
-}
-
-function getLiveSourcePreferenceKeys(streamOption = {}) {
-  const source = normalizePlaybackSourceValue(streamOption?.source);
-  const provider = normalizeLiveStreamPreferenceProvider(streamOption);
-  const host = getLiveStreamSourceHost(streamOption);
-  const slot = getLiveStreamLabelSlot(streamOption);
-  const keys = [];
-  if (source) {
-    keys.push(`source:${source}`);
-  }
-  if (provider && host) {
-    keys.push(`host:${provider}:${host}`);
-  }
-  if (provider && slot) {
-    keys.push(`slot:${provider}:${slot}`);
-  }
-  return keys;
-}
-
-function loadLiveSourcePreferenceEntries() {
-  if (liveSourcePreferenceEntries instanceof Map) {
-    return liveSourcePreferenceEntries;
-  }
-
-  liveSourcePreferenceEntries = new Map();
-  try {
-    const parsed = JSON.parse(
-      localStorage.getItem(LIVE_SOURCE_PREFERENCE_STORAGE_KEY) || "[]",
-    );
-    const entries = Array.isArray(parsed) ? parsed : [];
-    const now = Date.now();
-    entries.forEach((entry) => {
-      const key = String(entry?.key || "").trim();
-      const expiresAt = Number(entry?.expiresAt || 0);
-      if (!key || expiresAt <= now) {
-        return;
-      }
-      liveSourcePreferenceEntries.set(key, {
-        score: Number(entry?.score || 0),
-        expiresAt,
-        lastSuccessAt: Number(entry?.lastSuccessAt || 0),
-        lastFailureAt: Number(entry?.lastFailureAt || 0),
-      });
-    });
-  } catch {
-    liveSourcePreferenceEntries = new Map();
-  }
-  return liveSourcePreferenceEntries;
-}
-
-function persistLiveSourcePreferenceEntries() {
-  const entries = loadLiveSourcePreferenceEntries();
-  const now = Date.now();
-  try {
-    const payload = Array.from(entries.entries())
-      .filter(([, entry]) => Number(entry?.expiresAt || 0) > now)
-      .map(([key, entry]) => ({
-        key,
-        score: Math.max(-12, Math.min(12, Number(entry?.score || 0))),
-        expiresAt: Number(entry?.expiresAt || 0),
-        lastSuccessAt: Number(entry?.lastSuccessAt || 0),
-        lastFailureAt: Number(entry?.lastFailureAt || 0),
-      }));
-    if (!payload.length) {
-      localStorage.removeItem(LIVE_SOURCE_PREFERENCE_STORAGE_KEY);
-      return;
-    }
-    localStorage.setItem(
-      LIVE_SOURCE_PREFERENCE_STORAGE_KEY,
-      JSON.stringify(payload),
-    );
-  } catch {
-    // Live-source preference storage is best effort.
-  }
-}
-
-function recordLiveSourcePreference(streamOption, delta) {
-  if (!streamOption?.source) {
-    return;
-  }
-
-  const keys = getLiveSourcePreferenceKeys(streamOption);
-  if (!keys.length) {
-    return;
-  }
-
-  const entries = loadLiveSourcePreferenceEntries();
-  const now = Date.now();
-  const scoreDelta = Number(delta || 0);
-  keys.forEach((key) => {
-    const existing = entries.get(key) || {};
-    const nextScore = Math.max(
-      -12,
-      Math.min(12, Number(existing.score || 0) + scoreDelta),
-    );
-    entries.set(key, {
-      score: nextScore,
-      expiresAt: now + LIVE_SOURCE_PREFERENCE_TTL_MS,
-      lastSuccessAt:
-        scoreDelta > 0 ? now : Number(existing.lastSuccessAt || 0),
-      lastFailureAt:
-        scoreDelta < 0 ? now : Number(existing.lastFailureAt || 0),
-    });
-  });
-  persistLiveSourcePreferenceEntries();
-}
-
-function getLiveSourcePreferenceScore(streamOption) {
-  const entries = loadLiveSourcePreferenceEntries();
-  const now = Date.now();
-  return getLiveSourcePreferenceKeys(streamOption).reduce((score, key) => {
-    const entry = entries.get(key);
-    if (!entry || Number(entry.expiresAt || 0) <= now) {
-      return score;
-    }
-    return score + Number(entry.score || 0);
-  }, 0);
 }
 
 function getPreferredRankedLiveStreamOption() {
-  if (!isLivePlayback || liveStreamOptions.length <= 1) {
-    return null;
-  }
-
-  return liveStreamOptions
-    .map((option, index) => ({
-      option,
-      index,
-      score: getLiveSourcePreferenceScore(option),
-    }))
-    .filter(
-      (entry) =>
-        entry.option?.source &&
-        entry.score > 0 &&
-        !isLiveStreamRecentlyFailed(entry.option),
-    )
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-      return left.index - right.index;
-    })[0]?.option || null;
-}
-
-function liveStreamEntryMatchesOption(entry, streamOption) {
-  const entryStreamId = String(entry?.streamId || "").trim();
-  const streamId = String(streamOption?.id || "").trim();
-  if (!entryStreamId || !streamId || entryStreamId !== streamId) {
-    return false;
-  }
-  const entrySource = normalizePlaybackSourceValue(entry?.source);
-  const optionSource = normalizePlaybackSourceValue(streamOption?.source);
-  return !entrySource || !optionSource || entrySource === optionSource;
+  return liveStreamCache.getPreferredRankedOption();
 }
 
 function getRememberedWorkingLiveStreamOption(now = Date.now()) {
-  const entry = liveWorkingStreamEntry || null;
-  if (!entry || Number(entry.expiresAt || 0) <= now) {
-    return null;
-  }
-
-  const entrySource = normalizePlaybackSourceValue(entry.source);
-  return (
-    liveStreamOptions.find((option) => liveStreamEntryMatchesOption(entry, option)) ||
-    liveStreamOptions.find(
-      (option) =>
-        entrySource && normalizePlaybackSourceValue(option?.source) === entrySource,
-    ) ||
-    null
-  );
-}
-
-function pruneLiveWorkingCache(now = Date.now()) {
-  if (!liveWorkingStreamEntry) {
-    return false;
-  }
-  const rememberedOption = getRememberedWorkingLiveStreamOption(now);
-  if (
-    !rememberedOption ||
-    Number(liveWorkingStreamEntry.expiresAt || 0) <= now ||
-    isLiveStreamRecentlyFailed(rememberedOption, now)
-  ) {
-    liveWorkingStreamEntry = null;
-    return true;
-  }
-  return false;
-}
-
-function persistLiveWorkingCache() {
-  const cacheKey = liveWorkingStreamCacheKey || getLiveWorkingCacheStorageKey();
-  if (!cacheKey) {
-    return;
-  }
-  try {
-    pruneLiveWorkingCache();
-    if (!liveWorkingStreamEntry) {
-      localStorage.removeItem(cacheKey);
-      return;
-    }
-    localStorage.setItem(cacheKey, JSON.stringify(liveWorkingStreamEntry));
-  } catch {
-    // Working-stream caching is a convenience only.
-  }
-}
-
-function loadLiveWorkingCacheForCurrentEvent() {
-  const cacheKey = getLiveWorkingCacheStorageKey();
-  if (!cacheKey || cacheKey === liveWorkingStreamCacheKey) {
-    if (pruneLiveWorkingCache()) {
-      persistLiveWorkingCache();
-    }
-    return;
-  }
-
-  liveWorkingStreamCacheKey = cacheKey;
-  liveWorkingStreamEntry = null;
-
-  try {
-    const parsed = JSON.parse(localStorage.getItem(cacheKey) || "null");
-    const streamId = String(parsed?.streamId || "").trim();
-    const source = normalizePlaybackSourceValue(parsed?.source);
-    const expiresAt = Number(parsed?.expiresAt || 0);
-    if (streamId && source && expiresAt > Date.now()) {
-      liveWorkingStreamEntry = {
-        streamId,
-        source,
-        expiresAt,
-        confirmedAt: Number(parsed?.confirmedAt || 0),
-        reason: String(parsed?.reason || "").trim(),
-      };
-    }
-    if (pruneLiveWorkingCache()) {
-      persistLiveWorkingCache();
-    }
-  } catch {
-    liveWorkingStreamEntry = null;
-  }
-}
-
-function clearLiveStreamSuccess(streamOption) {
-  if (
-    !liveWorkingStreamEntry ||
-    !liveStreamEntryMatchesOption(liveWorkingStreamEntry, streamOption)
-  ) {
-    return;
-  }
-  liveWorkingStreamEntry = null;
-  persistLiveWorkingCache();
+  return liveStreamCache.getRememberedWorkingOption(now);
 }
 
 function rememberLiveStreamSuccess(
@@ -6246,67 +4892,14 @@ function rememberLiveStreamSuccess(
   if (!isLivePlayback || liveStreamOptions.length <= 1) {
     return;
   }
-  // A source is playing — stop any pending failover retry and reset its budget.
   liveFallbackRetry.reset();
-  const streamId = String(streamOption?.id || "").trim();
-  const source = normalizePlaybackSourceValue(streamOption?.source);
-  if (!streamId || !source) {
-    return;
-  }
-  recordLiveSourcePreference(streamOption, 3);
-  if (!liveWorkingStreamCacheKey) {
-    loadLiveWorkingCacheForCurrentEvent();
-  }
-
-  const now = Date.now();
-  const existing = liveWorkingStreamEntry || null;
-  const sameEntry =
-    existing &&
-    String(existing.streamId || "").trim() === streamId &&
-    normalizePlaybackSourceValue(existing.source) === source;
-  const failureRemoved =
-    Boolean(getLiveStreamFailureEntry(streamOption, now)) &&
-    liveFailedStreamStatuses.delete(streamId);
-  if (failureRemoved) {
-    persistLiveFailureCache();
-  }
-
-  if (
-    sameEntry &&
-    Number(existing.expiresAt || 0) >
-      now + LIVE_WORKING_STREAM_CACHE_TTL_MS / 2
-  ) {
-    if (failureRemoved) {
-      renderLiveStreamOptions();
-    }
-    return;
-  }
-
-  liveWorkingStreamEntry = {
-    streamId,
-    source,
-    expiresAt: now + LIVE_WORKING_STREAM_CACHE_TTL_MS,
-    confirmedAt: now,
-    reason: String(reason || "").trim(),
-  };
-  persistLiveWorkingCache();
-  if (failureRemoved) {
+  if (liveStreamCache.rememberSuccess(streamOption, reason)) {
     renderLiveStreamOptions();
   }
 }
 
 function prepareLiveFailureCacheForCurrentEvent() {
-  if (!isLivePlayback) {
-    liveFailedStreamCacheKey = "";
-    liveFailedStreamStatuses = new Map();
-    liveWorkingStreamCacheKey = "";
-    liveWorkingStreamEntry = null;
-    return;
-  }
-  loadLiveFailureCacheForCurrentEvent();
-  pruneLiveFailureCache();
-  loadLiveWorkingCacheForCurrentEvent();
-  pruneLiveWorkingCache();
+  liveStreamCache.prepareForCurrentEvent();
 }
 
 function selectRememberedWorkingLiveStreamIfNeeded() {
@@ -6518,199 +5111,12 @@ async function resolveLivePlaybackSource(source, { preflight = false } = {}) {
   });
 }
 
-function clearLiveVisualHealthWatch({ resetSamples = false } = {}) {
-  if (liveVisualHealthInterval !== null) {
-    window.clearInterval(liveVisualHealthInterval);
-    liveVisualHealthInterval = null;
-  }
-  if (resetSamples) {
-    liveVisualBlankSampleCount = 0;
-  }
-}
-
-function clearLiveStartupHealthWatch({ resetRequest = false } = {}) {
-  if (liveStartupHealthTimeout !== null) {
-    window.clearTimeout(liveStartupHealthTimeout);
-    liveStartupHealthTimeout = null;
-  }
-  if (resetRequest) {
-    liveStartupWatchArmed = false;
-  }
-}
-
-function shouldWatchLiveStartupHealth() {
-  return Boolean(
-    isLivePlayback &&
-      !liveAutoFallbackInFlight &&
-      liveStreamOptions.length > 1 &&
-      !isLiveIframePlaybackActive() &&
-      hasRecoverablePlaybackSource(),
-  );
-}
-
-function hasLivePlaybackStarted() {
-  return Boolean(
-    video.readyState >= 2 ||
-      video.videoWidth > 0 ||
-      video.videoHeight > 0 ||
-      getEffectiveCurrentTime() > 0.25,
-  );
-}
-
-function checkLiveStartupHealth(expectedSource, expectedStreamId) {
-  liveStartupHealthTimeout = null;
-
-  if (
-    !liveStartupWatchArmed ||
-    !shouldWatchLiveStartupHealth() ||
-    document.visibilityState === "hidden"
-  ) {
-    return;
-  }
-
-  const currentSource =
-    lastRequestedAbsolutePlaybackSource ||
-    lastRequestedPlaybackSource ||
-    video.currentSrc ||
-    video.getAttribute("src") ||
-    "";
-  if (expectedSource && currentSource && currentSource !== expectedSource) {
-    return;
-  }
-  if (
-    expectedStreamId &&
-    selectedLiveStreamId &&
-    selectedLiveStreamId !== expectedStreamId
-  ) {
-    return;
-  }
-
-  if (hasLivePlaybackStarted()) {
-    clearLiveStartupHealthWatch({ resetRequest: true });
-    return;
-  }
-
-  const elapsedSinceSourceSet = performance.now() - lastPlaybackSourceSetAt;
-  if (elapsedSinceSourceSet < LIVE_STARTUP_HEALTH_TIMEOUT_MS) {
-    scheduleLiveStartupHealthWatch();
-    return;
-  }
-
-  void attemptAutomaticLiveStreamFallback(
-    "Live stream did not start. Trying another source...",
-  );
-}
-
-function scheduleLiveStartupHealthWatch() {
-  if (!liveStartupWatchArmed || !shouldWatchLiveStartupHealth()) {
-    return;
-  }
-
-  clearLiveStartupHealthWatch();
-  const elapsedSinceSourceSet = performance.now() - lastPlaybackSourceSetAt;
-  const delayMs = Math.max(
-    0,
-    LIVE_STARTUP_HEALTH_TIMEOUT_MS - elapsedSinceSourceSet,
-  );
-  const expectedSource =
-    lastRequestedAbsolutePlaybackSource ||
-    lastRequestedPlaybackSource ||
-    video.currentSrc ||
-    video.getAttribute("src") ||
-    "";
-  const expectedStreamId = selectedLiveStreamId;
-  liveStartupHealthTimeout = window.setTimeout(
-    () => checkLiveStartupHealth(expectedSource, expectedStreamId),
-    delayMs,
-  );
-}
-
-function armLiveStartupHealthWatch() {
-  if (!shouldWatchLiveStartupHealth()) {
-    return;
-  }
-  liveStartupWatchArmed = true;
-  scheduleLiveStartupHealthWatch();
-}
-
 function isPlaybackBlockedByPolicy(error) {
   return String(error?.name || "").toLowerCase() === "notallowederror";
 }
 
 function resetLiveAutoFallbackAttempts() {
   liveAutoFallbackAttemptedStreamIds = new Set();
-}
-
-function getLiveVisualHealthCanvasContext() {
-  if (!liveVisualHealthCanvas) {
-    liveVisualHealthCanvas = document.createElement("canvas");
-    liveVisualHealthCanvas.width = LIVE_VISUAL_HEALTH_SAMPLE_WIDTH;
-    liveVisualHealthCanvas.height = LIVE_VISUAL_HEALTH_SAMPLE_HEIGHT;
-  }
-  return liveVisualHealthCanvas.getContext("2d", {
-    willReadFrequently: true,
-  });
-}
-
-function sampleLiveVideoBlankness() {
-  if (
-    !video ||
-    video.videoWidth <= 0 ||
-    video.videoHeight <= 0 ||
-    isLiveIframePlaybackActive()
-  ) {
-    return null;
-  }
-
-  const context = getLiveVisualHealthCanvasContext();
-  if (!context) {
-    return null;
-  }
-
-  try {
-    context.drawImage(
-      video,
-      0,
-      0,
-      LIVE_VISUAL_HEALTH_SAMPLE_WIDTH,
-      LIVE_VISUAL_HEALTH_SAMPLE_HEIGHT,
-    );
-    const { data } = context.getImageData(
-      0,
-      0,
-      LIVE_VISUAL_HEALTH_SAMPLE_WIDTH,
-      LIVE_VISUAL_HEALTH_SAMPLE_HEIGHT,
-    );
-    const pixels = data.length / 4;
-    if (pixels <= 0) {
-      return null;
-    }
-
-    let totalLuma = 0;
-    let brightPixels = 0;
-    for (let offset = 0; offset < data.length; offset += 4) {
-      const luma =
-        data[offset] * 0.2126 +
-        data[offset + 1] * 0.7152 +
-        data[offset + 2] * 0.0722;
-      totalLuma += luma;
-      if (luma > LIVE_VISUAL_HEALTH_MAX_AVG_LUMA * 2) {
-        brightPixels += 1;
-      }
-    }
-
-    const avgLuma = totalLuma / pixels;
-    const brightPixelRatio = brightPixels / pixels;
-    return {
-      avgLuma,
-      brightPixelRatio,
-      isBlank:
-        avgLuma <= LIVE_VISUAL_HEALTH_MAX_AVG_LUMA &&
-        brightPixelRatio <= LIVE_VISUAL_HEALTH_MIN_BRIGHT_PIXEL_RATIO,
-    };
-  } catch {
-    return null;
-  }
 }
 
 function getOrderedLiveFallbackOptions({ includeCachedFailures = false } = {}) {
@@ -6864,57 +5270,6 @@ function scheduleLiveFallbackRetry(message) {
   if (queued) {
     showResolver("Still searching for a working source…", { showStatus: true });
   }
-}
-
-function checkLiveVisualHealth() {
-  if (
-    !isLivePlayback ||
-    liveAutoFallbackInFlight ||
-    liveStreamOptions.length <= 1 ||
-    document.visibilityState === "hidden" ||
-    isLiveIframePlaybackActive() ||
-    video.paused ||
-    !hasActiveSource() ||
-    performance.now() - lastPlaybackSourceSetAt < LIVE_VISUAL_HEALTH_GRACE_MS
-  ) {
-    liveVisualBlankSampleCount = 0;
-    return;
-  }
-
-  const sample = sampleLiveVideoBlankness();
-  if (!sample) {
-    return;
-  }
-
-  if (!sample.isBlank) {
-    liveVisualBlankSampleCount = 0;
-    return;
-  }
-
-  liveVisualBlankSampleCount += 1;
-  if (liveVisualBlankSampleCount < LIVE_VISUAL_HEALTH_MAX_BLANK_SAMPLES) {
-    return;
-  }
-
-  liveVisualBlankSampleCount = 0;
-  void attemptAutomaticLiveStreamFallback();
-}
-
-function startLiveVisualHealthWatch() {
-  if (
-    !isLivePlayback ||
-    isLiveIframePlaybackActive() ||
-    liveStreamOptions.length <= 1
-  ) {
-    return;
-  }
-  if (liveVisualHealthInterval !== null) {
-    return;
-  }
-  liveVisualHealthInterval = window.setInterval(
-    checkLiveVisualHealth,
-    LIVE_VISUAL_HEALTH_INTERVAL_MS,
-  );
 }
 
 function openLiveStreamPopover() {
@@ -7180,7 +5535,7 @@ function refreshSubtitleOffsetApplication() {
   // Force the overlay to re-pick the active cue at the new offset, and shift
   // any native cues to match. Covers the paused case, where the RAF loop is
   // stopped and would not otherwise re-render.
-  lastRenderedSubtitleCueIndex = -1;
+  invalidateRenderedCue();
   subtitleOffset.applyToNativeTracks(video.textTracks);
   renderCustomSubtitleOverlay();
   syncAudioState();
@@ -7818,7 +6173,7 @@ function syncLiveSeekState() {
   if (
     !liveEdgePinned &&
     Number.isFinite(liveEdgeTarget) &&
-    current >= liveEdgeTarget - LIVE_EDGE_REJOIN_TOLERANCE_SECONDS
+    shouldPinLiveEdgeFromTarget(current, liveEdgeTarget)
   ) {
     liveEdgePinned = true;
   }
@@ -11196,7 +9551,7 @@ trackListener(video, "ended", stopSubtitleRafLoop);
 trackListener(video, "seeking", () => {
   lastPlaybackSeekAt = performance.now();
   resetAudioDecodeWatchState();
-  lastRenderedSubtitleCueIndex = -1;
+  invalidateRenderedCue();
   renderCustomSubtitleOverlay();
 });
 trackListener(video, "progress", syncSeekState);
@@ -11299,7 +9654,7 @@ trackListener(video, "pause", () => {
   clearStreamStallRecovery();
   liveFallbackRetry.cancel();
   clearLiveVisualHealthWatch({ resetSamples: true });
-  if (!liveStartupWatchArmed || hasLivePlaybackStarted()) {
+  if (!isStartupArmed() || hasLivePlaybackStarted()) {
     clearLiveStartupHealthWatch({ resetRequest: true });
   }
   persistResumeTime(true);
@@ -11643,7 +9998,6 @@ trackListener(window, "storage", (event) => {
     if (audioPopoverCloseTimeout) clearTimeout(audioPopoverCloseTimeout);
     if (sourcePopoverCloseTimeout) clearTimeout(sourcePopoverCloseTimeout);
     if (autoPlayCountdownInterval) clearInterval(autoPlayCountdownInterval);
-    if (seekLoadingTimeout) clearTimeout(seekLoadingTimeout);
   });
 
 

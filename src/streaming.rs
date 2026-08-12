@@ -22,6 +22,7 @@ use url::form_urlencoded::byte_serialize;
 use crate::cleanup_guard::CleanupGuard;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
+use crate::key_lock::key_lock;
 use crate::media::{MediaProbe, MediaService};
 use crate::process::{
     RuntimeServices, normalize_audio_sync_ms, resolve_effective_remux_hwaccel_mode,
@@ -2063,12 +2064,6 @@ fn build_hls_transcode_args(
     args
 }
 
-fn key_lock(map: &DashMap<String, Arc<Mutex<()>>>, key: &str) -> Arc<Mutex<()>> {
-    map.entry(key.to_owned())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
-}
-
 impl RemuxStreamGuard {
     fn new(
         metrics: Arc<RemuxMetrics>,
@@ -2370,15 +2365,11 @@ fn spawn_bounded_ffmpeg_stderr_logger(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use dashmap::DashMap;
-
     use crate::media::{AudioTrack, MediaProbe};
 
     use super::{
         build_hls_on_demand_segment_args, build_hls_transcode_args, build_hls_transcode_job_key,
-        build_hls_video_encode_config, key_lock, normalize_remux_video_mode,
+        build_hls_video_encode_config, normalize_remux_video_mode,
         should_force_accurate_seek_for_remux, should_force_normalize_video_for_browser,
     };
 
@@ -2529,16 +2520,5 @@ mod tests {
                 Some("160k")
             );
         }
-    }
-
-    #[test]
-    fn reuses_job_locks_per_hls_key() {
-        let locks = DashMap::new();
-        let first = key_lock(&locks, "movie.mp4|a:2");
-        let second = key_lock(&locks, "movie.mp4|a:2");
-        let other = key_lock(&locks, "movie.mp4|a:3");
-
-        assert!(Arc::ptr_eq(&first, &second));
-        assert!(!Arc::ptr_eq(&first, &other));
     }
 }

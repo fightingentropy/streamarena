@@ -10,36 +10,13 @@
 // registry file lets later resolves for the same embed reuse the existing
 // context instead of starting another Chromium process.
 
+import { loadPlaywright } from "./lib/load-playwright.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 
-async function loadPlaywright() {
-  try {
-    return await import("playwright");
-  } catch (error) {
-    const fallbackDirs = [
-      process.env.PLAYWRIGHT_NODE_MODULES,
-      process.env.STREAMARENA_NODE_DEPS_DIR,
-      process.env.HOME ? join(process.env.HOME, ".local/share/streamarena-node") : "",
-    ].filter(Boolean);
-    for (const dir of fallbackDirs) {
-      const normalized = String(dir).replace(/\/+$/, "");
-      const nodeModulesDir = normalized.endsWith("/node_modules")
-        ? normalized
-        : join(normalized, "node_modules");
-      try {
-        return await import(pathToFileURL(join(nodeModulesDir, "playwright", "index.mjs")).href);
-      } catch {
-        // Try the next configured module directory.
-      }
-    }
-    throw error;
-  }
-}
 
 const embedUrl = String(process.argv[2] || "").trim();
 const resolveTimeoutMs = Math.max(

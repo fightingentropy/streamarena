@@ -9,13 +9,19 @@ add a focused regression test and remain in the mandatory `bun run check` gate.
 
 | Domain | Owner | Must not own |
 | --- | --- | --- |
-| HTTP composition and handlers | `src/routes.rs` | migration SQL, edge-proxy transport |
+| HTTP composition | `src/routes.rs` | migration SQL, edge-proxy transport |
+| Admin dashboard handlers | `src/routes/admin.rs` | public/auth route composition |
 | Durable/cache persistence facade | `src/persistence.rs` | browser clocks, provider HTTP |
 | Append-only migrations | `src/persistence/migrations.rs` | request parsing |
 | Replay/LWW/tombstone policy | `src/persistence/user_state.rs` | UI rendering |
+| Continue-watching session reconcile | `src/persistence/continue_watching.rs` | HTTP handlers, UI rendering |
+| Sports schedule merge | `src/football/schedule.rs` | provider HTTP, HLS resolve |
 | Provider DNS/redirect policy | `src/egress_policy.rs` | application sessions, local Torznab |
 | Per-provider capacity | `src/provider_budget.rs` | global resolver capacity |
 | Cancellation rollback | `src/cleanup_guard.rs` | business decisions |
+| Per-key single-flight locks | `src/key_lock.rs` | provider HTTP, persistence |
+| Torrent candidate ranking | `src/resolver/scoring.rs` | provider HTTP, playback sessions |
+| External embed catalog | `src/resolver/external_embed.rs` | HLS fetch, Playwright resolve, playback sessions |
 | Browser mutation versions | `src-ui/lib/replay-safe-state.js` | server authorization |
 | Worker route dispatch | `workers/live-hls-proxy/src/index.js` | signature, origin, playlist, or media implementation |
 | Worker trust boundaries | `authorization.js`, `origin.js`, `playlist.js`, `resource.js` | application account/session state |

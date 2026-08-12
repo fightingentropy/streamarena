@@ -12,6 +12,7 @@ export function renderPlayerShell({
         class="player-video"
         playsinline
         preload="metadata"
+        aria-label="Video player"
       ></video>
       <iframe
         id="liveEmbedFrame"

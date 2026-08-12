@@ -1,0 +1,1863 @@
+{
+  "ntvCdnLiveBaseUrl": "https://ntv.cx/channel-cdnlive",
+  "ntvBbcAmericaPhoenixUrl": "https://ntvs.cx/channel/305",
+  "hesgoalerStreamBaseUrl": "https://hesgoaler.com/stream.php",
+  "urls": {
+    "bloombergUs": "https://www.bloomberg.com/media-manifest/streams/us.m3u8",
+    "bloombergEu": "https://www.bloomberg.com/media-manifest/streams/eu.m3u8",
+    "bloombergUsPhoenixHd": "https://liveprodusphoenixeast.global.ssl.fastly.net/USPhx-HD/index.m3u8",
+    "bbcNews": "https://vs-hls-push-ww-live.akamaized.net/x=4/i=urn:bbc:pips:service:bbc_news_channel_hd/mobile_wifi_main_hd_abr_v2.m3u8",
+    "bbcNewsRoku": "https://jmp2.uk/rok-6183f9f73a64394cf3c55690605af2a7.m3u8",
+    "skyNews": "https://jmp2.uk/plu-55b285cd2665de274553d66f.m3u8",
+    "ertWorld": "https://ert-ucdn.broadpeak-aas.com/bpk-tv/ERTCosmos/default/index.m3u8",
+    "megaNews": "https://c98db5952cb54b358365984178fb898a.msvdn.net/live/S99841657/NU0xOarAMJ5X/playlist.m3u8",
+    "ant1": "https://pcdn.antennaplus.gr/live/media0/antenna-gr/HLS/index.m3u8",
+    "alphaTv": "https://alphatvlive2.siliconweb.com/alphatvlive/live_abr/playlist.m3u8",
+    "topNews": "https://player.twitch.tv/?channel=topmedia_topnews&parent=top-channel.tv"
+  },
+  "channels": [
+    {
+      "id": "bloomberg-tv-us",
+      "title": "Bloomberg TV",
+      "source": "https://www.bloomberg.com/media-manifest/streams/us.m3u8",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Bloomberg TV US",
+          "source": "https://www.bloomberg.com/media-manifest/streams/us.m3u8",
+          "quality": "720p HLS"
+        },
+        {
+          "id": "europe",
+          "label": "Bloomberg TV+ Europe",
+          "source": "https://www.bloomberg.com/media-manifest/streams/eu.m3u8",
+          "quality": "720p HLS"
+        },
+        {
+          "id": "us-phoenix-hd",
+          "label": "Bloomberg US 1080p",
+          "source": "https://liveprodusphoenixeast.global.ssl.fastly.net/USPhx-HD/index.m3u8",
+          "quality": "1080p HLS"
+        }
+      ],
+      "artwork": "assets/images/live-thumbs/bloomberg-tv-us.png",
+      "genre": "Business",
+      "region": "US",
+      "quality": "720p HLS + 1080p option"
+    },
+    {
+      "id": "bbc-news",
+      "title": "BBC News",
+      "source": "https://vs-hls-push-ww-live.akamaized.net/x=4/i=urn:bbc:pips:service:bbc_news_channel_hd/mobile_wifi_main_hd_abr_v2.m3u8",
+      "defaultStreamId": "official",
+      "streams": [
+        {
+          "id": "official",
+          "label": "Official BBC",
+          "source": "https://vs-hls-push-ww-live.akamaized.net/x=4/i=urn:bbc:pips:service:bbc_news_channel_hd/mobile_wifi_main_hd_abr_v2.m3u8",
+          "quality": "720p HLS"
+        },
+        {
+          "id": "roku-1080p",
+          "label": "Roku 1080p",
+          "source": "https://jmp2.uk/rok-6183f9f73a64394cf3c55690605af2a7.m3u8",
+          "quality": "1080p HLS"
+        }
+      ],
+      "artwork": "assets/images/live-thumbs/bbc-news.jpg",
+      "genre": "News",
+      "region": "UK",
+      "quality": "720p HLS + 1080p option"
+    },
+    {
+      "id": "sky-news",
+      "title": "Sky News",
+      "source": "https://jmp2.uk/plu-55b285cd2665de274553d66f.m3u8",
+      "defaultStreamId": "sky-hd",
+      "streams": [
+        {
+          "id": "sky-hd",
+          "label": "Sky News HD",
+          "source": "https://jmp2.uk/plu-55b285cd2665de274553d66f.m3u8",
+          "quality": "720p HLS"
+        }
+      ],
+      "artwork": "assets/images/live-thumbs/sky-news.png",
+      "genre": "News",
+      "region": "UK",
+      "quality": "720p HLS"
+    },
+    {
+      "id": "bbc-us",
+      "title": "BBC America",
+      "source": "https://ntv.cx/channel-cdnlive/BBC?code=us",
+      "defaultStreamId": "ntv-titan",
+      "streams": [
+        {
+          "id": "ntv-titan",
+          "label": "BBC America · NTV Titan",
+          "source": "https://ntv.cx/channel-cdnlive/BBC?code=us",
+          "quality": "Live HLS"
+        },
+        {
+          "id": "ntv-phoenix",
+          "label": "BBC America · NTV Phoenix",
+          "source": "live-iframe:https%3A%2F%2Fntvs.cx%2Fchannel%2F305",
+          "quality": "Live mirror"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/bbc-us.svg",
+      "genre": "General",
+      "region": "US",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "cnn",
+      "title": "CNN",
+      "source": "https://ntv.cx/channel-cdnlive/CNN?code=us",
+      "defaultStreamId": "ntv-titan",
+      "streams": [
+        {
+          "id": "ntv-titan",
+          "label": "CNN · NTV Titan",
+          "source": "https://ntv.cx/channel-cdnlive/CNN?code=us",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/cnn.svg",
+      "genre": "News",
+      "region": "US",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "fox-news",
+      "title": "FOX News",
+      "source": "https://ntv.cx/channel-cdnlive/FOX-News?code=us",
+      "defaultStreamId": "ntv-titan",
+      "streams": [
+        {
+          "id": "ntv-titan",
+          "label": "FOX News · NTV Titan",
+          "source": "https://ntv.cx/channel-cdnlive/FOX-News?code=us",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/fox-news.svg",
+      "genre": "News",
+      "region": "US",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "espn-2-us",
+      "title": "ESPN 2 (US)",
+      "source": "https://ntv.cx/channel-cdnlive/ESPN-2?code=us",
+      "defaultStreamId": "ntv-titan",
+      "streams": [
+        {
+          "id": "ntv-titan",
+          "label": "ESPN 2 (US) · NTV Titan",
+          "source": "https://ntv.cx/channel-cdnlive/ESPN-2?code=us",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/espn-2-us.svg",
+      "genre": "Sports",
+      "region": "US",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "hbo",
+      "title": "HBO",
+      "source": "https://ntv.cx/channel-cdnlive/HBO?code=us",
+      "defaultStreamId": "ntv-titan",
+      "streams": [
+        {
+          "id": "ntv-titan",
+          "label": "HBO · NTV Titan",
+          "source": "https://ntv.cx/channel-cdnlive/HBO?code=us",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/hbo.svg",
+      "genre": "General",
+      "region": "Poland · Multi-audio",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "discovery-channel",
+      "title": "Discovery Channel",
+      "source": "https://ntv.cx/channel-cdnlive/Discovery-Channel?code=us",
+      "defaultStreamId": "ntv-titan",
+      "streams": [
+        {
+          "id": "ntv-titan",
+          "label": "Discovery Channel · NTV Titan",
+          "source": "https://ntv.cx/channel-cdnlive/Discovery-Channel?code=us",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/discovery-channel.svg",
+      "genre": "General",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "national-geographic",
+      "title": "National Geographic",
+      "source": "https://ntv.cx/channel-cdnlive/National-Geographic?code=us",
+      "defaultStreamId": "ntv-titan",
+      "streams": [
+        {
+          "id": "ntv-titan",
+          "label": "National Geographic · NTV Titan",
+          "source": "https://ntv.cx/channel-cdnlive/National-Geographic?code=us",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/national-geographic.svg",
+      "genre": "General",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "ert1",
+      "title": "ERT World",
+      "source": "https://ert-ucdn.broadpeak-aas.com/bpk-tv/ERTCosmos/default/index.m3u8",
+      "defaultStreamId": "ert1-main",
+      "streams": [
+        {
+          "id": "ert1-main",
+          "label": "ERT World HD",
+          "source": "https://ert-ucdn.broadpeak-aas.com/bpk-tv/ERTCosmos/default/index.m3u8",
+          "quality": "1080p HLS"
+        }
+      ],
+      "artwork": "assets/images/live-thumbs/ert1.jpg",
+      "genre": "General",
+      "region": "Greece",
+      "quality": "1080p HLS"
+    },
+    {
+      "id": "mega-news",
+      "title": "MEGA News",
+      "source": "https://c98db5952cb54b358365984178fb898a.msvdn.net/live/S99841657/NU0xOarAMJ5X/playlist.m3u8",
+      "defaultStreamId": "mega-news-main",
+      "streams": [
+        {
+          "id": "mega-news-main",
+          "label": "MEGA News HD",
+          "source": "https://c98db5952cb54b358365984178fb898a.msvdn.net/live/S99841657/NU0xOarAMJ5X/playlist.m3u8",
+          "quality": "720p HLS"
+        }
+      ],
+      "artwork": "assets/images/live-thumbs/mega-news.jpg",
+      "genre": "General",
+      "region": "Greece",
+      "quality": "720p HLS"
+    },
+    {
+      "id": "ant1",
+      "title": "ANT1",
+      "source": "https://pcdn.antennaplus.gr/live/media0/antenna-gr/HLS/index.m3u8",
+      "defaultStreamId": "ant1-main",
+      "streams": [
+        {
+          "id": "ant1-main",
+          "label": "ANT1 HD",
+          "source": "https://pcdn.antennaplus.gr/live/media0/antenna-gr/HLS/index.m3u8",
+          "quality": "720p HLS"
+        }
+      ],
+      "artwork": "assets/images/live-thumbs/ant1.svg",
+      "genre": "General",
+      "region": "Greece",
+      "quality": "720p HLS"
+    },
+    {
+      "id": "alpha-tv",
+      "title": "Alpha TV",
+      "source": "https://alphatvlive2.siliconweb.com/alphatvlive/live_abr/playlist.m3u8",
+      "defaultStreamId": "alpha-main",
+      "streams": [
+        {
+          "id": "alpha-main",
+          "label": "Alpha TV HD",
+          "source": "https://alphatvlive2.siliconweb.com/alphatvlive/live_abr/playlist.m3u8",
+          "quality": "720p HLS"
+        }
+      ],
+      "artwork": "assets/images/live-thumbs/alpha-tv.png",
+      "genre": "General",
+      "region": "Greece",
+      "quality": "720p HLS"
+    },
+    {
+      "id": "top-news",
+      "title": "Top News",
+      "source": "https://player.twitch.tv/?channel=topmedia_topnews&parent=top-channel.tv",
+      "defaultStreamId": "top-news-live",
+      "streams": [
+        {
+          "id": "top-news-live",
+          "label": "Top News Live",
+          "source": "https://player.twitch.tv/?channel=topmedia_topnews&parent=top-channel.tv",
+          "quality": "Twitch HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "twitch",
+      "artwork": "assets/images/live-thumbs/top-news.jpg",
+      "genre": "News",
+      "region": "Albania",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "novasports-1",
+      "title": "Nova Sports 1",
+      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS1",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Nova Sports 1 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS1",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/novasports-1.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "novasports-2",
+      "title": "Nova Sports 2",
+      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS2",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Nova Sports 2 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS2",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/novasports-2.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "novasports-3",
+      "title": "Nova Sports 3",
+      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS3",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Nova Sports 3 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS3",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/novasports-3.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "novasports-4",
+      "title": "Nova Sports 4",
+      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS4",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Nova Sports 4 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS4",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/novasports-4.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "novasports-5",
+      "title": "Nova Sports 5",
+      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS5",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Nova Sports 5 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS5",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/novasports-5.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "novasports-6",
+      "title": "Nova Sports 6",
+      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS6",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Nova Sports 6 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS6",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/novasports-6.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sky-sports-main-event",
+      "title": "Sky Sports Main Event",
+      "source": "https://hesgoaler.com/stream.php?ch=skysportsmainevent",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sky Sports Main Event Live",
+          "source": "https://hesgoaler.com/stream.php?ch=skysportsmainevent",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sky-sports-main-event.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sky-sports-premier-league",
+      "title": "Sky Sports Premier League",
+      "source": "https://hesgoaler.com/stream.php?ch=skysportspremierleague",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sky Sports Premier League Live",
+          "source": "https://hesgoaler.com/stream.php?ch=skysportspremierleague",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sky-sports-premier-league.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sky-sports-football",
+      "title": "Sky Sports Football",
+      "source": "https://hesgoaler.com/stream.php?ch=SkySportsFootballUK",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sky Sports Football Live",
+          "source": "https://hesgoaler.com/stream.php?ch=SkySportsFootballUK",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sky-sports-football.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sky-sports-action",
+      "title": "Sky Sports Action",
+      "source": "https://hesgoaler.com/stream.php?ch=skysportsaction",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sky Sports Action Live",
+          "source": "https://hesgoaler.com/stream.php?ch=skysportsaction",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sky-sports-action.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sky-sports-f1",
+      "title": "Sky Sports F1",
+      "source": "https://hesgoaler.com/stream.php?ch=SkySportsF1",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sky Sports F1 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=SkySportsF1",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sky-sports-f1.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sky-sports-golf",
+      "title": "Sky Sports Golf",
+      "source": "https://hesgoaler.com/stream.php?ch=skysportsgolfuk",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sky Sports Golf Live",
+          "source": "https://hesgoaler.com/stream.php?ch=skysportsgolfuk",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sky-sports-golf.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sky-sports-tennis",
+      "title": "Sky Sports Tennis",
+      "source": "https://hesgoaler.com/stream.php?ch=skysportstennisuk",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sky Sports Tennis Live",
+          "source": "https://hesgoaler.com/stream.php?ch=skysportstennisuk",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sky-sports-tennis.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sky-sports-mix",
+      "title": "Sky Sports Mix",
+      "source": "https://hesgoaler.com/stream.php?ch=skysportsmixuk",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sky Sports Mix Live",
+          "source": "https://hesgoaler.com/stream.php?ch=skysportsmixuk",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sky-sports-mix.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "tnt-sports-1",
+      "title": "TNT Sports 1",
+      "source": "https://hesgoaler.com/stream.php?ch=TNT1UK",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "TNT Sports 1 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=TNT1UK",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/tnt-sports-1.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "tnt-sports-2",
+      "title": "TNT Sports 2",
+      "source": "https://hesgoaler.com/stream.php?ch=tntsports2",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "TNT Sports 2 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=tntsports2",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/tnt-sports-2.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "tnt-sports-3",
+      "title": "TNT Sports 3",
+      "source": "https://hesgoaler.com/stream.php?ch=tntsports3",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "TNT Sports 3 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=tntsports3",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/tnt-sports-3.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "tnt-sports-4",
+      "title": "TNT Sports 4",
+      "source": "https://hesgoaler.com/stream.php?ch=tntsports4",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "TNT Sports 4 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=tntsports4",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/tnt-sports-4.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "premier-sports-1",
+      "title": "Premier Sports 1",
+      "source": "https://hesgoaler.com/stream.php?ch=PREMIERSPORTS1",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Premier Sports 1 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=PREMIERSPORTS1",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/premier-sports-1.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "premier-sports-2",
+      "title": "Premier Sports 2",
+      "source": "https://hesgoaler.com/stream.php?ch=PREMIERSPORTS2",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Premier Sports 2 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=PREMIERSPORTS2",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/premier-sports-2.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "eurosport-1",
+      "title": "Eurosport 1",
+      "source": "https://hesgoaler.com/stream.php?ch=Eurosport1UK",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Eurosport 1 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=Eurosport1UK",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/eurosport-1.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "eurosport-2",
+      "title": "Eurosport 2",
+      "source": "https://hesgoaler.com/stream.php?ch=Eurosport2UK",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Eurosport 2 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=Eurosport2UK",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/eurosport-2.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "viaplay-sports-la-liga",
+      "title": "LALIGA TV",
+      "source": "https://hesgoaler.com/stream.php?ch=ViaplayLaLigaUK",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "LALIGA TV Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ViaplayLaLigaUK",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/viaplay-sports-la-liga.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "bein-sports-1-uk",
+      "title": "beIN Sports 1 UK",
+      "source": "https://hesgoaler.com/stream.php?ch=BEINSPORTS1UK",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "beIN Sports 1 UK Live",
+          "source": "https://hesgoaler.com/stream.php?ch=BEINSPORTS1UK",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/bein-sports-1-uk.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "itv-1",
+      "title": "ITV1",
+      "source": "https://hesgoaler.com/stream.php?ch=ITV1",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "ITV1 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ITV1",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/itv-1.png",
+      "artworkPresentation": "logo",
+      "genre": "General",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "itv-2",
+      "title": "ITV2",
+      "source": "https://hesgoaler.com/stream.php?ch=ITV2",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "ITV2 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ITV2",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/itv-2.png",
+      "artworkPresentation": "logo",
+      "genre": "General",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "itv-3",
+      "title": "ITV3",
+      "source": "https://hesgoaler.com/stream.php?ch=ITV3",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "ITV3 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ITV3",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/itv-3.png",
+      "artworkPresentation": "logo",
+      "genre": "General",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "itv-4",
+      "title": "ITV4",
+      "source": "https://hesgoaler.com/stream.php?ch=ITV4",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "ITV4 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ITV4",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/itv-4.png",
+      "artworkPresentation": "logo",
+      "genre": "General",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "lfc-tv",
+      "title": "LFC TV",
+      "source": "https://hesgoaler.com/stream.php?ch=LFCTV",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "LFC TV Live",
+          "source": "https://hesgoaler.com/stream.php?ch=LFCTV",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/lfc-tv.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "mutv",
+      "title": "MUTV",
+      "source": "https://hesgoaler.com/stream.php?ch=MUTV",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "MUTV Live",
+          "source": "https://hesgoaler.com/stream.php?ch=MUTV",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/mutv.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "UK",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "bein-sports-1",
+      "title": "beIN Sports 1",
+      "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT1FR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "beIN Sports 1 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT1FR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/bein-sports-1.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "bein-sports-2",
+      "title": "beIN Sports 2",
+      "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT2FR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "beIN Sports 2 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT2FR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/bein-sports-2.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "bein-sports-3",
+      "title": "beIN Sports 3",
+      "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT3FR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "beIN Sports 3 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT3FR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/bein-sports-3.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "bein-sports-max-4",
+      "title": "beIN Sports Max 4",
+      "source": "https://hesgoaler.com/stream.php?ch=beINMAX4FR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "beIN Sports Max 4 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=beINMAX4FR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/bein-sports-max-4.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "bein-sports-max-5",
+      "title": "beIN Sports Max 5",
+      "source": "https://hesgoaler.com/stream.php?ch=beINMAX5FR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "beIN Sports Max 5 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=beINMAX5FR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/bein-sports-max-5.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "bein-sports-max-6",
+      "title": "beIN Sports Max 6",
+      "source": "https://hesgoaler.com/stream.php?ch=beINMAX6FR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "beIN Sports Max 6 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=beINMAX6FR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/bein-sports-max-6.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "bein-sports-max-7",
+      "title": "beIN Sports Max 7",
+      "source": "https://hesgoaler.com/stream.php?ch=beINMAX7FR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "beIN Sports Max 7 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=beINMAX7FR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/bein-sports-max-7.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "bein-sports-max-8",
+      "title": "beIN Sports Max 8",
+      "source": "https://hesgoaler.com/stream.php?ch=beINMAX8FR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "beIN Sports Max 8 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=beINMAX8FR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/bein-sports-max-8.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "bein-sports-max-9",
+      "title": "beIN Sports Max 9",
+      "source": "https://hesgoaler.com/stream.php?ch=beINMAX9FR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "beIN Sports Max 9 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=beINMAX9FR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/bein-sports-max-9.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "canal-plus-sport",
+      "title": "Canal+ Sport",
+      "source": "https://hesgoaler.com/stream.php?ch=CANALSPORTFR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Canal+ Sport Live",
+          "source": "https://hesgoaler.com/stream.php?ch=CANALSPORTFR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/canal-plus-sport.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "canal-plus-sport-360",
+      "title": "Canal+ Sport 360",
+      "source": "https://hesgoaler.com/stream.php?ch=CANALS360",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Canal+ Sport 360 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=CANALS360",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/canal-plus-sport-360.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "canal-plus-foot",
+      "title": "Canal+ Foot",
+      "source": "https://hesgoaler.com/stream.php?ch=FOOTPLUSFR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Canal+ Foot Live",
+          "source": "https://hesgoaler.com/stream.php?ch=FOOTPLUSFR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/canal-plus-foot.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "rmc-sport-1",
+      "title": "RMC Sport 1",
+      "source": "https://hesgoaler.com/stream.php?ch=RMCSPORT1FR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "RMC Sport 1 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=RMCSPORT1FR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/rmc-sport-1.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "rmc-sport-2",
+      "title": "RMC Sport 2",
+      "source": "https://hesgoaler.com/stream.php?ch=RMCSPORT2FR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "RMC Sport 2 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=RMCSPORT2FR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/rmc-sport-2.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "lequipe",
+      "title": "L'Équipe",
+      "source": "https://hesgoaler.com/stream.php?ch=EQUIPEFR",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "L'Équipe Live",
+          "source": "https://hesgoaler.com/stream.php?ch=EQUIPEFR",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/lequipe.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "France",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "cosmote-sport-1",
+      "title": "Cosmote Sport 1",
+      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT1",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Cosmote Sport 1 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT1",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/cosmote-sport-1.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "cosmote-sport-2",
+      "title": "Cosmote Sport 2",
+      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT2",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Cosmote Sport 2 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT2",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/cosmote-sport-2.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "cosmote-sport-3",
+      "title": "Cosmote Sport 3",
+      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT3",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Cosmote Sport 3 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT3",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/cosmote-sport-3.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "cosmote-sport-4",
+      "title": "Cosmote Sport 4",
+      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT4",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Cosmote Sport 4 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT4",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/cosmote-sport-4.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "cosmote-sport-5",
+      "title": "Cosmote Sport 5",
+      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT5",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Cosmote Sport 5 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT5",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/cosmote-sport-5.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "cosmote-sport-6",
+      "title": "Cosmote Sport 6",
+      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT6",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Cosmote Sport 6 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT6",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/cosmote-sport-6.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "cosmote-sport-7",
+      "title": "Cosmote Sport 7",
+      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT7",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Cosmote Sport 7 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT7",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/cosmote-sport-7.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "cosmote-sport-8",
+      "title": "Cosmote Sport 8",
+      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT8",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Cosmote Sport 8 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT8",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/cosmote-sport-8.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "cosmote-sport-9",
+      "title": "Cosmote Sport 9",
+      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT9",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Cosmote Sport 9 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT9",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/cosmote-sport-9.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Greece",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sport-tv-1",
+      "title": "Sport TV 1",
+      "source": "https://hesgoaler.com/stream.php?ch=SPT1",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sport TV 1 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=SPT1",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sport-tv-1.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Portugal",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sport-tv-2",
+      "title": "Sport TV 2",
+      "source": "https://hesgoaler.com/stream.php?ch=SPT2",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sport TV 2 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=SPT2",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sport-tv-2.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Portugal",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sport-tv-3",
+      "title": "Sport TV 3",
+      "source": "https://hesgoaler.com/stream.php?ch=SPT3",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sport TV 3 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=SPT3",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sport-tv-3.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Portugal",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sport-tv-4",
+      "title": "Sport TV 4",
+      "source": "https://hesgoaler.com/stream.php?ch=SPT4",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sport TV 4 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=SPT4",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sport-tv-4.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Portugal",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sport-tv-5",
+      "title": "Sport TV 5",
+      "source": "https://hesgoaler.com/stream.php?ch=SPT5",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sport TV 5 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=SPT5",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sport-tv-5.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Portugal",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sport-tv-6",
+      "title": "Sport TV 6",
+      "source": "https://hesgoaler.com/stream.php?ch=SPT6",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sport TV 6 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=SPT6",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sport-tv-6.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Portugal",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "sport-tv-7",
+      "title": "Sport TV 7",
+      "source": "https://hesgoaler.com/stream.php?ch=SPT7",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Sport TV 7 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=SPT7",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/sport-tv-7.png",
+      "artworkPresentation": "thumbnail",
+      "genre": "Sports",
+      "region": "Portugal",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "benfica-tv",
+      "title": "Benfica TV",
+      "source": "https://hesgoaler.com/stream.php?ch=BTV1",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Benfica TV Live",
+          "source": "https://hesgoaler.com/stream.php?ch=BTV1",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/benfica-tv.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Portugal",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "canal-11",
+      "title": "Canal 11",
+      "source": "https://hesgoaler.com/stream.php?ch=CANAL11",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Canal 11 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=CANAL11",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/canal-11.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Portugal",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "espn-1-nl",
+      "title": "ESPN 1",
+      "source": "https://hesgoaler.com/stream.php?ch=ESPN1NL",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "ESPN 1 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ESPN1NL",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/espn-1-nl.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Netherlands",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "espn-2-nl",
+      "title": "ESPN 2",
+      "source": "https://hesgoaler.com/stream.php?ch=ESPN2NL",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "ESPN 2 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ESPN2NL",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/espn-2-nl.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Netherlands",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "espn-3-nl",
+      "title": "ESPN 3",
+      "source": "https://hesgoaler.com/stream.php?ch=ESPN3NL",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "ESPN 3 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ESPN3NL",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/espn-3-nl.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Netherlands",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "espn-4-nl",
+      "title": "ESPN 4",
+      "source": "https://hesgoaler.com/stream.php?ch=ESPN4NL",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "ESPN 4 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ESPN4NL",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/espn-4-nl.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Netherlands",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "ziggo-sport",
+      "title": "Ziggo Sport",
+      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Ziggo Sport Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/ziggo-sport.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Netherlands",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "ziggo-sport-2",
+      "title": "Ziggo Sport 2",
+      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport2",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Ziggo Sport 2 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport2",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/ziggo-sport-2.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Netherlands",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "ziggo-sport-3",
+      "title": "Ziggo Sport 3",
+      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport3",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Ziggo Sport 3 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport3",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/ziggo-sport-3.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Netherlands",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "ziggo-sport-4",
+      "title": "Ziggo Sport 4",
+      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport4",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Ziggo Sport 4 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport4",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/ziggo-sport-4.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Netherlands",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "ziggo-sport-5",
+      "title": "Ziggo Sport 5",
+      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport5",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Ziggo Sport 5 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport5",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/ziggo-sport-5.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Netherlands",
+      "quality": "Live HLS"
+    },
+    {
+      "id": "ziggo-sport-6",
+      "title": "Ziggo Sport 6",
+      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport6",
+      "defaultStreamId": "default",
+      "streams": [
+        {
+          "id": "default",
+          "label": "Ziggo Sport 6 Live",
+          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport6",
+          "quality": "Live HLS"
+        }
+      ],
+      "liveEmbed": true,
+      "liveResolver": "sports",
+      "artwork": "assets/images/live-thumbs/ziggo-sport-6.png",
+      "artworkPresentation": "logo",
+      "genre": "Sports",
+      "region": "Netherlands",
+      "quality": "Live HLS"
+    }
+  ]
+}

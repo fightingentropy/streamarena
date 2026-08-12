@@ -29,6 +29,7 @@ use tokio_util::io::ReaderStream;
 use crate::cleanup_guard::CleanupGuard;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
+use crate::key_lock::key_lock;
 use crate::persistence::Db;
 use crate::playback_optimize::optimize_playback_cache_file_best_effort;
 use crate::resolver::pick_video_file_ids;
@@ -259,7 +260,7 @@ impl LocalTorrentService {
             ));
         }
 
-        let lock = local_torrent_key_lock(&self.locks, &source_hash);
+        let lock = key_lock(&self.locks, &source_hash);
         let _guard = lock.lock().await;
 
         let session = self.session().await?;
@@ -338,7 +339,7 @@ impl LocalTorrentService {
         }
 
         let lock_key = format!("{source_hash}:direct:{file_id}");
-        let lock = local_torrent_key_lock(&self.locks, &lock_key);
+        let lock = key_lock(&self.locks, &lock_key);
         let _guard = lock.lock().await;
 
         if let Some(mut entry) = self.load_direct_file_entry(&source_hash, &file_id).await?
@@ -486,7 +487,7 @@ impl LocalTorrentService {
             return Err(ApiError::method_not_allowed("Method not allowed."));
         }
         let (source_hash, file_id) = validate_local_torrent_stream_params(source_hash, file_id)?;
-        let lock = local_torrent_key_lock(&self.locks, &source_hash);
+        let lock = key_lock(&self.locks, &source_hash);
         let _guard = lock.lock().await;
         let mut entry = self
             .load_entry(&source_hash, file_id)
@@ -562,7 +563,7 @@ impl LocalTorrentService {
         }
         let (source_hash, file_id) = validate_direct_file_stream_params(source_hash, file_id)?;
         let lock_key = format!("{source_hash}:direct:{file_id}");
-        let lock = local_torrent_key_lock(&self.locks, &lock_key);
+        let lock = key_lock(&self.locks, &lock_key);
         let _guard = lock.lock().await;
         let mut entry = self
             .load_direct_file_entry(&source_hash, &file_id)
@@ -1283,12 +1284,6 @@ impl LocalTorrentService {
     pub fn prune_idle_locks(&self) {
         self.locks.retain(|_, lock| Arc::strong_count(lock) > 1);
     }
-}
-
-fn local_torrent_key_lock(map: &DashMap<String, Arc<Mutex<()>>>, key: &str) -> Arc<Mutex<()>> {
-    map.entry(key.to_owned())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
 }
 
 fn validate_local_torrent_stream_params(

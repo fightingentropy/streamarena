@@ -60,15 +60,21 @@ import {
 } from "../lib/offline-artwork.js";
 import { liveNavClass, sportsNavLinkClass } from "../lib/browse-nav.js";
 import {
+  FEATURED_HERO_CANDIDATE_LIMIT,
   HERO_PREVIEW_EMBED_ORIGIN,
   HERO_PREVIEW_MESSAGE_ORIGINS,
   HERO_PREVIEW_REDUCED_MOTION_QUERY,
+  buildFeaturedHeroCandidates,
   buildYoutubeTrailerEmbedUrl,
+  createDefaultFeaturedHero,
   getFeaturedHeroAutoAdvanceDelay,
   getFeaturedHeroCallouts,
   getFeaturedHeroMetaItems,
   getFeaturedHeroTitleLines,
+  getPopularRowTitle,
+  normalizeHeroTitle,
   normalizeYoutubeVideoKey,
+  selectFeaturedHeroCandidate,
   selectFeaturedHeroTrailerKey,
 } from "../lib/featured-hero.js";
 import FeedbackNav from "../components/feedback-nav.jsx";
@@ -83,10 +89,6 @@ const SEARCH_RESULTS_LIMIT = 40;
 const STALE_HERO_PREVIEW_MUTED_PREF_KEY = "streamarena-hero-trailer-muted-v2";
 const HERO_PREVIEW_ENTER_VISIBLE_RATIO = 0.3;
 const HERO_PREVIEW_LEAVE_VISIBLE_RATIO = 0.08;
-const FEATURED_HERO_ROTATION_MS = 24 * 60 * 60 * 1000;
-const FEATURED_HERO_STORAGE_KEY = "streamarena-featured-hero-v2";
-const FEATURED_HERO_CANDIDATE_LIMIT = 10;
-const BLOCKED_FEATURED_HERO_TITLE_KEYS = new Set(["your heart will be broken"]);
 const MY_LIST_STORAGE_KEY = "streamarena-my-list-v1";
 const POPULAR_TITLES_LIMIT = 14;
 const BROWSE_RAIL_LIMIT = 14;
@@ -541,139 +543,8 @@ function normalizeSearchQuery(value) {
     .trim();
 }
 
-function createDefaultFeaturedHero() {
-  return {
-    title: "Popular Movies",
-    tmdbId: "",
-    mediaType: "movie",
-    year: "",
-    runtime: "Movie",
-    maturity: UNRATED_CERTIFICATION_LABEL,
-    tagline: "Discover what everyone is watching right now.",
-    description: "Current top movies from around the world.",
-    poster: "assets/images/thumbnail-top10-h.jpg",
-    thumb: "assets/images/thumbnail-top10-h.jpg",
-    src: "",
-    previewSrc: "",
-    trailerKey: "",
-    callouts: ["Top global movies", "Popular now"],
-    ready: false,
-  };
-}
-
-function normalizeHeroTitle(value) {
-  return String(value || "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeHeroTitleKey(value) {
-  return normalizeHeroTitle(value).toLowerCase();
-}
-
 function getFeaturedHeroMaturityLabel(feature) {
   return normalizeCertification(feature?.maturity);
-}
-
-function getPopularRowTitle(payload) {
-  const genreMap = new Map();
-  (Array.isArray(payload?.genres) ? payload.genres : []).forEach((genre) => {
-    genreMap.set(genre.id, genre.name);
-  });
-  const genreCounts = new Map();
-  (Array.isArray(payload?.results) ? payload.results : [])
-    .slice(0, POPULAR_TITLES_LIMIT)
-    .forEach((item) => {
-      (Array.isArray(item?.genre_ids) ? item.genre_ids : []).forEach((id) => {
-        const name = genreMap.get(id);
-        if (!name) {
-          return;
-        }
-        genreCounts.set(name, (genreCounts.get(name) || 0) + 1);
-      });
-    });
-  const topGenre = [...genreCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
-  if (topGenre === "Crime" || topGenre === "Thriller") {
-    return "Relentless Crime Thrillers";
-  }
-  if (topGenre === "Action") {
-    return "Adrenaline-Fueled Action";
-  }
-  if (topGenre === "Comedy") {
-    return "Laugh Out Loud Comedies";
-  }
-  if (topGenre === "Horror") {
-    return "Spine-Chilling Horror";
-  }
-  if (topGenre) {
-    return `${topGenre} Picks`;
-  }
-  return "Trending Now";
-}
-
-function findLocalMovieForTmdbId(localLibrary, tmdbId) {
-  const normalizedTmdbId = String(tmdbId || "").trim();
-  if (!normalizedTmdbId) {
-    return null;
-  }
-  return (
-    (Array.isArray(localLibrary?.movies) ? localLibrary.movies : []).find(
-      (movie) => String(movie?.tmdbId || "").trim() === normalizedTmdbId,
-    ) || null
-  );
-}
-
-function createFeaturedHeroFromTmdbItem(
-  item,
-  genreMap,
-  imageBase = TMDB_IMAGE_BASE,
-  localLibrary = null,
-  heroPreviewMap = null,
-) {
-  const tmdbId = String(item?.id || "").trim();
-  const title = normalizeHeroTitle(item?.title || item?.name || "Popular Movie");
-  const releaseDate = String(item?.release_date || item?.first_air_date || "").trim();
-  const year = releaseDate ? releaseDate.slice(0, 4) : "";
-  const posterPath = String(item?.poster_path || "").trim();
-  const backdropPath = String(item?.backdrop_path || posterPath || "").trim();
-  const poster = backdropPath
-    ? `${imageBase}/w1280${backdropPath}`
-    : posterPath
-      ? `${imageBase}/w780${posterPath}`
-      : "assets/images/thumbnail-top10-h.jpg";
-  const logoPath = String(item?.logo_path || "").trim();
-  const logoUrl = logoPath ? `${imageBase}/w500${logoPath}` : "";
-  const genreNames = (Array.isArray(item?.genre_ids) ? item.genre_ids : [])
-    .map((id) => genreMap.get(id))
-    .filter(Boolean)
-    .slice(0, 2);
-  const localMovie = findLocalMovieForTmdbId(localLibrary, tmdbId);
-  const localSrc = String(localMovie?.src || "").trim();
-  const previewEntry =
-    heroPreviewMap instanceof Map ? heroPreviewMap.get(tmdbId) : null;
-  const previewSrc = String(previewEntry?.src || "").trim();
-  return {
-    title,
-    tmdbId,
-    mediaType: "movie",
-    year,
-    runtime: "Movie",
-    maturity: normalizeCertification(item?.certification),
-    logoUrl,
-    tagline: String(item?.tagline || "").trim(),
-    description:
-      String(item?.overview || "").trim() || "No description available.",
-    poster,
-    thumb: poster,
-    src: localSrc,
-    previewSrc,
-    trailerKey: "",
-    callouts: [
-      localSrc ? "Available locally" : "Top global movie",
-      genreNames.length ? genreNames.join(" / ") : "Popular now",
-    ],
-    ready: true,
-  };
 }
 
 function createFeaturedHeroFromLocalEntry(entry) {
@@ -750,96 +621,6 @@ function createFeaturedHeroFromLocalEntry(entry) {
     ],
     ready: true,
   };
-}
-
-function buildFeaturedHeroCandidates(
-  payload,
-  localLibrary = null,
-  heroPreviewMap = null,
-) {
-  const genreMap = new Map();
-  (Array.isArray(payload?.genres) ? payload.genres : []).forEach((genre) => {
-    genreMap.set(genre.id, genre.name);
-  });
-  const imageBase = payload?.imageBase || TMDB_IMAGE_BASE;
-  const seenIds = new Set();
-  const candidates = (Array.isArray(payload?.results) ? payload.results : [])
-    .map((item) =>
-      createFeaturedHeroFromTmdbItem(
-        item,
-        genreMap,
-        imageBase,
-        localLibrary,
-        heroPreviewMap,
-      ),
-    )
-    .filter((item) => {
-      if (!item.tmdbId || seenIds.has(item.tmdbId)) {
-        return false;
-      }
-      if (
-        BLOCKED_FEATURED_HERO_TITLE_KEYS.has(normalizeHeroTitleKey(item.title))
-      ) {
-        return false;
-      }
-      seenIds.add(item.tmdbId);
-      return Boolean(item.poster && item.title);
-    })
-    .slice(0, FEATURED_HERO_CANDIDATE_LIMIT);
-  const previewCandidates = candidates.filter((item) => item.previewSrc);
-  return previewCandidates.length ? previewCandidates : candidates;
-}
-
-function readFeaturedHeroRotation() {
-  try {
-    const parsed = JSON.parse(
-      localStorage.getItem(FEATURED_HERO_STORAGE_KEY) || "null",
-    );
-    if (!parsed || typeof parsed !== "object") {
-      return null;
-    }
-    const tmdbId = String(parsed.tmdbId || "").trim();
-    const expiresAt = Number(parsed.expiresAt || 0);
-    return tmdbId && Number.isFinite(expiresAt) ? { tmdbId, expiresAt } : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeFeaturedHeroRotation(tmdbId, expiresAt) {
-  try {
-    localStorage.setItem(
-      FEATURED_HERO_STORAGE_KEY,
-      JSON.stringify({ tmdbId: String(tmdbId || "").trim(), expiresAt }),
-    );
-  } catch {
-    // Ignore storage failures; the wall-clock fallback still keeps reloads stable.
-  }
-}
-
-function selectFeaturedHeroCandidate(candidates) {
-  const validCandidates = Array.isArray(candidates) ? candidates : [];
-  if (!validCandidates.length) {
-    return null;
-  }
-  const now = Date.now();
-  const stored = readFeaturedHeroRotation();
-  const storedCandidate =
-    stored && stored.expiresAt > now
-      ? validCandidates.find((item) => item.tmdbId === stored.tmdbId)
-      : null;
-  if (storedCandidate) {
-    return storedCandidate;
-  }
-
-  const nextPool =
-    stored?.tmdbId && validCandidates.length > 1
-      ? validCandidates.filter((item) => item.tmdbId !== stored.tmdbId)
-      : validCandidates;
-  const rotationIndex = Math.floor(now / FEATURED_HERO_ROTATION_MS);
-  const selected = nextPool[rotationIndex % nextPool.length] || validCandidates[0];
-  writeFeaturedHeroRotation(selected.tmdbId, now + FEATURED_HERO_ROTATION_MS);
-  return selected;
 }
 
 // Local preview files are optional. The normal path is the official trailer key
@@ -1238,7 +1019,9 @@ export default function HomePage() {
   const [showSearchBox, setShowSearchBox] = createSignal(false);
   const [searchBoxOpen, setSearchBoxOpen] = createSignal(false);
   const [accountMenuOpen, setAccountMenuOpen] = createSignal(false);
-  const [featuredHero, setFeaturedHero] = createSignal(createDefaultFeaturedHero());
+  const [featuredHero, setFeaturedHero] = createSignal(
+    createDefaultFeaturedHero(UNRATED_CERTIFICATION_LABEL),
+  );
   const [failedHeroLogos, setFailedHeroLogos] = createSignal(new Set());
   const [featuredHeroReady, setFeaturedHeroReady] = createSignal(false);
   const [featuredHeroCandidates, setFeaturedHeroCandidates] = createSignal([]);
@@ -3600,7 +3383,7 @@ export default function HomePage() {
       setFeaturedHeroReady(true);
     } else {
       setFeaturedHeroReady(false);
-      setFeaturedHero(createDefaultFeaturedHero());
+      setFeaturedHero(createDefaultFeaturedHero(UNRATED_CERTIFICATION_LABEL));
     }
 
     setPopularRowTitle("Recently Added");
@@ -3611,7 +3394,7 @@ export default function HomePage() {
   function applyFeaturedHeroCandidate(selected) {
     if (!selected) {
       setFeaturedHeroReady(false);
-      setFeaturedHero(createDefaultFeaturedHero());
+      setFeaturedHero(createDefaultFeaturedHero(UNRATED_CERTIFICATION_LABEL));
       stopHeroPreview();
       return;
     }
@@ -3683,6 +3466,10 @@ export default function HomePage() {
       payload,
       localLibrary,
       heroPreviewMap,
+      {
+        imageBase: TMDB_IMAGE_BASE,
+        unratedLabel: UNRATED_CERTIFICATION_LABEL,
+      },
     );
     setFeaturedHeroCandidates(candidates);
     const selected = selectFeaturedHeroCandidate(candidates);
@@ -3879,7 +3666,11 @@ export default function HomePage() {
       libraryResult.status === "fulfilled" ? libraryResult.value : null,
       previewResult.status === "fulfilled" ? previewResult.value : null,
     );
-    setPopularRowTitle(getPopularRowTitle(popularResult.value));
+    setPopularRowTitle(
+      getPopularRowTitle(popularResult.value, {
+        popularTitlesLimit: POPULAR_TITLES_LIMIT,
+      }),
+    );
     setPopularRowVisible(cardsToRender.length > 0);
     markHomeBrowseContentReady();
     renderPopularCards(cardsToRender);

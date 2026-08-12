@@ -19,6 +19,7 @@ use url::form_urlencoded::{Serializer, byte_serialize};
 
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
+use crate::key_lock::key_lock;
 use crate::persistence::Db;
 use crate::process::run_process_capture_text;
 use crate::utils::hash_stable_string;
@@ -1426,12 +1427,6 @@ fn parse_probe_tracks_from_ffprobe_payload(payload: &Value, source_input: &str) 
         audioTracks: audio_tracks,
         subtitleTracks: subtitle_tracks,
     }
-}
-
-fn key_lock(map: &DashMap<String, Arc<Mutex<()>>>, key: &str) -> Arc<Mutex<()>> {
-    map.entry(key.to_owned())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
 }
 
 fn is_local_app_playback_url(config: &Config, url: &Url) -> bool {

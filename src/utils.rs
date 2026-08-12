@@ -93,3 +93,19 @@ fn normalize_iso_language(value: &str) -> String {
         alias.chars().take(2).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::now_ms;
+
+    #[test]
+    fn now_ms_is_a_post_epoch_millisecond_timestamp() {
+        // Fail-loud on a pre-epoch clock is intentional (see now_ms). A healthy
+        // host must therefore report a millisecond instant after 2020-01-01.
+        let value = now_ms();
+        assert!(
+            value > 1_577_836_800_000,
+            "now_ms should be a 2020s millisecond timestamp, got {value}"
+        );
+    }
+}

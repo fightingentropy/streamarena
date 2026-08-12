@@ -251,11 +251,14 @@ impl Config {
                 .unwrap_or_default()
                 .trim()
                 .to_owned(),
-            live_hls_proxy_secret: env::var("LIVE_HLS_PROXY_SECRET")
-                .ok()
-                .map(|value| value.trim().to_owned())
-                .filter(|value| value.len() >= 32)
-                .unwrap_or_else(generate_live_hls_proxy_secret),
+            live_hls_proxy_secret: resolve_live_hls_proxy_secret(
+                env::var("LIVE_HLS_PROXY_SECRET").ok(),
+                env::var("LIVE_HLS_RESOURCE_WORKER_BASE")
+                    .unwrap_or_default()
+                    .trim(),
+                parse_bool_env("REQUIRE_LIVE_HLS_PROXY_SECRET", false),
+            )
+            .unwrap_or_else(|message| panic!("{message}")),
             live_hls_resource_worker_base: env::var("LIVE_HLS_RESOURCE_WORKER_BASE")
                 .unwrap_or_default()
                 .trim()
@@ -343,6 +346,29 @@ fn generate_live_hls_proxy_secret() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Pin the live-HLS HMAC secret when a Worker origin is configured or the
+/// operator asked for pinned secrets. Local `cargo run` without those still
+/// generates an ephemeral secret so unsigned URLs work for a single process.
+fn resolve_live_hls_proxy_secret(
+    configured: Option<String>,
+    worker_base: &str,
+    require_pinned: bool,
+) -> Result<String, String> {
+    if let Some(secret) = configured
+        .map(|value| value.trim().to_owned())
+        .filter(|value| value.len() >= 32)
+    {
+        return Ok(secret);
+    }
+    if require_pinned || !worker_base.trim().is_empty() {
+        return Err(
+            "LIVE_HLS_PROXY_SECRET must be set to at least 32 characters when REQUIRE_LIVE_HLS_PROXY_SECRET=1 or LIVE_HLS_RESOURCE_WORKER_BASE is set."
+                .to_owned(),
+        );
+    }
+    Ok(generate_live_hls_proxy_secret())
+}
+
 fn parse_usize_env(name: &str, fallback: usize, min: usize, max: usize) -> usize {
     env::var(name)
         .ok()
@@ -423,6 +449,7 @@ mod tests {
     use super::{
         DEFAULT_OUTBOUND_PROXY_BYPASS_HOSTS, configured_email_from_env, normalize_bool_flag,
         parse_bool_env, parse_csv_env, parse_proxy_bypass_env, parse_u64_env, parse_usize_env,
+        resolve_live_hls_proxy_secret,
     };
 
     #[test]
@@ -506,5 +533,27 @@ mod tests {
         unsafe {
             std::env::remove_var("TORZNAB_CATEGORY_TEST");
         }
+    }
+
+    #[test]
+    fn live_hls_proxy_secret_generates_locally_and_fails_closed_when_pinned() {
+        let generated = resolve_live_hls_proxy_secret(None, "", false).expect("local generate");
+        assert!(generated.len() >= 32);
+
+        let pinned = resolve_live_hls_proxy_secret(
+            Some("  pinned-live-hls-proxy-secret-value  ".to_owned()),
+            "https://live.example.workers.dev",
+            true,
+        )
+        .expect("configured secret");
+        assert_eq!(pinned, "pinned-live-hls-proxy-secret-value");
+
+        let missing_with_worker =
+            resolve_live_hls_proxy_secret(None, "https://live.example.workers.dev", false);
+        assert!(missing_with_worker.is_err());
+
+        let missing_when_required =
+            resolve_live_hls_proxy_secret(Some("short".to_owned()), "", true);
+        assert!(missing_when_required.is_err());
     }
 }

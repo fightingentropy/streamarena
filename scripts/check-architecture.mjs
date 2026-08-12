@@ -4,15 +4,16 @@ import { basename, join, resolve } from "node:path";
 
 const rootDir = resolve(new URL("..", import.meta.url).pathname);
 const maxSourceLines = {
-  "src-ui/pages/player.js": 10_800,
-  "src-ui/pages/home.jsx": 5_450,
+  "src-ui/pages/player.js": 9_300,
+  "src-ui/pages/home.jsx": 5_300,
   "src-ui/pages/settings.jsx": 1_600,
 };
 const defaultPageLineLimit = 1_500;
 const backendSourceLineLimits = {
-  "src/persistence.rs": 7_350,
-  "src/routes.rs": 5_450,
-  "src/resolver.rs": 11_500,
+  "src/persistence.rs": 7_050,
+  "src/routes.rs": 4_600,
+  "src/resolver.rs": 7_300,
+  "src/football.rs": 6_500,
 };
 const workerSourceLineLimit = 250;
 const maxJsBundleBytes = 700 * 1024;
@@ -150,21 +151,124 @@ async function checkDomainDecomposition() {
   }
 
   const persistence = await readText("src/persistence.rs");
-  for (const moduleName of ["migrations", "user_state"]) {
+  for (const moduleName of ["continue_watching", "migrations", "user_state"]) {
     if (!persistence.includes(`mod ${moduleName};`)) {
       fail(`src/persistence.rs must keep the ${moduleName} domain module.`);
     }
   }
+  const continueWatchingCount = lineCount(await readText("src/persistence/continue_watching.rs"));
+  const continueWatchingLimit = 450;
+  if (continueWatchingCount > continueWatchingLimit) {
+    fail(`src/persistence/continue_watching.rs has ${continueWatchingCount} nonblank lines, above the ${continueWatchingLimit}-line domain guard.`);
+  }
+  const football = await readText("src/football.rs");
+  if (!football.includes("mod schedule;")) {
+    fail("src/football.rs must keep the schedule merge module.");
+  }
+  const scheduleCount = lineCount(await readText("src/football/schedule.rs"));
+  const scheduleLimit = 400;
+  if (scheduleCount > scheduleLimit) {
+    fail(`src/football/schedule.rs has ${scheduleCount} nonblank lines, above the ${scheduleLimit}-line domain guard.`);
+  }
+  const routes = await readText("src/routes.rs");
+  if (!routes.includes("mod admin;")) {
+    fail("src/routes.rs must keep the admin handlers module.");
+  }
+  const adminCount = lineCount(await readText("src/routes/admin.rs"));
+  const adminLimit = 1_000;
+  if (adminCount > adminLimit) {
+    fail(`src/routes/admin.rs has ${adminCount} nonblank lines, above the ${adminLimit}-line domain guard.`);
+  }
+  const resolver = await readText("src/resolver.rs");
+  if (!resolver.includes("mod scoring;")) {
+    fail("src/resolver.rs must keep the scoring domain module.");
+  }
+  if (!resolver.includes("mod external_embed;")) {
+    fail("src/resolver.rs must keep the external embed catalog module.");
+  }
+  const scoringCount = lineCount(await readText("src/resolver/scoring.rs"));
+  const scoringLimit = 1_250;
+  if (scoringCount > scoringLimit) {
+    fail(`src/resolver/scoring.rs has ${scoringCount} nonblank lines, above the ${scoringLimit}-line domain guard.`);
+  }
+  const embedCount = lineCount(await readText("src/resolver/external_embed.rs"));
+  const embedLimit = 650;
+  if (embedCount > embedLimit) {
+    fail(`src/resolver/external_embed.rs has ${embedCount} nonblank lines, above the ${embedLimit}-line domain guard.`);
+  }
+  const liveStreamCacheCount = lineCount(await readText("src-ui/player/live-stream-cache.js"));
+  const liveStreamCacheLimit = 650;
+  if (liveStreamCacheCount > liveStreamCacheLimit) {
+    fail(`src-ui/player/live-stream-cache.js has ${liveStreamCacheCount} nonblank lines, above the ${liveStreamCacheLimit}-line domain guard.`);
+  }
+  const customSubtitleCount = lineCount(await readText("src-ui/player/custom-subtitle-overlay.js"));
+  const customSubtitleLimit = 300;
+  if (customSubtitleCount > customSubtitleLimit) {
+    fail(`src-ui/player/custom-subtitle-overlay.js has ${customSubtitleCount} nonblank lines, above the ${customSubtitleLimit}-line domain guard.`);
+  }
+  const liveHealthCount = lineCount(await readText("src-ui/player/live-playback-health.js"));
+  const liveHealthLimit = 350;
+  if (liveHealthCount > liveHealthLimit) {
+    fail(`src-ui/player/live-playback-health.js has ${liveHealthCount} nonblank lines, above the ${liveHealthLimit}-line domain guard.`);
+  }
+  const liveSeekCount = lineCount(await readText("src-ui/player/live-seek.js"));
+  const liveSeekLimit = 150;
+  if (liveSeekCount > liveSeekLimit) {
+    fail(`src-ui/player/live-seek.js has ${liveSeekCount} nonblank lines, above the ${liveSeekLimit}-line domain guard.`);
+  }
+  const subtitlePlacementCount = lineCount(await readText("src-ui/player/subtitle-placement.js"));
+  const subtitlePlacementLimit = 150;
+  if (subtitlePlacementCount > subtitlePlacementLimit) {
+    fail(`src-ui/player/subtitle-placement.js has ${subtitlePlacementCount} nonblank lines, above the ${subtitlePlacementLimit}-line domain guard.`);
+  }
+  const featuredHeroCount = lineCount(await readText("src-ui/lib/featured-hero.js"));
+  const featuredHeroLimit = 450;
+  if (featuredHeroCount > featuredHeroLimit) {
+    fail(`src-ui/lib/featured-hero.js has ${featuredHeroCount} nonblank lines, above the ${featuredHeroLimit}-line domain guard.`);
+  }
+  const player = await readText("src-ui/pages/player.js");
+  for (const symbol of [
+    "createResolverOverlayController",
+    "playback-preferences.js",
+    "continue-watching-pin.js",
+    "createLiveStreamCache",
+    "createCustomSubtitleOverlay",
+    "createLivePlaybackHealthWatch",
+    "live-seek.js",
+    "subtitle-placement.js",
+  ]) {
+    if (!player.includes(symbol)) {
+      fail(`src-ui/pages/player.js must keep the extracted ${symbol} seam.`);
+    }
+  }
+  const home = await readText("src-ui/pages/home.jsx");
+  for (const symbol of ["selectFeaturedHeroCandidate", "buildFeaturedHeroCandidates"]) {
+    if (!home.includes(symbol)) {
+      fail(`src-ui/pages/home.jsx must keep the extracted ${symbol} seam.`);
+    }
+  }
   const main = await readText("src/main.rs");
-  for (const moduleName of ["cleanup_guard", "egress_policy", "provider_budget"]) {
+  for (const moduleName of ["cleanup_guard", "egress_policy", "provider_budget", "key_lock"]) {
     if (!main.includes(`mod ${moduleName};`)) {
       fail(`src/main.rs must keep the ${moduleName} trust-boundary module.`);
     }
     const relPath = `src/${moduleName}.rs`;
     const count = lineCount(await readText(relPath));
-    if (count > 250) {
-      fail(`${relPath} has ${count} nonblank lines, above the 250-line domain guard.`);
+    const limit = moduleName === "key_lock" ? 80 : 250;
+    if (count > limit) {
+      fail(`${relPath} has ${count} nonblank lines, above the ${limit}-line domain guard.`);
     }
+  }
+  const webLiveChannels = await readText("src-ui/lib/live-channels.js");
+  if (!webLiveChannels.includes("shared/live-channels.json")) {
+    fail("src-ui/lib/live-channels.js must load the shared live catalog.");
+  }
+  const mobileLiveChannels = await readText("mobile/src/lib/live-channels.ts");
+  if (!mobileLiveChannels.includes("streamarena-shared/live-channels.json")) {
+    fail("mobile/src/lib/live-channels.ts must load the shared live catalog.");
+  }
+  if (!mobileLiveChannels.includes("loadLiveChannelOverrides")) {
+    fail("mobile/src/lib/live-channels.ts must apply runtime channel overrides.");
   }
   const replaySafeClient = await readText("src-ui/lib/replay-safe-state.js");
   if (!replaySafeClient.includes("nextUserStateMutationTimestamp")) {
