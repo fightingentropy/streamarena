@@ -551,17 +551,19 @@ export function createPlaybackRouting({
   }
 
   function getPreferredDefaultSourceHash(options = []) {
-    const preferredContainerOption =
-      [...options]
-        .filter((option) =>
-          isSourceOptionLikelyContainer(
-            option,
-            getDefaultSourceContainerPreference(),
-          ),
+    const preferredContainer = getDefaultSourceContainerPreference();
+    const containerMatches = preferredContainer
+      ? options.filter((option) =>
+          isSourceOptionLikelyContainer(option, preferredContainer),
         )
-        .sort(compareSourceOptionsForDefault)[0] || null;
-    const defaultOption = preferredContainerOption || options[0] || null;
-    return normalizeSourceHash(defaultOption?.sourceHash || defaultOption?.infoHash || "");
+      : [];
+    const rankedOptions = [
+      ...(containerMatches.length > 0 ? containerMatches : options),
+    ].sort(compareSourceOptionsForDefault);
+    const defaultOption = rankedOptions[0] || null;
+    return normalizeSourceHash(
+      defaultOption?.sourceHash || defaultOption?.infoHash || "",
+    );
   }
 
   return {
