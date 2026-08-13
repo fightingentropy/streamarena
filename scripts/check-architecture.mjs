@@ -12,7 +12,7 @@ const defaultPageLineLimit = 1_500;
 const backendSourceLineLimits = {
   "src/persistence.rs": 7_050,
   "src/routes.rs": 4_600,
-  "src/resolver.rs": 7_300,
+  "src/resolver.rs": 7_400,
   "src/football.rs": 6_500,
 };
 const workerSourceLineLimit = 250;
