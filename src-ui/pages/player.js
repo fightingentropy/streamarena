@@ -400,8 +400,7 @@ const playbackRouting = createPlaybackRouting({
   getPreferredResolverProvider: () => preferredResolverProvider,
   getSupportedSourceFormatSet: () => supportedSourceFormatSet,
   shouldPreferMobileLightTmdbSources: () => shouldPreferMobileLightTmdbSources(),
-  shouldPreferDirectMp4Default: () =>
-    Boolean(userRealDebridConfigured) && !userLocalTorrentEnabled,
+  shouldPreferDirectMp4Default: () => !userLocalTorrentEnabled,
   shouldMapSubtitleStreamIndex,
   parseTranscodeSource,
   getSubtitleTrackByStreamIndex,
@@ -6424,6 +6423,9 @@ async function tryPlay() {
       clearLiveStartupHealthWatch({ resetRequest: true });
     }
     syncPlayState();
+    if (isManualSourceSwitchPending() && !isPlaybackBlockedByPolicy(error)) {
+      throw error;
+    }
   }
 }
 
@@ -7651,10 +7653,7 @@ async function fetchTmdbSourceOptionsViaBackend() {
       persistSourceHashInUrl();
     }
     renderSourceOptionsWhenStable();
-    if (
-      shouldAdoptPreferredDefault &&
-      (tmdbSkipExternalEmbed || preferredResolverProvider === "local-torrent")
-    ) {
+    if (shouldAdoptPreferredDefault) {
       if (userLocalTorrentEnabled) {
         preferredResolverProvider = "local-torrent";
         tmdbSkipExternalEmbed = true;
@@ -9188,6 +9187,8 @@ async function handleSourceOptionSelection(nextSourceHash) {
   if (!switchingToEmbed && userLocalTorrentEnabled) {
     preferredResolverProvider = "local-torrent";
   }
+  const keepCurrentPlaybackWhileResolving =
+    !switchingToEmbed && userLocalTorrentEnabled;
   const playbackRequestToken = ++tmdbPlaybackRequestToken;
   stopLocalCacheUpgradeWatch();
   localCacheUpgradeWatch.setHasUpgraded(false);
@@ -9196,7 +9197,7 @@ async function handleSourceOptionSelection(nextSourceHash) {
   applyPreferredSourceAudioSync(normalizedNextSourceHash);
   syncAudioState();
   renderSelectedSourceDetails();
-  if (sourceOptionDetails instanceof HTMLElement && !switchingToEmbed) {
+  if (sourceOptionDetails instanceof HTMLElement && keepCurrentPlaybackWhileResolving) {
     sourceOptionDetails.hidden = false;
     sourceOptionDetails.textContent =
       "Preparing torrent — current stream keeps playing.";
@@ -9204,7 +9205,7 @@ async function handleSourceOptionSelection(nextSourceHash) {
   tmdbResolveRetries = 0;
   closeAudioPopover(false, { force: true });
   // Keep Server menu open with an understated row spinner (no full overlay).
-  // HLS/embed stays on screen until the torrent has a playable URL.
+  // With local torrent, HLS/embed stays on screen until the torrent has a playable URL.
   if (sourceControl && !sourceControl.classList.contains("is-open")) {
     openSourcePopover();
   }
@@ -9215,7 +9216,7 @@ async function handleSourceOptionSelection(nextSourceHash) {
       requiredSourceHash: normalizedNextSourceHash,
       requestSourceHash: normalizedNextSourceHash,
       resolveTimeoutMs: sourceSwitchTimeouts.resolveTimeoutMs,
-      skipExternalEmbed: !switchingToEmbed,
+      skipExternalEmbed: keepCurrentPlaybackWhileResolving,
       startSeconds: resumeFrom,
     });
     if (
@@ -9281,6 +9282,12 @@ async function handleSourceOptionSelection(nextSourceHash) {
     const message = error?.message || "Unable to switch source.";
     if (manualSourceSwitch.isCurrent(sourceSwitchRequest)) {
       await manualSourceSwitch.fail(sourceSwitchRequest, message);
+    } else if (sourceSwitchRequest?.baseline) {
+      await rollbackManualSourceSwitchPlayback(sourceSwitchRequest.baseline, {
+        reason: message,
+        request: sourceSwitchRequest,
+      });
+      setPendingSourceSwitchHash("");
     } else {
       preferredResolverProvider = previousPreferredResolverProvider;
       setPendingSourceSwitchHash("");
