@@ -78,11 +78,16 @@
       "expo-status-bar"
     ],
     "extra": {
-      "apiOrigin": "https://streamarena.xyz"
+      "apiOrigin": "https://streamarena.xyz",
+      "router": {},
+      "eas": {
+        "projectId": "80548de6-ab1e-4323-8440-eea1ab7acd0c"
+      }
     },
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": false
-    }
+    },
+    "owner": "magemerlin"
   }
 }
