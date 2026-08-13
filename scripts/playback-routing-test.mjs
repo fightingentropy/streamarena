@@ -48,6 +48,18 @@ assert.equal(
   "desktop still prefers an mp4 match when one exists",
 );
 
+const localTorrentRouting = createPlaybackRouting({
+  getPreferredSourceFormats: () => ["mp4", "mkv"],
+  getSupportedSourceFormatSet: () => new Set(["mp4", "mkv"]),
+  shouldPreferDirectMp4Default: () => false,
+});
+
+assert.equal(
+  localTorrentRouting.getPreferredDefaultSourceHash([mkv2160, mkv1080, mp41080]),
+  hashA,
+  "local torrent defaults to the healthiest swarm instead of a weak mp4",
+);
+
 const mobileRouting = createPlaybackRouting({
   shouldPreferMobileLightTmdbSources: () => true,
   getPreferredSourceFormats: () => ["mp4", "mkv"],

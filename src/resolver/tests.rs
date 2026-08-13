@@ -39,7 +39,8 @@ use super::{
     now_ms, parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
     parse_torznab_xml, playback_session_key_allowed_for_user,
     playback_session_matches_preferred_container, playback_session_matches_preferred_quality,
-    playback_session_matches_source_hash, ready_info_has_selected_file_id,
+    playback_session_matches_source_hash, prefer_mp4_default_candidates,
+    ready_info_has_selected_file_id,
     score_stream_episode_match, select_fastest_race_candidates, select_top_episode_candidates,
     select_top_movie_candidates, should_allow_latest_playback_session_fallback,
     should_prefer_default_external_embed, should_prefer_software_decode_source,
@@ -937,6 +938,16 @@ fn normalizes_resolver_provider_preference() {
 fn local_torrent_is_available_without_becoming_the_automatic_default() {
     assert!(!torrent_playback_enabled(None, false));
     assert!(torrent_playback_enabled(None, true));
+    assert!(!prefer_mp4_default_candidates(
+        ResolverProvider::Fastest,
+        true,
+        None
+    ));
+    assert!(!prefer_mp4_default_candidates(
+        ResolverProvider::LocalTorrent,
+        false,
+        None
+    ));
     assert_eq!(
         cache_reuse_provider_for_context(ResolverProvider::Fastest, false, true),
         ResolverProvider::LocalTorrent
@@ -1711,6 +1722,7 @@ fn filters_unrelated_sources_for_short_movie_titles() {
         5,
         &sample_source_filters(),
         &HashMap::new(),
+        true,
     );
 
     assert_eq!(selected.len(), 1);
@@ -1743,6 +1755,7 @@ fn avoids_failed_mp4_default_candidate_when_health_is_bad() {
         1,
         &sample_source_filters(),
         &health_scores,
+        true,
     );
 
     assert_eq!(selected.len(), 1);
@@ -1772,6 +1785,7 @@ fn prefers_mp4_for_tv_episode_auto_container_when_unpinned() {
         2,
         &sample_source_filters(),
         &HashMap::new(),
+        true,
     );
 
     assert_eq!(selected.len(), 2);
@@ -1806,12 +1820,74 @@ fn keeps_mp4_alternates_ahead_of_mkv_for_tv_default() {
         3,
         &sample_source_filters(),
         &HashMap::new(),
+        true,
     );
 
     assert_eq!(selected.len(), 3);
     assert_eq!(selected[0].infoHash, first_mp4.infoHash);
     assert_eq!(selected[1].infoHash, second_mp4.infoHash);
     assert_eq!(selected[2].infoHash, high_seed_mkv.infoHash);
+}
+
+#[test]
+fn ranks_high_seeder_mkv_first_when_local_torrent_skips_mp4_default() {
+    let metadata = sample_tv_metadata();
+    let high_seed_mkv = sample_stream(
+        "Succession S01E01 Celebration 1080p AMZN WEB-DL DDP5.1 H.264-NTb.mkv\n👤 900",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
+    let weak_mp4 = sample_stream(
+        "Succession.S01E01.1080p.BluRay.x265-RARBG.mp4\n👤 5",
+        "cccccccccccccccccccccccccccccccccccccccc",
+    );
+    let streams = vec![weak_mp4.clone(), high_seed_mkv.clone()];
+
+    let selected = select_top_episode_candidates(
+        &streams,
+        &metadata,
+        "en",
+        "1080p",
+        "auto",
+        "",
+        2,
+        &sample_source_filters(),
+        &HashMap::new(),
+        false,
+    );
+
+    assert_eq!(selected.len(), 2);
+    assert_eq!(selected[0].infoHash, high_seed_mkv.infoHash);
+    assert_eq!(selected[1].infoHash, weak_mp4.infoHash);
+}
+
+#[test]
+fn ranks_high_seeder_movie_mkv_first_when_local_torrent_skips_mp4_default() {
+    let metadata = sample_movie_metadata();
+    let high_seed_mkv = sample_stream(
+        "The Housemaid 2025 1080p BluRay x265-GROUP.mkv\n👤 900",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
+    let weak_mp4 = sample_stream(
+        "The Housemaid 2025 1080p BluRay x265-GROUP.mp4\n👤 5",
+        "cccccccccccccccccccccccccccccccccccccccc",
+    );
+    let streams = vec![weak_mp4.clone(), high_seed_mkv.clone()];
+
+    let selected = select_top_movie_candidates(
+        &streams,
+        &metadata,
+        "en",
+        "1080p",
+        "",
+        2,
+        &sample_source_filters(),
+        &HashMap::new(),
+        false,
+    );
+
+    assert_eq!(selected.len(), 2);
+    assert_eq!(selected[0].infoHash, high_seed_mkv.infoHash);
+    assert_eq!(selected[1].infoHash, weak_mp4.infoHash);
 }
 
 #[test]
@@ -1837,6 +1913,7 @@ fn keeps_pinned_tv_episode_source_ahead_of_default_mp4() {
         2,
         &sample_source_filters(),
         &HashMap::new(),
+        true,
     );
 
     // Pinned selection is exclusive — no race substitutes.
@@ -1863,6 +1940,7 @@ fn pinned_missing_hash_does_not_return_substitute_candidates() {
         3,
         &sample_source_filters(),
         &HashMap::new(),
+        true,
     );
 
     assert!(selected.is_empty());
@@ -1992,6 +2070,7 @@ fn torznab_candidates_use_existing_filters_and_hash_pinning() {
         5,
         &filters,
         &HashMap::new(),
+        true,
     );
 
     assert_eq!(selected.len(), 1);

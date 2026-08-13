@@ -400,6 +400,8 @@ const playbackRouting = createPlaybackRouting({
   getPreferredResolverProvider: () => preferredResolverProvider,
   getSupportedSourceFormatSet: () => supportedSourceFormatSet,
   shouldPreferMobileLightTmdbSources: () => shouldPreferMobileLightTmdbSources(),
+  shouldPreferDirectMp4Default: () =>
+    Boolean(userRealDebridConfigured) && !userLocalTorrentEnabled,
   shouldMapSubtitleStreamIndex,
   parseTranscodeSource,
   getSubtitleTrackByStreamIndex,
@@ -1105,7 +1107,18 @@ function clearDisabledTorrentPlaybackState() {
 }
 
 function shouldAllowTorrentResolveFallback() {
-  return Boolean(userRealDebridSettingsLoaded && userRealDebridConfigured);
+  return Boolean(
+    userRealDebridSettingsLoaded &&
+      (userRealDebridConfigured || userLocalTorrentEnabled),
+  );
+}
+
+function getTmdbTorrentResolveTimeoutMs() {
+  return getManualSourceSwitchTimeouts({
+    localTorrentEnabled: userLocalTorrentEnabled,
+    realDebridConfigured: userRealDebridConfigured,
+    resolverProvider: preferredResolverProvider,
+  }).resolveTimeoutMs;
 }
 
 function getRememberedContinueWatchingSourceState() {
@@ -3523,12 +3536,28 @@ async function resolveTmdbSourcesAndPlay({
   if (!skipExternalEmbed) {
     tmdbSkipExternalEmbed = false;
   }
+  if (
+    skipExternalEmbed &&
+    userLocalTorrentEnabled &&
+    preferredResolverProvider === DEFAULT_RESOLVER_PROVIDER
+  ) {
+    preferredResolverProvider = "local-torrent";
+  }
   if (!availablePlaybackSources.length) {
     void fetchTmdbSourceOptionsViaBackend();
   }
 
   const normalizedRequiredSourceHash = normalizeSourceHash(requiredSourceHash);
   const normalizedRequestSourceHash = normalizeSourceHash(requestSourceHash);
+  let effectiveResolveTimeoutMs = resolveTimeoutMs;
+  if (
+    !Number.isFinite(Number(effectiveResolveTimeoutMs)) &&
+    (skipExternalEmbed ||
+      preferredResolverProvider === "local-torrent" ||
+      preferredResolverProvider === "real-debrid")
+  ) {
+    effectiveResolveTimeoutMs = getTmdbTorrentResolveTimeoutMs();
+  }
   const resolved = isTmdbTvPlayback
     ? await resolveTmdbTvEpisodeViaBackend(
         tmdbId,
@@ -3538,7 +3567,7 @@ async function resolveTmdbSourcesAndPlay({
           allowContainerFallback,
           allowSourceFallback,
           requestSourceHash: normalizedRequestSourceHash,
-          resolveTimeoutMs,
+          resolveTimeoutMs: effectiveResolveTimeoutMs,
           skipExternalEmbed,
           refreshResolve,
         },
@@ -3546,7 +3575,7 @@ async function resolveTmdbSourcesAndPlay({
     : await resolveTmdbMovieViaBackend(tmdbId, {
         allowSourceFallback,
         requestSourceHash: normalizedRequestSourceHash,
-        resolveTimeoutMs,
+        resolveTimeoutMs: effectiveResolveTimeoutMs,
         skipExternalEmbed,
         refreshResolve,
       });
@@ -3624,6 +3653,9 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
   ) {
     tmdbResolveRetries += 1;
     tmdbSkipExternalEmbed = true;
+    if (userLocalTorrentEnabled) {
+      preferredResolverProvider = "local-torrent";
+    }
     showResolver(
       `Trying torrent fallback (${tmdbResolveRetries}/${maxTmdbResolveRetries})...`,
     );
@@ -3636,7 +3668,12 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
       .then(() =>
         // Force a fresh resolve on recovery so a stale/dead cached upstream URL is
         // evicted server-side rather than re-served.
-        resolveTmdbSourcesAndPlay({ startSeconds: resumeAt, refreshResolve: true }),
+        resolveTmdbSourcesAndPlay({
+          startSeconds: resumeAt,
+          refreshResolve: true,
+          skipExternalEmbed: true,
+          resolveTimeoutMs: getTmdbTorrentResolveTimeoutMs(),
+        }),
       )
       .catch((error) => {
         console.error("Failed to refresh TMDB playback source:", error);
@@ -7040,7 +7077,9 @@ async function requestResolveJson(url, timeoutMs) {
     ? Math.floor(Number(timeoutMs))
     : preferredResolverProvider === "real-debrid"
       ? 95_000
-      : 50_000;
+      : preferredResolverProvider === "local-torrent"
+        ? 300_000
+        : 50_000;
   // Cloudflare proxied requests die around 100s; long local-torrent budgets
   // must poll a short-lived async job instead of holding one HTTP request open.
   const useAsyncResolve = hasExplicitTimeout && effectiveTimeoutMs > 90_000;
@@ -7612,10 +7651,19 @@ async function fetchTmdbSourceOptionsViaBackend() {
       persistSourceHashInUrl();
     }
     renderSourceOptionsWhenStable();
-    if (shouldAdoptPreferredDefault) {
+    if (
+      shouldAdoptPreferredDefault &&
+      (tmdbSkipExternalEmbed || preferredResolverProvider === "local-torrent")
+    ) {
+      if (userLocalTorrentEnabled) {
+        preferredResolverProvider = "local-torrent";
+        tmdbSkipExternalEmbed = true;
+      }
       void resolveTmdbSourcesAndPlay({
         requestSourceHash: preferredDefaultSourceHash,
         requiredSourceHash: preferredDefaultSourceHash,
+        skipExternalEmbed: tmdbSkipExternalEmbed,
+        resolveTimeoutMs: getTmdbTorrentResolveTimeoutMs(),
         startSeconds: getEffectiveCurrentTime(),
       }).catch((error) => {
         console.error("Failed to adopt preferred default source:", error);
@@ -9137,12 +9185,8 @@ async function handleSourceOptionSelection(nextSourceHash) {
       wasPaused,
     }),
   });
-  if (!switchingToEmbed) {
-    if (userLocalTorrentEnabled) {
-      preferredResolverProvider = "local-torrent";
-    } else if (userRealDebridConfigured) {
-      preferredResolverProvider = "real-debrid";
-    }
+  if (!switchingToEmbed && userLocalTorrentEnabled) {
+    preferredResolverProvider = "local-torrent";
   }
   const playbackRequestToken = ++tmdbPlaybackRequestToken;
   stopLocalCacheUpgradeWatch();
@@ -9152,9 +9196,15 @@ async function handleSourceOptionSelection(nextSourceHash) {
   applyPreferredSourceAudioSync(normalizedNextSourceHash);
   syncAudioState();
   renderSelectedSourceDetails();
+  if (sourceOptionDetails instanceof HTMLElement && !switchingToEmbed) {
+    sourceOptionDetails.hidden = false;
+    sourceOptionDetails.textContent =
+      "Preparing torrent — current stream keeps playing.";
+  }
   tmdbResolveRetries = 0;
   closeAudioPopover(false, { force: true });
   // Keep Server menu open with an understated row spinner (no full overlay).
+  // HLS/embed stays on screen until the torrent has a playable URL.
   if (sourceControl && !sourceControl.classList.contains("is-open")) {
     openSourcePopover();
   }
@@ -9165,6 +9215,7 @@ async function handleSourceOptionSelection(nextSourceHash) {
       requiredSourceHash: normalizedNextSourceHash,
       requestSourceHash: normalizedNextSourceHash,
       resolveTimeoutMs: sourceSwitchTimeouts.resolveTimeoutMs,
+      skipExternalEmbed: !switchingToEmbed,
       startSeconds: resumeFrom,
     });
     if (

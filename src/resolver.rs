@@ -85,9 +85,11 @@ const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 300_000;
 const FASTEST_RESOLVE_MAX_MS: i64 = 45_000;
 /// How many top-ranked local-torrent candidates race (staggered hedge) for the
 /// first successful resolve. One dead or swarm-slow torrent used to serialize
-/// the whole resolve behind its 60s metadata timeout; racing caps that cost.
+/// the whole resolve behind its metadata timeout; racing caps that cost.
 const LOCAL_TORRENT_RACE_CANDIDATES: usize = 4;
-const LOCAL_TORRENT_RACE_STAGGER: Duration = Duration::from_secs(6);
+/// Metadata probes usually show life or fail within a couple of seconds.
+/// Six seconds meant the 4th candidate waited 18s to even start.
+const LOCAL_TORRENT_RACE_STAGGER: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const FASTEST_PARALLEL_CANDIDATES: usize = 4;
 const FASTEST_CANDIDATE_POOL_LIMIT: usize = 40;
@@ -555,6 +557,19 @@ fn torrent_playback_enabled(
     real_debrid.is_some() || local_torrent_enabled
 }
 
+/// Direct MP4 is valuable for Real-Debrid / browser-native playback. Local
+/// torrent remuxes anyway, so swarm health (seeders) should rank first.
+fn prefer_mp4_default_candidates(
+    resolver_provider: ResolverProvider,
+    local_torrent_enabled: bool,
+    real_debrid: Option<&RealDebridRequestContext>,
+) -> bool {
+    if local_torrent_enabled || resolver_provider == ResolverProvider::LocalTorrent {
+        return false;
+    }
+    real_debrid.is_some()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolverProvider {
     RealDebrid,
@@ -800,6 +815,11 @@ impl ResolverService {
             source_language: normalize_source_language_filter(source_language),
             source_audio_profile: normalize_source_audio_profile_filter(source_audio_profile),
         };
+        let prefer_mp4_default = prefer_mp4_default_candidates(
+            resolver_provider,
+            local_torrent_enabled,
+            real_debrid.as_ref(),
+        );
         if media_type == "tv" {
             let season_number = normalize_episode_ordinal(
                 if season_number.trim().is_empty() {
@@ -876,6 +896,7 @@ impl ResolverService {
                         &normalized_source_hash,
                         normalized_limit as usize,
                         &source_filters,
+                        prefer_mp4_default,
                     )
                     .await?
                 }
@@ -900,6 +921,7 @@ impl ResolverService {
                             &normalized_source_hash,
                             normalized_limit as usize,
                             &source_filters,
+                            prefer_mp4_default,
                         )
                         .await?;
                     if torznab_sources.is_empty() && !has_external_sources {
@@ -963,6 +985,7 @@ impl ResolverService {
                     &normalized_source_hash,
                     normalized_limit as usize,
                     &source_filters,
+                    prefer_mp4_default,
                 )
                 .await?
             }
@@ -986,6 +1009,7 @@ impl ResolverService {
                         &normalized_source_hash,
                         normalized_limit as usize,
                         &source_filters,
+                        prefer_mp4_default,
                     )
                     .await?;
                 if torznab_sources.is_empty() && !has_external_sources {
@@ -1344,6 +1368,11 @@ impl ResolverService {
                 } else {
                     10
                 };
+                let prefer_mp4_default = prefer_mp4_default_candidates(
+                    resolver_provider,
+                    local_torrent_enabled,
+                    real_debrid,
+                );
                 let candidates = select_top_movie_candidates(
                     &streams,
                     &metadata,
@@ -1353,6 +1382,7 @@ impl ResolverService {
                     candidate_limit,
                     &filters.source_filters,
                     &health_scores,
+                    prefer_mp4_default,
                 );
                 let pinned_missing = !filters.source_hash.is_empty()
                     && !stream_list_contains_hash(&streams, &filters.source_hash);
@@ -1370,6 +1400,7 @@ impl ResolverService {
                         candidate_limit,
                         &filters.source_filters,
                         &health_scores,
+                        prefer_mp4_default,
                     );
                     if let Ok(result) = self
                         .resolve_movie_candidates(torznab_candidates, candidate_context)
@@ -1418,6 +1449,11 @@ impl ResolverService {
                 } else {
                     10
                 };
+                let prefer_mp4_default = prefer_mp4_default_candidates(
+                    resolver_provider,
+                    local_torrent_enabled,
+                    real_debrid,
+                );
                 let torznab_candidates = select_top_movie_candidates(
                     &torznab_streams,
                     &metadata,
@@ -1427,6 +1463,7 @@ impl ResolverService {
                     candidate_limit,
                     &filters.source_filters,
                     &health_scores,
+                    prefer_mp4_default,
                 );
                 if !torznab_candidates.is_empty() {
                     match self
@@ -1778,6 +1815,11 @@ impl ResolverService {
                 } else {
                     10
                 };
+                let prefer_mp4_default = prefer_mp4_default_candidates(
+                    resolver_provider,
+                    local_torrent_enabled,
+                    real_debrid,
+                );
                 let candidates = select_top_episode_candidates(
                     &streams,
                     &metadata,
@@ -1788,6 +1830,7 @@ impl ResolverService {
                     candidate_limit,
                     &filters.source_filters,
                     &health_scores,
+                    prefer_mp4_default,
                 );
                 let pinned_missing = !filters.source_hash.is_empty()
                     && !stream_list_contains_hash(&streams, &filters.source_hash);
@@ -1806,6 +1849,7 @@ impl ResolverService {
                         candidate_limit,
                         &filters.source_filters,
                         &health_scores,
+                        prefer_mp4_default,
                     );
                     if let Ok(result) = self
                         .resolve_episode_candidates(torznab_candidates, candidate_context)
@@ -1854,6 +1898,11 @@ impl ResolverService {
                 } else {
                     10
                 };
+                let prefer_mp4_default = prefer_mp4_default_candidates(
+                    resolver_provider,
+                    local_torrent_enabled,
+                    real_debrid,
+                );
                 let torznab_candidates = select_top_episode_candidates(
                     &torznab_streams,
                     &metadata,
@@ -1864,6 +1913,7 @@ impl ResolverService {
                     candidate_limit,
                     &filters.source_filters,
                     &health_scores,
+                    prefer_mp4_default,
                 );
                 if !torznab_candidates.is_empty() {
                     match self
@@ -4085,6 +4135,7 @@ impl ResolverService {
         normalized_source_hash: &str,
         limit: usize,
         source_filters: &SourceFilters,
+        prefer_mp4_default: bool,
     ) -> AppResult<Vec<SourceSummary>> {
         let health_scores = self.compute_source_health_scores(streams).await?;
         let candidates = select_top_movie_candidates(
@@ -4096,6 +4147,7 @@ impl ResolverService {
             limit,
             source_filters,
             &health_scores,
+            prefer_mp4_default,
         );
         Ok(candidates
             .iter()
@@ -4123,6 +4175,7 @@ impl ResolverService {
         normalized_source_hash: &str,
         limit: usize,
         source_filters: &SourceFilters,
+        prefer_mp4_default: bool,
     ) -> AppResult<Vec<SourceSummary>> {
         let health_scores = self.compute_source_health_scores(streams).await?;
         let candidates = select_top_episode_candidates(
@@ -4135,6 +4188,7 @@ impl ResolverService {
             limit,
             source_filters,
             &health_scores,
+            prefer_mp4_default,
         );
         Ok(candidates
             .iter()

@@ -85,6 +85,7 @@ pub(super) fn select_top_movie_candidates<'a>(
     limit: usize,
     source_filters: &SourceFilters,
     health_scores: &HashMap<String, i64>,
+    prefer_mp4_default: bool,
 ) -> Vec<&'a DiscoveryStream> {
     let ranked_pool = streams
         .iter()
@@ -110,14 +111,18 @@ pub(super) fn select_top_movie_candidates<'a>(
         .take(limit.max(1))
         .collect::<Vec<_>>();
     let selected = prioritize_candidates_by_source_hash(capped, sorted.clone(), source_hash, limit);
-    apply_mp4_default_candidate_rule(
-        selected,
-        sorted,
-        source_hash,
-        limit,
-        &source_filters.source_language,
-        health_scores,
-    )
+    if prefer_mp4_default {
+        apply_mp4_default_candidate_rule(
+            selected,
+            sorted,
+            source_hash,
+            limit,
+            &source_filters.source_language,
+            health_scores,
+        )
+    } else {
+        selected
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -131,6 +136,7 @@ pub(super) fn select_top_episode_candidates<'a>(
     limit: usize,
     source_filters: &SourceFilters,
     health_scores: &HashMap<String, i64>,
+    prefer_mp4_default: bool,
 ) -> Vec<&'a DiscoveryStream> {
     let ranked_pool = streams
         .iter()
@@ -161,7 +167,7 @@ pub(super) fn select_top_episode_candidates<'a>(
         source_hash,
         limit,
     );
-    if should_prefer_mp4_episode_candidate(preferred_container, source_hash) {
+    if prefer_mp4_default && should_prefer_mp4_episode_candidate(preferred_container, source_hash) {
         apply_mp4_default_candidate_rule(
             selected,
             sorted,

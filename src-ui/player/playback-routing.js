@@ -206,6 +206,7 @@ export function createPlaybackRouting({
   getPreferredResolverProvider = () => "fastest",
   getSupportedSourceFormatSet = () => new Set(),
   shouldPreferMobileLightTmdbSources = () => false,
+  shouldPreferDirectMp4Default = () => true,
   shouldMapSubtitleStreamIndex = () => false,
   parseTranscodeSource = () => null,
   getSubtitleTrackByStreamIndex = () => null,
@@ -504,19 +505,24 @@ export function createPlaybackRouting({
       return rightLangScore - leftLangScore;
     }
 
-    const leftResolution = parseSourceOptionVerticalResolution(left);
-    const rightResolution = parseSourceOptionVerticalResolution(right);
-    if (leftResolution !== rightResolution) {
-      return rightResolution - leftResolution;
-    }
-
     const leftSeeders = Number.isFinite(Number(left?.seeders))
       ? Math.max(0, Math.floor(Number(left.seeders)))
       : 0;
     const rightSeeders = Number.isFinite(Number(right?.seeders))
       ? Math.max(0, Math.floor(Number(right.seeders)))
       : 0;
-    if (leftSeeders !== rightSeeders) {
+    const preferDirectMp4 = shouldPreferDirectMp4Default();
+    if (!preferDirectMp4 && leftSeeders !== rightSeeders) {
+      return rightSeeders - leftSeeders;
+    }
+
+    const leftResolution = parseSourceOptionVerticalResolution(left);
+    const rightResolution = parseSourceOptionVerticalResolution(right);
+    if (leftResolution !== rightResolution) {
+      return rightResolution - leftResolution;
+    }
+
+    if (preferDirectMp4 && leftSeeders !== rightSeeders) {
       return rightSeeders - leftSeeders;
     }
 
@@ -546,6 +552,9 @@ export function createPlaybackRouting({
     const explicitPreference = getSourceListPreferredContainer();
     if (explicitPreference) {
       return explicitPreference;
+    }
+    if (!shouldPreferDirectMp4Default()) {
+      return "";
     }
     return getSupportedSourceFormatSet().has("mp4") ? "mp4" : "";
   }
