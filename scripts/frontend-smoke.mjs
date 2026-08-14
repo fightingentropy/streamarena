@@ -1945,9 +1945,9 @@ async function runSmoke() {
         // recovery overlay, and "Try another source" recovers to the working hashB.
         await page.waitForFunction(
           (hash) =>
-            Boolean(
-              document.querySelector(`.source-option[data-source-hash="${hash}"]`),
-            ) &&
+            document
+              .querySelector(`.source-option[data-source-hash="${hash}"]`)
+              ?.getAttribute("aria-selected") === "true" &&
             (document.querySelector("video")?.getAttribute("src") || "").includes(hash),
           sourceSwitchHashB,
           { timeout: 8_000 },
