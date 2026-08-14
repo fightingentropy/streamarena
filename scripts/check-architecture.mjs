@@ -234,6 +234,7 @@ async function checkDomainDecomposition() {
     "createLiveStreamCache",
     "createCustomSubtitleOverlay",
     "createLivePlaybackHealthWatch",
+    "createSourceDownloadController",
     "live-seek.js",
     "subtitle-placement.js",
   ]) {

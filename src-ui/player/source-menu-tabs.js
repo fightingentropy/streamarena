@@ -80,12 +80,19 @@ export function syncSourceMenuTabs(tabList, view) {
   });
 }
 
+const SOURCE_OPTION_DOWNLOAD_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="M12 3v12"></path>
+  <path d="M7 11l5 5 5-5"></path>
+  <path d="M5 21h14"></path>
+</svg>`;
+
 export function createSourceOptionButton({
   iconSvg,
   option,
   selectedSourceHash,
   sourceHash,
   loadingSourceHash = "",
+  downloadingSourceHash = "",
 }) {
   const button = document.createElement("button");
   button.className = "audio-option source-option";
@@ -132,5 +139,34 @@ export function createSourceOptionButton({
   status.appendChild(spinner);
 
   button.append(iconBadge, textWrap, status);
-  return button;
+
+  const downloadButton = document.createElement("button");
+  downloadButton.className = "source-option-download";
+  downloadButton.type = "button";
+  downloadButton.dataset.sourceHash = sourceHash;
+  const downloadLabel = `Download ${getSourceDisplayName(option)}`;
+  downloadButton.dataset.downloadLabel = downloadLabel;
+  const isDownloading =
+    Boolean(downloadingSourceHash) && sourceHash === downloadingSourceHash;
+  downloadButton.classList.toggle("is-loading", isDownloading);
+  downloadButton.disabled = Boolean(downloadingSourceHash);
+  downloadButton.setAttribute("aria-busy", isDownloading ? "true" : "false");
+  downloadButton.setAttribute(
+    "aria-label",
+    isDownloading ? "Preparing download" : downloadLabel,
+  );
+  downloadButton.title = isDownloading ? "Preparing download" : "Download";
+  const downloadIcon = document.createElement("span");
+  downloadIcon.className = "source-option-download-icon";
+  downloadIcon.setAttribute("aria-hidden", "true");
+  downloadIcon.innerHTML = SOURCE_OPTION_DOWNLOAD_ICON_SVG;
+  const downloadSpinner = document.createElement("span");
+  downloadSpinner.className = "source-option-spinner";
+  downloadSpinner.setAttribute("aria-hidden", "true");
+  downloadButton.append(downloadIcon, downloadSpinner);
+
+  const row = document.createElement("div");
+  row.className = "source-option-row";
+  row.append(button, downloadButton);
+  return row;
 }

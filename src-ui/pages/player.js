@@ -35,6 +35,7 @@ import {
   isBrowserSafeAudioCodec,
 } from "../player/sources.js";
 import { buildSourceMenuView, createSourceOptionButton, shouldIgnoreRememberedTorrentSource, syncSourceMenuTabs } from "../player/source-menu-tabs.js";
+import { createSourceDownloadController } from "../player/source-download.js";
 import {
   isTorrentResolverProvider,
   mergeRememberedServerContinueWatchingEntry,
@@ -423,6 +424,25 @@ const {
   pickResolverAlternateSourceHash: pickResolverAlternateSourceHashFromRouting,
   getPreferredDefaultSourceHash,
 } = playbackRouting;
+
+const sourceDownload = createSourceDownloadController({
+  normalizeSourceHash, extractPlaybackSourceInput, parseLiveIframePlaybackSource,
+  getSourceOptionByHash, isSourceOptionEmbed, getManualSourceSwitchTimeouts,
+  resolveTmdbSourcesAndPlay, normalizeResolverFailureMessage,
+  syncSourceSelectionState, renderSelectedSourceDetails,
+  getSelectedSourceHash: () => selectedSourceHash,
+  getPendingSourceSwitchHash: () => pendingSourceSwitchHash,
+  getActiveTrackSourceInput: () => activeTrackSourceInput,
+  getLastRequestedPlaybackSource: () => lastRequestedPlaybackSource,
+  isTmdbResolvedPlayback: () => isTmdbResolvedPlayback,
+  getUserLocalTorrentEnabled: () => userLocalTorrentEnabled,
+  getUserRealDebridConfigured: () => userRealDebridConfigured,
+  getPreferredResolverProvider: () => preferredResolverProvider,
+  setPreferredResolverProvider: (value) => { preferredResolverProvider = value; },
+  getActiveAudioStreamIndex: () => activeAudioStreamIndex,
+  getSelectedAudioStreamIndex: () => selectedAudioStreamIndex,
+  getCurrentTmdbResolvedFilename: () => currentTmdbResolvedFilename,
+});
 
 const hlsQualityControls = createHlsQualityControls({
   getElements: () => ({
@@ -1734,9 +1754,8 @@ function getSourceSelectLabel(option = {}) {
 }
 
 function renderSelectedSourceDetails() {
-  if (!sourceOptionDetails) {
-    return;
-  }
+  if (!sourceOptionDetails) return;
+  if (sourceDownload.applyStatus(sourceOptionDetails)) return;
   const selectedOption =
     getSourceOptionByHash(selectedSourceHash) ||
     availablePlaybackSources[0] ||
@@ -1873,6 +1892,7 @@ function syncSourceSelectionState() {
         : "false",
     );
   });
+  sourceDownload.syncButtons(sourceOptionsContainer);
 }
 
 function setPendingSourceSwitchHash(nextHash = "") {
@@ -1947,6 +1967,7 @@ function renderSourceOptionButtons() {
       selectedSourceHash,
       sourceHash,
       loadingSourceHash: pendingSourceSwitchHash,
+      downloadingSourceHash: sourceDownload.getDownloadingSourceHash(),
     }));
     displayedSources.push(option);
   }
@@ -9359,6 +9380,13 @@ if (sourceMenu) trackListener(sourceMenu, "click", (event) => {
     activeSourceTypeTab = String(sourceTab.dataset.sourceTab || "");
     renderSourceOptionButtons();
     sourceTab.focus({ preventScroll: true });
+    return;
+  }
+
+  const downloadButton = event.target.closest(".source-option-download");
+  if (downloadButton instanceof HTMLButtonElement) {
+    event.preventDefault(); event.stopPropagation();
+    void sourceDownload.download(downloadButton.dataset.sourceHash || "");
     return;
   }
 

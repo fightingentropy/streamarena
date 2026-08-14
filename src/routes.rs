@@ -2062,6 +2062,7 @@ pub async fn download_export_handler(
         .get("duration")
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or_default();
+    let filename_hint = params.get("filename").cloned().unwrap_or_default();
     state
         .streaming
         .create_export_response(
@@ -2069,6 +2070,7 @@ pub async fn download_export_handler(
             audio_stream_index,
             duration_seconds,
             method == Method::HEAD,
+            &filename_hint,
         )
         .await
 }

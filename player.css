@@ -1886,6 +1886,14 @@ body {
     gap: 8px;
 }
 
+.source-option-row {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    width: 100%;
+    min-width: 0;
+}
+
 .audio-option.source-option {
     display: flex;
     align-items: center;
@@ -1893,7 +1901,7 @@ body {
     width: 100%;
     min-width: 0;
     min-height: 88px;
-    padding: 14px 48px 14px 16px;
+    padding: 14px 92px 14px 16px;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 7px;
     background: rgba(255, 255, 255, 0.04);
@@ -1936,6 +1944,73 @@ body {
     height: 16px;
     transform: translateY(-50%);
     pointer-events: none;
+}
+
+.source-option-download {
+    position: absolute;
+    right: 46px;
+    top: 50%;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(245, 245, 245, 0.88);
+    cursor: pointer;
+    transform: translateY(-50%);
+    transition:
+        background-color 140ms ease,
+        color 140ms ease;
+}
+
+.source-option-download:hover,
+.source-option-download:focus-visible {
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+}
+
+.source-option-download:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+
+.source-option-download[disabled] {
+    cursor: wait;
+}
+
+.source-option-download-icon,
+.source-option-download .source-option-spinner {
+    pointer-events: none;
+}
+
+.source-option-download-icon {
+    display: inline-flex;
+    width: 18px;
+    height: 18px;
+}
+
+.source-option-download-icon svg {
+    width: 18px;
+    height: 18px;
+}
+
+.source-option-download.is-loading .source-option-download-icon {
+    display: none;
+}
+
+.source-option-download .source-option-spinner {
+    display: none;
+    width: 14px;
+    height: 14px;
+}
+
+.source-option-download.is-loading .source-option-spinner {
+    display: block;
 }
 
 .source-option-spinner {
@@ -2703,9 +2778,15 @@ body {
 
     .audio-option.source-option {
         min-height: 78px;
-        padding: 10px 36px 10px 12px;
+        padding: 10px 76px 10px 12px;
         border-radius: 7px;
         gap: 10px;
+    }
+
+    .source-option-download {
+        right: 38px;
+        width: 32px;
+        height: 32px;
     }
 
     .audio-option.source-option::before {

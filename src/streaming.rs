@@ -778,6 +778,7 @@ impl StreamingService {
         audio_stream_index: i64,
         duration_seconds: i64,
         is_head: bool,
+        filename_hint: &str,
     ) -> AppResult<Response<Body>> {
         // Two input shapes resolve to an ffmpeg input:
         //  • Our own signed live-HLS proxy URL — the form embed sources resolve to. ffmpeg
@@ -810,9 +811,14 @@ impl StreamingService {
             let name = source.clone();
             (source, false, name)
         };
+        let disposition_source = if filename_hint.trim().is_empty() {
+            filename_source
+        } else {
+            filename_hint.to_owned()
+        };
         let disposition = format!(
             "attachment; filename=\"{}\"",
-            export_download_filename(&filename_source)
+            export_download_filename(&disposition_source)
         );
 
         // HEAD: cheap existence/type probe — return headers without spawning ffmpeg.
@@ -2290,10 +2296,12 @@ fn build_export_ffmpeg_args(
 }
 
 // Derive a safe `attachment` filename from the source basename (sanitized to ASCII).
+// Only known media suffixes are treated as extensions so names like
+// `Game.of.Thrones.S02E10` keep the episode token instead of becoming `Game.of.Thrones.mp4`.
 fn export_download_filename(source: &str) -> String {
     let trimmed = source.split(['?', '#']).next().unwrap_or(source);
     let base = trimmed.rsplit(['/', '\\']).next().unwrap_or("").trim();
-    let stem = base.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(base);
+    let stem = strip_known_media_extension(base);
     let safe: String = stem
         .chars()
         .map(|c| {
@@ -2309,6 +2317,23 @@ fn export_download_filename(source: &str) -> String {
         "download.mp4".to_owned()
     } else {
         format!("{safe}.mp4")
+    }
+}
+
+fn strip_known_media_extension(name: &str) -> &str {
+    const MEDIA_EXTENSIONS: [&str; 11] = [
+        "mp4", "m4v", "mkv", "mk3d", "webm", "avi", "wmv", "ts", "m2ts", "mov", "mpg",
+    ];
+    let Some((stem, ext)) = name.rsplit_once('.') else {
+        return name;
+    };
+    if MEDIA_EXTENSIONS
+        .iter()
+        .any(|known| ext.eq_ignore_ascii_case(known))
+    {
+        stem
+    } else {
+        name
     }
 }
 
@@ -2369,7 +2394,7 @@ mod tests {
 
     use super::{
         build_hls_on_demand_segment_args, build_hls_transcode_args, build_hls_transcode_job_key,
-        build_hls_video_encode_config, normalize_remux_video_mode,
+        build_hls_video_encode_config, export_download_filename, normalize_remux_video_mode,
         should_force_accurate_seek_for_remux, should_force_normalize_video_for_browser,
     };
 
@@ -2520,5 +2545,26 @@ mod tests {
                 Some("160k")
             );
         }
+    }
+
+    #[test]
+    fn export_download_filename_uses_safe_basename() {
+        assert_eq!(
+            export_download_filename("Game.of.Thrones.S02E10.mkv"),
+            "Game.of.Thrones.S02E10.mp4"
+        );
+        assert_eq!(
+            export_download_filename("Game.of.Thrones.S02E10"),
+            "Game.of.Thrones.S02E10.mp4"
+        );
+        assert_eq!(
+            export_download_filename("/api/local-torrent/stream?sourceHash=abc"),
+            "stream.mp4"
+        );
+        assert_eq!(export_download_filename(""), "download.mp4");
+        assert_eq!(
+            export_download_filename("Valar..Morghulis*.mkv"),
+            "Valar..Morghulis_.mp4"
+        );
     }
 }
