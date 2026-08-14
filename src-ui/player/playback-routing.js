@@ -491,6 +491,31 @@ export function createPlaybackRouting({
   }
 
   function compareSourceOptionsForDefault(left = {}, right = {}) {
+    const leftEmbed = isSourceOptionEmbed(left);
+    const rightEmbed = isSourceOptionEmbed(right);
+    if (leftEmbed !== rightEmbed) {
+      return Number(rightEmbed) - Number(leftEmbed);
+    }
+
+    if (leftEmbed && rightEmbed) {
+      const leftBackendScore = Number(left?.score);
+      const rightBackendScore = Number(right?.score);
+      if (
+        Number.isFinite(leftBackendScore) ||
+        Number.isFinite(rightBackendScore)
+      ) {
+        const safeLeftScore = Number.isFinite(leftBackendScore)
+          ? leftBackendScore
+          : 0;
+        const safeRightScore = Number.isFinite(rightBackendScore)
+          ? rightBackendScore
+          : 0;
+        if (safeLeftScore !== safeRightScore) {
+          return safeRightScore - safeLeftScore;
+        }
+      }
+    }
+
     if (shouldPreferMobileLightTmdbSources()) {
       const leftMobileScore = scoreMobileLightSourceOption(left);
       const rightMobileScore = scoreMobileLightSourceOption(right);
@@ -560,14 +585,23 @@ export function createPlaybackRouting({
   }
 
   function getPreferredDefaultSourceHash(options = []) {
-    const preferredContainer = getDefaultSourceContainerPreference();
+    // Fetching the combined source menu must not turn torrent availability into
+    // an automatic torrent selection. The backend already ranks playable HLS /
+    // embed handoffs first; torrent quality ranking only applies when the list
+    // contains no such handoff (for example, after HLS has been exhausted).
+    const embeddedOptions = options.filter((option) =>
+      isSourceOptionEmbed(option),
+    );
+    const defaultOptions = embeddedOptions.length > 0 ? embeddedOptions : options;
+    const preferredContainer =
+      embeddedOptions.length > 0 ? "" : getDefaultSourceContainerPreference();
     const containerMatches = preferredContainer
-      ? options.filter((option) =>
+      ? defaultOptions.filter((option) =>
           isSourceOptionLikelyContainer(option, preferredContainer),
         )
       : [];
     const rankedOptions = [
-      ...(containerMatches.length > 0 ? containerMatches : options),
+      ...(containerMatches.length > 0 ? containerMatches : defaultOptions),
     ].sort(compareSourceOptionsForDefault);
     const defaultOption = rankedOptions[0] || null;
     return normalizeSourceHash(

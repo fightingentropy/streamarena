@@ -5,6 +5,8 @@ import { createPlaybackRouting } from "../src-ui/player/playback-routing.js";
 const hashA = "a".repeat(40);
 const hashB = "b".repeat(40);
 const hashMp4 = "c".repeat(40);
+const hashHls = "d".repeat(40);
+const hashHlsBackup = "e".repeat(40);
 
 const mkv1080 = {
   sourceHash: hashA,
@@ -30,6 +32,21 @@ const mp41080 = {
   container: "mp4",
   seeders: 120,
 };
+const hlsDefault = {
+  sourceHash: hashHls,
+  primary: "Meridian",
+  provider: "LivNet",
+  qualityLabel: "HLS",
+  container: "hls",
+  seeders: 0,
+  score: 1_001_000,
+};
+const hlsBackup = {
+  ...hlsDefault,
+  sourceHash: hashHlsBackup,
+  primary: "Aether backup",
+  score: 1_000_000,
+};
 
 const desktopRouting = createPlaybackRouting({
   getPreferredSourceFormats: () => ["mp4", "mkv"],
@@ -48,6 +65,18 @@ assert.equal(
   "desktop still prefers an mp4 match when one exists",
 );
 
+assert.equal(
+  desktopRouting.getPreferredDefaultSourceHash([
+    mkv2160,
+    hlsBackup,
+    hlsDefault,
+    mkv1080,
+    mp41080,
+  ]),
+  hashHls,
+  "a fresh mixed source list should stay on HLS instead of auto-selecting a torrent",
+);
+
 const localTorrentRouting = createPlaybackRouting({
   getPreferredSourceFormats: () => ["mp4", "mkv"],
   getSupportedSourceFormatSet: () => new Set(["mp4", "mkv"]),
@@ -58,6 +87,18 @@ assert.equal(
   localTorrentRouting.getPreferredDefaultSourceHash([mkv2160, mkv1080, mp41080]),
   hashA,
   "local torrent defaults to the healthiest swarm instead of a weak mp4",
+);
+
+assert.equal(
+  localTorrentRouting.getPreferredDefaultSourceHash([
+    mkv2160,
+    hlsBackup,
+    hlsDefault,
+    mkv1080,
+    mp41080,
+  ]),
+  hashHls,
+  "enabling local torrent must not replace an available HLS default",
 );
 
 const mobileRouting = createPlaybackRouting({
