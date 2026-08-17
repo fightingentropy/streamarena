@@ -331,6 +331,7 @@ async fn main() -> AppResult<()> {
             sweep_db.sweep().await;
             sweep_uploads.sweep_sessions().await;
             sweep_streaming.prune().await;
+            sweep_local_torrent.pause_finished_handles().await;
             sweep_local_torrent.prune_idle_locks();
             sweep_auth_rate_limiter.prune();
             sweep_auth_failure_backoff.prune();

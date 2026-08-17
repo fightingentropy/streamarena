@@ -8,8 +8,9 @@ export function getManualSourceSwitchTimeouts({
     return { resolveTimeoutMs: 30_000, startupTimeoutMs: 12_000 };
   }
   if (localTorrentEnabled) {
-    // Match the backend cold-torrent budget (metadata + ready + first byte).
-    return { resolveTimeoutMs: 300_000, startupTimeoutMs: 120_000 };
+    // Cover discovery plus the bounded cold-torrent metadata/readiness budget
+    // without leaving a failed manual handoff pending for five minutes.
+    return { resolveTimeoutMs: 190_000, startupTimeoutMs: 60_000 };
   }
   if (
     realDebridConfigured ||

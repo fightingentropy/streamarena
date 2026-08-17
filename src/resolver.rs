@@ -79,22 +79,22 @@ const REAL_DEBRID_API_BASE: &str = "https://api.real-debrid.com/rest/1.0";
 const SOURCE_LANGUAGE_FILTER_DEFAULT: &str = "en";
 const SOURCE_AUDIO_PROFILE_DEFAULT: &str = "single";
 const RESOLVE_MAX_MS: i64 = 90_000;
-// Cold pinned torrents often need a long metadata wait plus ready/first-byte.
-// Keep this above metadata + 2× ready (see local_torrent timeouts).
-const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 300_000;
+// Bound a cold torrent to metadata plus initialization/startup-buffer windows.
+// Candidate hedging keeps one dead swarm from serializing the whole budget.
+const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 150_000;
 const FASTEST_RESOLVE_MAX_MS: i64 = 45_000;
 /// How many top-ranked local-torrent candidates race (staggered hedge) for the
 /// first successful resolve. One dead or swarm-slow torrent used to serialize
 /// the whole resolve behind its metadata timeout; racing caps that cost.
-const LOCAL_TORRENT_RACE_CANDIDATES: usize = 4;
-/// Metadata probes usually show life or fail within a couple of seconds.
-/// Six seconds meant the 4th candidate waited 18s to even start.
-const LOCAL_TORRENT_RACE_STAGGER: Duration = Duration::from_secs(2);
+const LOCAL_TORRENT_RACE_CANDIDATES: usize = 2;
+/// Give the best-ranked swarm time to establish peers before starting one
+/// bounded hedge. Fast failures still launch the second candidate immediately.
+const LOCAL_TORRENT_RACE_STAGGER: Duration = Duration::from_secs(6);
 #[cfg(test)]
 const FASTEST_PARALLEL_CANDIDATES: usize = 4;
 const FASTEST_CANDIDATE_POOL_LIMIT: usize = 40;
 const PLAYABLE_URL_VALIDATE_TIMEOUT_MS: u64 = 8_000;
-const TORRENTIO_REQUEST_TIMEOUT_MS: u64 = 65_000;
+const TORRENTIO_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const TORRENTIO_REQUEST_MAX_ATTEMPTS: usize = 2;
 const TORRENTIO_REQUEST_RETRY_DELAY_MS: u64 = 1_200;
 const TORRENTIO_RETRY_MAX_ELAPSED_MS: i64 = 25_000;
@@ -279,6 +279,8 @@ pub(in crate::resolver) struct ResolveMetadata {
 pub(in crate::resolver) struct DiscoveryStream {
     #[serde(default)]
     pub(in crate::resolver) infoHash: String,
+    #[serde(default)]
+    pub(in crate::resolver) fileIdx: Option<usize>,
     #[serde(default)]
     pub(in crate::resolver) name: String,
     #[serde(default)]
@@ -2472,6 +2474,9 @@ impl ResolverService {
                 .get("preferences")
                 .and_then(|preferences| preferences.get("subtitleLang")),
         );
+        if preferred_subtitle_lang == "off" {
+            return;
+        }
 
         let mut subtitle_tracks = self
             .media
@@ -2520,63 +2525,94 @@ impl ResolverService {
         include_session: bool,
     ) -> AppResult<Value> {
         let source_input = extract_playable_source_input(&resolved.playable_url);
-        let tracks = match self.media.probe_media_tracks(&source_input).await {
-            Ok(probe) => probe,
-            Err(_) => MediaProbe {
-                durationSeconds: metadata.runtime_seconds,
-                ..MediaProbe::default()
-            },
-        };
-        let mut tracks = tracks;
-        let mut external_subtitle_tracks = self
-            .media
-            .search_opensubtitles_tracks(
-                &metadata.imdb_id,
-                &metadata.display_title,
-                &metadata.display_year,
-                &preferences.subtitle_lang,
-                &resolved.filename,
-            )
-            .await;
-        if external_subtitle_tracks.is_empty() {
-            external_subtitle_tracks = self
-                .media
-                .search_stremio_addon_subtitle_tracks(
-                    &metadata.imdb_id,
-                    metadata.season_number,
-                    metadata.episode_number,
-                    &preferences.subtitle_lang,
+        // The piece-aware local stream is playable as soon as its startup
+        // buffer is ready. ffprobe and subtitle providers are enrichment, not
+        // prerequisites; running them here used to add 15-55 seconds before
+        // the browser received a URL and made ffmpeg compete with startup I/O.
+        let tracks_pending = is_local_playback_session_url(&resolved.playable_url);
+        let (tracks, selected_audio_stream_index, selected_subtitle_stream_index) =
+            if tracks_pending {
+                (
+                    MediaProbe {
+                        durationSeconds: metadata.runtime_seconds,
+                        ..MediaProbe::default()
+                    },
+                    -1,
+                    -1,
                 )
-                .await;
-        }
-        if !external_subtitle_tracks.is_empty() {
-            tracks.subtitleTracks =
-                merge_preferred_subtitle_tracks(external_subtitle_tracks, tracks.subtitleTracks);
-        }
-        let force_audio_stream_mapping = preferences.audio_lang != "auto";
-        let preferred_audio_track = choose_audio_track_from_probe(&tracks, &preferences.audio_lang);
-        let mut selected_audio_stream_index = if force_audio_stream_mapping {
-            preferred_audio_track
-                .as_ref()
-                .map(|track| track.streamIndex)
-                .unwrap_or(-1)
-        } else {
-            -1
-        };
-        let preferred_subtitle_track =
-            choose_subtitle_track_from_probe(&tracks, &preferences.subtitle_lang);
-        let selected_subtitle_stream_index = preferred_subtitle_track
-            .as_ref()
-            .map(|track| track.streamIndex)
-            .unwrap_or(-1);
-        if should_force_remux_for_audio_compatibility(&tracks, selected_audio_stream_index)
-            && selected_audio_stream_index < 0
-        {
-            selected_audio_stream_index = preferred_audio_track
-                .as_ref()
-                .map(|track| track.streamIndex)
-                .unwrap_or_else(|| get_fallback_audio_stream_index(&tracks));
-        }
+            } else {
+                let subtitle_lookup = async {
+                    if preferences.subtitle_lang == "off" {
+                        return Vec::new();
+                    }
+                    let mut external = self
+                        .media
+                        .search_opensubtitles_tracks(
+                            &metadata.imdb_id,
+                            &metadata.display_title,
+                            &metadata.display_year,
+                            &preferences.subtitle_lang,
+                            &resolved.filename,
+                        )
+                        .await;
+                    if external.is_empty() {
+                        external = self
+                            .media
+                            .search_stremio_addon_subtitle_tracks(
+                                &metadata.imdb_id,
+                                metadata.season_number,
+                                metadata.episode_number,
+                                &preferences.subtitle_lang,
+                            )
+                            .await;
+                    }
+                    external
+                };
+                let (probe_result, external_subtitle_tracks) = tokio::join!(
+                    self.media.probe_media_tracks(&source_input),
+                    subtitle_lookup
+                );
+                let mut tracks = probe_result.unwrap_or_else(|_| MediaProbe {
+                    durationSeconds: metadata.runtime_seconds,
+                    ..MediaProbe::default()
+                });
+                if !external_subtitle_tracks.is_empty() {
+                    tracks.subtitleTracks = merge_preferred_subtitle_tracks(
+                        external_subtitle_tracks,
+                        tracks.subtitleTracks,
+                    );
+                }
+                let force_audio_stream_mapping = preferences.audio_lang != "auto";
+                let preferred_audio_track =
+                    choose_audio_track_from_probe(&tracks, &preferences.audio_lang);
+                let mut selected_audio_stream_index = if force_audio_stream_mapping {
+                    preferred_audio_track
+                        .as_ref()
+                        .map(|track| track.streamIndex)
+                        .unwrap_or(-1)
+                } else {
+                    -1
+                };
+                let preferred_subtitle_track =
+                    choose_subtitle_track_from_probe(&tracks, &preferences.subtitle_lang);
+                let selected_subtitle_stream_index = preferred_subtitle_track
+                    .as_ref()
+                    .map(|track| track.streamIndex)
+                    .unwrap_or(-1);
+                if should_force_remux_for_audio_compatibility(&tracks, selected_audio_stream_index)
+                    && selected_audio_stream_index < 0
+                {
+                    selected_audio_stream_index = preferred_audio_track
+                        .as_ref()
+                        .map(|track| track.streamIndex)
+                        .unwrap_or_else(|| get_fallback_audio_stream_index(&tracks));
+                }
+                (
+                    tracks,
+                    selected_audio_stream_index,
+                    selected_subtitle_stream_index,
+                )
+            };
         let normalized = normalize_resolved_source_for_software_decode(
             &resolved,
             selected_audio_stream_index,
@@ -2607,6 +2643,7 @@ impl ResolverService {
             "resolverProvider": resolver_provider.as_str(),
             "sourceInput": source_input,
             "tracks": tracks,
+            "tracksPending": tracks_pending,
             "selectedAudioStreamIndex": selected_audio_stream_index,
             "selectedSubtitleStreamIndex": selected_subtitle_stream_index,
             "preferences": {
@@ -2737,15 +2774,7 @@ impl ResolverService {
     }
 
     fn build_local_cache_upgrade_payload(&self, resolved: LocalTorrentResolvedSource) -> Value {
-        json!({
-            "ready": true,
-            "playableUrl": resolved.playable_url,
-            "sourceInput": extract_playable_source_input(&resolved.playable_url),
-            "filename": resolved.filename,
-            "sourceHash": resolved.source_hash,
-            "selectedFile": resolved.selected_file,
-            "resolverProvider": ResolverProvider::LocalTorrent.as_str(),
-        })
+        local_cache_upgrade_payload(resolved)
     }
 
     fn build_local_cache_upgrade_payload_from_session(&self, session: PlaybackSession) -> Value {
@@ -2757,6 +2786,7 @@ impl ResolverService {
             "sourceHash": session.source_hash,
             "selectedFile": session.selected_file,
             "resolverProvider": ResolverProvider::LocalTorrent.as_str(),
+            "tracksPending": true,
             "session": build_playback_session_payload(&session),
         })
     }
@@ -2772,6 +2802,7 @@ impl ResolverService {
             .resolve(LocalTorrentResolveRequest {
                 info_hash: get_stream_info_hash(stream),
                 magnet_uri: magnet,
+                preferred_file_index: stream.fileIdx,
                 preferred_filename: stream.behaviorHints.filename.clone(),
                 fallback_name: fallback_name.to_owned(),
             })
@@ -4268,6 +4299,21 @@ fn local_torrent_resolved_source_to_resolved_source(
         selected_file: source.selected_file,
         selected_file_path: source.selected_file_path,
     }
+}
+
+fn local_cache_upgrade_payload(resolved: LocalTorrentResolvedSource) -> Value {
+    json!({
+        "ready": true,
+        "playableUrl": resolved.playable_url,
+        "sourceInput": extract_playable_source_input(&resolved.playable_url),
+        "filename": resolved.filename,
+        "sourceHash": resolved.source_hash,
+        "selectedFile": resolved.selected_file,
+        "resolverProvider": ResolverProvider::LocalTorrent.as_str(),
+        // Local playback starts before ffprobe/subtitle enrichment; upgrades
+        // need the same deferred track pass as a fresh local resolve.
+        "tracksPending": true,
+    })
 }
 
 fn validate_resolved_movie_source(
@@ -6531,6 +6577,7 @@ fn torznab_item_to_stream(item: TorznabItem) -> Option<DiscoveryStream> {
     };
     Some(DiscoveryStream {
         infoHash: info_hash,
+        fileIdx: None,
         name: provider,
         title: title_lines.join("\n"),
         description: String::new(),
@@ -7617,7 +7664,10 @@ fn normalize_resolved_source_for_software_decode(
             audio_stream_index,
             normalized_subtitle_stream_index,
         );
-        if is_real_debrid_download_url(&current_playable) && !remux_fallback.is_empty() {
+        if (is_real_debrid_download_url(&current_playable)
+            || is_local_playback_session_url(&current_playable))
+            && !remux_fallback.is_empty()
+        {
             push_unique_url(&mut normalized.fallback_urls, &remux_fallback);
         }
         return normalized;

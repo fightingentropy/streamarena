@@ -531,6 +531,8 @@ Resolver/local cache:
 - `LOCAL_TORRENT_MAX_BYTES`
 - `LOCAL_TORRENT_METADATA_TIMEOUT_MS`
 - `LOCAL_TORRENT_READY_TIMEOUT_MS`
+- `LOCAL_TORRENT_UPLOAD_BPS` - session-wide peer upload cap; default 524288 bytes/s, `0` disables uploads.
+- `LOCAL_TORRENT_LISTEN_PORT_START` / `LOCAL_TORRENT_LISTEN_PORT_END` - inbound peer TCP range (exclusive end); defaults to the single deployment-mapped port 42501.
 - `PLAYBACK_SESSIONS`
 
 Torznab behavior:
@@ -646,7 +648,7 @@ Mac mini:
 
 - `bun run mini:install-server` - install/update Caddy, backend runner, and LaunchDaemons.
 - `bun run mini:install-agents` - install/update log rotation, disk monitor, and watchdog LaunchAgents; also removes obsolete hero-preview jobs/files.
-- `bun run mini:map-ports` - create router UPnP forwards for TCP 80 and 443.
+- `bun run mini:map-ports` - create router UPnP forwards for web TCP 80/443 plus the canonical Mini `LOCAL_TORRENT_LISTEN_PORT_START..END` range (up to 16 torrent ports). Setting the start to `0` removes the managed default torrent forward and leaves BitTorrent inbound mapping disabled.
 - `CF_API_TOKEN=... bun run mini:update-dns` - update Cloudflare-proxied A records with automatic TTL.
 - `bun run mini:check` - verify runtime tree, protected API auth status, Caddy, launchd, env permissions, public sign-up (`OPEN_SIGNUP=1` by default; override with `EXPECTED_OPEN_SIGNUP=0` for invite-only deployments), sports WARP proxy, resolver helpers, agents, disk space, and public response.
 - `bun run mini:deploy` - run quality/tests, stage a release while retaining the previous artifacts, deploy `dist`, backend binary, library metadata, images, and icons, then restart/check. Failed post-restart verification leaves the new binary active because database migrations can be forward-only; the retained artifacts are for deliberate, schema-aware recovery only.

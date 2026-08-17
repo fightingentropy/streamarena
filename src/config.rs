@@ -4,6 +4,10 @@ use std::path::PathBuf;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+const DEFAULT_LOCAL_TORRENT_UPLOAD_BPS: u32 = 512 * 1024;
+const MIN_LOCAL_TORRENT_UPLOAD_BPS: u64 = 64 * 1024;
+const MAX_LOCAL_TORRENT_UPLOAD_BPS: u64 = 32 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub root_dir: PathBuf,
@@ -134,13 +138,13 @@ impl Config {
             2 * 1024 * 1024 * 1024 * 1024,
         );
         let local_torrent_metadata_timeout_ms =
-            parse_u64_env("LOCAL_TORRENT_METADATA_TIMEOUT_MS", 120_000, 5_000, 300_000);
+            parse_u64_env("LOCAL_TORRENT_METADATA_TIMEOUT_MS", 45_000, 5_000, 300_000);
         let local_torrent_ready_timeout_ms =
-            parse_u64_env("LOCAL_TORRENT_READY_TIMEOUT_MS", 90_000, 5_000, 300_000);
+            parse_u64_env("LOCAL_TORRENT_READY_TIMEOUT_MS", 45_000, 5_000, 300_000);
         let local_torrent_listen_port_start =
             parse_u64_env("LOCAL_TORRENT_LISTEN_PORT_START", 42_501, 0, 65_534);
         let local_torrent_listen_port_end =
-            parse_u64_env("LOCAL_TORRENT_LISTEN_PORT_END", 42_521, 1, 65_535);
+            parse_u64_env("LOCAL_TORRENT_LISTEN_PORT_END", 42_502, 1, 65_535);
         let local_torrent_listen_port_range = if local_torrent_listen_port_start == 0 {
             None
         } else {
@@ -323,6 +327,23 @@ pub fn outbound_proxy_bypass_hosts() -> Vec<String> {
     parse_proxy_bypass_env("OUTBOUND_HTTP_PROXY_BYPASS")
 }
 
+/// Global BitTorrent upload budget. A small bounded contribution improves
+/// swarm reciprocity without allowing peer uploads to monopolize the same home
+/// uplink used to relay playback. Operators can set the value to 0 to opt out.
+pub fn local_torrent_upload_bps() -> Option<u32> {
+    normalize_local_torrent_upload_bps(env::var("LOCAL_TORRENT_UPLOAD_BPS").ok().as_deref())
+}
+
+fn normalize_local_torrent_upload_bps(value: Option<&str>) -> Option<u32> {
+    let parsed = value
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(u64::from(DEFAULT_LOCAL_TORRENT_UPLOAD_BPS));
+    if parsed == 0 {
+        return None;
+    }
+    Some(parsed.clamp(MIN_LOCAL_TORRENT_UPLOAD_BPS, MAX_LOCAL_TORRENT_UPLOAD_BPS) as u32)
+}
+
 /// Unset env -> the default bypass list; set-but-empty (or only whitespace/
 /// commas) -> empty, i.e. the operator explicitly re-routes everything through
 /// the proxy. Entries are trimmed and lowercased for suffix matching.
@@ -448,8 +469,8 @@ fn normalize_hwaccel_mode(value: String) -> String {
 mod tests {
     use super::{
         DEFAULT_OUTBOUND_PROXY_BYPASS_HOSTS, configured_email_from_env, normalize_bool_flag,
-        parse_bool_env, parse_csv_env, parse_proxy_bypass_env, parse_u64_env, parse_usize_env,
-        resolve_live_hls_proxy_secret,
+        normalize_local_torrent_upload_bps, parse_bool_env, parse_csv_env, parse_proxy_bypass_env,
+        parse_u64_env, parse_usize_env, resolve_live_hls_proxy_secret,
     };
 
     #[test]
@@ -533,6 +554,24 @@ mod tests {
         unsafe {
             std::env::remove_var("TORZNAB_CATEGORY_TEST");
         }
+    }
+
+    #[test]
+    fn bounds_local_torrent_upload_and_allows_opt_out() {
+        assert_eq!(normalize_local_torrent_upload_bps(None), Some(512 * 1024));
+        assert_eq!(
+            normalize_local_torrent_upload_bps(Some("bad")),
+            Some(512 * 1024)
+        );
+        assert_eq!(normalize_local_torrent_upload_bps(Some("0")), None);
+        assert_eq!(
+            normalize_local_torrent_upload_bps(Some("1")),
+            Some(64 * 1024)
+        );
+        assert_eq!(
+            normalize_local_torrent_upload_bps(Some("999999999")),
+            Some(32 * 1024 * 1024)
+        );
     }
 
     #[test]

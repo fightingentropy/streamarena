@@ -26,6 +26,14 @@ import {
   sleep,
 } from "../player/api.js";
 import {
+  createResolveJobRequestCoordinator,
+  createResolveRequester,
+  isTransientResolveError,
+} from "../player/resolve-job.js";
+import {
+  createDeferredMediaTrackController,
+} from "../player/deferred-media-tracks.js";
+import {
   normalizeSourceHash,
   getSourceDisplayName,
   getSourceDisplayHint,
@@ -233,6 +241,11 @@ let tmdbSourceAttemptIndex = 0;
 let tmdbSkipExternalEmbed = false;
 let tmdbResolveRetries = 0;
 let tmdbPlaybackRequestToken = 0;
+const resolveJobRequestCoordinator = createResolveJobRequestCoordinator();
+const requestResolveJson = createResolveRequester({
+  coordinator: resolveJobRequestCoordinator,
+  getResolverProvider: () => preferredResolverProvider,
+});
 let userRealDebridSettingsLoaded = false;
 let userRealDebridConfigured = false;
 let userLocalTorrentEnabled = false;
@@ -424,6 +437,51 @@ const {
   pickResolverAlternateSourceHash: pickResolverAlternateSourceHashFromRouting,
   getPreferredDefaultSourceHash,
 } = playbackRouting;
+
+const deferredMediaTracks = createDeferredMediaTrackController({
+  getState: () => ({
+    video,
+    sourceInput: activeTrackSourceInput, audioLang: preferredAudioLang,
+    subtitleLang: normalizeSubtitlePreference(preferredSubtitleLang),
+    currentPlaybackSource: String(lastRequestedPlaybackSource ||
+      lastRequestedAbsolutePlaybackSource || video?.currentSrc ||
+      video?.getAttribute?.("src") || "").trim(),
+    title, year,
+    filename: currentTmdbResolvedFilename, isTv: isTmdbTvPlayback,
+    seasonNumber, episodeNumber,
+    selectedAudioStreamIndex, selectedSubtitleStreamIndex,
+    activeAudioSyncMs, preferredAudioSyncMs,
+  }),
+  setActiveSourceInput: (value) => { activeTrackSourceInput = value; },
+  applyTrackState: (next, options = {}) => {
+    availableAudioTracks = next.audioTracks;
+    availableSubtitleTracks = next.subtitleTracks;
+    selectedAudioStreamIndex = next.selectedAudioStreamIndex;
+    selectedSubtitleStreamIndex = next.selectedSubtitleStreamIndex;
+    if (Number.isFinite(next.durationSeconds)) {
+      expectedDurationSeconds = next.durationSeconds;
+    } else if (options.resetDuration) {
+      expectedDurationSeconds = 0;
+    }
+    if (options.updateAudioPreference && next.audioPreference) {
+      resolvedTrackPreferenceAudio = next.audioPreference;
+    }
+  },
+  isSupportedAudioLanguage: (value) => supportedAudioLangs.has(value),
+  parseTranscodeSource, parseHlsMasterSource,
+  getDefaultEmbeddedAudioTrack, getSubtitleTrackByStreamIndex,
+  shouldUseNativeEmbeddedSubtitleTrack, hasLoadedNativeSubtitleTrack,
+  applyStoredSubtitleSelectionPreference,
+  shouldForceRemuxForEmbeddedAudio, shouldUseSoftwareDecode,
+  rebuildTrackOptionButtons, syncAudioState, syncDurationText,
+  getEffectiveCurrentTime, buildHlsPlaybackUrl, buildSoftwareDecodeUrl,
+  setVideoSource, applySubtitleTrackByStreamIndex,
+  tryPlay,
+});
+const {
+  schedule: scheduleDeferredMediaTrackEnrichment,
+  resolveExplicit: resolveExplicitSourceTrackSelection,
+} = deferredMediaTracks;
 
 const sourceDownload = createSourceDownloadController({
   normalizeSourceHash, extractPlaybackSourceInput, parseLiveIframePlaybackSource,
@@ -2168,6 +2226,7 @@ async function upgradePlaybackToLocalCache(payload) {
   });
   applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
   syncAudioState();
+  scheduleDeferredMediaTrackEnrichment(payload);
   await tryPlay();
 }
 
@@ -2385,7 +2444,10 @@ async function persistTrackPreferencesOnServer({
   }
 }
 
-function applySubtitleTrackByStreamIndex(streamIndex) {
+function applySubtitleTrackByStreamIndex(
+  streamIndex,
+  { preservePendingNative = false } = {},
+) {
   clearSubtitleTrack();
   hideAllSubtitleTracks();
 
@@ -2404,11 +2466,12 @@ function applySubtitleTrackByStreamIndex(streamIndex) {
   }
 
   selectedSubtitleStreamIndex = safeStreamIndex;
-  if (
-    shouldUseNativeEmbeddedSubtitleTrack(selectedTrack) &&
-    hasLoadedNativeSubtitleTrack(selectedTrack)
-  ) {
-    ensureNativeSubtitleTrackVisible();
+  const useNativeTrack = shouldUseNativeEmbeddedSubtitleTrack(selectedTrack);
+  const hasNativeTrack = useNativeTrack && hasLoadedNativeSubtitleTrack(selectedTrack);
+  if (hasNativeTrack || (useNativeTrack && preservePendingNative)) {
+    if (hasNativeTrack) {
+      ensureNativeSubtitleTrackVisible();
+    }
     return;
   }
 
@@ -2736,6 +2799,7 @@ function setVideoSource(
   { resetInitialResume = true, startSeconds = 0, autoplay = true } = {},
 ) {
   if (!nextSource) return;
+  deferredMediaTracks.cancel();
   const requestedStartSeconds = normalizeResumeStartSeconds(startSeconds);
   const iframeSource = parseLiveIframePlaybackSource(nextSource);
   if (iframeSource) {
@@ -2981,6 +3045,7 @@ async function rollbackManualSourceSwitchPlayback(
     return false;
   }
 
+  await requestResolveJson.cancelActive();
   const rollbackPlaybackRequestToken = ++tmdbPlaybackRequestToken;
   stopLocalCacheUpgradeWatch();
   const activePlaybackSource = getManualSourceSwitchRestoreSource();
@@ -3511,6 +3576,8 @@ async function applyResolvedTmdbPlayback(
       releaseYear ? `(${releaseYear})` : "",
     );
   }
+
+  scheduleDeferredMediaTrackEnrichment(resolved);
 
   if (autoplay) {
     await tryPlay();
@@ -7025,24 +7092,6 @@ async function handlePlaybackErrorRecovery(message) {
   return false;
 }
 
-function isTransientResolveError(error) {
-  const status = Number(error?.status || 0);
-  if (status === 502 || status === 503 || status === 504) {
-    return true;
-  }
-
-  const message = String(error?.message || "").toLowerCase();
-  return (
-    message.includes("bad gateway") ||
-    message.includes("request timed out") ||
-    message.includes("real-debrid request timed out") ||
-    message.includes("torrentio request failed") ||
-    message.includes("selected external hls source is unavailable") ||
-    message.includes("external hls sources are unavailable") ||
-    message.includes("failed to fetch")
-  );
-}
-
 function isSourceFallbackResolveError(error) {
   const status = Number(error?.status || 0);
   if (status === 424) {
@@ -7056,74 +7105,6 @@ function isSourceFallbackResolveError(error) {
     message.includes("external hls sources are unavailable") ||
     message.includes("all stream candidates failed")
   );
-}
-
-async function requestResolveJsonAsync(url, timeoutMs) {
-  const asyncUrl = String(url || "").includes("?")
-    ? `${url}&async=1`
-    : `${url}?async=1`;
-  const started = await requestJson(asyncUrl, {}, 20_000);
-  if (started?.playableUrl || (started?.sourceHash && !started?.jobId)) {
-    return started;
-  }
-  const jobId = String(started?.jobId || "").trim();
-  if (!jobId) {
-    throw new Error("Unable to start async resolve.");
-  }
-
-  const deadline = Date.now() + Math.max(1, Number(timeoutMs) || 1);
-  while (Date.now() < deadline) {
-    await sleep(2_000);
-    const status = await requestJson(`/api/resolve/job/${encodeURIComponent(jobId)}`, {}, 20_000);
-    const state = String(status?.status || "").trim().toLowerCase();
-    if (state === "done" && status?.result) {
-      return status.result;
-    }
-    if (state === "error") {
-      throw new Error(
-        String(status?.error || status?.message || "Unable to resolve this stream."),
-      );
-    }
-  }
-  throw new Error("Resolving stream timed out.");
-}
-
-async function requestResolveJson(url, timeoutMs) {
-  const retryDelays =
-    preferredResolverProvider === "real-debrid" ? [900, 1800] : [];
-  // Only an explicit timeout opts into the long async path. Passing `undefined`
-  // must NOT inherit a 300s default — that turned every page-load "fastest"
-  // resolve into a competing async job and starved torrent switches.
-  const hasExplicitTimeout =
-    Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0;
-  const effectiveTimeoutMs = hasExplicitTimeout
-    ? Math.floor(Number(timeoutMs))
-    : preferredResolverProvider === "real-debrid"
-      ? 95_000
-      : preferredResolverProvider === "local-torrent"
-        ? 300_000
-        : 50_000;
-  // Cloudflare proxied requests die around 100s; long local-torrent budgets
-  // must poll a short-lived async job instead of holding one HTTP request open.
-  const useAsyncResolve = hasExplicitTimeout && effectiveTimeoutMs > 90_000;
-  let lastError = null;
-
-  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
-    try {
-      if (useAsyncResolve) {
-        return await requestResolveJsonAsync(url, effectiveTimeoutMs);
-      }
-      return await requestJson(url, {}, effectiveTimeoutMs);
-    } catch (error) {
-      lastError = error;
-      if (attempt >= retryDelays.length || !isTransientResolveError(error)) {
-        throw error;
-      }
-      await sleep(retryDelays[attempt]);
-    }
-  }
-
-  throw lastError || new Error("Unable to resolve this stream.");
 }
 
 function getGallerySavePlayableCandidates(resolvedPayload = {}) {
@@ -7233,77 +7214,6 @@ async function queueGallerySaveIfRequested(resolvedPayload = {}) {
     hasQueuedGallerySave = false;
     console.error("Failed to queue gallery save:", error);
   }
-}
-
-async function resolveExplicitSourceTrackSelection(sourceInput) {
-  activeTrackSourceInput = String(sourceInput || "").trim();
-  if (!activeTrackSourceInput) {
-    expectedDurationSeconds = 0;
-    availableAudioTracks = [];
-    availableSubtitleTracks = [];
-    selectedAudioStreamIndex = -1;
-    selectedSubtitleStreamIndex = -1;
-    rebuildTrackOptionButtons();
-    return;
-  }
-
-  const query = new URLSearchParams({ input: activeTrackSourceInput });
-  if (title) {
-    query.set("title", title);
-  }
-  if (year) {
-    query.set("year", year);
-  }
-  if (
-    supportedAudioLangs.has(preferredAudioLang) &&
-    preferredAudioLang !== "auto"
-  ) {
-    query.set("audioLang", preferredAudioLang);
-  }
-  if (preferredSubtitleLang && preferredSubtitleLang !== "off") {
-    query.set("subtitleLang", preferredSubtitleLang);
-  }
-
-  try {
-    const payload = await requestJson(`/api/media/tracks?${query.toString()}`);
-    const nextExpectedDurationSeconds = Number(payload?.tracks?.durationSeconds);
-    expectedDurationSeconds =
-      Number.isFinite(nextExpectedDurationSeconds) &&
-      nextExpectedDurationSeconds > 0
-        ? Math.floor(nextExpectedDurationSeconds)
-        : 0;
-    availableAudioTracks = Array.isArray(payload?.tracks?.audioTracks)
-      ? payload.tracks.audioTracks
-      : [];
-    availableSubtitleTracks = Array.isArray(payload?.tracks?.subtitleTracks)
-      ? payload.tracks.subtitleTracks
-      : [];
-
-    const nextAudioStreamIndex = Number(payload?.selectedAudioStreamIndex);
-    selectedAudioStreamIndex =
-      Number.isFinite(nextAudioStreamIndex) && nextAudioStreamIndex >= 0
-        ? Math.floor(nextAudioStreamIndex)
-        : -1;
-
-    const nextSubtitleStreamIndex = Number(
-      payload?.selectedSubtitleStreamIndex,
-    );
-    selectedSubtitleStreamIndex =
-      Number.isFinite(nextSubtitleStreamIndex) && nextSubtitleStreamIndex >= 0
-        ? Math.floor(nextSubtitleStreamIndex)
-        : -1;
-  } catch {
-    // Track probing is best effort for explicit sources.
-    expectedDurationSeconds = 0;
-    availableAudioTracks = [];
-    availableSubtitleTracks = [];
-    selectedAudioStreamIndex = -1;
-    selectedSubtitleStreamIndex = -1;
-  }
-
-  rebuildTrackOptionButtons();
-  syncAudioState();
-  syncDurationText();
 }
 
 async function resolveTmdbMovieViaBackend(
@@ -9205,6 +9115,10 @@ async function handleSourceOptionSelection(nextSourceHash) {
       wasPaused,
     }),
   });
+  await requestResolveJson.cancelActive();
+  if (!manualSourceSwitch.isCurrent(sourceSwitchRequest)) {
+    return;
+  }
   if (!switchingToEmbed && userLocalTorrentEnabled) {
     preferredResolverProvider = "local-torrent";
   }
@@ -9300,6 +9214,12 @@ async function handleSourceOptionSelection(nextSourceHash) {
     }
     // Otherwise leave the row spinner up until startup completes or rolls back.
   } catch (error) {
+    if (
+      error?.name === "AbortError" &&
+      !manualSourceSwitch.isCurrent(sourceSwitchRequest)
+    ) {
+      return;
+    }
     const message = error?.message || "Unable to switch source.";
     if (manualSourceSwitch.isCurrent(sourceSwitchRequest)) {
       await manualSourceSwitch.fail(sourceSwitchRequest, message);
@@ -10014,6 +9934,8 @@ trackListener(window, "storage", (event) => {
   });
 
   onCleanup(() => {
+    void requestResolveJson.dispose();
+    deferredMediaTracks.dispose();
     _cleanups.forEach(fn => fn());
     _cleanups.length = 0;
     manualSourceSwitch.dispose();

@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
@@ -12,17 +14,19 @@ use axum::http::{HeaderMap, Method, Response, StatusCode};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dashmap::DashMap;
+use futures_util::StreamExt as _;
 use hmac::{Hmac, Mac};
 use librqbit::api::TorrentIdOrHash;
+use librqbit::limits::LimitsConfig;
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, PeerConnectionOptions,
-    Session, SessionOptions,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, ListOnlyResponse, ManagedTorrent,
+    PeerConnectionOptions, Session, SessionOptions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{Mutex, Notify, OnceCell};
 use tokio::time::timeout;
 use tokio_util::io::ReaderStream;
 
@@ -40,9 +44,15 @@ const LOCAL_TORRENT_ACCESS_MARKER: &str = ".last-accessed";
 /// Persisted BitTorrent metainfo so resolves after restart don't wait on peers
 /// for metadata that was already fetched once.
 const LOCAL_TORRENT_METAINFO_FILENAME: &str = ".meta.torrent";
-/// Short HTTP hedge when local metainfo is missing; magnet peer metadata is the
-/// fallback and can take the full LOCAL_TORRENT_METADATA_TIMEOUT_MS.
+/// Short HTTP hedge when local metainfo is missing. It races magnet peer/DHT
+/// metadata, which remains bounded by LOCAL_TORRENT_METADATA_TIMEOUT_MS.
 const LOCAL_TORRENT_METAINFO_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
+/// Public metainfo caches are untrusted HTTP endpoints. Legitimate `.torrent`
+/// files are normally tiny compared with the selected media, so reject an
+/// unexpectedly large response before it can consume unbounded memory.
+const LOCAL_TORRENT_METAINFO_MAX_BYTES: usize = 16 * 1024 * 1024;
+const LOCAL_TORRENT_STARTUP_PROBE_BYTES: usize = 256 * 1024;
+const LOCAL_TORRENT_FINISHED_HANDLE_GRACE_MS: i64 = 5 * 60 * 1000;
 const CACHE_CONTROL_STREAM: &str = "no-store";
 const DIRECT_FILE_CACHE_FOLDER: &str = "direct";
 const INTERNAL_STREAM_ACCESS_PARAM: &str = "internalAccess";
@@ -76,8 +86,36 @@ fn add_torrent_tracker_list() -> Vec<String> {
         .map(|tracker| (*tracker).to_owned())
         .collect()
 }
+
+fn local_torrent_add_options(
+    output_folder: &Path,
+    paused: bool,
+    only_file: Option<usize>,
+) -> AddTorrentOptions {
+    AddTorrentOptions {
+        paused,
+        only_files: only_file.map(|file_id| vec![file_id]),
+        output_folder: Some(output_folder.to_string_lossy().to_string()),
+        overwrite: true,
+        trackers: Some(add_torrent_tracker_list()),
+        peer_opts: Some(PeerConnectionOptions {
+            connect_timeout: Some(Duration::from_secs(20)),
+            read_write_timeout: Some(Duration::from_secs(20)),
+            keep_alive_interval: None,
+        }),
+        ..Default::default()
+    }
+}
+
+fn local_torrent_list_options(output_folder: &Path) -> AddTorrentOptions {
+    AddTorrentOptions {
+        list_only: true,
+        ..local_torrent_add_options(output_folder, true, None)
+    }
+}
 const INTERNAL_STREAM_ACCESS_CONTEXT: &[u8] = b"streamarena-local-torrent-internal-v1";
 type HmacSha256 = Hmac<Sha256>;
+type PendingTorrentCleanup = CleanupGuard<Box<dyn FnOnce() + Send>>;
 /// Direct-cache downloads only ever target Real-Debrid unrestricted
 /// links. Restricting the host prevents this server-side fetch from being
 /// pointed at internal/metadata endpoints (SSRF).
@@ -147,6 +185,9 @@ pub struct LocalTorrentService {
     http_client: reqwest::Client,
     session: Arc<OnceCell<Arc<Session>>>,
     handles: Arc<DashMap<String, Arc<ManagedTorrent>>>,
+    pending_handle_deletions: Arc<DashMap<String, Arc<PendingTorrentDeletion>>>,
+    active_streams: Arc<DashMap<String, Arc<AtomicUsize>>>,
+    managed_add_lock: Arc<Mutex<()>>,
     locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
 }
 
@@ -154,6 +195,7 @@ pub struct LocalTorrentService {
 pub(crate) struct LocalTorrentResolveRequest {
     pub info_hash: String,
     pub magnet_uri: String,
+    pub preferred_file_index: Option<usize>,
     pub preferred_filename: String,
     pub fallback_name: String,
 }
@@ -218,6 +260,31 @@ struct CacheDirEntry {
     modified_ms: i64,
 }
 
+struct PendingTorrentDeletion {
+    done: Notify,
+}
+
+struct ActiveTorrentStreamGuard {
+    count: Arc<AtomicUsize>,
+}
+
+fn spawn_cleanup_holding_managed_add_lock(
+    runtime: tokio::runtime::Handle,
+    managed_add_guard: tokio::sync::OwnedMutexGuard<()>,
+    cleanup: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    runtime.spawn(async move {
+        let _managed_add_guard = managed_add_guard;
+        cleanup.await;
+    });
+}
+
+impl Drop for ActiveTorrentStreamGuard {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl LocalTorrentService {
     pub fn new(config: Config, db: Db, http_client: reqwest::Client) -> Self {
         let download_client = reqwest::Client::builder()
@@ -231,6 +298,9 @@ impl LocalTorrentService {
             http_client: download_client,
             session: Arc::new(OnceCell::new()),
             handles: Arc::new(DashMap::new()),
+            pending_handle_deletions: Arc::new(DashMap::new()),
+            active_streams: Arc::new(DashMap::new()),
+            managed_add_lock: Arc::new(Mutex::new(())),
             locks: Arc::new(DashMap::new()),
         }
     }
@@ -269,18 +339,11 @@ impl LocalTorrentService {
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?;
 
-        let files = self
-            .fetch_torrent_file_candidates(session.clone(), &request, &output_folder)
+        let (handle, selected, newly_added) = self
+            .prepare_selected_handle(session.clone(), &request, &output_folder)
             .await?;
-        let selected = pick_local_torrent_video_file(
-            &files,
-            &request.preferred_filename,
-            &request.fallback_name,
-        )
-        .ok_or_else(|| ApiError::internal("No supported video file was found in this torrent."))?;
-
-        self.ensure_cache_has_room(selected.length, &source_hash)
-            .await?;
+        let mut pending_handle_cleanup = newly_added
+            .then(|| self.pending_handle_cleanup(session, source_hash.clone(), handle.clone()));
 
         let mut entry = LocalTorrentCacheEntry {
             source_hash: source_hash.clone(),
@@ -292,8 +355,7 @@ impl LocalTorrentService {
             file_length: selected.length,
             updated_at_ms: now_ms(),
         };
-        let handle = self.ensure_handle(session, &entry).await?;
-        self.wait_for_first_byte(handle.clone(), entry.file_id)
+        self.wait_for_startup_probe(handle.clone(), entry.file_id)
             .await?;
 
         let file_id_key = entry.file_id.to_string();
@@ -302,10 +364,17 @@ impl LocalTorrentService {
             .await?
         {
             self.refresh_entry_access_best_effort(&mut entry).await;
+            if let Some(cleanup) = pending_handle_cleanup.as_mut() {
+                cleanup.disarm();
+            }
             return Ok(optimized);
         }
 
         self.refresh_entry_access(&mut entry).await?;
+
+        if let Some(cleanup) = pending_handle_cleanup.as_mut() {
+            cleanup.disarm();
+        }
 
         Ok(LocalTorrentResolvedSource {
             playable_url: local_torrent_stream_url(&entry.source_hash, entry.file_id),
@@ -494,7 +563,22 @@ impl LocalTorrentService {
             .await?
             .ok_or_else(|| ApiError::not_found("Local torrent stream was not found."))?;
         let session = self.session().await?;
-        let handle = self.ensure_handle(session, &entry).await?;
+        let output_folder = self.output_folder_for_hash(&source_hash);
+        tokio::fs::create_dir_all(&output_folder)
+            .await
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        let resume_request = LocalTorrentResolveRequest {
+            info_hash: source_hash.clone(),
+            magnet_uri: entry.magnet_uri.clone(),
+            preferred_file_index: Some(entry.file_id),
+            preferred_filename: entry.filename.clone(),
+            fallback_name: entry.file_path.clone(),
+        };
+        let (handle, _, newly_added) = self
+            .prepare_selected_handle(session.clone(), &resume_request, &output_folder)
+            .await?;
+        let mut pending_handle_cleanup = newly_added
+            .then(|| self.pending_handle_cleanup(session, source_hash.clone(), handle.clone()));
         self.refresh_entry_access_best_effort(&mut entry).await;
         let mut stream = handle.clone().stream(file_id).map_err(|error| {
             ApiError::bad_gateway(format!("Local torrent stream failed: {error}"))
@@ -524,7 +608,13 @@ impl LocalTorrentService {
             let body = if method == Method::HEAD {
                 Body::empty()
             } else {
-                Body::from_stream(ReaderStream::new(stream.take(len)))
+                let active_stream = self.active_stream_guard(&source_hash);
+                Body::from_stream(
+                    ReaderStream::with_capacity(stream.take(len), 64 * 1024).map(move |chunk| {
+                        let _keep_alive = &active_stream;
+                        chunk
+                    }),
+                )
             };
             let mut response = Response::builder()
                 .status(StatusCode::PARTIAL_CONTENT)
@@ -535,20 +625,51 @@ impl LocalTorrentService {
                 CONTENT_RANGE,
                 HeaderValue::from_str(&format!("bytes {start}-{end}/{file_size}")).unwrap(),
             );
+            if let Some(cleanup) = pending_handle_cleanup.as_mut() {
+                cleanup.disarm();
+            }
             return Ok(response);
         }
 
         let body = if method == Method::HEAD {
             Body::empty()
         } else {
-            Body::from_stream(ReaderStream::new(stream))
+            let active_stream = self.active_stream_guard(&source_hash);
+            Body::from_stream(
+                ReaderStream::with_capacity(stream, 64 * 1024).map(move |chunk| {
+                    let _keep_alive = &active_stream;
+                    chunk
+                }),
+            )
         };
         let mut response = Response::builder()
             .status(StatusCode::OK)
             .body(body)
             .expect("local torrent response");
         apply_stream_headers(&mut response, &content_type, file_size);
+        if let Some(cleanup) = pending_handle_cleanup.as_mut() {
+            cleanup.disarm();
+        }
         Ok(response)
+    }
+
+    fn active_stream_guard(&self, source_hash: &str) -> ActiveTorrentStreamGuard {
+        let count_entry = self
+            .active_streams
+            .entry(source_hash.to_owned())
+            .or_insert_with(|| Arc::new(AtomicUsize::new(0)));
+        // Increment while the DashMap entry guard still pins this key. The
+        // maintenance sweep cannot prune a zero-valued entry between lookup
+        // and increment and thereby lose visibility of a live response.
+        count_entry.fetch_add(1, Ordering::AcqRel);
+        let count = count_entry.clone();
+        ActiveTorrentStreamGuard { count }
+    }
+
+    fn has_active_stream(&self, source_hash: &str) -> bool {
+        self.active_streams
+            .get(source_hash)
+            .is_some_and(|count| count.load(Ordering::Acquire) > 0)
     }
 
     pub(crate) async fn create_direct_file_stream_response(
@@ -615,7 +736,7 @@ impl LocalTorrentService {
             let body = if method == Method::HEAD {
                 Body::empty()
             } else {
-                Body::from_stream(ReaderStream::new(file.take(len)))
+                Body::from_stream(ReaderStream::with_capacity(file.take(len), 64 * 1024))
             };
             let mut response = Response::builder()
                 .status(StatusCode::PARTIAL_CONTENT)
@@ -635,7 +756,7 @@ impl LocalTorrentService {
             let file = tokio::fs::File::open(&file_path)
                 .await
                 .map_err(|error| ApiError::internal(error.to_string()))?;
-            Body::from_stream(ReaderStream::new(file))
+            Body::from_stream(ReaderStream::with_capacity(file, 64 * 1024))
         };
         let mut response = Response::builder()
             .status(StatusCode::OK)
@@ -653,6 +774,8 @@ impl LocalTorrentService {
                     .map_err(|error| ApiError::internal(error.to_string()))?;
                 let session_persistence_folder =
                     self.config.local_torrent_cache_dir.join(".session");
+                let upload_bps =
+                    crate::config::local_torrent_upload_bps().and_then(NonZeroU32::new);
                 let options = SessionOptions {
                     disable_dht: false,
                     // Keep the DHT routing table across restarts so the first
@@ -670,9 +793,9 @@ impl LocalTorrentService {
                     // forward the port on the router for full effect.
                     listen_port_range: self.config.local_torrent_listen_port_range.clone(),
                     enable_upnp_port_forwarding: false,
-                    // Raced resolve candidates (up to 4) initialize in
-                    // parallel; the loser handles are cheap to keep around.
-                    concurrent_init_limit: Some(4),
+                    // The primary candidate and one bounded hedge initialize in
+                    // parallel; cancellation cleanup removes loser handles.
+                    concurrent_init_limit: Some(2),
                     // Give cold swarms longer to establish peer sockets while
                     // metadata is still being fetched.
                     peer_opts: Some(PeerConnectionOptions {
@@ -681,7 +804,14 @@ impl LocalTorrentService {
                         keep_alive_interval: None,
                     }),
                     trackers: session_tracker_urls(),
-                    disable_upload: true,
+                    // Contribute enough upload bandwidth for swarm reciprocity
+                    // without monopolizing the home uplink used for playback.
+                    // A configured zero keeps the original no-upload mode.
+                    ratelimits: LimitsConfig {
+                        upload_bps,
+                        download_bps: None,
+                    },
+                    disable_upload: upload_bps.is_none(),
                     ..Default::default()
                 };
                 Session::new_with_opts(self.config.local_torrent_cache_dir.clone(), options)
@@ -696,95 +826,414 @@ impl LocalTorrentService {
             .cloned()
     }
 
-    async fn fetch_torrent_file_candidates(
+    async fn prepare_selected_handle(
         &self,
         session: Arc<Session>,
         request: &LocalTorrentResolveRequest,
         output_folder: &Path,
-    ) -> AppResult<Vec<LocalTorrentFileCandidate>> {
+    ) -> AppResult<(Arc<ManagedTorrent>, LocalTorrentFileCandidate, bool)> {
         let source_hash = normalize_torrent_hash(&request.info_hash);
-        let add = self
-            .resolve_add_torrent(&source_hash, &request.magnet_uri, output_folder)
-            .await?;
-        // List-only still asks librqbit for an output folder and may touch
-        // placeholder files. Keep that scratch space away from the real cache
-        // so metadata probes cannot wipe or conflict with warm downloads.
-        let list_folder = self
-            .config
-            .local_torrent_cache_dir
-            .join(".list-only")
-            .join(&source_hash);
-        tokio::fs::create_dir_all(&list_folder)
-            .await
-            .map_err(|error| ApiError::internal(error.to_string()))?;
-        let options = AddTorrentOptions {
-            list_only: true,
-            output_folder: Some(list_folder.to_string_lossy().to_string()),
-            overwrite: true,
-            trackers: Some(add_torrent_tracker_list()),
-            peer_opts: Some(PeerConnectionOptions {
-                connect_timeout: Some(Duration::from_secs(20)),
-                read_write_timeout: Some(Duration::from_secs(20)),
-                keep_alive_interval: None,
-            }),
-            ..Default::default()
+        let (handle, preselected, newly_added) =
+            if let Some(existing) = self.handles.get(&source_hash) {
+                (existing.clone(), None, false)
+            } else {
+                self.add_paused_torrent_handle(
+                    session.clone(),
+                    &source_hash,
+                    &request.magnet_uri,
+                    output_folder,
+                    request,
+                )
+                .await?
+            };
+
+        let mut pending_handle_cleanup = newly_added.then(|| {
+            self.pending_handle_cleanup(session.clone(), source_hash.clone(), handle.clone())
+        });
+
+        timeout(
+            Duration::from_millis(self.config.local_torrent_ready_timeout_ms),
+            handle.wait_until_initialized(),
+        )
+        .await
+        .map_err(|_| ApiError::gateway_timeout("Local torrent initialization timed out."))?
+        .map_err(|error| {
+            ApiError::bad_gateway(format!("Local torrent initialization failed: {error}"))
+        })?;
+
+        let selected = match preselected {
+            Some(selected) => selected,
+            None => select_torrent_file(self.file_candidates(&handle)?, request)?,
         };
-        let list_response = timeout(
+
+        self.ensure_cache_has_room(selected.length, &source_hash)
+            .await?;
+        self.cleanup_unselected_placeholders(output_folder, &selected.path)
+            .await;
+
+        let selected_files = HashSet::from([selected.file_id]);
+        if handle.only_files().as_deref() != Some(&[selected.file_id]) {
+            session
+                .update_only_files(&handle, &selected_files)
+                .await
+                .map_err(|error| {
+                    ApiError::bad_gateway(format!("Local torrent file selection failed: {error}"))
+                })?;
+        }
+        if handle.is_paused() {
+            session.unpause(&handle).await.map_err(|error| {
+                ApiError::bad_gateway(format!("Local torrent start failed: {error}"))
+            })?;
+        }
+
+        self.persist_handle_metainfo(&handle, output_folder).await;
+        self.handles.insert(source_hash, handle.clone());
+        if let Some(cleanup) = pending_handle_cleanup.as_mut() {
+            cleanup.disarm();
+        }
+        Ok((handle, selected, newly_added))
+    }
+
+    fn pending_handle_cleanup(
+        &self,
+        session: Arc<Session>,
+        source_hash: String,
+        handle: Arc<ManagedTorrent>,
+    ) -> PendingTorrentCleanup {
+        let handles = self.handles.clone();
+        let pending_deletions = self.pending_handle_deletions.clone();
+        let handle_id = handle.id();
+        CleanupGuard::new(Box::new(move || {
+            let pending = Arc::new(PendingTorrentDeletion {
+                done: Notify::new(),
+            });
+            pending_deletions.insert(source_hash.clone(), pending.clone());
+            let should_remove = handles
+                .get(&source_hash)
+                .is_some_and(|current| current.id() == handle_id);
+            if should_remove {
+                handles.remove(&source_hash);
+            }
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    if let Ok(id_or_hash) = TorrentIdOrHash::parse(&source_hash)
+                        && let Some(current) = session.get(id_or_hash)
+                        && current.id() == handle_id
+                    {
+                        let _ = session.delete(id_or_hash, false).await;
+                    }
+                    let should_remove = pending_deletions
+                        .get(&source_hash)
+                        .is_some_and(|current| Arc::ptr_eq(current.value(), &pending));
+                    if should_remove {
+                        pending_deletions.remove(&source_hash);
+                    }
+                    pending.done.notify_one();
+                });
+            } else {
+                pending_deletions.remove(&source_hash);
+                pending.done.notify_one();
+            }
+        }))
+    }
+
+    async fn add_paused_torrent_handle(
+        &self,
+        session: Arc<Session>,
+        source_hash: &str,
+        magnet_uri: &str,
+        output_folder: &Path,
+        request: &LocalTorrentResolveRequest,
+    ) -> AppResult<(Arc<ManagedTorrent>, Option<LocalTorrentFileCandidate>, bool)> {
+        while let Some(pending) = self
+            .pending_handle_deletions
+            .get(source_hash)
+            .map(|entry| entry.clone())
+        {
+            pending.done.notified().await;
+        }
+        if let Ok(id_or_hash) = TorrentIdOrHash::parse(source_hash)
+            && let Some(handle) = session.get(id_or_hash)
+        {
+            return Ok((handle, None, false));
+        }
+
+        // Metadata discovery is deliberately list-only. It can race the
+        // public cache against DHT/peer magnet discovery without inserting a
+        // half-initialized managed torrent if the losing future is cancelled.
+        let listed = timeout(
             Duration::from_millis(self.config.local_torrent_metadata_timeout_ms),
-            session.add_torrent(add, Some(options)),
+            self.load_torrent_metadata(session.clone(), source_hash, magnet_uri, output_folder),
         )
         .await
         .map_err(|_| {
             ApiError::gateway_timeout(
                 "Selected torrent did not start in time (no metadata from peers). Try another source.",
             )
-        })?
-        .map_err(|error| {
-            ApiError::bad_gateway(format!("Local torrent metadata failed: {error}"))
-        })?;
+        })??;
 
-        let AddTorrentResponse::ListOnly(list) = list_response else {
-            return Err(ApiError::bad_gateway(
-                "Local torrent metadata could not be listed.",
-            ));
-        };
-        self.persist_metainfo_bytes(output_folder, &list.torrent_bytes)
+        let files = file_candidates_from_listed_metainfo(&listed)?;
+        let selected = select_torrent_file(files, request)?;
+        // Reserve cache capacity before librqbit creates the selected file.
+        // Passing only_files on the first managed add also prevents a season
+        // pack from allocating sparse logical-length files for every episode.
+        self.ensure_cache_has_room(selected.length, source_hash)
+            .await?;
+        self.cleanup_unselected_placeholders(output_folder, &selected.path)
             .await;
-        let _ = tokio::fs::remove_dir_all(&list_folder).await;
-        list.info
-            .iter_file_details()
-            .map_err(|error| {
-                ApiError::bad_gateway(format!("Local torrent file list failed: {error}"))
-            })?
-            .enumerate()
-            .map(|(file_id, details)| {
-                let path = details
-                    .filename
-                    .to_string()
-                    .unwrap_or_else(|_| format!("file-{file_id}"));
-                Ok(LocalTorrentFileCandidate {
-                    file_id,
-                    path,
-                    length: details.len,
-                })
-            })
-            .collect()
+
+        let response = self
+            .add_selected_torrent(
+                session.clone(),
+                source_hash,
+                output_folder,
+                listed.torrent_bytes.to_vec(),
+                selected.file_id,
+            )
+            .await?;
+        match response {
+            AddTorrentResponse::Added(_, handle)
+            | AddTorrentResponse::AlreadyManaged(_, handle) => {
+                if handle.info_hash().as_string() != source_hash {
+                    let handle_id = handle.id();
+                    return Err(ApiError::bad_gateway(format!(
+                        "Local torrent add collided with another managed handle ({handle_id})."
+                    )));
+                }
+                Ok((handle, Some(selected), true))
+            }
+            AddTorrentResponse::ListOnly(_) => Err(ApiError::bad_gateway(
+                "Local torrent handle was not created.",
+            )),
+        }
     }
 
-    async fn resolve_add_torrent(
+    async fn load_torrent_metadata(
         &self,
+        session: Arc<Session>,
         source_hash: &str,
         magnet_uri: &str,
         output_folder: &Path,
-    ) -> AppResult<AddTorrent<'static>> {
+    ) -> AppResult<ListOnlyResponse> {
         if let Some(bytes) = self.load_metainfo_bytes(output_folder).await {
-            return Ok(AddTorrent::from_bytes(bytes));
+            match self
+                .list_metainfo_bytes(session.clone(), bytes, output_folder)
+                .await
+            {
+                Ok(listed) if listed.info_hash.as_string() == source_hash => return Ok(listed),
+                Ok(listed) => tracing::warn!(
+                    expected_hash = source_hash,
+                    actual_hash = %listed.info_hash.as_string(),
+                    "discarding persisted torrent metainfo with a mismatched info hash"
+                ),
+                Err(error) => tracing::warn!(
+                    error = ?error,
+                    source_hash,
+                    "discarding invalid persisted torrent metainfo"
+                ),
+            }
+            let _ = tokio::fs::remove_file(Self::metainfo_path(output_folder)).await;
         }
-        if let Some(bytes) = self.fetch_metainfo_bytes(source_hash).await {
-            self.persist_metainfo_bytes(output_folder, &bytes).await;
-            return Ok(AddTorrent::from_bytes(bytes));
+
+        let magnet_list = session.add_torrent(
+            AddTorrent::from_url(magnet_uri.to_owned()),
+            Some(local_torrent_list_options(output_folder)),
+        );
+        let metainfo_fetch = self.fetch_metainfo_bytes(source_hash);
+        tokio::pin!(magnet_list);
+        tokio::pin!(metainfo_fetch);
+
+        let listed = tokio::select! {
+            result = &mut magnet_list => {
+                match listed_metainfo_response(result) {
+                    Ok(listed) if listed.info_hash.as_string() == source_hash => Ok(listed),
+                    Ok(listed) => {
+                        tracing::warn!(
+                            expected_hash = source_hash,
+                            actual_hash = %listed.info_hash.as_string(),
+                            "magnet metadata did not match; waiting for public metainfo cache"
+                        );
+                        match metainfo_fetch.await {
+                            Some(bytes) => self.list_metainfo_bytes(session.clone(), bytes, output_folder).await,
+                            None => Ok(listed),
+                        }
+                    }
+                    Err(magnet_error) => {
+                        tracing::warn!(
+                            error = ?magnet_error,
+                            source_hash,
+                            "magnet metadata failed; waiting for public metainfo cache"
+                        );
+                        match metainfo_fetch.await {
+                            Some(bytes) => self.list_metainfo_bytes(session.clone(), bytes, output_folder).await,
+                            None => Err(magnet_error),
+                        }
+                    }
+                }
+            },
+            maybe_bytes = &mut metainfo_fetch => {
+                if let Some(bytes) = maybe_bytes {
+                    match self.list_metainfo_bytes(session.clone(), bytes, output_folder).await {
+                        Ok(listed) if listed.info_hash.as_string() == source_hash => Ok(listed),
+                        Ok(listed) => {
+                            tracing::warn!(
+                                expected_hash = source_hash,
+                                actual_hash = %listed.info_hash.as_string(),
+                                "public torrent metainfo cache returned the wrong info hash"
+                            );
+                            listed_metainfo_response(magnet_list.await)
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                error = ?error,
+                                source_hash,
+                                "public torrent metainfo cache returned invalid data; waiting for magnet metadata"
+                            );
+                            listed_metainfo_response(magnet_list.await)
+                        }
+                    }
+                } else {
+                    listed_metainfo_response(magnet_list.await)
+                }
+            }
+        }?;
+        if listed.info_hash.as_string() != source_hash {
+            return Err(ApiError::bad_gateway(
+                "Local torrent metadata did not match the requested info hash.",
+            ));
         }
-        Ok(AddTorrent::from_url(magnet_uri.to_owned()))
+        self.persist_metainfo_bytes(output_folder, &listed.torrent_bytes)
+            .await;
+        Ok(listed)
+    }
+
+    async fn list_metainfo_bytes(
+        &self,
+        session: Arc<Session>,
+        bytes: Vec<u8>,
+        output_folder: &Path,
+    ) -> AppResult<ListOnlyResponse> {
+        listed_metainfo_response(
+            session
+                .add_torrent(
+                    AddTorrent::from_bytes(bytes),
+                    Some(local_torrent_list_options(output_folder)),
+                )
+                .await,
+        )
+    }
+
+    async fn add_selected_torrent(
+        &self,
+        session: Arc<Session>,
+        source_hash: &str,
+        output_folder: &Path,
+        torrent_bytes: Vec<u8>,
+        selected_file_id: usize,
+    ) -> AppResult<AddTorrentResponse> {
+        // librqbit's JSON persistence chooses the next numeric ID before its
+        // torrent DB write lock. Serialize only the short managed-add phase so
+        // two different hashes cannot be mistaken for AlreadyManaged by ID;
+        // metadata discovery and torrent initialization remain concurrent.
+        let managed_add_guard = self.managed_add_lock.clone().lock_owned().await;
+        let pending = Arc::new(PendingTorrentDeletion {
+            done: Notify::new(),
+        });
+        self.pending_handle_deletions
+            .insert(source_hash.to_owned(), pending.clone());
+
+        // add_torrent inserts into the session before its final persistence
+        // await. If this resolve is cancelled in that small window, remove the
+        // partially-created handle and keep later resolves behind the barrier
+        // until deletion has completed.
+        let cleanup_session = session.clone();
+        let cleanup_hash = source_hash.to_owned();
+        let cleanup_pending = pending.clone();
+        let pending_deletions = self.pending_handle_deletions.clone();
+        let mut cleanup = CleanupGuard::new(Box::new(move || {
+            // `add_torrent` can be cancelled after librqbit reserves an
+            // in-memory numeric ID but before JSON persistence records it.
+            // Transfer the owned add lock into cleanup so another hash cannot
+            // reuse that ID until the cancelled handle is gone.
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let cleanup = async move {
+                    tokio::task::yield_now().await;
+                    if let Ok(id_or_hash) = TorrentIdOrHash::parse(&cleanup_hash)
+                        && cleanup_session.get(id_or_hash).is_some()
+                    {
+                        let _ = cleanup_session.delete(id_or_hash, false).await;
+                    }
+                    let should_remove = pending_deletions
+                        .get(&cleanup_hash)
+                        .is_some_and(|current| Arc::ptr_eq(current.value(), &cleanup_pending));
+                    if should_remove {
+                        pending_deletions.remove(&cleanup_hash);
+                    }
+                    cleanup_pending.done.notify_one();
+                };
+                spawn_cleanup_holding_managed_add_lock(runtime, managed_add_guard, cleanup);
+            } else {
+                drop(managed_add_guard);
+                pending_deletions.remove(&cleanup_hash);
+                cleanup_pending.done.notify_one();
+            }
+        }) as Box<dyn FnOnce() + Send>);
+
+        let response = session
+            .add_torrent(
+                AddTorrent::from_bytes(torrent_bytes),
+                Some(local_torrent_add_options(
+                    output_folder,
+                    true,
+                    Some(selected_file_id),
+                )),
+            )
+            .await
+            .map_err(|error| ApiError::bad_gateway(format!("Local torrent add failed: {error}")))?;
+        cleanup.disarm();
+        let should_remove = self
+            .pending_handle_deletions
+            .get(source_hash)
+            .is_some_and(|current| Arc::ptr_eq(current.value(), &pending));
+        if should_remove {
+            self.pending_handle_deletions.remove(source_hash);
+        }
+        pending.done.notify_one();
+        Ok(response)
+    }
+
+    fn file_candidates(
+        &self,
+        handle: &ManagedTorrent,
+    ) -> AppResult<Vec<LocalTorrentFileCandidate>> {
+        handle
+            .with_metadata(|metadata| {
+                metadata
+                    .info
+                    .iter_file_details()
+                    .map_err(|error| error.to_string())
+                    .and_then(|files| {
+                        files
+                            .enumerate()
+                            .map(|(file_id, details)| {
+                                Ok(LocalTorrentFileCandidate {
+                                    file_id,
+                                    path: details
+                                        .filename
+                                        .to_string()
+                                        .unwrap_or_else(|_| format!("file-{file_id}")),
+                                    length: details.len,
+                                })
+                            })
+                            .collect()
+                    })
+            })
+            .map_err(|error| {
+                ApiError::bad_gateway(format!("Local torrent file list failed: {error}"))
+            })?
+            .map_err(|error| {
+                ApiError::bad_gateway(format!("Local torrent file list failed: {error}"))
+            })
     }
 
     fn metainfo_path(output_folder: &Path) -> PathBuf {
@@ -851,11 +1300,26 @@ impl LocalTorrentService {
         if !response.status().is_success() {
             return None;
         }
-        let bytes = timeout(LOCAL_TORRENT_METAINFO_FETCH_TIMEOUT, response.bytes())
-            .await
-            .ok()?
-            .ok()?;
-        let bytes = bytes.to_vec();
+        if response
+            .content_length()
+            .is_some_and(|length| length > LOCAL_TORRENT_METAINFO_MAX_BYTES as u64)
+        {
+            return None;
+        }
+        let bytes = timeout(LOCAL_TORRENT_METAINFO_FETCH_TIMEOUT, async move {
+            let mut stream = response.bytes_stream();
+            let mut bytes = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.ok()?;
+                if bytes.len().saturating_add(chunk.len()) > LOCAL_TORRENT_METAINFO_MAX_BYTES {
+                    return None;
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Some(bytes)
+        })
+        .await
+        .ok()??;
         if looks_like_torrent_metainfo(&bytes) {
             Some(bytes)
         } else {
@@ -909,128 +1373,7 @@ impl LocalTorrentService {
         }
     }
 
-    async fn ensure_handle(
-        &self,
-        session: Arc<Session>,
-        entry: &LocalTorrentCacheEntry,
-    ) -> AppResult<Arc<ManagedTorrent>> {
-        if let Some(existing) = self.handles.get(&entry.source_hash) {
-            let handle = existing.clone();
-            if handle_includes_file(&handle, entry.file_id) {
-                return Ok(handle);
-            }
-            let _ = session
-                .delete(TorrentIdOrHash::Id(handle.id()), false)
-                .await;
-            drop(existing);
-            self.handles.remove(&entry.source_hash);
-        }
-
-        let output_folder = self.output_folder_for_hash(&entry.source_hash);
-        tokio::fs::create_dir_all(&output_folder)
-            .await
-            .map_err(|error| ApiError::internal(error.to_string()))?;
-        let add = self
-            .resolve_add_torrent(&entry.source_hash, &entry.magnet_uri, &output_folder)
-            .await?;
-        // Drop leftover zero-byte placeholders from older full-pack adds so the
-        // cache stays lean. librqbit's overwrite=true opens existing files with
-        // truncate=false, so warm selected bytes are preserved.
-        self.cleanup_unselected_placeholders(&output_folder, &entry.file_path)
-            .await;
-        let options = AddTorrentOptions {
-            only_files: Some(vec![entry.file_id]),
-            output_folder: Some(output_folder.to_string_lossy().to_string()),
-            overwrite: true,
-            trackers: Some(add_torrent_tracker_list()),
-            peer_opts: Some(PeerConnectionOptions {
-                connect_timeout: Some(Duration::from_secs(20)),
-                read_write_timeout: Some(Duration::from_secs(20)),
-                keep_alive_interval: None,
-            }),
-            ..Default::default()
-        };
-        let response = session
-            .add_torrent(add, Some(options))
-            .await
-            .map_err(|error| ApiError::bad_gateway(format!("Local torrent add failed: {error}")))?;
-        let handle = match response {
-            AddTorrentResponse::Added(_, handle) => handle,
-            AddTorrentResponse::AlreadyManaged(_, handle) => {
-                if !handle_includes_file(&handle, entry.file_id) {
-                    session
-                        .delete(TorrentIdOrHash::Id(handle.id()), false)
-                        .await
-                        .map_err(|error| {
-                            ApiError::bad_gateway(format!("Local torrent reload failed: {error}"))
-                        })?;
-                    let retry_add = self
-                        .resolve_add_torrent(&entry.source_hash, &entry.magnet_uri, &output_folder)
-                        .await?;
-                    self.cleanup_unselected_placeholders(&output_folder, &entry.file_path)
-                        .await;
-                    let retry_options = AddTorrentOptions {
-                        only_files: Some(vec![entry.file_id]),
-                        output_folder: Some(output_folder.to_string_lossy().to_string()),
-                        overwrite: true,
-                        trackers: Some(add_torrent_tracker_list()),
-                        peer_opts: Some(PeerConnectionOptions {
-                            connect_timeout: Some(Duration::from_secs(20)),
-                            read_write_timeout: Some(Duration::from_secs(20)),
-                            keep_alive_interval: None,
-                        }),
-                        ..Default::default()
-                    };
-                    session
-                        .add_torrent(retry_add, Some(retry_options))
-                        .await
-                        .map_err(|error| {
-                            ApiError::bad_gateway(format!("Local torrent add failed: {error}"))
-                        })?
-                        .into_handle()
-                        .ok_or_else(|| {
-                            ApiError::bad_gateway("Local torrent handle was not created.")
-                        })?
-                } else {
-                    handle
-                }
-            }
-            AddTorrentResponse::ListOnly(_) => {
-                return Err(ApiError::bad_gateway(
-                    "Local torrent handle was not created.",
-                ));
-            }
-        };
-
-        let cleanup_session = session.clone();
-        let cleanup_handle_id = handle.id();
-        let mut pending_handle_cleanup = CleanupGuard::new(move || {
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                runtime.spawn(async move {
-                    let _ = cleanup_session
-                        .delete(TorrentIdOrHash::Id(cleanup_handle_id), false)
-                        .await;
-                });
-            }
-        });
-
-        timeout(
-            Duration::from_millis(self.config.local_torrent_ready_timeout_ms),
-            handle.wait_until_initialized(),
-        )
-        .await
-        .map_err(|_| ApiError::gateway_timeout("Local torrent initialization timed out."))?
-        .map_err(|error| {
-            ApiError::bad_gateway(format!("Local torrent initialization failed: {error}"))
-        })?;
-        self.persist_handle_metainfo(&handle, &output_folder).await;
-        self.handles
-            .insert(entry.source_hash.clone(), handle.clone());
-        pending_handle_cleanup.disarm();
-        Ok(handle)
-    }
-
-    async fn wait_for_first_byte(
+    async fn wait_for_startup_probe(
         &self,
         handle: Arc<ManagedTorrent>,
         file_id: usize,
@@ -1038,18 +1381,23 @@ impl LocalTorrentService {
         let mut stream = handle.stream(file_id).map_err(|error| {
             ApiError::bad_gateway(format!("Local torrent stream failed: {error}"))
         })?;
-        let mut first_byte = [0_u8; 1];
+        let target_bytes = stream.len().min(LOCAL_TORRENT_STARTUP_PROBE_BYTES as u64) as usize;
+        if target_bytes == 0 {
+            return Err(ApiError::bad_gateway("Local torrent file was empty."));
+        }
         let read_result = timeout(
             Duration::from_millis(self.config.local_torrent_ready_timeout_ms),
-            stream.read(&mut first_byte),
+            read_startup_probe(&mut stream, target_bytes),
         )
         .await
-        .map_err(|_| ApiError::gateway_timeout("Local torrent first byte was not ready."))?;
+        .map_err(|_| ApiError::gateway_timeout("Local torrent startup buffer was not ready."))?;
         match read_result {
-            Ok(count) if count > 0 => Ok(()),
-            Ok(_) => Err(ApiError::bad_gateway("Local torrent file was empty.")),
+            Ok(count) if count >= target_bytes => Ok(()),
+            Ok(_) => Err(ApiError::bad_gateway(
+                "Local torrent startup buffer ended unexpectedly.",
+            )),
             Err(error) => Err(ApiError::bad_gateway(format!(
-                "Local torrent first byte failed: {error}"
+                "Local torrent startup buffer failed: {error}"
             ))),
         }
     }
@@ -1194,7 +1542,24 @@ impl LocalTorrentService {
             .map_err(|error| ApiError::internal(error.to_string()))?;
         let cache_dir = self.config.local_torrent_cache_dir.clone();
         let keep_dir = self.output_folder_for_hash(keep_hash);
-        let existing_keep_bytes = dir_size_blocking(keep_dir).await.unwrap_or_default();
+        let initial_keep_bytes = dir_size_blocking(keep_dir).await.unwrap_or_default();
+        let initial_used_bytes = dir_size_blocking(cache_dir.clone()).await?;
+        if initial_used_bytes
+            .saturating_sub(initial_keep_bytes)
+            .saturating_add(required_bytes)
+            <= max_bytes
+        {
+            return Ok(());
+        }
+        if let Some(session) = self.session.get().cloned() {
+            // Under actual quota pressure, retire stale inactive handles
+            // before selecting cache directories to evict. Freshly resolved
+            // URLs retain their grace window until the first stream arrives.
+            self.maintain_idle_handles(session, Some(keep_hash)).await;
+        }
+        let existing_keep_bytes = dir_size_blocking(self.output_folder_for_hash(keep_hash))
+            .await
+            .unwrap_or_default();
         self.prune_cache(keep_hash, required_bytes, existing_keep_bytes)
             .await?;
         let used_bytes = dir_size_blocking(cache_dir.clone()).await?;
@@ -1223,11 +1588,18 @@ impl LocalTorrentService {
         let max_bytes = self.config.local_torrent_max_bytes.max(1);
         let target_total =
             max_bytes.saturating_sub(required_bytes.saturating_sub(existing_keep_bytes));
-        let mut active_hashes = self
-            .handles
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect::<HashSet<_>>();
+        // Protect everything still owned by librqbit, including restored
+        // session torrents that have not yet been copied into `self.handles`.
+        // The quota pre-pass retires inactive handles first; what remains is
+        // either busy, actively streamed, or failed safe during deletion.
+        let mut active_hashes = self.session.get().map_or_else(HashSet::new, |session| {
+            session.with_torrents(|torrents| {
+                torrents
+                    .map(|(_, handle)| handle.info_hash().as_string())
+                    .collect::<HashSet<_>>()
+            })
+        });
+        active_hashes.extend(self.handles.iter().map(|entry| entry.key().clone()));
         active_hashes.insert(keep_hash.to_owned());
         tokio::task::spawn_blocking(move || {
             let entries = collect_cache_dir_entries(&cache_dir)?;
@@ -1279,10 +1651,110 @@ impl LocalTorrentService {
 }
 
 impl LocalTorrentService {
+    /// Stop completed torrents from seeding indefinitely once bounded uploads
+    /// are enabled. A later playback request transparently unpauses its handle.
+    pub async fn pause_finished_handles(&self) -> usize {
+        let Some(session) = self.session.get().cloned() else {
+            return 0;
+        };
+        self.maintain_idle_handles(session, None).await
+    }
+
+    async fn maintain_idle_handles(&self, session: Arc<Session>, skip_hash: Option<&str>) -> usize {
+        let handles = session.with_torrents(|torrents| {
+            torrents
+                .map(|(_, handle)| handle.clone())
+                .collect::<Vec<_>>()
+        });
+        let mut paused = 0;
+        for handle in handles {
+            let source_hash = handle.info_hash().as_string();
+            if skip_hash == Some(source_hash.as_str()) {
+                continue;
+            }
+            if self.pending_handle_deletions.contains_key(&source_hash) {
+                continue;
+            }
+            let lock = key_lock(&self.locks, &source_hash);
+            let Ok(_guard) = lock.try_lock() else {
+                continue;
+            };
+            if self.has_active_stream(&source_hash) {
+                continue;
+            }
+            let Some(current) = session
+                .get(TorrentIdOrHash::Hash(handle.info_hash()))
+                .filter(|current| current.id() == handle.id())
+            else {
+                continue;
+            };
+            let finished = current.stats().finished;
+            let recently_accessed = self.was_torrent_recently_accessed(&source_hash).await;
+            // Keep an incomplete torrent alive while it is recent; a resolve
+            // in progress also owns the hash lock, so it never reaches here.
+            // Once idle, retire it just like a completed handle so dead swarms
+            // cannot download or pin quota indefinitely.
+            if !finished && recently_accessed {
+                continue;
+            }
+            if !current.is_paused() {
+                match session.pause(&current).await {
+                    Ok(()) => paused += 1,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            torrent_id = current.id(),
+                            "failed to pause idle local torrent"
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            if recently_accessed || self.has_active_stream(&source_hash) {
+                continue;
+            }
+            if let Err(error) = session
+                .delete(TorrentIdOrHash::Id(current.id()), false)
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    torrent_id = current.id(),
+                    "failed to retire idle local torrent"
+                );
+                continue;
+            }
+            let should_remove = self
+                .handles
+                .get(&source_hash)
+                .is_some_and(|stored| stored.id() == current.id());
+            if should_remove {
+                self.handles.remove(&source_hash);
+            }
+        }
+        paused
+    }
+
+    async fn was_torrent_recently_accessed(&self, source_hash: &str) -> bool {
+        let marker = self
+            .output_folder_for_hash(source_hash)
+            .join(LOCAL_TORRENT_ACCESS_MARKER);
+        tokio::fs::read_to_string(marker)
+            .await
+            .ok()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .is_some_and(|accessed_ms| {
+                now_ms().saturating_sub(accessed_ms) < LOCAL_TORRENT_FINISHED_HANDLE_GRACE_MS
+            })
+    }
+
     /// Drop per-hash lock entries that no active resolve/stream is holding so
     /// the lock table does not grow unbounded over the process lifetime.
     pub fn prune_idle_locks(&self) {
         self.locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        self.active_streams
+            .retain(|_, count| count.load(Ordering::Acquire) > 0);
     }
 }
 
@@ -1340,11 +1812,101 @@ fn pick_local_torrent_video_file(
         .cloned()
 }
 
-fn handle_includes_file(handle: &ManagedTorrent, file_id: usize) -> bool {
-    handle
-        .only_files()
-        .map(|files| files.contains(&file_id))
-        .unwrap_or(true)
+fn select_torrent_file(
+    files: Vec<LocalTorrentFileCandidate>,
+    request: &LocalTorrentResolveRequest,
+) -> AppResult<LocalTorrentFileCandidate> {
+    let exact_selected = request
+        .preferred_file_index
+        .and_then(|file_id| files.iter().find(|file| file.file_id == file_id))
+        .filter(|file| is_supported_local_torrent_video_file(file))
+        .cloned();
+    let heuristic_selected =
+        pick_local_torrent_video_file(&files, &request.preferred_filename, &request.fallback_name);
+    let selected = match (exact_selected, heuristic_selected) {
+        (Some(exact), Some(heuristic)) if exact.file_id != heuristic.file_id => {
+            let filename_hint = request.preferred_filename.trim();
+            if !filename_hint.is_empty() && media_filename_hint_matches(&exact.path, filename_hint)
+            {
+                Some(exact)
+            } else if contains_episode_hint(&request.fallback_name)
+                || (!filename_hint.is_empty()
+                    && media_filename_hint_matches(&heuristic.path, filename_hint))
+            {
+                // fileIdx can be stale in cached addon results. Prefer the
+                // metadata/name match when the requested episode or exact
+                // behaviorHints filename points at another video.
+                Some(heuristic)
+            } else {
+                Some(exact)
+            }
+        }
+        (Some(exact), _) => Some(exact),
+        (None, heuristic) => heuristic,
+    };
+    selected.ok_or_else(|| ApiError::internal("No supported video file was found in this torrent."))
+}
+
+static EPISODE_HINT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)(?:^|[^a-z0-9])(?:s\d{1,3}e\d{1,3}|\d{1,3}x\d{1,3})(?:[^a-z0-9]|$)")
+        .expect("valid episode hint regex")
+});
+
+fn contains_episode_hint(value: &str) -> bool {
+    EPISODE_HINT_RE.is_match(value)
+}
+
+fn media_filename_hint_matches(path: &str, hint: &str) -> bool {
+    fn normalized(value: &str) -> String {
+        value
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+
+    let path = normalized(path);
+    let hint = normalized(hint);
+    !hint.is_empty() && (path.contains(&hint) || hint.contains(&path))
+}
+
+fn file_candidates_from_listed_metainfo(
+    listed: &ListOnlyResponse,
+) -> AppResult<Vec<LocalTorrentFileCandidate>> {
+    listed
+        .info
+        .iter_file_details()
+        .map_err(|error| ApiError::bad_gateway(format!("Local torrent file list failed: {error}")))?
+        .enumerate()
+        .map(|(file_id, details)| {
+            Ok(LocalTorrentFileCandidate {
+                file_id,
+                path: details
+                    .filename
+                    .to_string()
+                    .unwrap_or_else(|_| format!("file-{file_id}")),
+                length: details.len,
+            })
+        })
+        .collect()
+}
+
+fn listed_metainfo_response<E: std::fmt::Display>(
+    response: Result<AddTorrentResponse, E>,
+) -> AppResult<ListOnlyResponse> {
+    match response
+        .map_err(|error| ApiError::bad_gateway(format!("Local torrent metadata failed: {error}")))?
+    {
+        AddTorrentResponse::ListOnly(listed) => Ok(listed),
+        AddTorrentResponse::Added(_, _) | AddTorrentResponse::AlreadyManaged(_, _) => Err(
+            ApiError::bad_gateway("Local torrent metadata request unexpectedly created a handle."),
+        ),
+    }
+}
+
+fn is_supported_local_torrent_video_file(file: &LocalTorrentFileCandidate) -> bool {
+    pick_local_torrent_video_file(std::slice::from_ref(file), "", "")
+        .is_some_and(|selected| selected.file_id == file.file_id)
 }
 
 fn local_torrent_stream_url(source_hash: &str, file_id: usize) -> String {
@@ -1504,6 +2066,24 @@ fn apply_stream_headers(response: &mut Response<Body>, content_type: &str, conte
     );
 }
 
+async fn read_startup_probe(
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    target_bytes: usize,
+) -> std::io::Result<usize> {
+    let mut total_read = 0_usize;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    while total_read < target_bytes {
+        let remaining = target_bytes - total_read;
+        let chunk_size = remaining.min(buffer.len());
+        let count = reader.read(&mut buffer[..chunk_size]).await?;
+        if count == 0 {
+            break;
+        }
+        total_read += count;
+    }
+    Ok(total_read)
+}
+
 async fn dir_size_blocking(path: PathBuf) -> AppResult<u64> {
     tokio::task::spawn_blocking(move || dir_size(&path))
         .await
@@ -1571,14 +2151,50 @@ fn system_time_ms(value: SystemTime) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::io::AsyncReadExt as _;
+    use tokio::sync::{Mutex, Notify};
+    use tokio::time::timeout;
+
     use super::{
-        DirectFileCacheEntry, LocalTorrentFileCandidate, direct_file_cache_key,
+        DirectFileCacheEntry, LOCAL_TORRENT_STARTUP_PROBE_BYTES, LocalTorrentFileCandidate,
+        LocalTorrentResolveRequest, contains_episode_hint, direct_file_cache_key,
         direct_file_entry_to_resolved_source, direct_file_stream_url, is_internal_stream_request,
-        local_torrent_cache_key, looks_like_torrent_metainfo, normalize_direct_file_id,
-        parse_stream_range, pick_local_torrent_video_file, sanitize_cache_filename,
+        is_supported_local_torrent_video_file, local_torrent_cache_key,
+        looks_like_torrent_metainfo, media_filename_hint_matches, normalize_direct_file_id,
+        parse_stream_range, pick_local_torrent_video_file, read_startup_probe,
+        sanitize_cache_filename, select_torrent_file, spawn_cleanup_holding_managed_add_lock,
         validate_direct_file_stream_params, validate_local_torrent_stream_params,
         with_internal_stream_access,
     };
+
+    #[tokio::test]
+    async fn cancellation_cleanup_holds_managed_add_lock_until_it_finishes() {
+        let managed_add_lock = Arc::new(Mutex::new(()));
+        let managed_add_guard = managed_add_lock.clone().lock_owned().await;
+        let cleanup_started = Arc::new(Notify::new());
+        let release_cleanup = Arc::new(Notify::new());
+        let cleanup_started_for_task = cleanup_started.clone();
+        let release_cleanup_for_task = release_cleanup.clone();
+
+        spawn_cleanup_holding_managed_add_lock(
+            tokio::runtime::Handle::current(),
+            managed_add_guard,
+            async move {
+                cleanup_started_for_task.notify_one();
+                release_cleanup_for_task.notified().await;
+            },
+        );
+
+        cleanup_started.notified().await;
+        assert!(managed_add_lock.try_lock().is_err());
+        release_cleanup.notify_one();
+        let _guard = timeout(Duration::from_secs(1), managed_add_lock.lock())
+            .await
+            .expect("managed-add lock should release after cancellation cleanup");
+    }
 
     #[test]
     fn detects_torrent_metainfo_bytes() {
@@ -1658,6 +2274,25 @@ mod tests {
         assert_eq!(parse_stream_range("bytes=100-101", 100), None);
     }
 
+    #[tokio::test]
+    async fn startup_probe_reads_the_bounded_target() {
+        let mut enough = tokio::io::repeat(7).take((LOCAL_TORRENT_STARTUP_PROBE_BYTES * 2) as u64);
+        assert_eq!(
+            read_startup_probe(&mut enough, LOCAL_TORRENT_STARTUP_PROBE_BYTES)
+                .await
+                .expect("startup probe"),
+            LOCAL_TORRENT_STARTUP_PROBE_BYTES
+        );
+
+        let mut short = tokio::io::repeat(7).take(1024);
+        assert_eq!(
+            read_startup_probe(&mut short, LOCAL_TORRENT_STARTUP_PROBE_BYTES)
+                .await
+                .expect("short startup probe"),
+            1024
+        );
+    }
+
     #[test]
     fn picks_movie_video_file() {
         let files = vec![
@@ -1694,6 +2329,80 @@ mod tests {
         let selected = pick_local_torrent_video_file(&files, "", "Show Name S01E02 Episode")
             .expect("selected file");
         assert_eq!(selected.file_id, 1);
+    }
+
+    #[test]
+    fn validates_exact_torrent_file_index_as_video() {
+        let video = LocalTorrentFileCandidate {
+            file_id: 7,
+            path: "Show.Name.S01E08.mkv".to_owned(),
+            length: 900_000,
+        };
+        let text = LocalTorrentFileCandidate {
+            file_id: 8,
+            path: "Show.Name.S01E08.nfo".to_owned(),
+            length: 10_000,
+        };
+        assert!(is_supported_local_torrent_video_file(&video));
+        assert!(!is_supported_local_torrent_video_file(&text));
+    }
+
+    #[test]
+    fn validates_file_index_against_requested_episode_and_falls_back() {
+        let files = vec![
+            LocalTorrentFileCandidate {
+                file_id: 0,
+                path: "Show.Name.S01E07.mkv".to_owned(),
+                length: 800_000,
+            },
+            LocalTorrentFileCandidate {
+                file_id: 1,
+                path: "Show.Name.S01E08.mkv".to_owned(),
+                length: 900_000,
+            },
+        ];
+        let request = LocalTorrentResolveRequest {
+            info_hash: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            magnet_uri: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_owned(),
+            preferred_file_index: Some(0),
+            preferred_filename: String::new(),
+            fallback_name: "Show Name S01E08 Episode".to_owned(),
+        };
+        assert_eq!(
+            select_torrent_file(files.clone(), &request)
+                .expect("episode fallback")
+                .file_id,
+            1
+        );
+
+        let mut valid_request = request.clone();
+        valid_request.preferred_file_index = Some(1);
+        assert_eq!(
+            select_torrent_file(files.clone(), &valid_request)
+                .expect("valid file index")
+                .file_id,
+            1
+        );
+
+        let mut out_of_range_request = request;
+        out_of_range_request.preferred_file_index = Some(99);
+        assert_eq!(
+            select_torrent_file(files, &out_of_range_request)
+                .expect("out-of-range fallback")
+                .file_id,
+            1
+        );
+    }
+
+    #[test]
+    fn recognizes_episode_and_filename_hints() {
+        assert!(contains_episode_hint("Show.Name.S01E08.1080p"));
+        assert!(contains_episode_hint("Show Name 1x08"));
+        assert!(!contains_episode_hint("Movie 2008 1080p"));
+        assert!(media_filename_hint_matches(
+            "folder/Show.Name.S01E08.mkv",
+            "Show Name S01E08.mkv"
+        ));
     }
 
     #[test]

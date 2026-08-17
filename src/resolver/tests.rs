@@ -16,9 +16,9 @@ use super::{
 };
 use super::{
     DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, ExternalEmbedSource,
-    PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters, ResolveMetadata,
-    ResolvePreferences, ResolvedSource, ResolverExternalGuard, ResolverMetrics, ResolverProvider,
-    SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
+    LocalTorrentResolvedSource, PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters,
+    ResolveMetadata, ResolvePreferences, ResolvedSource, ResolverExternalGuard, ResolverMetrics,
+    ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
     build_external_embed_source_summaries, build_movie_resolve_lock_key,
     build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
     build_scoped_rd_torrent_cache_key, build_torrentio_stream_cache_key,
@@ -33,11 +33,12 @@ use super::{
     is_default_external_embed_hls_fallback_source, is_external_embed_hls_capable_source,
     is_persistent_source_resolve_error, is_public_external_embed_hls_hostname,
     is_supported_external_embed_hls_embed_url, is_supported_external_embed_hls_url,
-    merge_discovery_query_results, merge_discovery_streams, normalize_allowed_formats,
-    normalize_nebula_addon_base, normalize_resolved_source_for_software_decode,
-    normalize_resolver_provider, normalize_source_audio_profile_filter, normalize_source_hash,
-    now_ms, parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
-    parse_torznab_xml, playback_session_key_allowed_for_user,
+    local_cache_upgrade_payload, merge_discovery_query_results, merge_discovery_streams,
+    normalize_allowed_formats, normalize_nebula_addon_base,
+    normalize_resolved_source_for_software_decode, normalize_resolver_provider,
+    normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
+    parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
+    parse_torrentio_streams_payload, parse_torznab_xml, playback_session_key_allowed_for_user,
     playback_session_matches_preferred_container, playback_session_matches_preferred_quality,
     playback_session_matches_source_hash, prefer_mp4_default_candidates,
     ready_info_has_selected_file_id, score_stream_episode_match, select_fastest_race_candidates,
@@ -1264,6 +1265,22 @@ fn normalizes_torrentio_stream_cache_keys() {
 }
 
 #[test]
+fn parses_torrentio_file_index_for_local_playback() {
+    let payload = json!({
+        "streams": [{
+            "infoHash": "0123456789abcdef0123456789abcdef01234567",
+            "fileIdx": 7,
+            "name": "Torrentio",
+            "behaviorHints": { "filename": "Show.S01E08.mkv" }
+        }]
+    });
+    let streams = parse_torrentio_streams_payload(&payload).expect("torrentio streams");
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0].fileIdx, Some(7));
+    assert_eq!(streams[0].discoveryProvider, "torrentio");
+}
+
+#[test]
 fn builds_torznab_urls_without_leaking_api_keys_to_cache_keys() {
     let params = vec![
         ("t", "movie".to_owned()),
@@ -1449,6 +1466,43 @@ fn prefers_direct_for_browser_safe_real_debrid_mp4_sources() {
             "/api/remux?input=https%3A%2F%2F126-4.download.real-debrid.com%2Fpath%2FThe.Matrix.1999.1080p.mp4"
         ]
     );
+}
+
+#[test]
+fn keeps_direct_local_mp4_with_remux_recovery_fallback() {
+    let raw =
+        "/api/local-torrent/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=7";
+    let normalized = normalize_resolved_source_for_software_decode(
+        &ResolvedSource {
+            playable_url: raw.to_owned(),
+            filename: "Movie.2026.mp4".to_owned(),
+            ..ResolvedSource::default()
+        },
+        -1,
+        -1,
+    );
+
+    assert_eq!(normalized.playable_url, raw);
+    assert_eq!(normalized.fallback_urls.len(), 1);
+    assert!(normalized.fallback_urls[0].starts_with("/api/remux?input="));
+    assert!(normalized.fallback_urls[0].contains("local-torrent%2Fstream"));
+}
+
+#[test]
+fn local_cache_upgrade_requests_deferred_track_enrichment() {
+    let playable_url =
+        "/api/local-torrent/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=7";
+    let payload = local_cache_upgrade_payload(LocalTorrentResolvedSource {
+        playable_url: playable_url.to_owned(),
+        filename: "Show.S01E08.mkv".to_owned(),
+        source_hash: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+        selected_file: "7".to_owned(),
+        selected_file_path: "Show.S01E08.mkv".to_owned(),
+    });
+
+    assert_eq!(payload["ready"], true);
+    assert_eq!(payload["tracksPending"], true);
+    assert_eq!(payload["sourceInput"], playable_url);
 }
 
 #[test]

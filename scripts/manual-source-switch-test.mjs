@@ -105,7 +105,7 @@ await run("uses source-specific resolve and startup timeouts", () => {
   );
   assert.deepEqual(
     getManualSourceSwitchTimeouts({ localTorrentEnabled: true }),
-    { resolveTimeoutMs: 300_000, startupTimeoutMs: 120_000 },
+    { resolveTimeoutMs: 190_000, startupTimeoutMs: 60_000 },
   );
   assert.deepEqual(
     getManualSourceSwitchTimeouts({ realDebridConfigured: true }),

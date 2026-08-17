@@ -779,62 +779,25 @@ impl MediaService {
         tracks
     }
 
-    /// Prefer a local disk path for remux when the torrent/direct cache file is
-    /// already present, so ffmpeg can seek without HTTP-looping through the
-    /// torrent streamer.
+    /// Prefer a local disk path only for completed direct-cache files.
+    ///
+    /// librqbit creates a sparse file at its final logical length before every
+    /// piece has arrived. Passing that path to ffmpeg makes it read zero-filled
+    /// holes and, more importantly, bypasses librqbit's piece-aware streaming
+    /// priority. Local torrents must therefore stay behind the signed loopback
+    /// HTTP stream until completion can be proven independently.
     pub async fn resolve_remux_input(&self, raw_input: &str) -> AppResult<String> {
         let input = raw_input.trim();
         if input.is_empty() {
             return Err(ApiError::bad_request("Missing playback input."));
         }
         let nested = parse_playback_proxy_input(input).unwrap_or_else(|| input.to_owned());
-        if let Some(disk_path) = self.local_torrent_stream_file_path(&nested).await {
-            return Ok(disk_path);
-        }
         if is_local_cache_stream_input(&nested)
             && let Some(local_path) = local_cache_stream_file_path(&self.config, &nested)
         {
             return Ok(local_path.to_string_lossy().to_string());
         }
         self.resolve_transcode_input(input)
-    }
-
-    async fn local_torrent_stream_file_path(&self, value: &str) -> Option<String> {
-        let (source_hash, file_id) = parse_local_torrent_stream_params(value)?;
-        let cache_key = format!("local-torrent:{source_hash}:{file_id}");
-        let (payload, _) = self
-            .db
-            .get_movie_quick_start_cache(cache_key)
-            .await
-            .ok()
-            .flatten()?;
-        let relative_path = payload.get("filePath")?.as_str()?.trim();
-        if relative_path.is_empty() {
-            return None;
-        }
-        let candidates = [
-            payload
-                .get("outputFolder")
-                .and_then(Value::as_str)
-                .map(|folder| PathBuf::from(folder).join(relative_path)),
-            Some(
-                self.config
-                    .local_torrent_cache_dir
-                    .join(&source_hash)
-                    .join(relative_path),
-            ),
-        ];
-        for candidate in candidates.into_iter().flatten() {
-            if candidate.is_file()
-                && candidate
-                    .metadata()
-                    .map(|metadata| metadata.len() > 0)
-                    .unwrap_or(false)
-            {
-                return Some(candidate.to_string_lossy().to_string());
-            }
-        }
-        None
     }
 
     pub fn resolve_transcode_input(&self, raw_input: &str) -> AppResult<String> {
@@ -1457,31 +1420,6 @@ fn is_local_cache_stream_input(value: &str) -> bool {
 
 fn is_local_stream_input(value: &str) -> bool {
     is_local_torrent_stream_input(value) || is_local_cache_stream_input(value)
-}
-
-fn parse_local_torrent_stream_params(value: &str) -> Option<(String, usize)> {
-    let (path, query) = if let Ok(url) = Url::parse(value) {
-        (
-            url.path().to_owned(),
-            url.query().unwrap_or_default().to_owned(),
-        )
-    } else {
-        let trimmed = value.trim();
-        let (path, query) = trimmed.split_once('?')?;
-        (path.to_owned(), query.to_owned())
-    };
-    if path != LOCAL_TORRENT_STREAM_PATH {
-        return None;
-    }
-    let params = url::form_urlencoded::parse(query.as_bytes())
-        .into_owned()
-        .collect::<HashMap<String, String>>();
-    let source_hash = normalize_local_cache_hash(params.get("sourceHash")?);
-    let file_id = params.get("fileId")?.trim().parse::<usize>().ok()?;
-    if source_hash.is_empty() {
-        return None;
-    }
-    Some((source_hash, file_id))
 }
 
 fn is_local_torrent_stream_url(url: &Url) -> bool {
@@ -2752,7 +2690,7 @@ mod tests {
     use url::Url;
 
     use super::{
-        AudioTrack, MediaProbe, SubtitleTrack, analyze_english_subtitle_content,
+        AudioTrack, MediaProbe, MediaService, SubtitleTrack, analyze_english_subtitle_content,
         build_english_subtitle_qualities, build_stremio_subtitle_tracks_from_payload,
         choose_audio_track_from_probe, choose_subtitle_track_from_probe,
         extract_sidecar_subtitle_suffix, infer_sidecar_subtitle_language,
@@ -3350,6 +3288,39 @@ mod tests {
         assert!(resolve_local_media_path(&config, "/Cargo.toml").is_none());
         assert!(resolve_local_media_path(&config, "/assets/videos/../Cargo.toml").is_none());
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn remux_keeps_incomplete_local_torrents_behind_piece_aware_streaming() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("streamarena-remux-torrent-{unique}"));
+        let config = test_config(root.clone());
+        let db = crate::persistence::Db::initialize_test_paths(
+            config.persistent_cache_db_path.clone(),
+            config.persistent_users_db_path.clone(),
+        )
+        .await
+        .expect("test database");
+        let service = MediaService::new(config, db.clone(), reqwest::Client::new());
+        let input = "/api/local-torrent/stream?sourceHash=0123456789abcdef0123456789abcdef01234567&fileId=0";
+
+        let resolved = service
+            .resolve_remux_input(input)
+            .await
+            .expect("local torrent remux input");
+
+        assert!(resolved.starts_with("http://127.0.0.1:5173/api/local-torrent/stream?"));
+        assert!(resolved.contains("sourceHash=0123456789abcdef0123456789abcdef01234567"));
+        assert!(resolved.contains("fileId=0"));
+        assert!(resolved.contains("internalAccess="));
+        assert!(!resolved.starts_with(&root.to_string_lossy().to_string()));
+
+        drop(service);
+        drop(db);
         let _ = fs::remove_dir_all(root);
     }
 

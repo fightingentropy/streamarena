@@ -1,8 +1,21 @@
 export async function requestJson(url, options = {}, timeoutMs = 20000) {
   const controller = new AbortController();
+  const externalSignal = options?.signal || null;
+  let externalAborted = Boolean(externalSignal?.aborted);
+  let timedOut = false;
+  const handleExternalAbort = () => {
+    externalAborted = true;
+    controller.abort();
+  };
+  if (externalAborted) {
+    controller.abort();
+  } else if (externalSignal?.addEventListener) {
+    externalSignal.addEventListener("abort", handleExternalAbort, { once: true });
+  }
   let timeoutId = null;
   const timeoutPromise = new Promise((_, reject) => {
     timeoutId = window.setTimeout(() => {
+      timedOut = true;
       controller.abort();
       reject(new Error("Request timed out."));
     }, timeoutMs);
@@ -49,7 +62,16 @@ export async function requestJson(url, options = {}, timeoutMs = 20000) {
 
     return payload;
   } catch (error) {
-    if (error.name === "AbortError" || error.message === "Request timed out.") {
+    if (externalAborted || externalSignal?.aborted) {
+      const abortError = new Error("Request cancelled.");
+      abortError.name = "AbortError";
+      throw abortError;
+    }
+    if (
+      timedOut ||
+      error.name === "AbortError" ||
+      error.message === "Request timed out."
+    ) {
       throw new Error("Request timed out.");
     }
     throw error;
@@ -57,6 +79,7 @@ export async function requestJson(url, options = {}, timeoutMs = 20000) {
     if (timeoutId !== null) {
       window.clearTimeout(timeoutId);
     }
+    externalSignal?.removeEventListener?.("abort", handleExternalAbort);
   }
 }
 

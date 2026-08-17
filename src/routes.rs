@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 use axum::RequestExt;
 use axum::Router;
@@ -32,7 +33,7 @@ use crate::library::{
 use crate::live::{live_hls_handler, live_hls_resource_handler};
 use crate::local_torrent::LocalTorrentService;
 use crate::media::{
-    MediaProbe, MediaService, choose_audio_track_from_probe, choose_subtitle_track_from_probe,
+    MediaService, choose_audio_track_from_probe, choose_subtitle_track_from_probe,
     merge_preferred_subtitle_tracks,
 };
 use crate::persistence::{Db, TitlePreference, build_cache_debug_payload};
@@ -108,6 +109,7 @@ const LOCAL_TORRENT_ENABLED_PREF_KEY: &str = "streamarena-local-torrent-enabled"
 const USER_PREF_MAX_ENTRIES: usize = 200;
 const USER_PREF_KEY_MAX_BYTES: usize = 128;
 const USER_PREF_VALUE_MAX_BYTES: usize = 2_000_000;
+const RESOLVE_JOB_MAX_WAIT_MS: u64 = 25_000;
 const USER_SYNC_MAX_ENTRIES: usize = 500;
 const USER_IDENTITY_MAX_BYTES: usize = 512;
 const USER_URL_MAX_BYTES: usize = 4_096;
@@ -1489,21 +1491,51 @@ pub async fn resolve_job_handler(
     method: Method,
     headers: HeaderMap,
     AxumPath(job_id): AxumPath<String>,
+    uri: Uri,
 ) -> AppResult<Response<Body>> {
-    if method != Method::GET {
-        return Err(ApiError::method_not_allowed("Method not allowed."));
-    }
     let user = auth::require_auth(&state.db, &headers).await?;
     let normalized_job_id = job_id.trim();
     if normalized_job_id.is_empty() {
         return Err(ApiError::bad_request("Missing resolve job id."));
     }
-    let payload = state
-        .resolve_jobs
-        .snapshot(normalized_job_id, user.id)
-        .await
-        .ok_or_else(|| ApiError::not_found("Resolve job not found."))?;
+    if !resolve_job_method_supported(&method) {
+        return Err(ApiError::method_not_allowed("Method not allowed."));
+    }
+    if method == Method::DELETE {
+        if !state.resolve_jobs.cancel(normalized_job_id, user.id) {
+            return Err(ApiError::not_found("Resolve job not found."));
+        }
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(Body::empty())
+            .map_err(|_| ApiError::internal("Unable to cancel resolve job."));
+    }
+    let wait_ms = resolve_job_wait_ms(uri.query());
+    let payload = if wait_ms == 0 {
+        state
+            .resolve_jobs
+            .snapshot(normalized_job_id, user.id)
+            .await
+    } else {
+        state
+            .resolve_jobs
+            .snapshot_wait(normalized_job_id, user.id, Duration::from_millis(wait_ms))
+            .await
+    }
+    .ok_or_else(|| ApiError::not_found("Resolve job not found."))?;
     Ok(json_response(payload))
+}
+
+fn resolve_job_method_supported(method: &Method) -> bool {
+    method == Method::GET || method == Method::DELETE
+}
+
+fn resolve_job_wait_ms(query: Option<&str>) -> u64 {
+    query
+        .map(query_pairs)
+        .and_then(|params| params.get("waitMs").and_then(|value| value.parse().ok()))
+        .unwrap_or(0)
+        .min(RESOLVE_JOB_MAX_WAIT_MS)
 }
 
 pub async fn resolve_movie_handler(
@@ -1532,11 +1564,11 @@ pub async fn resolve_movie_handler(
     if truthy_query_flag(&params, "async") {
         let job_id = state.resolve_jobs.create(user.id);
         let job_state = state.clone();
-        let job_id_for_task = job_id.clone();
+        let resolve_jobs = state.resolve_jobs.clone();
         let real_debrid_api_key = real_debrid_api_key.clone();
         let params = params.clone();
-        tokio::spawn(async move {
-            let result = job_state
+        let spawned = resolve_jobs.spawn(&job_id, async move {
+            job_state
                 .resolver
                 .resolve_movie(
                     user.id,
@@ -1588,28 +1620,15 @@ pub async fn resolve_movie_handler(
                     skip_external_embed,
                     refresh_resolve,
                 )
-                .await;
-            match result {
-                Ok(payload) => {
-                    job_state
-                        .resolve_jobs
-                        .complete(&job_id_for_task, payload)
-                        .await;
-                }
-                Err(error) => {
-                    job_state
-                        .resolve_jobs
-                        .fail(
-                            &job_id_for_task,
-                            error
-                                .message()
-                                .unwrap_or("Unable to resolve this stream.")
-                                .to_owned(),
-                        )
-                        .await;
-                }
-            }
+                .await
+                .map_err(|error| {
+                    error
+                        .message()
+                        .unwrap_or("Unable to resolve this stream.")
+                        .to_owned()
+                })
         });
+        debug_assert!(spawned, "newly-created resolve job should be present");
         return Ok(json_response(json!({
             "jobId": job_id,
             "status": "pending",
@@ -1756,11 +1775,11 @@ pub async fn resolve_tv_handler(
     if truthy_query_flag(&params, "async") {
         let job_id = state.resolve_jobs.create(user.id);
         let job_state = state.clone();
-        let job_id_for_task = job_id.clone();
+        let resolve_jobs = state.resolve_jobs.clone();
         let real_debrid_api_key = real_debrid_api_key.clone();
         let params = params.clone();
-        tokio::spawn(async move {
-            let result = job_state
+        let spawned = resolve_jobs.spawn(&job_id, async move {
+            job_state
                 .resolver
                 .resolve_tv(
                     user.id,
@@ -1829,28 +1848,15 @@ pub async fn resolve_tv_handler(
                     skip_external_embed,
                     refresh_resolve,
                 )
-                .await;
-            match result {
-                Ok(payload) => {
-                    job_state
-                        .resolve_jobs
-                        .complete(&job_id_for_task, payload)
-                        .await;
-                }
-                Err(error) => {
-                    job_state
-                        .resolve_jobs
-                        .fail(
-                            &job_id_for_task,
-                            error
-                                .message()
-                                .unwrap_or("Unable to resolve this stream.")
-                                .to_owned(),
-                        )
-                        .await;
-                }
-            }
+                .await
+                .map_err(|error| {
+                    error
+                        .message()
+                        .unwrap_or("Unable to resolve this stream.")
+                        .to_owned()
+                })
         });
+        debug_assert!(spawned, "newly-created resolve job should be present");
         return Ok(json_response(json!({
             "jobId": job_id,
             "status": "pending",
@@ -2165,18 +2171,28 @@ pub async fn media_tracks_handler(
         .unwrap_or_else(|| infer_title_hint_from_source_input(&source_input));
     let subtitle_year_hint = normalize_year(params.get("year").cloned().unwrap_or_default());
     let subtitle_imdb_id_hint = params.get("imdbId").cloned().unwrap_or_default();
-    let subtitle_filename_hint = infer_filename_hint_from_source_input(&source_input);
+    let subtitle_filename_hint = params
+        .get("filename")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| infer_filename_hint_from_source_input(&source_input));
 
-    let mut tracks = MediaProbe::default();
     let mut selected_audio_stream_index = -1_i64;
     let mut selected_subtitle_stream_index = -1_i64;
-
-    if let Ok(probe) = state.media.probe_media_tracks(&source_input).await {
-        let mut merged_tracks = probe;
-        let local_sidecar_subtitle_tracks = state
-            .media
-            .find_local_sidecar_subtitle_tracks(&source_input);
-        let mut external_subtitle_tracks = state
+    let season_number_hint = params
+        .get("seasonNumber")
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .unwrap_or_default();
+    let episode_number_hint = params
+        .get("episodeNumber")
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .unwrap_or_default();
+    let probe_future = state.media.probe_media_tracks(&source_input);
+    let external_subtitle_future = async {
+        if preferred_subtitle_lang == "off" {
+            return Vec::new();
+        }
+        let mut external = state
             .media
             .search_opensubtitles_tracks(
                 &subtitle_imdb_id_hint,
@@ -2186,16 +2202,8 @@ pub async fn media_tracks_handler(
                 &subtitle_filename_hint,
             )
             .await;
-        if external_subtitle_tracks.is_empty() {
-            let season_number_hint = params
-                .get("seasonNumber")
-                .and_then(|value| value.trim().parse::<i64>().ok())
-                .unwrap_or_default();
-            let episode_number_hint = params
-                .get("episodeNumber")
-                .and_then(|value| value.trim().parse::<i64>().ok())
-                .unwrap_or_default();
-            external_subtitle_tracks = state
+        if external.is_empty() {
+            external = state
                 .media
                 .search_stremio_addon_subtitle_tracks(
                     &subtitle_imdb_id_hint,
@@ -2205,30 +2213,34 @@ pub async fn media_tracks_handler(
                 )
                 .await;
         }
-        if !local_sidecar_subtitle_tracks.is_empty() {
-            merged_tracks.subtitleTracks = merge_preferred_subtitle_tracks(
-                local_sidecar_subtitle_tracks,
-                merged_tracks.subtitleTracks,
-            );
-        }
-        if !external_subtitle_tracks.is_empty() {
-            merged_tracks.subtitleTracks = merge_preferred_subtitle_tracks(
-                external_subtitle_tracks,
-                merged_tracks.subtitleTracks,
-            );
-        }
-        if let Some(audio_track) =
-            choose_audio_track_from_probe(&merged_tracks, &preferred_audio_lang)
-        {
-            selected_audio_stream_index = audio_track.streamIndex;
-        }
-        if let Some(subtitle_track) =
-            choose_subtitle_track_from_probe(&merged_tracks, &preferred_subtitle_lang)
-        {
-            selected_subtitle_stream_index = subtitle_track.streamIndex;
-        }
-        tracks = merged_tracks;
+        external
+    };
+    let (probe_result, external_subtitle_tracks) =
+        tokio::join!(probe_future, external_subtitle_future);
+    let mut merged_tracks = probe_result.unwrap_or_default();
+    let local_sidecar_subtitle_tracks = state
+        .media
+        .find_local_sidecar_subtitle_tracks(&source_input);
+    if !local_sidecar_subtitle_tracks.is_empty() {
+        merged_tracks.subtitleTracks = merge_preferred_subtitle_tracks(
+            local_sidecar_subtitle_tracks,
+            merged_tracks.subtitleTracks,
+        );
     }
+    if !external_subtitle_tracks.is_empty() {
+        merged_tracks.subtitleTracks =
+            merge_preferred_subtitle_tracks(external_subtitle_tracks, merged_tracks.subtitleTracks);
+    }
+    if let Some(audio_track) = choose_audio_track_from_probe(&merged_tracks, &preferred_audio_lang)
+    {
+        selected_audio_stream_index = audio_track.streamIndex;
+    }
+    if let Some(subtitle_track) =
+        choose_subtitle_track_from_probe(&merged_tracks, &preferred_subtitle_lang)
+    {
+        selected_subtitle_stream_index = subtitle_track.streamIndex;
+    }
+    let tracks = merged_tracks;
 
     Ok(json_response(json!({
         "tracks": tracks,
@@ -4390,10 +4402,11 @@ mod tests {
         manifest_is_stream_addon, normalize_custom_addon_base, normalize_preferred_audio_lang,
         normalize_subtitle_preference, normalize_sync_continue_watching_entries,
         normalize_sync_watch_progress_entries, normalize_user_updated_at, now_ms, provider_slugify,
-        query_flag_enabled, sanitize_my_list_entries, signup_admin_status,
+        query_flag_enabled, resolve_job_method_supported, resolve_job_wait_ms,
+        sanitize_my_list_entries, signup_admin_status,
     };
     use axum::http::header::{CONTENT_TYPE, HOST};
-    use axum::http::{HeaderMap, HeaderValue, Uri};
+    use axum::http::{HeaderMap, HeaderValue, Method, Uri};
 
     #[test]
     fn forwarded_for_takes_left_most_client_ip() {
@@ -4448,6 +4461,23 @@ mod tests {
         assert!(!query_flag_enabled("notclear=1", "clear"));
         assert!(!query_flag_enabled("clearance=1", "clear"));
         assert!(!query_flag_enabled("clear=0", "clear"));
+    }
+
+    #[test]
+    fn resolve_job_wait_is_bounded_and_opt_in() {
+        assert_eq!(resolve_job_wait_ms(None), 0);
+        assert_eq!(resolve_job_wait_ms(Some("other=1")), 0);
+        assert_eq!(resolve_job_wait_ms(Some("waitMs=invalid")), 0);
+        assert_eq!(resolve_job_wait_ms(Some("waitMs=24000")), 24_000);
+        assert_eq!(resolve_job_wait_ms(Some("waitMs=999999")), 25_000);
+    }
+
+    #[test]
+    fn resolve_job_route_accepts_get_and_authenticated_delete_only() {
+        assert!(resolve_job_method_supported(&Method::GET));
+        assert!(resolve_job_method_supported(&Method::DELETE));
+        assert!(!resolve_job_method_supported(&Method::POST));
+        assert!(!resolve_job_method_supported(&Method::PUT));
     }
 
     #[test]
