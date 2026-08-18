@@ -437,7 +437,6 @@ const {
   scoreMobileLightSourceOption,
   getSourceListPreferredContainer,
   pickResolverAlternateSourceHash: pickResolverAlternateSourceHashFromRouting,
-  getPreferredDefaultSourceHash,
 } = playbackRouting;
 
 const deferredMediaTracks = createDeferredMediaTrackController({
@@ -1991,7 +1990,6 @@ function renderSourceOptionButtons() {
   }
 
   const seenHashes = new Set();
-  const displayedSources = [];
   const fragment = document.createDocumentFragment();
   const rankedSources = sortSourcesBySeeders(sourceView.sources, {
     preferContainer: getSourceListPreferredContainer(),
@@ -2029,7 +2027,6 @@ function renderSourceOptionButtons() {
       loadingSourceHash: pendingSourceSwitchHash,
       downloadingSourceHash: sourceDownload.getDownloadingSourceHash(),
     }));
-    displayedSources.push(option);
   }
 
   sourceOptionsContainer.appendChild(fragment);
@@ -2045,8 +2042,6 @@ function renderSourceOptionButtons() {
     return;
   }
 
-  const preferredDefaultSourceHash =
-    getPreferredDefaultSourceHash(displayedSources);
   const normalizedSelectedSourceHash = normalizeSourceHash(selectedSourceHash);
   const hasSelectedSource =
     normalizedSelectedSourceHash &&
@@ -2056,15 +2051,6 @@ function renderSourceOptionButtons() {
   if (sourceSelectionPinned && !hasSelectedSource) {
     sourceSelectionPinned = false;
   }
-  if (
-    preferredDefaultSourceHash &&
-    (!normalizedSelectedSourceHash || !hasSelectedSource)
-  ) {
-    selectedSourceHash = preferredDefaultSourceHash;
-    applyPreferredSourceAudioSync(selectedSourceHash);
-    persistSourceHashInUrl();
-  }
-
   syncSourceSelectionState();
   renderSelectedSourceDetails();
   syncTmdbSourceControls();
@@ -3404,6 +3390,7 @@ async function applyResolvedTmdbPlayback(
   const normalizedResolvedSourceHash = normalizeSourceHash(
     resolvedSourceHash || resolved?.sourceHash || selectedSourceHash,
   );
+  const previousSelectedSourceHash = normalizeSourceHash(selectedSourceHash);
   const isProvisionalManualSourceSwitch = Boolean(
     manualSourceSwitchRequest &&
       manualSourceSwitch.isCurrent(manualSourceSwitchRequest),
@@ -3479,12 +3466,13 @@ async function applyResolvedTmdbPlayback(
   }
 
   rebuildTrackOptionButtons();
-  if (
+  const addedResolvedSourceOption = Boolean(
     !availablePlaybackSources.some(
       (option) => option.sourceHash === selectedSourceHash,
     ) &&
-    selectedSourceHash
-  ) {
+      selectedSourceHash,
+  );
+  if (addedResolvedSourceOption) {
     availablePlaybackSources = [
       {
         sourceHash: selectedSourceHash,
@@ -3499,7 +3487,20 @@ async function applyResolvedTmdbPlayback(
       },
       ...availablePlaybackSources,
     ];
+  }
+  const shouldFollowResolvedSource = Boolean(
+    !isProvisionalManualSourceSwitch &&
+      previousSelectedSourceHash !== selectedSourceHash &&
+      !sourceControl?.classList.contains("is-open"),
+  );
+  if (shouldFollowResolvedSource) {
+    activeSourceTypeTab = "";
+  }
+  if (shouldFollowResolvedSource || addedResolvedSourceOption) {
     renderSourceOptionButtons();
+  } else {
+    syncSourceSelectionState();
+    renderSelectedSourceDetails();
   }
   const nativePreferredSource = String(resolved?.playableUrl || "").trim();
   const preferredBrowserSource = buildPreferredBrowserPlaybackSource(
@@ -5469,6 +5470,10 @@ function openSourcePopover() {
   activeSourceTypeTab = "";
   if (!availablePlaybackSources.length && !isFetchingPlaybackSources) {
     void fetchTmdbSourceOptionsViaBackend();
+  } else {
+    // Resetting the tab is stateful; rebuild the filtered rows immediately so
+    // the DOM follows the playing source rather than the previously browsed tab.
+    renderSourceOptionButtons();
   }
   showControls();
   clearControlsHideTimer();
@@ -7599,53 +7604,10 @@ async function fetchTmdbSourceOptionsViaBackend() {
       preferContainer: getSourceListPreferredContainer(),
     });
     isFetchingPlaybackSources = false;
-    const preferredDefaultSourceHash = getPreferredDefaultSourceHash(
-      availablePlaybackSources,
-    );
-    const shouldAdoptPreferredDefault =
-      Boolean(preferredDefaultSourceHash) &&
-      !sourceSelectionPinned &&
-      !pendingSourceSwitchHash &&
-      !isManualSourceSwitchPending() &&
-      preferredDefaultSourceHash !== normalizeSourceHash(selectedSourceHash);
-    if (shouldAdoptPreferredDefault) {
-      selectedSourceHash = preferredDefaultSourceHash;
-      applyPreferredSourceAudioSync(selectedSourceHash);
-      persistSourceHashInUrl();
-    }
+    // The unpinned playback resolve owns initial source choice. This endpoint
+    // only enriches the menu; starting a second preferred resolve here can
+    // discard a valid first result and leave the player without an owner.
     renderSourceOptionsWhenStable();
-    if (shouldAdoptPreferredDefault) {
-      const preferredDefaultSource = getSourceOptionByHash(
-        preferredDefaultSourceHash,
-      );
-      const preferredDefaultIsEmbed = Boolean(
-        preferredDefaultSource && isSourceOptionEmbed(preferredDefaultSource),
-      );
-      const useLocalTorrent =
-        userLocalTorrentEnabled && !preferredDefaultIsEmbed;
-      if (preferredDefaultIsEmbed) {
-        tmdbSkipExternalEmbed = false;
-      } else if (useLocalTorrent) {
-        preferredResolverProvider = "local-torrent";
-        tmdbSkipExternalEmbed = true;
-      }
-      void resolveTmdbSourcesAndPlay({
-        requestSourceHash: preferredDefaultSourceHash,
-        requiredSourceHash: preferredDefaultSourceHash,
-        skipExternalEmbed: preferredDefaultIsEmbed
-          ? false
-          : tmdbSkipExternalEmbed,
-        resolveTimeoutMs: useLocalTorrent
-          ? getTmdbTorrentResolveTimeoutMs()
-          : undefined,
-        startSeconds: getEffectiveCurrentTime(),
-      }).catch((error) => {
-        if (isResolveAbortError(error)) {
-          return;
-        }
-        console.error("Failed to adopt preferred default source:", error);
-      });
-    }
   } catch {
     if (requestToken !== playbackSourcesRequestToken) {
       return;

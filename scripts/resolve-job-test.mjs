@@ -401,105 +401,25 @@ await run("resolve requester owns async registration and wait transport", async 
   assert.equal(waits[0].cancelOnAbort, false);
 });
 
-await run("preferred B supersedes delayed A without an overlay or fallback C", async () => {
-  const preferredHash = "b".repeat(40);
-  let notifyInitialStarted;
-  const initialStarted = new Promise((resolve) => {
-    notifyInitialStarted = resolve;
-  });
-  const requests = [];
-  const appliedHashes = [];
-  const overlayErrors = [];
-  let fallbackCount = 0;
-  let playbackGeneration = 0;
-  const coordinator = createResolveJobRequestCoordinator({
-    cancelResolveJobFn: async () => true,
-  });
-  const requestResolveJson = createResolveRequester({
-    coordinator,
-    getResolverProvider: () => "fastest",
-    requestJsonFn: async (url, { signal } = {}) => {
-      requests.push(url);
-      if (url.includes(`sourceHash=${preferredHash}`)) {
-        return {
-          playableUrl: `/preferred-${preferredHash}.m3u8`,
-          sourceHash: preferredHash,
-        };
-      }
-      if (url.includes("fallback=c")) {
-        fallbackCount += 1;
-        return { playableUrl: "/fallback-c.m3u8", sourceHash: "c" };
-      }
-      notifyInitialStarted();
-      return new Promise((_resolve, reject) => {
-        signal.addEventListener(
-          "abort",
-          () => {
-            const error = new Error("initial A cancelled");
-            error.name = "AbortError";
-            reject(error);
-          },
-          { once: true },
-        );
-      });
+await run("only a superseded resolve abort settles as stale", async () => {
+  const abortError = new Error("cancelled");
+  abortError.name = "AbortError";
+  const stale = await runResolveWithSupersession({
+    resolve: async () => {
+      throw abortError;
     },
+    isSuperseded: () => true,
   });
-
-  async function resolveMovie(url) {
-    try {
-      return await requestResolveJson(url);
-    } catch (error) {
-      // Mirrors the movie/TV wrappers: cancellation belongs to the newer
-      // request and must never enter source fallback.
-      if (isResolveAbortError(error)) {
-        throw error;
-      }
-      return requestResolveJson("/api/resolve/movie?fallback=c");
-    }
-  }
-
-  async function resolveAndApply(url, requiredHash = "") {
-    const requestGeneration = ++playbackGeneration;
-    try {
-      const attempt = await runResolveWithSupersession({
-        resolve: () => resolveMovie(url),
-        isSuperseded: () => requestGeneration !== playbackGeneration,
-      });
-      if (attempt.stale) {
-        return { stale: true };
-      }
-      if (requiredHash && attempt.value?.sourceHash !== requiredHash) {
-        throw new Error("Selected source is unavailable.");
-      }
-      if (requestGeneration !== playbackGeneration) {
-        return { stale: true };
-      }
-      appliedHashes.push(attempt.value.sourceHash);
-      return { stale: false, sourceHash: attempt.value.sourceHash };
-    } catch (error) {
-      overlayErrors.push(error.message);
-      throw error;
-    }
-  }
-
-  const initialA = resolveAndApply("/api/resolve/movie?tmdbId=27205");
-  await initialStarted;
-  // Source discovery finishes while A is unresolved and gives preferred B
-  // ownership. Starting B must cancel A, not let A wake and launch fallback C.
-  const preferredB = resolveAndApply(
-    `/api/resolve/movie?tmdbId=27205&sourceHash=${preferredHash}`,
-    preferredHash,
+  assert.deepEqual(stale, { value: null, stale: true });
+  await assert.rejects(
+    runResolveWithSupersession({
+      resolve: async () => {
+        throw abortError;
+      },
+      isSuperseded: () => false,
+    }),
+    (error) => isResolveAbortError(error),
   );
-
-  assert.deepEqual(await initialA, { stale: true });
-  assert.deepEqual(await preferredB, {
-    stale: false,
-    sourceHash: preferredHash,
-  });
-  assert.deepEqual(appliedHashes, [preferredHash]);
-  assert.deepEqual(overlayErrors, []);
-  assert.equal(fallbackCount, 0);
-  assert.equal(requests.length, 2);
 });
 
 await run("a sleeping B retry cannot wake and cancel newer C", async () => {
