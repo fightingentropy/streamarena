@@ -22,6 +22,27 @@ const disabledView = buildSourceMenuView({ sources, torrentsEnabled: false });
 assert.equal(disabledView.showTabs, false);
 assert.deepEqual(disabledView.sources, sources);
 
+const initialLoadingView = buildSourceMenuView({
+  sources: [],
+  torrentsEnabled: true,
+});
+assert.equal(
+  initialLoadingView.activeTab,
+  "",
+  "an empty initial render must not invent a torrents tab before HLS discovery",
+);
+
+const explicitlyRequestedEmptyTorrentView = buildSourceMenuView({
+  sources: [],
+  requestedTab: SOURCE_MENU_TORRENTS_TAB,
+  torrentsEnabled: true,
+});
+assert.equal(
+  explicitlyRequestedEmptyTorrentView.activeTab,
+  SOURCE_MENU_TORRENTS_TAB,
+  "an explicit user tab choice must survive an empty refresh",
+);
+
 const selectedTorrentView = buildSourceMenuView({
   sources,
   selectedSourceHash: torrentSource.sourceHash,

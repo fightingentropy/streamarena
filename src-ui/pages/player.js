@@ -28,7 +28,9 @@ import {
 import {
   createResolveJobRequestCoordinator,
   createResolveRequester,
+  isResolveAbortError,
   isTransientResolveError,
+  runResolveWithSupersession,
 } from "../player/resolve-job.js";
 import {
   createDeferredMediaTrackController,
@@ -3645,27 +3647,43 @@ async function resolveTmdbSourcesAndPlay({
   ) {
     effectiveResolveTimeoutMs = getTmdbTorrentResolveTimeoutMs();
   }
-  const resolved = isTmdbTvPlayback
-    ? await resolveTmdbTvEpisodeViaBackend(
-        tmdbId,
-        seasonNumber,
-        episodeNumber,
-        {
-          allowContainerFallback,
-          allowSourceFallback,
-          requestSourceHash: normalizedRequestSourceHash,
-          resolveTimeoutMs: effectiveResolveTimeoutMs,
-          skipExternalEmbed,
-          refreshResolve,
-        },
-      )
-    : await resolveTmdbMovieViaBackend(tmdbId, {
-        allowSourceFallback,
-        requestSourceHash: normalizedRequestSourceHash,
-        resolveTimeoutMs: effectiveResolveTimeoutMs,
-        skipExternalEmbed,
-        refreshResolve,
-      });
+  const resolveAttempt = await runResolveWithSupersession({
+    resolve: () =>
+      isTmdbTvPlayback
+        ? resolveTmdbTvEpisodeViaBackend(
+            tmdbId,
+            seasonNumber,
+            episodeNumber,
+            {
+              allowContainerFallback,
+              allowSourceFallback,
+              requestSourceHash: normalizedRequestSourceHash,
+              resolveTimeoutMs: effectiveResolveTimeoutMs,
+              skipExternalEmbed,
+              refreshResolve,
+            },
+          )
+        : resolveTmdbMovieViaBackend(tmdbId, {
+            allowSourceFallback,
+            requestSourceHash: normalizedRequestSourceHash,
+            resolveTimeoutMs: effectiveResolveTimeoutMs,
+            skipExternalEmbed,
+            refreshResolve,
+          }),
+    isSuperseded: () =>
+      applyPlayback &&
+      (activePlaybackRequestToken !== tmdbPlaybackRequestToken ||
+        isManualSourceSwitchPending()),
+  });
+  if (resolveAttempt.stale) {
+    return {
+      nativeLaunched: false,
+      resolved: null,
+      resolvedSourceHash: "",
+      stale: true,
+    };
+  }
+  const resolved = resolveAttempt.value;
   const resolvedSourceHash = normalizeSourceHash(
     resolved?.sourceHash || normalizedRequestSourceHash || selectedSourceHash,
   );
@@ -7288,6 +7306,9 @@ async function resolveTmdbMovieViaBackend(
       requestTimeoutMs,
     );
   } catch (error) {
+    if (isResolveAbortError(error)) {
+      throw error;
+    }
     lastError = error;
     if (allowSourceFallback && pinnedSourceHash) {
       const skipEmbedFallback =
@@ -7301,6 +7322,9 @@ async function resolveTmdbMovieViaBackend(
           requestTimeoutMs,
         );
       } catch (fallbackError) {
+        if (isResolveAbortError(fallbackError)) {
+          throw fallbackError;
+        }
         lastError = fallbackError;
       }
     }
@@ -7409,6 +7433,9 @@ async function resolveTmdbTvEpisodeViaBackend(
       requestTimeoutMs,
     );
   } catch (error) {
+    if (isResolveAbortError(error)) {
+      throw error;
+    }
     let lastError = error;
     const fallbackAttempts = [];
     const seen = new Set([`${preferredContainer}::${pinnedSourceHash}`]);
@@ -7455,6 +7482,9 @@ async function resolveTmdbTvEpisodeViaBackend(
           requestTimeoutMs,
         );
       } catch (fallbackError) {
+        if (isResolveAbortError(fallbackError)) {
+          throw fallbackError;
+        }
         lastError = fallbackError;
       }
     }
@@ -7585,17 +7615,34 @@ async function fetchTmdbSourceOptionsViaBackend() {
     }
     renderSourceOptionsWhenStable();
     if (shouldAdoptPreferredDefault) {
-      if (userLocalTorrentEnabled) {
+      const preferredDefaultSource = getSourceOptionByHash(
+        preferredDefaultSourceHash,
+      );
+      const preferredDefaultIsEmbed = Boolean(
+        preferredDefaultSource && isSourceOptionEmbed(preferredDefaultSource),
+      );
+      const useLocalTorrent =
+        userLocalTorrentEnabled && !preferredDefaultIsEmbed;
+      if (preferredDefaultIsEmbed) {
+        tmdbSkipExternalEmbed = false;
+      } else if (useLocalTorrent) {
         preferredResolverProvider = "local-torrent";
         tmdbSkipExternalEmbed = true;
       }
       void resolveTmdbSourcesAndPlay({
         requestSourceHash: preferredDefaultSourceHash,
         requiredSourceHash: preferredDefaultSourceHash,
-        skipExternalEmbed: tmdbSkipExternalEmbed,
-        resolveTimeoutMs: getTmdbTorrentResolveTimeoutMs(),
+        skipExternalEmbed: preferredDefaultIsEmbed
+          ? false
+          : tmdbSkipExternalEmbed,
+        resolveTimeoutMs: useLocalTorrent
+          ? getTmdbTorrentResolveTimeoutMs()
+          : undefined,
         startSeconds: getEffectiveCurrentTime(),
       }).catch((error) => {
+        if (isResolveAbortError(error)) {
+          return;
+        }
         console.error("Failed to adopt preferred default source:", error);
       });
     }

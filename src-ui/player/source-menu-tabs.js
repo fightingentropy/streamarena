@@ -44,7 +44,9 @@ export function buildSourceMenuView({
     requestedTab === SOURCE_MENU_HLS_TAB ||
     requestedTab === SOURCE_MENU_TORRENTS_TAB
       ? requestedTab
-      : fallbackTab;
+      : safeSources.length > 0
+        ? fallbackTab
+        : "";
   const counts = safeSources.reduce(
     (result, source) => {
       result[getSourceMenuTab(source)] += 1;

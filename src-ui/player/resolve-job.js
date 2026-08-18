@@ -11,6 +11,31 @@ function createResolveAbortError() {
   return error;
 }
 
+export function isResolveAbortError(error) {
+  return error?.name === "AbortError";
+}
+
+/**
+ * Convert cancellation into a stale result only after a newer playback owner
+ * exists. Other aborts still propagate so real failures are not hidden.
+ */
+export async function runResolveWithSupersession({
+  resolve,
+  isSuperseded = () => false,
+} = {}) {
+  if (typeof resolve !== "function") {
+    throw new TypeError("Resolve operation is required.");
+  }
+  try {
+    return { value: await resolve(), stale: false };
+  } catch (error) {
+    if (isResolveAbortError(error) && isSuperseded()) {
+      return { value: null, stale: true };
+    }
+    throw error;
+  }
+}
+
 function throwIfResolveAborted(signal) {
   if (signal?.aborted) {
     throw createResolveAbortError();

@@ -15,6 +15,9 @@ const smokeVideo = "assets/videos/fantozzi-1975-1080p-h264-aac-4k-restored.mp4";
 const hevcSmokeVideo = "assets/videos/project-hail-mary-2026-2160p-hevc.mp4";
 const sourceSwitchHashA = "a".repeat(40);
 const sourceSwitchHashB = "b".repeat(40);
+const initialResolveRaceTmdbId = "initial-resolve-source-discovery-tv";
+const initialResolvePreferredHash = "6".repeat(40);
+const initialResolveStaleHash = "7".repeat(40);
 const hlsManagedTmdbId = "273240";
 const emptyTracksTmdbId = "empty-tracks-tv";
 const translatedSubtitleTmdbId = "translated-subtitle-tv";
@@ -566,6 +569,11 @@ const pages = [
     selector: ".player-shell",
     expectSourceSwitchFailureRestore: true,
   },
+  {
+    path: `/player.html?tmdbId=${initialResolveRaceTmdbId}&mediaType=tv&title=Resolve%20Ownership&seasonNumber=1&episodeNumber=1&preferredContainer=mp4`,
+    selector: ".player-shell",
+    expectInitialResolveSourceDiscoverySupersession: true,
+  },
 ];
 
 async function runSmoke() {
@@ -594,10 +602,33 @@ async function runSmoke() {
       let hlsBundleReleased = false;
       const hoverResolvePrewarmRequests = [];
       const realDebridUpdateBodies = [];
+      const initialResolveRaceRequests = [];
+      const initialResolveRaceCancelRequests = [];
+      const initialResolveRaceConsoleErrors = [];
+      let initialResolveRaceSourceResponses = 0;
+      let notifyInitialResolveRaceStarted;
+      const initialResolveRaceStarted = new Promise((resolveStarted) => {
+        notifyInitialResolveRaceStarted = resolveStarted;
+      });
+      let releaseInitialResolveRace;
+      const initialResolveRaceRelease = new Promise((resolveRelease) => {
+        releaseInitialResolveRace = resolveRelease;
+      });
 
       let hlsBundleHoldActive = false;
       page.on("pageerror", (error) => {
         failures.push(`page error: ${error.message}`);
+      });
+      page.on("console", (message) => {
+        if (
+          pageSpec.expectInitialResolveSourceDiscoverySupersession &&
+          message.type() === "error" &&
+          /(?:failed to resolve tmdb playback|failed to adopt preferred default source|cancelled|abort)/i.test(
+            message.text(),
+          )
+        ) {
+          initialResolveRaceConsoleErrors.push(message.text());
+        }
       });
       page.on("requestfailed", (request) => {
         if (["document", "script", "stylesheet"].includes(request.resourceType())) {
@@ -694,6 +725,108 @@ async function runSmoke() {
       await page.route("**/api/**", async (route) => {
         const request = route.request();
         const url = new URL(request.url());
+        if (
+          pageSpec.expectInitialResolveSourceDiscoverySupersession &&
+          url.pathname === "/api/user/torrent-settings" &&
+          request.method() === "GET"
+        ) {
+          await route.fulfill(
+            jsonResponse({
+              configured: false,
+              localTorrentEnabled: true,
+            }),
+          );
+          return;
+        }
+        if (
+          pageSpec.expectInitialResolveSourceDiscoverySupersession &&
+          url.pathname.startsWith("/api/resolve/job/") &&
+          request.method() === "DELETE"
+        ) {
+          initialResolveRaceCancelRequests.push(url.pathname);
+          await route.fulfill(jsonResponse({ cancelled: true }));
+          return;
+        }
+        if (
+          pageSpec.expectInitialResolveSourceDiscoverySupersession &&
+          url.pathname === "/api/resolve/sources" &&
+          url.searchParams.get("tmdbId") === initialResolveRaceTmdbId
+        ) {
+          // Force source discovery to finish while initial unpinned resolve A is
+          // still held. This is the production ordering which used to let A's
+          // aborted TV-container fallback cancel preferred resolve B.
+          await initialResolveRaceStarted;
+          initialResolveRaceSourceResponses += 1;
+          await route.fulfill(
+            jsonResponse({
+              sources: [
+                {
+                  sourceHash: initialResolvePreferredHash,
+                  infoHash: initialResolvePreferredHash,
+                  primary: "Meridian",
+                  filename: "Meridian embed",
+                  provider: "LivNet",
+                  qualityLabel: "1080p",
+                  container: "hls",
+                  isTorrent: false,
+                  seeders: 0,
+                  size: "",
+                  releaseGroup: "Native HLS",
+                  score: 1_000_400,
+                },
+              ],
+            }),
+          );
+          return;
+        }
+        if (
+          pageSpec.expectInitialResolveSourceDiscoverySupersession &&
+          url.pathname === "/api/resolve/tv" &&
+          url.searchParams.get("tmdbId") === initialResolveRaceTmdbId
+        ) {
+          initialResolveRaceRequests.push({
+            method: request.method(),
+            params: Object.fromEntries(url.searchParams),
+          });
+          const requestNumber = initialResolveRaceRequests.length;
+          if (requestNumber === 1) {
+            notifyInitialResolveRaceStarted();
+            await initialResolveRaceRelease;
+            const staleResponseUrl = new URL(url);
+            staleResponseUrl.searchParams.set(
+              "sourceHash",
+              initialResolveStaleHash,
+            );
+            try {
+              await route.fulfill(
+                jsonResponse({
+                  ...apiPayload(staleResponseUrl, request.method()),
+                  resolverProvider: "external-embed",
+                }),
+              );
+            } catch {
+              // B aborts A's fetch before this held route is released. Playwright
+              // may therefore reject the late fulfilment; that is expected.
+            }
+            return;
+          }
+
+          // Starting preferred B releases the stale A response. Even if the
+          // transport delivers C, playback generation ownership must keep C from
+          // applying. Any request after B is an illegal fallback spawned by A.
+          releaseInitialResolveRace();
+          const responseUrl = new URL(url);
+          if (requestNumber > 2) {
+            responseUrl.searchParams.set("sourceHash", initialResolveStaleHash);
+          }
+          await route.fulfill(
+            jsonResponse({
+              ...apiPayload(responseUrl, request.method()),
+              resolverProvider: "external-embed",
+            }),
+          );
+          return;
+        }
         if (url.pathname === "/api/hls/master.m3u8") {
           sawHlsMasterRequest = true;
         }
@@ -866,7 +999,11 @@ async function runSmoke() {
         );
       }
 
-      if (pageSpec.expectSourceSwitch || pageSpec.expectSourceSwitchFailureRestore) {
+      if (
+        pageSpec.expectSourceSwitch ||
+        pageSpec.expectSourceSwitchFailureRestore ||
+        pageSpec.expectInitialResolveSourceDiscoverySupersession
+      ) {
         await context.addInitScript(({ sourceHashes, failingHash }) => {
           const shouldHandleSource = (media) => {
             const currentSource = String(media.getAttribute("src") || "");
@@ -917,7 +1054,9 @@ async function runSmoke() {
             return Promise.resolve();
           };
         }, {
-          sourceHashes: [sourceSwitchHashA, sourceSwitchHashB],
+          sourceHashes: pageSpec.expectInitialResolveSourceDiscoverySupersession
+            ? [initialResolvePreferredHash, initialResolveStaleHash]
+            : [sourceSwitchHashA, sourceSwitchHashB],
           // The player defaults to hashB, so make the 1080p alternate (hashA) the
           // failing source the failure-restore test switches to.
           failingHash: pageSpec.expectSourceSwitchFailureRestore
@@ -937,6 +1076,118 @@ async function runSmoke() {
         }
       }
       await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
+
+      if (pageSpec.expectInitialResolveSourceDiscoverySupersession) {
+        for (
+          let attempt = 0;
+          attempt < 160 && initialResolveRaceRequests.length < 2;
+          attempt += 1
+        ) {
+          await delay(50);
+        }
+        if (initialResolveRaceRequests.length < 2) {
+          releaseInitialResolveRace();
+          throw new Error(
+            `${pageSpec.path}\nSource discovery did not supersede delayed initial resolve A with preferred HLS resolve B.\n${JSON.stringify({
+              sourceResponses: initialResolveRaceSourceResponses,
+              resolveRequests: initialResolveRaceRequests,
+            })}`,
+          );
+        }
+
+        for (let attempt = 0; attempt < 160; attempt += 1) {
+          const preferredOwnsPlayback = await page.evaluate((preferredHash) => {
+            const selectedHash =
+              document.querySelector(".source-option[aria-selected='true']")
+                ?.dataset.sourceHash || "";
+            const videoSource =
+              document.querySelector("video")?.getAttribute("src") || "";
+            return selectedHash === preferredHash && videoSource.includes(preferredHash);
+          }, initialResolvePreferredHash);
+          if (preferredOwnsPlayback) {
+            break;
+          }
+          await delay(50);
+        }
+
+        // Let A's aborted promise unwind completely. A missing AbortError guard
+        // would now start TV-container/source fallback C and create request 3.
+        await delay(250);
+        const ownershipState = await page.evaluate(
+          ({ preferredHash, staleHash }) => {
+            const overlay = document.querySelector(".resolver-overlay");
+            const resolverText = overlay?.textContent?.replace(/\s+/g, " ").trim() || "";
+            return {
+              selectedHash:
+                document.querySelector(".source-option[aria-selected='true']")
+                  ?.dataset.sourceHash || "",
+              sourceOptions: Array.from(
+                document.querySelectorAll(".source-option"),
+              ).map((option) => ({
+                hash: option.dataset.sourceHash || "",
+                selected: option.getAttribute("aria-selected") || "",
+                busy: option.getAttribute("aria-busy") || "",
+              })),
+              activeSourceTab:
+                document.querySelector("[data-source-tab].is-active")?.getAttribute(
+                  "data-source-tab",
+                ) || "",
+              videoSource:
+                document.querySelector("video")?.getAttribute("src") || "",
+              overlayHidden: overlay?.hidden ?? true,
+              overlayIsError: overlay?.classList.contains("is-error") || false,
+              visibleCancellation:
+                Boolean(overlay && !overlay.hidden) &&
+                /cancelled|abort/i.test(resolverText),
+              staleSourceVisible:
+                (document.querySelector("video")?.getAttribute("src") || "").includes(
+                  staleHash,
+                ),
+              preferredSourceVisible:
+                (document.querySelector("video")?.getAttribute("src") || "").includes(
+                  preferredHash,
+                ),
+            };
+          },
+          {
+            preferredHash: initialResolvePreferredHash,
+            staleHash: initialResolveStaleHash,
+          },
+        );
+        const [initialRequest, preferredRequest] = initialResolveRaceRequests;
+        if (
+          initialResolveRaceSourceResponses !== 1 ||
+          initialResolveRaceRequests.length !== 2 ||
+          initialResolveRaceCancelRequests.length !== 0 ||
+          initialResolveRaceConsoleErrors.length !== 0 ||
+          initialRequest?.method !== "GET" ||
+          Object.hasOwn(initialRequest?.params || {}, "sourceHash") ||
+          initialRequest?.params?.resolverProvider !== "fastest" ||
+          initialRequest?.params?.preferredContainer !== "mp4" ||
+          Object.hasOwn(initialRequest?.params || {}, "skipExternalEmbed") ||
+          Object.hasOwn(initialRequest?.params || {}, "async") ||
+          preferredRequest?.params?.sourceHash !== initialResolvePreferredHash ||
+          preferredRequest?.params?.resolverProvider !== "fastest" ||
+          Object.hasOwn(preferredRequest?.params || {}, "skipExternalEmbed") ||
+          Object.hasOwn(preferredRequest?.params || {}, "async") ||
+          ownershipState.selectedHash !== initialResolvePreferredHash ||
+          !ownershipState.preferredSourceVisible ||
+          ownershipState.staleSourceVisible ||
+          !ownershipState.overlayHidden ||
+          ownershipState.overlayIsError ||
+          ownershipState.visibleCancellation
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nPreferred HLS resolve B did not exclusively own playback after superseding delayed A.\n${JSON.stringify({
+              sourceResponses: initialResolveRaceSourceResponses,
+              resolveRequests: initialResolveRaceRequests,
+              cancelRequests: initialResolveRaceCancelRequests,
+              consoleErrors: initialResolveRaceConsoleErrors,
+              ownershipState,
+            })}`,
+          );
+        }
+      }
 
       if (pageSpec.expectSeekProgress) {
         const seekProgressState = await page.evaluate(() => {
