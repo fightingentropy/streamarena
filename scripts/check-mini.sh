@@ -468,19 +468,19 @@ public_login_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$P
 public_http_result="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 "http://$PUBLIC_HOST/login.html" || true)"
 public_http_status="${public_http_result%% *}"
 public_http_target="${public_http_result#* }"
-if [[ "$public_http_status" == "308" && "$public_http_target" == "$PUBLIC_URL/login.html" ]]; then
+if [[ ("$public_http_status" == "301" || "$public_http_status" == "308") && "$public_http_target" == "$PUBLIC_URL/login.html" ]]; then
   pass "public HTTP login redirects permanently to canonical HTTPS"
 else
-  bad "public HTTP login returned '$public_http_result' (expected 308 $PUBLIC_URL/login.html)"
+  bad "public HTTP login returned '$public_http_result' (expected permanent redirect to $PUBLIC_URL/login.html)"
 fi
 
 public_alias_result="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 "https://$PUBLIC_ALIAS_HOST/login.html" || true)"
 public_alias_status="${public_alias_result%% *}"
 public_alias_target="${public_alias_result#* }"
-if [[ "$public_alias_status" == "308" && "$public_alias_target" == "$PUBLIC_URL/login.html" ]]; then
+if [[ ("$public_alias_status" == "301" || "$public_alias_status" == "308") && "$public_alias_target" == "$PUBLIC_URL/login.html" ]]; then
   pass "alternate hostname redirects permanently to canonical HTTPS"
 else
-  bad "alternate hostname returned '$public_alias_result' (expected 308 $PUBLIC_URL/login.html)"
+  bad "alternate hostname returned '$public_alias_result' (expected permanent redirect to $PUBLIC_URL/login.html)"
 fi
 
 public_robots_header="$({ curl -sSI --max-time 10 "$PUBLIC_URL/login.html" 2>/dev/null || true; } \
@@ -499,7 +499,7 @@ fi
 
 auth_config_file="$(mktemp)"
 auth_config_status="$(curl -sS -o "$auth_config_file" -w '%{http_code}' --max-time 10 "$PUBLIC_URL/api/auth/config" || true)"
-auth_config_open="$(jq -r '.signup.open // "missing"' "$auth_config_file" 2>/dev/null || echo invalid)"
+auth_config_open="$(jq -r 'if .signup.open == false then "false" elif .signup.open == true then "true" else "missing" end' "$auth_config_file" 2>/dev/null || echo invalid)"
 rm -f "$auth_config_file"
 if [[ "$auth_config_status" == "200" && "$auth_config_open" == "false" ]]; then
   pass "public auth config confirms self-signup is closed"
