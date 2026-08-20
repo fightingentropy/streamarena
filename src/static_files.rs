@@ -21,6 +21,13 @@ const CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";
 const CACHE_STATIC_ASSET: &str = "public, max-age=86400";
 const CACHE_VIDEO_ASSET: &str = "private, max-age=3600";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrivateStaticAssetKind {
+    Library,
+    Image,
+    Video,
+}
+
 pub async fn serve_static(
     State(state): State<AppState>,
     method: Method,
@@ -188,8 +195,9 @@ fn resolve_local_path(frontend_dir: &Path, repo_root: &Path, pathname: &str) -> 
     if decoded.starts_with("/reset-password/") || decoded == "/reset-password" {
         return Some(frontend_dir.join("reset-password.html"));
     }
-    if decoded.starts_with("/assets/") {
-        let normalized = normalize_path(decoded.trim_start_matches('/'))?;
+    let normalized_request = normalize_path(decoded.trim_start_matches('/'))?;
+    if first_path_component_eq_ignore_ascii_case(&normalized_request, "assets") {
+        let normalized = normalized_request;
         let file_path = repo_root.join(normalized);
         return if file_path.starts_with(repo_root) {
             Some(file_path)
@@ -233,6 +241,45 @@ fn normalize_path(path: &str) -> Option<PathBuf> {
         }
     }
     Some(output)
+}
+
+fn first_path_component_eq_ignore_ascii_case(path: &Path, expected: &str) -> bool {
+    path.components().next().is_some_and(|component| {
+        matches!(component, Component::Normal(value) if value.to_str().is_some_and(|value| value.eq_ignore_ascii_case(expected)))
+    })
+}
+
+fn classify_private_static_asset(path: &Path) -> Option<PrivateStaticAssetKind> {
+    let mut components = path.components();
+    let Component::Normal(root) = components.next()? else {
+        return None;
+    };
+    if !root
+        .to_str()
+        .is_some_and(|value| value.eq_ignore_ascii_case("assets"))
+    {
+        return None;
+    }
+    let Component::Normal(category) = components.next()? else {
+        return None;
+    };
+    let category = category.to_str()?;
+    if category.eq_ignore_ascii_case("library.json") && components.next().is_none() {
+        return Some(PrivateStaticAssetKind::Library);
+    }
+    if category.eq_ignore_ascii_case("images") {
+        return Some(PrivateStaticAssetKind::Image);
+    }
+    if category.eq_ignore_ascii_case("videos") {
+        return Some(PrivateStaticAssetKind::Video);
+    }
+    None
+}
+
+fn classify_private_static_request(pathname: &str) -> Option<PrivateStaticAssetKind> {
+    let decoded = percent_decode(pathname)?;
+    let normalized = normalize_path(decoded.trim_start_matches('/'))?;
+    classify_private_static_asset(&normalized)
 }
 
 fn percent_decode(path: &str) -> Option<String> {
@@ -322,25 +369,27 @@ fn redirect_to_login() -> Response<Body> {
 }
 
 fn should_require_auth_for_static_path(pathname: &str) -> bool {
-    pathname == "/assets/library.json"
-        || pathname.starts_with("/assets/images/")
-        || pathname.starts_with("/assets/videos/")
+    classify_private_static_request(pathname).is_some()
 }
 
 fn should_require_auth_for_static_file(repo_root: &Path, file_path: &Path) -> bool {
-    let asset_root = repo_root.join("assets");
-    let library_path = asset_root.join("library.json");
-    let images_dir = asset_root.join("images");
-    let videos_dir = asset_root.join("videos");
-    file_path == library_path
-        || file_path.starts_with(images_dir)
-        || file_path.starts_with(videos_dir)
+    file_path
+        .strip_prefix(repo_root)
+        .ok()
+        .and_then(classify_private_static_asset)
+        .is_some()
 }
 
 fn cache_control_for_path(pathname: &str, content_type: &str) -> &'static str {
+    match classify_private_static_request(pathname) {
+        Some(PrivateStaticAssetKind::Library | PrivateStaticAssetKind::Image) => {
+            return CACHE_NO_STORE;
+        }
+        Some(PrivateStaticAssetKind::Video) => return CACHE_VIDEO_ASSET,
+        None => {}
+    }
     if pathname == "/"
         || pathname.ends_with(".html")
-        || pathname == "/assets/library.json"
         || content_type.starts_with("text/html")
         || content_type.contains("json")
     {
@@ -348,12 +397,6 @@ fn cache_control_for_path(pathname: &str, content_type: &str) -> &'static str {
     }
     if pathname.starts_with("/ui-assets/") {
         return CACHE_IMMUTABLE;
-    }
-    if pathname.starts_with("/assets/videos/") {
-        return CACHE_VIDEO_ASSET;
-    }
-    if pathname.starts_with("/assets/images/") {
-        return CACHE_NO_STORE;
     }
     if pathname.starts_with("/assets/icons/") {
         return CACHE_STATIC_ASSET;
@@ -425,6 +468,29 @@ mod tests {
     }
 
     #[test]
+    fn resolves_asset_routes_case_insensitively_after_decoding() {
+        for route in [
+            "/ASSETS/IMAGES/poster.jpg",
+            "/assets%2FIMAGES%2Fposter.jpg",
+            "/assets//VIDEOS/movie.mp4",
+            "/assets/%2e/LIBRARY.JSON",
+        ] {
+            let path = resolve_local_path(Path::new("/tmp/app/dist"), Path::new("/tmp/app"), route)
+                .unwrap();
+            assert!(
+                path.to_string_lossy()
+                    .to_ascii_lowercase()
+                    .starts_with("/tmp/app/assets"),
+                "route {route}: {path:?}"
+            );
+            assert!(
+                !path.starts_with("/tmp/app/dist"),
+                "route {route}: {path:?}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_asset_path_traversal() {
         assert!(
             resolve_local_path(
@@ -464,15 +530,34 @@ mod tests {
 
     #[test]
     fn marks_private_static_media_and_library_as_auth_required() {
-        assert!(should_require_auth_for_static_path("/assets/library.json"));
-        assert!(should_require_auth_for_static_path(
-            "/assets/videos/movie.mp4"
-        ));
+        for route in [
+            "/assets/library.json",
+            "/assets/LIBRARY.JSON",
+            "/assets/%4cIBRARY.JSON",
+            "/assets%2FLIBRARY.JSON",
+            "/assets/images/poster.jpg",
+            "/ASSETS/IMAGES/poster.jpg",
+            "/assets/IMAGES/poster.jpg",
+            "/assets/%49MAGES/poster.jpg",
+            "/assets%2FIMAGES%2Fposter.jpg",
+            "/assets//IMAGES/poster.jpg",
+            "/assets/./IMAGES/poster.jpg",
+            "/assets/%2e/IMAGES/poster.jpg",
+            "/assets/videos/movie.mp4",
+            "/assets/VIDEOS/movie.mp4",
+            "/assets/%56IDEOS/movie.mp4",
+            "/assets%2FVIDEOS%2Fmovie.mp4",
+            "/assets//VIDEOS/movie.mp4",
+            "/assets/./VIDEOS/movie.mp4",
+            "/assets/%2e/VIDEOS/movie.mp4",
+        ] {
+            assert!(
+                should_require_auth_for_static_path(route),
+                "route {route} must require authentication"
+            );
+        }
         assert!(!should_require_auth_for_static_path(
             "/assets/icons/streamarena-mark.svg"
-        ));
-        assert!(should_require_auth_for_static_path(
-            "/assets/images/poster.jpg"
         ));
         assert!(should_require_auth_for_static_file(
             Path::new("/tmp/app"),
@@ -485,6 +570,18 @@ mod tests {
         assert!(should_require_auth_for_static_file(
             Path::new("/tmp/app"),
             Path::new("/tmp/app/assets/images/poster.jpg")
+        ));
+        assert!(should_require_auth_for_static_file(
+            Path::new("/tmp/app"),
+            Path::new("/tmp/app/assets/IMAGES/poster.jpg")
+        ));
+        assert!(should_require_auth_for_static_file(
+            Path::new("/tmp/app"),
+            Path::new("/tmp/app/assets/VIDEOS/movie.mp4")
+        ));
+        assert!(should_require_auth_for_static_file(
+            Path::new("/tmp/app"),
+            Path::new("/tmp/app/assets/LIBRARY.JSON")
         ));
     }
 
@@ -527,6 +624,14 @@ mod tests {
         );
         assert_eq!(
             cache_control_for_path("/assets/videos/movie.mp4", "video/mp4"),
+            CACHE_VIDEO_ASSET
+        );
+        assert_eq!(
+            cache_control_for_path("/assets/%49MAGES/poster.jpg", "image/jpeg"),
+            CACHE_NO_STORE
+        );
+        assert_eq!(
+            cache_control_for_path("/assets%2FVIDEOS%2Fmovie.mp4", "video/mp4"),
             CACHE_VIDEO_ASSET
         );
     }
