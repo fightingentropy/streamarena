@@ -1,7 +1,5 @@
 export function renderPlayerShell({
   defaultEpisodeThumbnail,
-  handleLiveIframePlaybackError,
-  liveIframeAllowPolicy,
   refs,
 }) {
   return <><div data-solid-page-root="" class="solid-page-root">
@@ -14,18 +12,6 @@ export function renderPlayerShell({
         preload="metadata"
         aria-label="Video player"
       ></video>
-      <iframe
-        id="liveEmbedFrame"
-        ref={refs.liveEmbedFrame}
-        class="live-embed-frame"
-        title="Live stream player"
-        allow={liveIframeAllowPolicy}
-        allowfullscreen
-        referrerpolicy="strict-origin-when-cross-origin"
-        onError={handleLiveIframePlaybackError}
-        hidden
-      ></iframe>
-
       <div id="subtitleOverlay" ref={refs.subtitleOverlay} class="custom-subtitle-overlay" hidden></div>
       <div class="player-ui">
         <header class="top-row">

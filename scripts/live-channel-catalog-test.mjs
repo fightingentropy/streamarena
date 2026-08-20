@@ -9,7 +9,7 @@ import {
 } from "../src-ui/lib/live-channels.js";
 
 const expectedNtvChannels = [
-  ["bbc-us", "BBC", "BBC America", "General", "US", 2],
+  ["bbc-us", "BBC", "BBC America", "General", "US", 1],
   ["cnn", "CNN", "CNN", "News", "US", 1],
   ["fox-news", "FOX-News", "FOX News", "News", "US", 1],
   ["espn-2-us", "ESPN-2", "ESPN 2 (US)", "Sports", "US", 1],
@@ -53,10 +53,15 @@ for (const [id, route, title, genre, region, streamCount] of expectedNtvChannels
 }
 
 assert.equal(ntvCdnLiveChannelUrl("BBC"), "https://ntv.cx/channel-cdnlive/BBC?code=us");
-const bbcPhoenixSource = `live-iframe:${encodeURIComponent("https://ntvs.cx/channel/305")}`;
 const bbcAmerica = LIVE_CHANNELS.find((channel) => channel.id === "bbc-us");
-assert.equal(bbcAmerica.streams[1].source, bbcPhoenixSource);
-assert.equal(findLiveChannelIdBySource(bbcPhoenixSource), "bbc-us");
+assert.equal(bbcAmerica.streams.length, 1);
+assert.equal(
+  LIVE_CHANNELS.some((channel) =>
+    channel.streams.some((stream) => String(stream.source || "").startsWith("live-iframe:")),
+  ),
+  false,
+  "the built-in channel catalogue must not ship direct third-party iframe sources",
+);
 assert.equal(LIVE_CHANNELS.filter((channel) => channel.id === "bbc-news").length, 1);
 
 assert.doesNotMatch(liveChannelsViewSource, /live-channel-play/);
@@ -121,6 +126,10 @@ assert.match(
 );
 
 const bbcAmericaCatalog = catalog.channels.find((channel) => channel.id === "bbc-us");
-assert.equal(bbcAmericaCatalog.streams.length, 2, "shared catalog must keep BBC America Phoenix fallback");
+assert.equal(
+  bbcAmericaCatalog.streams.length,
+  1,
+  "shared catalog must not restore the removed iframe fallback",
+);
 
 console.log("Live channel catalog and card UI tests passed (7 NTV/CDNLive channels).");

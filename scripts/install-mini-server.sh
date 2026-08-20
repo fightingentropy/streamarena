@@ -7,6 +7,8 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
 REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/streamarena}"
 CADDY_VERSION="${CADDY_VERSION:-2.11.3}"
 PUBLIC_HOSTS="${PUBLIC_HOSTS:-streamarena.xyz,www.streamarena.xyz}"
+PUBLIC_CANONICAL_HOST="${PUBLIC_CANONICAL_HOST:-streamarena.xyz}"
+DIRECT_ORIGIN_HOSTS="${DIRECT_ORIGIN_HOSTS:-}"
 TLS_MODE="${TLS_MODE:-auto}"
 
 usage() {
@@ -29,6 +31,10 @@ Environment:
   REMOTE_APP                   Default: /Users/hermes/Developer/streamarena
   CADDY_VERSION                Default: 2.11.3
   PUBLIC_HOSTS                 Default: streamarena.xyz,www.streamarena.xyz
+  PUBLIC_CANONICAL_HOST        Default: streamarena.xyz
+  DIRECT_ORIGIN_HOSTS          Optional comma-separated DNS-only Worker origin
+                               hosts. When omitted, the Mini reads this value
+                               from its mode-600 canonical Streamarena env.
   TLS_MODE                     Default: auto
 USAGE
 }
@@ -52,9 +58,51 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ ! "$PUBLIC_CANONICAL_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
+  echo "PUBLIC_CANONICAL_HOST is invalid" >&2
+  exit 2
+fi
+canonical_requested=0
+IFS=',' read -r -a requested_hosts <<< "$PUBLIC_HOSTS"
+for requested_host in "${requested_hosts[@]}"; do
+  requested_host="${requested_host//[[:space:]]/}"
+  [[ -n "$requested_host" ]] || continue
+  if [[ ! "$requested_host" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    echo "PUBLIC_HOSTS contains an invalid host" >&2
+    exit 2
+  fi
+  if [[ "$requested_host" == "$PUBLIC_CANONICAL_HOST" ]]; then
+    canonical_requested=1
+  fi
+done
+if [[ "$canonical_requested" != "1" ]]; then
+  echo "PUBLIC_CANONICAL_HOST must be included in PUBLIC_HOSTS" >&2
+  exit 2
+fi
+IFS=',' read -r -a requested_direct_origin_hosts <<< "$DIRECT_ORIGIN_HOSTS"
+for requested_host in "${requested_direct_origin_hosts[@]}"; do
+  requested_host="${requested_host//[[:space:]]/}"
+  [[ -n "$requested_host" ]] || continue
+  if [[ ! "$requested_host" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    echo "DIRECT_ORIGIN_HOSTS contains an invalid host" >&2
+    exit 2
+  fi
+done
+
 ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$MINI_HOST" \
-  "REMOTE_APP='$REMOTE_APP' CADDY_VERSION='$CADDY_VERSION' PUBLIC_HOSTS='$PUBLIC_HOSTS' TLS_MODE='$TLS_MODE' bash -s" <<'REMOTE'
+  "REMOTE_APP='$REMOTE_APP' CADDY_VERSION='$CADDY_VERSION' PUBLIC_HOSTS='$PUBLIC_HOSTS' PUBLIC_CANONICAL_HOST='$PUBLIC_CANONICAL_HOST' DIRECT_ORIGIN_HOSTS='$DIRECT_ORIGIN_HOSTS' TLS_MODE='$TLS_MODE' bash -s" <<'REMOTE'
 set -euo pipefail
+
+if [[ -z "$DIRECT_ORIGIN_HOSTS" ]]; then
+  DIRECT_ORIGIN_HOSTS="$({
+    awk -F= '/^DIRECT_ORIGIN_HOSTS=/ {print substr($0, length($1) + 2); exit}' \
+      "$HOME/.config/streamarena/env" 2>/dev/null || true
+  })"
+fi
+if [[ -z "$DIRECT_ORIGIN_HOSTS" ]]; then
+  echo "DIRECT_ORIGIN_HOSTS is required in the environment or canonical Mini env" >&2
+  exit 1
+fi
 
 state_dir="$HOME/.local/state/streamarena"
 bin_dir="$HOME/.local/bin"
@@ -145,18 +193,57 @@ chmod 700 "$bin_dir/streamarena-run-backend"
 bash -n "$bin_dir/streamarena-run-backend"
 
 host_blocks=""
+http_host_blocks=""
+alias_host_blocks=""
+direct_origin_host_blocks=""
+canonical_host_present=0
 IFS=',' read -r -a hosts <<< "$PUBLIC_HOSTS"
 for host in "${hosts[@]}"; do
   host="${host//[[:space:]]/}"
   [[ -n "$host" ]] || continue
+  if [[ ! "$host" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    echo "Invalid host in PUBLIC_HOSTS" >&2
+    exit 1
+  fi
   if [[ -z "$host_blocks" ]]; then
     host_blocks="$host"
+    http_host_blocks="http://$host"
   else
     host_blocks="$host_blocks, $host"
+    http_host_blocks="$http_host_blocks, http://$host"
+  fi
+  if [[ "$host" == "$PUBLIC_CANONICAL_HOST" ]]; then
+    canonical_host_present=1
+  elif [[ -z "$alias_host_blocks" ]]; then
+    alias_host_blocks="$host"
+  else
+    alias_host_blocks="$alias_host_blocks, $host"
   fi
 done
 if [[ -z "$host_blocks" ]]; then
   echo "PUBLIC_HOSTS resolved to an empty host list" >&2
+  exit 1
+fi
+if [[ "$canonical_host_present" != "1" ]]; then
+  echo "PUBLIC_CANONICAL_HOST must be included in PUBLIC_HOSTS" >&2
+  exit 1
+fi
+IFS=',' read -r -a direct_origin_hosts <<< "$DIRECT_ORIGIN_HOSTS"
+for host in "${direct_origin_hosts[@]}"; do
+  host="${host//[[:space:]]/}"
+  [[ -n "$host" ]] || continue
+  if [[ ! "$host" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    echo "Invalid host in DIRECT_ORIGIN_HOSTS" >&2
+    exit 1
+  fi
+  if [[ -z "$direct_origin_host_blocks" ]]; then
+    direct_origin_host_blocks="http://$host"
+  else
+    direct_origin_host_blocks="$direct_origin_host_blocks, http://$host"
+  fi
+done
+if [[ -z "$direct_origin_host_blocks" ]]; then
+  echo "DIRECT_ORIGIN_HOSTS resolved to an empty host list" >&2
   exit 1
 fi
 
@@ -182,6 +269,23 @@ cloudflare_ranges="$(
 tls_line=""
 if [[ "$TLS_MODE" == "internal" ]]; then
   tls_line="  tls internal"
+fi
+
+alias_redirect_block=""
+if [[ -n "$alias_host_blocks" ]]; then
+  alias_redirect_block="$alias_host_blocks {
+$tls_line
+  @untrusted_origin not remote_ip private_ranges $cloudflare_ranges
+  respond @untrusted_origin 403
+  redir https://$PUBLIC_CANONICAL_HOST{uri} permanent
+  log {
+    output file $caddy_log_dir/caddy-access.log {
+      roll_size 10MiB
+      roll_keep 10
+      roll_keep_for 168h
+    }
+  }
+}"
 fi
 
 # Caddy is shared with Spotify on this host. Spotify owns its route inside an
@@ -245,14 +349,33 @@ cat > "$tmp_caddy_config" <<CADDY
   }
 }
 
-http:// {
-  import streamarena_proxy
+$http_host_blocks {
+  @untrusted_origin not remote_ip private_ranges $cloudflare_ranges
+  respond @untrusted_origin 403
+  redir https://$PUBLIC_CANONICAL_HOST{uri} permanent
+  log {
+    output file $caddy_log_dir/caddy-access.log {
+      roll_size 10MiB
+      roll_keep 10
+      roll_keep_for 168h
+    }
+  }
 }
 
-$host_blocks {
+# BEGIN STREAMARENA DIRECT WORKER ORIGIN
+# The hostname stays in out-of-band operator configuration. It remains HTTP
+# intentionally, but the shared proxy accepts only Cloudflare/private sources.
+$direct_origin_host_blocks {
+  import streamarena_proxy
+}
+# END STREAMARENA DIRECT WORKER ORIGIN
+
+$PUBLIC_CANONICAL_HOST {
 $tls_line
   import streamarena_proxy
 }
+
+$alias_redirect_block
 CADDY
 if [[ -s "$preserved_spotify_caddy" ]]; then
   printf '\n' >> "$tmp_caddy_config"
@@ -260,6 +383,7 @@ if [[ -s "$preserved_spotify_caddy" ]]; then
 fi
 rm -f "$preserved_spotify_caddy"
 "$caddy_bin" fmt --overwrite "$tmp_caddy_config"
+"$caddy_bin" validate --config "$tmp_caddy_config" --adapter caddyfile
 caddy_config_changed=1
 if [[ -f "$caddy_config_dir/Caddyfile" ]] && cmp -s "$tmp_caddy_config" "$caddy_config_dir/Caddyfile"; then
   caddy_config_changed=0

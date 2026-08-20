@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 const scheduledCallbacks = [];
 const workerMessages = [];
@@ -106,6 +107,25 @@ const {
 } = await import("../src-ui/lib/offline-artwork.js");
 const { DEFAULT_LOCAL_THUMBNAIL } = await import(
   "../src-ui/lib/continue-watching.js"
+);
+
+const serviceWorkerSource = await readFile(
+  new URL("../public/sw.js", import.meta.url),
+  "utf8",
+);
+assert.match(serviceWorkerSource, /CACHE_PREFIX = "streamarena-pwa-v31"/);
+assert.match(
+  serviceWorkerSource,
+  /url\.pathname\.startsWith\("\/assets\/images\/"\)[\s\S]*?return;/,
+  "service worker must bypass Cache Storage for authenticated local artwork",
+);
+const appShellSource = serviceWorkerSource.match(
+  /const APP_SHELL_URLS = \[([\s\S]*?)\];/,
+)?.[1] || "";
+assert.doesNotMatch(
+  appShellSource,
+  /\/assets\/images\//,
+  "private local artwork must not be app-shell precached",
 );
 
 assert.equal(

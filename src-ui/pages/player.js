@@ -147,6 +147,7 @@ import {
 } from "../player/manual-source-switch.js";
 import { createLocalCacheUpgradeWatch } from "../player/local-cache-upgrade-watch.js";
 import { createLiveIframePlaybackClock } from "../player/live-iframe-playback-clock.js";
+import { parseLiveIframePlaybackSource } from "../player/live-iframe-policy.js";
 import {
   attachFullscreenControl,
   isFullscreenActive,
@@ -198,7 +199,7 @@ export default function PlayerPage() {
   let subtitleOverlay, resolverOverlay, resolverStatus, resolverLoader;
   let resolverTitle, resolverDetail, resolverCountdown;
   let resolverRetryButton, resolverAlternateButton;
-  let seekLoadingOverlay, playerShell, liveEmbedFrame;
+  let seekLoadingOverlay, playerShell;
   let speedOptions = [];
   let closeSeekPreviewVideo = () => {};
 
@@ -219,8 +220,6 @@ const audioDecodeGraceAfterSourceChangeMs = 6000;
 const audioDecodeGraceAfterSeekMs = 6000;
 const audioDecodeVideoAdvanceThresholdSeconds = 6;
 const LIVE_EMBED_FALLBACK_SOURCE_LIMIT = 5;
-const LIVE_IFRAME_SOURCE_PREFIX = "live-iframe:";
-const LIVE_IFRAME_ALLOW_POLICY = "autoplay; fullscreen; picture-in-picture; encrypted-media";
 // When auto-failover has tried every source without success, keep retrying the
 // whole set on this cadence (bounded by max cycles) instead of giving up — so
 // the viewer never has to click "Retry" while a source is still coming online.
@@ -2709,81 +2708,13 @@ function navigateBackFromPlayer() {
   window.location.href = getFallbackPlayerReturnPath();
 }
 
-function handleLiveIframePlaybackError() {
-  if (!isTmdbResolvedPlayback || !isLiveIframePlaybackActive()) {
-    return;
-  }
-  if (tmdbSourceAttemptIndex < tmdbSourceQueue.length) {
-    void tryNextTmdbSource();
-    return;
-  }
-  attemptTmdbRecovery("Embed unavailable. Trying another source...");
-}
-
 function clearLiveIframePlayback() {
-  if (liveEmbedFrame) {
-    liveEmbedFrame.hidden = true;
-    liveEmbedFrame.removeAttribute("src");
-  }
   liveIframePlaybackClock.reset();
   playerShell?.classList.remove("live-iframe-active");
 }
 
-function hardenLiveEmbedFrame() {
-  if (!liveEmbedFrame) {
-    return;
-  }
-  liveEmbedFrame.setAttribute("allow", LIVE_IFRAME_ALLOW_POLICY);
-  liveEmbedFrame.removeAttribute("sandbox");
-  liveEmbedFrame.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
-}
-
-function setLiveIframePlaybackSource(embedUrl, encodedSource, { startSeconds = null, autoplay = true } = {}) {
-  const hasExplicitStartSeconds =
-    startSeconds !== null && startSeconds !== undefined;
-  const nextStartSeconds = hasExplicitStartSeconds
-    ? normalizeResumeStartSeconds(startSeconds)
-    : liveIframePlaybackClock.getSeconds();
-  const absoluteEmbedUrl = new URL(embedUrl, window.location.origin).toString();
-  lastRequestedPlaybackSource = encodedSource;
-  lastRequestedAbsolutePlaybackSource = absoluteEmbedUrl;
-  lastPlaybackSourceSetAt = performance.now();
-  liveEdgePinned = true;
-  resetAudioDecodeWatchState();
-  clearStreamStallRecovery();
-  clearSubtitleTrack();
-  hlsPlaybackController.destroy();
-  activeTranscodeInput = "";
-  transcodeBaseOffsetSeconds = 0;
-  activeAudioStreamIndex = -1;
-  activeAudioSyncMs = 0;
-  activeTrackSourceInput = "";
-  knownDurationSeconds = 0;
-  clearLiveVisualHealthWatch({ resetSamples: true });
-  clearLiveStartupHealthWatch({ resetRequest: true });
-  if (video.src) {
-    video.pause();
-    video.removeAttribute("src");
-    video.load();
-  }
-  if (liveEmbedFrame) {
-    hardenLiveEmbedFrame();
-    liveEmbedFrame.src = absoluteEmbedUrl;
-    liveEmbedFrame.hidden = false;
-  }
-  liveIframePlaybackClock.start({ startSeconds: nextStartSeconds, autoplay });
-  playerShell?.classList.add("live-iframe-active");
-  syncPlayState();
-  syncDurationText();
-  showControls();
-  scheduleControlsHide();
-}
-
 function isLiveIframePlaybackActive() {
-  return Boolean(
-    parseLiveIframePlaybackSource(lastRequestedPlaybackSource) ||
-      (liveEmbedFrame && !liveEmbedFrame.hidden && liveEmbedFrame.src),
-  );
+  return Boolean(parseLiveIframePlaybackSource(lastRequestedPlaybackSource));
 }
 
 function adoptHlsRemuxFallbackSource(absoluteSource) {
@@ -2812,15 +2743,6 @@ function setVideoSource(
   if (!nextSource) return;
   deferredMediaTracks.cancel();
   const requestedStartSeconds = normalizeResumeStartSeconds(startSeconds);
-  const iframeSource = parseLiveIframePlaybackSource(nextSource);
-  if (iframeSource) {
-    activeLiveHlsReferer = "";
-    setLiveIframePlaybackSource(iframeSource, nextSource, {
-      startSeconds: requestedStartSeconds,
-      autoplay,
-    });
-    return;
-  }
   clearLiveIframePlayback();
   const sourceWithStart = withRemuxResumeStart(nextSource, requestedStartSeconds, window.location.origin);
   const sourceWithAudioSync = withPreferredAudioSyncForRemuxSource(
@@ -3158,10 +3080,7 @@ const manualSourceSwitch = createManualSourceSwitchController({
   normalizeSourceHash,
   captureProgress: captureManualSourceSwitchProgress,
   getActivePlaybackSource: () =>
-    String(
-      (isLiveIframePlaybackActive() ? liveEmbedFrame?.src : video?.currentSrc) ||
-        "",
-    ).trim(),
+    String(video?.currentSrc || "").trim(),
   commit: commitManualSourceSwitchPlayback,
   rollback: rollbackManualSourceSwitchPlayback,
   markFailed: (sourceHash) => resolverFailedSourceHashes.add(sourceHash),
@@ -5192,25 +5111,6 @@ function getLiveEmbedFallbackSources(source) {
 
   return [...sameProviderSources, ...otherProviderSources]
     .slice(0, LIVE_EMBED_FALLBACK_SOURCE_LIMIT);
-}
-
-function parseLiveIframePlaybackSource(source) {
-  const value = String(source || "").trim();
-  if (!value.startsWith(LIVE_IFRAME_SOURCE_PREFIX)) {
-    return "";
-  }
-  try {
-    const payload = decodeURIComponent(value.slice(LIVE_IFRAME_SOURCE_PREFIX.length));
-    if (/^https?:\/\//i.test(payload)) {
-      return payload;
-    }
-    if (payload.startsWith("/")) {
-      return payload;
-    }
-    return "";
-  } catch {
-    return "";
-  }
 }
 
 async function resolveLivePlaybackSource(source, { preflight = false } = {}) {
@@ -10023,8 +9923,6 @@ trackListener(window, "storage", (event) => {
 
   return renderPlayerShell({
     defaultEpisodeThumbnail: DEFAULT_EPISODE_THUMBNAIL,
-    handleLiveIframePlaybackError,
-    liveIframeAllowPolicy: LIVE_IFRAME_ALLOW_POLICY,
     refs: {
       audioControl: (el) => { audioControl = el; },
       audioMenu: (el) => { audioMenu = el; },
@@ -10051,10 +9949,6 @@ trackListener(window, "storage", (event) => {
       hlsQualityControl: (el) => { hlsQualityControl = el; },
       hlsQualityMenu: (el) => { hlsQualityMenu = el; },
       hlsQualityOptionsContainer: (el) => { hlsQualityOptionsContainer = el; },
-      liveEmbedFrame: (el) => {
-        liveEmbedFrame = el;
-        hardenLiveEmbedFrame();
-      },
       liveStreamControl: (el) => { liveStreamControl = el; },
       liveStreamMenu: (el) => { liveStreamMenu = el; },
       liveStreamOptionsContainer: (el) => { liveStreamOptionsContainer = el; },

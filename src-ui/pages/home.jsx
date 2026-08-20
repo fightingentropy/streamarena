@@ -5099,6 +5099,7 @@ export default function HomePage() {
             class="hero-trailer-frame"
             title={`${featuredHero().title || "Featured movie"} trailer preview`}
             allow="autoplay; encrypted-media; picture-in-picture"
+            sandbox="allow-scripts allow-same-origin allow-presentation"
             referrerpolicy="strict-origin-when-cross-origin"
             tabindex="-1"
             aria-hidden="true"

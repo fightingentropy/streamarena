@@ -3,6 +3,9 @@ import { establishUserLocalState, getAuthSession } from "../lib/auth.js";
 
 export default function LoginPage() {
   const [isSignUp, setIsSignUp] = createSignal(false);
+  // Private deployments fail closed: the registration affordance is absent
+  // unless the server explicitly confirms that public signup is open.
+  const [signupOpen, setSignupOpen] = createSignal(false);
   const [forgot, setForgot] = createSignal(false);
   const [error, setError] = createSignal("");
   const [notice, setNotice] = createSignal("");
@@ -12,6 +15,22 @@ export default function LoginPage() {
   // If already authenticated, redirect to home
   onMount(() => {
     authCheckController = new AbortController();
+    void fetch("/api/auth/config", {
+      cache: "no-store",
+      credentials: "same-origin",
+      signal: authCheckController.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return response.json().catch(() => null);
+      })
+      .then((config) => {
+        if (authCheckController?.signal.aborted) return;
+        const open = config?.signup?.open === true;
+        setSignupOpen(open);
+        if (!open) setIsSignUp(false);
+      })
+      .catch(() => {});
     void getAuthSession({
       allowOffline: false,
       signal: authCheckController.signal,
@@ -31,6 +50,7 @@ export default function LoginPage() {
   onCleanup(() => authCheckController?.abort());
 
   function toggleMode() {
+    if (!signupOpen() && !isSignUp()) return;
     setIsSignUp((prev) => !prev);
     setForgot(false);
     setError("");
@@ -90,6 +110,13 @@ export default function LoginPage() {
     const email = form.email.value.trim();
     const password = form.password.value;
     const displayName = form.displayName?.value.trim() || "";
+
+    if (isSignUp() && !signupOpen()) {
+      setIsSignUp(false);
+      setError("Account registration is not available.");
+      setSubmitting(false);
+      return;
+    }
 
     if (!email || !password || (isSignUp() && !displayName)) {
       setError("Please fill in all fields.");
@@ -185,12 +212,12 @@ export default function LoginPage() {
           <Show
             when={forgot()}
             fallback={
-              <>
+              <Show when={signupOpen() || isSignUp()}>
                 <span>{isSignUp() ? "Already have an account?" : "New here?"}</span>{" "}
                 <button class="login-toggle-btn" type="button" onClick={toggleMode}>
                   {isSignUp() ? "Sign in" : "Create account"}
                 </button>
-              </>
+              </Show>
             }
           >
             <button class="login-toggle-btn" type="button" onClick={backToSignIn}>

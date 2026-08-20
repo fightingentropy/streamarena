@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import {
   FEATURED_HERO_POSTER_ROTATION_MS,
@@ -21,6 +22,16 @@ assert.equal(embedUrl.searchParams.get("autoplay"), "1");
 assert.equal(embedUrl.searchParams.get("mute"), "1");
 assert.equal(embedUrl.searchParams.has("loop"), false);
 assert.equal(embedUrl.searchParams.has("playlist"), false);
+
+const homeSource = await readFile(
+  new URL("../src-ui/pages/home.jsx", import.meta.url),
+  "utf8",
+);
+assert.match(
+  homeSource,
+  /sandbox="allow-scripts allow-same-origin allow-presentation"/,
+);
+assert.doesNotMatch(homeSource, /sandbox="[^"]*(?:allow-forms|allow-popups|allow-top-navigation)/);
 
 assert.equal(
   getFeaturedHeroAutoAdvanceDelay({ trailerKey }),

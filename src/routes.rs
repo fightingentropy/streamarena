@@ -124,17 +124,17 @@ const SECURITY_CONTENT_SECURITY_POLICY: &str = concat!(
     "script-src-attr 'none'; ",
     "style-src 'self'; ",
     "style-src-attr 'none'; ",
-    "img-src 'self' data: blob: https: http:; ",
+    "img-src 'self' data: blob: https:; ",
     "font-src 'self' data:; ",
-    "media-src 'self' data: blob: https: http:; ",
-    "connect-src 'self' https: http: blob:; ",
-    "frame-src 'self' https: http:; ",
+    "media-src 'self' data: blob: https:; ",
+    "connect-src 'self' https: blob:; ",
+    "frame-src https://www.youtube-nocookie.com; ",
     "worker-src 'self' blob:; ",
     "manifest-src 'self'; ",
     "base-uri 'self'; ",
     "form-action 'self'; ",
     "object-src 'none'; ",
-    "frame-ancestors 'self'"
+    "frame-ancestors 'none'"
 );
 const SECURITY_STRICT_TRANSPORT_SECURITY: &str = "max-age=31536000; includeSubDomains";
 const SECURITY_PERMISSIONS_POLICY: &str = concat!(
@@ -171,7 +171,7 @@ fn apply_security_headers(headers: &mut HeaderMap, include_hsts: bool) {
         "content-security-policy",
         SECURITY_CONTENT_SECURITY_POLICY,
     );
-    insert_security_header_if_missing(headers, "x-frame-options", "SAMEORIGIN");
+    insert_security_header_if_missing(headers, "x-frame-options", "DENY");
     insert_security_header_if_missing(headers, "x-content-type-options", "nosniff");
     insert_security_header_if_missing(
         headers,
@@ -179,6 +179,11 @@ fn apply_security_headers(headers: &mut HeaderMap, include_hsts: bool) {
         "strict-origin-when-cross-origin",
     );
     insert_security_header_if_missing(headers, "permissions-policy", SECURITY_PERMISSIONS_POLICY);
+    insert_security_header_if_missing(
+        headers,
+        "x-robots-tag",
+        "noindex, nofollow, noarchive, nosnippet",
+    );
     if include_hsts {
         insert_security_header_if_missing(
             headers,
@@ -341,11 +346,9 @@ async fn auth_throttle_middleware(
 pub fn build_router(state: AppState) -> Router {
     let public_api = Router::new()
         .route("/api/health/live", any(health_live_handler))
-        .route("/api/health", any(health_handler))
-        .route("/api/config", any(config_handler))
+        .route("/api/auth/config", get(auth_config_handler))
         .route("/api/auth/logout", any(auth_logout_handler))
-        .route("/api/auth/verify/{token}", get(auth_verify_handler))
-        .route("/api/home/bootstrap", get(home_bootstrap_handler));
+        .route("/api/auth/verify/{token}", get(auth_verify_handler));
 
     // The cheap mutating auth routes do the surge-heavy work (Argon2 hashing +
     // outbound verification/reset email). A concurrency cap + per-request
@@ -365,6 +368,9 @@ pub fn build_router(state: AppState) -> Router {
         .route_layer(middleware::from_fn(auth_throttle_middleware));
 
     let protected_api = Router::new()
+        .route("/api/health", any(health_handler))
+        .route("/api/config", any(config_handler))
+        .route("/api/home/bootstrap", get(home_bootstrap_handler))
         .route(
             "/api/library",
             get(library_get_handler).put(library_put_handler),
@@ -622,10 +628,12 @@ pub async fn debug_sports(
 pub async fn config_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
+    auth::require_auth(&state.db, &headers).await?;
     let ffmpeg = state.runtime.get_ffmpeg_capabilities(false).await;
     Ok(json_response(json!({
         "realDebridConfigured": false,
@@ -666,6 +674,16 @@ pub async fn config_handler(
     })))
 }
 
+/// Minimal unauthenticated configuration required to render the sign-in page.
+/// Operational/provider details stay behind the authenticated `/api/config`.
+pub async fn auth_config_handler(State(state): State<AppState>) -> AppResult<Response<Body>> {
+    Ok(json_response(json!({
+        "signup": {
+            "open": state.config.open_signup_enabled
+        }
+    })))
+}
+
 pub async fn health_handler(
     State(state): State<AppState>,
     method: Method,
@@ -675,6 +693,7 @@ pub async fn health_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
+    auth::require_auth(&state.db, &headers).await?;
     let refresh = query_flag_enabled(uri.query().unwrap_or_default(), "refresh");
     if refresh {
         auth::require_admin(&state.db, &headers).await?;
@@ -693,17 +712,11 @@ pub async fn health_handler(
     })))
 }
 
-pub async fn health_live_handler(
-    State(state): State<AppState>,
-    method: Method,
-) -> AppResult<Response<Body>> {
+pub async fn health_live_handler(method: Method) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    Ok(json_response(json!({
-        "ok": true,
-        "uptimeSeconds": ((now_ms() - state.started_at_ms) / 1000).max(0)
-    })))
+    Ok(json_response(json!({ "ok": true })))
 }
 
 pub async fn library_get_handler(State(state): State<AppState>) -> AppResult<Response<Body>> {
@@ -2428,6 +2441,12 @@ async fn auth_signup_handler(
         return Err(ApiError::method_not_allowed(
             "Method not allowed. Use POST.",
         ));
+    }
+    // A fully private deployment rejects the endpoint before reading or
+    // validating attacker-controlled account data. Invite-only deployments
+    // continue below so the supplied invite can be checked.
+    if !state.config.open_signup_enabled && state.config.signup_invite_code.is_empty() {
+        return Err(ApiError::forbidden(SIGNUP_CLOSED_MESSAGE));
     }
     // Captured before the body is consumed below; used for per-IP rate limiting.
     let client_ip = extract_client_ip(&request);
@@ -4279,14 +4298,17 @@ mod tests {
         assert!(csp.contains("style-src-attr 'none'"));
         assert!(!csp.contains("'unsafe-inline'"));
         assert!(csp.contains("object-src 'none'"));
-        assert!(csp.contains("frame-ancestors 'self'"));
-        assert!(csp.contains("media-src 'self' data: blob: https: http:"));
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(csp.contains("media-src 'self' data: blob: https:"));
+        assert!(!csp.contains("media-src 'self' data: blob: https: http:"));
+        assert!(csp.contains("frame-src https://www.youtube-nocookie.com"));
+        assert!(!csp.contains("frame-src 'self' https: http:"));
 
         assert_eq!(
             headers
                 .get("x-frame-options")
                 .and_then(|value| value.to_str().ok()),
-            Some("SAMEORIGIN")
+            Some("DENY")
         );
         assert_eq!(
             headers
@@ -4299,6 +4321,12 @@ mod tests {
                 .get("referrer-policy")
                 .and_then(|value| value.to_str().ok()),
             Some("strict-origin-when-cross-origin")
+        );
+        assert_eq!(
+            headers
+                .get("x-robots-tag")
+                .and_then(|value| value.to_str().ok()),
+            Some("noindex, nofollow, noarchive, nosnippet")
         );
         assert!(
             headers

@@ -5,12 +5,14 @@ MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
 REMOTE_APP="${REMOTE_APP:-/Users/hermes/Developer/streamarena}"
 PUBLIC_URL="${PUBLIC_URL:-https://streamarena.xyz}"
+PUBLIC_URL="${PUBLIC_URL%/}"
 PUBLIC_HOST="${PUBLIC_HOST:-streamarena.xyz}"
+PUBLIC_ALIAS_HOST="${PUBLIC_ALIAS_HOST:-www.$PUBLIC_HOST}"
 MAX_DISK_PERCENT="${MAX_DISK_PERCENT:-90}"
 MIN_FREE_GB="${MIN_FREE_GB:-50}"
 PROTECTED_ENDPOINT_STATUS="${PROTECTED_ENDPOINT_STATUS:-401}"
 SPORTS_PROXY_EXPECTED="${SPORTS_PROXY_EXPECTED:-http://127.0.0.1:40000}"
-EXPECTED_OPEN_SIGNUP="${EXPECTED_OPEN_SIGNUP:-1}"
+EXPECTED_OPEN_SIGNUP="${EXPECTED_OPEN_SIGNUP:-0}"
 
 SSH_OPTS=(
   -i "$SSH_KEY"
@@ -64,12 +66,21 @@ tunnel_pid=$(pgrep -f "cloudflared tunnel run streamarena" | head -1 || true)
 tunnel_daemon=$(test -e "$tunnel_plist" && echo yes || echo no)
 caddy_version=$("$caddy_bin" version 2>/dev/null | awk '{print $1}' || true)
 caddy_client_ip_guard=no
+caddy_https_redirect=no
+caddy_direct_origin=no
 caddy_config="$HOME/.config/caddy/Caddyfile"
 if sudo -n grep -q 'trusted_proxies static' "$caddy_config" 2>/dev/null \
   && sudo -n grep -qi 'header_up cf-connecting-ip' "$caddy_config" 2>/dev/null \
   && sudo -n grep -qi 'client_ip_headers CF-Connecting-IP' "$caddy_config" 2>/dev/null \
   && sudo -n grep -q 'remote_ip private_ranges' "$caddy_config" 2>/dev/null; then
   caddy_client_ip_guard=yes
+fi
+if sudo -n grep -Eq 'redir[[:space:]]+https://[^[:space:]]+\{uri\}[[:space:]]+permanent' "$caddy_config" 2>/dev/null; then
+  caddy_https_redirect=yes
+fi
+if sudo -n grep -Fq '# BEGIN STREAMARENA DIRECT WORKER ORIGIN' "$caddy_config" 2>/dev/null \
+  && sudo -n grep -Fq '# END STREAMARENA DIRECT WORKER ORIGIN' "$caddy_config" 2>/dev/null; then
+  caddy_direct_origin=yes
 fi
 asset_files=$(find "$app/assets" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
 video_files=$(find "$app/assets/videos" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
@@ -213,6 +224,8 @@ printf 'tunnel_pid=%s\n' "${tunnel_pid:-missing}"
 printf 'tunnel_daemon=%s\n' "$tunnel_daemon"
 printf 'caddy_version=%s\n' "${caddy_version:-missing}"
 printf 'caddy_client_ip_guard=%s\n' "$caddy_client_ip_guard"
+printf 'caddy_https_redirect=%s\n' "$caddy_https_redirect"
+printf 'caddy_direct_origin=%s\n' "$caddy_direct_origin"
 printf 'asset_files=%s\n' "$asset_files"
 printf 'video_files=%s\n' "$video_files"
 printf 'asset_symlinks=%s\n' "$asset_symlinks"
@@ -294,6 +307,8 @@ tunnel_pid=$(value_for tunnel_pid)
 tunnel_daemon=$(value_for tunnel_daemon)
 caddy_version=$(value_for caddy_version)
 caddy_client_ip_guard=$(value_for caddy_client_ip_guard)
+caddy_https_redirect=$(value_for caddy_https_redirect)
+caddy_direct_origin=$(value_for caddy_direct_origin)
 asset_symlinks=$(value_for asset_symlinks)
 env_mode=$(value_for env_mode)
 env_in_app=$(value_for env_in_app)
@@ -360,6 +375,8 @@ ntvs_proxy_http=$(value_for ntvs_proxy_http)
 [[ "$caddy_pid" != "missing" ]] && pass "Caddy process is running ($caddy_pid)" || bad "Caddy process missing"
 [[ "$caddy_version" != "missing" ]] && pass "Caddy is installed ($caddy_version)" || bad "Caddy is missing"
 [[ "$caddy_client_ip_guard" == "yes" ]] && pass "Caddy sanitizes client IP headers using Cloudflare's trusted ranges" || bad "Caddy client IP trust guard is missing"
+[[ "$caddy_https_redirect" == "yes" ]] && pass "Caddy redirects public HTTP requests to HTTPS" || bad "Caddy HTTPS redirect is missing"
+[[ "$caddy_direct_origin" == "yes" ]] && pass "Caddy retains the Cloudflare-only direct Worker origin" || bad "Caddy direct Worker origin is missing"
 [[ "$asset_symlinks" == "0" ]] && pass "mini assets have no symlinks" || bad "mini assets have $asset_symlinks symlink(s)"
 [[ "$hls_resolver" == "yes" ]] && pass "external HLS resolver script is deployed" || bad "external HLS resolver script is missing"
 [[ "$streamed_hls_resolver" == "yes" ]] && pass "Streamed sports HLS resolver script is deployed" || bad "Streamed sports HLS resolver script is missing"
@@ -447,6 +464,55 @@ public_edge_server="$(
 
 public_login_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL/login.html" || true)"
 [[ "$public_login_status" == "200" ]] && pass "$PUBLIC_URL/login.html is reachable (HTTP 200)" || bad "$PUBLIC_URL/login.html returned HTTP $public_login_status"
+
+public_http_result="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 "http://$PUBLIC_HOST/login.html" || true)"
+public_http_status="${public_http_result%% *}"
+public_http_target="${public_http_result#* }"
+if [[ "$public_http_status" == "308" && "$public_http_target" == "$PUBLIC_URL/login.html" ]]; then
+  pass "public HTTP login redirects permanently to canonical HTTPS"
+else
+  bad "public HTTP login returned '$public_http_result' (expected 308 $PUBLIC_URL/login.html)"
+fi
+
+public_alias_result="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 "https://$PUBLIC_ALIAS_HOST/login.html" || true)"
+public_alias_status="${public_alias_result%% *}"
+public_alias_target="${public_alias_result#* }"
+if [[ "$public_alias_status" == "308" && "$public_alias_target" == "$PUBLIC_URL/login.html" ]]; then
+  pass "alternate hostname redirects permanently to canonical HTTPS"
+else
+  bad "alternate hostname returned '$public_alias_result' (expected 308 $PUBLIC_URL/login.html)"
+fi
+
+public_robots_header="$({ curl -sSI --max-time 10 "$PUBLIC_URL/login.html" 2>/dev/null || true; } \
+  | awk -F: 'tolower($1) == "x-robots-tag" {sub(/^[[:space:]]+/, "", $2); sub(/[[:space:]\r]+$/, "", $2); print tolower($2); exit}')"
+[[ "$public_robots_header" == "noindex, nofollow, noarchive, nosnippet" ]] \
+  && pass "public responses carry a site-wide X-Robots-Tag" \
+  || bad "public X-Robots-Tag is '$public_robots_header'"
+
+robots_body="$(curl -fsS --max-time 10 "$PUBLIC_URL/robots.txt" 2>/dev/null || true)"
+if printf '%s\n' "$robots_body" | grep -Eqi '^User-agent:[[:space:]]*\*$' \
+  && printf '%s\n' "$robots_body" | grep -Eqi '^Disallow:[[:space:]]*/$'; then
+  pass "robots.txt disallows all crawling"
+else
+  bad "robots.txt does not disallow all crawling"
+fi
+
+auth_config_file="$(mktemp)"
+auth_config_status="$(curl -sS -o "$auth_config_file" -w '%{http_code}' --max-time 10 "$PUBLIC_URL/api/auth/config" || true)"
+auth_config_open="$(jq -r '.signup.open // "missing"' "$auth_config_file" 2>/dev/null || echo invalid)"
+rm -f "$auth_config_file"
+if [[ "$auth_config_status" == "200" && "$auth_config_open" == "false" ]]; then
+  pass "public auth config confirms self-signup is closed"
+else
+  bad "public auth config returned HTTP $auth_config_status with signup.open=$auth_config_open"
+fi
+
+for protected_path in /api/config /api/health /api/home/bootstrap /assets/images/thumbnail.jpg; do
+  protected_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$PUBLIC_URL$protected_path" || true)"
+  [[ "$protected_status" == "$PROTECTED_ENDPOINT_STATUS" ]] \
+    && pass "$protected_path requires authentication" \
+    || bad "$protected_path returned HTTP $protected_status (expected $PROTECTED_ENDPOINT_STATUS)"
+done
 
 public_auth_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL/api/auth/me" || true)"
 [[ "$public_auth_status" == "401" ]] && pass "$PUBLIC_URL keeps app login active" || bad "$PUBLIC_URL app auth returned HTTP $public_auth_status"

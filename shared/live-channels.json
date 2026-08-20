@@ -1,6 +1,5 @@
 {
   "ntvCdnLiveBaseUrl": "https://ntv.cx/channel-cdnlive",
-  "ntvBbcAmericaPhoenixUrl": "https://ntvs.cx/channel/305",
   "hesgoalerStreamBaseUrl": "https://hesgoaler.com/stream.php",
   "urls": {
     "bloombergUs": "https://www.bloomberg.com/media-manifest/streams/us.m3u8",
@@ -99,12 +98,6 @@
           "label": "BBC America · NTV Titan",
           "source": "https://ntv.cx/channel-cdnlive/BBC?code=us",
           "quality": "Live HLS"
-        },
-        {
-          "id": "ntv-phoenix",
-          "label": "BBC America · NTV Phoenix",
-          "source": "live-iframe:https%3A%2F%2Fntvs.cx%2Fchannel%2F305",
-          "quality": "Live mirror"
         }
       ],
       "liveEmbed": true,

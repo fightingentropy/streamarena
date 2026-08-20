@@ -84,7 +84,7 @@ async function waitForReady(baseUrl, deadline) {
   let lastError = "server did not accept a request";
   while (performance.now() < deadline) {
     try {
-      const response = await fetch(`${baseUrl}/api/config`, {
+      const response = await fetch(`${baseUrl}/api/health/live`, {
         cache: "no-store",
         signal: AbortSignal.timeout(500),
       });

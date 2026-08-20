@@ -1,5 +1,5 @@
 // Bump CACHE_PREFIX when shell assets change so clients pick up updates.
-const CACHE_PREFIX = "streamarena-pwa-v30";
+const CACHE_PREFIX = "streamarena-pwa-v31";
 const SHELL_CACHE = `${CACHE_PREFIX}:shell`;
 const PAGE_CACHE = `${CACHE_PREFIX}:pages`;
 const API_CACHE = `${CACHE_PREFIX}:api`;
@@ -14,7 +14,6 @@ const CACHE_NAMES = new Set([
 ]);
 
 const OFFLINE_URL = "/offline.html";
-const ARTWORK_FALLBACK_URL = "/assets/images/thumbnail.jpg";
 const ARTWORK_CACHE_MAX_ENTRIES = 320;
 const API_CACHE_MAX_ENTRIES = 140;
 const RUNTIME_CACHE_MAX_ENTRIES = 90;
@@ -32,8 +31,6 @@ const APP_SHELL_URLS = [
   "/offline.css",
   "/offline.js",
   "/manifest.webmanifest",
-  ARTWORK_FALLBACK_URL,
-  "/assets/images/thumbnail-top10-h.jpg",
   "/assets/icons/streamarena-mark.svg",
   "/assets/icons/streamarena-app-icon-180.png",
   "/assets/icons/streamarena-app-icon-192.png",
@@ -97,7 +94,6 @@ self.addEventListener("fetch", (event) => {
       cacheFirstWithFallback(request, {
         cacheName: ARTWORK_CACHE,
         cacheOpaque: true,
-        fallbackUrl: ARTWORK_FALLBACK_URL,
         maxEntries: ARTWORK_CACHE_MAX_ENTRIES,
       }),
     );
@@ -105,6 +101,13 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  // Local catalogue artwork is authenticated by the origin. Never satisfy it
+  // from Cache Storage, where a logged-out visit could otherwise read artwork
+  // left by a previous session. Old artwork caches are evicted on activation.
+  if (url.pathname.startsWith("/assets/images/")) {
     return;
   }
 
@@ -150,7 +153,6 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       cacheFirstWithFallback(request, {
         cacheName: ARTWORK_CACHE,
-        fallbackUrl: ARTWORK_FALLBACK_URL,
         maxEntries: ARTWORK_CACHE_MAX_ENTRIES,
       }),
     );
@@ -420,8 +422,7 @@ function isLocalArtworkRequest(request, url) {
   return (
     url.origin === self.location.origin &&
     isImageLikeRequest(request, url) &&
-    (url.pathname.startsWith("/assets/images/") ||
-      url.pathname.startsWith("/assets/icons/") ||
+    (url.pathname.startsWith("/assets/icons/") ||
       LOCAL_IMAGE_EXTENSIONS.test(url.pathname))
   );
 }

@@ -8,8 +8,6 @@ import { chromium, devices } from "playwright";
 const rootDir = resolve(new URL("..", import.meta.url).pathname);
 const port = Number(process.env.FRONTEND_SMOKE_PORT || 4174);
 const baseUrl = `http://127.0.0.1:${port}`;
-const liveIframeEmbedUrl = `${baseUrl}/offline.html`;
-const liveIframeAltUrl = `${baseUrl}/privacy.html`;
 const viteBin = resolve(rootDir, "node_modules/.bin/vite");
 const smokeVideo = "assets/videos/fantozzi-1975-1080p-h264-aac-4k-restored.mp4";
 const hevcSmokeVideo = "assets/videos/project-hail-mary-2026-2160p-hevc.mp4";
@@ -58,34 +56,6 @@ const liveStreamSwitchParams = new URLSearchParams({
   liveStreams: JSON.stringify(liveStreamSwitchStreams),
 });
 const liveStreamSwitchPath = `/player.html?${liveStreamSwitchParams.toString()}`;
-const liveIframeSwitchStreams = [
-  {
-    id: "iframe-main",
-    label: "Kobra main",
-    source: `live-iframe:${encodeURIComponent("/offline.html")}`,
-    provider: "ntvs",
-    playbackType: "iframe",
-    quality: "HD",
-  },
-  {
-    id: "iframe-alt",
-    label: "Kobra backup",
-    source: `live-iframe:${encodeURIComponent("/privacy.html")}`,
-    provider: "ntvs",
-    playbackType: "iframe",
-    quality: "HD",
-  },
-];
-const liveIframeSwitchParams = new URLSearchParams({
-  src: liveIframeSwitchStreams[0].source,
-  title: "Live Iframe",
-  live: "1",
-  liveEmbed: "1",
-  liveResolver: "sports",
-  liveStreamId: liveIframeSwitchStreams[0].id,
-  liveStreams: JSON.stringify(liveIframeSwitchStreams),
-});
-const liveIframeSwitchPath = `/player.html?${liveIframeSwitchParams.toString()}`;
 
 function sportsEarlyPlaybackMatches() {
   const now = Date.now();
@@ -169,6 +139,9 @@ function apiPayload(url, method) {
   const path = url.pathname;
   if (path === "/api/auth/me") {
     return { id: 1, email: "smoke@example.com", displayName: "Smoke User" };
+  }
+  if (path === "/api/auth/config") {
+    return { signup: { open: false } };
   }
   if (path === "/api/auth/login" || path === "/api/auth/signup") {
     return { user: { id: 1, email: "smoke@example.com", displayName: "Smoke User" } };
@@ -459,7 +432,7 @@ function apiPayload(url, method) {
 }
 
 const pages = [
-  { path: "/login.html", selector: ".login-page" },
+  { path: "/login.html", selector: ".login-page", expectClosedSignup: true },
   {
     path: "/settings.html",
     selector: ".settings-content",
@@ -515,19 +488,6 @@ const pages = [
     contextOptions: devices["iPhone 13"],
     expectHlsMaster: true,
     expectMobileFullscreenToggle: true,
-  },
-  {
-    path: liveIframeSwitchPath,
-    selector: ".player-shell",
-    expectLiveIframeUnsandboxed: true,
-    expectLiveIframeSourceSwitch: true,
-  },
-  {
-    path: liveIframeSwitchPath,
-    selector: ".player-shell",
-    contextOptions: devices["iPhone 13"],
-    expectLiveIframeUnsandboxed: true,
-    expectLiveIframeSourceSwitch: true,
   },
   {
     path: liveStreamSwitchPath,
@@ -617,6 +577,7 @@ async function runSmoke() {
       let sawSourceSwitchSkipExternalEmbed = "";
       let sawHlsManagedResolve = false;
       let sawSportsBasketballMatches = false;
+      let signupConfigRequests = 0;
       let sawHlsManagedImportHold = false;
       let automaticFallbackResolveCount = 0;
       let sawAutomaticFallbackResolveHash = "";
@@ -760,6 +721,13 @@ async function runSmoke() {
       await page.route("**/api/**", async (route) => {
         const request = route.request();
         const url = new URL(request.url());
+        if (url.pathname === "/api/auth/config") {
+          signupConfigRequests += 1;
+        }
+        if (pageSpec.expectClosedSignup && url.pathname === "/api/auth/me") {
+          await route.fulfill(jsonResponse({ error: "Not authenticated." }, 401));
+          return;
+        }
         if (
           pageSpec.expectRealDebridCacheRefresh &&
           url.pathname === "/api/user/torrent-settings" &&
@@ -1241,6 +1209,29 @@ async function runSmoke() {
         }
       }
       await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
+
+      if (pageSpec.expectClosedSignup) {
+        for (let attempt = 0; attempt < 40 && signupConfigRequests < 1; attempt += 1) {
+          await delay(25);
+        }
+        const signupState = await page.evaluate(() => ({
+          createAccountButton: [...document.querySelectorAll("button")].some(
+            (button) => button.textContent?.trim() === "Create account",
+          ),
+          displayNameVisible: !document.querySelector("#displayName")?.closest(".login-field")?.hidden,
+          heading: document.querySelector("h1")?.textContent?.trim() || "",
+        }));
+        if (
+          signupConfigRequests !== 1 ||
+          signupState.createAccountButton ||
+          signupState.displayNameVisible ||
+          signupState.heading !== "Sign In"
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nClosed signup must not expose account creation.\n${JSON.stringify(signupState)}`,
+          );
+        }
+      }
 
       if (pageSpec.expectRealDebridCacheRefresh) {
         await page.waitForFunction(
@@ -2255,107 +2246,6 @@ async function runSmoke() {
         }
       }
 
-      if (pageSpec.expectLiveIframeUnsandboxed) {
-        await page.waitForFunction(
-          (expectedSrc) => {
-            const frame = document.querySelector("#liveEmbedFrame");
-            return Boolean(
-              frame &&
-                !frame.hidden &&
-                frame.getAttribute("src") === expectedSrc,
-            );
-          },
-          liveIframeEmbedUrl,
-          { timeout: 8_000 },
-        );
-        const iframeState = await page.evaluate(() => {
-          const frame = document.querySelector("#liveEmbedFrame");
-          return {
-            sandbox: frame?.getAttribute("sandbox") ?? null,
-            allow: frame?.getAttribute("allow") || "",
-            referrerpolicy: frame?.getAttribute("referrerpolicy") || "",
-          };
-        });
-        if (
-          iframeState.sandbox !== null ||
-          !iframeState.allow.includes("fullscreen") ||
-          iframeState.referrerpolicy !== "strict-origin-when-cross-origin"
-        ) {
-          throw new Error(
-            `${pageSpec.path}\nLive iframe should be unsandboxed while keeping frame policies.\n${JSON.stringify(iframeState)}`,
-          );
-        }
-        const readIframePlayLabel = () =>
-          page.getAttribute("#togglePlay", "aria-label");
-        const clickIframePlayToggle = () =>
-          page.evaluate(() => document.querySelector("#togglePlay")?.click());
-        if ((await readIframePlayLabel()) !== "Pause") {
-          throw new Error(`${pageSpec.path}\nLive iframe should start with play intent.`);
-        }
-        await clickIframePlayToggle();
-        if ((await readIframePlayLabel()) !== "Play") {
-          throw new Error(`${pageSpec.path}\nLive iframe pause intent was not retained.`);
-        }
-        await clickIframePlayToggle();
-        if ((await readIframePlayLabel()) !== "Pause") {
-          throw new Error(`${pageSpec.path}\nLive iframe did not resume play intent.`);
-        }
-
-        if (pageSpec.expectLiveIframeSourceSwitch) {
-          await page.evaluate(() => {
-            document.querySelector(".player-shell")?.classList.add("controls-hidden");
-          });
-          const pickerState = await page.evaluate(() => {
-            const picker = document.querySelector("#toggleLiveStream");
-            const rect = picker?.getBoundingClientRect();
-            return {
-              hidden: picker?.closest("#liveStreamControl")?.hidden ?? true,
-              width: rect?.width || 0,
-              height: rect?.height || 0,
-              visibility: picker ? getComputedStyle(picker).visibility : "missing",
-              playerUiOpacity: getComputedStyle(
-                document.querySelector(".player-ui"),
-              ).opacity,
-            };
-          });
-          if (
-            pickerState.hidden ||
-            pickerState.width < 40 ||
-            pickerState.height < 40 ||
-            pickerState.visibility !== "visible" ||
-            pickerState.playerUiOpacity !== "1"
-          ) {
-            throw new Error(
-              `${pageSpec.path}\nLive iframe source picker should remain visible after controls hide.\n${JSON.stringify(pickerState)}`,
-            );
-          }
-
-          await page.click("#toggleLiveStream");
-          await page.click(
-            `.live-stream-option[data-stream-id="${liveIframeSwitchStreams[1].id}"]`,
-          );
-          await page.waitForFunction(
-            ({ expectedId, expectedSrc }) => {
-              const frame = document.querySelector("#liveEmbedFrame");
-              const selected = document.querySelector(
-                ".live-stream-option[aria-selected='true']",
-              );
-              return (
-                frame?.src === expectedSrc &&
-                selected?.dataset.streamId === expectedId &&
-                new URL(window.location.href).searchParams.get("liveStreamId") ===
-                  expectedId
-              );
-            },
-            {
-              expectedId: liveIframeSwitchStreams[1].id,
-              expectedSrc: liveIframeAltUrl,
-            },
-            { timeout: 8_000 },
-          );
-        }
-      }
-
       if (pageSpec.expectDirectVideo) {
         for (
           let attempt = 0;
@@ -2655,9 +2545,7 @@ async function runSmoke() {
             const selected =
               document.querySelector(".live-stream-option[aria-selected='true']")
                 ?.dataset.streamId || "";
-            const iframeActive =
-              document.querySelector("#liveEmbedFrame")?.hidden === false;
-            return selected === streamId && !iframeActive;
+            return selected === streamId;
           },
           liveStreamSwitchStreams[0].id,
           { timeout: liveStreamWaitMs },
@@ -2675,15 +2563,12 @@ async function runSmoke() {
             const selected =
               document.querySelector(".live-stream-option[aria-selected='true']")
                 ?.dataset.streamId || "";
-            const iframeActive =
-              document.querySelector("#liveEmbedFrame")?.hidden === false;
             const currentStreamId = new URL(window.location.href).searchParams.get(
               "liveStreamId",
             );
             return (
               selected === streamId &&
-              currentStreamId === streamId &&
-              !iframeActive
+              currentStreamId === streamId
             );
           }, liveStreamSwitchStreams[1].id);
           if (liveStreamSwitched) {
@@ -2705,7 +2590,6 @@ async function runSmoke() {
             selected:
               document.querySelector(".live-stream-option[aria-selected='true']")
                 ?.dataset.streamId || "",
-            iframeActive: document.querySelector("#liveEmbedFrame")?.hidden === false,
             currentStreamId: new URL(window.location.href).searchParams.get(
               "liveStreamId",
             ),

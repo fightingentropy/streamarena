@@ -16,8 +16,13 @@ test("mobile live catalog is generated from the shared JSON source", () => {
   assert.match(liveChannelsSource, /from "streamarena-shared\/live-channels\.json"/);
   assert.equal(catalog.channels.length, 88);
   const bbcAmerica = catalog.channels.find((channel) => channel.id === "bbc-us");
-  assert.equal(bbcAmerica.streams.length, 2);
-  assert.match(bbcAmerica.streams[1].source, /^live-iframe:/);
+  assert.equal(bbcAmerica.streams.length, 1);
+  assert.equal(
+    catalog.channels.some((channel) =>
+      channel.streams.some((stream) => String(stream.source || "").startsWith("live-iframe:")),
+    ),
+    false,
+  );
 });
 
 test("authenticated sessions load live channel URL overrides", () => {

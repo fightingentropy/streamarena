@@ -322,14 +322,19 @@ fn redirect_to_login() -> Response<Body> {
 }
 
 fn should_require_auth_for_static_path(pathname: &str) -> bool {
-    pathname == "/assets/library.json" || pathname.starts_with("/assets/videos/")
+    pathname == "/assets/library.json"
+        || pathname.starts_with("/assets/images/")
+        || pathname.starts_with("/assets/videos/")
 }
 
 fn should_require_auth_for_static_file(repo_root: &Path, file_path: &Path) -> bool {
     let asset_root = repo_root.join("assets");
     let library_path = asset_root.join("library.json");
+    let images_dir = asset_root.join("images");
     let videos_dir = asset_root.join("videos");
-    file_path == library_path || file_path.starts_with(videos_dir)
+    file_path == library_path
+        || file_path.starts_with(images_dir)
+        || file_path.starts_with(videos_dir)
 }
 
 fn cache_control_for_path(pathname: &str, content_type: &str) -> &'static str {
@@ -347,7 +352,10 @@ fn cache_control_for_path(pathname: &str, content_type: &str) -> &'static str {
     if pathname.starts_with("/assets/videos/") {
         return CACHE_VIDEO_ASSET;
     }
-    if pathname.starts_with("/assets/images/") || pathname.starts_with("/assets/icons/") {
+    if pathname.starts_with("/assets/images/") {
+        return CACHE_NO_STORE;
+    }
+    if pathname.starts_with("/assets/icons/") {
         return CACHE_STATIC_ASSET;
     }
     if content_type.starts_with("text/") || content_type.contains("javascript") {
@@ -361,9 +369,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        CACHE_IMMUTABLE, CACHE_NO_STORE, CACHE_STATIC_ASSET, cache_control_for_path,
-        is_protected_html_page, should_require_auth_for_static_file,
-        should_require_auth_for_static_path,
+        CACHE_IMMUTABLE, CACHE_NO_STORE, cache_control_for_path, is_protected_html_page,
+        should_require_auth_for_static_file, should_require_auth_for_static_path,
     };
     use super::{CACHE_VIDEO_ASSET, parse_range, resolve_local_path};
 
@@ -382,8 +389,8 @@ mod tests {
             "/app/dist/reset-password.html"
         )));
         assert!(!is_protected_html_page(Path::new("/app/dist/offline.html")));
-        // Assets are never page shells, so they remain public (the sign-in page
-        // needs its JS/CSS/icons).
+        // Assets are never page shells. Authentication for private catalogue
+        // artwork/media is enforced separately from the HTML-shell check.
         assert!(!is_protected_html_page(Path::new(
             "/app/dist/ui-assets/login-abc123.js"
         )));
@@ -464,7 +471,7 @@ mod tests {
         assert!(!should_require_auth_for_static_path(
             "/assets/icons/streamarena-mark.svg"
         ));
-        assert!(!should_require_auth_for_static_path(
+        assert!(should_require_auth_for_static_path(
             "/assets/images/poster.jpg"
         ));
         assert!(should_require_auth_for_static_file(
@@ -474,6 +481,10 @@ mod tests {
         assert!(should_require_auth_for_static_file(
             Path::new("/tmp/app"),
             Path::new("/tmp/app/assets/library.json")
+        ));
+        assert!(should_require_auth_for_static_file(
+            Path::new("/tmp/app"),
+            Path::new("/tmp/app/assets/images/poster.jpg")
         ));
     }
 
@@ -512,7 +523,7 @@ mod tests {
     fn caches_media_assets_without_marking_them_immutable() {
         assert_eq!(
             cache_control_for_path("/assets/images/poster.jpg", "image/jpeg"),
-            CACHE_STATIC_ASSET
+            CACHE_NO_STORE
         );
         assert_eq!(
             cache_control_for_path("/assets/videos/movie.mp4", "video/mp4"),

@@ -85,12 +85,11 @@ pub struct Config {
 impl Config {
     pub fn load() -> Self {
         let root_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let dist_dir = root_dir.join("dist");
-        let frontend_dir = if dist_dir.is_dir() {
-            dist_dir
-        } else {
-            root_dir.clone()
-        };
+        // Static files must always resolve beneath the build output. Falling
+        // back to the repository root when `dist/` is absent can expose source,
+        // configuration, or database files through the catch-all static route.
+        // A missing frontend build should fail closed with 404 responses.
+        let frontend_dir = root_dir.join("dist");
         let assets_dir = root_dir.join("assets");
         let cache_dir = root_dir.join("cache");
         let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());

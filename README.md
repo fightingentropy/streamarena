@@ -282,8 +282,8 @@ PWA/offline behavior:
 
 Operational features:
 
-- `/api/health` reports uptime, streaming counters, resolver counters, sports resolver health, and cached ffmpeg/ffprobe capabilities. Forcing a capability refresh requires an administrator session.
-- `/api/config` reports configured integrations, resolver providers, upload limit, remux/HLS limits, and effective hardware acceleration.
+- Authenticated `/api/health` reports uptime, streaming counters, resolver counters, sports resolver health, and cached ffmpeg/ffprobe capabilities. Forcing a capability refresh requires an administrator session.
+- Authenticated `/api/config` reports configured integrations, resolver providers, upload limit, remux/HLS limits, and effective hardware acceleration.
 - Administrator-only `/api/debug/cache` reports persistent and in-memory cache counts; its POST clear operation removes persistent resolver/TMDB/session/media caches and HLS cache data.
 - Administrator-only `/api/debug/sports` reports sports schedule cache, stream resolver cache, and provider health details.
 - Runtime sweeps stale DB/cache/upload/streaming state every minute.
@@ -298,7 +298,7 @@ Operational features:
 
 `/login.html`
 
-- Public sign-in/sign-up page.
+- Public sign-in page. The account-creation control is shown only when an operator explicitly enables public signup.
 - Migrates old localStorage data to server user tables after successful auth.
 
 `/watch?...` and `/player.html`
@@ -322,13 +322,22 @@ Operational features:
 
 Public API routes:
 
-- `GET /api/health` (`refresh=1` requires an administrator session)
 - `GET /api/health/live`
-- `GET /api/config`
-- `GET /api/home/bootstrap`
-- `POST /api/auth/signup`
+- `GET /api/auth/config` (minimal signup-open flag only)
+- `POST /api/auth/signup` (closed unless public signup or a valid invite is configured)
 - `POST /api/auth/login`
 - `POST /api/auth/logout`
+- `GET /api/auth/verify/{token}`
+- `POST /api/auth/resend-verification`
+- `POST /api/auth/forgot`
+- `POST /api/auth/reset`
+
+Protected API routes:
+
+- `GET /api/health` (`refresh=1` additionally requires an administrator session)
+- `GET /api/config`
+- `GET /api/home/bootstrap`
+- `GET /api/library`
 - `GET /api/football/matches`
 - `GET /api/basketball/matches`
 - `GET /api/tennis/matches`
@@ -336,10 +345,6 @@ Public API routes:
 - `GET /api/baseball/matches`
 - `GET /api/american-football/matches`
 - `GET /api/cricket/matches`
-
-Protected API routes:
-
-- `GET /api/library`
 - `GET /api/twitch/stream`
 - `GET /api/live/hls.m3u8`
 - `GET /api/live/hls-resource`
@@ -493,7 +498,8 @@ Server:
 
 - `HOST` - default `127.0.0.1`.
 - `PORT` - default `5173`.
-- `OPEN_SIGNUP` - public registration, disabled when the setting is missing. The public StreamArena deployment sets it to `1`; use `0` for invite-only deployments.
+- `OPEN_SIGNUP` - public registration, disabled when the setting is missing. The private StreamArena deployment keeps it at `0`.
+- `DIRECT_ORIGIN_HOSTS` - operator-only, comma-separated DNS-only hostnames used by the live-HLS Worker to reach the Mini directly. Keep this value in the Mini's mode-600 canonical environment; do not commit the hostnames.
 - `SIGNUP_INVITE_CODE` - optional secret that permits viewer registration while public sign-up is closed.
 - `BOOTSTRAP_ADMIN_EMAIL` - optional admin-bootstrap email. Bootstrap requires the matching email and `SIGNUP_INVITE_CODE`; remove this setting once the admin exists.
 - `REAL_DEBRID_TOKEN_ENCRYPTION_KEYS` - comma-separated `key-id:base64url-key` ring for per-user Real-Debrid tokens. Each key is 32 random bytes; the first entry is active and retained entries support rotation.
@@ -667,7 +673,7 @@ Mac mini:
 - `bun run mini:install-agents` - install/update log rotation, disk monitor, and watchdog LaunchAgents; also removes obsolete hero-preview jobs/files.
 - `bun run mini:map-ports` - create router UPnP forwards for web TCP 80/443 plus the canonical Mini `LOCAL_TORRENT_LISTEN_PORT_START..END` range (up to 16 torrent ports). Setting the start to `0` removes the managed default torrent forward and leaves BitTorrent inbound mapping disabled.
 - `CF_API_TOKEN=... bun run mini:update-dns` - update Cloudflare-proxied A records with automatic TTL.
-- `bun run mini:check` - verify runtime tree, protected API auth status, Caddy, launchd, env permissions, public sign-up (`OPEN_SIGNUP=1` by default; override with `EXPECTED_OPEN_SIGNUP=0` for invite-only deployments), sports WARP proxy, resolver helpers, agents, disk space, and public response.
+- `bun run mini:check` - verify runtime tree, protected API auth status, HTTPS/canonical redirects, no-index controls, Caddy, launchd, env permissions, closed public sign-up (`OPEN_SIGNUP=0`), sports WARP proxy, resolver helpers, agents, disk space, and public response.
 - `bun run mini:deploy` - run quality/tests, stage a release while retaining the previous artifacts, deploy `dist`, backend binary, library metadata, images, and icons, then restart/check. Failed post-restart verification leaves the new binary active because database migrations can be forward-only; the retained artifacts are for deliberate, schema-aware recovery only.
 - `bun run mini:deploy -- --skip-build` - reuse existing `dist/` and release binary.
 - `bun run mini:deploy -- --video assets/videos/<file>.mp4` - copy that symlink target as a real mini video file.
