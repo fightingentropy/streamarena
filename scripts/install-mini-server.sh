@@ -385,7 +385,7 @@ if [[ -s "$preserved_spotify_caddy" ]]; then
 fi
 rm -f "$preserved_spotify_caddy"
 "$caddy_bin" fmt --overwrite "$tmp_caddy_config"
-"$caddy_bin" validate --config "$tmp_caddy_config" --adapter caddyfile
+sudo "$caddy_bin" validate --config "$tmp_caddy_config" --adapter caddyfile
 caddy_config_changed=1
 if [[ -f "$caddy_config_dir/Caddyfile" ]] && cmp -s "$tmp_caddy_config" "$caddy_config_dir/Caddyfile"; then
   caddy_config_changed=0
