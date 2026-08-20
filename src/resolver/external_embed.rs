@@ -169,6 +169,7 @@ pub(super) fn build_external_embed_source_summaries(
                 qualityLabel: external_embed_source_quality_label(source).to_owned(),
                 container: "hls".to_owned(),
                 isTorrent: false,
+                realDebridCached: false,
                 seeders: 0,
                 size: String::new(),
                 releaseGroup: external_embed_source_detail_label(source).to_owned(),

@@ -71,6 +71,10 @@ export function getSourceDisplayHint(option = {}) {
     .trim()
     .toUpperCase();
 
+  if (isRealDebridCachedTorrentSource(option)) {
+    hintParts.push("RD cached");
+  }
+
   if (provider) {
     hintParts.push(provider);
   }
@@ -172,6 +176,18 @@ export function isSourceOptionEmbed(option = {}) {
     .trim()
     .toLowerCase();
   return container === "iframe" || container === "embed" || container === "hls";
+}
+
+/**
+ * Whether a torrent source is already available in the user's Real-Debrid
+ * cloud. Embeds are deliberately excluded so an upstream flag cannot turn an
+ * HLS entry into a torrent-cache result in the UI.
+ *
+ * @param {object} option
+ * @returns {boolean}
+ */
+export function isRealDebridCachedTorrentSource(option = {}) {
+  return !isSourceOptionEmbed(option) && option?.realDebridCached === true;
 }
 
 // -------------------------------------------------------------------------
@@ -305,6 +321,14 @@ export function sortSourcesBySeeders(sources = [], { preferContainer = "" } = {}
       }
     }
 
+    if (!rightEmbed && !leftEmbed) {
+      const rightRealDebridCached = isRealDebridCachedTorrentSource(right);
+      const leftRealDebridCached = isRealDebridCachedTorrentSource(left);
+      if (rightRealDebridCached !== leftRealDebridCached) {
+        return Number(rightRealDebridCached) - Number(leftRealDebridCached);
+      }
+    }
+
     if (normalizedPreferredContainer) {
       const rightPreferred = isSourceOptionLikelyContainer(
         right,
@@ -334,6 +358,35 @@ export function sortSourcesBySeeders(sources = [], { preferContainer = "" } = {}
       { sensitivity: "base" },
     );
   });
+}
+
+export function promoteSelectedSourceWithinCacheTier(
+  sources = [],
+  selectedSourceHash = "",
+) {
+  const rankedSources = [...sources];
+  const selectedHash = normalizeSourceHash(selectedSourceHash);
+  const selectedIndex = rankedSources.findIndex(
+    (option) =>
+      normalizeSourceHash(option?.sourceHash || option?.infoHash || "") ===
+      selectedHash,
+  );
+  const selectedOption = rankedSources[selectedIndex];
+  const selectedTier = isSourceOptionEmbed(selectedOption)
+    ? "embed"
+    : isRealDebridCachedTorrentSource(selectedOption)
+      ? "cached"
+      : "uncached";
+  const firstTierIndex = rankedSources.findIndex((option) => {
+    if (isSourceOptionEmbed(option)) return selectedTier === "embed";
+    if (isRealDebridCachedTorrentSource(option)) return selectedTier === "cached";
+    return selectedTier === "uncached";
+  });
+  if (firstTierIndex >= 0 && selectedIndex > firstTierIndex) {
+    const [selectedSource] = rankedSources.splice(selectedIndex, 1);
+    rankedSources.splice(firstTierIndex, 0, selectedSource);
+  }
+  return rankedSources;
 }
 
 // -------------------------------------------------------------------------

@@ -41,11 +41,14 @@ import {
   getSourceDisplayHint,
   getSourceDisplayMeta,
   isSourceOptionEmbed,
+  promoteSelectedSourceWithinCacheTier,
   sortSourcesBySeeders,
   isBrowserSafeAudioCodec,
 } from "../player/sources.js";
 import { buildSourceMenuView, createSourceOptionButton, shouldIgnoreRememberedTorrentSource, syncSourceMenuTabs } from "../player/source-menu-tabs.js";
 import { createSourceDownloadController } from "../player/source-download.js";
+import { createRealDebridSourceRefreshController } from "../player/real-debrid-cache-refresh.js";
+import { buildTmdbSourceDiscoveryQuery } from "../player/source-discovery.js";
 import {
   isTorrentResolverProvider,
   mergeRememberedServerContinueWatchingEntry,
@@ -125,7 +128,10 @@ import { attachSeekInteractions } from "../player/seek-interactions.js";
 import { createPlaybackBenchmarkApi } from "../player/playback-benchmark-api.js";
 import { applySubtitleCueColor } from "../player/subtitle-style.js";
 import {
+  buildOrderedRemuxFallbacks,
+  buildResolvedRemuxVariantSource,
   createRemuxRouting,
+  getBrowserSupportedRemuxVideoCodecs,
   normalizeAudioSyncMs,
 } from "../player/remux-routing.js";
 import {
@@ -148,6 +154,11 @@ import {
 } from "../player/fullscreen.js";
 import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
 import { handleAuthFailureResponse } from "../lib/auth.js";
+import {
+  normalizeRealDebridSettings,
+  pickTorrentResolverProvider,
+  resolveTorrentRequestProvider,
+} from "../lib/real-debrid-settings.js";
 import { replaySafeMutationBody } from "../lib/replay-safe-state.js";
 import { renderPlayerShell } from "../player/player-shell-template.jsx";
 import {
@@ -250,6 +261,7 @@ const requestResolveJson = createResolveRequester({
 });
 let userRealDebridSettingsLoaded = false;
 let userRealDebridConfigured = false;
+let userRealDebridEnabled = false;
 let userLocalTorrentEnabled = false;
 let userRealDebridSettingsPromise = null;
 let knownDurationSeconds = 0;
@@ -393,6 +405,7 @@ const remuxRouting = createRemuxRouting({
   getSelectedSubtitleStreamIndex: () => selectedSubtitleStreamIndex,
   getPreferredAudioSyncMs: () => preferredAudioSyncMs,
   getPreferredRemuxVideoMode: () => preferredRemuxVideoMode,
+  getBrowserVideoCodecs: () => getBrowserSupportedRemuxVideoCodecs(video),
   isBrowserSafeAudioCodec,
   shouldMapSubtitleStreamIndex,
 });
@@ -408,6 +421,7 @@ const {
 const playbackRouting = createPlaybackRouting({
   getVideo: () => video,
   getOrigin: () => window.location.origin,
+  getBrowserVideoCodecs: () => getBrowserSupportedRemuxVideoCodecs(video),
   getSelectedAudioStreamIndex: () => selectedAudioStreamIndex,
   getSelectedSubtitleStreamIndex: () => selectedSubtitleStreamIndex,
   getPreferredSourceLanguage: () => preferredSourceLanguage,
@@ -495,12 +509,19 @@ const sourceDownload = createSourceDownloadController({
   getLastRequestedPlaybackSource: () => lastRequestedPlaybackSource,
   isTmdbResolvedPlayback: () => isTmdbResolvedPlayback,
   getUserLocalTorrentEnabled: () => userLocalTorrentEnabled,
-  getUserRealDebridConfigured: () => userRealDebridConfigured,
+  getUserRealDebridConfigured: () => isUserRealDebridPlaybackEnabled(),
   getPreferredResolverProvider: () => preferredResolverProvider,
   setPreferredResolverProvider: (value) => { preferredResolverProvider = value; },
   getActiveAudioStreamIndex: () => activeAudioStreamIndex,
   getSelectedAudioStreamIndex: () => selectedAudioStreamIndex,
   getCurrentTmdbResolvedFilename: () => currentTmdbResolvedFilename,
+});
+
+const realDebridSourceRefresh = createRealDebridSourceRefreshController({
+  isRealDebridActive: () => isUserRealDebridPlaybackEnabled(),
+  onRefresh: (expectedRequestKey) => void fetchTmdbSourceOptionsViaBackend({
+    realDebridCacheRefresh: true, expectedRequestKey,
+  }),
 });
 
 const hlsQualityControls = createHlsQualityControls({
@@ -1136,7 +1157,11 @@ function isTorrentResolverProviderEnabledForPlayback(value) {
   }
   if (!userRealDebridSettingsLoaded) return false;
   if (normalized === "local-torrent") return userLocalTorrentEnabled;
-  return userRealDebridConfigured;
+  return isUserRealDebridPlaybackEnabled();
+}
+
+function isUserRealDebridPlaybackEnabled() {
+  return userRealDebridConfigured && userRealDebridEnabled;
 }
 
 async function loadUserRealDebridPlaybackSettings() {
@@ -1152,11 +1177,14 @@ async function loadUserRealDebridPlaybackSettings() {
   })
     .then(async (response) => (response.ok ? response.json() : {}))
     .then((payload) => {
-      userRealDebridConfigured = Boolean(payload?.configured);
-      userLocalTorrentEnabled = Boolean(payload?.localTorrentEnabled);
+      const settings = normalizeRealDebridSettings(payload);
+      userRealDebridConfigured = settings.configured;
+      userRealDebridEnabled = settings.enabled;
+      userLocalTorrentEnabled = settings.localTorrentEnabled;
     })
     .catch(() => {
       userRealDebridConfigured = false;
+      userRealDebridEnabled = false;
       userLocalTorrentEnabled = false;
     })
     .finally(() => {
@@ -1187,14 +1215,14 @@ function clearDisabledTorrentPlaybackState() {
 function shouldAllowTorrentResolveFallback() {
   return Boolean(
     userRealDebridSettingsLoaded &&
-      (userRealDebridConfigured || userLocalTorrentEnabled),
+      (isUserRealDebridPlaybackEnabled() || userLocalTorrentEnabled),
   );
 }
 
 function getTmdbTorrentResolveTimeoutMs() {
   return getManualSourceSwitchTimeouts({
     localTorrentEnabled: userLocalTorrentEnabled,
-    realDebridConfigured: userRealDebridConfigured,
+    realDebridConfigured: isUserRealDebridPlaybackEnabled(),
     resolverProvider: preferredResolverProvider,
   }).resolveTimeoutMs;
 }
@@ -1969,7 +1997,8 @@ function renderSourceOptionButtons() {
     sources: availablePlaybackSources,
     selectedSourceHash,
     requestedTab: activeSourceTypeTab,
-    torrentsEnabled: userLocalTorrentEnabled || userRealDebridConfigured,
+    torrentsEnabled:
+      userLocalTorrentEnabled || isUserRealDebridPlaybackEnabled(),
   });
   activeSourceTypeTab = sourceView.activeTab;
   syncSourceMenuTabs(sourceMenu?.querySelector(".source-type-tabs"), sourceView);
@@ -1991,22 +2020,16 @@ function renderSourceOptionButtons() {
 
   const seenHashes = new Set();
   const fragment = document.createDocumentFragment();
-  const rankedSources = sortSourcesBySeeders(sourceView.sources, {
-    preferContainer: getSourceListPreferredContainer(),
-  });
+  const rankedSources = promoteSelectedSourceWithinCacheTier(
+    sortSourcesBySeeders(sourceView.sources, {
+      preferContainer: getSourceListPreferredContainer(),
+    }),
+    selectedSourceHash,
+  );
   const sourceDisplayLimit = Math.max(
     preferredSourceResultsLimit,
     sourceView.sources.filter((option) => isSourceOptionEmbed(option)).length,
   );
-  const selectedSourceIndex = rankedSources.findIndex(
-    (option) =>
-      normalizeSourceHash(option?.sourceHash || option?.infoHash || "") ===
-      normalizeSourceHash(selectedSourceHash),
-  );
-  if (selectedSourceIndex > 0) {
-    const [selectedSource] = rankedSources.splice(selectedSourceIndex, 1);
-    rankedSources.unshift(selectedSource);
-  }
   for (const option of rankedSources) {
     if (seenHashes.size >= sourceDisplayLimit) {
       break;
@@ -3513,20 +3536,25 @@ async function applyResolvedTmdbPlayback(
     preferredBrowserSource &&
     preferredBrowserSource !== nativePreferredSource &&
     shouldAvoidRemuxFallbackForHls();
-  setTmdbSourceQueue(
-    preferredBrowserSource,
-    preferredBrowserSource &&
-      preferredBrowserSource !== nativePreferredSource
-      ? [
-          ...(shouldSkipRemuxFallback ? [] : [nativePreferredSource]),
-          ...(resolved?.fallbackUrls || []).filter(
-            (url) =>
-              !shouldSkipRemuxFallback ||
-              !String(url || "").includes("/api/remux"),
-          ),
-        ]
-      : resolved.fallbackUrls,
-  );
+  const normalizeRemuxFallback = buildResolvedRemuxVariantSource({
+    ...resolved,
+    playableUrl: preferredBrowserSource,
+    fallbackUrls: [nativePreferredSource, ...(resolved?.fallbackUrls || [])],
+  }, {
+    sourceHash: normalizedResolvedSourceHash,
+    audioSyncMs: preferredAudioSyncMs,
+    remuxVideoMode: "normalize",
+    parseTranscodeSource,
+    buildSoftwareDecodeUrl,
+  });
+  const resolvedFallbackUrls = buildOrderedRemuxFallbacks({
+    normalizeSource: normalizeRemuxFallback,
+    nativePreferredSource,
+    fallbackUrls: resolved?.fallbackUrls,
+    skipRemuxFallback: shouldSkipRemuxFallback,
+    parseTranscodeSource,
+  });
+  setTmdbSourceQueue(preferredBrowserSource, resolvedFallbackUrls);
   if (isProvisionalManualSourceSwitch) {
     manualSourceSwitch.setCommitData(manualSourceSwitchRequest, {
       persistSubtitleStreamPreference: shouldPersistSubtitleStreamPreference,
@@ -3626,13 +3654,12 @@ async function resolveTmdbSourcesAndPlay({
   if (!skipExternalEmbed) {
     tmdbSkipExternalEmbed = false;
   }
-  if (
-    skipExternalEmbed &&
-    userLocalTorrentEnabled &&
-    preferredResolverProvider === DEFAULT_RESOLVER_PROVIDER
-  ) {
-    preferredResolverProvider = "local-torrent";
-  }
+  preferredResolverProvider = resolveTorrentRequestProvider({
+    currentProvider: preferredResolverProvider,
+    skipExternalEmbed,
+    realDebridActive: isUserRealDebridPlaybackEnabled(),
+    localTorrentEnabled: userLocalTorrentEnabled,
+  });
   if (!availablePlaybackSources.length) {
     void fetchTmdbSourceOptionsViaBackend();
   }
@@ -3759,9 +3786,11 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
   ) {
     tmdbResolveRetries += 1;
     tmdbSkipExternalEmbed = true;
-    if (userLocalTorrentEnabled) {
-      preferredResolverProvider = "local-torrent";
-    }
+    preferredResolverProvider = pickTorrentResolverProvider({
+      currentProvider: preferredResolverProvider,
+      realDebridActive: isUserRealDebridPlaybackEnabled(),
+      localTorrentEnabled: userLocalTorrentEnabled,
+    });
     showResolver(
       `Trying torrent fallback (${tmdbResolveRetries}/${maxTmdbResolveRetries})...`,
     );
@@ -7515,7 +7544,10 @@ async function resolveTmdbTvEpisodeViaBackend(
   }
 }
 
-async function fetchTmdbSourceOptionsViaBackend() {
+async function fetchTmdbSourceOptionsViaBackend({
+  realDebridCacheRefresh = false,
+  expectedRequestKey = "",
+} = {}) {
   if (!isTmdbResolvedPlayback || !tmdbId) {
     availablePlaybackSources = [];
     isFetchingPlaybackSources = false;
@@ -7524,41 +7556,26 @@ async function fetchTmdbSourceOptionsViaBackend() {
   }
   await loadUserRealDebridPlaybackSettings();
   clearDisabledTorrentPlaybackState();
-  const query = new URLSearchParams({
-    tmdbId,
-    mediaType: isTmdbTvPlayback ? "tv" : "movie",
-    title,
-    year,
-    audioLang: preferredAudioLang,
-    quality: preferredQuality,
-    resolverProvider: preferredResolverProvider,
-    limit: String(
-      Math.max(preferredSourceResultsLimit, SOURCE_FETCH_BATCH_LIMIT),
-    ),
-  });
-  if (isTmdbTvPlayback) {
-    query.set("seasonNumber", String(seasonNumber));
-    query.set("episodeNumber", String(episodeNumber));
-    if (preferredContainer) {
-      query.set("preferredContainer", preferredContainer);
-    }
-  }
   const pinnedSourceHash = getPinnedSourceHashForRequests();
-  if (pinnedSourceHash) {
-    query.set("sourceHash", pinnedSourceHash);
-  }
-  if (!pinnedSourceHash) {
-    if (preferredSourceMinSeeders > 0) {
-      query.set("minSeeders", String(preferredSourceMinSeeders));
-    }
-    if (
-      preferredSourceFormats.length > 0 &&
-      preferredSourceFormats.length < supportedSourceFormats.length
-    ) {
-      query.set("allowedFormats", preferredSourceFormats.join(","));
-    }
-    query.set("sourceLang", preferredSourceLanguage);
-    query.set("sourceAudioProfile", preferredSourceAudioProfile);
+  const query = buildTmdbSourceDiscoveryQuery({
+    tmdbId, title, year, pinnedSourceHash,
+    mediaType: isTmdbTvPlayback ? "tv" : "movie",
+    audioLang: preferredAudioLang, quality: preferredQuality,
+    resolverProvider: preferredResolverProvider,
+    resultLimit: Math.max(preferredSourceResultsLimit, SOURCE_FETCH_BATCH_LIMIT),
+    seasonNumber, episodeNumber, preferredContainer,
+    minSeeders: preferredSourceMinSeeders,
+    preferredSourceFormats, supportedSourceFormats,
+    sourceLanguage: preferredSourceLanguage,
+    sourceAudioProfile: preferredSourceAudioProfile,
+  });
+  const requestKey = query.toString();
+  if (!realDebridSourceRefresh.prepareRequest({
+    requestKey,
+    refreshRequest: realDebridCacheRefresh,
+    expectedRequestKey,
+  })) {
+    return;
   }
 
   isFetchingPlaybackSources = true;
@@ -7593,7 +7610,7 @@ async function fetchTmdbSourceOptionsViaBackend() {
     ) {
       if (previousSelectedSourceOption) {
         nextPlaybackSources.unshift(previousSelectedSourceOption);
-      } else {
+      } else if (!realDebridCacheRefresh) {
         selectedSourceHash = "";
         sourceSelectionPinned = false;
         applyPreferredSourceAudioSync(selectedSourceHash);
@@ -7602,6 +7619,11 @@ async function fetchTmdbSourceOptionsViaBackend() {
     }
     availablePlaybackSources = sortSourcesBySeeders(nextPlaybackSources, {
       preferContainer: getSourceListPreferredContainer(),
+    });
+    realDebridSourceRefresh.observeSources({
+      requestKey,
+      refreshRequest: realDebridCacheRefresh,
+      sources: nextPlaybackSources,
     });
     isFetchingPlaybackSources = false;
     // The unpinned playback resolve owns initial source choice. This endpoint
@@ -7612,6 +7634,17 @@ async function fetchTmdbSourceOptionsViaBackend() {
     if (requestToken !== playbackSourcesRequestToken) {
       return;
     }
+    if (realDebridCacheRefresh) {
+      realDebridSourceRefresh.observeSources({
+        requestKey,
+        refreshRequest: true,
+        sources: availablePlaybackSources,
+      });
+      isFetchingPlaybackSources = false;
+      renderSourceOptionsWhenStable();
+      return;
+    }
+    realDebridSourceRefresh.cancelPending();
     availablePlaybackSources = [];
     isFetchingPlaybackSources = false;
     renderSourceOptionsWhenStable();
@@ -9110,7 +9143,7 @@ async function handleSourceOptionSelection(nextSourceHash) {
   const sourceSwitchTimeouts = getManualSourceSwitchTimeouts({
     isEmbed: switchingToEmbed,
     localTorrentEnabled: userLocalTorrentEnabled,
-    realDebridConfigured: userRealDebridConfigured,
+    realDebridConfigured: isUserRealDebridPlaybackEnabled(),
     resolverProvider: preferredResolverProvider,
   });
   const resumeFrom = getEffectiveCurrentTime();
@@ -9128,11 +9161,16 @@ async function handleSourceOptionSelection(nextSourceHash) {
   if (!manualSourceSwitch.isCurrent(sourceSwitchRequest)) {
     return;
   }
-  if (!switchingToEmbed && userLocalTorrentEnabled) {
-    preferredResolverProvider = "local-torrent";
-  }
+  preferredResolverProvider = pickTorrentResolverProvider({
+    currentProvider: preferredResolverProvider,
+    isEmbed: switchingToEmbed,
+    realDebridActive: isUserRealDebridPlaybackEnabled(),
+    localTorrentEnabled: userLocalTorrentEnabled,
+  });
   const keepCurrentPlaybackWhileResolving =
-    !switchingToEmbed && userLocalTorrentEnabled;
+    !switchingToEmbed && (
+      isUserRealDebridPlaybackEnabled() || userLocalTorrentEnabled
+    );
   const playbackRequestToken = ++tmdbPlaybackRequestToken;
   stopLocalCacheUpgradeWatch();
   localCacheUpgradeWatch.setHasUpgraded(false);
@@ -9143,8 +9181,9 @@ async function handleSourceOptionSelection(nextSourceHash) {
   renderSelectedSourceDetails();
   if (sourceOptionDetails instanceof HTMLElement && keepCurrentPlaybackWhileResolving) {
     sourceOptionDetails.hidden = false;
-    sourceOptionDetails.textContent =
-      "Preparing torrent — current stream keeps playing.";
+    sourceOptionDetails.textContent = isUserRealDebridPlaybackEnabled()
+      ? "Preparing Real-Debrid source — current stream keeps playing."
+      : "Preparing torrent — current stream keeps playing.";
   }
   tmdbResolveRetries = 0;
   closeAudioPopover(false, { force: true });
@@ -9977,6 +10016,7 @@ trackListener(window, "storage", (event) => {
     if (episodesPopoverCloseTimeout) clearTimeout(episodesPopoverCloseTimeout);
     if (audioPopoverCloseTimeout) clearTimeout(audioPopoverCloseTimeout);
     if (sourcePopoverCloseTimeout) clearTimeout(sourcePopoverCloseTimeout);
+    realDebridSourceRefresh.dispose();
     if (autoPlayCountdownInterval) clearInterval(autoPlayCountdownInterval);
   });
 

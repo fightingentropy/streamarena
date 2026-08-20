@@ -20,6 +20,10 @@ import {
 } from "../lib/preferences.js";
 import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
 import { handleAuthFailureResponse } from "../lib/auth.js";
+import {
+  buildRealDebridSettingsUpdate,
+  normalizeRealDebridSettings,
+} from "../lib/real-debrid-settings.js";
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
 const DEFAULT_AVATAR_STYLE = "blue";
@@ -70,10 +74,11 @@ function getAvatarChoiceLabel(value) {
   }, "Blue");
 }
 
-function getRealDebridStatusLabel(configured, maskedKey, loadState) {
+function getRealDebridStatusLabel(configured, enabled, maskedKey, loadState) {
   if (loadState === "loading") return "Loading…";
   if (loadState === "error") return "Unavailable";
   if (!configured) return "Off";
+  if (!enabled) return maskedKey ? `Off (${maskedKey} saved)` : "Off (token saved)";
   return maskedKey ? `On (${maskedKey})` : "On";
 }
 
@@ -255,12 +260,14 @@ export default function SettingsPage() {
   const [subtitleColor, setSubtitleColor] = createSignal(getStoredSubtitleColorPreference());
   const [defaultAudioLang, setDefaultAudioLang] = createSignal(getStoredDefaultAudioLanguage());
   const [realDebridConfigured, setRealDebridConfigured] = createSignal(false);
+  const [realDebridEnabled, setRealDebridEnabled] = createSignal(false);
   const [realDebridMaskedApiKey, setRealDebridMaskedApiKey] = createSignal("");
   const [realDebridApiKeyInput, setRealDebridApiKeyInput] = createSignal("");
   const [localTorrentEnabled, setLocalTorrentEnabled] = createSignal(false);
   const [realDebridStatus, setRealDebridStatus] = createSignal("");
   const [realDebridLoadState, setRealDebridLoadState] = createSignal("loading");
   const [realDebridApiKeyDirty, setRealDebridApiKeyDirty] = createSignal(false);
+  const [realDebridEnabledDirty, setRealDebridEnabledDirty] = createSignal(false);
   const [localTorrentDirty, setLocalTorrentDirty] = createSignal(false);
 
   // Avatar state
@@ -352,12 +359,31 @@ export default function SettingsPage() {
 
   function handleRealDebridApiKeyInput(e) {
     const nextValue = String(e.target.value || "");
+    const hasNewApiKey = Boolean(nextValue.trim());
     setRealDebridApiKeyInput(nextValue);
-    setRealDebridApiKeyDirty(Boolean(nextValue.trim()));
+    setRealDebridApiKeyDirty(hasNewApiKey);
+    if (!realDebridConfigured() && !hasNewApiKey && realDebridEnabled()) {
+      setRealDebridEnabled(false);
+      setRealDebridEnabledDirty(false);
+    }
   }
 
   function canToggleLocalTorrentCache() {
     return realDebridLoadState() !== "loading";
+  }
+
+  function canToggleRealDebrid() {
+    return realDebridLoadState() !== "loading" && Boolean(
+      realDebridConfigured() || realDebridApiKeyInput().trim(),
+    );
+  }
+
+  function handleRealDebridEnabledChange(e) {
+    const nextEnabled = canToggleRealDebrid() && Boolean(e.target.checked);
+    if (nextEnabled !== realDebridEnabled()) {
+      setRealDebridEnabledDirty(true);
+    }
+    setRealDebridEnabled(nextEnabled);
   }
 
   function handleLocalTorrentEnabledChange(e) {
@@ -400,11 +426,14 @@ export default function SettingsPage() {
       if (!response.ok) {
         throw new Error(`Unable to load Real-Debrid settings (${response.status}).`);
       }
-      const payload = await response.json();
-      setRealDebridConfigured(Boolean(payload?.configured));
-      setRealDebridMaskedApiKey(String(payload?.maskedApiKey || ""));
+      const settings = normalizeRealDebridSettings(await response.json());
+      setRealDebridConfigured(settings.configured);
+      setRealDebridMaskedApiKey(settings.maskedApiKey);
+      if (!realDebridEnabledDirty()) {
+        setRealDebridEnabled(settings.enabled);
+      }
       if (!localTorrentDirty()) {
-        setLocalTorrentEnabled(Boolean(payload?.localTorrentEnabled));
+        setLocalTorrentEnabled(settings.localTorrentEnabled);
       }
       setRealDebridLoadState("loaded");
       setRealDebridStatus("");
@@ -418,15 +447,20 @@ export default function SettingsPage() {
 
   async function saveRealDebridSettings() {
     const shouldSaveApiKey = realDebridApiKeyDirty();
+    const shouldSaveRealDebridEnabled = realDebridEnabledDirty() || shouldSaveApiKey;
     const shouldSaveLocalTorrent = localTorrentDirty();
-    if (!shouldSaveApiKey && !shouldSaveLocalTorrent) {
+    if (!shouldSaveApiKey && !shouldSaveRealDebridEnabled && !shouldSaveLocalTorrent) {
       return false;
     }
 
-    const apiKey = String(realDebridApiKeyInput() || "").trim();
-    const body = {};
-    if (shouldSaveApiKey && apiKey) body.apiKey = apiKey;
-    if (shouldSaveLocalTorrent) body.localTorrentEnabled = localTorrentEnabled();
+    const body = buildRealDebridSettingsUpdate({
+      apiKey: realDebridApiKeyInput(),
+      apiKeyDirty: shouldSaveApiKey,
+      enabled: realDebridEnabled(),
+      enabledDirty: shouldSaveRealDebridEnabled,
+      localTorrentEnabled: localTorrentEnabled(),
+      localTorrentDirty: shouldSaveLocalTorrent,
+    });
     if (Object.keys(body).length === 0) {
       return false;
     }
@@ -444,11 +478,14 @@ export default function SettingsPage() {
     if (!response.ok) {
       throw new Error(payload?.error || payload?.message || "Unable to save Real-Debrid key.");
     }
-    setRealDebridConfigured(Boolean(payload?.configured));
-    setRealDebridMaskedApiKey(String(payload?.maskedApiKey || ""));
-    setLocalTorrentEnabled(Boolean(payload?.localTorrentEnabled));
+    const settings = normalizeRealDebridSettings(payload);
+    setRealDebridConfigured(settings.configured);
+    setRealDebridEnabled(settings.enabled);
+    setRealDebridMaskedApiKey(settings.maskedApiKey);
+    setLocalTorrentEnabled(settings.localTorrentEnabled);
     setRealDebridApiKeyInput("");
     setRealDebridApiKeyDirty(false);
+    setRealDebridEnabledDirty(false);
     setLocalTorrentDirty(false);
     setRealDebridLoadState("loaded");
     setRealDebridStatus("Saved");
@@ -461,7 +498,7 @@ export default function SettingsPage() {
       const response = await fetch("/api/user/torrent-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: "" }),
+        body: JSON.stringify({ apiKey: "", realDebridEnabled: false }),
       });
       const payload = await response.json().catch(() => ({}));
       if (handleAuthFailureResponse(response)) {
@@ -470,11 +507,16 @@ export default function SettingsPage() {
       if (!response.ok) {
         throw new Error(payload?.error || payload?.message || "Unable to clear Real-Debrid key.");
       }
-      setRealDebridConfigured(false);
-      setRealDebridMaskedApiKey("");
+      const settings = normalizeRealDebridSettings(payload);
+      setRealDebridConfigured(settings.configured);
+      setRealDebridEnabled(settings.enabled);
+      setRealDebridMaskedApiKey(settings.maskedApiKey);
+      if (!localTorrentDirty()) {
+        setLocalTorrentEnabled(settings.localTorrentEnabled);
+      }
       setRealDebridApiKeyInput("");
       setRealDebridApiKeyDirty(false);
-      setLocalTorrentDirty(false);
+      setRealDebridEnabledDirty(false);
       setRealDebridLoadState("loaded");
       setRealDebridStatus("Cleared");
       showToast("Real-Debrid key cleared");
@@ -621,19 +663,39 @@ export default function SettingsPage() {
                   <h3>Real-Debrid</h3>
                   <p>{getRealDebridStatusLabel(
                     realDebridConfigured(),
+                    realDebridEnabled(),
                     realDebridMaskedApiKey(),
                     realDebridLoadState(),
                   )}</p>
                 </div>
                 <div class="settings-row-control real-debrid-controls">
+                  <label
+                    class={"settings-toggle-control real-debrid-enable-control" + (canToggleRealDebrid() ? "" : " is-disabled")}
+                    for="realDebridEnabled"
+                  >
+                    <input
+                      id="realDebridEnabled"
+                      name="realDebridEnabled"
+                      type="checkbox"
+                      role="switch"
+                      checked={realDebridEnabled()}
+                      disabled={!canToggleRealDebrid()}
+                      onChange={handleRealDebridEnabledChange}
+                    />
+                    <span class="settings-toggle-track" aria-hidden="true">
+                      <span class="settings-toggle-thumb"></span>
+                    </span>
+                    <span class="settings-toggle-label">Use Real-Debrid</span>
+                  </label>
                   <label class="settings-text-field" for="realDebridApiKey">
                     <span class="settings-field-label">API token</span>
                     <input
                       id="realDebridApiKey"
                       name="realDebridApiKey"
                       type="password"
-                      autocomplete="off"
+                      autocomplete="new-password"
                       spellcheck="false"
+                      aria-describedby="realDebridStatus"
                       value={realDebridApiKeyInput()}
                       placeholder={realDebridConfigured() ? "Leave blank to keep current token" : "Paste token"}
                       onInput={handleRealDebridApiKeyInput}
@@ -647,7 +709,7 @@ export default function SettingsPage() {
                   >
                     Clear
                   </button>
-                  <p class="real-debrid-status" role="status" aria-live="polite">
+                  <p id="realDebridStatus" class="real-debrid-status" role="status" aria-live="polite">
                     {realDebridStatus()}
                   </p>
                 </div>

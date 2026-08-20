@@ -3,16 +3,18 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use serde_json::json;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore, oneshot};
 
 use crate::error::ApiError;
 
 use super::finalize_external_embed_payload;
 use super::race_staggered_first_success;
 use super::{
-    CachedResolvedEmbed, EXTERNAL_EMBED_HEDGE_STAGGER_MS, ResolvedEmbedCache,
-    cache_reuse_provider_for_context, compute_external_embed_provider_rank_health_score,
-    external_embed_resolve_cache_key,
+    BoxResolverAttempt, CachedResolvedEmbed, EXTERNAL_EMBED_HEDGE_STAGGER_MS,
+    FASTEST_PROVIDER_HEDGE_STAGGER, RealDebridValidationControl, ResolvedEmbedCache,
+    acquire_owned_real_debrid_torrent_lease, cache_reuse_provider_for_context,
+    complete_real_debrid_attempt_with_lease, compute_external_embed_provider_rank_health_score,
+    external_embed_resolve_cache_key, race_staggered_resolver_attempts,
 };
 use super::{
     DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, ExternalEmbedSource,
@@ -37,17 +39,18 @@ use super::{
     normalize_allowed_formats, normalize_nebula_addon_base,
     normalize_resolved_source_for_software_decode, normalize_resolver_provider,
     normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
+    parse_ready_real_debrid_hashes, parse_ready_real_debrid_torrents,
     parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
     parse_torrentio_streams_payload, parse_torznab_xml, playback_session_key_allowed_for_user,
     playback_session_matches_preferred_container, playback_session_matches_preferred_quality,
     playback_session_matches_source_hash, prefer_mp4_default_candidates,
-    ready_info_has_selected_file_id, score_stream_episode_match, select_fastest_race_candidates,
-    select_top_episode_candidates, select_top_movie_candidates,
+    prioritize_local_torrent_first_wave, ready_info_has_selected_file_id,
+    score_stream_episode_match, select_top_episode_candidates, select_top_movie_candidates,
     should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
     should_prefer_software_decode_source, should_resolve_torrent_candidates,
     should_skip_playback_session_reuse, sort_movie_candidates, stream_list_contains_hash,
     stremio_addon_stream_url, summarize_stream_candidate_for_client, torrent_playback_enabled,
-    torznab_download_url_allowed, user_facing_real_debrid_error,
+    torznab_download_url_allowed, user_facing_real_debrid_error, validate_real_debrid_user_payload,
 };
 
 use std::sync::Mutex as StdMutex;
@@ -65,6 +68,295 @@ async fn hedge_attempt(
     started.lock().unwrap().push(index);
     tokio::time::sleep(delay).await;
     result
+}
+
+async fn resolver_provider_attempt(
+    started: Arc<StdMutex<Vec<usize>>>,
+    index: usize,
+    delay: Duration,
+    succeeds: bool,
+) -> Result<serde_json::Value, ApiError> {
+    started.lock().unwrap().push(index);
+    tokio::time::sleep(delay).await;
+    if succeeds {
+        Ok(json!({ "winner": index }))
+    } else {
+        Err(ApiError::bad_gateway(format!("provider {index} failed")))
+    }
+}
+
+#[tokio::test]
+async fn owned_real_debrid_add_cleans_after_caller_cancels_before_response() {
+    let (provider_accepted_tx, provider_accepted_rx) = oneshot::channel();
+    let (provider_response_tx, provider_response_rx) = oneshot::channel();
+    let (cleanup_complete_tx, cleanup_complete_rx) = oneshot::channel();
+    let cleanup_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let caller = tokio::spawn({
+        let cleanup_runs = cleanup_runs.clone();
+        async move {
+            acquire_owned_real_debrid_torrent_lease(
+                async move {
+                    let _ = provider_accepted_tx.send(());
+                    let _ = provider_response_rx.await;
+                    Ok("created-torrent-id".to_owned())
+                },
+                move |torrent_id| async move {
+                    assert_eq!(torrent_id, "created-torrent-id");
+                    cleanup_runs.fetch_add(1, Ordering::SeqCst);
+                    let _ = cleanup_complete_tx.send(());
+                },
+            )
+            .await
+        }
+    });
+
+    provider_accepted_rx
+        .await
+        .expect("owned add task should reach the provider");
+    caller.abort();
+    assert!(caller.await.is_err());
+    let _ = provider_response_tx.send(());
+    tokio::time::timeout(Duration::from_secs(1), cleanup_complete_rx)
+        .await
+        .expect("accepted torrent should be cleaned after caller cancellation")
+        .expect("cleanup should signal completion");
+    assert_eq!(cleanup_runs.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn owned_real_debrid_cleanup_waits_for_delete_completion() {
+    let (cleanup_started_tx, cleanup_started_rx) = oneshot::channel();
+    let (allow_cleanup_tx, allow_cleanup_rx) = oneshot::channel();
+    let lease = acquire_owned_real_debrid_torrent_lease(
+        async { Ok("created-torrent-id".to_owned()) },
+        move |_| async move {
+            let _ = cleanup_started_tx.send(());
+            let _ = allow_cleanup_rx.await;
+        },
+    )
+    .await
+    .expect("lease should be acquired");
+
+    let cleanup = tokio::spawn(lease.cleanup());
+    cleanup_started_rx
+        .await
+        .expect("cleanup should start after the explicit decision");
+    assert!(!cleanup.is_finished());
+    let _ = allow_cleanup_tx.send(());
+    cleanup.await.expect("cleanup task should finish");
+}
+
+#[tokio::test]
+async fn owned_real_debrid_lease_survives_until_payload_completion() {
+    let (payload_started_tx, payload_started_rx) = oneshot::channel();
+    let (cleanup_complete_tx, cleanup_complete_rx) = oneshot::channel();
+    let lease = acquire_owned_real_debrid_torrent_lease(
+        async { Ok("created-torrent-id".to_owned()) },
+        move |_| async move {
+            let _ = cleanup_complete_tx.send(());
+        },
+    )
+    .await
+    .expect("lease should be acquired");
+    let provider_attempt = tokio::spawn(complete_real_debrid_attempt_with_lease(
+        Some(lease),
+        async move {
+            let _ = payload_started_tx.send(());
+            std::future::pending::<Result<(), ApiError>>().await
+        },
+    ));
+
+    payload_started_rx
+        .await
+        .expect("post-resolve payload work should start");
+    provider_attempt.abort();
+    assert!(provider_attempt.await.is_err());
+    tokio::time::timeout(Duration::from_secs(1), cleanup_complete_rx)
+        .await
+        .expect("cancellation during payload work should clean the owned torrent")
+        .expect("cleanup should signal completion");
+}
+
+#[tokio::test]
+async fn real_debrid_validation_dedupes_concurrent_success_for_same_token() {
+    let control = RealDebridValidationControl::with_limits(10, 10, 2);
+    let validation_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (first_started_tx, first_started_rx) = oneshot::channel();
+    let (release_first_tx, release_first_rx) = oneshot::channel();
+    let first = tokio::spawn({
+        let control = control.clone();
+        let validation_runs = validation_runs.clone();
+        async move {
+            control
+                .validate(1, "192.0.2.10", "same-token", move || async move {
+                    validation_runs.fetch_add(1, Ordering::SeqCst);
+                    let _ = first_started_tx.send(());
+                    let _ = release_first_rx.await;
+                    Ok(())
+                })
+                .await
+        }
+    });
+    first_started_rx
+        .await
+        .expect("first validation should reach the upstream seam");
+    let second = tokio::spawn({
+        let control = control.clone();
+        let validation_runs = validation_runs.clone();
+        async move {
+            control
+                .validate(2, "192.0.2.11", "same-token", move || async move {
+                    validation_runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        }
+    });
+
+    let _ = release_first_tx.send(());
+    first
+        .await
+        .expect("first validation task should finish")
+        .expect("first validation should succeed");
+    second
+        .await
+        .expect("second validation task should finish")
+        .expect("same-token validation should reuse success");
+    assert_eq!(validation_runs.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn real_debrid_validation_limits_each_user_and_client_ip() {
+    let per_user = RealDebridValidationControl::with_limits(1, 10, 2);
+    let first = per_user
+        .validate(7, "192.0.2.20", "bad-token-a", || async {
+            Err(ApiError::bad_request("invalid token"))
+        })
+        .await
+        .expect_err("invalid token should fail validation");
+    assert_eq!(first.status(), axum::http::StatusCode::BAD_REQUEST);
+    let second = per_user
+        .validate(7, "192.0.2.21", "bad-token-b", || async {
+            panic!("per-user limiter should reject before validation")
+        })
+        .await
+        .expect_err("second user attempt should be throttled");
+    assert_eq!(second.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+
+    let per_ip = RealDebridValidationControl::with_limits(10, 1, 2);
+    let first = per_ip
+        .validate(8, "192.0.2.30", "bad-token-c", || async {
+            Err(ApiError::bad_request("invalid token"))
+        })
+        .await
+        .expect_err("invalid token should fail validation");
+    assert_eq!(first.status(), axum::http::StatusCode::BAD_REQUEST);
+    let second = per_ip
+        .validate(9, "192.0.2.30", "bad-token-d", || async {
+            panic!("per-IP limiter should reject before validation")
+        })
+        .await
+        .expect_err("second IP attempt should be throttled");
+    assert_eq!(second.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn real_debrid_validation_shares_a_small_concurrency_budget() {
+    let control = RealDebridValidationControl::with_limits(10, 10, 1);
+    let first_started = Arc::new(Notify::new());
+    let second_started = Arc::new(Notify::new());
+    let release_first = Arc::new(Notify::new());
+    let first = tokio::spawn({
+        let control = control.clone();
+        let first_started = first_started.clone();
+        let release_first = release_first.clone();
+        async move {
+            control
+                .validate(10, "192.0.2.40", "token-one", move || async move {
+                    first_started.notify_one();
+                    release_first.notified().await;
+                    Ok(())
+                })
+                .await
+        }
+    });
+    first_started.notified().await;
+    let second = tokio::spawn({
+        let control = control.clone();
+        let second_started = second_started.clone();
+        async move {
+            control
+                .validate(11, "192.0.2.41", "token-two", move || async move {
+                    second_started.notify_one();
+                    Ok(())
+                })
+                .await
+        }
+    });
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), second_started.notified())
+            .await
+            .is_err(),
+        "second upstream validation should wait for the shared permit"
+    );
+    release_first.notify_one();
+    first
+        .await
+        .expect("first validation task should finish")
+        .expect("first validation should succeed");
+    second
+        .await
+        .expect("second validation task should finish")
+        .expect("second validation should succeed after the permit is released");
+}
+
+#[tokio::test(start_paused = true)]
+async fn fastest_provider_hedge_keeps_a_fast_real_debrid_hit_exclusive() {
+    let started = Arc::new(StdMutex::new(Vec::new()));
+    let attempts: Vec<BoxResolverAttempt<'_>> = vec![
+        Box::pin(resolver_provider_attempt(
+            started.clone(),
+            0,
+            Duration::from_millis(400),
+            true,
+        )),
+        Box::pin(resolver_provider_attempt(
+            started.clone(),
+            1,
+            Duration::from_millis(50),
+            true,
+        )),
+    ];
+    let (winner, _) = race_staggered_resolver_attempts(attempts, FASTEST_PROVIDER_HEDGE_STAGGER)
+        .await
+        .expect("RD should win");
+    assert_eq!(winner, 0);
+    assert_eq!(*started.lock().unwrap(), vec![0]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn fastest_provider_hedge_launches_local_after_cached_hit_window() {
+    let started = Arc::new(StdMutex::new(Vec::new()));
+    let attempts: Vec<BoxResolverAttempt<'_>> = vec![
+        Box::pin(resolver_provider_attempt(
+            started.clone(),
+            0,
+            Duration::from_secs(30),
+            true,
+        )),
+        Box::pin(resolver_provider_attempt(
+            started.clone(),
+            1,
+            Duration::from_millis(100),
+            true,
+        )),
+    ];
+    let (winner, _) = race_staggered_resolver_attempts(attempts, FASTEST_PROVIDER_HEDGE_STAGGER)
+        .await
+        .expect("local should win");
+    assert_eq!(winner, 1);
+    assert_eq!(*started.lock().unwrap(), vec![0, 1]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -909,6 +1201,150 @@ fn maps_real_debrid_provider_codes_to_readable_errors() {
         user_facing_real_debrid_error("too_many_requests"),
         "Real-Debrid is rate limiting requests. Try again shortly."
     );
+    assert_eq!(
+        user_facing_real_debrid_error("an upstream message that must not be echoed"),
+        "Real-Debrid request failed."
+    );
+}
+
+#[test]
+fn validates_real_debrid_account_without_exposing_identity() {
+    assert!(
+        validate_real_debrid_user_payload(&json!({
+            "id": 42,
+            "username": "private-user",
+            "email": "private@example.com",
+            "type": "premium"
+        }))
+        .is_ok()
+    );
+    let free = validate_real_debrid_user_payload(&json!({ "id": 42, "type": "free" }))
+        .expect_err("free accounts cannot stream cached torrents");
+    assert_eq!(free.status(), axum::http::StatusCode::FAILED_DEPENDENCY);
+    assert!(!free.message().unwrap_or_default().contains("42"));
+    let malformed = validate_real_debrid_user_payload(&json!({ "type": "premium" }))
+        .expect_err("missing account id must fail closed");
+    assert_eq!(malformed.status(), axum::http::StatusCode::BAD_GATEWAY);
+}
+
+#[test]
+fn extracts_only_downloaded_real_debrid_hashes() {
+    let downloaded = "abcdef0123456789abcdef0123456789abcdef01";
+    let waiting = "1111111111111111111111111111111111111111";
+    let hashes = parse_ready_real_debrid_hashes(&json!([
+        { "id": "rd-ready", "hash": downloaded.to_uppercase(), "status": "downloaded" },
+        { "id": "rd-waiting", "hash": waiting, "status": "downloading" },
+        { "id": "rd-invalid", "hash": "not-a-hash", "status": "downloaded" }
+    ]));
+    assert_eq!(hashes.len(), 1);
+    assert!(hashes.contains(downloaded));
+    assert_eq!(
+        parse_ready_real_debrid_torrents(&json!([
+            { "id": "rd-ready", "hash": downloaded, "status": "downloaded" }
+        ]))
+        .get(downloaded)
+        .map(String::as_str),
+        Some("rd-ready")
+    );
+
+    let cached = parse_ready_real_debrid_hashes(&json!({
+        "hashes": [downloaded],
+        "torrents": { (downloaded): "rd-ready" }
+    }));
+    assert_eq!(cached, hashes);
+}
+
+#[test]
+fn real_debrid_ready_sources_rank_ahead_of_uncached_torrents() {
+    let mut cached = sample_stream(
+        "Example.Movie.2024.1080p.WEB-DL.x264.mkv\n👤 1",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    cached.real_debrid_cached = true;
+    let uncached = sample_stream(
+        "Example.Movie.2024.1080p.WEB-DL.x264.mkv\n👤 9999",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
+    let mut metadata = sample_movie_metadata();
+    metadata.display_title = "Example Movie".to_owned();
+    metadata.display_year = "2024".to_owned();
+    let streams = vec![uncached, cached];
+    let selected = select_top_movie_candidates(
+        &streams,
+        &metadata,
+        "en",
+        "1080p",
+        "",
+        2,
+        &sample_source_filters(),
+        &HashMap::new(),
+        false,
+    );
+    assert_eq!(
+        selected.first().map(|stream| stream.infoHash.as_str()),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+}
+
+#[test]
+fn cached_real_debrid_movie_mkv_outranks_uncached_mp4_default() {
+    let mut cached_mkv = sample_stream(
+        "The Housemaid 2025 1080p BluRay x265-GROUP.mkv\n👤 1",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    cached_mkv.real_debrid_cached = true;
+    let uncached_mp4 = sample_stream(
+        "The Housemaid 2025 1080p BluRay x265-GROUP.mp4\n👤 9999",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
+    let streams = vec![uncached_mp4, cached_mkv];
+
+    let selected = select_top_movie_candidates(
+        &streams,
+        &sample_movie_metadata(),
+        "en",
+        "1080p",
+        "",
+        1,
+        &sample_source_filters(),
+        &HashMap::new(),
+        true,
+    );
+
+    assert_eq!(selected.len(), 1);
+    assert!(selected[0].real_debrid_cached);
+    assert!(selected[0].title.contains(".mkv"));
+}
+
+#[test]
+fn cached_real_debrid_episode_mkv_outranks_uncached_mp4_default() {
+    let mut cached_mkv = sample_stream(
+        "Succession.S01E01.1080p.WEB-DL.mkv\n👤 1",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    cached_mkv.real_debrid_cached = true;
+    let uncached_mp4 = sample_stream(
+        "Succession.S01E01.1080p.WEB-DL.mp4\n👤 9999",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
+    let streams = vec![uncached_mp4, cached_mkv];
+
+    let selected = select_top_episode_candidates(
+        &streams,
+        &sample_tv_metadata(),
+        "en",
+        "1080p",
+        "auto",
+        "",
+        1,
+        &sample_source_filters(),
+        &HashMap::new(),
+        true,
+    );
+
+    assert_eq!(selected.len(), 1);
+    assert!(selected[0].real_debrid_cached);
+    assert!(selected[0].title.contains(".mkv"));
 }
 
 #[test]
@@ -999,6 +1435,148 @@ fn real_debrid_and_fastest_reuse_real_debrid_sessions() {
     assert_eq!(
         ResolverProvider::LocalTorrent.cache_reuse_provider(),
         ResolverProvider::LocalTorrent
+    );
+}
+
+#[test]
+fn real_debrid_cache_scope_changes_when_credentials_are_replaced() {
+    let first = super::RealDebridRequestContext::for_user(42, "first-private-token")
+        .expect("first context");
+    let second = super::RealDebridRequestContext::for_user(42, "second-private-token")
+        .expect("second context");
+    let other_user = super::RealDebridRequestContext::for_user(7, "first-private-token")
+        .expect("other user context");
+    assert_ne!(first.cache_scope, second.cache_scope);
+    assert_ne!(first.cache_scope, other_user.cache_scope);
+    assert!(!first.cache_scope.contains("first-private-token"));
+    assert!(!second.cache_scope.contains("second-private-token"));
+}
+
+#[test]
+fn real_debrid_playback_sessions_are_private_to_the_credential_scope() {
+    let first = super::RealDebridRequestContext::for_user(42, "first-private-token")
+        .expect("first context");
+    let second = super::RealDebridRequestContext::for_user(42, "second-private-token")
+        .expect("second context");
+    let session = PlaybackSession {
+        metadata: json!({
+            "resolverProvider": "real-debrid",
+            (super::RD_CREDENTIAL_SCOPE_METADATA_KEY): first.cache_scope.clone()
+        }),
+        ..PlaybackSession::default()
+    };
+
+    assert!(super::playback_session_matches_real_debrid_scope(
+        &session,
+        ResolverProvider::RealDebrid,
+        Some(&first)
+    ));
+    assert!(!super::playback_session_matches_real_debrid_scope(
+        &session,
+        ResolverProvider::RealDebrid,
+        Some(&second)
+    ));
+    assert!(!super::playback_session_matches_real_debrid_scope(
+        &session,
+        ResolverProvider::RealDebrid,
+        None
+    ));
+    assert!(super::playback_session_matches_real_debrid_scope(
+        &session,
+        ResolverProvider::LocalTorrent,
+        None
+    ));
+    assert!(
+        !super::build_playback_session_payload(&session)
+            .to_string()
+            .contains(&first.cache_scope),
+        "private credential scope must never enter serialized session payloads"
+    );
+}
+
+#[test]
+fn reused_real_debrid_torrents_are_read_only_and_require_an_exact_ready_selection() {
+    use super::RealDebridTorrentOwnership::{CreatedByRequest, ReusedFromAccount};
+
+    assert!(!ReusedFromAccount.may_change_file_selection());
+    assert!(CreatedByRequest.may_change_file_selection());
+
+    let ready = json!({
+        "status": "downloaded",
+        "files": [
+            {"id": 2, "path": "/Show.S01E01.mkv", "selected": 1},
+            {"id": 3, "path": "/Show.S01E02.mkv", "selected": 0}
+        ],
+        "links": ["https://real-debrid.example/link"]
+    });
+    assert!(super::reusable_rd_torrent_ready_for_selected_file(
+        &ready, 2
+    ));
+    assert!(!super::reusable_rd_torrent_ready_for_selected_file(
+        &ready, 3
+    ));
+
+    let mut multiple_selected = ready.clone();
+    multiple_selected["files"][1]["selected"] = json!(1);
+    multiple_selected["links"] = json!(["first", "second"]);
+    assert!(!super::reusable_rd_torrent_ready_for_selected_file(
+        &multiple_selected,
+        2
+    ));
+
+    let mut downloading = ready;
+    downloading["status"] = json!("downloading");
+    assert!(!super::reusable_rd_torrent_ready_for_selected_file(
+        &downloading,
+        2
+    ));
+}
+
+#[test]
+fn real_debrid_defers_track_enrichment_until_after_playable_url_delivery() {
+    assert!(super::should_defer_resolved_track_enrichment(
+        ResolverProvider::RealDebrid,
+        "https://example.download.real-debrid.com/movie.mp4"
+    ));
+    assert!(super::should_defer_resolved_track_enrichment(
+        ResolverProvider::LocalTorrent,
+        "/api/local-torrent/stream?sourceHash=abc"
+    ));
+    assert!(!super::should_defer_resolved_track_enrichment(
+        ResolverProvider::Fastest,
+        "https://cdn.example/movie.mp4"
+    ));
+}
+
+#[test]
+fn real_debrid_resolve_does_not_head_verify_before_returning_unrestricted_url() {
+    let source = include_str!("real_debrid.rs");
+    let resolve_body = source
+        .split("async fn resolve_from_torrent_id")
+        .nth(1)
+        .expect("resolve_from_torrent_id source")
+        .split("async fn resolve_playable_url_from_rd_link")
+        .next()
+        .expect("resolve body boundary");
+    assert!(
+        !resolve_body.contains(".verify_playable_url("),
+        "authoritative unrestrict URLs must be returned before CDN validation"
+    );
+}
+
+#[test]
+fn real_debrid_playback_does_not_repeat_the_background_account_list_request() {
+    let source = include_str!("real_debrid.rs");
+    let reusable_lookup = source
+        .split("async fn find_reusable_rd_torrent_by_hash")
+        .nth(1)
+        .expect("reusable lookup source")
+        .split("async fn mark_ready_real_debrid_sources")
+        .next()
+        .expect("lookup body boundary");
+    assert!(
+        !reusable_lookup.contains("/torrents?limit="),
+        "cold and cached misses must go directly to addMagnet"
     );
 }
 
@@ -1650,7 +2228,7 @@ fn sample_source_filters() -> SourceFilters {
 }
 
 #[test]
-fn fastest_race_candidates_include_local_friendly_sources() {
+fn local_torrent_first_wave_includes_its_swarm_optimized_candidate() {
     let ranked_huge = sample_stream(
         "The Matrix 1999 2160p Remux.mkv\n💾 76 GB\n👤 300",
         "1111111111111111111111111111111111111111",
@@ -1660,7 +2238,7 @@ fn fastest_race_candidates_include_local_friendly_sources() {
         "2222222222222222222222222222222222222222",
     );
     let small_mp4 = sample_stream(
-        "The Matrix 1999 1080p BluRay.x265.mp4\n💾 2.2 GB\n👤 2,400",
+        "The Matrix 1999 1080p BluRay.x264.mp4\n💾 2.2 GB\n👤 2,400",
         "3333333333333333333333333333333333333333",
     );
     let medium_mkv = sample_stream(
@@ -1669,16 +2247,43 @@ fn fastest_race_candidates_include_local_friendly_sources() {
     );
     let candidates = vec![&ranked_huge, &ranked_large, &medium_mkv, &small_mp4];
 
-    let selected = select_fastest_race_candidates(candidates);
+    let selected = prioritize_local_torrent_first_wave(candidates);
 
     assert_eq!(selected.len(), 4);
     assert_eq!(selected[0].infoHash, ranked_huge.infoHash);
-    assert_eq!(selected[1].infoHash, ranked_large.infoHash);
-    assert!(
-        selected
-            .iter()
-            .any(|item| item.infoHash == small_mp4.infoHash)
+    assert_eq!(selected[1].infoHash, small_mp4.infoHash);
+    assert_eq!(selected[2].infoHash, ranked_large.infoHash);
+}
+
+#[test]
+fn local_torrent_first_wave_prefers_h264_copy_over_x265_transcode() {
+    let ranked_first = sample_stream(
+        "Example 2160p Remux.mkv\n💾 76 GB\n👤 300",
+        "1111111111111111111111111111111111111111",
     );
+    let ranked_second = sample_stream(
+        "Example 2160p WEB-DL.mkv\n💾 24 GB\n👤 180",
+        "2222222222222222222222222222222222222222",
+    );
+    let x265_mp4 = sample_stream(
+        "Example 1080p WEB-DL.x265.mp4\n💾 2.2 GB\n👤 2,400",
+        "3333333333333333333333333333333333333333",
+    );
+    let h264_mkv = sample_stream(
+        "Example 1080p WEB-DL.H.264.mkv\n💾 2.2 GB\n👤 2,400",
+        "4444444444444444444444444444444444444444",
+    );
+
+    let selected = prioritize_local_torrent_first_wave(vec![
+        &ranked_first,
+        &ranked_second,
+        &x265_mp4,
+        &h264_mkv,
+    ]);
+
+    assert_eq!(selected[0].infoHash, ranked_first.infoHash);
+    assert_eq!(selected[1].infoHash, h264_mkv.infoHash);
+    assert_ne!(selected[1].infoHash, x265_mp4.infoHash);
 }
 
 #[test]

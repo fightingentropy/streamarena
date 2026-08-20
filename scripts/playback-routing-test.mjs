@@ -113,4 +113,78 @@ assert.equal(
   "mobile-light defaults keep the lighter 1080p mkv ahead of 4K",
 );
 
+globalThis.window = {
+  navigator: {
+    userAgent: "Mozilla/5.0 Chrome/150 Safari/537.36",
+    vendor: "Google Inc.",
+    platform: "MacIntel",
+    maxTouchPoints: 0,
+  },
+  MediaSource: {
+    isTypeSupported: () => true,
+  },
+  matchMedia: () => ({ matches: false }),
+  location: { origin: "https://streamarena.test" },
+};
+const remoteHevcMkv =
+  "https://download.example.test/Game.of.Thrones.S01E01.HEVC.x265.mkv";
+const automaticHevcRemux =
+  `/api/remux?${new URLSearchParams({
+    input: remoteHevcMkv,
+    videoMode: "auto",
+    videoCodecs: "h264,hevc",
+  })}`;
+const hevcCopyRouting = createPlaybackRouting({
+  getOrigin: () => "https://streamarena.test",
+  getBrowserVideoCodecs: () => ["h264", "hevc"],
+  parseTranscodeSource: (source) => {
+    const url = new URL(source, "https://streamarena.test");
+    if (url.pathname !== "/api/remux") return null;
+    return { input: url.searchParams.get("input") || "" };
+  },
+});
+assert.equal(
+  hevcCopyRouting.buildPreferredBrowserPlaybackSource(
+    automaticHevcRemux,
+    remoteHevcMkv,
+  ),
+  automaticHevcRemux,
+  "a browser that declares HEVC support must keep the copy-capable remux instead of starting HLS",
+);
+
+const highRiskHevcMkv =
+  "https://download.example.test/Game.of.Thrones.S01E01.DV.HDR.10bit.HEVC.x265.mkv";
+const highRiskHevcRemux =
+  `/api/remux?${new URLSearchParams({
+    input: highRiskHevcMkv,
+    videoMode: "auto",
+    videoCodecs: "h264,hevc",
+  })}`;
+assert.match(
+  hevcCopyRouting.buildPreferredBrowserPlaybackSource(
+    highRiskHevcRemux,
+    highRiskHevcMkv,
+  ),
+  /^\/api\/hls\/master\.m3u8\?/,
+  "generic HEVC support must not copy-remux an unproven DV/HDR/Main10 profile",
+);
+
+const unsupportedHevcRouting = createPlaybackRouting({
+  getOrigin: () => "https://streamarena.test",
+  getBrowserVideoCodecs: () => ["h264"],
+  parseTranscodeSource: (source) => {
+    const url = new URL(source, "https://streamarena.test");
+    if (url.pathname !== "/api/remux") return null;
+    return { input: url.searchParams.get("input") || "" };
+  },
+});
+assert.match(
+  unsupportedHevcRouting.buildPreferredBrowserPlaybackSource(
+    automaticHevcRemux,
+    remoteHevcMkv,
+  ),
+  /^\/api\/hls\/master\.m3u8\?/,
+  "an HEVC-unsafe browser should retain the HLS normalization path",
+);
+
 console.log("playback-routing-test: ok");

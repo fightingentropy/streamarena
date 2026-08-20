@@ -3,6 +3,33 @@ import { normalizeSourceHash } from "./sources.js";
 
 const AUDIO_SYNC_MIN_MS = -2500;
 const AUDIO_SYNC_MAX_MS = 2500;
+const REMUX_VIDEO_CODEC_PROBES = [
+  ["h264", 'video/mp4; codecs="avc1.42E01E"'],
+  ["hevc", 'video/mp4; codecs="hvc1.1.6.L93.B0"'],
+  ["av1", 'video/mp4; codecs="av01.0.05M.08"'],
+  ["vp9", 'video/mp4; codecs="vp09.00.10.08"'],
+];
+
+export function getBrowserSupportedRemuxVideoCodecs(video) {
+  if (!video || typeof video.canPlayType !== "function") {
+    return ["h264"];
+  }
+  const supported = [];
+  for (const [codec, contentType] of REMUX_VIDEO_CODEC_PROBES) {
+    try {
+      const result = String(video.canPlayType(contentType) || "").toLowerCase();
+      if (result === "maybe" || result === "probably") {
+        supported.push(codec);
+      }
+    } catch {
+      // One unsupported codec probe must not suppress the safe baseline.
+    }
+  }
+  if (!supported.includes("h264")) {
+    supported.unshift("h264");
+  }
+  return supported;
+}
 
 export function normalizeAudioSyncMs(value) {
   const parsed = Number(value);
@@ -15,6 +42,100 @@ export function normalizeAudioSyncMs(value) {
   );
 }
 
+function normalizedBrowserVideoCodecHint(getBrowserVideoCodecs) {
+  const values = getBrowserVideoCodecs?.();
+  return (Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean)
+    .join(",");
+}
+
+function resolvedTrackIndex(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+export function buildResolvedRemuxVariantSource(
+  resolved,
+  {
+    startSeconds = null,
+    sourceHash = "",
+    audioSyncMs = 0,
+    remuxVideoMode = "auto",
+    parseTranscodeSource = () => null,
+    buildSoftwareDecodeUrl = () => "",
+  } = {},
+) {
+  const candidates = [
+    resolved?.playableUrl,
+    ...(Array.isArray(resolved?.fallbackUrls) ? resolved.fallbackUrls : []),
+  ];
+  for (const candidate of candidates) {
+    const meta = parseTranscodeSource(String(candidate || "").trim());
+    if (!meta?.input) continue;
+    const effectiveStartSeconds =
+      startSeconds === null || startSeconds === undefined || startSeconds === ""
+        ? meta.startSeconds
+        : Number(startSeconds);
+    return buildSoftwareDecodeUrl(
+      meta.input,
+      Number.isFinite(effectiveStartSeconds) ? effectiveStartSeconds : 0,
+      resolvedTrackIndex(
+        resolved?.selectedAudioStreamIndex,
+        meta.audioStreamIndex,
+      ),
+      audioSyncMs,
+      resolvedTrackIndex(
+        resolved?.selectedSubtitleStreamIndex,
+        meta.subtitleStreamIndex,
+      ),
+      sourceHash || resolved?.sourceHash || meta.sourceHash || "",
+      remuxVideoMode,
+    );
+  }
+  return "";
+}
+
+function remuxInputOrSource(source, parseTranscodeSource) {
+  const normalized = String(source || "").trim();
+  if (!normalized) return "";
+  return String(parseTranscodeSource(normalized)?.input || normalized).trim();
+}
+
+export function buildOrderedRemuxFallbacks({
+  normalizeSource = "",
+  nativePreferredSource = "",
+  fallbackUrls = [],
+  skipRemuxFallback = false,
+  parseTranscodeSource = () => null,
+} = {}) {
+  const normalizedFallbacks = Array.isArray(fallbackUrls) ? fallbackUrls : [];
+  const normalizeInput = remuxInputOrSource(normalizeSource, parseTranscodeSource);
+  const nativeInput = remuxInputOrSource(
+    nativePreferredSource,
+    parseTranscodeSource,
+  );
+  const nativeDuplicatesNormalize = Boolean(
+    normalizeInput && nativeInput && normalizeInput === nativeInput,
+  );
+  const candidates = skipRemuxFallback
+    ? normalizedFallbacks
+    : [
+        normalizeSource,
+        ...(nativeDuplicatesNormalize ? [] : [nativePreferredSource]),
+        ...normalizedFallbacks,
+      ];
+  return candidates
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .filter(
+      (value) =>
+        !skipRemuxFallback || !parseTranscodeSource(value),
+    )
+    .filter((value, index, values) => values.indexOf(value) === index);
+}
+
 export function createRemuxRouting({
   getOrigin = () => window.location.origin,
   getSelectedSourceHash = () => "",
@@ -23,6 +144,7 @@ export function createRemuxRouting({
   getSelectedSubtitleStreamIndex = () => -1,
   getPreferredAudioSyncMs = () => 0,
   getPreferredRemuxVideoMode = () => "auto",
+  getBrowserVideoCodecs = () => ["h264"],
   isBrowserSafeAudioCodec = () => true,
   shouldMapSubtitleStreamIndex = () => false,
 } = {}) {
@@ -88,6 +210,12 @@ export function createRemuxRouting({
         url.searchParams.delete("sourceHash");
       }
       url.searchParams.set("videoMode", normalizeRemuxVideoMode(remuxVideoMode));
+      const videoCodecs = normalizedBrowserVideoCodecHint(getBrowserVideoCodecs);
+      if (videoCodecs) {
+        url.searchParams.set("videoCodecs", videoCodecs);
+      } else {
+        url.searchParams.delete("videoCodecs");
+      }
       return `${url.pathname}?${url.searchParams.toString()}`;
     } catch {
       return source;
@@ -122,6 +250,10 @@ export function createRemuxRouting({
       params.set("sourceHash", normalizedSourceHash);
     }
     params.set("videoMode", normalizeRemuxVideoMode(remuxVideoMode));
+    const videoCodecs = normalizedBrowserVideoCodecHint(getBrowserVideoCodecs);
+    if (videoCodecs) {
+      params.set("videoCodecs", videoCodecs);
+    }
     return `/api/remux?${params.toString()}`;
   }
 
@@ -166,6 +298,12 @@ export function createRemuxRouting({
       const remuxVideoMode = normalizeRemuxVideoMode(
         url.searchParams.get("videoMode") || "auto",
       );
+      const browserVideoCodecs = String(
+        url.searchParams.get("videoCodecs") || "",
+      )
+        .split(",")
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean);
       return {
         input,
         startSeconds,
@@ -174,6 +312,7 @@ export function createRemuxRouting({
         audioSyncMs,
         sourceHash,
         remuxVideoMode,
+        browserVideoCodecs,
       };
     } catch {
       return null;

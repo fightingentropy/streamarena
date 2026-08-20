@@ -1,3 +1,5 @@
+import { pickTorrentResolverProvider } from "../lib/real-debrid-settings.js";
+
 const EXPORT_PATH = "/api/download/export.mp4";
 const MAX_EXPORT_FILENAME_CHARS = 80;
 
@@ -194,7 +196,10 @@ export function createSourceDownloadController({
       requiredSourceHash: sourceHash,
       requestSourceHash: sourceHash,
       resolveTimeoutMs: timeouts.resolveTimeoutMs,
-      skipExternalEmbed: !switchingToEmbed && getUserLocalTorrentEnabled(),
+      skipExternalEmbed:
+        !switchingToEmbed && (
+          getUserRealDebridConfigured() || getUserLocalTorrentEnabled()
+        ),
     });
     const input = pickResolvedExportInput(
       result?.resolved,
@@ -244,6 +249,12 @@ export function createSourceDownloadController({
     const token = ++requestToken;
     const option = getSourceOptionByHash(sourceHash);
     const previousResolverProvider = getPreferredResolverProvider();
+    setPreferredResolverProvider(pickTorrentResolverProvider({
+      currentProvider: previousResolverProvider,
+      isEmbed: Boolean(option && isSourceOptionEmbed(option)),
+      realDebridActive: getUserRealDebridConfigured(),
+      localTorrentEnabled: getUserLocalTorrentEnabled(),
+    }));
     downloadingSourceHash = sourceHash;
     statusMessage = "Preparing download — current stream keeps playing.";
     syncSourceSelectionState();

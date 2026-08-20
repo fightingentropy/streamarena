@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::net::Ipv4Addr;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -39,6 +40,7 @@ use crate::media::{
 };
 use crate::persistence::{Db, PersistPlaybackSessionInput, PlaybackSession, SourceHealthStats};
 use crate::provider_budget::ProviderConcurrencyBudgets;
+use crate::rate_limit::RateLimiter;
 use crate::tmdb::TmdbService;
 use crate::utils::now_ms;
 use crate::utils::{
@@ -47,17 +49,31 @@ use crate::utils::{
 };
 
 mod external_embed;
+mod real_debrid;
 mod scoring;
+pub(crate) use real_debrid::pick_video_file_ids;
+use real_debrid::{
+    RealDebridRequestContext, RealDebridValidationControl, complete_real_debrid_attempt_with_lease,
+    real_debrid_api_key_required_error, validate_real_debrid_user_payload,
+};
+#[cfg(test)]
+use real_debrid::{
+    RealDebridTorrentOwnership, acquire_owned_real_debrid_torrent_lease,
+    build_rd_torrent_cache_key, build_scoped_rd_torrent_cache_key, parse_ready_real_debrid_hashes,
+    parse_ready_real_debrid_torrents, ready_info_has_selected_file_id,
+    reusable_rd_torrent_ready_for_selected_file, user_facing_real_debrid_error,
+};
 use scoring::{
     build_episode_signature, collect_episode_signatures, extract_stream_title_lines,
-    parse_seed_count, parse_vertical_resolution_from_text, select_top_episode_candidates,
-    select_top_movie_candidates, summarize_stream_candidate_for_client,
+    parse_seed_count, parse_vertical_resolution_from_text, prioritize_local_torrent_first_wave,
+    select_top_episode_candidates, select_top_movie_candidates,
+    summarize_stream_candidate_for_client,
 };
 
 #[cfg(test)]
 use scoring::{
     parse_runtime_from_label_seconds, parse_size_label_bytes, score_stream_episode_match,
-    select_fastest_race_candidates, sort_movie_candidates,
+    sort_movie_candidates,
 };
 
 use external_embed::{
@@ -83,6 +99,7 @@ const RESOLVE_MAX_MS: i64 = 90_000;
 // Candidate hedging keeps one dead swarm from serializing the whole budget.
 const LOCAL_TORRENT_RESOLVE_MAX_MS: i64 = 150_000;
 const FASTEST_RESOLVE_MAX_MS: i64 = 45_000;
+const FASTEST_PROVIDER_HEDGE_STAGGER: Duration = Duration::from_millis(1_750);
 /// How many top-ranked local-torrent candidates race (staggered hedge) for the
 /// first successful resolve. One dead or swarm-slow torrent used to serialize
 /// the whole resolve behind its metadata timeout; racing caps that cost.
@@ -90,10 +107,7 @@ const LOCAL_TORRENT_RACE_CANDIDATES: usize = 2;
 /// Give the best-ranked swarm time to establish peers before starting one
 /// bounded hedge. Fast failures still launch the second candidate immediately.
 const LOCAL_TORRENT_RACE_STAGGER: Duration = Duration::from_secs(6);
-#[cfg(test)]
-const FASTEST_PARALLEL_CANDIDATES: usize = 4;
 const FASTEST_CANDIDATE_POOL_LIMIT: usize = 40;
-const PLAYABLE_URL_VALIDATE_TIMEOUT_MS: u64 = 8_000;
 const TORRENTIO_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const TORRENTIO_REQUEST_MAX_ATTEMPTS: usize = 2;
 const TORRENTIO_REQUEST_RETRY_DELAY_MS: u64 = 1_200;
@@ -105,6 +119,9 @@ const TORZNAB_CACHE_STALE_WINDOW_SECONDS: i64 = 2 * 60 * 60;
 const TORZNAB_DOWNLOAD_MAGNET_CACHE_SECONDS: i64 = 24 * 60 * 60;
 const TORZNAB_DOWNLOAD_LINK_HYDRATE_LIMIT: usize = 12;
 const RD_TORRENT_CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+const RD_READY_HASH_CACHE_TTL_MS: i64 = 30 * 1000;
+const RD_TORRENT_LIST_LIMIT: usize = 500;
+const RD_CREDENTIAL_SCOPE_METADATA_KEY: &str = "_realDebridCredentialScope";
 const SOURCE_HEALTH_AVOID_SCORE: i64 = -6_000;
 const RD_SELECTED_FILE_MISMATCH_ERROR: &str =
     "Real-Debrid returned a cached torrent with a different selected file.";
@@ -193,6 +210,8 @@ pub struct ResolverService {
     external_resolver_permits: Arc<Semaphore>,
     provider_resolver_permits: ProviderConcurrencyBudgets,
     resolved_embed_cache: ResolvedEmbedCache,
+    rd_ready_refreshes: Arc<DashMap<String, ()>>,
+    rd_validation: RealDebridValidationControl,
 }
 
 pub struct LocalCacheUpgradeRequest<'a> {
@@ -297,6 +316,8 @@ pub(in crate::resolver) struct DiscoveryStream {
     pub(in crate::resolver) discoveryProvider: String,
     #[serde(skip)]
     pub(in crate::resolver) downloadUrl: String,
+    #[serde(skip)]
+    pub(in crate::resolver) real_debrid_cached: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -330,6 +351,7 @@ pub(in crate::resolver) struct SourceSummary {
     pub(in crate::resolver) qualityLabel: String,
     pub(in crate::resolver) container: String,
     pub(in crate::resolver) isTorrent: bool,
+    pub(in crate::resolver) realDebridCached: bool,
     pub(in crate::resolver) seeders: i64,
     pub(in crate::resolver) size: String,
     pub(in crate::resolver) releaseGroup: String,
@@ -490,6 +512,8 @@ struct ResolvedSource {
     selected_file: String,
     #[serde(rename = "selectedFilePath")]
     selected_file_path: String,
+    #[serde(default, rename = "realDebridCached")]
+    real_debrid_cached: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -531,25 +555,6 @@ struct ExternalEmbedPlaybackRequest<'a> {
     /// path; `None` on pinned-source resolves, which are never cached.
     resolve_cache: Option<&'a ResolvedEmbedCache>,
     cache_key: Option<&'a str>,
-}
-
-#[derive(Clone)]
-struct RealDebridRequestContext {
-    api_key: String,
-    cache_scope: String,
-}
-
-impl RealDebridRequestContext {
-    fn for_user(user_id: i64, api_key: &str) -> Option<Self> {
-        let normalized_api_key = api_key.trim();
-        if normalized_api_key.is_empty() {
-            return None;
-        }
-        Some(Self {
-            api_key: normalized_api_key.to_owned(),
-            cache_scope: format!("user:{}", user_id.max(0)),
-        })
-    }
 }
 
 fn torrent_playback_enabled(
@@ -652,6 +657,8 @@ impl ResolverService {
             external_resolver_permits,
             provider_resolver_permits,
             resolved_embed_cache: ResolvedEmbedCache::new(),
+            rd_ready_refreshes: Arc::new(DashMap::new()),
+            rd_validation: RealDebridValidationControl::new(),
         }
     }
 
@@ -659,6 +666,7 @@ impl ResolverService {
     pub fn prune_resolve_cache(&self) {
         self.resolved_embed_cache.prune();
         self.provider_resolver_permits.prune_idle();
+        self.rd_validation.prune();
     }
 
     pub fn stats(&self) -> ResolverStats {
@@ -687,6 +695,27 @@ impl ResolverService {
                 .external_rejected
                 .load(Ordering::Relaxed),
         }
+    }
+
+    /// Verify a user-supplied credential before it is encrypted and stored.
+    /// Only a boolean success/failure crosses this boundary; Real-Debrid
+    /// account identity fields are deliberately discarded.
+    pub async fn validate_real_debrid_api_key(
+        &self,
+        user_id: i64,
+        client_ip: &str,
+        api_key: &str,
+    ) -> AppResult<()> {
+        let real_debrid = RealDebridRequestContext::for_user(0, api_key)
+            .ok_or_else(|| ApiError::bad_request("Enter a valid Real-Debrid API token."))?;
+        self.rd_validation
+            .validate(user_id, client_ip, api_key, || async {
+                let payload = self
+                    .rd_fetch_json(&real_debrid, "/user", reqwest::Method::GET, 8_000)
+                    .await?;
+                validate_real_debrid_user_payload(&payload)
+            })
+            .await
     }
 
     async fn acquire_external_resolve_permit(&self) -> AppResult<ResolverExternalGuard> {
@@ -888,7 +917,11 @@ impl ResolverService {
             let sources = match torrentio_result {
                 Ok(torrentio_streams) => {
                     let torznab_streams = torznab_result.unwrap_or_default();
-                    let streams = merge_discovery_streams(torrentio_streams, torznab_streams);
+                    let mut streams = merge_discovery_streams(torrentio_streams, torznab_streams);
+                    if resolver_provider != ResolverProvider::LocalTorrent {
+                        self.mark_ready_real_debrid_sources(&mut streams, real_debrid.as_ref())
+                            .await;
+                    }
                     self.summarize_episode_sources_from_streams(
                         &streams,
                         &metadata,
@@ -913,6 +946,14 @@ impl ResolverService {
                             }
                         }
                     };
+                    let mut torznab_streams = torznab_streams;
+                    if resolver_provider != ResolverProvider::LocalTorrent {
+                        self.mark_ready_real_debrid_sources(
+                            &mut torznab_streams,
+                            real_debrid.as_ref(),
+                        )
+                        .await;
+                    }
                     let torznab_sources = self
                         .summarize_episode_sources_from_streams(
                             &torznab_streams,
@@ -978,7 +1019,11 @@ impl ResolverService {
         let sources = match torrentio_result {
             Ok(torrentio_streams) => {
                 let torznab_streams = torznab_result.unwrap_or_default();
-                let streams = merge_discovery_streams(torrentio_streams, torznab_streams);
+                let mut streams = merge_discovery_streams(torrentio_streams, torznab_streams);
+                if resolver_provider != ResolverProvider::LocalTorrent {
+                    self.mark_ready_real_debrid_sources(&mut streams, real_debrid.as_ref())
+                        .await;
+                }
                 self.summarize_movie_sources_from_streams(
                     &streams,
                     &metadata,
@@ -1002,6 +1047,11 @@ impl ResolverService {
                         }
                     }
                 };
+                let mut torznab_streams = torznab_streams;
+                if resolver_provider != ResolverProvider::LocalTorrent {
+                    self.mark_ready_real_debrid_sources(&mut torznab_streams, real_debrid.as_ref())
+                        .await;
+                }
                 let torznab_sources = self
                     .summarize_movie_sources_from_streams(
                         &torznab_streams,
@@ -1334,6 +1384,7 @@ impl ResolverService {
                 &filters,
                 cache_reuse_provider,
                 session_key,
+                real_debrid,
             )
             .await?
         {
@@ -1347,6 +1398,7 @@ impl ResolverService {
                     &preferences,
                     &filters,
                     cache_reuse_provider,
+                    real_debrid,
                 )
                 .await?
         {
@@ -1363,7 +1415,11 @@ impl ResolverService {
         };
         let mut last_error;
         match self.fetch_torrentio_movie_streams(&metadata.imdb_id).await {
-            Ok(streams) => {
+            Ok(mut streams) => {
+                if resolver_provider != ResolverProvider::LocalTorrent {
+                    self.mark_ready_real_debrid_sources(&mut streams, real_debrid)
+                        .await;
+                }
                 let health_scores = self.compute_source_health_scores(&streams).await?;
                 let candidate_limit = if resolver_provider.is_fastest() {
                     FASTEST_CANDIDATE_POOL_LIMIT
@@ -1774,6 +1830,7 @@ impl ResolverService {
                 &filters,
                 cache_reuse_provider,
                 session_key,
+                real_debrid,
             )
             .await?
         {
@@ -1787,6 +1844,7 @@ impl ResolverService {
                     &preferences,
                     &filters,
                     cache_reuse_provider,
+                    real_debrid,
                 )
                 .await?
         {
@@ -1810,7 +1868,11 @@ impl ResolverService {
             )
             .await
         {
-            Ok(streams) => {
+            Ok(mut streams) => {
+                if resolver_provider != ResolverProvider::LocalTorrent {
+                    self.mark_ready_real_debrid_sources(&mut streams, real_debrid)
+                        .await;
+                }
                 let health_scores = self.compute_source_health_scores(&streams).await?;
                 let candidate_limit = if resolver_provider.is_fastest() {
                     FASTEST_CANDIDATE_POOL_LIMIT
@@ -2005,36 +2067,22 @@ impl ResolverService {
                 .trim(),
             );
             let remaining_ms = (resolve_max_ms - elapsed_ms).max(1) as u64;
-            let resolved_result = match timeout(
+            let payload_result = match timeout(
                 Duration::from_millis(remaining_ms),
-                self.resolve_candidate_stream(
+                self.resolve_real_debrid_candidate_payload(
                     candidate,
                     &fallback_name,
-                    context.resolver_provider,
-                    context.real_debrid,
-                    context.local_torrent_enabled,
+                    context,
+                    validate_resolved_movie_source,
                 ),
             )
             .await
             {
-                Ok(result) => result.and_then(|resolved| {
-                    validate_resolved_movie_source(resolved, context.metadata)
-                }),
+                Ok(result) => result,
                 Err(_) => Err(ApiError::bad_gateway("Resolving stream timed out.")),
             };
-            match resolved_result {
-                Ok(resolved) => {
-                    return self
-                        .build_resolved_response(
-                            resolved,
-                            context.metadata.clone(),
-                            context.preferences.clone(),
-                            context.resolver_provider,
-                            context.user_id,
-                            true,
-                        )
-                        .await;
-                }
+            match payload_result {
+                Ok(payload) => return Ok(payload),
                 Err(error) => {
                     self.record_source_resolve_failure(candidate, &error).await;
                     last_error = Some(error);
@@ -2054,6 +2102,53 @@ impl ResolverService {
         user_id: i64,
         local_torrent_enabled: bool,
     ) -> AppResult<Value> {
+        if let Some(real_debrid) = real_debrid
+            && local_torrent_enabled
+        {
+            let rd_candidates = candidates.clone();
+            let rd_attempt: BoxResolverAttempt<'_> = Box::pin(async {
+                self.resolve_movie_candidates_with_provider(
+                    rd_candidates,
+                    CandidateResolutionContext {
+                        metadata,
+                        preferences,
+                        resolver_provider: ResolverProvider::RealDebrid,
+                        real_debrid: Some(real_debrid),
+                        user_id,
+                        local_torrent_enabled,
+                    },
+                )
+                .await
+            });
+            let local_attempt: BoxResolverAttempt<'_> = Box::pin(async {
+                self.resolve_movie_candidates_with_provider(
+                    candidates,
+                    CandidateResolutionContext {
+                        metadata,
+                        preferences,
+                        resolver_provider: ResolverProvider::LocalTorrent,
+                        real_debrid: Some(real_debrid),
+                        user_id,
+                        local_torrent_enabled,
+                    },
+                )
+                .await
+            });
+            return match timeout(
+                Duration::from_millis(FASTEST_RESOLVE_MAX_MS as u64),
+                race_staggered_resolver_attempts(
+                    vec![rd_attempt, local_attempt],
+                    FASTEST_PROVIDER_HEDGE_STAGGER,
+                ),
+            )
+            .await
+            {
+                Ok(Ok((_provider_index, payload))) => Ok(payload),
+                Ok(Err(errors)) => Err(choose_auto_provider_error(errors)),
+                Err(_) => Err(ApiError::gateway_timeout("Resolving stream timed out.")),
+            };
+        }
+
         let mut real_debrid_error = None;
         if let Some(real_debrid) = real_debrid {
             match self
@@ -2187,36 +2282,22 @@ impl ResolverService {
                 )
             };
             let remaining_ms = (resolve_max_ms - elapsed_ms).max(1) as u64;
-            let resolved_result = match timeout(
+            let payload_result = match timeout(
                 Duration::from_millis(remaining_ms),
-                self.resolve_candidate_stream(
+                self.resolve_real_debrid_candidate_payload(
                     candidate,
                     &fallback_name,
-                    context.resolver_provider,
-                    context.real_debrid,
-                    context.local_torrent_enabled,
+                    context,
+                    validate_resolved_episode_source,
                 ),
             )
             .await
             {
-                Ok(result) => result.and_then(|resolved| {
-                    validate_resolved_episode_source(resolved, context.metadata)
-                }),
+                Ok(result) => result,
                 Err(_) => Err(ApiError::bad_gateway("Resolving stream timed out.")),
             };
-            match resolved_result {
-                Ok(resolved) => {
-                    return self
-                        .build_resolved_response(
-                            resolved,
-                            context.metadata.clone(),
-                            context.preferences.clone(),
-                            context.resolver_provider,
-                            context.user_id,
-                            true,
-                        )
-                        .await;
-                }
+            match payload_result {
+                Ok(payload) => return Ok(payload),
                 Err(error) => {
                     self.record_source_resolve_failure(candidate, &error).await;
                     last_error = Some(error);
@@ -2240,6 +2321,7 @@ impl ResolverService {
         fallback_name: String,
         validate: fn(ResolvedSource, &ResolveMetadata) -> AppResult<ResolvedSource>,
     ) -> AppResult<Value> {
+        let candidates = prioritize_local_torrent_first_wave(candidates);
         let resolution_started_at = now_ms();
         let resolve_max_ms = context.resolver_provider.resolve_max_ms();
         let metadata = context.metadata;
@@ -2321,6 +2403,7 @@ impl ResolverService {
                     context.preferences.clone(),
                     context.resolver_provider,
                     context.user_id,
+                    context.real_debrid,
                     true,
                 )
                 .await;
@@ -2357,6 +2440,7 @@ impl ResolverService {
                             context.preferences.clone(),
                             context.resolver_provider,
                             context.user_id,
+                            context.real_debrid,
                             true,
                         )
                         .await;
@@ -2382,6 +2466,53 @@ impl ResolverService {
         user_id: i64,
         local_torrent_enabled: bool,
     ) -> AppResult<Value> {
+        if let Some(real_debrid) = real_debrid
+            && local_torrent_enabled
+        {
+            let rd_candidates = candidates.clone();
+            let rd_attempt: BoxResolverAttempt<'_> = Box::pin(async {
+                self.resolve_episode_candidates_with_provider(
+                    rd_candidates,
+                    CandidateResolutionContext {
+                        metadata,
+                        preferences,
+                        resolver_provider: ResolverProvider::RealDebrid,
+                        real_debrid: Some(real_debrid),
+                        user_id,
+                        local_torrent_enabled,
+                    },
+                )
+                .await
+            });
+            let local_attempt: BoxResolverAttempt<'_> = Box::pin(async {
+                self.resolve_episode_candidates_with_provider(
+                    candidates,
+                    CandidateResolutionContext {
+                        metadata,
+                        preferences,
+                        resolver_provider: ResolverProvider::LocalTorrent,
+                        real_debrid: Some(real_debrid),
+                        user_id,
+                        local_torrent_enabled,
+                    },
+                )
+                .await
+            });
+            return match timeout(
+                Duration::from_millis(FASTEST_RESOLVE_MAX_MS as u64),
+                race_staggered_resolver_attempts(
+                    vec![rd_attempt, local_attempt],
+                    FASTEST_PROVIDER_HEDGE_STAGGER,
+                ),
+            )
+            .await
+            {
+                Ok(Ok((_provider_index, payload))) => Ok(payload),
+                Ok(Err(errors)) => Err(choose_auto_provider_error(errors)),
+                Err(_) => Err(ApiError::gateway_timeout("Resolving stream timed out.")),
+            };
+        }
+
         let mut real_debrid_error = None;
         if let Some(real_debrid) = real_debrid {
             match self
@@ -2515,6 +2646,7 @@ impl ResolverService {
         payload["selectedSubtitleStreamIndex"] = json!(selected_subtitle_stream_index);
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn build_resolved_response(
         &self,
         resolved: ResolvedSource,
@@ -2522,6 +2654,7 @@ impl ResolverService {
         preferences: ResolvePreferences,
         resolver_provider: ResolverProvider,
         user_id: i64,
+        real_debrid: Option<&RealDebridRequestContext>,
         include_session: bool,
     ) -> AppResult<Value> {
         let source_input = extract_playable_source_input(&resolved.playable_url);
@@ -2529,7 +2662,8 @@ impl ResolverService {
         // buffer is ready. ffprobe and subtitle providers are enrichment, not
         // prerequisites; running them here used to add 15-55 seconds before
         // the browser received a URL and made ffmpeg compete with startup I/O.
-        let tracks_pending = is_local_playback_session_url(&resolved.playable_url);
+        let tracks_pending =
+            should_defer_resolved_track_enrichment(resolver_provider, &resolved.playable_url);
         let (tracks, selected_audio_stream_index, selected_subtitle_stream_index) =
             if tracks_pending {
                 (
@@ -2627,6 +2761,7 @@ impl ResolverService {
         let mut response_metadata =
             build_resolved_metadata_payload(&metadata, &resolved, &response_filename);
         response_metadata["resolverProvider"] = json!(resolver_provider.as_str());
+        response_metadata["realDebridCached"] = json!(resolved.real_debrid_cached);
         let response_source_hash = resolved.source_hash.clone();
         let response_selected_file = resolved.selected_file.clone();
         let response_selected_file_path = resolved.selected_file_path.clone();
@@ -2641,6 +2776,7 @@ impl ResolverService {
             "selectedFile": response_selected_file.clone(),
             "selectedFilePath": response_selected_file_path.clone(),
             "resolverProvider": resolver_provider.as_str(),
+            "realDebridCached": resolved.real_debrid_cached,
             "sourceInput": source_input,
             "tracks": tracks,
             "tracksPending": tracks_pending,
@@ -2663,6 +2799,13 @@ impl ResolverService {
                         resolver_provider,
                         user_id,
                     );
+                    let mut persisted_metadata = response_metadata.clone();
+                    if resolver_provider == ResolverProvider::RealDebrid
+                        && let Some(real_debrid) = real_debrid
+                    {
+                        persisted_metadata[RD_CREDENTIAL_SCOPE_METADATA_KEY] =
+                            json!(real_debrid.cache_scope.clone());
+                    }
                     self.db
                         .persist_playback_session(PersistPlaybackSessionInput {
                             user_id,
@@ -2675,7 +2818,7 @@ impl ResolverService {
                             filename: response_filename.clone(),
                             playable_url: normalized.playable_url.clone(),
                             fallback_urls: normalized.fallback_urls.clone(),
-                            metadata: response_metadata.clone(),
+                            metadata: persisted_metadata,
                         })
                         .await?;
                     self.db
@@ -2703,14 +2846,13 @@ impl ResolverService {
         stream: &DiscoveryStream,
         fallback_name: &str,
         resolver_provider: ResolverProvider,
-        real_debrid: Option<&RealDebridRequestContext>,
+        _real_debrid: Option<&RealDebridRequestContext>,
         local_torrent_enabled: bool,
     ) -> AppResult<ResolvedSource> {
         if resolver_provider.is_real_debrid() {
-            let real_debrid = real_debrid.ok_or_else(real_debrid_api_key_required_error)?;
-            return self
-                .resolve_real_debrid_candidate_stream(stream, fallback_name, real_debrid)
-                .await;
+            return Err(ApiError::internal(
+                "Real-Debrid candidates must retain ownership through payload completion.",
+            ));
         }
         if resolver_provider.is_fastest() {
             return Err(ApiError::internal(
@@ -2722,6 +2864,35 @@ impl ResolverService {
         }
         self.resolve_local_torrent_candidate_stream(stream, fallback_name)
             .await
+    }
+
+    async fn resolve_real_debrid_candidate_payload(
+        &self,
+        stream: &DiscoveryStream,
+        fallback_name: &str,
+        context: CandidateResolutionContext<'_>,
+        validate: fn(ResolvedSource, &ResolveMetadata) -> AppResult<ResolvedSource>,
+    ) -> AppResult<Value> {
+        let real_debrid = context
+            .real_debrid
+            .ok_or_else(real_debrid_api_key_required_error)?;
+        let resolved_stream = self
+            .resolve_real_debrid_candidate_stream(stream, fallback_name, real_debrid)
+            .await?;
+        let resolved = validate(resolved_stream.resolved, context.metadata)?;
+        complete_real_debrid_attempt_with_lease(
+            resolved_stream.owned_torrent,
+            self.build_resolved_response(
+                resolved,
+                context.metadata.clone(),
+                context.preferences.clone(),
+                ResolverProvider::RealDebrid,
+                context.user_id,
+                Some(real_debrid),
+                true,
+            ),
+        )
+        .await
     }
 
     async fn find_local_cache_upgrade_from_session(
@@ -2810,559 +2981,6 @@ impl ResolverService {
         Ok(local_torrent_resolved_source_to_resolved_source(resolved))
     }
 
-    async fn resolve_real_debrid_candidate_stream(
-        &self,
-        stream: &DiscoveryStream,
-        fallback_name: &str,
-        real_debrid: &RealDebridRequestContext,
-    ) -> AppResult<ResolvedSource> {
-        let magnet = build_magnet_uri(stream, fallback_name)?;
-        let info_hash = get_stream_info_hash(stream);
-        if let Ok(Some(reusable_torrent_id)) = self
-            .find_reusable_rd_torrent_by_hash(real_debrid, &info_hash)
-            .await
-        {
-            match self
-                .resolve_from_torrent_id(
-                    real_debrid,
-                    &reusable_torrent_id,
-                    &info_hash,
-                    stream,
-                    fallback_name,
-                )
-                .await
-            {
-                Ok(resolved) => {
-                    let _ = self
-                        .set_cached_rd_torrent_id(real_debrid, &info_hash, &reusable_torrent_id)
-                        .await;
-                    return Ok(resolved);
-                }
-                Err(error) => {
-                    if is_rd_selected_file_mismatch_error(&error) {
-                        let _ = self
-                            .safe_delete_torrent(real_debrid, &reusable_torrent_id)
-                            .await;
-                    }
-                    let _ = self
-                        .delete_cached_rd_torrent_id(real_debrid, &info_hash)
-                        .await;
-                }
-            }
-        }
-
-        let mut last_error = None;
-        for attempt in 0..2 {
-            let add_magnet = self
-                .rd_fetch_form(
-                    real_debrid,
-                    "/torrents/addMagnet",
-                    reqwest::Method::POST,
-                    &[("magnet", magnet.as_str())],
-                    12_000,
-                )
-                .await?;
-            let torrent_id = stringify_json(add_magnet.get("id"));
-            if torrent_id.is_empty() {
-                return Err(ApiError::internal(
-                    "Real-Debrid did not return a torrent id.",
-                ));
-            }
-
-            let result = self
-                .resolve_from_torrent_id(
-                    real_debrid,
-                    &torrent_id,
-                    &info_hash,
-                    stream,
-                    fallback_name,
-                )
-                .await;
-            match result {
-                Ok(resolved) => {
-                    let _ = self
-                        .set_cached_rd_torrent_id(real_debrid, &info_hash, &torrent_id)
-                        .await;
-                    return Ok(resolved);
-                }
-                Err(error) => {
-                    let retry_after_stale_selected_file =
-                        attempt == 0 && is_rd_selected_file_mismatch_error(&error);
-                    let _ = self.safe_delete_torrent(real_debrid, &torrent_id).await;
-                    let _ = self
-                        .delete_cached_rd_torrent_id(real_debrid, &info_hash)
-                        .await;
-                    if retry_after_stale_selected_file {
-                        last_error = Some(error);
-                        continue;
-                    }
-                    return Err(error);
-                }
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| ApiError::internal("Unable to resolve this source.")))
-    }
-
-    async fn resolve_from_torrent_id(
-        &self,
-        real_debrid: &RealDebridRequestContext,
-        torrent_id: &str,
-        info_hash: &str,
-        stream: &DiscoveryStream,
-        fallback_name: &str,
-    ) -> AppResult<ResolvedSource> {
-        let info = self
-            .rd_fetch_json(
-                real_debrid,
-                &format!("/torrents/info/{torrent_id}"),
-                reqwest::Method::GET,
-                12_000,
-            )
-            .await?;
-        let files = info
-            .get("files")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let file_ids = pick_video_file_ids(&files, &stream.behaviorHints.filename, fallback_name);
-        if file_ids.is_empty() {
-            return Err(ApiError::internal(
-                "No supported video file was found in this torrent.",
-            ));
-        }
-        let selected_file = file_ids[0].to_string();
-        let selected_file_path = files
-            .iter()
-            .find(|file| file.get("id").and_then(Value::as_i64) == Some(file_ids[0]))
-            .map(|file| stringify_json(file.get("path")))
-            .unwrap_or_default();
-        self.rd_fetch_form(
-            real_debrid,
-            &format!("/torrents/selectFiles/{torrent_id}"),
-            reqwest::Method::POST,
-            &[(
-                "files",
-                &file_ids
-                    .iter()
-                    .map(|value| value.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-            )],
-            12_000,
-        )
-        .await?;
-
-        let ready_info = self
-            .wait_for_torrent_to_be_ready(real_debrid, torrent_id)
-            .await?;
-        if !ready_info_has_selected_file_id(&ready_info, file_ids[0]) {
-            return Err(ApiError::internal(RD_SELECTED_FILE_MISMATCH_ERROR));
-        }
-        let download_links = ready_info
-            .get("links")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-            .collect::<Vec<_>>();
-        if download_links.is_empty() {
-            return Err(ApiError::internal(
-                "No Real-Debrid download link was generated.",
-            ));
-        }
-
-        let mut filename = String::new();
-        let mut verified_candidates = Vec::new();
-        let mut uncertain_candidates = Vec::new();
-        let mut last_error = None;
-        for download_link in download_links {
-            match self
-                .resolve_playable_url_from_rd_link(real_debrid, &download_link)
-                .await
-            {
-                Ok((playable_urls, resolved_filename)) => {
-                    if filename.is_empty() {
-                        filename = resolved_filename.clone();
-                    }
-                    let filename_hint = if !filename.is_empty() {
-                        filename.clone()
-                    } else if !selected_file_path.is_empty() {
-                        selected_file_path.clone()
-                    } else {
-                        resolved_filename
-                    };
-                    let mut ranked_urls = playable_urls
-                        .into_iter()
-                        .filter(|url| !url.trim().is_empty())
-                        .collect::<Vec<_>>();
-                    ranked_urls.sort_by(|left, right| {
-                        let left_stable = left.contains("download.real-debrid.com");
-                        let right_stable = right.contains("download.real-debrid.com");
-                        right_stable.cmp(&left_stable)
-                    });
-                    if ranked_urls.is_empty()
-                        && is_supported_resolved_container_path(&filename_hint)
-                    {
-                        last_error = Some(ApiError::internal(
-                            "No playable Real-Debrid stream URL was available.",
-                        ));
-                    }
-                    for playable_url in ranked_urls {
-                        if verified_candidates.contains(&playable_url)
-                            || uncertain_candidates.contains(&playable_url)
-                        {
-                            continue;
-                        }
-                        match self
-                            .verify_playable_url(&playable_url, PLAYABLE_URL_VALIDATE_TIMEOUT_MS)
-                            .await
-                        {
-                            Ok(PlayableUrlVerification::Verified) => {
-                                verified_candidates.push(playable_url)
-                            }
-                            Ok(PlayableUrlVerification::Uncertain) => {
-                                uncertain_candidates.push(playable_url)
-                            }
-                            Err(error) => last_error = Some(error),
-                        }
-                    }
-                }
-                Err(error) => last_error = Some(error),
-            }
-        }
-
-        let ranked_candidates = verified_candidates
-            .into_iter()
-            .chain(uncertain_candidates)
-            .collect::<Vec<_>>();
-        if ranked_candidates.is_empty() {
-            return Err(last_error.unwrap_or_else(|| {
-                ApiError::internal("No playable Real-Debrid stream URL was available.")
-            }));
-        }
-
-        let playable_url = ranked_candidates[0].clone();
-        let resolved = ResolvedSource {
-            playable_url,
-            fallback_urls: ranked_candidates.into_iter().skip(1).collect(),
-            filename: if filename.is_empty() {
-                selected_file_path.clone()
-            } else {
-                filename
-            },
-            source_hash: info_hash.to_owned(),
-            selected_file,
-            selected_file_path,
-        };
-        Ok(resolved)
-    }
-
-    async fn find_reusable_rd_torrent_by_hash(
-        &self,
-        real_debrid: &RealDebridRequestContext,
-        info_hash: &str,
-    ) -> AppResult<Option<String>> {
-        let normalized_hash = normalize_source_hash(info_hash);
-        if normalized_hash.is_empty() {
-            return Ok(None);
-        }
-
-        if let Some(cached_torrent_id) = self
-            .get_cached_rd_torrent_id(real_debrid, &normalized_hash)
-            .await?
-        {
-            return Ok(Some(cached_torrent_id));
-        }
-
-        for page in 1..=4 {
-            let payload = self
-                .rd_fetch_json(
-                    real_debrid,
-                    &format!("/torrents?page={page}"),
-                    reqwest::Method::GET,
-                    10_000,
-                )
-                .await?;
-            let Some(items) = payload.as_array() else {
-                break;
-            };
-            if items.is_empty() {
-                break;
-            }
-            if let Some(torrent_id) = items.iter().find_map(|item| {
-                let hash = stringify_json(item.get("hash"));
-                let torrent_id = stringify_json(item.get("id"));
-                (hash == normalized_hash && !torrent_id.is_empty()).then_some(torrent_id)
-            }) {
-                let _ = self
-                    .set_cached_rd_torrent_id(real_debrid, &normalized_hash, &torrent_id)
-                    .await;
-                return Ok(Some(torrent_id));
-            }
-        }
-        Ok(None)
-    }
-
-    async fn get_cached_rd_torrent_id(
-        &self,
-        real_debrid: &RealDebridRequestContext,
-        info_hash: &str,
-    ) -> AppResult<Option<String>> {
-        let cache_key = build_scoped_rd_torrent_cache_key(&real_debrid.cache_scope, info_hash);
-        let Some((payload, _)) = self.db.get_movie_quick_start_cache(cache_key).await? else {
-            return Ok(None);
-        };
-        let torrent_id = stringify_json(payload.get("torrentId"));
-        if torrent_id.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(torrent_id))
-    }
-
-    async fn set_cached_rd_torrent_id(
-        &self,
-        real_debrid: &RealDebridRequestContext,
-        info_hash: &str,
-        torrent_id: &str,
-    ) -> AppResult<()> {
-        let normalized_hash = normalize_source_hash(info_hash);
-        let normalized_torrent_id = torrent_id.trim();
-        if normalized_hash.is_empty() || normalized_torrent_id.is_empty() {
-            return Ok(());
-        }
-        self.db
-            .set_movie_quick_start_cache(
-                build_scoped_rd_torrent_cache_key(&real_debrid.cache_scope, &normalized_hash),
-                json!({
-                    "infoHash": normalized_hash,
-                    "torrentId": normalized_torrent_id
-                }),
-                now_ms() + RD_TORRENT_CACHE_TTL_MS,
-            )
-            .await
-    }
-
-    async fn delete_cached_rd_torrent_id(
-        &self,
-        real_debrid: &RealDebridRequestContext,
-        info_hash: &str,
-    ) -> AppResult<()> {
-        let normalized_hash = normalize_source_hash(info_hash);
-        if normalized_hash.is_empty() {
-            return Ok(());
-        }
-        self.db
-            .delete_movie_quick_start_cache(build_scoped_rd_torrent_cache_key(
-                &real_debrid.cache_scope,
-                &normalized_hash,
-            ))
-            .await
-    }
-
-    async fn record_source_resolve_failure(&self, stream: &DiscoveryStream, error: &ApiError) {
-        if !is_persistent_source_resolve_error(error) {
-            return;
-        }
-        let source_hash = get_stream_info_hash(stream);
-        if source_hash.is_empty() {
-            return;
-        }
-        let message = error
-            .message()
-            .unwrap_or("Source failed during resolve.")
-            .to_owned();
-        let _ = self
-            .db
-            .record_source_health_event(source_hash, "playback_error".to_owned(), message)
-            .await;
-    }
-
-    async fn wait_for_torrent_to_be_ready(
-        &self,
-        real_debrid: &RealDebridRequestContext,
-        torrent_id: &str,
-    ) -> AppResult<Value> {
-        let started_at = now_ms();
-        let mut last_status = "pending".to_owned();
-        while now_ms() - started_at < 18_000 {
-            let info = self
-                .rd_fetch_json(
-                    real_debrid,
-                    &format!("/torrents/info/{torrent_id}"),
-                    reqwest::Method::GET,
-                    12_000,
-                )
-                .await?;
-            let status = stringify_json(info.get("status")).to_lowercase();
-            if !status.is_empty() {
-                last_status = status.clone();
-            }
-            let has_links = info
-                .get("links")
-                .and_then(Value::as_array)
-                .map(|values| !values.is_empty())
-                .unwrap_or(false);
-            if status == "downloaded" && has_links {
-                return Ok(info);
-            }
-            if TORRENT_FATAL_STATUSES.contains(&status.as_str()) {
-                return Err(ApiError::internal(format!(
-                    "Real-Debrid torrent failed ({status})."
-                )));
-            }
-            sleep(Duration::from_millis(1_200)).await;
-        }
-        Err(ApiError::internal(format!(
-            "Timed out waiting for cached source ({last_status})."
-        )))
-    }
-
-    async fn resolve_playable_url_from_rd_link(
-        &self,
-        real_debrid: &RealDebridRequestContext,
-        rd_link: &str,
-    ) -> AppResult<(Vec<String>, String)> {
-        let unrestricted = self
-            .rd_fetch_form(
-                real_debrid,
-                "/unrestrict/link",
-                reqwest::Method::POST,
-                &[("link", rd_link)],
-                12_000,
-            )
-            .await?;
-        let download = stringify_json(unrestricted.get("download"));
-        if download.is_empty() {
-            return Err(ApiError::internal(
-                "Real-Debrid returned no downloadable link.",
-            ));
-        }
-        Ok((vec![download], stringify_json(unrestricted.get("filename"))))
-    }
-
-    async fn verify_playable_url(
-        &self,
-        playable_url: &str,
-        timeout_ms: u64,
-    ) -> AppResult<PlayableUrlVerification> {
-        if playable_url.trim().is_empty() {
-            return Err(ApiError::internal("Resolved stream URL is empty."));
-        }
-        let response = self
-            .client
-            .head(playable_url)
-            .timeout(Duration::from_millis(timeout_ms))
-            .send()
-            .await;
-        match response {
-            Ok(response) if response.status().is_success() => Ok(PlayableUrlVerification::Verified),
-            Ok(response)
-                if matches!(response.status().as_u16(), 401 | 403 | 404)
-                    || response.status().is_server_error() =>
-            {
-                Err(ApiError::internal(format!(
-                    "Resolved stream is unavailable ({}).",
-                    response.status().as_u16()
-                )))
-            }
-            Ok(_) => Ok(PlayableUrlVerification::Uncertain),
-            Err(error) if error.is_timeout() => Ok(PlayableUrlVerification::Uncertain),
-            Err(_) => Ok(PlayableUrlVerification::Uncertain),
-        }
-    }
-
-    async fn rd_fetch_json(
-        &self,
-        real_debrid: &RealDebridRequestContext,
-        path: &str,
-        method: reqwest::Method,
-        timeout_ms: u64,
-    ) -> AppResult<Value> {
-        self.rd_fetch(real_debrid, path, method, None, timeout_ms)
-            .await
-    }
-
-    async fn rd_fetch_form(
-        &self,
-        real_debrid: &RealDebridRequestContext,
-        path: &str,
-        method: reqwest::Method,
-        form: &[(&str, &str)],
-        timeout_ms: u64,
-    ) -> AppResult<Value> {
-        self.rd_fetch(real_debrid, path, method, Some(form), timeout_ms)
-            .await
-    }
-
-    async fn rd_fetch(
-        &self,
-        real_debrid: &RealDebridRequestContext,
-        path: &str,
-        method: reqwest::Method,
-        form: Option<&[(&str, &str)]>,
-        timeout_ms: u64,
-    ) -> AppResult<Value> {
-        if real_debrid.api_key.trim().is_empty() {
-            return Err(ApiError::internal("Real-Debrid API key is not configured."));
-        }
-        let mut builder = self
-            .client
-            .request(method, format!("{REAL_DEBRID_API_BASE}{path}"))
-            .bearer_auth(real_debrid.api_key.clone())
-            .timeout(Duration::from_millis(timeout_ms));
-        if let Some(form) = form {
-            builder = builder.form(form);
-        }
-        let response = builder
-            .send()
-            .await
-            .map_err(|error| map_reqwest_error(error, "Real-Debrid request timed out."))?;
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|_| ApiError::bad_gateway("Real-Debrid response could not be read."))?;
-        let payload = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| {
-            json!({
-                "message": body
-            })
-        });
-        if !status.is_success() {
-            let message = payload
-                .get("error")
-                .and_then(Value::as_str)
-                .or_else(|| payload.get("message").and_then(Value::as_str))
-                .unwrap_or("Real-Debrid request failed.");
-            let user_message = user_facing_real_debrid_error(message);
-            if is_real_debrid_blocked_source_message(&user_message) {
-                return Err(ApiError::failed_dependency(user_message));
-            }
-            return Err(ApiError::bad_gateway(user_message));
-        }
-        Ok(payload)
-    }
-
-    async fn safe_delete_torrent(
-        &self,
-        real_debrid: &RealDebridRequestContext,
-        torrent_id: &str,
-    ) -> AppResult<()> {
-        if torrent_id.trim().is_empty() {
-            return Ok(());
-        }
-        let _ = self
-            .rd_fetch_json(
-                real_debrid,
-                &format!("/torrents/delete/{torrent_id}"),
-                reqwest::Method::DELETE,
-                5_000,
-            )
-            .await;
-        Ok(())
-    }
-
     async fn resolve_effective_preferred_audio_lang(
         &self,
         user_id: i64,
@@ -3393,6 +3011,7 @@ impl ResolverService {
             .unwrap_or_else(|| "auto".to_owned()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn try_reuse_playback_session(
         &self,
         user_id: i64,
@@ -3401,6 +3020,7 @@ impl ResolverService {
         filters: &ResolveFilters,
         resolver_provider: ResolverProvider,
         requested_session_key: &str,
+        real_debrid: Option<&RealDebridRequestContext>,
     ) -> AppResult<Option<Value>> {
         if !self.config.playback_sessions_enabled
             || metadata.tmdb_id.trim().is_empty()
@@ -3454,6 +3074,9 @@ impl ResolverService {
             return Ok(None);
         }
         if !playback_session_matches_resolver_provider(&session, resolver_provider) {
+            return Ok(None);
+        }
+        if !playback_session_matches_real_debrid_scope(&session, resolver_provider, real_debrid) {
             return Ok(None);
         }
         if should_skip_unpinned_torrent_session_reuse(&session, filters) {
@@ -3518,11 +3141,17 @@ impl ResolverService {
                 source_hash: session.source_hash.clone(),
                 selected_file: session.selected_file.clone(),
                 selected_file_path: playback_session_selected_file_path(&session),
+                real_debrid_cached: session
+                    .metadata
+                    .get("realDebridCached")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             },
             metadata.clone(),
             preferences.clone(),
             resolver_provider,
             user_id,
+            real_debrid,
             true,
         )
         .await
@@ -3536,6 +3165,7 @@ impl ResolverService {
         preferences: &ResolvePreferences,
         filters: &ResolveFilters,
         resolver_provider: ResolverProvider,
+        real_debrid: Option<&RealDebridRequestContext>,
     ) -> AppResult<Option<Value>> {
         if !self.config.playback_sessions_enabled || metadata.tmdb_id.trim().is_empty() {
             return Ok(None);
@@ -3570,6 +3200,10 @@ impl ResolverService {
                 continue;
             }
             if !playback_session_matches_resolver_provider(&session, resolver_provider) {
+                continue;
+            }
+            if !playback_session_matches_real_debrid_scope(&session, resolver_provider, real_debrid)
+            {
                 continue;
             }
             if should_skip_unpinned_torrent_session_reuse(&session, filters) {
@@ -3638,11 +3272,17 @@ impl ResolverService {
                         source_hash: session.source_hash.clone(),
                         selected_file: session.selected_file.clone(),
                         selected_file_path: playback_session_selected_file_path(&session),
+                        real_debrid_cached: session
+                            .metadata
+                            .get("realDebridCached")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                     },
                     metadata.clone(),
                     preferences.clone(),
                     resolver_provider,
                     user_id,
+                    real_debrid,
                     true,
                 )
                 .await
@@ -4298,6 +3938,7 @@ fn local_torrent_resolved_source_to_resolved_source(
         source_hash: source.source_hash,
         selected_file: source.selected_file,
         selected_file_path: source.selected_file_path,
+        real_debrid_cached: false,
     }
 }
 
@@ -4892,6 +4533,81 @@ where
     (index, fut.await)
 }
 
+type BoxResolverAttempt<'a> = Pin<Box<dyn Future<Output = AppResult<Value>> + Send + 'a>>;
+
+/// Provider-level hedge used by `fastest`: give Real-Debrid a short exclusive
+/// window for a CDN/cache hit, then start the Mini's local torrent path. A fast
+/// error starts the fallback immediately. Returning drops any still-running
+/// local future (which activates its cleanup guards). If local wins after RD
+/// has added a magnet, dropping RD's request future activates its asynchronous
+/// cancellation guard, deleting the new cloud torrent and its local id cache.
+async fn race_staggered_resolver_attempts(
+    futures: Vec<BoxResolverAttempt<'_>>,
+    stagger: Duration,
+) -> Result<(usize, Value), Vec<(usize, ApiError)>> {
+    let mut remaining = futures.into_iter().enumerate();
+    let mut in_flight = FuturesUnordered::new();
+    let mut errors = Vec::new();
+    match remaining.next() {
+        Some((index, future)) => in_flight.push(tag_resolver_attempt(index, future)),
+        None => return Err(errors),
+    }
+    loop {
+        if in_flight.is_empty() {
+            match remaining.next() {
+                Some((index, future)) => in_flight.push(tag_resolver_attempt(index, future)),
+                None => return Err(errors),
+            }
+        }
+        let stagger_timer = sleep(stagger);
+        tokio::select! {
+            biased;
+            completed = in_flight.next(), if !in_flight.is_empty() => {
+                match completed {
+                    Some((index, Ok(value))) => return Ok((index, value)),
+                    Some((index, Err(error))) => {
+                        errors.push((index, error));
+                        if let Some((next_index, future)) = remaining.next() {
+                            in_flight.push(tag_resolver_attempt(next_index, future));
+                        }
+                    }
+                    None => {}
+                }
+            }
+            _ = stagger_timer => {
+                if let Some((index, future)) = remaining.next() {
+                    in_flight.push(tag_resolver_attempt(index, future));
+                }
+            }
+        }
+    }
+}
+
+async fn tag_resolver_attempt(
+    index: usize,
+    future: BoxResolverAttempt<'_>,
+) -> (usize, AppResult<Value>) {
+    (index, future.await)
+}
+
+fn choose_auto_provider_error(mut errors: Vec<(usize, ApiError)>) -> ApiError {
+    let local_error = errors
+        .iter()
+        .position(|(index, _)| *index == 1)
+        .map(|position| errors.swap_remove(position).1);
+    let real_debrid_error = errors
+        .into_iter()
+        .find_map(|(index, error)| (index == 0).then_some(error));
+    match (real_debrid_error, local_error) {
+        (Some(real_debrid), Some(local)) if !is_persistent_source_resolve_error(&local) => {
+            real_debrid
+        }
+        (_, Some(local)) => local,
+        (Some(real_debrid), None) => real_debrid,
+        (None, None) => ApiError::bad_gateway("All resolver providers failed."),
+    }
+}
+
 fn external_embed_hls_candidate_sources(
     source: ExternalEmbedSource,
     metadata: &ResolveMetadata,
@@ -4996,6 +4712,7 @@ fn build_external_embed_resolved_payload_with_playable_url(
         source_hash: source_hash.clone(),
         selected_file: String::new(),
         selected_file_path: String::new(),
+        real_debrid_cached: false,
     };
     let mut response_metadata = build_resolved_metadata_payload(metadata, &resolved, &filename);
     response_metadata["resolverProvider"] = json!(EXTERNAL_EMBED_RESOLVER_PROVIDER);
@@ -6299,20 +6016,6 @@ fn build_torznab_request_url(
     Ok(url.to_string())
 }
 
-fn build_rd_torrent_cache_key(info_hash: &str) -> String {
-    format!("rd-torrent:{}", normalize_source_hash(info_hash))
-}
-
-fn build_scoped_rd_torrent_cache_key(cache_scope: &str, info_hash: &str) -> String {
-    let normalized_hash = normalize_source_hash(info_hash);
-    let normalized_scope = cache_scope.trim();
-    if normalized_scope.is_empty() {
-        build_rd_torrent_cache_key(&normalized_hash)
-    } else {
-        format!("rd-torrent:{normalized_scope}:{normalized_hash}")
-    }
-}
-
 fn parse_torrentio_streams_payload(payload: &Value) -> AppResult<Vec<DiscoveryStream>> {
     let streams = payload
         .get("streams")
@@ -6586,6 +6289,7 @@ fn torznab_item_to_stream(item: TorznabItem) -> Option<DiscoveryStream> {
         magnetUrl: candidate_magnet,
         discoveryProvider: "torznab".to_owned(),
         downloadUrl: candidate_download_url,
+        real_debrid_cached: false,
     })
 }
 
@@ -6669,21 +6373,6 @@ fn map_reqwest_error(error: reqwest::Error, timeout_message: &str) -> ApiError {
     }
 }
 
-fn user_facing_real_debrid_error(message: &str) -> String {
-    match message.trim() {
-        "infringing_file" => "Real-Debrid blocked this source.".to_owned(),
-        "too_many_requests" => {
-            "Real-Debrid is rate limiting requests. Try again shortly.".to_owned()
-        }
-        "" => "Real-Debrid request failed.".to_owned(),
-        other => other.to_owned(),
-    }
-}
-
-fn real_debrid_api_key_required_error() -> ApiError {
-    ApiError::failed_dependency("Add a Real-Debrid API key in Settings to use torrent sources.")
-}
-
 fn external_embed_hls_unavailable_error() -> ApiError {
     ApiError::failed_dependency(
         "External HLS sources are unavailable right now. Try another server.",
@@ -6696,10 +6385,6 @@ fn selected_external_embed_hls_unavailable_error() -> ApiError {
 
 fn local_torrent_required_error() -> ApiError {
     ApiError::failed_dependency("Enable Torrent streaming in Settings to use magnet sources.")
-}
-
-fn is_real_debrid_blocked_source_message(message: &str) -> bool {
-    message.trim() == "Real-Debrid blocked this source."
 }
 
 fn is_retryable_torrentio_status(status: reqwest::StatusCode) -> bool {
@@ -6840,95 +6525,6 @@ fn build_magnet_uri(stream: &DiscoveryStream, fallback_name: &str) -> AppResult<
         ));
     }
     Ok(format!("magnet:?{}", parts.join("&")))
-}
-
-pub(crate) fn pick_video_file_ids(
-    files: &[Value],
-    preferred_filename: &str,
-    fallback_name: &str,
-) -> Vec<i64> {
-    let list = files
-        .iter()
-        .filter_map(|file| {
-            let id = file.get("id").and_then(Value::as_i64)?;
-            let path = stringify_json(file.get("path"));
-            let bytes = file
-                .get("bytes")
-                .and_then(Value::as_i64)
-                .unwrap_or_default();
-            Some((id, path, bytes))
-        })
-        .collect::<Vec<_>>();
-    if list.is_empty() {
-        return Vec::new();
-    }
-    let video_files = list
-        .iter()
-        .filter(|(_, path, _)| is_supported_resolved_container_path(path))
-        .cloned()
-        .collect::<Vec<_>>();
-    if video_files.is_empty() {
-        return Vec::new();
-    }
-    let preferred_needle = preferred_filename.trim().to_lowercase();
-    if !preferred_needle.is_empty()
-        && let Some((id, _, _)) = video_files
-            .iter()
-            .find(|(_, path, _)| path.to_lowercase().contains(&preferred_needle))
-    {
-        return vec![*id];
-    }
-
-    let fallback_episode_signatures = collect_episode_signatures(fallback_name, None);
-    let fallback_season_hint = fallback_episode_signatures
-        .first()
-        .and_then(|signature| signature.split('x').next())
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or_default();
-    if !fallback_episode_signatures.is_empty()
-        && let Some((id, _, _)) = video_files.iter().find(|(_, path, _)| {
-            let file_signatures = collect_episode_signatures(
-                path,
-                (fallback_season_hint > 0).then_some(fallback_season_hint),
-            );
-            !file_signatures.is_empty()
-                && fallback_episode_signatures
-                    .iter()
-                    .any(|signature| file_signatures.contains(signature))
-        })
-    {
-        return vec![*id];
-    }
-
-    video_files
-        .iter()
-        .max_by_key(|(_, path, bytes)| (container_preference_rank(path), *bytes))
-        .map(|(id, _, _)| vec![*id])
-        .unwrap_or_default()
-}
-
-fn ready_info_has_selected_file_id(info: &Value, selected_file_id: i64) -> bool {
-    if selected_file_id <= 0 {
-        return true;
-    }
-    let Some(files) = info.get("files").and_then(Value::as_array) else {
-        return true;
-    };
-    if files.is_empty() {
-        return true;
-    }
-    files.iter().any(|file| {
-        file.get("id").and_then(Value::as_i64) == Some(selected_file_id)
-            && file
-                .get("selected")
-                .and_then(Value::as_i64)
-                .unwrap_or_default()
-                != 0
-    })
-}
-
-fn is_rd_selected_file_mismatch_error(error: &ApiError) -> bool {
-    error.message() == Some(RD_SELECTED_FILE_MISMATCH_ERROR)
 }
 
 fn is_persistent_source_resolve_error(error: &ApiError) -> bool {
@@ -7254,6 +6850,24 @@ fn playback_session_matches_resolver_provider(
     resolver_provider: ResolverProvider,
 ) -> bool {
     playback_session_resolver_provider(session) == resolver_provider
+}
+
+fn playback_session_matches_real_debrid_scope(
+    session: &PlaybackSession,
+    resolver_provider: ResolverProvider,
+    real_debrid: Option<&RealDebridRequestContext>,
+) -> bool {
+    if resolver_provider != ResolverProvider::RealDebrid {
+        return true;
+    }
+    let Some(real_debrid) = real_debrid else {
+        return false;
+    };
+    session
+        .metadata
+        .get(RD_CREDENTIAL_SCOPE_METADATA_KEY)
+        .and_then(Value::as_str)
+        == Some(real_debrid.cache_scope.as_str())
 }
 
 fn playback_session_resolver_provider(session: &PlaybackSession) -> ResolverProvider {
@@ -7639,6 +7253,13 @@ fn extract_playable_source_input(source_url: &str) -> String {
 fn is_local_playback_session_url(value: &str) -> bool {
     let input = extract_playable_source_input(value);
     input.contains("/api/local-cache/stream") || input.contains("/api/local-torrent/stream")
+}
+
+fn should_defer_resolved_track_enrichment(
+    resolver_provider: ResolverProvider,
+    playable_url: &str,
+) -> bool {
+    resolver_provider == ResolverProvider::RealDebrid || is_local_playback_session_url(playable_url)
 }
 
 fn normalize_resolved_source_for_software_decode(

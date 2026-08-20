@@ -5,6 +5,15 @@ import {
   buildSourceMenuView,
   shouldIgnoreRememberedTorrentSource,
 } from "../src-ui/player/source-menu-tabs.js";
+import {
+  getSourceDisplayHint,
+  promoteSelectedSourceWithinCacheTier,
+  sortSourcesBySeeders,
+} from "../src-ui/player/sources.js";
+import {
+  createRealDebridSourceRefreshController,
+  shouldRefreshRealDebridCachedSources,
+} from "../src-ui/player/real-debrid-cache-refresh.js";
 
 const hlsSource = {
   sourceHash: "a".repeat(40),
@@ -91,5 +100,159 @@ assert.equal(emptyTorrentView.emptyMessage, "No torrent sources available.");
 assert.equal(shouldIgnoreRememberedTorrentSource(false, true), true);
 assert.equal(shouldIgnoreRememberedTorrentSource(true, true), false);
 assert.equal(shouldIgnoreRememberedTorrentSource(true, false), true);
+
+const cachedTorrentSource = {
+  ...torrentSource,
+  sourceHash: "c".repeat(40),
+  primary: "Movie.2160p.mkv",
+  container: "mkv",
+  seeders: 1,
+  realDebridCached: true,
+};
+const popularUncachedTorrentSource = {
+  ...torrentSource,
+  seeders: 10_000,
+};
+const morePopularUncachedTorrentSource = {
+  ...torrentSource,
+  sourceHash: "e".repeat(40),
+  primary: "Movie.1080p.Remux.mp4",
+  seeders: 20_000,
+};
+assert.deepEqual(
+  sortSourcesBySeeders(
+    [popularUncachedTorrentSource, cachedTorrentSource, hlsSource],
+    { preferContainer: "mp4" },
+  ),
+  [hlsSource, cachedTorrentSource, popularUncachedTorrentSource],
+  "HLS stays first while an RD-cached torrent outranks container and seeder preferences",
+);
+assert.deepEqual(
+  promoteSelectedSourceWithinCacheTier(
+    [
+      hlsSource,
+      cachedTorrentSource,
+      morePopularUncachedTorrentSource,
+      popularUncachedTorrentSource,
+    ],
+    popularUncachedTorrentSource.sourceHash,
+  ),
+  [
+    hlsSource,
+    cachedTorrentSource,
+    popularUncachedTorrentSource,
+    morePopularUncachedTorrentSource,
+  ],
+  "the playing torrent leads its uncached tier without jumping ahead of HLS or RD-cached sources",
+);
+assert.match(
+  getSourceDisplayHint(cachedTorrentSource),
+  /^RD cached \u2022 /,
+  "cached torrents should show an instant-ready hint",
+);
+assert.equal(
+  getSourceDisplayHint({ ...hlsSource, realDebridCached: true }),
+  "HLS",
+  "an HLS entry must not present itself as an RD-cached torrent",
+);
+assert.equal(
+  shouldRefreshRealDebridCachedSources({
+    realDebridActive: true,
+    attemptCount: 0,
+    sources: [popularUncachedTorrentSource],
+  }),
+  true,
+);
+assert.equal(
+  shouldRefreshRealDebridCachedSources({
+    realDebridActive: true,
+    attemptCount: 1,
+    sources: [popularUncachedTorrentSource],
+  }),
+  true,
+  "a second bounded refresh can observe providers that take up to three seconds",
+);
+assert.equal(
+  shouldRefreshRealDebridCachedSources({
+    realDebridActive: true,
+    attemptCount: 2,
+    sources: [popularUncachedTorrentSource],
+  }),
+  false,
+  "the same page/request identity gets at most two cache refreshes",
+);
+assert.equal(
+  shouldRefreshRealDebridCachedSources({
+    realDebridActive: true,
+    attemptCount: 0,
+    sources: [cachedTorrentSource],
+  }),
+  false,
+);
+assert.equal(
+  shouldRefreshRealDebridCachedSources({
+    realDebridActive: false,
+    attemptCount: 0,
+    sources: [popularUncachedTorrentSource],
+  }),
+  false,
+);
+
+const scheduledRefreshTimers = [];
+const observedRefreshKeys = [];
+const refreshController = createRealDebridSourceRefreshController({
+  isRealDebridActive: () => true,
+  onRefresh: (requestKey) => observedRefreshKeys.push(requestKey),
+  delaysMs: [12, 24],
+  setTimeoutFn: (callback, delayMs) => {
+    const timer = { callback, delayMs, cancelled: false };
+    scheduledRefreshTimers.push(timer);
+    return timer;
+  },
+  clearTimeoutFn: (timer) => {
+    timer.cancelled = true;
+  },
+});
+assert.equal(refreshController.prepareRequest({ requestKey: "episode-1" }), true);
+assert.equal(
+  refreshController.observeSources({
+    requestKey: "episode-1",
+    sources: [popularUncachedTorrentSource],
+  }),
+  true,
+);
+assert.equal(scheduledRefreshTimers[0].delayMs, 12);
+scheduledRefreshTimers[0].callback();
+assert.deepEqual(observedRefreshKeys, ["episode-1"]);
+assert.equal(
+  refreshController.prepareRequest({
+    requestKey: "episode-1",
+    refreshRequest: true,
+    expectedRequestKey: "episode-1",
+  }),
+  true,
+);
+assert.equal(
+  refreshController.observeSources({
+    requestKey: "episode-1",
+    refreshRequest: true,
+    sources: [popularUncachedTorrentSource],
+  }),
+  true,
+  "a slow or failed first follow-up should schedule the post-provider-window attempt",
+);
+assert.equal(scheduledRefreshTimers[1].delayMs, 24);
+scheduledRefreshTimers[1].callback();
+assert.deepEqual(observedRefreshKeys, ["episode-1", "episode-1"]);
+assert.equal(
+  refreshController.observeSources({
+    requestKey: "episode-1",
+    refreshRequest: true,
+    sources: [popularUncachedTorrentSource],
+  }),
+  false,
+  "the controller must stop after two follow-ups",
+);
+refreshController.dispose();
 
 console.log("Source menu tab tests passed.");

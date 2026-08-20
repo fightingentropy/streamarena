@@ -60,6 +60,7 @@ const BROWSER_SAFE_AUDIO_CODECS: &[&str] = &["aac", "mp3", "opus", "vorbis", "fl
 const BROWSER_UNSAFE_AUDIO_CODEC_PREFIXES: &[&str] = &[
     "ac3", "eac3", "dts", "dca", "truehd", "mlp", "pcm_", "wma", "mp2",
 ];
+const REMUX_COPY_VIDEO_CODECS: &[&str] = &["h264", "hevc", "av1", "vp9"];
 
 #[derive(Clone)]
 pub struct StreamingService {
@@ -347,6 +348,7 @@ impl StreamingService {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_remux_response(
         &self,
         input: &str,
@@ -355,6 +357,7 @@ impl StreamingService {
         subtitle_stream_index: i64,
         manual_audio_sync_ms: i64,
         preferred_video_mode: &str,
+        browser_video_codecs: &str,
     ) -> AppResult<Response<Body>> {
         let source = self.media.resolve_remux_input(input).await?;
         let permit = match timeout(
@@ -404,6 +407,9 @@ impl StreamingService {
             .iter()
             .any(|suffix| source_path_lower.contains(suffix));
         let mut resolved_video_mode = if requested_video_mode == "auto" {
+            // A probe below makes the final decision. Start conservatively for
+            // extensionless URLs while retaining the old fallback if probing
+            // fails entirely.
             if looks_like_matroska_source {
                 "normalize".to_owned()
             } else {
@@ -430,17 +436,13 @@ impl StreamingService {
                 effective_audio_stream_index = get_fallback_audio_stream_index(probe);
             }
 
-            if requested_video_mode == "auto" && resolved_video_mode != "normalize" {
-                let probe_format = probe.formatName.to_lowercase();
-                if probe_format.contains("matroska") || probe_format.contains("webm") {
-                    resolved_video_mode = "normalize".to_owned();
-                }
-            }
-            if requested_video_mode == "auto"
-                && resolved_video_mode != "normalize"
-                && should_force_normalize_video_for_browser(probe, &source)
-            {
-                resolved_video_mode = "normalize".to_owned();
+            if requested_video_mode == "auto" {
+                resolved_video_mode = resolve_auto_remux_video_mode(
+                    probe,
+                    browser_video_codecs,
+                    looks_like_matroska_source,
+                )
+                .to_owned();
             }
 
             remux_subtitle_stream_indexes = probe
@@ -466,6 +468,10 @@ impl StreamingService {
         ) {
             resolved_video_mode = "normalize".to_owned();
         }
+        let resolved_video_codec = probe
+            .as_ref()
+            .map(|probe| canonical_remux_video_codec(&probe.videoCodec))
+            .unwrap_or_default();
 
         let mut effective_remux_hwaccel_mode = "none".to_owned();
         let mut remux_video_encode_config = build_remux_video_encode_config("none");
@@ -602,8 +608,7 @@ impl StreamingService {
             ffmpeg_args.push("setpts=PTS-STARTPTS".to_owned());
             ffmpeg_args.extend(remux_video_encode_config.video_encode_args.clone());
         } else {
-            ffmpeg_args.push("-c:v".to_owned());
-            ffmpeg_args.push("copy".to_owned());
+            ffmpeg_args.extend(build_remux_video_copy_args(resolved_video_codec));
         }
         ffmpeg_args.push("-c:a".to_owned());
         ffmpeg_args.push("aac".to_owned());
@@ -1682,13 +1687,54 @@ fn get_fallback_audio_stream_index(probe: &MediaProbe) -> i64 {
         .unwrap_or(-1)
 }
 
-fn should_force_normalize_video_for_browser(probe: &MediaProbe, _source: &str) -> bool {
-    // Prefer `-c:v copy` for remux. Forcing normalize whenever B-frames exist
-    // re-encodes the whole video and routinely stalls local-torrent switches
-    // past the browser startup watchdog. Audio is already re-encoded to AAC
-    // with aresample/adelay, which is enough for browser A/V sync on fMP4.
-    let _ = probe;
-    false
+fn canonical_remux_video_codec(codec: &str) -> &'static str {
+    match codec.trim().to_lowercase().as_str() {
+        "h264" | "avc" | "avc1" => "h264",
+        "hevc" | "h265" | "hvc1" | "hev1" => "hevc",
+        "av1" | "av01" => "av1",
+        "vp9" | "vp09" => "vp9",
+        _ => "",
+    }
+}
+
+fn build_remux_video_copy_args(video_codec: &str) -> Vec<String> {
+    let mut args = vec!["-c:v".to_owned(), "copy".to_owned()];
+    if canonical_remux_video_codec(video_codec) == "hevc" {
+        // HEVC copied from Matroska commonly keeps the `hev1` sample entry.
+        // Browsers probe `hvc1`, and Safari in particular requires that tag.
+        args.extend(["-tag:v".to_owned(), "hvc1".to_owned()]);
+    }
+    args
+}
+
+fn browser_declares_remux_video_codec(browser_video_codecs: &str, codec: &str) -> bool {
+    let canonical_codec = canonical_remux_video_codec(codec);
+    if canonical_codec.is_empty() || !REMUX_COPY_VIDEO_CODECS.contains(&canonical_codec) {
+        return false;
+    }
+    // H.264 in fragmented MP4 is the universal baseline for every browser the
+    // web player supports. Newer codecs are copied only after canPlayType on
+    // that exact client declared support in the `videoCodecs` hint.
+    canonical_codec == "h264"
+        || browser_video_codecs
+            .split(',')
+            .any(|value| canonical_remux_video_codec(value) == canonical_codec)
+}
+
+fn resolve_auto_remux_video_mode(
+    probe: &MediaProbe,
+    browser_video_codecs: &str,
+    looks_like_matroska_source: bool,
+) -> &'static str {
+    if browser_declares_remux_video_codec(browser_video_codecs, &probe.videoCodec) {
+        return "copy";
+    }
+    if probe.videoCodec.trim().is_empty() && !looks_like_matroska_source {
+        // Preserve the existing direct-MP4 fast path when a remote probe could
+        // not identify the codec. Matroska stays conservative in this case.
+        return "copy";
+    }
+    "normalize"
 }
 
 fn should_force_accurate_seek_for_remux(
@@ -2394,8 +2440,9 @@ mod tests {
 
     use super::{
         build_hls_on_demand_segment_args, build_hls_transcode_args, build_hls_transcode_job_key,
-        build_hls_video_encode_config, export_download_filename, normalize_remux_video_mode,
-        should_force_accurate_seek_for_remux, should_force_normalize_video_for_browser,
+        build_hls_video_encode_config, build_remux_video_copy_args, export_download_filename,
+        normalize_remux_video_mode, resolve_auto_remux_video_mode,
+        should_force_accurate_seek_for_remux,
     };
 
     #[test]
@@ -2406,9 +2453,10 @@ mod tests {
     }
 
     #[test]
-    fn keeps_video_copy_when_b_frames_are_present_with_safe_audio() {
+    fn copies_h264_matroska_without_reencoding() {
         let probe = MediaProbe {
             videoBFrames: 2,
+            videoCodec: "h264".to_owned(),
             audioTracks: vec![AudioTrack {
                 codec: "aac".to_owned(),
                 ..AudioTrack::default()
@@ -2416,10 +2464,50 @@ mod tests {
             ..MediaProbe::default()
         };
 
-        assert!(!should_force_normalize_video_for_browser(
-            &probe,
-            "movie.mp4"
-        ));
+        assert_eq!(resolve_auto_remux_video_mode(&probe, "", true), "copy");
+    }
+
+    #[test]
+    fn copies_hevc_only_when_the_client_declares_support() {
+        let probe = MediaProbe {
+            videoCodec: "hevc".to_owned(),
+            ..MediaProbe::default()
+        };
+
+        assert_eq!(resolve_auto_remux_video_mode(&probe, "", true), "normalize");
+        assert_eq!(
+            resolve_auto_remux_video_mode(&probe, "h264,hevc", true),
+            "copy"
+        );
+        assert_eq!(
+            build_remux_video_copy_args("hevc"),
+            vec!["-c:v", "copy", "-tag:v", "hvc1"]
+        );
+        assert_eq!(build_remux_video_copy_args("h264"), vec!["-c:v", "copy"]);
+    }
+
+    #[test]
+    fn normalizes_non_mp4_video_codecs_even_when_the_client_hint_is_untrusted() {
+        let probe = MediaProbe {
+            videoCodec: "mpeg2video".to_owned(),
+            ..MediaProbe::default()
+        };
+
+        assert_eq!(
+            resolve_auto_remux_video_mode(&probe, "mpeg2video,h264", true),
+            "normalize"
+        );
+    }
+
+    #[test]
+    fn keeps_probe_failure_conservative_for_matroska() {
+        let probe = MediaProbe::default();
+
+        assert_eq!(
+            resolve_auto_remux_video_mode(&probe, "hevc", true),
+            "normalize"
+        );
+        assert_eq!(resolve_auto_remux_video_mode(&probe, "", false), "copy");
     }
 
     #[test]

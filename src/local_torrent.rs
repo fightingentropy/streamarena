@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -52,6 +52,10 @@ const LOCAL_TORRENT_METAINFO_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 /// unexpectedly large response before it can consume unbounded memory.
 const LOCAL_TORRENT_METAINFO_MAX_BYTES: usize = 16 * 1024 * 1024;
 const LOCAL_TORRENT_STARTUP_PROBE_BYTES: usize = 256 * 1024;
+/// Give browsers/ffmpeg a short window to replace a range request before an
+/// otherwise idle torrent is paused. This closes the large overfetch gap from
+/// leaving librqbit's natural full-file downloader running after playback ends.
+const LOCAL_TORRENT_STREAM_IDLE_PAUSE_DELAY: Duration = Duration::from_millis(1_500);
 const LOCAL_TORRENT_FINISHED_HANDLE_GRACE_MS: i64 = 5 * 60 * 1000;
 const CACHE_CONTROL_STREAM: &str = "no-store";
 const DIRECT_FILE_CACHE_FOLDER: &str = "direct";
@@ -186,7 +190,7 @@ pub struct LocalTorrentService {
     session: Arc<OnceCell<Arc<Session>>>,
     handles: Arc<DashMap<String, Arc<ManagedTorrent>>>,
     pending_handle_deletions: Arc<DashMap<String, Arc<PendingTorrentDeletion>>>,
-    active_streams: Arc<DashMap<String, Arc<AtomicUsize>>>,
+    active_streams: Arc<DashMap<String, Arc<ActiveTorrentStreamState>>>,
     managed_add_lock: Arc<Mutex<()>>,
     locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
 }
@@ -264,8 +268,35 @@ struct PendingTorrentDeletion {
     done: Notify,
 }
 
+#[derive(Default)]
+struct ActiveTorrentStreamState {
+    count: AtomicUsize,
+    generation: AtomicU64,
+}
+
+impl ActiveTorrentStreamState {
+    fn register(&self) {
+        // Bump the generation first so an older idle timer cannot observe a
+        // transient zero count and pause while this response is registering.
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.count.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn release(&self) -> Option<u64> {
+        // Every release invalidates older timers. Only the release that takes
+        // the count to zero owns the newly captured idle generation.
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        (self.count.fetch_sub(1, Ordering::AcqRel) == 1).then_some(generation)
+    }
+}
+
 struct ActiveTorrentStreamGuard {
-    count: Arc<AtomicUsize>,
+    state: Arc<ActiveTorrentStreamState>,
+    source_hash: String,
+    handle: Arc<ManagedTorrent>,
+    session: Arc<Session>,
+    active_streams: Arc<DashMap<String, Arc<ActiveTorrentStreamState>>>,
+    locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
 }
 
 fn spawn_cleanup_holding_managed_add_lock(
@@ -281,7 +312,49 @@ fn spawn_cleanup_holding_managed_add_lock(
 
 impl Drop for ActiveTorrentStreamGuard {
     fn drop(&mut self) {
-        self.count.fetch_sub(1, Ordering::AcqRel);
+        let Some(idle_generation) = self.state.release() else {
+            return;
+        };
+        let state = self.state.clone();
+        let source_hash = self.source_hash.clone();
+        let handle = self.handle.clone();
+        let session = self.session.clone();
+        let active_streams = self.active_streams.clone();
+        let locks = self.locks.clone();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            tokio::time::sleep(LOCAL_TORRENT_STREAM_IDLE_PAUSE_DELAY).await;
+            let lock = key_lock(&locks, &source_hash);
+            let _guard = lock.lock().await;
+            let Some(current_state) = active_streams.get(&source_hash) else {
+                return;
+            };
+            if !is_current_idle_stream_state(current_state.value(), &state, idle_generation) {
+                return;
+            }
+            drop(current_state);
+            let Ok(id_or_hash) = TorrentIdOrHash::parse(&source_hash) else {
+                return;
+            };
+            let Some(current) = session
+                .get(id_or_hash)
+                .filter(|current| current.id() == handle.id())
+            else {
+                return;
+            };
+            if current.is_paused() {
+                return;
+            }
+            if let Err(error) = session.pause(&current).await {
+                tracing::warn!(
+                    error = %error,
+                    source_hash,
+                    "failed to pause local torrent after its last stream closed"
+                );
+            }
+        });
     }
 }
 
@@ -342,8 +415,9 @@ impl LocalTorrentService {
         let (handle, selected, newly_added) = self
             .prepare_selected_handle(session.clone(), &request, &output_folder)
             .await?;
-        let mut pending_handle_cleanup = newly_added
-            .then(|| self.pending_handle_cleanup(session, source_hash.clone(), handle.clone()));
+        let mut pending_handle_cleanup = newly_added.then(|| {
+            self.pending_handle_cleanup(session.clone(), source_hash.clone(), handle.clone())
+        });
 
         let mut entry = LocalTorrentCacheEntry {
             source_hash: source_hash.clone(),
@@ -355,7 +429,7 @@ impl LocalTorrentService {
             file_length: selected.length,
             updated_at_ms: now_ms(),
         };
-        self.wait_for_startup_probe(handle.clone(), entry.file_id)
+        self.wait_for_startup_probe(session.clone(), handle.clone(), entry.file_id)
             .await?;
 
         let file_id_key = entry.file_id.to_string();
@@ -577,12 +651,15 @@ impl LocalTorrentService {
         let (handle, _, newly_added) = self
             .prepare_selected_handle(session.clone(), &resume_request, &output_folder)
             .await?;
-        let mut pending_handle_cleanup = newly_added
-            .then(|| self.pending_handle_cleanup(session, source_hash.clone(), handle.clone()));
+        let mut pending_handle_cleanup = newly_added.then(|| {
+            self.pending_handle_cleanup(session.clone(), source_hash.clone(), handle.clone())
+        });
         self.refresh_entry_access_best_effort(&mut entry).await;
         let mut stream = handle.clone().stream(file_id).map_err(|error| {
             ApiError::bad_gateway(format!("Local torrent stream failed: {error}"))
         })?;
+        self.limit_download_to_stream_lookahead(session.clone(), handle.clone())
+            .await?;
         let file_size = stream.len().max(entry.file_length);
         let content_type = mime_guess::from_path(&entry.file_path)
             .first_raw()
@@ -608,7 +685,8 @@ impl LocalTorrentService {
             let body = if method == Method::HEAD {
                 Body::empty()
             } else {
-                let active_stream = self.active_stream_guard(&source_hash);
+                let active_stream =
+                    self.active_stream_guard(&source_hash, session.clone(), handle.clone());
                 Body::from_stream(
                     ReaderStream::with_capacity(stream.take(len), 64 * 1024).map(move |chunk| {
                         let _keep_alive = &active_stream;
@@ -634,7 +712,8 @@ impl LocalTorrentService {
         let body = if method == Method::HEAD {
             Body::empty()
         } else {
-            let active_stream = self.active_stream_guard(&source_hash);
+            let active_stream =
+                self.active_stream_guard(&source_hash, session.clone(), handle.clone());
             Body::from_stream(
                 ReaderStream::with_capacity(stream, 64 * 1024).map(move |chunk| {
                     let _keep_alive = &active_stream;
@@ -653,23 +732,53 @@ impl LocalTorrentService {
         Ok(response)
     }
 
-    fn active_stream_guard(&self, source_hash: &str) -> ActiveTorrentStreamGuard {
-        let count_entry = self
+    fn active_stream_guard(
+        &self,
+        source_hash: &str,
+        session: Arc<Session>,
+        handle: Arc<ManagedTorrent>,
+    ) -> ActiveTorrentStreamGuard {
+        let state_entry = self
             .active_streams
             .entry(source_hash.to_owned())
-            .or_insert_with(|| Arc::new(AtomicUsize::new(0)));
+            .or_insert_with(|| Arc::new(ActiveTorrentStreamState::default()));
         // Increment while the DashMap entry guard still pins this key. The
         // maintenance sweep cannot prune a zero-valued entry between lookup
         // and increment and thereby lose visibility of a live response.
-        count_entry.fetch_add(1, Ordering::AcqRel);
-        let count = count_entry.clone();
-        ActiveTorrentStreamGuard { count }
+        state_entry.register();
+        let state = state_entry.clone();
+        ActiveTorrentStreamGuard {
+            state,
+            source_hash: source_hash.to_owned(),
+            handle,
+            session,
+            active_streams: self.active_streams.clone(),
+            locks: self.locks.clone(),
+        }
     }
 
     fn has_active_stream(&self, source_hash: &str) -> bool {
         self.active_streams
             .get(source_hash)
-            .is_some_and(|count| count.load(Ordering::Acquire) > 0)
+            .is_some_and(|state| state.count.load(Ordering::Acquire) > 0)
+    }
+
+    /// librqbit normally combines a stream's 32 MiB priority window with a
+    /// natural-order download of every selected file. Clearing the natural
+    /// selection after the FileStream is registered leaves the piece-aware
+    /// priority window intact while preventing full-file overfetch.
+    async fn limit_download_to_stream_lookahead(
+        &self,
+        session: Arc<Session>,
+        handle: Arc<ManagedTorrent>,
+    ) -> AppResult<()> {
+        let only_files = streaming_only_file_selection();
+        session
+            .update_only_files(&handle, &only_files)
+            .await
+            .map_err(|error| {
+                ApiError::bad_gateway(format!("Local torrent streaming priority failed: {error}"))
+            })
     }
 
     pub(crate) async fn create_direct_file_stream_response(
@@ -1375,12 +1484,15 @@ impl LocalTorrentService {
 
     async fn wait_for_startup_probe(
         &self,
+        session: Arc<Session>,
         handle: Arc<ManagedTorrent>,
         file_id: usize,
     ) -> AppResult<()> {
-        let mut stream = handle.stream(file_id).map_err(|error| {
+        let mut stream = handle.clone().stream(file_id).map_err(|error| {
             ApiError::bad_gateway(format!("Local torrent stream failed: {error}"))
         })?;
+        self.limit_download_to_stream_lookahead(session, handle)
+            .await?;
         let target_bytes = stream.len().min(LOCAL_TORRENT_STARTUP_PROBE_BYTES as u64) as usize;
         if target_bytes == 0 {
             return Err(ApiError::bad_gateway("Local torrent file was empty."));
@@ -1754,8 +1866,26 @@ impl LocalTorrentService {
     pub fn prune_idle_locks(&self) {
         self.locks.retain(|_, lock| Arc::strong_count(lock) > 1);
         self.active_streams
-            .retain(|_, count| count.load(Ordering::Acquire) > 0);
+            .retain(|_, state| should_retain_stream_state(state));
     }
+}
+
+fn is_current_idle_stream_state(
+    current: &Arc<ActiveTorrentStreamState>,
+    captured: &Arc<ActiveTorrentStreamState>,
+    captured_generation: u64,
+) -> bool {
+    Arc::ptr_eq(current, captured)
+        && current.count.load(Ordering::Acquire) == 0
+        && current.generation.load(Ordering::Acquire) == captured_generation
+}
+
+fn should_retain_stream_state(state: &Arc<ActiveTorrentStreamState>) -> bool {
+    state.count.load(Ordering::Acquire) > 0 || Arc::strong_count(state) > 1
+}
+
+fn streaming_only_file_selection() -> HashSet<usize> {
+    HashSet::new()
 }
 
 fn validate_local_torrent_stream_params(
@@ -2152,6 +2282,7 @@ fn system_time_ms(value: SystemTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use tokio::io::AsyncReadExt as _;
@@ -2159,13 +2290,15 @@ mod tests {
     use tokio::time::timeout;
 
     use super::{
-        DirectFileCacheEntry, LOCAL_TORRENT_STARTUP_PROBE_BYTES, LocalTorrentFileCandidate,
-        LocalTorrentResolveRequest, contains_episode_hint, direct_file_cache_key,
-        direct_file_entry_to_resolved_source, direct_file_stream_url, is_internal_stream_request,
+        ActiveTorrentStreamState, DirectFileCacheEntry, LOCAL_TORRENT_STARTUP_PROBE_BYTES,
+        LocalTorrentFileCandidate, LocalTorrentResolveRequest, contains_episode_hint,
+        direct_file_cache_key, direct_file_entry_to_resolved_source, direct_file_stream_url,
+        is_current_idle_stream_state, is_internal_stream_request,
         is_supported_local_torrent_video_file, local_torrent_cache_key,
         looks_like_torrent_metainfo, media_filename_hint_matches, normalize_direct_file_id,
         parse_stream_range, pick_local_torrent_video_file, read_startup_probe,
-        sanitize_cache_filename, select_torrent_file, spawn_cleanup_holding_managed_add_lock,
+        sanitize_cache_filename, select_torrent_file, should_retain_stream_state,
+        spawn_cleanup_holding_managed_add_lock, streaming_only_file_selection,
         validate_direct_file_stream_params, validate_local_torrent_stream_params,
         with_internal_stream_access,
     };
@@ -2291,6 +2424,45 @@ mod tests {
                 .expect("short startup probe"),
             1024
         );
+    }
+
+    #[test]
+    fn stream_registration_disables_natural_full_file_selection() {
+        assert!(streaming_only_file_selection().is_empty());
+    }
+
+    #[test]
+    fn delayed_pause_rejects_replaced_reactivated_and_stale_idle_generations() {
+        let captured = Arc::new(ActiveTorrentStreamState::default());
+        captured.generation.store(1, Ordering::Release);
+        assert!(is_current_idle_stream_state(&captured, &captured, 1));
+
+        let replacement = Arc::new(ActiveTorrentStreamState::default());
+        assert!(!is_current_idle_stream_state(&replacement, &captured, 1));
+        captured.register();
+        assert!(!is_current_idle_stream_state(&captured, &captured, 1));
+
+        // A replacement request can start and finish before the first request's
+        // delay expires. Its release owns a later generation, so the older timer
+        // must not shorten the replacement request's full idle grace period.
+        let latest_generation = captured.release().expect("replacement became idle");
+        assert!(!is_current_idle_stream_state(&captured, &captured, 1));
+        assert!(is_current_idle_stream_state(
+            &captured,
+            &captured,
+            latest_generation
+        ));
+    }
+
+    #[test]
+    fn pruning_keeps_counters_owned_by_live_or_delayed_guards() {
+        let state = Arc::new(ActiveTorrentStreamState::default());
+        assert!(!should_retain_stream_state(&state));
+        let delayed_guard_state = state.clone();
+        assert!(should_retain_stream_state(&state));
+        drop(delayed_guard_state);
+        state.register();
+        assert!(should_retain_stream_state(&state));
     }
 
     #[test]

@@ -6,9 +6,10 @@ use regex::Regex;
 use crate::utils::{normalize_preferred_audio_lang, normalize_preferred_stream_quality};
 
 use super::{
-    DEFAULT_ALLOWED_SOURCE_FORMATS, DiscoveryStream, ResolveMetadata, SOURCE_AUDIO_PROFILE_DEFAULT,
-    SOURCE_HEALTH_AVOID_SCORE, SOURCE_LANGUAGE_FILTER_DEFAULT, SourceFilters, SourceSummary,
-    audio_language_tokens, build_stream_release_text, build_stream_text, build_stream_text_raw,
+    DEFAULT_ALLOWED_SOURCE_FORMATS, DiscoveryStream, LOCAL_TORRENT_RACE_CANDIDATES,
+    ResolveMetadata, SOURCE_AUDIO_PROFILE_DEFAULT, SOURCE_HEALTH_AVOID_SCORE,
+    SOURCE_LANGUAGE_FILTER_DEFAULT, SourceFilters, SourceSummary, audio_language_tokens,
+    build_stream_release_text, build_stream_text, build_stream_text_raw,
     count_matching_title_tokens, get_stream_info_hash, has_explicit_multi_audio_marker,
     normalize_episode_ordinal, normalize_preferred_container,
     normalize_source_audio_profile_filter, normalize_source_hash, normalize_source_language_filter,
@@ -16,15 +17,20 @@ use super::{
     prefer_movie_title_matched_candidates, stream_quality_target, tokenize_title_for_match,
 };
 
-#[cfg(test)]
-use super::FASTEST_PARALLEL_CANDIDATES;
-
 static SEED_COUNT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"👤\s*([0-9.,]+)").expect("valid seed regex"));
 static STREAM_SIZE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"💾\s*([^\n⚙👤]+)").expect("valid stream size regex"));
 static STREAM_RELEASE_GROUP_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"⚙\s*([^\n👤]+)").expect("valid release group regex"));
+static H264_RELEASE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[^a-z0-9])(?:x264|avc1?|h[ ._-]?264)(?:[^a-z0-9]|$)")
+        .expect("valid h264 release regex")
+});
+static EXPENSIVE_LOCAL_VIDEO_CODEC_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[^a-z0-9])(?:x265|hevc|h[ ._-]?265|av1|vp9)(?:[^a-z0-9]|$)")
+        .expect("valid expensive local codec regex")
+});
 static HXH_SEASON_EPISODE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\bs(?:eason\s*)?0*(\d{1,2})\s*[-_. ]?e(?:pisode\s*)?0*(\d{1,3})\b")
         .expect("valid episode regex")
@@ -181,46 +187,31 @@ pub(super) fn select_top_episode_candidates<'a>(
     }
 }
 
-#[cfg(test)]
-pub(super) fn select_fastest_race_candidates(
-    candidates: Vec<&DiscoveryStream>,
+pub(super) fn prioritize_local_torrent_first_wave(
+    mut candidates: Vec<&DiscoveryStream>,
 ) -> Vec<&DiscoveryStream> {
-    let safe_limit = FASTEST_PARALLEL_CANDIDATES.max(1);
-    let mut selected = Vec::new();
-    let mut seen_hashes = HashSet::new();
-    for candidate in candidates.iter().copied().take(2) {
-        push_unique_candidate(&mut selected, &mut seen_hashes, candidate);
-        if selected.len() >= safe_limit {
-            return selected;
-        }
+    if candidates.len() <= LOCAL_TORRENT_RACE_CANDIDATES {
+        return candidates;
     }
-
-    let mut local_friendly = candidates.clone();
-    local_friendly.sort_by(|left, right| {
-        let right_score = score_fastest_local_candidate(right);
-        let left_score = score_fastest_local_candidate(left);
-        if right_score != left_score {
-            return right_score.cmp(&left_score);
-        }
-        parse_seed_count(&right.title).cmp(&parse_seed_count(&left.title))
-    });
-    for candidate in local_friendly {
-        push_unique_candidate(&mut selected, &mut seen_hashes, candidate);
-        if selected.len() >= safe_limit {
-            return selected;
-        }
+    let best_local_index = candidates
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| {
+            score_fastest_local_candidate(left)
+                .cmp(&score_fastest_local_candidate(right))
+                .then_with(|| parse_seed_count(&left.title).cmp(&parse_seed_count(&right.title)))
+        })
+        .map(|(index, _)| index)
+        .unwrap_or_default();
+    if best_local_index >= LOCAL_TORRENT_RACE_CANDIDATES {
+        let best_local = candidates.remove(best_local_index);
+        // Retain the globally top-ranked source, but guarantee that the local
+        // startup hedge includes its own swarm/size-optimized best candidate.
+        candidates.insert(LOCAL_TORRENT_RACE_CANDIDATES - 1, best_local);
     }
-
-    for candidate in candidates {
-        push_unique_candidate(&mut selected, &mut seen_hashes, candidate);
-        if selected.len() >= safe_limit {
-            break;
-        }
-    }
-    selected
+    candidates
 }
 
-#[cfg(test)]
 fn score_fastest_local_candidate(stream: &DiscoveryStream) -> i64 {
     let seed_count = parse_seed_count(if stream.title.is_empty() {
         stream.name.as_str()
@@ -250,6 +241,18 @@ fn score_fastest_local_candidate(stream: &DiscoveryStream) -> i64 {
     }
     if is_stream_likely_container(stream, "mp4") {
         score += 550;
+    }
+    let release_text = build_stream_text_raw(stream);
+    if H264_RELEASE_RE.is_match(&release_text) {
+        // H.264 can play directly in MP4 and remux-copy cheaply from MKV on
+        // every supported browser. Other modern codecs depend on client
+        // capability that is not available during backend candidate ranking.
+        score += 1_600;
+    } else if EXPENSIVE_LOCAL_VIDEO_CODEC_RE.is_match(&release_text) {
+        // Keep high-seed HEVC/AV1/VP9 candidates eligible, but do not spend the
+        // bounded local hedge on a likely full-transcode source ahead of an
+        // otherwise comparable H.264 release.
+        score -= 1_200;
     }
     score + score_stream_release_quality(stream)
 }
@@ -314,6 +317,7 @@ pub(super) fn summarize_stream_candidate_for_client(
         },
         container,
         isTorrent: true,
+        realDebridCached: stream.real_debrid_cached,
         seeders,
         size: extract_stream_size_label(stream),
         releaseGroup: extract_stream_release_group(stream),
@@ -486,7 +490,11 @@ fn score_stream_quality(
     source_filters: &SourceFilters,
     health_scores: &HashMap<String, i64>,
 ) -> i64 {
-    score_stream_language_preference(stream, preferred_audio_lang)
+    (if stream.real_debrid_cached {
+        250_000
+    } else {
+        0
+    }) + score_stream_language_preference(stream, preferred_audio_lang)
         + score_stream_source_audio_profile(
             stream,
             &source_filters.source_language,
@@ -560,6 +568,18 @@ fn apply_mp4_default_candidate_rule<'a>(
     if !normalize_source_hash(source_hash).is_empty() {
         return candidates;
     }
+    let safe_limit = limit.max(1);
+    let cached_candidates = ranked_pool
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.real_debrid_cached)
+        .take(safe_limit)
+        .collect::<Vec<_>>();
+    // A confirmed cloud-cache hit is immediately playable and must not be
+    // displaced merely to satisfy the browser-friendly MP4 preference.
+    if cached_candidates.len() >= safe_limit {
+        return cached_candidates;
+    }
     let with_mp4 = ensure_at_least_one_container_candidate(
         candidates,
         ranked_pool.clone(),
@@ -581,28 +601,34 @@ fn apply_mp4_default_candidate_rule<'a>(
         })
         .collect::<Vec<_>>();
     if mp4_candidates.is_empty() {
-        return move_container_candidates_to_front(with_mp4, "mp4");
+        return move_real_debrid_cached_candidates_to_front(move_container_candidates_to_front(
+            with_mp4, "mp4",
+        ));
     }
 
     mp4_candidates
         .sort_by(|left, right| compare_container_default_candidates(left, right, source_language));
 
-    let safe_limit = limit.max(1);
     let mut seen_hashes = HashSet::new();
     let mut next = Vec::new();
-    for candidate in mp4_candidates {
+    for candidate in cached_candidates {
         push_unique_candidate(&mut next, &mut seen_hashes, candidate);
-        if next.len() >= safe_limit {
-            return next;
-        }
     }
-    for candidate in with_mp4 {
+    for candidate in mp4_candidates {
         push_unique_candidate(&mut next, &mut seen_hashes, candidate);
         if next.len() >= safe_limit {
             break;
         }
     }
-    next
+    if next.len() < safe_limit {
+        for candidate in with_mp4 {
+            push_unique_candidate(&mut next, &mut seen_hashes, candidate);
+            if next.len() >= safe_limit {
+                break;
+            }
+        }
+    }
+    move_real_debrid_cached_candidates_to_front(next)
 }
 
 fn push_unique_candidate<'a>(
@@ -715,6 +741,22 @@ fn move_container_candidates_to_front<'a>(
     }
     preferred.extend(rest);
     preferred
+}
+
+fn move_real_debrid_cached_candidates_to_front(
+    candidates: Vec<&DiscoveryStream>,
+) -> Vec<&DiscoveryStream> {
+    let mut cached = Vec::new();
+    let mut rest = Vec::new();
+    for candidate in candidates {
+        if candidate.real_debrid_cached {
+            cached.push(candidate);
+        } else {
+            rest.push(candidate);
+        }
+    }
+    cached.extend(rest);
+    cached
 }
 
 fn score_container_default_language(stream: &DiscoveryStream, source_language: &str) -> i64 {
@@ -1155,12 +1197,10 @@ fn extract_stream_size_label(stream: &DiscoveryStream) -> String {
         .unwrap_or_default()
 }
 
-#[cfg(test)]
 fn parse_stream_size_bytes(stream: &DiscoveryStream) -> i64 {
     parse_size_label_bytes(&extract_stream_size_label(stream))
 }
 
-#[cfg(test)]
 pub(super) fn parse_size_label_bytes(label: &str) -> i64 {
     let mut parts = label.split_whitespace();
     let Some(number_part) = parts.next() else {

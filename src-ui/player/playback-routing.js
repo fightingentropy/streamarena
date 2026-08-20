@@ -198,6 +198,7 @@ function hasHlsJsPlaybackSupport() {
 export function createPlaybackRouting({
   getVideo = () => null,
   getOrigin = () => getDefaultOrigin(),
+  getBrowserVideoCodecs = () => ["h264"],
   getSelectedAudioStreamIndex = () => -1,
   getSelectedSubtitleStreamIndex = () => -1,
   getPreferredSourceLanguage = () => "en",
@@ -212,6 +213,34 @@ export function createPlaybackRouting({
   getSubtitleTrackByStreamIndex = () => null,
   shouldUseNativeEmbeddedSubtitleTrack = () => false,
 } = {}) {
+  function browserSupportsSourceVideoCodec(source) {
+    const declaredCodecs = getBrowserVideoCodecs?.();
+    const supported = new Set(
+      (Array.isArray(declaredCodecs) ? declaredCodecs : [])
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const normalizedText = getNormalizedPlaybackSourceText(source);
+    if (/\b(10bit|10 bit|main10|hdr10|hdr|dolby vision|dovi|dv)\b/.test(
+      normalizedText,
+    )) {
+      // Generic canPlayType probes establish baseline codec support only. They
+      // do not prove that this browser/GPU accepts Main10, HDR, or Dolby Vision
+      // profiles, so keep those releases on the normalize fallback path.
+      return false;
+    }
+    if (/\b(hevc|x265|h265|h 265)\b/.test(normalizedText)) {
+      return supported.has("hevc");
+    }
+    if (/\b(av1|av01)\b/.test(normalizedText)) {
+      return supported.has("av1");
+    }
+    if (/\b(vp9|vp09)\b/.test(normalizedText)) {
+      return supported.has("vp9");
+    }
+    return false;
+  }
+
   function buildHlsPlaybackUrl(
     input,
     audioStreamIndex = -1,
@@ -282,6 +311,14 @@ export function createPlaybackRouting({
     }
     const selectedSubtitleTrack = getSubtitleTrackByStreamIndex(subtitleStreamIndex);
     if (shouldUseNativeEmbeddedSubtitleTrack(selectedSubtitleTrack)) {
+      return false;
+    }
+
+    // A Matroska container still needs the server remux, but a client that
+    // declares support for its video codec can use the cheap copy path. Do not
+    // divert that request into HLS and a full transcode before the remux probe
+    // has a chance to select `-c:v copy`.
+    if (browserSupportsSourceVideoCodec(sourceInput)) {
       return false;
     }
 

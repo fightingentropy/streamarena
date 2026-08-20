@@ -136,7 +136,7 @@ Playback flow for TMDB titles:
 3. It calls `/api/resolve/movie` or `/api/resolve/tv`.
 4. For default unpinned TMDB playback, the resolver ranks native HLS providers by quality and learned health, starts with VidLink on a neutral install, then quickly rotates through VidRock, NoTorrent, VixSrc, LordFlix, and VidEasy sources when a provider fails. Providers with poor health are skipped from auto-fallback; Icefy remains manually selectable only.
 5. The player probes tracks when needed through `/api/media/tracks`, selects audio/subtitle streams, and chooses direct, HLS, remux, local torrent, or local cache playback.
-6. If the external HLS path fails in the browser, the player retries with `skipExternalEmbed=1`. Torrentio/Torznab sources are considered whenever the user enables Torrent streaming or has saved a Real-Debrid token. Standalone Torrent streaming resolves magnets through the Mini's local torrent engine; Real-Debrid remains an optional direct-download accelerator.
+6. If the external HLS path fails in the browser, the player retries with `skipExternalEmbed=1`. Torrentio/Torznab sources are considered whenever the user enables Torrent streaming or explicitly enables Real-Debrid with a saved token. Standalone Torrent streaming resolves magnets through the Mini's local torrent engine; Real-Debrid remains an optional direct-download accelerator.
 7. Playback progress is stored locally for responsiveness and synced to `/api/user/watch-progress`, `/api/user/continue-watching`, and `/api/session/progress` when enabled.
 
 External movie/TV embed stack:
@@ -367,6 +367,7 @@ Protected API routes:
 - `GET /api/subtitles.external.vtt`
 - `GET /api/auth/me`
 - `GET|PUT /api/user/preferences`
+- `GET|PUT /api/user/real-debrid`
 - `GET|PUT /api/user/torrent-settings`
 - `GET|PUT|DELETE /api/user/watch-progress`
 - `GET|PUT|DELETE /api/user/continue-watching`
@@ -427,7 +428,23 @@ Required for TMDB browsing and external embed playback:
 Per-user Settings:
 
 - Torrent streaming - enables magnet discovery and local torrent/cache playback through the Mini without requiring Real-Debrid.
-- Real-Debrid API token - optional; when configured, `fastest` tries its direct-download path before falling back to local torrent streaming.
+- Real-Debrid cached streaming - an explicit per-user toggle, separate from the saved API token. New tokens are verified against the authenticated Real-Debrid `/user` endpoint and require an active Premium account before they are encrypted and stored. Disabling the toggle preserves the token but keeps it out of resolver requests; removing the token also disables the integration. Existing configured tokens default to enabled for compatibility.
+
+Fresh unpinned playback remains HLS-first. Real-Debrid is used when an enabled
+user selects a torrent source or explicitly requests the `real-debrid` resolver.
+The resolver reuses an existing cloud torrent when possible, selects the exact
+Torrentio file, and unrestricts its download URL. Resolved payloads include
+`realDebridCached: true` only when the torrent becomes ready within the short
+instant-selection window; the app does not send private tokens to Torrentio
+or pre-add every listed magnet merely to estimate global cache availability.
+Ready-torrent badges are refreshed in a deduplicated background request and
+cached briefly, so a cold Real-Debrid API call never delays the source menu.
+`fastest` gives Real-Debrid a 1.75-second cached-hit window, then hedges with the
+local torrent engine and returns the first successful provider. Cancellation
+guards stop the losing local path and delete a newly-added Real-Debrid cloud
+torrent if the local path wins. Per-user cache keys include a truncated
+SHA-256 credential fingerprint (never returned or logged), and replacing or
+clearing a token invalidates that user's Real-Debrid playback sessions.
 
 Real-Debrid tokens are encrypted at rest with AES-256-GCM. Configure an
 operator-managed key ring before a user saves a token:
@@ -537,7 +554,7 @@ Resolver/local cache:
 
 Torznab behavior:
 
-- Torrentio remains the primary torrent discovery source when the user enables Torrent streaming or saves a Real-Debrid API token.
+- Torrentio remains the primary torrent discovery source when the user enables Torrent streaming or explicitly enables Real-Debrid with a saved API token.
 - Torznab is a fallback for missing/failed Torrentio results or pinned hashes absent from Torrentio.
 - Torznab is discovery only. Real-Debrid or user-enabled local torrent/cache still supplies the playable media path.
 - Prefer filtered Prowlarr/Jackett endpoints over broad `all` endpoints.

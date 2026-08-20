@@ -15,6 +15,9 @@ const smokeVideo = "assets/videos/fantozzi-1975-1080p-h264-aac-4k-restored.mp4";
 const hevcSmokeVideo = "assets/videos/project-hail-mary-2026-2160p-hevc.mp4";
 const sourceSwitchHashA = "a".repeat(40);
 const sourceSwitchHashB = "b".repeat(40);
+const realDebridCacheRefreshTmdbId = "real-debrid-cache-refresh-tv";
+const realDebridCachedHash = "c".repeat(40);
+const realDebridHlsHash = "d".repeat(40);
 const initialResolveRaceTmdbId = "initial-resolve-source-discovery-movie";
 const initialResolvePreferredHash = "6".repeat(40);
 const initialResolveActualHash = "7".repeat(40);
@@ -457,7 +460,11 @@ function apiPayload(url, method) {
 
 const pages = [
   { path: "/login.html", selector: ".login-page" },
-  { path: "/settings.html", selector: ".settings-content" },
+  {
+    path: "/settings.html",
+    selector: ".settings-content",
+    expectRealDebridToggleSave: true,
+  },
   {
     path: "/settings.html",
     selector: ".settings-content",
@@ -562,6 +569,12 @@ const pages = [
     path: "/player.html?tmdbId=source-switch-tv&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1",
     selector: ".player-shell",
     expectSourceSwitch: true,
+    expectRealDebridSourceSwitch: true,
+  },
+  {
+    path: `/player.html?tmdbId=${realDebridCacheRefreshTmdbId}&mediaType=tv&title=RD%20Cache%20Refresh&seasonNumber=1&episodeNumber=1`,
+    selector: ".player-shell",
+    expectRealDebridCacheRefresh: true,
   },
   {
     path: "/player.html?tmdbId=source-switch-failure-tv&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1",
@@ -600,6 +613,8 @@ async function runSmoke() {
       let sawRemuxRequest = false;
       let sawSourceSwitchResolveHash = "";
       let sourceSwitchResolveHashes = [];
+      let sawSourceSwitchResolverProvider = "";
+      let sawSourceSwitchSkipExternalEmbed = "";
       let sawHlsManagedResolve = false;
       let sawSportsBasketballMatches = false;
       let sawHlsManagedImportHold = false;
@@ -611,6 +626,7 @@ async function runSmoke() {
       let hlsBundleReleased = false;
       const hoverResolvePrewarmRequests = [];
       const realDebridUpdateBodies = [];
+      let realDebridCacheRefreshRequests = 0;
       const initialResolveRaceCase =
         pageSpec.initialResolveSourceDiscoveryCase || "";
       const initialResolveRaceRequests = [];
@@ -744,6 +760,87 @@ async function runSmoke() {
       await page.route("**/api/**", async (route) => {
         const request = route.request();
         const url = new URL(request.url());
+        if (
+          pageSpec.expectRealDebridCacheRefresh &&
+          url.pathname === "/api/user/torrent-settings" &&
+          request.method() === "GET"
+        ) {
+          await route.fulfill(jsonResponse({
+            configured: true,
+            enabled: true,
+            maskedApiKey: "abcd…wxyz",
+            localTorrentEnabled: false,
+          }));
+          return;
+        }
+        if (
+          pageSpec.expectRealDebridCacheRefresh &&
+          url.pathname === "/api/resolve/sources" &&
+          url.searchParams.get("tmdbId") === realDebridCacheRefreshTmdbId
+        ) {
+          realDebridCacheRefreshRequests += 1;
+          if (realDebridCacheRefreshRequests === 2) {
+            await route.fulfill(jsonResponse({ error: "Transient cache refresh" }, 503));
+            return;
+          }
+          const cacheIsReady = realDebridCacheRefreshRequests > 2;
+          await route.fulfill(
+            jsonResponse({
+              sources: [
+                {
+                  sourceHash: realDebridHlsHash,
+                  infoHash: realDebridHlsHash,
+                  primary: "Meridian",
+                  filename: "Meridian HLS",
+                  provider: "LivNet",
+                  qualityLabel: "1080p",
+                  container: "hls",
+                  isTorrent: false,
+                  seeders: 0,
+                  score: 1_000_000,
+                },
+                {
+                  sourceHash: sourceSwitchHashB,
+                  infoHash: sourceSwitchHashB,
+                  primary: "Popular.1080p.mp4",
+                  filename: "Popular.1080p.mp4",
+                  provider: "Torrentio",
+                  qualityLabel: "1080p",
+                  container: "mp4",
+                  isTorrent: true,
+                  seeders: 10_000,
+                  realDebridCached: false,
+                },
+                {
+                  sourceHash: realDebridCachedHash,
+                  infoHash: realDebridCachedHash,
+                  primary: "Instant.2160p.mkv",
+                  filename: "Instant.2160p.mkv",
+                  provider: "Torrentio",
+                  qualityLabel: "4K",
+                  container: "mkv",
+                  isTorrent: true,
+                  seeders: 1,
+                  realDebridCached: cacheIsReady,
+                },
+              ],
+            }),
+          );
+          return;
+        }
+        if (
+          pageSpec.expectRealDebridSourceSwitch &&
+          url.pathname === "/api/user/torrent-settings" &&
+          request.method() === "GET"
+        ) {
+          await route.fulfill(jsonResponse({
+            configured: true,
+            enabled: true,
+            maskedApiKey: "abcd…wxyz",
+            localTorrentEnabled: false,
+          }));
+          return;
+        }
         if (
           initialResolveRaceCase &&
           url.pathname === "/api/user/torrent-settings" &&
@@ -879,6 +976,10 @@ async function runSmoke() {
           if (sourceHash) {
             sawSourceSwitchResolveHash = sourceHash;
             sourceSwitchResolveHashes.push(sourceHash);
+            sawSourceSwitchResolverProvider =
+              url.searchParams.get("resolverProvider") || "";
+            sawSourceSwitchSkipExternalEmbed =
+              url.searchParams.get("skipExternalEmbed") || "";
           }
         }
         if (
@@ -921,6 +1022,31 @@ async function runSmoke() {
           return;
         }
         if (
+          pageSpec.expectRealDebridToggleSave &&
+          url.pathname === "/api/user/torrent-settings"
+        ) {
+          if (request.method() === "GET") {
+            await route.fulfill(jsonResponse({
+              configured: true,
+              enabled: true,
+              maskedApiKey: "abcd…wxyz",
+              localTorrentEnabled: false,
+            }));
+            return;
+          }
+          const update = request.postDataJSON();
+          realDebridUpdateBodies.push(update);
+          const cleared = Object.hasOwn(update, "apiKey") && update.apiKey === "";
+          await route.fulfill(jsonResponse({
+            ok: true,
+            configured: !cleared,
+            enabled: !cleared && update.realDebridEnabled !== false,
+            maskedApiKey: cleared ? "" : "abcd…wxyz",
+            localTorrentEnabled: false,
+          }));
+          return;
+        }
+        if (
           pageSpec.expectRealDebridLoadFailureNoOverwrite &&
           url.pathname === "/api/user/torrent-settings"
         ) {
@@ -932,6 +1058,7 @@ async function runSmoke() {
           await route.fulfill(jsonResponse({
             ok: true,
             configured: true,
+            enabled: false,
             maskedApiKey: "abcd…wxyz",
             localTorrentEnabled: false,
           }));
@@ -1114,6 +1241,58 @@ async function runSmoke() {
         }
       }
       await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
+
+      if (pageSpec.expectRealDebridCacheRefresh) {
+        await page.waitForFunction(
+          ({ cachedHash, selectedHash }) => {
+            const sourceOptions = Array.from(
+              document.querySelectorAll(".source-option"),
+            );
+            const cachedOption = sourceOptions.find(
+              (option) => option.dataset.sourceHash === cachedHash,
+            );
+            return Boolean(
+              cachedOption &&
+                cachedOption
+                  .querySelector(".source-option-hint")
+                  ?.textContent?.startsWith("RD cached") &&
+                document.querySelector(".source-option[aria-selected='true']")
+                  ?.dataset.sourceHash === selectedHash &&
+                (document.querySelector("video")?.getAttribute("src") || "").includes(
+                  selectedHash,
+                ),
+            );
+          },
+          {
+            cachedHash: realDebridCachedHash,
+            selectedHash: sourceSwitchHashB,
+          },
+          { timeout: 8_000 },
+        );
+        await delay(1_500);
+        const cacheRefreshState = await page.evaluate(() => ({
+          orderedHashes: Array.from(
+            document.querySelectorAll(".source-option"),
+          ).map((option) => option.dataset.sourceHash || ""),
+          selectedHash:
+            document.querySelector(".source-option[aria-selected='true']")
+              ?.dataset.sourceHash || "",
+          videoSource: document.querySelector("video")?.getAttribute("src") || "",
+        }));
+        if (
+          realDebridCacheRefreshRequests !== 3 ||
+          cacheRefreshState.orderedHashes[0] !== realDebridCachedHash ||
+          cacheRefreshState.selectedHash !== sourceSwitchHashB ||
+          !cacheRefreshState.videoSource.includes(sourceSwitchHashB)
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nReal-Debrid cache refresh was not bounded and playback-neutral.\n${JSON.stringify({
+              realDebridCacheRefreshRequests,
+              cacheRefreshState,
+            })}`,
+          );
+        }
+      }
 
       if (initialResolveRaceCase) {
         if (initialResolveRaceCase === "active") {
@@ -1826,10 +2005,63 @@ async function runSmoke() {
         if (
           realDebridUpdateBodies.length !== 1 ||
           realDebridUpdateBodies[0]?.apiKey !== "a".repeat(40) ||
+          realDebridUpdateBodies[0]?.realDebridEnabled !== false ||
           Object.hasOwn(realDebridUpdateBodies[0], "localTorrentEnabled")
         ) {
           throw new Error(
             `${pageSpec.path}\nDirty Real-Debrid save did not use field-level update semantics.\n${JSON.stringify(realDebridUpdateBodies)}`,
+          );
+        }
+      }
+
+      if (pageSpec.expectRealDebridToggleSave) {
+        await page.waitForFunction(
+          () => document.querySelector("#realDebridEnabled")?.checked === true,
+          null,
+          { timeout: 8_000 },
+        );
+        const loadedState = await page.evaluate(() => ({
+          inputValue: document.querySelector("#realDebridApiKey")?.value || "",
+          status: document.querySelector(".settings-list-row--debrid .settings-row-copy p")
+            ?.textContent?.trim() || "",
+        }));
+        if (loadedState.inputValue || !loadedState.status.includes("abcd…wxyz")) {
+          throw new Error(
+            `${pageSpec.path}\nStored Real-Debrid token was exposed or mask was missing.\n${JSON.stringify(loadedState)}`,
+          );
+        }
+
+        await page.getByText("Use Real-Debrid", { exact: true }).click();
+        await page.getByRole("button", { name: "Save Settings" }).click();
+        await page.waitForFunction(
+          () => document.querySelector(".real-debrid-status")?.textContent?.trim() === "Saved",
+          null,
+          { timeout: 8_000 },
+        );
+        if (
+          realDebridUpdateBodies.length !== 1 ||
+          realDebridUpdateBodies[0]?.realDebridEnabled !== false ||
+          Object.hasOwn(realDebridUpdateBodies[0], "apiKey") ||
+          Object.hasOwn(realDebridUpdateBodies[0], "localTorrentEnabled")
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nReal-Debrid enable toggle did not save independently.\n${JSON.stringify(realDebridUpdateBodies)}`,
+          );
+        }
+
+        await page.getByRole("button", { name: "Clear" }).click();
+        await page.waitForFunction(
+          () => document.querySelector(".real-debrid-status")?.textContent?.trim() === "Cleared",
+          null,
+          { timeout: 8_000 },
+        );
+        if (
+          realDebridUpdateBodies.length !== 2 ||
+          realDebridUpdateBodies[1]?.apiKey !== "" ||
+          realDebridUpdateBodies[1]?.realDebridEnabled !== false
+        ) {
+          throw new Error(
+            `${pageSpec.path}\nReal-Debrid clear did not remove and disable the token.\n${JSON.stringify(realDebridUpdateBodies)}`,
           );
         }
       }
@@ -2303,6 +2535,9 @@ async function runSmoke() {
         if (
           sawSourceSwitchResolveHash !== sourceSwitchHashA ||
           !sourceSwitchResolveHashes.includes(sourceSwitchHashA) ||
+          (pageSpec.expectRealDebridSourceSwitch &&
+            (sawSourceSwitchResolverProvider !== "real-debrid" ||
+              sawSourceSwitchSkipExternalEmbed !== "1")) ||
           switchState.selectedHash !== sourceSwitchHashA ||
           !switchState.videoSource.includes(sourceSwitchHashA)
         ) {
@@ -2310,6 +2545,8 @@ async function runSmoke() {
             `${pageSpec.path}\nSource switch failed.\n${JSON.stringify({
               sawSourceSwitchResolveHash,
               sourceSwitchResolveHashes,
+              sawSourceSwitchResolverProvider,
+              sawSourceSwitchSkipExternalEmbed,
               switchState,
             })}`,
           );
