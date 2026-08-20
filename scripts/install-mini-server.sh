@@ -79,15 +79,17 @@ if [[ "$canonical_requested" != "1" ]]; then
   echo "PUBLIC_CANONICAL_HOST must be included in PUBLIC_HOSTS" >&2
   exit 2
 fi
-IFS=',' read -r -a requested_direct_origin_hosts <<< "$DIRECT_ORIGIN_HOSTS"
-for requested_host in "${requested_direct_origin_hosts[@]}"; do
-  requested_host="${requested_host//[[:space:]]/}"
-  [[ -n "$requested_host" ]] || continue
-  if [[ ! "$requested_host" =~ ^[A-Za-z0-9.-]+$ ]]; then
-    echo "DIRECT_ORIGIN_HOSTS contains an invalid host" >&2
-    exit 2
-  fi
-done
+if [[ -n "${DIRECT_ORIGIN_HOSTS//[[:space:]]/}" ]]; then
+  IFS=',' read -r -a requested_direct_origin_hosts <<< "$DIRECT_ORIGIN_HOSTS"
+  for requested_host in "${requested_direct_origin_hosts[@]}"; do
+    requested_host="${requested_host//[[:space:]]/}"
+    [[ -n "$requested_host" ]] || continue
+    if [[ ! "$requested_host" =~ ^[A-Za-z0-9.-]+$ ]]; then
+      echo "DIRECT_ORIGIN_HOSTS contains an invalid host" >&2
+      exit 2
+    fi
+  done
+fi
 
 ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$MINI_HOST" \
   "REMOTE_APP='$REMOTE_APP' CADDY_VERSION='$CADDY_VERSION' PUBLIC_HOSTS='$PUBLIC_HOSTS' PUBLIC_CANONICAL_HOST='$PUBLIC_CANONICAL_HOST' DIRECT_ORIGIN_HOSTS='$DIRECT_ORIGIN_HOSTS' TLS_MODE='$TLS_MODE' bash -s" <<'REMOTE'
