@@ -31,6 +31,35 @@ assert.equal(
   }),
   "Local torrent could not start this source quickly enough. Try another source.",
 );
+assert.equal(
+  normalizeResolverFailureMessage("502 Bad Gateway", undefined, {
+    isLivePlayback: true,
+    hasAlternatePlaybackSource: false,
+    preferredResolverProvider: "real-debrid",
+  }),
+  "This live channel is temporarily unavailable. Please try again shortly.",
+);
+assert.equal(
+  normalizeResolverFailureMessage("502 Bad Gateway", undefined, {
+    isLivePlayback: true,
+    hasAlternatePlaybackSource: true,
+  }),
+  "This live stream could not start. Try another source.",
+);
+assert.equal(
+  normalizeResolverFailureMessage("MEDIA_ERR_SRC_NOT_SUPPORTED", undefined, {
+    isLivePlayback: true,
+    hasAlternatePlaybackSource: false,
+  }),
+  "This live channel is temporarily unavailable. Please try again shortly.",
+);
+assert.equal(
+  normalizeResolverFailureMessage("Selected source is unavailable. Try another source.", undefined, {
+    isLivePlayback: true,
+    hasAlternatePlaybackSource: false,
+  }),
+  "This live channel is temporarily unavailable. Please try again shortly.",
+);
 
 function makeEl(hidden = true) {
   return {

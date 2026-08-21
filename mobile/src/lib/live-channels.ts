@@ -19,6 +19,8 @@ export type LiveChannel = {
   streams: LiveChannelStream[];
   liveEmbed?: boolean;
   liveResolver?: LiveResolver;
+  artworkPresentation?: "logo" | "thumbnail";
+  unavailableReason?: string;
   genre: string;
   region: string;
   quality: string;
@@ -32,6 +34,8 @@ type CatalogChannel = {
   streams: LiveChannelStream[];
   liveEmbed?: boolean;
   liveResolver?: string;
+  artworkPresentation?: string;
+  unavailableReason?: string;
   genre: string;
   region: string;
   quality: string;
@@ -52,6 +56,11 @@ function hydrateLiveChannels(channels: CatalogChannel[]): LiveChannel[] {
       channel.liveResolver === "sports" || channel.liveResolver === "twitch"
         ? channel.liveResolver
         : undefined,
+    artworkPresentation:
+      channel.artworkPresentation === "logo" || channel.artworkPresentation === "thumbnail"
+        ? channel.artworkPresentation
+        : undefined,
+    unavailableReason: channel.unavailableReason,
     genre: channel.genre,
     region: channel.region,
     quality: channel.quality,
@@ -59,6 +68,13 @@ function hydrateLiveChannels(channels: CatalogChannel[]): LiveChannel[] {
 }
 
 export const LIVE_CHANNELS: LiveChannel[] = hydrateLiveChannels(catalog.channels);
+
+export function isLiveChannelPlayable(channel: LiveChannel): boolean {
+  return (
+    channel.streams.some((stream) => Boolean(stream.source.trim())) ||
+    Boolean(channel.source.trim())
+  );
+}
 
 let liveOverridesPromise: Promise<void> | null = null;
 

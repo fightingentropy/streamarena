@@ -1566,6 +1566,8 @@ function normalizeResolverFailureMessage(errorOrMessage, fallbackMessage) {
     isExplicitLocalUploadSource,
     src,
     preferredResolverProvider,
+    isLivePlayback,
+    hasAlternatePlaybackSource: liveStreamOptions.length > 1,
   });
 }
 

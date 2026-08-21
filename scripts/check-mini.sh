@@ -166,8 +166,16 @@ matchstream_hls_resolver=$(test -f "$app/bin/resolve-matchstream-hls.mjs" && ech
 ntvs_hls_resolver=$(test -f "$app/bin/resolve-ntvs-hls.mjs" && echo yes || echo no)
 browser_hls_session_relay=$(test -f "$app/bin/serve-browser-hls-session.mjs" && echo yes || echo no)
 cdnlivetv_hls_resolver=$(test -f "$app/bin/resolve-cdnlivetv-hls.mjs" && echo yes || echo no)
+resolver_runtime_helper=$(test -f "$app/bin/lib/load-playwright.mjs" && echo yes || echo no)
 node_bin=$(command -v node || true)
 bun_bin=$(command -v bun || true)
+resolver_runtime_smoke=no
+if [[ -n "$node_bin" && -f "$app/bin/check-resolver-runtime.mjs" ]]; then
+  if STREAMARENA_NODE_DEPS_DIR="$node_deps_dir" \
+    "$node_bin" "$app/bin/check-resolver-runtime.mjs" "$app/bin" >/dev/null 2>&1; then
+    resolver_runtime_smoke=yes
+  fi
+fi
 playwright_module=$(
   STREAMARENA_NODE_DEPS_DIR="$node_deps_dir" node -e 'require.resolve("playwright", { paths: [process.env.STREAMARENA_NODE_DEPS_DIR] }); process.stdout.write("yes")' 2>/dev/null || echo no
 )
@@ -273,6 +281,8 @@ printf 'matchstream_hls_resolver=%s\n' "$matchstream_hls_resolver"
 printf 'ntvs_hls_resolver=%s\n' "$ntvs_hls_resolver"
 printf 'browser_hls_session_relay=%s\n' "$browser_hls_session_relay"
 printf 'cdnlivetv_hls_resolver=%s\n' "$cdnlivetv_hls_resolver"
+printf 'resolver_runtime_helper=%s\n' "$resolver_runtime_helper"
+printf 'resolver_runtime_smoke=%s\n' "$resolver_runtime_smoke"
 printf 'node_bin=%s\n' "${node_bin:-missing}"
 printf 'bun_bin=%s\n' "${bun_bin:-missing}"
 printf 'playwright_module=%s\n' "$playwright_module"
@@ -352,6 +362,8 @@ matchstream_hls_resolver=$(value_for matchstream_hls_resolver)
 ntvs_hls_resolver=$(value_for ntvs_hls_resolver)
 browser_hls_session_relay=$(value_for browser_hls_session_relay)
 cdnlivetv_hls_resolver=$(value_for cdnlivetv_hls_resolver)
+resolver_runtime_helper=$(value_for resolver_runtime_helper)
+resolver_runtime_smoke=$(value_for resolver_runtime_smoke)
 node_bin=$(value_for node_bin)
 bun_bin=$(value_for bun_bin)
 playwright_module=$(value_for playwright_module)
@@ -384,6 +396,8 @@ ntvs_proxy_http=$(value_for ntvs_proxy_http)
 [[ "$ntvs_hls_resolver" == "yes" ]] && pass "NTVS sports HLS resolver script is deployed" || bad "NTVS sports HLS resolver script is missing"
 [[ "$browser_hls_session_relay" == "yes" ]] && pass "browser HLS session relay script is deployed" || bad "browser HLS session relay script is missing"
 [[ "$cdnlivetv_hls_resolver" == "yes" ]] && pass "cdnlivetv sports HLS resolver script is deployed" || bad "cdnlivetv sports HLS resolver script is missing"
+[[ "$resolver_runtime_helper" == "yes" ]] && pass "shared Playwright resolver loader is deployed" || bad "shared Playwright resolver loader is missing"
+[[ "$resolver_runtime_smoke" == "yes" ]] && pass "resolver runtime import graph loads from the deployed bundle" || bad "resolver runtime import graph is broken"
 [[ "$node_bin" != "missing" ]] && pass "Node is available for resolver helpers ($node_bin)" || bad "Node is missing for resolver helpers"
 [[ "$bun_bin" != "missing" ]] && pass "Bun is available for resolver dependency installs ($bun_bin)" || bad "Bun is missing for resolver dependency installs"
 [[ "$playwright_module" == "yes" ]] && pass "Playwright module is installed for resolver helpers" || bad "Playwright module is missing for resolver helpers"

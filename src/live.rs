@@ -48,6 +48,12 @@ const LIVE_HLS_SIGNATURE_CONTEXT_V2: &[u8] = b"streamarena-live-hls-v2";
 const LIVE_HLS_SIGNATURE_TTL_SECONDS: i64 = 4 * 60 * 60;
 const LIVE_HLS_SIGNATURE_MAX_TTL_SECONDS: i64 = 6 * 60 * 60;
 const LIVE_HLS_SIGNATURE_CLOCK_SKEW_SECONDS: i64 = 60;
+// WideIPTV's Falcon tokens live for five minutes. Refresh signed master/media
+// playlists during the last 45 seconds; already-issued segments keep using the
+// still-valid old token and therefore never block on the provider page.
+const NTVS_WIDEIPTV_HLS_REFRESH_WINDOW_SECONDS: i64 = 45;
+const NTVS_WIDEIPTV_REFRESH_TIMEOUT_SECONDS: u64 = 5;
+const NTVS_WIDEIPTV_REFRESH_FAILURE_COOLDOWN_SECONDS: i64 = 5;
 const LIVE_HLS_ALLOWED_HOSTS: &[&str] = &[
     "liveproduseast.akamaized.net",
     "liveproduseast.global.ssl.fastly.net",
@@ -139,6 +145,7 @@ pub async fn live_hls_handler(
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
     let live_request = live_hls_request_input(&state, &uri, LiveHlsRequestKind::Playlist)?;
+    let live_request = refresh_expiring_ntvs_wideiptv_request(&state, live_request).await;
     let cache_key = live_hls_playlist_cache_key(&live_request);
 
     // Serve an already-rewritten playlist from memory. Immutable VOD/master
@@ -1009,6 +1016,78 @@ static LIVE_SEGMENT_OUTPUT_CACHE: LazyLock<LiveSegmentOutputCache> = LazyLock::n
     )
 });
 
+struct NtvsWideiptvRefreshCache {
+    entries: DashMap<String, Url>,
+    failures: DashMap<String, i64>,
+    locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+}
+
+impl NtvsWideiptvRefreshCache {
+    fn new() -> Self {
+        Self {
+            entries: DashMap::new(),
+            failures: DashMap::new(),
+            locks: DashMap::new(),
+        }
+    }
+
+    fn fresh_request_url(&self, source_url: &Url, referer: &str, now_seconds: i64) -> Option<Url> {
+        let token_url = self
+            .entries
+            .get(referer)
+            .map(|entry| entry.value().clone())?;
+        if crate::football::ntvs_wideiptv_hls_token_expires_within(
+            &token_url,
+            referer,
+            now_seconds,
+            NTVS_WIDEIPTV_HLS_REFRESH_WINDOW_SECONDS,
+        ) {
+            return None;
+        }
+        crate::football::refresh_ntvs_wideiptv_hls_request_url(source_url, &token_url, referer)
+    }
+
+    fn insert(&self, referer: String, token_url: Url) {
+        self.failures.remove(&referer);
+        self.entries.insert(referer, token_url);
+    }
+
+    fn recently_failed(&self, referer: &str, now_seconds: i64) -> bool {
+        self.failures
+            .get(referer)
+            .is_some_and(|retry_at| now_seconds < *retry_at.value())
+    }
+
+    fn record_failure(&self, referer: String) {
+        self.failures.insert(
+            referer,
+            current_unix_seconds().saturating_add(NTVS_WIDEIPTV_REFRESH_FAILURE_COOLDOWN_SECONDS),
+        );
+    }
+
+    fn lock_for(&self, referer: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let entry = self.locks.entry(referer.to_owned()).or_default();
+        Arc::clone(entry.value())
+    }
+
+    fn prune(&self) {
+        let now_seconds = current_unix_seconds();
+        self.entries.retain(|referer, token_url| {
+            !crate::football::ntvs_wideiptv_hls_token_expires_within(
+                token_url,
+                referer,
+                now_seconds,
+                0,
+            )
+        });
+        self.failures.retain(|_, retry_at| now_seconds < *retry_at);
+        prune_single_flight_locks(&self.locks);
+    }
+}
+
+static NTVS_WIDEIPTV_REFRESH_CACHE: LazyLock<NtvsWideiptvRefreshCache> =
+    LazyLock::new(NtvsWideiptvRefreshCache::new);
+
 // Single-flight lock maps: concurrent cache misses on the same playlist key /
 // segment URL share ONE upstream fetch (+rewrite/+ffmpeg) instead of stampeding
 // the WARP proxy and the transcode semaphore. Usage pattern (deadlock-critical,
@@ -1039,6 +1118,7 @@ fn prune_single_flight_locks(locks: &DashMap<String, Arc<tokio::sync::Mutex<()>>
 /// Called from the main.rs 60 s sweep, alongside the AppState cache prunes.
 pub fn prune_live_proxy_statics() {
     LIVE_SEGMENT_OUTPUT_CACHE.prune();
+    NTVS_WIDEIPTV_REFRESH_CACHE.prune();
     prune_single_flight_locks(&LIVE_HLS_PLAYLIST_SINGLE_FLIGHT);
     prune_single_flight_locks(&LIVE_SEGMENT_SINGLE_FLIGHT);
 }
@@ -1472,6 +1552,77 @@ fn live_hls_request_input(
         signature_expires_at,
         direct_segments,
     })
+}
+
+async fn refresh_expiring_ntvs_wideiptv_request(
+    state: &AppState,
+    mut live_request: LiveHlsRequest,
+) -> LiveHlsRequest {
+    let Some(referer) = live_request.referer.clone() else {
+        return live_request;
+    };
+    if !live_request.trusted_external_embed
+        || !crate::football::ntvs_wideiptv_hls_token_expires_within(
+            &live_request.source_url,
+            referer.as_str(),
+            current_unix_seconds(),
+            NTVS_WIDEIPTV_HLS_REFRESH_WINDOW_SECONDS,
+        )
+    {
+        return live_request;
+    }
+
+    let now_seconds = current_unix_seconds();
+    if let Some(refreshed_url) = NTVS_WIDEIPTV_REFRESH_CACHE.fresh_request_url(
+        &live_request.source_url,
+        referer.as_str(),
+        now_seconds,
+    ) {
+        live_request.source_url = refreshed_url;
+        return live_request;
+    }
+    if NTVS_WIDEIPTV_REFRESH_CACHE.recently_failed(referer.as_str(), now_seconds) {
+        return live_request;
+    }
+
+    // Single-flight per exact player URL: the first old-token playlist refreshes
+    // the provider page through WARP; concurrent and subsequent media-playlist
+    // polls reuse its cached shard+token until that token nears expiry too.
+    let refresh_lock = NTVS_WIDEIPTV_REFRESH_CACHE.lock_for(referer.as_str());
+    let _refresh_guard = refresh_lock.lock().await;
+    if let Some(refreshed_url) = NTVS_WIDEIPTV_REFRESH_CACHE.fresh_request_url(
+        &live_request.source_url,
+        referer.as_str(),
+        current_unix_seconds(),
+    ) {
+        live_request.source_url = refreshed_url;
+        return live_request;
+    }
+    if NTVS_WIDEIPTV_REFRESH_CACHE.recently_failed(referer.as_str(), current_unix_seconds()) {
+        return live_request;
+    }
+
+    // The helper rotates only the CDN shard + token while preserving whether
+    // this is the master or a rolling rendition. Bound the provider-page fetch
+    // far below the 45-second headroom; failure serves the still-valid original
+    // playlist and a short cooldown prevents queued polls from retrying in a
+    // serialized thundering herd.
+    let refresh_result = timeout(
+        Duration::from_secs(NTVS_WIDEIPTV_REFRESH_TIMEOUT_SECONDS),
+        crate::football::refresh_ntvs_wideiptv_hls_url(
+            state,
+            &live_request.source_url,
+            referer.as_str(),
+        ),
+    )
+    .await;
+    if let Ok(Some(refreshed_url)) = refresh_result {
+        NTVS_WIDEIPTV_REFRESH_CACHE.insert(referer, refreshed_url.clone());
+        live_request.source_url = refreshed_url;
+    } else {
+        NTVS_WIDEIPTV_REFRESH_CACHE.record_failure(referer);
+    }
+    live_request
 }
 
 fn normalize_hls_referer(value: &str) -> Option<String> {
@@ -3066,7 +3217,7 @@ fn find_hls_attribute_start(line: &str, attribute: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        LiveHlsRequestKind, audio_codec_needs_live_transcode,
+        LiveHlsRequestKind, NtvsWideiptvRefreshCache, audio_codec_needs_live_transcode,
         browser_bound_live_hls_referer_header, browser_live_hls_relay_url,
         build_sports_live_hls_playback_source, build_trusted_external_embed_hls_playback_source,
         host_matches_allowed_live_hls_host, is_allowed_live_hls_url,
@@ -3107,6 +3258,59 @@ mod tests {
             )))
             .is_none()
         );
+    }
+
+    #[test]
+    fn wideiptv_refresh_cache_reuses_one_token_for_old_master_and_media_urls() {
+        let cache = NtvsWideiptvRefreshCache::new();
+        let referer = "https://wideiptv.top/player/NOVASPORTS1";
+        let old_media = url::Url::parse(
+            "https://ds164.bluetier.top/NOVASPORTS1/tracks-v1a1/mono.m3u8?token=Tk9WQVNQT1JUUzF8bm9fY2hlY2tfaXB8MTAwMA%3D%3D.old",
+        )
+        .unwrap();
+        let old_master = url::Url::parse(
+            "https://ds164.bluetier.top/NOVASPORTS1/index.m3u8?token=Tk9WQVNQT1JUUzF8bm9fY2hlY2tfaXB8MTAwMA%3D%3D.old",
+        )
+        .unwrap();
+        let fresh_token_url = url::Url::parse(
+            "https://ds200.bluetier.top/NOVASPORTS1/index.m3u8?token=Tk9WQVNQT1JUUzF8bm9fY2hlY2tfaXB8MjAwMA%3D%3D.fresh",
+        )
+        .unwrap();
+        cache.insert(referer.to_owned(), fresh_token_url);
+
+        let media = cache
+            .fresh_request_url(&old_media, referer, 1_000)
+            .expect("cached media refresh");
+        let master = cache
+            .fresh_request_url(&old_master, referer, 1_000)
+            .expect("cached master refresh");
+        let repeated_media = cache
+            .fresh_request_url(&old_media, referer, 1_000)
+            .expect("reused cached media refresh");
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(media.host_str(), Some("ds200.bluetier.top"));
+        assert_eq!(media.path(), "/NOVASPORTS1/tracks-v1a1/mono.m3u8");
+        assert_eq!(master.path(), "/NOVASPORTS1/index.m3u8");
+        assert_eq!(repeated_media, media);
+        assert!(
+            media
+                .query_pairs()
+                .any(|(key, value)| { key == "token" && value.ends_with("fresh") })
+        );
+        assert!(
+            cache
+                .fresh_request_url(&old_media, referer, 1_960)
+                .is_none(),
+            "the cached token must single-flight another refresh before its own expiry"
+        );
+
+        let first_lock = cache.lock_for(referer);
+        let second_lock = cache.lock_for(referer);
+        assert!(std::sync::Arc::ptr_eq(&first_lock, &second_lock));
+
+        cache.failures.insert(referer.to_owned(), 2_000);
+        assert!(cache.recently_failed(referer, 1_999));
+        assert!(!cache.recently_failed(referer, 2_000));
     }
 
     #[test]

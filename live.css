@@ -122,6 +122,19 @@ body.live-route .page {
     background: #151515;
 }
 
+.live-channel-card:disabled,
+.live-channel-card.is-unavailable {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.live-channel-card:disabled:hover,
+.live-channel-card.is-unavailable:hover {
+    transform: none;
+    border-color: rgba(255, 255, 255, 0.075);
+    background: #121212;
+}
+
 .live-channel-card:focus-visible {
     outline: 2px solid rgba(255, 255, 255, 0.9);
     outline-offset: 3px;

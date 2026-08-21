@@ -39,6 +39,18 @@ assert.equal(
 );
 assert.equal(
   normalizeLiveStreamPreferenceProvider({
+    source: "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS1",
+  }),
+  "ntvs",
+);
+assert.equal(
+  normalizeLiveStreamPreferenceProvider({
+    source: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports",
+  }),
+  "cdnlivetv",
+);
+assert.equal(
+  normalizeLiveStreamPreferenceProvider({
     source: "https://watch.matchstream.to/game",
   }),
   "matchstream",

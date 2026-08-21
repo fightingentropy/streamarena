@@ -24,7 +24,7 @@ export function ntvCdnLiveChannelUrl(channelSlug, countryCode = "us") {
 }
 
 export function novasportsChannelUrl(channelNumber) {
-  return `${catalog.hesgoalerStreamBaseUrl}?ch=NOVASPORTS${channelNumber}`;
+  return `${catalog.falconPlayerBaseUrl}?id=NOVASPORTS${channelNumber}`;
 }
 
 export const NOVASPORTS_STREAM_URL = novasportsChannelUrl(1);
@@ -40,6 +40,14 @@ function hydrateLiveChannels(channels) {
 }
 
 export const LIVE_CHANNELS = Object.freeze(hydrateLiveChannels(catalog.channels));
+
+export function isLiveChannelPlayable(channel) {
+  const streams = Array.isArray(channel?.streams) ? channel.streams : [];
+  return (
+    streams.some((stream) => String(stream?.source || "").trim()) ||
+    Boolean(String(channel?.source || "").trim())
+  );
+}
 
 export const LIVE_CHANNEL_PLAYBACK_FALLBACKS = Object.freeze(
   Object.fromEntries(

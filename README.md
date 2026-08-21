@@ -753,6 +753,11 @@ Sports proxy/WARP:
   - `bin/resolve-streamed-hls.mjs` for Streamed sports native HLS.
   - `bin/resolve-matchstream-hls.mjs` for MatchStream sports native HLS.
   - `bin/resolve-ntvs-hls.mjs` for NTVS sports native HLS.
+  - `bin/lib/load-playwright.mjs` as the shared Playwright module loader used by
+    every browser resolver.
+- Deployment exercises the staged resolver import graph before activation, and
+  `scripts/check-mini.sh` repeats that smoke test against the active `bin/`
+  bundle so a missing relative import cannot pass on file-presence checks alone.
 
 Useful sports proxy checks:
 

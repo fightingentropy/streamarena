@@ -8,6 +8,10 @@ const liveChannelsSource = readFileSync(
   "utf8",
 );
 const layoutSource = readFileSync(join(__dirname, "../src/app/_layout.tsx"), "utf8");
+const liveTvViewSource = readFileSync(
+  join(__dirname, "../src/components/live/LiveTvView.tsx"),
+  "utf8",
+);
 const catalog = JSON.parse(
   readFileSync(join(__dirname, "../../shared/live-channels.json"), "utf8"),
 );
@@ -23,6 +27,16 @@ test("mobile live catalog is generated from the shared JSON source", () => {
     ),
     false,
   );
+  assert.equal(
+    catalog.channels.some((channel) => channel.source.includes("hesgoaler.com/stream.php")),
+    false,
+  );
+  assert.deepEqual(
+    catalog.channels.filter((channel) => !channel.source).map((channel) => channel.id),
+    ["bein-sports-1-uk"],
+  );
+  assert.match(liveTvViewSource, /disabled=\{!playable\}/);
+  assert.match(liveTvViewSource, /channel\.artworkPresentation === "logo"/);
 });
 
 test("authenticated sessions load live channel URL overrides", () => {

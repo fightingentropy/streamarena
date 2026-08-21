@@ -1,6 +1,6 @@
 {
   "ntvCdnLiveBaseUrl": "https://ntv.cx/channel-cdnlive",
-  "hesgoalerStreamBaseUrl": "https://hesgoaler.com/stream.php",
+  "falconPlayerBaseUrl": "https://hesgoal.team/ntvtvplayer.html",
   "urls": {
     "bloombergUs": "https://www.bloomberg.com/media-manifest/streams/us.m3u8",
     "bloombergEu": "https://www.bloomberg.com/media-manifest/streams/eu.m3u8",
@@ -322,13 +322,13 @@
     {
       "id": "novasports-1",
       "title": "Nova Sports 1",
-      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS1",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS1",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Nova Sports 1 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS1",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS1",
           "quality": "Live HLS"
         }
       ],
@@ -343,13 +343,13 @@
     {
       "id": "novasports-2",
       "title": "Nova Sports 2",
-      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS2",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS2",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Nova Sports 2 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS2",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS2",
           "quality": "Live HLS"
         }
       ],
@@ -364,13 +364,13 @@
     {
       "id": "novasports-3",
       "title": "Nova Sports 3",
-      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS3",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS3",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Nova Sports 3 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS3",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS3",
           "quality": "Live HLS"
         }
       ],
@@ -385,13 +385,13 @@
     {
       "id": "novasports-4",
       "title": "Nova Sports 4",
-      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS4",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS4",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Nova Sports 4 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS4",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS4",
           "quality": "Live HLS"
         }
       ],
@@ -406,13 +406,13 @@
     {
       "id": "novasports-5",
       "title": "Nova Sports 5",
-      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS5",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS5",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Nova Sports 5 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS5",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS5",
           "quality": "Live HLS"
         }
       ],
@@ -427,13 +427,13 @@
     {
       "id": "novasports-6",
       "title": "Nova Sports 6",
-      "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS6",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS6",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Nova Sports 6 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=NOVASPORTS6",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS6",
           "quality": "Live HLS"
         }
       ],
@@ -448,13 +448,13 @@
     {
       "id": "sky-sports-main-event",
       "title": "Sky Sports Main Event",
-      "source": "https://hesgoaler.com/stream.php?ch=skysportsmainevent",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Main%20Event&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sky Sports Main Event Live",
-          "source": "https://hesgoaler.com/stream.php?ch=skysportsmainevent",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Main%20Event&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -469,13 +469,13 @@
     {
       "id": "sky-sports-premier-league",
       "title": "Sky Sports Premier League",
-      "source": "https://hesgoaler.com/stream.php?ch=skysportspremierleague",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Premier%20League&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sky Sports Premier League Live",
-          "source": "https://hesgoaler.com/stream.php?ch=skysportspremierleague",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Premier%20League&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -490,13 +490,13 @@
     {
       "id": "sky-sports-football",
       "title": "Sky Sports Football",
-      "source": "https://hesgoaler.com/stream.php?ch=SkySportsFootballUK",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Football&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sky Sports Football Live",
-          "source": "https://hesgoaler.com/stream.php?ch=SkySportsFootballUK",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Football&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -511,13 +511,13 @@
     {
       "id": "sky-sports-action",
       "title": "Sky Sports Action",
-      "source": "https://hesgoaler.com/stream.php?ch=skysportsaction",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Action&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sky Sports Action Live",
-          "source": "https://hesgoaler.com/stream.php?ch=skysportsaction",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Action&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -532,13 +532,13 @@
     {
       "id": "sky-sports-f1",
       "title": "Sky Sports F1",
-      "source": "https://hesgoaler.com/stream.php?ch=SkySportsF1",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20F1&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sky Sports F1 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=SkySportsF1",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20F1&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -553,13 +553,13 @@
     {
       "id": "sky-sports-golf",
       "title": "Sky Sports Golf",
-      "source": "https://hesgoaler.com/stream.php?ch=skysportsgolfuk",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Golf&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sky Sports Golf Live",
-          "source": "https://hesgoaler.com/stream.php?ch=skysportsgolfuk",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Golf&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -574,13 +574,13 @@
     {
       "id": "sky-sports-tennis",
       "title": "Sky Sports Tennis",
-      "source": "https://hesgoaler.com/stream.php?ch=skysportstennisuk",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Tennis&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sky Sports Tennis Live",
-          "source": "https://hesgoaler.com/stream.php?ch=skysportstennisuk",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Tennis&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -595,13 +595,13 @@
     {
       "id": "sky-sports-mix",
       "title": "Sky Sports Mix",
-      "source": "https://hesgoaler.com/stream.php?ch=skysportsmixuk",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Mix&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sky Sports Mix Live",
-          "source": "https://hesgoaler.com/stream.php?ch=skysportsmixuk",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sports%20Mix&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -616,13 +616,13 @@
     {
       "id": "tnt-sports-1",
       "title": "TNT Sports 1",
-      "source": "https://hesgoaler.com/stream.php?ch=TNT1UK",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=TNT%20Sports%201&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "TNT Sports 1 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=TNT1UK",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=TNT%20Sports%201&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -637,13 +637,13 @@
     {
       "id": "tnt-sports-2",
       "title": "TNT Sports 2",
-      "source": "https://hesgoaler.com/stream.php?ch=tntsports2",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=TNT%20Sports%202&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "TNT Sports 2 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=tntsports2",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=TNT%20Sports%202&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -658,13 +658,13 @@
     {
       "id": "tnt-sports-3",
       "title": "TNT Sports 3",
-      "source": "https://hesgoaler.com/stream.php?ch=tntsports3",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=TNT%20Sports%203&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "TNT Sports 3 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=tntsports3",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=TNT%20Sports%203&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -679,13 +679,13 @@
     {
       "id": "tnt-sports-4",
       "title": "TNT Sports 4",
-      "source": "https://hesgoaler.com/stream.php?ch=tntsports4",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=TNT%20Sports%204&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "TNT Sports 4 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=tntsports4",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=TNT%20Sports%204&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -700,13 +700,13 @@
     {
       "id": "premier-sports-1",
       "title": "Premier Sports 1",
-      "source": "https://hesgoaler.com/stream.php?ch=PREMIERSPORTS1",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Premier%20Sports%201&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Premier Sports 1 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=PREMIERSPORTS1",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Premier%20Sports%201&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -721,13 +721,13 @@
     {
       "id": "premier-sports-2",
       "title": "Premier Sports 2",
-      "source": "https://hesgoaler.com/stream.php?ch=PREMIERSPORTS2",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Premier%20Sports%202&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Premier Sports 2 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=PREMIERSPORTS2",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Premier%20Sports%202&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -742,13 +742,13 @@
     {
       "id": "eurosport-1",
       "title": "Eurosport 1",
-      "source": "https://hesgoaler.com/stream.php?ch=Eurosport1UK",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Euro%20Sport%201&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Eurosport 1 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=Eurosport1UK",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Euro%20Sport%201&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -763,13 +763,13 @@
     {
       "id": "eurosport-2",
       "title": "Eurosport 2",
-      "source": "https://hesgoaler.com/stream.php?ch=Eurosport2UK",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Euro%20Sport%202&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Eurosport 2 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=Eurosport2UK",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Euro%20Sport%202&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -784,13 +784,13 @@
     {
       "id": "viaplay-sports-la-liga",
       "title": "LALIGA TV",
-      "source": "https://hesgoaler.com/stream.php?ch=ViaplayLaLigaUK",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=LaLiga%20TV&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "LALIGA TV Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ViaplayLaLigaUK",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=LaLiga%20TV&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -805,13 +805,13 @@
     {
       "id": "bein-sports-1-uk",
       "title": "beIN Sports 1 UK",
-      "source": "https://hesgoaler.com/stream.php?ch=BEINSPORTS1UK",
+      "source": "",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "beIN Sports 1 UK Live",
-          "source": "https://hesgoaler.com/stream.php?ch=BEINSPORTS1UK",
+          "source": "",
           "quality": "Live HLS"
         }
       ],
@@ -821,18 +821,19 @@
       "artworkPresentation": "logo",
       "genre": "Sports",
       "region": "UK",
-      "quality": "Live HLS"
+      "quality": "Unavailable",
+      "unavailableReason": "No current provider feed"
     },
     {
       "id": "itv-1",
       "title": "ITV1",
-      "source": "https://hesgoaler.com/stream.php?ch=ITV1",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ITV%201&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "ITV1 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ITV1",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ITV%201&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -847,13 +848,13 @@
     {
       "id": "itv-2",
       "title": "ITV2",
-      "source": "https://hesgoaler.com/stream.php?ch=ITV2",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ITV%202&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "ITV2 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ITV2",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ITV%202&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -868,13 +869,13 @@
     {
       "id": "itv-3",
       "title": "ITV3",
-      "source": "https://hesgoaler.com/stream.php?ch=ITV3",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ITV%203&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "ITV3 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ITV3",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ITV%203&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -889,13 +890,13 @@
     {
       "id": "itv-4",
       "title": "ITV4",
-      "source": "https://hesgoaler.com/stream.php?ch=ITV4",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ITV%204&code=gb&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "ITV4 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ITV4",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ITV%204&code=gb&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -910,13 +911,13 @@
     {
       "id": "lfc-tv",
       "title": "LFC TV",
-      "source": "https://hesgoaler.com/stream.php?ch=LFCTV",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=LFCTV",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "LFC TV Live",
-          "source": "https://hesgoaler.com/stream.php?ch=LFCTV",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=LFCTV",
           "quality": "Live HLS"
         }
       ],
@@ -931,13 +932,13 @@
     {
       "id": "mutv",
       "title": "MUTV",
-      "source": "https://hesgoaler.com/stream.php?ch=MUTV",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=MUTV",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "MUTV Live",
-          "source": "https://hesgoaler.com/stream.php?ch=MUTV",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=MUTV",
           "quality": "Live HLS"
         }
       ],
@@ -952,13 +953,13 @@
     {
       "id": "bein-sports-1",
       "title": "beIN Sports 1",
-      "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT1FR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%201&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "beIN Sports 1 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT1FR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%201&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -973,13 +974,13 @@
     {
       "id": "bein-sports-2",
       "title": "beIN Sports 2",
-      "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT2FR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%202&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "beIN Sports 2 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT2FR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%202&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -994,13 +995,13 @@
     {
       "id": "bein-sports-3",
       "title": "beIN Sports 3",
-      "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT3FR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%203&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "beIN Sports 3 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=BEINSPORT3FR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%203&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1015,13 +1016,13 @@
     {
       "id": "bein-sports-max-4",
       "title": "beIN Sports Max 4",
-      "source": "https://hesgoaler.com/stream.php?ch=beINMAX4FR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%204&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "beIN Sports Max 4 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=beINMAX4FR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%204&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1036,13 +1037,13 @@
     {
       "id": "bein-sports-max-5",
       "title": "beIN Sports Max 5",
-      "source": "https://hesgoaler.com/stream.php?ch=beINMAX5FR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%205&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "beIN Sports Max 5 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=beINMAX5FR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%205&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1057,13 +1058,13 @@
     {
       "id": "bein-sports-max-6",
       "title": "beIN Sports Max 6",
-      "source": "https://hesgoaler.com/stream.php?ch=beINMAX6FR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%206&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "beIN Sports Max 6 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=beINMAX6FR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%206&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1078,13 +1079,13 @@
     {
       "id": "bein-sports-max-7",
       "title": "beIN Sports Max 7",
-      "source": "https://hesgoaler.com/stream.php?ch=beINMAX7FR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%207&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "beIN Sports Max 7 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=beINMAX7FR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%207&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1099,13 +1100,13 @@
     {
       "id": "bein-sports-max-8",
       "title": "beIN Sports Max 8",
-      "source": "https://hesgoaler.com/stream.php?ch=beINMAX8FR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%208&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "beIN Sports Max 8 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=beINMAX8FR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%208&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1120,13 +1121,13 @@
     {
       "id": "bein-sports-max-9",
       "title": "beIN Sports Max 9",
-      "source": "https://hesgoaler.com/stream.php?ch=beINMAX9FR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%209&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "beIN Sports Max 9 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=beINMAX9FR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%20MAX%209&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1141,13 +1142,13 @@
     {
       "id": "canal-plus-sport",
       "title": "Canal+ Sport",
-      "source": "https://hesgoaler.com/stream.php?ch=CANALSPORTFR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%20Sport&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Canal+ Sport Live",
-          "source": "https://hesgoaler.com/stream.php?ch=CANALSPORTFR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%20Sport&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1162,13 +1163,13 @@
     {
       "id": "canal-plus-sport-360",
       "title": "Canal+ Sport 360",
-      "source": "https://hesgoaler.com/stream.php?ch=CANALS360",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%20Sport360&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Canal+ Sport 360 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=CANALS360",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%20Sport360&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1183,13 +1184,13 @@
     {
       "id": "canal-plus-foot",
       "title": "Canal+ Foot",
-      "source": "https://hesgoaler.com/stream.php?ch=FOOTPLUSFR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%20Foot&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Canal+ Foot Live",
-          "source": "https://hesgoaler.com/stream.php?ch=FOOTPLUSFR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%20Foot&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1204,13 +1205,13 @@
     {
       "id": "rmc-sport-1",
       "title": "RMC Sport 1",
-      "source": "https://hesgoaler.com/stream.php?ch=RMCSPORT1FR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=RMC%20Sport%201&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "RMC Sport 1 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=RMCSPORT1FR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=RMC%20Sport%201&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1225,13 +1226,13 @@
     {
       "id": "rmc-sport-2",
       "title": "RMC Sport 2",
-      "source": "https://hesgoaler.com/stream.php?ch=RMCSPORT2FR",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=RMC%20Sport%202&code=fr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "RMC Sport 2 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=RMCSPORT2FR",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=RMC%20Sport%202&code=fr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1246,13 +1247,13 @@
     {
       "id": "lequipe",
       "title": "L'Équipe",
-      "source": "https://hesgoaler.com/stream.php?ch=EQUIPEFR",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=EQUIPEFR",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "L'Équipe Live",
-          "source": "https://hesgoaler.com/stream.php?ch=EQUIPEFR",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=EQUIPEFR",
           "quality": "Live HLS"
         }
       ],
@@ -1267,13 +1268,13 @@
     {
       "id": "cosmote-sport-1",
       "title": "Cosmote Sport 1",
-      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT1",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%201&code=gr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Cosmote Sport 1 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT1",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%201&code=gr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1288,13 +1289,13 @@
     {
       "id": "cosmote-sport-2",
       "title": "Cosmote Sport 2",
-      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT2",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=COSMOTESPORT2",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Cosmote Sport 2 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT2",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=COSMOTESPORT2",
           "quality": "Live HLS"
         }
       ],
@@ -1309,13 +1310,13 @@
     {
       "id": "cosmote-sport-3",
       "title": "Cosmote Sport 3",
-      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT3",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=COSMOTESPORT3",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Cosmote Sport 3 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT3",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=COSMOTESPORT3",
           "quality": "Live HLS"
         }
       ],
@@ -1330,13 +1331,13 @@
     {
       "id": "cosmote-sport-4",
       "title": "Cosmote Sport 4",
-      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT4",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%204&code=gr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Cosmote Sport 4 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT4",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%204&code=gr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1351,13 +1352,13 @@
     {
       "id": "cosmote-sport-5",
       "title": "Cosmote Sport 5",
-      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT5",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%205&code=gr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Cosmote Sport 5 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT5",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%205&code=gr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1372,13 +1373,13 @@
     {
       "id": "cosmote-sport-6",
       "title": "Cosmote Sport 6",
-      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT6",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%206&code=gr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Cosmote Sport 6 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT6",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%206&code=gr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1393,13 +1394,13 @@
     {
       "id": "cosmote-sport-7",
       "title": "Cosmote Sport 7",
-      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT7",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%207&code=gr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Cosmote Sport 7 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT7",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%207&code=gr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1414,13 +1415,13 @@
     {
       "id": "cosmote-sport-8",
       "title": "Cosmote Sport 8",
-      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT8",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%208&code=gr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Cosmote Sport 8 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT8",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%208&code=gr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1435,13 +1436,13 @@
     {
       "id": "cosmote-sport-9",
       "title": "Cosmote Sport 9",
-      "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT9",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%209&code=gr&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Cosmote Sport 9 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=COSMOTESPORT9",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Cosmote%20Sport%209&code=gr&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1456,13 +1457,13 @@
     {
       "id": "sport-tv-1",
       "title": "Sport TV 1",
-      "source": "https://hesgoaler.com/stream.php?ch=SPT1",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%201&code=pt&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sport TV 1 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=SPT1",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%201&code=pt&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1477,13 +1478,13 @@
     {
       "id": "sport-tv-2",
       "title": "Sport TV 2",
-      "source": "https://hesgoaler.com/stream.php?ch=SPT2",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%202&code=pt&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sport TV 2 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=SPT2",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%202&code=pt&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1498,13 +1499,13 @@
     {
       "id": "sport-tv-3",
       "title": "Sport TV 3",
-      "source": "https://hesgoaler.com/stream.php?ch=SPT3",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%203&code=pt&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sport TV 3 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=SPT3",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%203&code=pt&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1519,13 +1520,13 @@
     {
       "id": "sport-tv-4",
       "title": "Sport TV 4",
-      "source": "https://hesgoaler.com/stream.php?ch=SPT4",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%204&code=pt&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sport TV 4 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=SPT4",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%204&code=pt&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1540,13 +1541,13 @@
     {
       "id": "sport-tv-5",
       "title": "Sport TV 5",
-      "source": "https://hesgoaler.com/stream.php?ch=SPT5",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%205&code=pt&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sport TV 5 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=SPT5",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%205&code=pt&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1561,13 +1562,13 @@
     {
       "id": "sport-tv-6",
       "title": "Sport TV 6",
-      "source": "https://hesgoaler.com/stream.php?ch=SPT6",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%206&code=pt&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sport TV 6 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=SPT6",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%206&code=pt&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1582,13 +1583,13 @@
     {
       "id": "sport-tv-7",
       "title": "Sport TV 7",
-      "source": "https://hesgoaler.com/stream.php?ch=SPT7",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%207&code=pt&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Sport TV 7 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=SPT7",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%207&code=pt&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1603,13 +1604,13 @@
     {
       "id": "benfica-tv",
       "title": "Benfica TV",
-      "source": "https://hesgoaler.com/stream.php?ch=BTV1",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Benfica%20TV&code=pt&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Benfica TV Live",
-          "source": "https://hesgoaler.com/stream.php?ch=BTV1",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Benfica%20TV&code=pt&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1624,13 +1625,13 @@
     {
       "id": "canal-11",
       "title": "Canal 11",
-      "source": "https://hesgoaler.com/stream.php?ch=CANAL11",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%2011&code=pt&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Canal 11 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=CANAL11",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%2011&code=pt&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1645,13 +1646,13 @@
     {
       "id": "espn-1-nl",
       "title": "ESPN 1",
-      "source": "https://hesgoaler.com/stream.php?ch=ESPN1NL",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ESPN&code=nl&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "ESPN 1 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ESPN1NL",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ESPN&code=nl&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1666,13 +1667,13 @@
     {
       "id": "espn-2-nl",
       "title": "ESPN 2",
-      "source": "https://hesgoaler.com/stream.php?ch=ESPN2NL",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ESPN%202&code=nl&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "ESPN 2 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ESPN2NL",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ESPN%202&code=nl&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1687,13 +1688,13 @@
     {
       "id": "espn-3-nl",
       "title": "ESPN 3",
-      "source": "https://hesgoaler.com/stream.php?ch=ESPN3NL",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ESPN%203&code=nl&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "ESPN 3 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ESPN3NL",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=ESPN%203&code=nl&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1708,13 +1709,13 @@
     {
       "id": "espn-4-nl",
       "title": "ESPN 4",
-      "source": "https://hesgoaler.com/stream.php?ch=ESPN4NL",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=ESPN4NL",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "ESPN 4 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ESPN4NL",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=ESPN4NL",
           "quality": "Live HLS"
         }
       ],
@@ -1729,13 +1730,13 @@
     {
       "id": "ziggo-sport",
       "title": "Ziggo Sport",
-      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport",
+      "source": "https://hesgoal.team/ntvtvplayer.html?id=ZiggoSport",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Ziggo Sport Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport",
+          "source": "https://hesgoal.team/ntvtvplayer.html?id=ZiggoSport",
           "quality": "Live HLS"
         }
       ],
@@ -1750,13 +1751,13 @@
     {
       "id": "ziggo-sport-2",
       "title": "Ziggo Sport 2",
-      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport2",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Ziggo%20Sport%202&code=nl&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Ziggo Sport 2 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport2",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Ziggo%20Sport%202&code=nl&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1771,13 +1772,13 @@
     {
       "id": "ziggo-sport-3",
       "title": "Ziggo Sport 3",
-      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport3",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Ziggo%20Sport%203&code=nl&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Ziggo Sport 3 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport3",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Ziggo%20Sport%203&code=nl&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1792,13 +1793,13 @@
     {
       "id": "ziggo-sport-4",
       "title": "Ziggo Sport 4",
-      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport4",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Ziggo%20Sport%204&code=nl&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Ziggo Sport 4 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport4",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Ziggo%20Sport%204&code=nl&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1813,13 +1814,13 @@
     {
       "id": "ziggo-sport-5",
       "title": "Ziggo Sport 5",
-      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport5",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Ziggo%20Sport%205&code=nl&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Ziggo Sport 5 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport5",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Ziggo%20Sport%205&code=nl&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],
@@ -1834,13 +1835,13 @@
     {
       "id": "ziggo-sport-6",
       "title": "Ziggo Sport 6",
-      "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport6",
+      "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Ziggo%20Sport%206&code=nl&user=ntvstream&plan=free",
       "defaultStreamId": "default",
       "streams": [
         {
           "id": "default",
           "label": "Ziggo Sport 6 Live",
-          "source": "https://hesgoaler.com/stream.php?ch=ZiggoSport6",
+          "source": "https://cdnlivetv.tv/api/v1/channels/player/?name=Ziggo%20Sport%206&code=nl&user=ntvstream&plan=free",
           "quality": "Live HLS"
         }
       ],

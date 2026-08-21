@@ -3,7 +3,11 @@ import { ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { Image } from "expo-image";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
-import { type LiveChannel, LIVE_CHANNELS } from "@/lib/live-channels";
+import {
+  isLiveChannelPlayable,
+  type LiveChannel,
+  LIVE_CHANNELS,
+} from "@/lib/live-channels";
 import { LIVE_LOGOS } from "@/lib/live-logos";
 import { liveRequestFromChannel } from "@/video/live";
 import { colors } from "@/theme";
@@ -63,10 +67,16 @@ function ChannelTile({
   width: number;
 }) {
   const logo = LIVE_LOGOS[channel.id];
-  const usesAuthenticLogo =
-    channel.id !== "sport-tv-7" && channel.source.includes("hesgoaler.com/stream.php");
+  const playable = isLiveChannelPlayable(channel);
+  const usesAuthenticLogo = channel.artworkPresentation === "logo";
   return (
-    <PressableScale onPress={() => onPlay(channel)} style={{ width }} accessibilityLabel={`Play ${channel.title}`}>
+    <PressableScale
+      onPress={() => onPlay(channel)}
+      disabled={!playable}
+      style={{ width, opacity: playable ? 1 : 0.5 }}
+      accessibilityLabel={playable ? `Play ${channel.title}` : `${channel.title} unavailable`}
+      accessibilityState={{ disabled: !playable }}
+    >
       {/* The logo is the card's colour; everything around it stays neutral. */}
       <View
         style={{
@@ -102,7 +112,7 @@ function ChannelTile({
           {channel.title}
         </Text>
         <Text numberOfLines={1} style={{ color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 1 }}>
-          {channel.genre} · {channel.region}
+          {channel.genre} · {channel.region}{playable ? "" : " · Unavailable"}
         </Text>
       </View>
     </PressableScale>

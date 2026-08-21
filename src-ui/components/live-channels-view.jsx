@@ -1,6 +1,6 @@
 import { createSignal, For } from "solid-js";
 
-import { LIVE_CHANNELS } from "../lib/live-channels.js";
+import { isLiveChannelPlayable, LIVE_CHANNELS } from "../lib/live-channels.js";
 import {
   addCurrentReturnToParam,
   buildLiveWatchPath,
@@ -117,16 +117,24 @@ function buildPlayerUrl(channel) {
 }
 
 function openLiveChannel(channel) {
+  if (!isLiveChannelPlayable(channel)) {
+    return;
+  }
   window.location.href = buildPlayerUrl(channel);
 }
 
 function renderChannelCard(channel) {
+  const playable = isLiveChannelPlayable(channel);
+  const meta = `${channel.genre} · ${channel.region}${playable ? "" : " · Unavailable"}`;
   return <>
     <button
       class="live-channel-card"
+      classList={{ "is-unavailable": !playable }}
       type="button"
       onClick={() => openLiveChannel(channel)}
-      aria-label={`Play ${channel.title}`}
+      disabled={!playable}
+      aria-label={playable ? `Play ${channel.title}` : `${channel.title} unavailable`}
+      title={playable ? undefined : channel.unavailableReason || "No current provider feed"}
     >
       <img
         class={channel.artworkPresentation === "logo" ? "live-channel-logo" : undefined}
@@ -136,7 +144,7 @@ function renderChannelCard(channel) {
       />
       <span class="live-channel-body">
         <span class="live-channel-title">{channel.title}</span>
-        <span class="live-channel-meta">{channel.genre} · {channel.region}</span>
+        <span class="live-channel-meta">{meta}</span>
       </span>
     </button>
   </>;

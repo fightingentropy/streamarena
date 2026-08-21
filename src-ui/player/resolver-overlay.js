@@ -7,6 +7,8 @@ export function normalizeResolverFailureMessage(
     isExplicitLocalUploadSource = false,
     src = "",
     preferredResolverProvider = "",
+    isLivePlayback = false,
+    hasAlternatePlaybackSource = true,
   } = {},
 ) {
   const rawMessage =
@@ -34,27 +36,46 @@ export function normalizeResolverFailureMessage(
     normalized.includes("no such file or directory") ||
     normalized.includes("media_err_src_not_supported")
   ) {
+    if (isLivePlayback) {
+      return hasAlternatePlaybackSource
+        ? "This live stream could not be opened. Try another source."
+        : "This live channel is temporarily unavailable. Please try again shortly.";
+    }
     if (isExplicitLocalUploadSource || /^\/?assets\//i.test(src)) {
       return "This local video file could not be opened. It may be missing from the library or unsupported.";
     }
     return "This video could not be opened. Try another source.";
   }
 
-  if (
-    preferredResolverProvider !== "real-debrid" &&
-    (normalized.includes("resolving stream timed out") ||
-      normalized.includes("request timed out") ||
-      normalized.includes("local torrent") ||
-      normalized.includes("metadata") ||
-      normalized.includes("first byte") ||
-      normalized.includes("peer") ||
-      normalized.includes("bad gateway") ||
-      normalized.includes("502"))
-  ) {
+  const isStartupFailure =
+    normalized.includes("resolving stream timed out") ||
+    normalized.includes("request timed out") ||
+    normalized.includes("local torrent") ||
+    normalized.includes("metadata") ||
+    normalized.includes("first byte") ||
+    normalized.includes("peer") ||
+    normalized.includes("bad gateway") ||
+    normalized.includes("502");
+
+  if (isLivePlayback && isStartupFailure) {
+    return hasAlternatePlaybackSource
+      ? "This live stream could not start. Try another source."
+      : "This live channel is temporarily unavailable. Please try again shortly.";
+  }
+
+  if (preferredResolverProvider !== "real-debrid" && isStartupFailure) {
     if (preferredResolverProvider === "fastest") {
       return "This source could not start quickly enough. Try another source.";
     }
     return "Local torrent could not start this source quickly enough. Try another source.";
+  }
+
+  if (
+    isLivePlayback &&
+    !hasAlternatePlaybackSource &&
+    normalized.includes("try another source")
+  ) {
+    return "This live channel is temporarily unavailable. Please try again shortly.";
   }
 
   return message || fallbackMessage || "Unable to resolve this stream.";

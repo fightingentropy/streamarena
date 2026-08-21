@@ -150,7 +150,7 @@ fi
 [[ -x "$BACKEND_BIN" ]] || { echo "Missing $BACKEND_BIN. Run without --skip-build first." >&2; exit 1; }
 
 "${SSH_BASE[@]}" "$MINI_HOST" \
-  "rm -rf -- '$REMOTE_STAGE' '$REMOTE_ROLLBACK' && mkdir -p '$REMOTE_STAGE/dist' '$REMOTE_STAGE/bin' '$REMOTE_STAGE/assets/images' '$REMOTE_STAGE/assets/icons' '$REMOTE_APP/assets/videos'"
+  "rm -rf -- '$REMOTE_STAGE' '$REMOTE_ROLLBACK' && mkdir -p '$REMOTE_STAGE/dist' '$REMOTE_STAGE/bin/lib' '$REMOTE_STAGE/assets/images' '$REMOTE_STAGE/assets/icons' '$REMOTE_APP/assets/videos'"
 
 rsync -a --delete -e "$RSYNC_SSH" dist/ "$MINI_HOST:$REMOTE_STAGE/dist/"
 
@@ -163,13 +163,15 @@ rsync -a -e "$RSYNC_SSH" scripts/resolve-cdnlivetv-hls.mjs "$MINI_HOST:$REMOTE_S
 rsync -a -e "$RSYNC_SSH" scripts/fetch-browser-live-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/fetch-browser-live-hls.mjs"
 rsync -a -e "$RSYNC_SSH" scripts/resolve-embed-min.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-embed-min.mjs"
 rsync -a -e "$RSYNC_SSH" scripts/serve-browser-hls-session.mjs "$MINI_HOST:$REMOTE_STAGE/bin/serve-browser-hls-session.mjs"
+rsync -a -e "$RSYNC_SSH" scripts/check-resolver-runtime.mjs "$MINI_HOST:$REMOTE_STAGE/bin/check-resolver-runtime.mjs"
+rsync -a --delete -e "$RSYNC_SSH" scripts/lib/ "$MINI_HOST:$REMOTE_STAGE/bin/lib/"
 "${SSH_BASE[@]}" "$MINI_HOST" "chmod 755 '$REMOTE_STAGE/bin/'*"
 
 rsync -a -e "$RSYNC_SSH" assets/library.json "$MINI_HOST:$REMOTE_STAGE/assets/library.json"
 rsync -a --delete -e "$RSYNC_SSH" assets/images/ "$MINI_HOST:$REMOTE_STAGE/assets/images/"
 rsync -a --delete -e "$RSYNC_SSH" assets/icons/ "$MINI_HOST:$REMOTE_STAGE/assets/icons/"
 
-"${SSH_BASE[@]}" "$MINI_HOST" "PLAYWRIGHT_VERSION='$PLAYWRIGHT_VERSION' LIBSODIUM_WRAPPERS_VERSION='$LIBSODIUM_WRAPPERS_VERSION' bash -s" <<'REMOTE'
+"${SSH_BASE[@]}" "$MINI_HOST" "REMOTE_STAGE='$REMOTE_STAGE' PLAYWRIGHT_VERSION='$PLAYWRIGHT_VERSION' LIBSODIUM_WRAPPERS_VERSION='$LIBSODIUM_WRAPPERS_VERSION' bash -s" <<'REMOTE'
 set -euo pipefail
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
@@ -210,6 +212,13 @@ NODE
 then
   (cd "$deps_dir" && "$deps_dir/node_modules/.bin/playwright" install chromium)
 fi
+
+# Exercise the exact staged directory layout before it can replace the current
+# release. This catches missing relative imports (such as bin/lib helpers) as
+# well as a Playwright installation that exists but cannot be loaded by the
+# resolver entrypoints.
+STREAMARENA_NODE_DEPS_DIR="$deps_dir" \
+  "$node_bin" "$REMOTE_STAGE/bin/check-resolver-runtime.mjs" "$REMOTE_STAGE/bin"
 REMOTE
 
 if [[ "${#VIDEOS[@]}" -gt 0 ]]; then

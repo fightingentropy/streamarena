@@ -5,7 +5,9 @@ import catalog from "../shared/live-channels.json" with { type: "json" };
 import {
   LIVE_CHANNELS,
   findLiveChannelIdBySource,
+  isLiveChannelPlayable,
   ntvCdnLiveChannelUrl,
+  novasportsChannelUrl,
 } from "../src-ui/lib/live-channels.js";
 
 const expectedNtvChannels = [
@@ -53,6 +55,10 @@ for (const [id, route, title, genre, region, streamCount] of expectedNtvChannels
 }
 
 assert.equal(ntvCdnLiveChannelUrl("BBC"), "https://ntv.cx/channel-cdnlive/BBC?code=us");
+assert.equal(
+  novasportsChannelUrl(1),
+  "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS1",
+);
 const bbcAmerica = LIVE_CHANNELS.find((channel) => channel.id === "bbc-us");
 assert.equal(bbcAmerica.streams.length, 1);
 assert.equal(
@@ -67,13 +73,15 @@ assert.equal(LIVE_CHANNELS.filter((channel) => channel.id === "bbc-news").length
 assert.doesNotMatch(liveChannelsViewSource, /live-channel-play/);
 assert.doesNotMatch(liveChannelsViewSource, /<span>Live<\/span>/);
 assert.doesNotMatch(liveChannelsViewSource, /channel\.quality/);
-assert.match(liveChannelsViewSource, /\{channel\.genre\} · \{channel\.region\}/);
+assert.match(liveChannelsViewSource, /isLiveChannelPlayable/);
+assert.match(liveChannelsViewSource, /disabled=\{!playable\}/);
+assert.match(liveChannelsViewSource, /Unavailable/);
 assert.match(liveChannelsViewSource, /LIVE_CHANNEL_ARTWORK_REVISION/);
 assert.match(liveChannelsViewSource, /src=\{channelArtworkUrl\(channel\.artwork\)\}/);
 assert.match(liveChannelsViewSource, /channel\.artworkPresentation === "logo"/);
 
-const authenticSportsLogoChannels = LIVE_CHANNELS.filter((channel) =>
-  channel.source.includes("hesgoaler.com/stream.php"),
+const authenticSportsLogoChannels = LIVE_CHANNELS.filter(
+  (channel) => channel.artworkPresentation === "logo" || channel.artworkPresentation === "thumbnail",
 );
 assert.equal(authenticSportsLogoChannels.length, 73);
 
@@ -93,6 +101,28 @@ for (const channel of authenticSportsLogoChannels) {
     `${channel.id} artwork must be a valid PNG`,
   );
 }
+
+assert.equal(
+  LIVE_CHANNELS.some((channel) => channel.source.includes("hesgoaler.com/stream.php")),
+  false,
+  "the retired Hesgoaler wrapper must not remain in the built-in catalogue",
+);
+assert.equal(
+  LIVE_CHANNELS.filter((channel) => channel.source.includes("cdnlivetv.tv")).length,
+  59,
+  "authoritative CDNLive rows should replace matching legacy sports channels",
+);
+assert.equal(
+  LIVE_CHANNELS.filter((channel) => channel.source.includes("hesgoal.team/ntvtvplayer.html")).length,
+  13,
+  "only channels without an exact CDNLive row should use the current Falcon player",
+);
+const unavailableChannels = LIVE_CHANNELS.filter((channel) => !isLiveChannelPlayable(channel));
+assert.deepEqual(
+  unavailableChannels.map((channel) => channel.id),
+  ["bein-sports-1-uk"],
+);
+assert.equal(unavailableChannels[0].unavailableReason, "No current provider feed");
 
 const svgArtwork = new Set(
   LIVE_CHANNELS.map((channel) => channel.artwork).filter((artwork) => artwork.endsWith(".svg")),

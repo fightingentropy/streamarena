@@ -49,9 +49,22 @@ export function normalizeLiveStreamPreferenceProvider(
       host === "www.embed.st" ||
       host === "hesgoaler.com" ||
       host.endsWith(".hesgoaler.com") ||
-      host.endsWith(".lovetier.bz")
+      host.endsWith(".lovetier.bz") ||
+      host === "hesgoal.team" ||
+      host === "www.hesgoal.team" ||
+      host === "wideiptv.top" ||
+      host.endsWith(".wideiptv.top") ||
+      host.endsWith(".bluetier.top")
     ) {
       return "ntvs";
+    }
+    if (
+      host === "cdnlivetv.tv" ||
+      host.endsWith(".cdnlivetv.tv") ||
+      host === "cdn-live.tv" ||
+      host.endsWith(".cdn-live.tv")
+    ) {
+      return "cdnlivetv";
     }
     if (
       host.includes("matchstream") ||
