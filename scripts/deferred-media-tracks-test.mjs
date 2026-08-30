@@ -209,6 +209,7 @@ function createControllerHarness({
   audioLang = "auto",
   subtitleLang = "off",
   currentRoute = "hls",
+  currentPlaybackSource = "",
   responsePayload,
   requestTracks,
   shouldForceAudioRemux = false,
@@ -229,7 +230,7 @@ function createControllerHarness({
     sourceInput: "/api/local-torrent/stream/session/file",
     audioLang,
     subtitleLang,
-    currentPlaybackSource: `/${currentRoute}`,
+    currentPlaybackSource: currentPlaybackSource || `/${currentRoute}`,
     title: "Slow Horses",
     year: "2022",
     filename: "Slow.Horses.S04E01.mkv",
@@ -289,6 +290,34 @@ function createControllerHarness({
     subtitleApplications,
     getTrackStateApplyCount: () => trackStateApplyCount,
   };
+}
+
+{
+  const harness = createControllerHarness({
+    currentRoute: "direct",
+    currentPlaybackSource:
+      "https://3.stream.real-debrid.com/t/download/audio/none/aac/full.m3u8",
+    softwareDecodeRequired: true,
+    responsePayload: {
+      tracks: {
+        audioTracks: [{ streamIndex: 1, isDefault: true, codec: "aac" }],
+        subtitleTracks: [],
+      },
+      selectedAudioStreamIndex: 1,
+      selectedSubtitleStreamIndex: -1,
+    },
+  });
+  harness.controller.schedule({
+    tracksPending: true,
+    sourceInput: harness.state.sourceInput,
+  });
+  await flushAsyncWork();
+  assert.deepEqual(
+    harness.sourceChanges,
+    [],
+    "browser-ready Real-Debrid HLS must not restart through the remux server",
+  );
+  harness.controller.dispose();
 }
 
 {

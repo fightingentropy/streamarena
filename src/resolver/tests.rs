@@ -24,12 +24,12 @@ use super::{
     ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
     build_external_embed_source_summaries, build_movie_resolve_lock_key,
     build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
-    build_real_debrid_unrestrict_form, build_scoped_rd_torrent_cache_key,
-    build_torrentio_stream_cache_key, build_torznab_download_cache_key, build_torznab_request_url,
-    build_torznab_stream_cache_key, build_tv_resolve_lock_key,
-    build_user_scoped_playback_session_key_for_metadata, collect_episode_signatures,
-    compute_external_embed_rank_health_score, compute_source_health_score,
-    compute_torrentio_cache_deadlines, default_external_embed_source,
+    build_real_debrid_cache_scope, build_real_debrid_unrestrict_form,
+    build_scoped_rd_torrent_cache_key, build_torrentio_stream_cache_key,
+    build_torznab_download_cache_key, build_torznab_request_url, build_torznab_stream_cache_key,
+    build_tv_resolve_lock_key, build_user_scoped_playback_session_key_for_metadata,
+    collect_episode_signatures, compute_external_embed_rank_health_score,
+    compute_source_health_score, compute_torrentio_cache_deadlines, default_external_embed_source,
     does_filename_likely_match_movie, external_embed_hls_candidate_sources,
     external_embed_source_for_source_hash, external_embed_source_hash,
     external_embed_source_rank_score, external_embed_sources, external_embed_url,
@@ -47,13 +47,13 @@ use super::{
     playback_session_matches_preferred_container, playback_session_matches_preferred_quality,
     playback_session_matches_source_hash, prefer_mp4_default_candidates,
     prioritize_local_torrent_first_wave, ready_info_has_selected_file_id,
-    score_stream_episode_match, select_resolved_track_indexes, select_top_episode_candidates,
-    select_top_movie_candidates, should_allow_latest_playback_session_fallback,
-    should_prefer_default_external_embed, should_prefer_software_decode_source,
-    should_resolve_torrent_candidates, should_skip_playback_session_reuse, sort_movie_candidates,
-    stream_list_contains_hash, stremio_addon_stream_url, summarize_stream_candidate_for_client,
-    torrent_playback_enabled, torznab_download_url_allowed, user_facing_real_debrid_error,
-    validate_real_debrid_user_payload,
+    real_debrid_apple_transcode_url, score_stream_episode_match, select_resolved_track_indexes,
+    select_top_episode_candidates, select_top_movie_candidates,
+    should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
+    should_prefer_software_decode_source, should_resolve_torrent_candidates,
+    should_skip_playback_session_reuse, sort_movie_candidates, stream_list_contains_hash,
+    stremio_addon_stream_url, summarize_stream_candidate_for_client, torrent_playback_enabled,
+    torznab_download_url_allowed, user_facing_real_debrid_error, validate_real_debrid_user_payload,
 };
 
 use std::sync::Mutex as StdMutex;
@@ -1398,6 +1398,13 @@ fn local_torrent_is_available_without_becoming_the_automatic_default() {
         false,
         None
     ));
+    let real_debrid =
+        super::RealDebridRequestContext::for_user(7, "token").expect("real-debrid context");
+    assert!(prefer_mp4_default_candidates(
+        ResolverProvider::Fastest,
+        true,
+        Some(&real_debrid),
+    ));
     assert_eq!(
         cache_reuse_provider_for_context(ResolverProvider::Fastest, false, true),
         ResolverProvider::LocalTorrent
@@ -1466,6 +1473,13 @@ fn real_debrid_cache_scope_changes_when_credentials_are_replaced() {
     assert_ne!(first.cache_scope, other_user.cache_scope);
     assert!(!first.cache_scope.contains("first-private-token"));
     assert!(!second.cache_scope.contains("second-private-token"));
+
+    let direct = build_real_debrid_cache_scope(42, "first-private-token", false);
+    let remote = build_real_debrid_cache_scope(42, "first-private-token", true);
+    assert_ne!(direct, remote);
+    assert!(direct.ends_with(":delivery:direct-v1"));
+    assert!(remote.ends_with(":delivery:remote-hls-v1"));
+    assert!(!remote.contains("first-private-token"));
 }
 
 #[test]
@@ -1589,6 +1603,22 @@ fn real_debrid_remote_traffic_is_explicit_on_unrestrict_requests() {
     assert_eq!(
         build_real_debrid_unrestrict_form("https://example.test/file", true),
         vec![("link", "https://example.test/file"), ("remote", "1")]
+    );
+
+    let valid = json!({
+        "apple": {
+            "full": "https://3.stream.real-debrid.com/t/download/audio/none/aac/full.m3u8"
+        }
+    });
+    assert_eq!(
+        real_debrid_apple_transcode_url(&valid).as_deref(),
+        Some("https://3.stream.real-debrid.com/t/download/audio/none/aac/full.m3u8")
+    );
+    assert!(
+        real_debrid_apple_transcode_url(&json!({
+            "apple": { "full": "https://stream.real-debrid.com.evil.test/full.m3u8" }
+        }))
+        .is_none()
     );
 }
 
@@ -2072,6 +2102,27 @@ fn prefers_direct_for_browser_safe_real_debrid_mp4_sources() {
             "/api/remux?input=https%3A%2F%2F126-4.download.real-debrid.com%2Fpath%2FThe.Matrix.1999.1080p.mp4"
         ]
     );
+}
+
+#[test]
+fn real_debrid_transcode_hls_stays_direct_with_safe_remux_recovery() {
+    let hls = "https://3.stream.real-debrid.com/t/download/audio/none/aac/full.m3u8";
+    let download = "https://126-4.download.real-debrid.com/path/Parasite.2019.mkv";
+    let normalized = normalize_resolved_source_for_software_decode(
+        &ResolvedSource {
+            playable_url: hls.to_owned(),
+            fallback_urls: vec![download.to_owned()],
+            filename: "Parasite.2019.mkv".to_owned(),
+            ..ResolvedSource::default()
+        },
+        -1,
+        -1,
+    );
+
+    assert_eq!(normalized.playable_url, hls);
+    assert_eq!(normalized.fallback_urls.len(), 1);
+    assert!(normalized.fallback_urls[0].starts_with("/api/remux?input="));
+    assert!(!normalized.fallback_urls.iter().any(|url| url == download));
 }
 
 #[test]

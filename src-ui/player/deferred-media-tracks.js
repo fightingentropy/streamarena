@@ -1,3 +1,5 @@
+import { isHlsPlaybackSource } from "./hls-playback.js";
+
 const DEFAULT_READY_TIMEOUT_MS = 8_000;
 
 function normalizeIdentityString(value, { lowercase = false } = {}) {
@@ -303,6 +305,9 @@ function getCurrentRoute(state, parseTranscodeSource, parseHlsMasterSource) {
       audioStreamIndex: hlsMeta.audioStreamIndex,
       subtitleStreamIndex: hlsMeta.subtitleStreamIndex,
     };
+  }
+  if (isHlsPlaybackSource(state.currentPlaybackSource)) {
+    return { kind: "hls", audioStreamIndex: -1, subtitleStreamIndex: -1 };
   }
   return { kind: "direct", audioStreamIndex: -1, subtitleStreamIndex: -1 };
 }

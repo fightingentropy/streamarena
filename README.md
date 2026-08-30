@@ -435,8 +435,10 @@ Per-user Settings:
 - Torrent streaming - enables magnet discovery and local torrent/cache playback through the Mini without requiring Real-Debrid.
 - Real-Debrid cached streaming - an explicit per-user toggle, separate from the saved API token. New tokens are verified against the authenticated Real-Debrid `/user` endpoint and require an active Premium account before they are encrypted and stored. Disabling the toggle preserves the token but keeps it out of resolver requests; removing the token also disables the integration. Existing configured tokens default to enabled for compatibility.
 
-Fresh unpinned playback remains HLS-first. Real-Debrid is used when an enabled
-user selects a torrent source or explicitly requests the `real-debrid` resolver.
+Fresh unpinned playback prefers Real-Debrid when the user has enabled it, then
+falls back to external HLS if the bounded torrent resolve does not produce a
+playable file. Real-Debrid is also used when a user selects a torrent source or
+explicitly requests the `real-debrid` resolver.
 The resolver reuses an existing cloud torrent when possible, selects the exact
 Torrentio file, and unrestricts its download URL. Resolved payloads include
 `realDebridCached: true` only when the torrent becomes ready within the short
@@ -450,6 +452,14 @@ guards stop the losing local path and delete a newly-added Real-Debrid cloud
 torrent if the local path wins. Per-user cache keys include a truncated
 SHA-256 credential fingerprint (never returned or logged), and replacing or
 clearing a token invalidates that user's Real-Debrid playback sessions.
+
+On a VPS/cloud deployment with `REAL_DEBRID_REMOTE_TRAFFIC=1`, unrestrict calls
+use paid Remote Traffic and StreamArena prefers Real-Debrid's CORS-enabled Apple
+HLS output. That path delivers browser-ready H.264/AAC directly to the viewer
+without relaying the movie through StreamArena's ffmpeg process. The original
+download URL remains available as a direct or server-remux fallback. Delivery
+mode is part of the private playback-session scope, so switching the flag cannot
+reuse an IP-bound URL produced by the other mode.
 
 Real-Debrid tokens are encrypted at rest with AES-256-GCM. Configure an
 operator-managed key ring before a user saves a token:

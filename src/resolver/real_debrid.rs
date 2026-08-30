@@ -278,10 +278,10 @@ impl RealDebridRequestContext {
         }
         Some(Self {
             api_key: normalized_api_key.to_owned(),
-            cache_scope: format!(
-                "user:{}:credential:{}",
-                user_id.max(0),
-                real_debrid_token_fingerprint(normalized_api_key)
+            cache_scope: build_real_debrid_cache_scope(
+                user_id,
+                normalized_api_key,
+                crate::config::real_debrid_remote_traffic_enabled(),
             ),
         })
     }
@@ -293,6 +293,23 @@ fn real_debrid_token_fingerprint(api_key: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+pub(super) fn build_real_debrid_cache_scope(
+    user_id: i64,
+    api_key: &str,
+    remote_traffic: bool,
+) -> String {
+    let delivery = if remote_traffic {
+        "remote-hls-v1"
+    } else {
+        "direct-v1"
+    };
+    format!(
+        "user:{}:credential:{}:delivery:{delivery}",
+        user_id.max(0),
+        real_debrid_token_fingerprint(api_key.trim())
+    )
 }
 
 pub(super) fn build_rd_torrent_cache_key(info_hash: &str) -> String {
@@ -318,6 +335,33 @@ pub(super) fn build_real_debrid_unrestrict_form(
         form.push(("remote", "1"));
     }
     form
+}
+
+pub(super) fn is_real_debrid_transcode_hls_url(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && (host == "stream.real-debrid.com" || host.ends_with(".stream.real-debrid.com"))
+        && url.path().to_ascii_lowercase().ends_with(".m3u8")
+}
+
+pub(super) fn real_debrid_apple_transcode_url(payload: &Value) -> Option<String> {
+    let url = stringify_json(payload.get("apple").and_then(|value| value.get("full")));
+    is_real_debrid_transcode_hls_url(&url).then_some(url)
+}
+
+fn real_debrid_playback_url_priority(value: &str) -> u8 {
+    if is_real_debrid_transcode_hls_url(value) {
+        2
+    } else if value.contains("download.real-debrid.com") {
+        1
+    } else {
+        0
+    }
 }
 
 pub(super) fn validate_real_debrid_user_payload(payload: &Value) -> AppResult<()> {
@@ -748,9 +792,8 @@ impl ResolverService {
                         .filter(|url| !url.trim().is_empty())
                         .collect::<Vec<_>>();
                     ranked_urls.sort_by(|left, right| {
-                        let left_stable = left.contains("download.real-debrid.com");
-                        let right_stable = right.contains("download.real-debrid.com");
-                        right_stable.cmp(&left_stable)
+                        real_debrid_playback_url_priority(right)
+                            .cmp(&real_debrid_playback_url_priority(left))
                     });
                     if ranked_urls.is_empty()
                         && is_supported_resolved_container_path(&filename_hint)
@@ -1071,10 +1114,8 @@ impl ResolverService {
         real_debrid: &RealDebridRequestContext,
         rd_link: &str,
     ) -> AppResult<(Vec<String>, String)> {
-        let form = build_real_debrid_unrestrict_form(
-            rd_link,
-            crate::config::real_debrid_remote_traffic_enabled(),
-        );
+        let remote_traffic = crate::config::real_debrid_remote_traffic_enabled();
+        let form = build_real_debrid_unrestrict_form(rd_link, remote_traffic);
         let unrestricted = self
             .rd_fetch_form(
                 real_debrid,
@@ -1090,7 +1131,38 @@ impl ResolverService {
                 "Real-Debrid returned no downloadable link.",
             ));
         }
-        Ok((vec![download], stringify_json(unrestricted.get("filename"))))
+        let mut playable_urls = Vec::new();
+        let streamable = unrestricted
+            .get("streamable")
+            .and_then(Value::as_i64)
+            .is_some_and(|value| value != 0)
+            || unrestricted
+                .get("streamable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        let download_id = stringify_json(unrestricted.get("id"));
+        let valid_download_id = !download_id.is_empty()
+            && download_id.len() <= 64
+            && download_id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric());
+        if remote_traffic
+            && streamable
+            && valid_download_id
+            && let Ok(transcode_payload) = self
+                .rd_fetch_json(
+                    real_debrid,
+                    &format!("/streaming/transcode/{download_id}"),
+                    reqwest::Method::GET,
+                    6_000,
+                )
+                .await
+            && let Some(apple_hls_url) = real_debrid_apple_transcode_url(&transcode_payload)
+        {
+            playable_urls.push(apple_hls_url);
+        }
+        playable_urls.push(download);
+        Ok((playable_urls, stringify_json(unrestricted.get("filename"))))
     }
 
     pub(super) async fn verify_playable_url(

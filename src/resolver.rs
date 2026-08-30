@@ -54,15 +54,17 @@ mod scoring;
 pub(crate) use real_debrid::pick_video_file_ids;
 use real_debrid::{
     RealDebridRequestContext, RealDebridValidationControl, complete_real_debrid_attempt_with_lease,
-    real_debrid_api_key_required_error, validate_real_debrid_user_payload,
+    is_real_debrid_transcode_hls_url, real_debrid_api_key_required_error,
+    validate_real_debrid_user_payload,
 };
 #[cfg(test)]
 use real_debrid::{
     RealDebridTorrentOwnership, acquire_owned_real_debrid_torrent_lease,
-    build_rd_torrent_cache_key, build_real_debrid_unrestrict_form,
+    build_rd_torrent_cache_key, build_real_debrid_cache_scope, build_real_debrid_unrestrict_form,
     build_scoped_rd_torrent_cache_key, parse_ready_real_debrid_hashes,
     parse_ready_real_debrid_torrents, ready_info_has_selected_file_id,
-    reusable_rd_torrent_ready_for_selected_file, user_facing_real_debrid_error,
+    real_debrid_apple_transcode_url, reusable_rd_torrent_ready_for_selected_file,
+    user_facing_real_debrid_error,
 };
 use scoring::{
     build_episode_signature, collect_episode_signatures, extract_stream_title_lines,
@@ -565,14 +567,15 @@ fn torrent_playback_enabled(
     real_debrid.is_some() || local_torrent_enabled
 }
 
-/// Direct MP4 is valuable for Real-Debrid / browser-native playback. Local
-/// torrent remuxes anyway, so swarm health (seeders) should rank first.
+/// Browser-friendly candidates are valuable whenever Real-Debrid participates
+/// in automatic selection, even when the local torrent engine is also enabled.
+/// An explicit local-torrent request still ranks for swarm performance alone.
 fn prefer_mp4_default_candidates(
     resolver_provider: ResolverProvider,
-    local_torrent_enabled: bool,
+    _local_torrent_enabled: bool,
     real_debrid: Option<&RealDebridRequestContext>,
 ) -> bool {
-    if local_torrent_enabled || resolver_provider == ResolverProvider::LocalTorrent {
+    if resolver_provider == ResolverProvider::LocalTorrent {
         return false;
     }
     real_debrid.is_some()
@@ -7306,6 +7309,30 @@ fn normalize_resolved_source_for_software_decode(
     let mut normalized = source.clone();
     let current_playable = normalized.playable_url.trim().to_owned();
     if current_playable.is_empty() {
+        return normalized;
+    }
+    if is_real_debrid_transcode_hls_url(&current_playable) {
+        let existing_fallbacks = std::mem::take(&mut normalized.fallback_urls);
+        for fallback in existing_fallbacks {
+            if is_real_debrid_transcode_hls_url(&fallback) || is_playback_proxy_url(&fallback) {
+                push_unique_url(&mut normalized.fallback_urls, &fallback);
+                continue;
+            }
+            if should_prefer_software_decode_source(&fallback, &normalized.filename) {
+                let remux_fallback = build_remux_proxy_url(
+                    &fallback,
+                    audio_stream_index,
+                    normalize_internal_subtitle_stream_index(subtitle_stream_index),
+                );
+                push_unique_url(&mut normalized.fallback_urls, &remux_fallback);
+                continue;
+            }
+            push_unique_url(&mut normalized.fallback_urls, &fallback);
+            if is_real_debrid_download_url(&fallback) {
+                let remux_fallback = build_remux_proxy_url(&fallback, -1, -1);
+                push_unique_url(&mut normalized.fallback_urls, &remux_fallback);
+            }
+        }
         return normalized;
     }
     let has_explicit_audio_selection = audio_stream_index >= 0;
