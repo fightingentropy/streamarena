@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+import {
+  isStreamPlaylistUrl,
+  shouldAllowEmbedRequest,
+  shouldAbortEmbedRequest,
+} from "./lib/external-embed-hls-policy.mjs";
 import { loadPlaywright } from "./lib/load-playwright.mjs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -95,72 +100,6 @@ function isSupportedEmbedUrl(value) {
   } catch {
     return false;
   }
-}
-
-function isAllowedRequestUrl(value) {
-  if (value.startsWith("blob:")) return true;
-  try {
-    const url = new URL(value);
-    const host = url.hostname.toLowerCase();
-    return (
-      host === "videasy.net" ||
-      host.endsWith(".videasy.net") ||
-      host === "videasy.to" ||
-      host.endsWith(".videasy.to") ||
-      host === "vidlink.pro" ||
-      host === "storm.vodvidl.site" ||
-      host === "easy.speedsterwave.app" ||
-      host === "easy.nightspeedster.app" ||
-      host === "hello.mousedoor.com" ||
-      host === "yoru.midwesteagle.com" ||
-      host === "typhoontigertribe.net"
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isStreamPlaylistUrl(value) {
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      isPublicHlsHostname(url.hostname) &&
-      url.pathname.toLowerCase().endsWith(".m3u8")
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isPublicHlsHostname(value) {
-  const host = String(value || "").trim().replace(/\.$/, "").toLowerCase();
-  if (
-    !host ||
-    host.includes(":") ||
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host.endsWith(".local") ||
-    host.endsWith(".internal") ||
-    isIpv4Hostname(host)
-  ) {
-    return false;
-  }
-  return (
-    host.includes(".") &&
-    !host.startsWith(".") &&
-    !host.endsWith(".") &&
-    !host.includes("..") &&
-    /^[a-z0-9.-]+$/.test(host)
-  );
-}
-
-function isIpv4Hostname(host) {
-  const parts = host.split(".");
-  return (
-    parts.length === 4 &&
-    parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255)
-  );
 }
 
 function normalizeReferer(value, fallback) {
@@ -554,20 +493,12 @@ async function resolveWithPlaywrightBrowser() {
 
   await page.route("**/*", async (route) => {
     const requestUrl = route.request().url();
-    if (isStreamPlaylistUrl(requestUrl)) {
-      await route.continue();
-      return;
-    }
     const resourceType = route.request().resourceType();
-    if (
-      resourceType === "image" ||
-      resourceType === "font" ||
-      (resourceType === "media" && !isStreamPlaylistUrl(requestUrl))
-    ) {
+    if (shouldAbortEmbedRequest(requestUrl, resourceType)) {
       await route.abort("blockedbyclient");
       return;
     }
-    if (isAllowedRequestUrl(requestUrl)) {
+    if (shouldAllowEmbedRequest(requestUrl, resourceType)) {
       await route.continue();
       return;
     }
