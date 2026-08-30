@@ -159,10 +159,13 @@ import {
   normalizeRealDebridSettings,
   pickTorrentResolverProvider,
   resolveTorrentRequestProvider,
+  shouldFallbackAutomaticTorrentResolveToExternal,
+  shouldPreferRealDebridAutomaticPlayback,
 } from "../lib/real-debrid-settings.js";
 import { replaySafeMutationBody } from "../lib/replay-safe-state.js";
 import { renderPlayerShell } from "../player/player-shell-template.jsx";
 import {
+  applyStoredParamsToSearchParams,
   buildLiveWatchPath,
   buildTmdbWatchPath,
   buildWatchUrl,
@@ -632,7 +635,13 @@ if (_isCleanUrl && _watchPath.slug) {
     }
   }
 }
-const params = _sessionParams || new URLSearchParams(window.location.search);
+// Stored clean-URL state fills in missing metadata, but an explicit query is
+// authoritative. This matters for sourceHash deep links and the benchmark API:
+// previously an older saved source silently replaced both.
+const params = new URLSearchParams(window.location.search);
+if (_sessionParams) {
+  applyStoredParamsToSearchParams(params, _sessionParams);
+}
 // Seed identity from a short tmdb-id URL so a cold deep link (no stored params,
 // no query string) resolves. Display metadata is hydrated from TMDB later in
 // initPlaybackSource.
@@ -7187,6 +7196,7 @@ async function resolveTmdbMovieViaBackend(
     audioLang = preferredAudioLang,
     quality = preferredQuality,
     skipExternalEmbed: skipEmbed = skipExternalEmbed,
+    resolverProvider = preferredResolverProvider,
   } = {}) => {
     const query = new URLSearchParams({
       tmdbId: tmdbMovieId,
@@ -7194,7 +7204,7 @@ async function resolveTmdbMovieViaBackend(
       year,
       audioLang,
       quality,
-      resolverProvider: preferredResolverProvider,
+      resolverProvider,
     });
     if (skipEmbed) {
       query.set("skipExternalEmbed", "1");
@@ -7268,6 +7278,30 @@ async function resolveTmdbMovieViaBackend(
 
   if (
     allowSourceFallback &&
+    shouldFallbackAutomaticTorrentResolveToExternal({
+      skipExternalEmbed,
+      resolverProvider: preferredResolverProvider,
+      sourceHash: pinnedSourceHash,
+    })
+  ) {
+    try {
+      return await requestResolveJson(
+        `/api/resolve/movie?${buildQuery({
+          skipExternalEmbed: false,
+          resolverProvider: DEFAULT_RESOLVER_PROVIDER,
+        }).toString()}`,
+        requestTimeoutMs,
+      );
+    } catch (fallbackError) {
+      if (isResolveAbortError(fallbackError)) {
+        throw fallbackError;
+      }
+      lastError = fallbackError;
+    }
+  }
+
+  if (
+    allowSourceFallback &&
     (isTransientResolveError(lastError) || isSourceFallbackResolveError(lastError))
   ) {
     return requestResolveJson(
@@ -7308,6 +7342,7 @@ async function resolveTmdbTvEpisodeViaBackend(
       audioLang = preferredAudioLang,
       quality = preferredQuality,
       skipExternalEmbed: skipEmbed = skipExternalEmbed,
+      resolverProvider = preferredResolverProvider,
     } = {},
   ) => {
     const query = new URLSearchParams({
@@ -7320,7 +7355,7 @@ async function resolveTmdbTvEpisodeViaBackend(
       ),
       audioLang,
       quality,
-      resolverProvider: preferredResolverProvider,
+      resolverProvider,
     });
     if (skipEmbed) {
       query.set("skipExternalEmbed", "1");
@@ -7373,6 +7408,29 @@ async function resolveTmdbTvEpisodeViaBackend(
       throw error;
     }
     let lastError = error;
+    if (
+      allowSourceFallback &&
+      shouldFallbackAutomaticTorrentResolveToExternal({
+        skipExternalEmbed,
+        resolverProvider: preferredResolverProvider,
+        sourceHash: pinnedSourceHash,
+      })
+    ) {
+      try {
+        return await requestResolveJson(
+          `/api/resolve/tv?${buildQuery(preferredContainer, "", {
+            skipExternalEmbed: false,
+            resolverProvider: DEFAULT_RESOLVER_PROVIDER,
+          }).toString()}`,
+          requestTimeoutMs,
+        );
+      } catch (fallbackError) {
+        if (isResolveAbortError(fallbackError)) {
+          throw fallbackError;
+        }
+        lastError = fallbackError;
+      }
+    }
     const fallbackAttempts = [];
     const seen = new Set([`${preferredContainer}::${pinnedSourceHash}`]);
     const skipEmbedFallback =
@@ -8103,6 +8161,23 @@ async function initPlaybackSource() {
         }
       }
     } catch {}
+  }
+
+  // Real-Debrid's cached path is dramatically faster than resolving a
+  // third-party embed. Use it for a fresh automatic start, while retaining any
+  // explicit/manual/Continue-Watching pin. The request layer retries with the
+  // external embed policy if torrent resolution is unavailable.
+  if (
+    shouldPreferRealDebridAutomaticPlayback({
+      realDebridActive: isUserRealDebridPlaybackEnabled(),
+      resolverProvider: preferredResolverProvider,
+      currentResolverProvider: currentTmdbResolverProvider,
+      selectedSourceHash,
+      sessionKey: currentTmdbPlaybackSessionKey,
+      hasDirectSourceHashParam,
+    })
+  ) {
+    tmdbSkipExternalEmbed = true;
   }
 
   // If localStorage still has no resume, try the lighter progress endpoint.

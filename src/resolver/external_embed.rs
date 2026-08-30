@@ -354,8 +354,9 @@ pub(super) fn should_prefer_default_external_embed(
 pub(super) fn should_resolve_torrent_candidates(
     filters: &ResolveFilters,
     resolver_provider: ResolverProvider,
+    skip_external_embed: bool,
 ) -> bool {
-    !filters.source_hash.is_empty() || !resolver_provider.is_fastest()
+    skip_external_embed || !filters.source_hash.is_empty() || !resolver_provider.is_fastest()
 }
 
 pub(super) fn external_embed_url(

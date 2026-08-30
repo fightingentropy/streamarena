@@ -5,6 +5,8 @@ import {
   normalizeRealDebridSettings,
   pickTorrentResolverProvider,
   resolveTorrentRequestProvider,
+  shouldFallbackAutomaticTorrentResolveToExternal,
+  shouldPreferRealDebridAutomaticPlayback,
 } from "../src-ui/lib/real-debrid-settings.js";
 
 const legacy = normalizeRealDebridSettings({
@@ -106,5 +108,35 @@ assert.equal(resolveTorrentRequestProvider({
   realDebridActive: true,
   localTorrentEnabled: true,
 }), "real-debrid");
+
+assert.equal(shouldPreferRealDebridAutomaticPlayback({
+  realDebridActive: true,
+}), true);
+assert.equal(shouldPreferRealDebridAutomaticPlayback({
+  realDebridActive: true,
+  currentResolverProvider: "external-embed",
+}), false);
+assert.equal(shouldPreferRealDebridAutomaticPlayback({
+  realDebridActive: true,
+  selectedSourceHash: "a".repeat(40),
+}), false);
+assert.equal(shouldPreferRealDebridAutomaticPlayback({
+  realDebridActive: true,
+  hasDirectSourceHashParam: true,
+}), false);
+
+assert.equal(shouldFallbackAutomaticTorrentResolveToExternal({
+  skipExternalEmbed: true,
+  resolverProvider: "fastest",
+}), true);
+assert.equal(shouldFallbackAutomaticTorrentResolveToExternal({
+  skipExternalEmbed: true,
+  resolverProvider: "real-debrid",
+}), false);
+assert.equal(shouldFallbackAutomaticTorrentResolveToExternal({
+  skipExternalEmbed: true,
+  resolverProvider: "fastest",
+  sourceHash: "a".repeat(40),
+}), false);
 
 console.log("real-debrid-settings-test: ok");

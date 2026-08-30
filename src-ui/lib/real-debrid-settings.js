@@ -84,3 +84,33 @@ export function resolveTorrentRequestProvider({
   }
   return provider;
 }
+
+export function shouldPreferRealDebridAutomaticPlayback({
+  realDebridActive = false,
+  resolverProvider = "fastest",
+  currentResolverProvider = "",
+  selectedSourceHash = "",
+  sessionKey = "",
+  hasDirectSourceHashParam = false,
+} = {}) {
+  return Boolean(
+    realDebridActive &&
+      String(resolverProvider || "fastest").trim().toLowerCase() === "fastest" &&
+      !String(currentResolverProvider || "").trim() &&
+      !String(selectedSourceHash || "").trim() &&
+      !String(sessionKey || "").trim() &&
+      !hasDirectSourceHashParam
+  );
+}
+
+export function shouldFallbackAutomaticTorrentResolveToExternal({
+  skipExternalEmbed = false,
+  resolverProvider = "fastest",
+  sourceHash = "",
+} = {}) {
+  return Boolean(
+    skipExternalEmbed &&
+      String(resolverProvider || "fastest").trim().toLowerCase() === "fastest" &&
+      !String(sourceHash || "").trim()
+  );
+}

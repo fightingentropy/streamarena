@@ -99,6 +99,35 @@ assert.equal(
   }),
   true,
 );
+assert.equal(
+  shouldIgnoreRememberedTmdbSourcePin({
+    remembered: {
+      ...emptyRememberedTmdbSourceState(),
+      sourceHash: "b".repeat(40),
+      resolverProvider: "external-embed",
+    },
+    selectedSourceHash: "a".repeat(40),
+    hasDirectSourceHashParam: true,
+    shouldResumeRememberedPlayback: true,
+    torrentProviderEnabled: true,
+    preferredResolverProvider: "fastest",
+    preferredTorrentEnabled: true,
+  }),
+  true,
+  "an explicit sourceHash must win over Continue Watching",
+);
+
+const { applyStoredParamsToSearchParams } = await import(
+  "../src-ui/lib/watch-params.js"
+);
+const explicitParams = new URLSearchParams("sourceHash=explicit&benchmark=1");
+applyStoredParamsToSearchParams(
+  explicitParams,
+  "sourceHash=remembered&quality=1080p",
+);
+assert.equal(explicitParams.get("sourceHash"), "explicit");
+assert.equal(explicitParams.get("benchmark"), "1");
+assert.equal(explicitParams.get("quality"), "1080p");
 
 const identity = "tmdb:movie:42";
 writeContinueWatchingEntry(identity, 95, {

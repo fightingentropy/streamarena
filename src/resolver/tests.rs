@@ -843,6 +843,16 @@ fn default_external_embed_prefers_hls_sources() {
         &filters,
         ResolverProvider::LocalTorrent
     ));
+    assert!(!should_resolve_torrent_candidates(
+        &filters,
+        ResolverProvider::Fastest,
+        false,
+    ));
+    assert!(should_resolve_torrent_candidates(
+        &filters,
+        ResolverProvider::Fastest,
+        true,
+    ));
 }
 
 #[test]
@@ -1401,7 +1411,8 @@ fn local_torrent_is_available_without_becoming_the_automatic_default() {
     };
     assert!(!should_resolve_torrent_candidates(
         &unpinned,
-        ResolverProvider::Fastest
+        ResolverProvider::Fastest,
+        false,
     ));
 
     let pinned = ResolveFilters {
@@ -1410,11 +1421,13 @@ fn local_torrent_is_available_without_becoming_the_automatic_default() {
     };
     assert!(should_resolve_torrent_candidates(
         &pinned,
-        ResolverProvider::Fastest
+        ResolverProvider::Fastest,
+        false,
     ));
     assert!(should_resolve_torrent_candidates(
         &unpinned,
-        ResolverProvider::LocalTorrent
+        ResolverProvider::LocalTorrent,
+        false,
     ));
 
     let real_debrid =

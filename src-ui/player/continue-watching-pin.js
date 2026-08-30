@@ -109,8 +109,14 @@ export function shouldIgnoreRememberedTmdbSourcePin({
       remembered.sessionKey ||
       remembered.resolverProvider,
   );
-  if (!hasRememberedPin || hasDirectSourceHashParam) {
+  if (!hasRememberedPin) {
     return false;
+  }
+  // A source hash in the visible URL is an explicit user/deep-link choice.
+  // Continue Watching is only a fallback and must never replace it, including
+  // when the server entry arrives after the initial local-state hydration.
+  if (hasDirectSourceHashParam) {
+    return true;
   }
   if (isRememberedIframeOnlyExternalEmbed(remembered)) {
     return true;

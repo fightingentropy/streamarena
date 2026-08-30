@@ -1305,9 +1305,9 @@ impl ResolverService {
         } else {
             filters.clone()
         };
-        // Enabling torrent playback must not change the automatic playback
-        // path. An unpinned request starts with HLS; torrents are resolved only
-        // when the user explicitly selects a torrent source.
+        // The client may explicitly request a Real-Debrid-first automatic path
+        // with skipExternalEmbed. Without it, an unpinned request retains the
+        // external-HLS policy for compatibility and fallback.
         let default_external_resolver_provider = resolver_provider;
         if !effective_skip_external_embed
             && let Some(provider) = pinned_external_source
@@ -1359,7 +1359,11 @@ impl ResolverService {
         {
             return Ok(payload);
         }
-        if !should_resolve_torrent_candidates(&filters, resolver_provider) {
+        if !should_resolve_torrent_candidates(
+            &filters,
+            resolver_provider,
+            effective_skip_external_embed,
+        ) {
             return Err(external_embed_hls_unavailable_error());
         }
         if resolver_provider.is_real_debrid() && real_debrid.is_none() {
@@ -1752,8 +1756,9 @@ impl ResolverService {
         } else {
             filters.clone()
         };
-        // Keep initial playback on HLS even when torrent playback is enabled.
-        // A pinned torrent source still flows through the torrent resolver.
+        // The client may explicitly request a Real-Debrid-first automatic path
+        // with skipExternalEmbed. Without it, initial playback retains the
+        // external-HLS policy for compatibility and fallback.
         let default_external_resolver_provider = resolver_provider;
         if !effective_skip_external_embed
             && let Some(provider) = pinned_external_source
@@ -1805,7 +1810,11 @@ impl ResolverService {
         {
             return Ok(payload);
         }
-        if !should_resolve_torrent_candidates(&filters, resolver_provider) {
+        if !should_resolve_torrent_candidates(
+            &filters,
+            resolver_provider,
+            effective_skip_external_embed,
+        ) {
             return Err(external_embed_hls_unavailable_error());
         }
         if resolver_provider.is_real_debrid() && real_debrid.is_none() {

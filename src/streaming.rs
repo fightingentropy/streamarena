@@ -39,6 +39,7 @@ const HLS_SEGMENT_WAIT_POLL_MS: u64 = 180;
 const REMUX_ACCURATE_SEEK_PREROLL_SECONDS: i64 = 12;
 const FFMPEG_STDERR_MAX_LINES: usize = 80;
 const FFMPEG_STDERR_MAX_BYTES: usize = 16 * 1024;
+const REMUX_STREAM_BUFFER_BYTES: usize = 256 * 1024;
 const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v7";
 
 // Cap transcoded HLS output to 720p. The origin serves from a residential upload
@@ -540,9 +541,10 @@ impl StreamingService {
                 (safe_start_seconds, 0)
             };
 
-        // Keep the remux probe window small so fMP4 init/first fragment can
-        // flush before browsers give up. Live-HLS export paths keep larger
-        // probesizes elsewhere.
+        // Keep the remux probe window tight so fMP4 init/first fragment can
+        // flush quickly. Track selection already ran through the cached probe
+        // above; 2 MB / 2 seconds is ample for Matroska stream discovery while
+        // avoiding a second long startup scan over the remote file.
         let mut ffmpeg_args = vec![
             "ffmpeg".to_owned(),
             "-v".to_owned(),
@@ -550,9 +552,9 @@ impl StreamingService {
             "-fflags".to_owned(),
             "+genpts+igndts+discardcorrupt".to_owned(),
             "-analyzeduration".to_owned(),
-            "5M".to_owned(),
+            "2M".to_owned(),
             "-probesize".to_owned(),
-            "5M".to_owned(),
+            "2M".to_owned(),
         ];
         if fast_seek_seconds > 0 {
             ffmpeg_args.push("-ss".to_owned());
@@ -639,10 +641,10 @@ impl StreamingService {
             "make_zero".to_owned(),
             "-movflags".to_owned(),
             "frag_keyframe+empty_moov+default_base_moof".to_owned(),
-            // 1s fragments flush playable media much sooner than the old 5s
-            // window, which mattered for local-torrent remux startups.
+            // Half-second fragments minimize tunnel/browser startup buffering
+            // without turning a full film into excessively small fragments.
             "-frag_duration".to_owned(),
-            "1000000".to_owned(),
+            "500000".to_owned(),
             "-f".to_owned(),
             "mp4".to_owned(),
             "pipe:1".to_owned(),
@@ -682,7 +684,9 @@ impl StreamingService {
             RemuxStreamState {
                 stdout,
                 child,
-                buffer: vec![0_u8; 16 * 1024],
+                // Fewer user-space body chunks reduce Axum/Tunnel overhead on
+                // high-bitrate 4K streams; HTTP/2 may still frame them smaller.
+                buffer: vec![0_u8; REMUX_STREAM_BUFFER_BYTES],
                 guard,
                 deadline: TokioInstant::now() + Duration::from_secs(timeout_seconds),
                 timeout_seconds,
