@@ -6,6 +6,7 @@ use serde_json::json;
 use tokio::sync::{Notify, Semaphore, oneshot};
 
 use crate::error::ApiError;
+use crate::media::{AudioTrack, MediaProbe};
 
 use super::finalize_external_embed_payload;
 use super::race_staggered_first_success;
@@ -45,12 +46,13 @@ use super::{
     playback_session_matches_preferred_container, playback_session_matches_preferred_quality,
     playback_session_matches_source_hash, prefer_mp4_default_candidates,
     prioritize_local_torrent_first_wave, ready_info_has_selected_file_id,
-    score_stream_episode_match, select_top_episode_candidates, select_top_movie_candidates,
-    should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
-    should_prefer_software_decode_source, should_resolve_torrent_candidates,
-    should_skip_playback_session_reuse, sort_movie_candidates, stream_list_contains_hash,
-    stremio_addon_stream_url, summarize_stream_candidate_for_client, torrent_playback_enabled,
-    torznab_download_url_allowed, user_facing_real_debrid_error, validate_real_debrid_user_payload,
+    score_stream_episode_match, select_resolved_track_indexes, select_top_episode_candidates,
+    select_top_movie_candidates, should_allow_latest_playback_session_fallback,
+    should_prefer_default_external_embed, should_prefer_software_decode_source,
+    should_resolve_torrent_candidates, should_skip_playback_session_reuse, sort_movie_candidates,
+    stream_list_contains_hash, stremio_addon_stream_url, summarize_stream_candidate_for_client,
+    torrent_playback_enabled, torznab_download_url_allowed, user_facing_real_debrid_error,
+    validate_real_debrid_user_payload,
 };
 
 use std::sync::Mutex as StdMutex;
@@ -2094,6 +2096,48 @@ fn local_cache_upgrade_requests_deferred_track_enrichment() {
     assert_eq!(payload["ready"], true);
     assert_eq!(payload["tracksPending"], true);
     assert_eq!(payload["sourceInput"], playable_url);
+}
+
+#[test]
+fn cached_probe_routes_browser_unsafe_audio_to_remux_immediately() {
+    let preferences = ResolvePreferences {
+        audio_lang: "auto".to_owned(),
+        subtitle_lang: "off".to_owned(),
+        quality: "auto".to_owned(),
+    };
+    let ac3_probe = MediaProbe {
+        videoCodec: "h264".to_owned(),
+        audioTracks: vec![AudioTrack {
+            streamIndex: 1,
+            language: "ko".to_owned(),
+            codec: "ac3".to_owned(),
+            channels: 6,
+            isDefault: true,
+            ..AudioTrack::default()
+        }],
+        ..MediaProbe::default()
+    };
+    assert_eq!(
+        select_resolved_track_indexes(&ac3_probe, &preferences),
+        (1, -1),
+        "a cached AC-3 default track must select remux before playback starts",
+    );
+
+    let aac_probe = MediaProbe {
+        audioTracks: vec![AudioTrack {
+            streamIndex: 1,
+            language: "ko".to_owned(),
+            codec: "aac".to_owned(),
+            isDefault: true,
+            ..AudioTrack::default()
+        }],
+        ..MediaProbe::default()
+    };
+    assert_eq!(
+        select_resolved_track_indexes(&aac_probe, &preferences),
+        (-1, -1),
+        "browser-safe default audio must preserve the direct RD fast path",
+    );
 }
 
 #[test]

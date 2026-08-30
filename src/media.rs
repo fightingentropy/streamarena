@@ -236,6 +236,15 @@ impl MediaService {
         Ok(probe)
     }
 
+    /// Return a previously completed media probe without starting ffprobe.
+    /// Real-Debrid resolves use this to choose the correct browser route on a
+    /// repeat play while keeping the first uncached resolve non-blocking.
+    pub async fn cached_media_probe(&self, source: &str) -> AppResult<Option<MediaProbe>> {
+        let source_input = self.resolve_transcode_input(source)?;
+        let probe_key = build_media_probe_cache_key(&source_input);
+        self.cached_probe(&probe_key).await
+    }
+
     /// Duration (seconds) of a live-proxy HLS source, probed with the segment-protocol gates
     /// relaxed — its segment URLs carry a query string that masks the `.ts` extension, which
     /// the default `probe_media_tracks` ffprobe rejects. Takes an already-resolved localhost

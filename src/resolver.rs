@@ -2675,14 +2675,35 @@ impl ResolverService {
             should_defer_resolved_track_enrichment(resolver_provider, &resolved.playable_url);
         let (tracks, selected_audio_stream_index, selected_subtitle_stream_index) =
             if tracks_pending {
-                (
-                    MediaProbe {
-                        durationSeconds: metadata.runtime_seconds,
-                        ..MediaProbe::default()
-                    },
-                    -1,
-                    -1,
-                )
+                // A prior play may already have populated the durable probe
+                // cache. Reuse it immediately for RD so browser-incompatible
+                // audio (for example AC-3) and explicit language choices route
+                // straight to remux instead of starting direct playback and
+                // restarting after deferred enrichment. A cache miss remains
+                // fully non-blocking: no ffprobe runs in this resolve request.
+                let cached_tracks = if resolver_provider == ResolverProvider::RealDebrid {
+                    self.media.cached_media_probe(&source_input).await?
+                } else {
+                    None
+                };
+                if let Some(tracks) = cached_tracks {
+                    let (selected_audio_stream_index, selected_subtitle_stream_index) =
+                        select_resolved_track_indexes(&tracks, &preferences);
+                    (
+                        tracks,
+                        selected_audio_stream_index,
+                        selected_subtitle_stream_index,
+                    )
+                } else {
+                    (
+                        MediaProbe {
+                            durationSeconds: metadata.runtime_seconds,
+                            ..MediaProbe::default()
+                        },
+                        -1,
+                        -1,
+                    )
+                }
             } else {
                 let subtitle_lookup = async {
                     if preferences.subtitle_lang == "off" {
@@ -2725,31 +2746,8 @@ impl ResolverService {
                         tracks.subtitleTracks,
                     );
                 }
-                let force_audio_stream_mapping = preferences.audio_lang != "auto";
-                let preferred_audio_track =
-                    choose_audio_track_from_probe(&tracks, &preferences.audio_lang);
-                let mut selected_audio_stream_index = if force_audio_stream_mapping {
-                    preferred_audio_track
-                        .as_ref()
-                        .map(|track| track.streamIndex)
-                        .unwrap_or(-1)
-                } else {
-                    -1
-                };
-                let preferred_subtitle_track =
-                    choose_subtitle_track_from_probe(&tracks, &preferences.subtitle_lang);
-                let selected_subtitle_stream_index = preferred_subtitle_track
-                    .as_ref()
-                    .map(|track| track.streamIndex)
-                    .unwrap_or(-1);
-                if should_force_remux_for_audio_compatibility(&tracks, selected_audio_stream_index)
-                    && selected_audio_stream_index < 0
-                {
-                    selected_audio_stream_index = preferred_audio_track
-                        .as_ref()
-                        .map(|track| track.streamIndex)
-                        .unwrap_or_else(|| get_fallback_audio_stream_index(&tracks));
-                }
+                let (selected_audio_stream_index, selected_subtitle_stream_index) =
+                    select_resolved_track_indexes(&tracks, &preferences);
                 (
                     tracks,
                     selected_audio_stream_index,
@@ -7081,6 +7079,34 @@ fn should_force_remux_for_audio_compatibility(
         .or_else(|| probe.audioTracks.first())
         .map(|track| !is_browser_safe_audio_codec(&track.codec))
         .unwrap_or(false)
+}
+
+fn select_resolved_track_indexes(
+    tracks: &MediaProbe,
+    preferences: &ResolvePreferences,
+) -> (i64, i64) {
+    let preferred_audio_track = choose_audio_track_from_probe(tracks, &preferences.audio_lang);
+    let mut selected_audio_stream_index = if preferences.audio_lang != "auto" {
+        preferred_audio_track
+            .as_ref()
+            .map(|track| track.streamIndex)
+            .unwrap_or(-1)
+    } else {
+        -1
+    };
+    let selected_subtitle_stream_index =
+        choose_subtitle_track_from_probe(tracks, &preferences.subtitle_lang)
+            .map(|track| track.streamIndex)
+            .unwrap_or(-1);
+    if should_force_remux_for_audio_compatibility(tracks, selected_audio_stream_index)
+        && selected_audio_stream_index < 0
+    {
+        selected_audio_stream_index = preferred_audio_track
+            .as_ref()
+            .map(|track| track.streamIndex)
+            .unwrap_or_else(|| get_fallback_audio_stream_index(tracks));
+    }
+    (selected_audio_stream_index, selected_subtitle_stream_index)
 }
 
 fn get_fallback_audio_stream_index(probe: &MediaProbe) -> i64 {
