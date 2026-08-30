@@ -59,7 +59,8 @@ use real_debrid::{
 #[cfg(test)]
 use real_debrid::{
     RealDebridTorrentOwnership, acquire_owned_real_debrid_torrent_lease,
-    build_rd_torrent_cache_key, build_scoped_rd_torrent_cache_key, parse_ready_real_debrid_hashes,
+    build_rd_torrent_cache_key, build_real_debrid_unrestrict_form,
+    build_scoped_rd_torrent_cache_key, parse_ready_real_debrid_hashes,
     parse_ready_real_debrid_torrents, ready_info_has_selected_file_id,
     reusable_rd_torrent_ready_for_selected_file, user_facing_real_debrid_error,
 };

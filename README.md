@@ -503,6 +503,7 @@ Server:
 - `SIGNUP_INVITE_CODE` - optional secret that permits viewer registration while public sign-up is closed.
 - `BOOTSTRAP_ADMIN_EMAIL` - optional admin-bootstrap email. Bootstrap requires the matching email and `SIGNUP_INVITE_CODE`; remove this setting once the admin exists.
 - `REAL_DEBRID_TOKEN_ENCRYPTION_KEYS` - comma-separated `key-id:base64url-key` ring for per-user Real-Debrid tokens. Each key is 32 random bytes; the first entry is active and retained entries support rotation.
+- `REAL_DEBRID_REMOTE_TRAFFIC` - set to `1` only on a VPS/cloud deployment with paid Real-Debrid Remote Traffic. Unrestrict requests then use `remote=1`; local/home deployments default to `0`.
 - `OUTBOUND_HTTP_PROXY` - optional HTTP/SOCKS proxy for server outbound requests.
 - `SPORTS_HTTP_PROXY` - optional HTTP/SOCKS proxy only for sports provider schedule/stream requests and sports browser HLS extraction. For Cloudflare WARP proxy mode this is typically `socks5://127.0.0.1:40000`.
 - `MAX_UPLOAD_BYTES` - default 10 GiB, clamped to at least 50 MiB.

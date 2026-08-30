@@ -24,11 +24,12 @@ use super::{
     ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
     build_external_embed_source_summaries, build_movie_resolve_lock_key,
     build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
-    build_scoped_rd_torrent_cache_key, build_torrentio_stream_cache_key,
-    build_torznab_download_cache_key, build_torznab_request_url, build_torznab_stream_cache_key,
-    build_tv_resolve_lock_key, build_user_scoped_playback_session_key_for_metadata,
-    collect_episode_signatures, compute_external_embed_rank_health_score,
-    compute_source_health_score, compute_torrentio_cache_deadlines, default_external_embed_source,
+    build_real_debrid_unrestrict_form, build_scoped_rd_torrent_cache_key,
+    build_torrentio_stream_cache_key, build_torznab_download_cache_key, build_torznab_request_url,
+    build_torznab_stream_cache_key, build_tv_resolve_lock_key,
+    build_user_scoped_playback_session_key_for_metadata, collect_episode_signatures,
+    compute_external_embed_rank_health_score, compute_source_health_score,
+    compute_torrentio_cache_deadlines, default_external_embed_source,
     does_filename_likely_match_movie, external_embed_hls_candidate_sources,
     external_embed_source_for_source_hash, external_embed_source_hash,
     external_embed_source_rank_score, external_embed_sources, external_embed_url,
@@ -1576,6 +1577,18 @@ fn real_debrid_resolve_does_not_head_verify_before_returning_unrestricted_url() 
     assert!(
         !resolve_body.contains(".verify_playable_url("),
         "authoritative unrestrict URLs must be returned before CDN validation"
+    );
+}
+
+#[test]
+fn real_debrid_remote_traffic_is_explicit_on_unrestrict_requests() {
+    assert_eq!(
+        build_real_debrid_unrestrict_form("https://example.test/file", false),
+        vec![("link", "https://example.test/file")]
+    );
+    assert_eq!(
+        build_real_debrid_unrestrict_form("https://example.test/file", true),
+        vec![("link", "https://example.test/file"), ("remote", "1")]
     );
 }
 

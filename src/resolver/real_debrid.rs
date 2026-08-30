@@ -308,6 +308,18 @@ pub(super) fn build_scoped_rd_torrent_cache_key(cache_scope: &str, info_hash: &s
         format!("rd-torrent:{normalized_scope}:{normalized_hash}")
     }
 }
+
+pub(super) fn build_real_debrid_unrestrict_form(
+    rd_link: &str,
+    remote_traffic: bool,
+) -> Vec<(&str, &str)> {
+    let mut form = vec![("link", rd_link)];
+    if remote_traffic {
+        form.push(("remote", "1"));
+    }
+    form
+}
+
 pub(super) fn validate_real_debrid_user_payload(payload: &Value) -> AppResult<()> {
     let has_account_id = payload.get("id").is_some_and(|value| {
         value.as_i64().is_some() || value.as_str().is_some_and(|id| !id.is_empty())
@@ -1059,12 +1071,16 @@ impl ResolverService {
         real_debrid: &RealDebridRequestContext,
         rd_link: &str,
     ) -> AppResult<(Vec<String>, String)> {
+        let form = build_real_debrid_unrestrict_form(
+            rd_link,
+            crate::config::real_debrid_remote_traffic_enabled(),
+        );
         let unrestricted = self
             .rd_fetch_form(
                 real_debrid,
                 "/unrestrict/link",
                 reqwest::Method::POST,
-                &[("link", rd_link)],
+                &form,
                 12_000,
             )
             .await?;

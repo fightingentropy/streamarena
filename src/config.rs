@@ -326,6 +326,13 @@ pub fn outbound_proxy_bypass_hosts() -> Vec<String> {
     parse_proxy_bypass_env("OUTBOUND_HTTP_PROXY_BYPASS")
 }
 
+/// Use Real-Debrid's paid Remote Traffic pool for unrestricted links. This is
+/// required when StreamArena runs on a VPS/cloud host instead of the account
+/// holder's own network. Keep it disabled for ordinary local deployments.
+pub fn real_debrid_remote_traffic_enabled() -> bool {
+    parse_bool_env("REAL_DEBRID_REMOTE_TRAFFIC", false)
+}
+
 /// Global BitTorrent upload budget. A small bounded contribution improves
 /// swarm reciprocity without allowing peer uploads to monopolize the same home
 /// uplink used to relay playback. Operators can set the value to 0 to opt out.
