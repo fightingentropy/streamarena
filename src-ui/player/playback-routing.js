@@ -288,31 +288,14 @@ export function createPlaybackRouting({
       const parsedUrl = new URL(normalizedSource, getOrigin());
       const host = String(parsedUrl.hostname || "").toLowerCase();
       return (
-        (host === "real-debrid.com" || host.endsWith(".real-debrid.com")) &&
+        parsedUrl.protocol === "https:" &&
+        (host === "stream.real-debrid.com" ||
+          host.endsWith(".stream.real-debrid.com")) &&
         parsedUrl.pathname.toLowerCase().endsWith(".m3u8")
       );
     } catch {
       return false;
     }
-  }
-
-  function normalizeRealDebridHlsPlaybackSource(
-    source,
-    audioStreamIndex = getSelectedAudioStreamIndex(),
-  ) {
-    const normalizedSource = String(source || "").trim();
-    if (!normalizedSource || !hasHlsPlaybackSupport()) {
-      return normalizedSource;
-    }
-    const hlsMeta = parseHlsMasterSource(normalizedSource, getOrigin());
-    if (hlsMeta?.input) {
-      return normalizedSource;
-    }
-    const normalizedSourceInput = extractPlaybackSourceInput(normalizedSource);
-    if (!normalizedSourceInput || !isRealDebridHlsSource(normalizedSourceInput)) {
-      return normalizedSource;
-    }
-    return buildHlsPlaybackUrl(normalizedSourceInput, audioStreamIndex, -1);
   }
 
   function shouldUseHlsJsForSource(source) {
@@ -393,11 +376,15 @@ export function createPlaybackRouting({
     const normalizedSourceInput = String(
       sourceInput || extractPlaybackSourceInput(normalizedSource),
     ).trim();
-    if (
-      hasHlsPlaybackSupport() &&
-      isRealDebridHlsSource(normalizedSourceInput)
-    ) {
-      return buildHlsPlaybackUrl(normalizedSourceInput, audioStreamIndex, -1);
+    if (isRealDebridHlsSource(normalizedSourceInput)) {
+      // Real-Debrid's `stream.real-debrid.com` Apple transcode is already a
+      // browser-ready HLS VOD with CORS-open manifests and segments. Sending it
+      // through `/api/hls/*` makes the server decode and segment an HLS stream
+      // that Real-Debrid already prepared, adds a second media hop, and makes a
+      // cold resume wait for sequential server-side segment generation. Keep
+      // the CDN URL direct; the resolved source queue still carries `/api/remux`
+      // as the compatibility fallback when direct HLS cannot play.
+      return normalizedSourceInput;
     }
     if (
       !normalizedSourceInput ||
@@ -691,7 +678,6 @@ export function createPlaybackRouting({
   return {
     parseHlsMasterSource: (source) => parseHlsMasterSource(source, getOrigin()),
     buildHlsPlaybackUrl,
-    normalizeRealDebridHlsPlaybackSource,
     extractPlaybackSourceInput,
     hasNativeHlsPlaybackSupport: hasNativeHlsSupportForPlayer,
     hasHlsJsPlaybackSupport,

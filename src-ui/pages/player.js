@@ -449,7 +449,6 @@ const {
   shouldAvoidRemuxFallbackForHls,
   isMobileOrTabletVideoEnvironment,
   buildPreferredBrowserPlaybackSource,
-  normalizeRealDebridHlsPlaybackSource,
   shouldUseSoftwareDecode,
   scoreMobileLightSourceOption,
   getSourceListPreferredContainer,
@@ -2753,10 +2752,6 @@ function setVideoSource(
   { resetInitialResume = true, startSeconds = 0, autoplay = true } = {},
 ) {
   if (!nextSource) return;
-  const browserNormalizedSource = normalizeRealDebridHlsPlaybackSource(nextSource);
-  if (browserNormalizedSource) {
-    nextSource = browserNormalizedSource;
-  }
   deferredMediaTracks.cancel();
   const requestedStartSeconds = normalizeResumeStartSeconds(startSeconds);
   clearLiveIframePlayback();

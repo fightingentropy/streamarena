@@ -145,37 +145,14 @@ const hevcCopyRouting = createPlaybackRouting({
 });
 
 const realDebridHls =
-  "https://23-4.download.real-debrid.com/d/example/stream.m3u8?auth=token";
-const normalizedRealDebridHls =
-  hevcCopyRouting.normalizeRealDebridHlsPlaybackSource(realDebridHls, 2);
-assert.match(
-  normalizedRealDebridHls,
-  /^\/api\/hls\/master\.m3u8\?/,
-  "Real-Debrid HLS should be routed through the internal HLS pipeline",
-);
-const normalizedRealDebridHlsMeta =
-  hevcCopyRouting.parseHlsMasterSource(normalizedRealDebridHls);
-assert.equal(normalizedRealDebridHlsMeta?.input, realDebridHls);
-assert.equal(normalizedRealDebridHlsMeta?.audioStreamIndex, 2);
+  "https://28.stream.real-debrid.com/d/example/full.m3u8?auth=token";
 assert.equal(
-  hevcCopyRouting.normalizeRealDebridHlsPlaybackSource(normalizedRealDebridHls),
-  normalizedRealDebridHls,
-  "an already-normalized Real-Debrid HLS source should not be wrapped twice",
-);
-assert.equal(
-  hevcCopyRouting.normalizeRealDebridHlsPlaybackSource(
-    "https://media.example.test/stream.m3u8",
-  ),
-  "https://media.example.test/stream.m3u8",
-  "non-Real-Debrid HLS sources should keep their existing route",
-);
-assert.match(
   hevcCopyRouting.buildPreferredBrowserPlaybackSource(
     realDebridHls,
     realDebridHls,
   ),
-  /^\/api\/hls\/master\.m3u8\?/,
-  "preferred browser playback should normalize Real-Debrid HLS before attachment",
+  realDebridHls,
+  "Real-Debrid's browser-ready HLS should stay directly on its CDN",
 );
 assert.equal(
   hevcCopyRouting.buildPreferredBrowserPlaybackSource(
