@@ -379,6 +379,12 @@ export function createPlaybackRouting({
     if (isRealDebridHlsSource(normalizedSourceInput)) {
       try {
         const parsedSource = new URL(normalizedSource, getOrigin());
+        if (parsedSource.pathname === "/api/remux") {
+          // A current backend may deliberately prefer its fast fragmented-MP4
+          // route while retaining the original Apple-HLS URL as provenance.
+          // Never unwrap that route back to the provider host.
+          return normalizedSource;
+        }
         if (parsedSource.pathname === "/api/live/hls.m3u8") {
           // The backend uses this signed, byte-streaming relay when RD bound the
           // transcode URL to its provider egress IP. Preserve that route: unlike

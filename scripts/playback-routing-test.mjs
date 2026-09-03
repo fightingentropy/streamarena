@@ -171,6 +171,14 @@ assert.equal(
 assert.equal(
   hevcCopyRouting.buildPreferredBrowserPlaybackSource(
     automaticHevcRemux,
+    realDebridHls,
+  ),
+  automaticHevcRemux,
+  "a remux-first RD payload must not be unwrapped to its HLS provenance URL",
+);
+assert.equal(
+  hevcCopyRouting.buildPreferredBrowserPlaybackSource(
+    automaticHevcRemux,
     remoteHevcMkv,
   ),
   automaticHevcRemux,

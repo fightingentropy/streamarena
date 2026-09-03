@@ -2763,15 +2763,18 @@ impl ResolverService {
             selected_audio_stream_index,
             selected_subtitle_stream_index,
         );
-        // Real-Debrid mints its Apple-HLS URL through the provider client, whose
-        // WARP egress is deliberately stable because RD media links are IP-bound.
-        // A browser fetching the playlist directly leaves through a different IP
-        // and can fetch the manifest while every media fragment stalls. Reuse the
-        // lightweight signed HLS relay so playlist and segment traffic stays on
-        // the same egress as the RD API. The persisted session remains the raw
-        // upstream URL so every response gets a fresh four-hour relay signature.
+        // Real-Debrid's Apple-HLS media host is unreliable from this datacenter,
+        // while its unrestricted download host starts consistently. Prefer the
+        // fragmented-MP4 remux and keep the signed HLS relay as recovery. The
+        // persisted session remains the raw provider response so every delivery
+        // can rebuild fresh, short-lived browser routes.
         let browser_normalized =
             proxy_real_debrid_hls_for_browser(&normalized, &self.config.live_hls_proxy_secret);
+        let browser_source_input = if is_remux_playback_url(&browser_normalized.playable_url) {
+            extract_playable_source_input(&browser_normalized.playable_url)
+        } else {
+            source_input.clone()
+        };
 
         let response_filename = if browser_normalized.filename.is_empty() {
             resolved.filename.clone()
@@ -2797,7 +2800,7 @@ impl ResolverService {
             "selectedFilePath": response_selected_file_path.clone(),
             "resolverProvider": resolver_provider.as_str(),
             "realDebridCached": resolved.real_debrid_cached,
-            "sourceInput": source_input,
+            "sourceInput": browser_source_input,
             "tracks": tracks,
             "tracksPending": tracks_pending,
             "selectedAudioStreamIndex": selected_audio_stream_index,
