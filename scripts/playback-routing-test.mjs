@@ -154,6 +154,20 @@ assert.equal(
   realDebridHls,
   "Real-Debrid's browser-ready HLS should stay directly on its CDN",
 );
+const realDebridRelay =
+  `/api/live/hls.m3u8?${new URLSearchParams({
+    input: realDebridHls,
+    externalEmbed: "1",
+    sigV2: "example",
+  })}`;
+assert.equal(
+  hevcCopyRouting.buildPreferredBrowserPlaybackSource(
+    realDebridRelay,
+    realDebridHls,
+  ),
+  realDebridRelay,
+  "the lightweight signed RD byte relay must not be bypassed",
+);
 assert.equal(
   hevcCopyRouting.buildPreferredBrowserPlaybackSource(
     automaticHevcRemux,

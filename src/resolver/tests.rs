@@ -46,9 +46,9 @@ use super::{
     parse_torrentio_streams_payload, parse_torznab_xml, playback_session_key_allowed_for_user,
     playback_session_matches_preferred_container, playback_session_matches_preferred_quality,
     playback_session_matches_source_hash, prefer_mp4_default_candidates,
-    prioritize_local_torrent_first_wave, ready_info_has_selected_file_id,
-    real_debrid_apple_transcode_url, score_stream_episode_match, select_resolved_track_indexes,
-    select_top_episode_candidates, select_top_movie_candidates,
+    prioritize_local_torrent_first_wave, proxy_real_debrid_hls_for_browser,
+    ready_info_has_selected_file_id, real_debrid_apple_transcode_url, score_stream_episode_match,
+    select_resolved_track_indexes, select_top_episode_candidates, select_top_movie_candidates,
     should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
     should_prefer_software_decode_source, should_resolve_torrent_candidates,
     should_skip_playback_session_reuse, sort_movie_candidates, stream_list_contains_hash,
@@ -2123,6 +2123,27 @@ fn real_debrid_transcode_hls_stays_direct_with_safe_remux_recovery() {
     assert_eq!(normalized.fallback_urls.len(), 1);
     assert!(normalized.fallback_urls[0].starts_with("/api/remux?input="));
     assert!(!normalized.fallback_urls.iter().any(|url| url == download));
+}
+
+#[test]
+fn real_debrid_transcode_hls_uses_the_signed_byte_relay_in_browser_payloads() {
+    let hls = "https://3.stream.real-debrid.com/t/download/audio/none/aac/full.m3u8";
+    let remux =
+        "/api/remux?input=https%3A%2F%2F126-4.download.real-debrid.com%2Fpath%2FParasite.2019.mkv";
+    let proxied = proxy_real_debrid_hls_for_browser(
+        &ResolvedSource {
+            playable_url: hls.to_owned(),
+            fallback_urls: vec![hls.to_owned(), remux.to_owned()],
+            ..ResolvedSource::default()
+        },
+        "test-secret",
+    );
+
+    assert!(proxied.playable_url.starts_with("/api/live/hls.m3u8?"));
+    assert!(proxied.playable_url.contains("externalEmbed=1"));
+    assert!(proxied.playable_url.contains("sig="));
+    assert!(!proxied.playable_url.contains("test-secret"));
+    assert_eq!(proxied.fallback_urls, vec![remux]);
 }
 
 #[test]

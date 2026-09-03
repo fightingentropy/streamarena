@@ -377,6 +377,17 @@ export function createPlaybackRouting({
       sourceInput || extractPlaybackSourceInput(normalizedSource),
     ).trim();
     if (isRealDebridHlsSource(normalizedSourceInput)) {
+      try {
+        const parsedSource = new URL(normalizedSource, getOrigin());
+        if (parsedSource.pathname === "/api/live/hls.m3u8") {
+          // The backend uses this signed, byte-streaming relay when RD bound the
+          // transcode URL to its provider egress IP. Preserve that route: unlike
+          // `/api/hls/*`, it does not decode, re-segment, or invoke ffmpeg.
+          return normalizedSource;
+        }
+      } catch {
+        // Fall through to the raw verified RD URL for legacy payloads.
+      }
       // Real-Debrid's `stream.real-debrid.com` Apple transcode is already a
       // browser-ready HLS VOD with CORS-open manifests and segments. Sending it
       // through `/api/hls/*` makes the server decode and segment an HLS stream

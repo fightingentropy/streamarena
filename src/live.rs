@@ -355,6 +355,17 @@ pub async fn live_hls_resource_handler(
         "no-store"
     };
 
+    // RD's Apple-HLS output is already H.264/AAC browser media. Its signed URLs
+    // are IP-bound to the stable provider/WARP egress used by `http_client`, so
+    // stream the bytes through that same route without an ffprobe/ffmpeg pass.
+    // This is the low-CPU, first-upstream-chunk fast path for RD VOD segments.
+    if live_request.trusted_external_embed
+        && is_real_debrid_stream_url(&live_request.source_url)
+        && url_path_is_mpegts(&live_request.source_url)
+    {
+        return stream_live_ts_passthrough(&state, &live_request, cache_control).await;
+    }
+
     // Streaming fast-path: a non-`.ts` segment fetched over plain HTTP (not the
     // curl-fingerprint path, not a transcode candidate) is streamed straight to the
     // client, so TTFB is the first upstream chunk rather than the whole multi-MB
@@ -467,6 +478,14 @@ fn live_segment_response(
 
 fn url_path_is_mpegts(url: &Url) -> bool {
     url.path().to_ascii_lowercase().ends_with(".ts")
+}
+
+fn is_real_debrid_stream_url(url: &Url) -> bool {
+    let Some(host) = url.host_str().map(|value| value.to_ascii_lowercase()) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && (host == "stream.real-debrid.com" || host.ends_with(".stream.real-debrid.com"))
 }
 
 /// Some external-embed CDNs disguise each `.ts` fragment as a PNG: a real PNG header
@@ -3222,11 +3241,29 @@ mod tests {
         build_sports_live_hls_playback_source, build_trusted_external_embed_hls_playback_source,
         host_matches_allowed_live_hls_host, is_allowed_live_hls_url,
         is_browser_bound_live_hls_upstream, is_live_ts_segment,
-        is_public_external_embed_hls_proxy_url, is_trusted_external_embed_hls_request,
-        live_audio_stream_key, live_segment_transcode_args, normalize_hls_referer,
-        png_prefixed_ts_strip_offset, query_pairs, rewrite_live_hls_playlist,
-        strip_video_only_stream_inf_codecs,
+        is_public_external_embed_hls_proxy_url, is_real_debrid_stream_url,
+        is_trusted_external_embed_hls_request, live_audio_stream_key, live_segment_transcode_args,
+        normalize_hls_referer, png_prefixed_ts_strip_offset, query_pairs,
+        rewrite_live_hls_playlist, strip_video_only_stream_inf_codecs,
     };
+
+    #[test]
+    fn real_debrid_stream_urls_require_https_and_the_exact_host_family() {
+        let playlist =
+            url::Url::parse("https://3.stream.real-debrid.com/t/download/audio/none/aac/full.m3u8")
+                .expect("real-debrid playlist URL");
+        let segment = url::Url::parse("https://3.stream.real-debrid.com/t/download/segment-1.ts")
+            .expect("real-debrid segment URL");
+        let insecure = url::Url::parse("http://3.stream.real-debrid.com/t/segment-1.ts")
+            .expect("insecure real-debrid URL");
+        let lookalike = url::Url::parse("https://stream.real-debrid.com.evil.test/segment-1.ts")
+            .expect("lookalike URL");
+
+        assert!(is_real_debrid_stream_url(&playlist));
+        assert!(is_real_debrid_stream_url(&segment));
+        assert!(!is_real_debrid_stream_url(&insecure));
+        assert!(!is_real_debrid_stream_url(&lookalike));
+    }
 
     #[test]
     fn browser_hls_relay_accepts_only_encoded_loopback_session_urls() {

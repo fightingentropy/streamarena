@@ -2763,11 +2763,20 @@ impl ResolverService {
             selected_audio_stream_index,
             selected_subtitle_stream_index,
         );
+        // Real-Debrid mints its Apple-HLS URL through the provider client, whose
+        // WARP egress is deliberately stable because RD media links are IP-bound.
+        // A browser fetching the playlist directly leaves through a different IP
+        // and can fetch the manifest while every media fragment stalls. Reuse the
+        // lightweight signed HLS relay so playlist and segment traffic stays on
+        // the same egress as the RD API. The persisted session remains the raw
+        // upstream URL so every response gets a fresh four-hour relay signature.
+        let browser_normalized =
+            proxy_real_debrid_hls_for_browser(&normalized, &self.config.live_hls_proxy_secret);
 
-        let response_filename = if normalized.filename.is_empty() {
+        let response_filename = if browser_normalized.filename.is_empty() {
             resolved.filename.clone()
         } else {
-            normalized.filename.clone()
+            browser_normalized.filename.clone()
         };
         let mut response_metadata =
             build_resolved_metadata_payload(&metadata, &resolved, &response_filename);
@@ -2780,8 +2789,8 @@ impl ResolverService {
         let response_subtitle_lang = preferences.subtitle_lang.clone();
         let response_quality = preferences.quality.clone();
         let mut payload = json!({
-            "playableUrl": normalized.playable_url.clone(),
-            "fallbackUrls": normalized.fallback_urls.clone(),
+            "playableUrl": browser_normalized.playable_url.clone(),
+            "fallbackUrls": browser_normalized.fallback_urls.clone(),
             "filename": response_filename.clone(),
             "sourceHash": response_source_hash.clone(),
             "selectedFile": response_selected_file.clone(),
@@ -7392,6 +7401,29 @@ fn normalize_resolved_source_for_software_decode(
     normalized.playable_url = preferred_remux;
     normalized.fallback_urls = next_fallbacks;
     normalized
+}
+
+fn proxy_real_debrid_hls_for_browser(
+    source: &ResolvedSource,
+    live_hls_proxy_secret: &str,
+) -> ResolvedSource {
+    let mut proxied = source.clone();
+    let upstream = proxied.playable_url.trim();
+    if upstream.is_empty() || !is_real_debrid_transcode_hls_url(upstream) {
+        return proxied;
+    }
+    proxied.playable_url = crate::live::build_trusted_external_embed_hls_playback_source(
+        upstream,
+        None,
+        live_hls_proxy_secret,
+    );
+    // A direct retry uses the browser's non-RD egress and repeats the same
+    // fragment timeout. Keep the already-built /api/remux compatibility route
+    // as the only fallback when the lightweight relay cannot play.
+    proxied
+        .fallback_urls
+        .retain(|url| !is_real_debrid_transcode_hls_url(url));
+    proxied
 }
 
 fn is_real_debrid_download_url(value: &str) -> bool {
