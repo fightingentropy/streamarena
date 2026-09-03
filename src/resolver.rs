@@ -7412,18 +7412,53 @@ fn proxy_real_debrid_hls_for_browser(
     if upstream.is_empty() || !is_real_debrid_transcode_hls_url(upstream) {
         return proxied;
     }
-    proxied.playable_url = crate::live::build_trusted_external_embed_hls_playback_source(
+    let hls_relay = crate::live::build_trusted_external_embed_hls_playback_source(
         upstream,
         None,
         live_hls_proxy_secret,
     );
-    // A direct retry uses the browser's non-RD egress and repeats the same
-    // fragment timeout. Keep the already-built /api/remux compatibility route
-    // as the only fallback when the lightweight relay cannot play.
-    proxied
+    let preferred_remux = proxied
         .fallback_urls
-        .retain(|url| !is_real_debrid_transcode_hls_url(url));
+        .iter()
+        .find(|url| is_remux_playback_url(url))
+        .cloned();
+
+    // Real-Debrid's Apple-HLS segment host can stall from datacenter egress
+    // even when the manifest succeeds. The unrestricted download host is both
+    // faster and more reliable from the Grok server, and /api/remux only copies
+    // browser-supported video while normalizing audio into fragmented MP4.
+    // Prefer that route immediately instead of spending a full fragment timeout
+    // before falling back. Retain the signed byte relay as recovery, but never
+    // expose the raw HLS URL to the browser's different egress.
+    if let Some(remux) = preferred_remux {
+        proxied.playable_url = remux.clone();
+        proxied.fallback_urls.clear();
+        push_unique_url(&mut proxied.fallback_urls, &hls_relay);
+        for fallback in &source.fallback_urls {
+            if fallback != &remux
+                && !is_real_debrid_transcode_hls_url(fallback)
+                && !is_remux_playback_url(fallback)
+            {
+                push_unique_url(&mut proxied.fallback_urls, fallback);
+            }
+        }
+    } else {
+        proxied.playable_url = hls_relay;
+        proxied
+            .fallback_urls
+            .retain(|url| !is_real_debrid_transcode_hls_url(url));
+    }
     proxied
+}
+
+fn is_remux_playback_url(value: &str) -> bool {
+    let raw = value.trim();
+    let Ok(url) =
+        url::Url::parse(raw).or_else(|_| url::Url::parse(&format!("http://localhost{raw}")))
+    else {
+        return false;
+    };
+    url.path() == "/api/remux" && parse_playback_proxy_url(raw).is_some()
 }
 
 fn is_real_debrid_download_url(value: &str) -> bool {

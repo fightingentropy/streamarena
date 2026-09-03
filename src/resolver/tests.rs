@@ -2126,7 +2126,7 @@ fn real_debrid_transcode_hls_stays_direct_with_safe_remux_recovery() {
 }
 
 #[test]
-fn real_debrid_transcode_hls_uses_the_signed_byte_relay_in_browser_payloads() {
+fn real_debrid_transcode_hls_prefers_remux_with_signed_byte_relay_recovery() {
     let hls = "https://3.stream.real-debrid.com/t/download/audio/none/aac/full.m3u8";
     let remux =
         "/api/remux?input=https%3A%2F%2F126-4.download.real-debrid.com%2Fpath%2FParasite.2019.mkv";
@@ -2139,11 +2139,28 @@ fn real_debrid_transcode_hls_uses_the_signed_byte_relay_in_browser_payloads() {
         "test-secret",
     );
 
+    assert_eq!(proxied.playable_url, remux);
+    assert_eq!(proxied.fallback_urls.len(), 1);
+    assert!(proxied.fallback_urls[0].starts_with("/api/live/hls.m3u8?"));
+    assert!(proxied.fallback_urls[0].contains("externalEmbed=1"));
+    assert!(proxied.fallback_urls[0].contains("sig="));
+    assert!(!proxied.fallback_urls[0].contains("test-secret"));
+}
+
+#[test]
+fn real_debrid_transcode_hls_uses_signed_relay_when_remux_is_unavailable() {
+    let hls = "https://3.stream.real-debrid.com/t/download/audio/none/aac/full.m3u8";
+    let proxied = proxy_real_debrid_hls_for_browser(
+        &ResolvedSource {
+            playable_url: hls.to_owned(),
+            fallback_urls: vec![hls.to_owned()],
+            ..ResolvedSource::default()
+        },
+        "test-secret",
+    );
+
     assert!(proxied.playable_url.starts_with("/api/live/hls.m3u8?"));
-    assert!(proxied.playable_url.contains("externalEmbed=1"));
-    assert!(proxied.playable_url.contains("sig="));
-    assert!(!proxied.playable_url.contains("test-secret"));
-    assert_eq!(proxied.fallback_urls, vec![remux]);
+    assert!(proxied.fallback_urls.is_empty());
 }
 
 #[test]
