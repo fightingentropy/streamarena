@@ -279,6 +279,42 @@ export function createPlaybackRouting({
     return hasNativeHlsSupportForPlayer() || hasHlsJsPlaybackSupport();
   }
 
+  function isRealDebridHlsSource(source) {
+    try {
+      const normalizedSource = String(source || "").trim();
+      if (!normalizedSource) {
+        return false;
+      }
+      const parsedUrl = new URL(normalizedSource, getOrigin());
+      const host = String(parsedUrl.hostname || "").toLowerCase();
+      return (
+        (host === "real-debrid.com" || host.endsWith(".real-debrid.com")) &&
+        parsedUrl.pathname.toLowerCase().endsWith(".m3u8")
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function normalizeRealDebridHlsPlaybackSource(
+    source,
+    audioStreamIndex = getSelectedAudioStreamIndex(),
+  ) {
+    const normalizedSource = String(source || "").trim();
+    if (!normalizedSource || !hasHlsPlaybackSupport()) {
+      return normalizedSource;
+    }
+    const hlsMeta = parseHlsMasterSource(normalizedSource, getOrigin());
+    if (hlsMeta?.input) {
+      return normalizedSource;
+    }
+    const normalizedSourceInput = extractPlaybackSourceInput(normalizedSource);
+    if (!normalizedSourceInput || !isRealDebridHlsSource(normalizedSourceInput)) {
+      return normalizedSource;
+    }
+    return buildHlsPlaybackUrl(normalizedSourceInput, audioStreamIndex, -1);
+  }
+
   function shouldUseHlsJsForSource(source) {
     return shouldUseHlsJsForPlayback(source, {
       hasNativeHlsPlaybackSupport: hasNativeHlsSupportForPlayer,
@@ -357,6 +393,12 @@ export function createPlaybackRouting({
     const normalizedSourceInput = String(
       sourceInput || extractPlaybackSourceInput(normalizedSource),
     ).trim();
+    if (
+      hasHlsPlaybackSupport() &&
+      isRealDebridHlsSource(normalizedSourceInput)
+    ) {
+      return buildHlsPlaybackUrl(normalizedSourceInput, audioStreamIndex, -1);
+    }
     if (
       !normalizedSourceInput ||
       !shouldPreferBrowserHlsPlayback(normalizedSourceInput, subtitleStreamIndex)
@@ -649,6 +691,7 @@ export function createPlaybackRouting({
   return {
     parseHlsMasterSource: (source) => parseHlsMasterSource(source, getOrigin()),
     buildHlsPlaybackUrl,
+    normalizeRealDebridHlsPlaybackSource,
     extractPlaybackSourceInput,
     hasNativeHlsPlaybackSupport: hasNativeHlsSupportForPlayer,
     hasHlsJsPlaybackSupport,
