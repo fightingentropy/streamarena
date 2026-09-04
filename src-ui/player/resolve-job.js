@@ -4,6 +4,9 @@ export const RESOLVE_JOB_LONG_POLL_MS = 25_000;
 export const RESOLVE_JOB_FALLBACK_POLL_MS = 2_000;
 const RESOLVE_JOB_REQUEST_GRACE_MS = 5_000;
 const RESOLVE_JOB_CANCEL_TIMEOUT_MS = 3_000;
+const PLAYBACK_INTENT_HEADERS = {
+  "X-StreamArena-Playback-Intent": "1",
+};
 
 function createResolveAbortError() {
   const error = new Error("Resolve request cancelled.");
@@ -269,7 +272,11 @@ export function createResolveRequester({
       // Finish the tiny registration request even after supersession so its
       // backend id can be cancelled before the next resolve is admitted.
       const started = await coordinatedRequest.trackStart(
-        requestJsonFn(asyncUrl, {}, registrationTimeoutMs),
+        requestJsonFn(
+          asyncUrl,
+          { headers: { ...PLAYBACK_INTENT_HEADERS } },
+          registrationTimeoutMs,
+        ),
       );
       throwIfResolveAborted(invocationSignal);
       if (started?.playableUrl || (started?.sourceHash && !started?.jobId)) {
@@ -329,7 +336,11 @@ export function createResolveRequester({
         try {
           return useAsyncResolve
             ? await requestAsync(url, effectiveTimeoutMs, signal)
-            : await requestJsonFn(url, { signal }, effectiveTimeoutMs);
+            : await requestJsonFn(
+                url,
+                { signal, headers: { ...PLAYBACK_INTENT_HEADERS } },
+                effectiveTimeoutMs,
+              );
         } catch (error) {
           if (signal.aborted) {
             throw createResolveAbortError();

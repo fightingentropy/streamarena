@@ -367,6 +367,45 @@ await run("requestJson preserves an external abort signal", async () => {
   }
 });
 
+await run("marks synchronous playback resolves and preserves cancellation", async () => {
+  const coordinator = createResolveJobRequestCoordinator({
+    cancelResolveJobFn: async () => true,
+  });
+  let observedOptions = null;
+  let notifyStarted;
+  const started = new Promise((resolve) => {
+    notifyStarted = resolve;
+  });
+  const requestResolveJson = createResolveRequester({
+    coordinator,
+    getResolverProvider: () => "real-debrid",
+    requestJsonFn: async (_url, options) => {
+      observedOptions = options;
+      notifyStarted();
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener(
+          "abort",
+          () => {
+            const error = new Error("cancelled");
+            error.name = "AbortError";
+            reject(error);
+          },
+          { once: true },
+        );
+      });
+    },
+  });
+
+  const pending = requestResolveJson("/api/resolve/movie?tmdbId=1", 60_000);
+  await started;
+  await requestResolveJson.cancelActive();
+  await assert.rejects(pending, (error) => error?.name === "AbortError");
+  assert.equal(observedOptions.signal.aborted, true);
+  assert.deepEqual(observedOptions.headers, {
+    "X-StreamArena-Playback-Intent": "1",
+  });
+});
+
 await run("uses an inline async result without a status round trip", async () => {
   const cancelledJobs = [];
   const coordinator = createResolveJobRequestCoordinator({
@@ -401,7 +440,9 @@ await run("uses an inline async result without a status round trip", async () =>
   assert.deepEqual(requests, [
     {
       url: "/api/resolve/movie?tmdbId=1&async=1",
-      options: {},
+      options: {
+        headers: { "X-StreamArena-Playback-Intent": "1" },
+      },
       timeoutMs: 5_000,
     },
   ]);
@@ -434,10 +475,13 @@ await run("resolve requester owns async registration and wait transport", async 
   assert.deepEqual(requests, [
     {
       url: "/api/resolve/movie?tmdbId=1&async=1",
-      options: {},
+      options: {
+        headers: { "X-StreamArena-Playback-Intent": "1" },
+      },
       timeoutMs: 5_000,
     },
   ]);
+  assert.equal("signal" in requests[0].options, false);
   assert.equal(waits.length, 1);
   assert.equal(waits[0].jobId, "job-local");
   assert.equal(waits[0].timeoutMs, 190_000);

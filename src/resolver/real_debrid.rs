@@ -469,7 +469,7 @@ fn real_debrid_token_fingerprint(api_key: &str) -> String {
         .collect()
 }
 
-pub(super) fn build_real_debrid_cache_scope(
+pub(crate) fn build_real_debrid_cache_scope(
     user_id: i64,
     api_key: &str,
     remote_traffic: bool,

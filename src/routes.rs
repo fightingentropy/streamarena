@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::RequestExt;
 use axum::Router;
@@ -41,10 +41,14 @@ use crate::process::{
     RuntimeServices, resolve_effective_remux_hwaccel_mode, to_absolute_playback_url,
 };
 use crate::provider_benchmark::{
+    ProviderBenchmarkAttestations, acknowledge_real_debrid_exact_reuse,
     provider_benchmark_capability_method_supported, provider_benchmark_capability_response,
-    provider_resolve_response, provider_resolve_result, record_external_health_events_for_request,
+    provider_benchmark_database_file_identity, provider_benchmark_real_debrid_scope_identity,
+    provider_benchmark_server_instance_identity, provider_resolve_response,
+    provider_resolve_result, real_debrid_benchmark_exact_reuse_for_request,
+    record_external_health_events_for_request,
 };
-use crate::resolver::{LocalCacheUpgradeRequest, ResolverService};
+use crate::resolver::{LocalCacheUpgradeRequest, ResolverService, build_real_debrid_cache_scope};
 use crate::secret_store::{REAL_DEBRID_TOKEN_PREF_KEY, RealDebridTokenCipher};
 use crate::static_files::serve_static;
 use crate::streaming::StreamingService;
@@ -55,6 +59,8 @@ use crate::upload::UploadService;
 use crate::utils::now_ms;
 
 mod admin;
+mod playback_media;
+mod real_debrid_benchmark;
 mod user_settings;
 use crate::utils::{
     normalize_preferred_audio_lang, normalize_preferred_stream_quality,
@@ -72,6 +78,14 @@ use admin::{
 };
 #[cfg(test)]
 use admin::{manifest_is_stream_addon, normalize_custom_addon_base, provider_slugify};
+use playback_media::{media_tracks_handler, remux_handler};
+use real_debrid_benchmark::{
+    attach_benchmark_server_instance, benchmark_query_matches_cardinality,
+    exact_single_query_value, playback_intent_requested, prepare_real_debrid_benchmark_probe,
+    prewarm_real_debrid_playback, provider_benchmark_capability_handler,
+    provider_benchmark_probe_status_handler, provider_resolve_result_with_benchmark_headers,
+    real_debrid_benchmark_instance_for_request, validate_real_debrid_benchmark_resolve_request,
+};
 use user_settings::*;
 
 #[derive(Clone)]
@@ -118,6 +132,11 @@ const USER_PREF_KEY_MAX_BYTES: usize = 128;
 const USER_PREF_VALUE_MAX_BYTES: usize = 2_000_000;
 const RESOLVE_JOB_MAX_WAIT_MS: u64 = 25_000;
 const RESOLVE_JOB_INLINE_WAIT_MS: u64 = 150;
+const PLAYBACK_INTENT_HEADER: &str = "x-streamarena-playback-intent";
+const REAL_DEBRID_BENCHMARK_QUERY_FLAG: &str = "benchmarkExactSession";
+const REAL_DEBRID_BENCHMARK_HEADER_NAME: &str = "x-streamarena-real-debrid-benchmark";
+const BENCHMARK_EXPECTED_SERVER_INSTANCE_HEADER: &str = "x-streamarena-expected-server-instance";
+const BENCHMARK_SERVER_INSTANCE_HEADER: &str = "x-streamarena-server-instance";
 const USER_SYNC_MAX_ENTRIES: usize = 500;
 const USER_IDENTITY_MAX_BYTES: usize = 512;
 const USER_URL_MAX_BYTES: usize = 4_096;
@@ -494,6 +513,18 @@ pub fn build_router(state: AppState) -> Router {
             "/api/admin/provider-benchmark-capability",
             get(provider_benchmark_capability_handler),
         )
+        .route(
+            "/api/admin/provider-benchmark-probe-status",
+            get(provider_benchmark_probe_status_handler),
+        )
+        .route(
+            "/api/admin/provider-benchmark-resolve/movie",
+            get(resolve_movie_handler),
+        )
+        .route(
+            "/api/admin/provider-benchmark-resolve/tv",
+            get(resolve_tv_handler),
+        )
         .route("/api/admin/overview", get(admin_overview_handler))
         .route("/api/admin/growth", get(admin_growth_handler))
         .route("/api/admin/users", get(admin_users_handler))
@@ -718,18 +749,22 @@ pub async fn health_handler(
     if refresh {
         auth::require_admin(&state.db, &headers).await?;
     }
+    let benchmark_instance = real_debrid_benchmark_instance_for_request(&state, &headers).await?;
     let ffmpeg = state.runtime.get_ffmpeg_capabilities(refresh).await;
-    Ok(json_response(json!({
+    let mut response = json_response(json!({
         "ok": true,
         "uptimeSeconds": ((now_ms() - state.started_at_ms) / 1000).max(0),
         "streaming": state.streaming.stats(),
         "resolver": state.resolver.stats(),
+        "mediaProbe": state.media.probe_stats(),
         "sports": {
             "streamResolveCache": state.sports_stream_resolve_cache.stats(),
             "providerHealth": state.sports_provider_health.summary(false)
         },
         "ffmpeg": ffmpeg
-    })))
+    }));
+    attach_benchmark_server_instance(&mut response, benchmark_instance.as_deref())?;
+    Ok(response)
 }
 
 pub async fn health_live_handler(method: Method) -> AppResult<Response<Body>> {
@@ -1597,18 +1632,6 @@ async fn resolve_job_registration_payload(
         })
 }
 
-async fn provider_benchmark_capability_handler(
-    State(state): State<AppState>,
-    method: Method,
-    headers: HeaderMap,
-) -> AppResult<Response<Body>> {
-    if !provider_benchmark_capability_method_supported(&method) {
-        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
-    }
-    let user = auth::require_admin(&state.db, &headers).await?;
-    provider_benchmark_capability_response(&headers, &user)
-}
-
 pub async fn resolve_movie_handler(
     State(state): State<AppState>,
     method: Method,
@@ -1630,9 +1653,63 @@ pub async fn resolve_movie_handler(
     // any cached resolved source so a stale/dead upstream URL can't be re-served.
     let refresh_resolve = truthy_query_flag(&params, "refreshResolve");
     let user = auth::require_auth(&state.db, &headers).await?;
+    let playback_intent = playback_intent_requested(&headers);
     let record_external_health_events = record_external_health_events_for_request(&headers, &user)?;
-    let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
-    let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
+    let real_debrid_benchmark_exact_reuse =
+        real_debrid_benchmark_exact_reuse_for_request(&headers, &user)?;
+    let resolver_started_at = Instant::now();
+    let real_debrid_benchmark_query = params.contains_key(REAL_DEBRID_BENCHMARK_QUERY_FLAG);
+    let real_debrid_benchmark_route = uri.path() == "/api/admin/provider-benchmark-resolve/movie";
+    if real_debrid_benchmark_query != real_debrid_benchmark_exact_reuse
+        || real_debrid_benchmark_route != real_debrid_benchmark_exact_reuse
+    {
+        return provider_resolve_result_with_benchmark_headers(
+            Err(ApiError::bad_request(
+                "Real-Debrid benchmark request markers do not match.",
+            )),
+            record_external_health_events,
+            real_debrid_benchmark_exact_reuse,
+            resolver_started_at.elapsed(),
+        );
+    }
+    if real_debrid_benchmark_exact_reuse
+        && let Err(error) = validate_real_debrid_benchmark_resolve_request(
+            &params,
+            uri.query().unwrap_or_default(),
+            "movie",
+            user.id,
+            skip_external_embed,
+            refresh_resolve,
+        )
+    {
+        return provider_resolve_result_with_benchmark_headers(
+            Err(error),
+            record_external_health_events,
+            true,
+            resolver_started_at.elapsed(),
+        );
+    }
+    if real_debrid_benchmark_exact_reuse {
+        real_debrid_benchmark_instance_for_request(&state, &headers)
+            .await?
+            .ok_or_else(|| ApiError::bad_request("Real-Debrid benchmark mode is required."))?;
+    }
+    let real_debrid_api_key = match real_debrid_api_key_for_user(&state, user.id).await {
+        Ok(value) => value,
+        Err(error) => {
+            return provider_resolve_result_with_benchmark_headers(
+                Err(error),
+                record_external_health_events,
+                real_debrid_benchmark_exact_reuse,
+                resolver_started_at.elapsed(),
+            );
+        }
+    };
+    let local_torrent_enabled = if real_debrid_benchmark_exact_reuse {
+        false
+    } else {
+        local_torrent_enabled_for_user(&state.db, user.id).await?
+    };
     if truthy_query_flag(&params, "async") {
         let job_id = state.resolve_jobs.create(user.id);
         let job_state = state.clone();
@@ -1640,7 +1717,7 @@ pub async fn resolve_movie_handler(
         let real_debrid_api_key = real_debrid_api_key.clone();
         let params = params.clone();
         let spawned = resolve_jobs.spawn(&job_id, async move {
-            job_state
+            let result = job_state
                 .resolver
                 .resolve_movie(
                     user.id,
@@ -1692,14 +1769,18 @@ pub async fn resolve_movie_handler(
                     skip_external_embed,
                     refresh_resolve,
                     record_external_health_events,
+                    real_debrid_benchmark_exact_reuse,
                 )
-                .await
-                .map_err(|error| {
-                    error
-                        .message()
-                        .unwrap_or("Unable to resolve this stream.")
-                        .to_owned()
-                })
+                .await;
+            if let Ok(payload) = &result {
+                prewarm_real_debrid_playback(&job_state.media, playback_intent, payload);
+            }
+            result.map_err(|error| {
+                error
+                    .message()
+                    .unwrap_or("Unable to resolve this stream.")
+                    .to_owned()
+            })
         });
         debug_assert!(spawned, "newly-created resolve job should be present");
         let payload = resolve_job_registration_payload(
@@ -1714,7 +1795,7 @@ pub async fn resolve_movie_handler(
             record_external_health_events,
         ));
     }
-    let result = state
+    let mut result = state
         .resolver
         .resolve_movie(
             user.id,
@@ -1766,9 +1847,25 @@ pub async fn resolve_movie_handler(
             skip_external_embed,
             refresh_resolve,
             record_external_health_events,
+            real_debrid_benchmark_exact_reuse,
         )
         .await;
-    provider_resolve_result(result, record_external_health_events)
+    if let Ok(payload) = &mut result {
+        if real_debrid_benchmark_exact_reuse {
+            if let Err(error) = prepare_real_debrid_benchmark_probe(&state, user.id, payload).await
+            {
+                result = Err(error);
+            }
+        } else {
+            prewarm_real_debrid_playback(&state.media, playback_intent, payload);
+        }
+    }
+    provider_resolve_result_with_benchmark_headers(
+        result,
+        record_external_health_events,
+        real_debrid_benchmark_exact_reuse,
+        resolver_started_at.elapsed(),
+    )
 }
 
 pub async fn resolve_local_upgrade_handler(
@@ -1851,9 +1948,63 @@ pub async fn resolve_tv_handler(
     // any cached resolved source so a stale/dead upstream URL can't be re-served.
     let refresh_resolve = truthy_query_flag(&params, "refreshResolve");
     let user = auth::require_auth(&state.db, &headers).await?;
+    let playback_intent = playback_intent_requested(&headers);
     let record_external_health_events = record_external_health_events_for_request(&headers, &user)?;
-    let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
-    let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
+    let real_debrid_benchmark_exact_reuse =
+        real_debrid_benchmark_exact_reuse_for_request(&headers, &user)?;
+    let resolver_started_at = Instant::now();
+    let real_debrid_benchmark_query = params.contains_key(REAL_DEBRID_BENCHMARK_QUERY_FLAG);
+    let real_debrid_benchmark_route = uri.path() == "/api/admin/provider-benchmark-resolve/tv";
+    if real_debrid_benchmark_query != real_debrid_benchmark_exact_reuse
+        || real_debrid_benchmark_route != real_debrid_benchmark_exact_reuse
+    {
+        return provider_resolve_result_with_benchmark_headers(
+            Err(ApiError::bad_request(
+                "Real-Debrid benchmark request markers do not match.",
+            )),
+            record_external_health_events,
+            real_debrid_benchmark_exact_reuse,
+            resolver_started_at.elapsed(),
+        );
+    }
+    if real_debrid_benchmark_exact_reuse
+        && let Err(error) = validate_real_debrid_benchmark_resolve_request(
+            &params,
+            uri.query().unwrap_or_default(),
+            "tv",
+            user.id,
+            skip_external_embed,
+            refresh_resolve,
+        )
+    {
+        return provider_resolve_result_with_benchmark_headers(
+            Err(error),
+            record_external_health_events,
+            true,
+            resolver_started_at.elapsed(),
+        );
+    }
+    if real_debrid_benchmark_exact_reuse {
+        real_debrid_benchmark_instance_for_request(&state, &headers)
+            .await?
+            .ok_or_else(|| ApiError::bad_request("Real-Debrid benchmark mode is required."))?;
+    }
+    let real_debrid_api_key = match real_debrid_api_key_for_user(&state, user.id).await {
+        Ok(value) => value,
+        Err(error) => {
+            return provider_resolve_result_with_benchmark_headers(
+                Err(error),
+                record_external_health_events,
+                real_debrid_benchmark_exact_reuse,
+                resolver_started_at.elapsed(),
+            );
+        }
+    };
+    let local_torrent_enabled = if real_debrid_benchmark_exact_reuse {
+        false
+    } else {
+        local_torrent_enabled_for_user(&state.db, user.id).await?
+    };
     if truthy_query_flag(&params, "async") {
         let job_id = state.resolve_jobs.create(user.id);
         let job_state = state.clone();
@@ -1861,7 +2012,7 @@ pub async fn resolve_tv_handler(
         let real_debrid_api_key = real_debrid_api_key.clone();
         let params = params.clone();
         let spawned = resolve_jobs.spawn(&job_id, async move {
-            job_state
+            let result = job_state
                 .resolver
                 .resolve_tv(
                     user.id,
@@ -1930,14 +2081,18 @@ pub async fn resolve_tv_handler(
                     skip_external_embed,
                     refresh_resolve,
                     record_external_health_events,
+                    real_debrid_benchmark_exact_reuse,
                 )
-                .await
-                .map_err(|error| {
-                    error
-                        .message()
-                        .unwrap_or("Unable to resolve this stream.")
-                        .to_owned()
-                })
+                .await;
+            if let Ok(payload) = &result {
+                prewarm_real_debrid_playback(&job_state.media, playback_intent, payload);
+            }
+            result.map_err(|error| {
+                error
+                    .message()
+                    .unwrap_or("Unable to resolve this stream.")
+                    .to_owned()
+            })
         });
         debug_assert!(spawned, "newly-created resolve job should be present");
         let payload = resolve_job_registration_payload(
@@ -1952,7 +2107,7 @@ pub async fn resolve_tv_handler(
             record_external_health_events,
         ));
     }
-    let result = state
+    let mut result = state
         .resolver
         .resolve_tv(
             user.id,
@@ -2021,9 +2176,25 @@ pub async fn resolve_tv_handler(
             skip_external_embed,
             refresh_resolve,
             record_external_health_events,
+            real_debrid_benchmark_exact_reuse,
         )
         .await;
-    provider_resolve_result(result, record_external_health_events)
+    if let Ok(payload) = &mut result {
+        if real_debrid_benchmark_exact_reuse {
+            if let Err(error) = prepare_real_debrid_benchmark_probe(&state, user.id, payload).await
+            {
+                result = Err(error);
+            }
+        } else {
+            prewarm_real_debrid_playback(&state.media, playback_intent, payload);
+        }
+    }
+    provider_resolve_result_with_benchmark_headers(
+        result,
+        record_external_health_events,
+        real_debrid_benchmark_exact_reuse,
+        resolver_started_at.elapsed(),
+    )
 }
 
 pub async fn local_torrent_stream_handler(
@@ -2084,57 +2255,6 @@ pub async fn local_cache_stream_handler(
                 .map(String::as_str)
                 .unwrap_or_default(),
             params.get("fileId").map(String::as_str).unwrap_or_default(),
-        )
-        .await
-}
-
-pub async fn remux_handler(
-    State(state): State<AppState>,
-    method: Method,
-    uri: Uri,
-) -> AppResult<Response<Body>> {
-    if method != Method::GET {
-        return Err(ApiError::method_not_allowed("Method not allowed."));
-    }
-    let params = query_pairs(uri.query().unwrap_or_default());
-    let input = params.get("input").cloned().unwrap_or_default();
-    if input.trim().is_empty() {
-        return Err(ApiError::bad_request("Missing input query parameter."));
-    }
-    let start_seconds = params
-        .get("start")
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or_default();
-    let audio_stream_index = params
-        .get("audioStream")
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(-1);
-    let subtitle_stream_index = params
-        .get("subtitleStream")
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(-1);
-    let manual_audio_sync_ms = params
-        .get("audioSyncMs")
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or_default();
-    let preferred_video_mode = params
-        .get("videoMode")
-        .cloned()
-        .unwrap_or_else(|| state.config.remux_video_mode.clone());
-    let browser_video_codecs = params
-        .get("videoCodecs")
-        .map(String::as_str)
-        .unwrap_or_default();
-    state
-        .streaming
-        .create_remux_response(
-            &input,
-            start_seconds,
-            audio_stream_index,
-            subtitle_stream_index,
-            manual_audio_sync_ms,
-            &preferred_video_mode,
-            browser_video_codecs,
         )
         .await
 }
@@ -2251,129 +2371,6 @@ pub async fn hls_segment_handler(
         .streaming
         .create_hls_segment_response(&input, segment_index, audio_stream_index)
         .await
-}
-
-pub async fn media_tracks_handler(
-    State(state): State<AppState>,
-    method: Method,
-    uri: Uri,
-) -> AppResult<Response<Body>> {
-    if method != Method::GET {
-        return Err(ApiError::method_not_allowed("Method not allowed."));
-    }
-    let params = query_pairs(uri.query().unwrap_or_default());
-    let request_url = absolute_request_url(&state, &uri)?;
-    let raw_input = params.get("input").map(String::as_str).unwrap_or_default();
-    let source_input = if raw_input.trim().starts_with("/api/local-torrent/stream")
-        || raw_input.trim().starts_with("/api/local-cache/stream")
-    {
-        raw_input.trim().to_owned()
-    } else {
-        to_absolute_playback_url(raw_input, &request_url)
-    };
-    if source_input.is_empty() {
-        return Err(ApiError::bad_request("Missing input query parameter."));
-    }
-
-    let preferred_audio_lang = normalize_preferred_audio_lang(
-        params
-            .get("audioLang")
-            .map(String::as_str)
-            .unwrap_or_default(),
-    );
-    let preferred_subtitle_lang = normalize_subtitle_preference(
-        params
-            .get("subtitleLang")
-            .map(String::as_str)
-            .unwrap_or_default(),
-    );
-    let subtitle_title_hint = params
-        .get("title")
-        .cloned()
-        .unwrap_or_else(|| infer_title_hint_from_source_input(&source_input));
-    let subtitle_year_hint = normalize_year(params.get("year").cloned().unwrap_or_default());
-    let subtitle_imdb_id_hint = params.get("imdbId").cloned().unwrap_or_default();
-    let subtitle_filename_hint = params
-        .get("filename")
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| infer_filename_hint_from_source_input(&source_input));
-
-    let mut selected_audio_stream_index = -1_i64;
-    let mut selected_subtitle_stream_index = -1_i64;
-    let season_number_hint = params
-        .get("seasonNumber")
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .unwrap_or_default();
-    let episode_number_hint = params
-        .get("episodeNumber")
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .unwrap_or_default();
-    let probe_future = state.media.probe_media_tracks(&source_input);
-    let external_subtitle_future = async {
-        if preferred_subtitle_lang == "off" {
-            return Vec::new();
-        }
-        let mut external = state
-            .media
-            .search_opensubtitles_tracks(
-                &subtitle_imdb_id_hint,
-                &subtitle_title_hint,
-                &subtitle_year_hint,
-                &preferred_subtitle_lang,
-                &subtitle_filename_hint,
-            )
-            .await;
-        if external.is_empty() {
-            external = state
-                .media
-                .search_stremio_addon_subtitle_tracks(
-                    &subtitle_imdb_id_hint,
-                    season_number_hint,
-                    episode_number_hint,
-                    &preferred_subtitle_lang,
-                )
-                .await;
-        }
-        external
-    };
-    let (probe_result, external_subtitle_tracks) =
-        tokio::join!(probe_future, external_subtitle_future);
-    let mut merged_tracks = probe_result.unwrap_or_default();
-    let local_sidecar_subtitle_tracks = state
-        .media
-        .find_local_sidecar_subtitle_tracks(&source_input);
-    if !local_sidecar_subtitle_tracks.is_empty() {
-        merged_tracks.subtitleTracks = merge_preferred_subtitle_tracks(
-            local_sidecar_subtitle_tracks,
-            merged_tracks.subtitleTracks,
-        );
-    }
-    if !external_subtitle_tracks.is_empty() {
-        merged_tracks.subtitleTracks =
-            merge_preferred_subtitle_tracks(external_subtitle_tracks, merged_tracks.subtitleTracks);
-    }
-    if let Some(audio_track) = choose_audio_track_from_probe(&merged_tracks, &preferred_audio_lang)
-    {
-        selected_audio_stream_index = audio_track.streamIndex;
-    }
-    if let Some(subtitle_track) =
-        choose_subtitle_track_from_probe(&merged_tracks, &preferred_subtitle_lang)
-    {
-        selected_subtitle_stream_index = subtitle_track.streamIndex;
-    }
-    let tracks = merged_tracks;
-
-    Ok(json_response(json!({
-        "tracks": tracks,
-        "selectedAudioStreamIndex": selected_audio_stream_index,
-        "selectedSubtitleStreamIndex": selected_subtitle_stream_index,
-        "preferences": {
-            "audioLang": preferred_audio_lang,
-            "subtitleLang": preferred_subtitle_lang
-        },
-        "sourceInput": source_input
-    })))
 }
 
 fn infer_filename_hint_from_source_input(source_input: &str) -> String {

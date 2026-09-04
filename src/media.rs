@@ -1,11 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, LazyLock};
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use axum::body::Body;
 use axum::http::{Response, StatusCode, header};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dashmap::DashMap;
 use encoding_rs::{UTF_8, WINDOWS_1252};
 use flate2::read::GzDecoder;
@@ -13,10 +16,12 @@ use futures_util::{StreamExt, stream};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use sha2::{Digest, Sha256};
+use tokio::sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
 use url::Url;
 use url::form_urlencoded::{Serializer, byte_serialize};
 
+use crate::auth::generate_session_token;
 use crate::config::Config;
 use crate::error::{ApiError, AppResult};
 use crate::key_lock::key_lock;
@@ -41,6 +46,14 @@ const STREMIO_SUBTITLE_SEARCH_CACHE_MAX_ENTRIES: usize = 512;
 const STREMIO_SUBTITLE_STREAM_INDEX_BASE: i64 = 3_000_000_000;
 const STREMIO_SUBTITLE_PREFERRED_TRACK_LIMIT: usize = 3;
 const STREMIO_SUBTITLE_ENGLISH_FALLBACK_TRACK_LIMIT: usize = 2;
+const MEDIA_PROBE_PREWARM_MAX_CONCURRENT: usize = 2;
+const MEDIA_PROBE_PREWARM_NEGATIVE_COOLDOWN: Duration = Duration::from_secs(2);
+const MEDIA_PROBE_PREWARM_MAX_NEGATIVE_ENTRIES: usize = 512;
+const MEDIA_PROBE_TEMPORARY_FAILURE_MESSAGE: &str = "Unable to inspect media tracks right now.";
+const BENCHMARK_PROBE_RUN_TTL_MS: i64 = 5 * 60 * 1000;
+const BENCHMARK_PROBE_RUN_MAX_ENTRIES: usize = 64;
+const BENCHMARK_PROBE_KEY_IDENTITY_DOMAIN: &[u8] = b"streamarena-benchmark-probe-key-v1\0";
+const BENCHMARK_PROBE_PAYLOAD_IDENTITY_DOMAIN: &[u8] = b"streamarena-benchmark-probe-payload-v1\0";
 // Languages eligible for the keyless addon menu, in menu order. Every entry
 // must have a real name in get_subtitle_language_display_name — unknown codes
 // would otherwise be labeled "English".
@@ -165,6 +178,299 @@ struct StremioSubtitleCacheEntry {
     tracks: Vec<SubtitleTrack>,
 }
 
+#[derive(Default)]
+struct MediaProbePrewarmState {
+    in_flight: HashSet<String>,
+    negative_until: HashMap<String, Instant>,
+}
+
+#[derive(Clone)]
+struct MediaProbePrewarmControl {
+    permits: Arc<Semaphore>,
+    state: Arc<StdMutex<MediaProbePrewarmState>>,
+    max_negative_entries: usize,
+}
+
+struct MediaProbePrewarmReservation {
+    state: Arc<StdMutex<MediaProbePrewarmState>>,
+    key: String,
+    max_negative_entries: usize,
+    _permit: OwnedSemaphorePermit,
+    released: bool,
+}
+
+struct MediaProbeLockReservation {
+    locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    key: String,
+    lock: Arc<Mutex<()>>,
+}
+
+struct MediaProbeOwnedLockReservation {
+    locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    key: String,
+    lock: Arc<Mutex<()>>,
+    guard: Option<OwnedMutexGuard<()>>,
+}
+
+#[derive(Default)]
+struct MediaProbeMetrics {
+    active: AtomicI64,
+    started: AtomicI64,
+    completed: AtomicI64,
+    failed: AtomicI64,
+}
+
+struct MediaProbeExecutionGuard {
+    metrics: Arc<MediaProbeMetrics>,
+    succeeded: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkMediaProbeOutcome {
+    Running,
+    Created,
+    LostRace,
+    Failed,
+}
+
+impl BenchmarkMediaProbeOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Created => "created",
+            Self::LostRace => "lost-race",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn is_terminal(self) -> bool {
+        self != Self::Running
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BenchmarkMediaProbeRun {
+    user_id: i64,
+    probe_key_identity: String,
+    outcome: BenchmarkMediaProbeOutcome,
+    payload_identity: Option<String>,
+    started_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BenchmarkMediaProbeStart {
+    pub run_nonce: String,
+    pub probe_key_identity: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BenchmarkMediaProbeStatus {
+    pub run_nonce: String,
+    pub probe_key_identity: String,
+    pub outcome: String,
+    pub terminal: bool,
+    pub payload_identity: Option<String>,
+    pub active_runs: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MediaProbeStats {
+    active: i64,
+    started: i64,
+    completed: i64,
+    failed: i64,
+    prewarm_active: usize,
+    benchmark_active: usize,
+}
+
+impl MediaProbePrewarmControl {
+    fn new(max_concurrent: usize, max_negative_entries: usize) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(max_concurrent)),
+            state: Arc::new(StdMutex::new(MediaProbePrewarmState::default())),
+            max_negative_entries,
+        }
+    }
+
+    fn try_reserve(&self, key: String) -> Option<MediaProbePrewarmReservation> {
+        self.try_reserve_at(key, Instant::now())
+    }
+
+    fn try_reserve_at(&self, key: String, now: Instant) -> Option<MediaProbePrewarmReservation> {
+        let mut state = lock_media_probe_prewarm_state(&self.state);
+        state.negative_until.retain(|_, deadline| *deadline > now);
+        if state.in_flight.contains(&key) || state.negative_until.contains_key(&key) {
+            return None;
+        }
+
+        let permit = self.permits.clone().try_acquire_owned().ok()?;
+        state.in_flight.insert(key.clone());
+        drop(state);
+        Some(MediaProbePrewarmReservation {
+            state: self.state.clone(),
+            key,
+            max_negative_entries: self.max_negative_entries,
+            _permit: permit,
+            released: false,
+        })
+    }
+
+    fn has_recent_failure(&self, key: &str) -> bool {
+        self.has_recent_failure_at(key, Instant::now())
+    }
+
+    fn has_recent_failure_at(&self, key: &str, now: Instant) -> bool {
+        let mut state = lock_media_probe_prewarm_state(&self.state);
+        state.negative_until.retain(|_, deadline| *deadline > now);
+        state.negative_until.contains_key(key)
+    }
+
+    fn record_probe_result(&self, key: &str, succeeded: bool) {
+        self.record_probe_result_at(key, succeeded, Instant::now());
+    }
+
+    fn record_probe_result_at(&self, key: &str, succeeded: bool, now: Instant) {
+        let mut state = lock_media_probe_prewarm_state(&self.state);
+        record_media_probe_result(&mut state, key, succeeded, now, self.max_negative_entries);
+    }
+}
+
+impl MediaProbePrewarmReservation {
+    fn finish(self, succeeded: bool) {
+        self.finish_at(succeeded, Instant::now());
+    }
+
+    fn finish_at(mut self, succeeded: bool, now: Instant) {
+        let mut state = lock_media_probe_prewarm_state(&self.state);
+        state.in_flight.remove(&self.key);
+        record_media_probe_result(
+            &mut state,
+            &self.key,
+            succeeded,
+            now,
+            self.max_negative_entries,
+        );
+        self.released = true;
+    }
+}
+
+impl Drop for MediaProbePrewarmReservation {
+    fn drop(&mut self) {
+        if !self.released {
+            lock_media_probe_prewarm_state(&self.state)
+                .in_flight
+                .remove(&self.key);
+        }
+    }
+}
+
+impl MediaProbeLockReservation {
+    fn new(locks: Arc<DashMap<String, Arc<Mutex<()>>>>, key: String) -> Self {
+        let lock = key_lock(&locks, &key);
+        Self { locks, key, lock }
+    }
+
+    fn lock(&self) -> &Mutex<()> {
+        &self.lock
+    }
+}
+
+impl MediaProbeOwnedLockReservation {
+    fn try_new(locks: Arc<DashMap<String, Arc<Mutex<()>>>>, key: String) -> Option<Self> {
+        let lock = key_lock(&locks, &key);
+        let guard = lock.clone().try_lock_owned().ok()?;
+        Some(Self {
+            locks,
+            key,
+            lock,
+            guard: Some(guard),
+        })
+    }
+}
+
+impl Drop for MediaProbeOwnedLockReservation {
+    fn drop(&mut self) {
+        self.guard.take();
+        self.locks.remove_if(&self.key, |_, candidate| {
+            Arc::ptr_eq(candidate, &self.lock) && Arc::strong_count(candidate) == 2
+        });
+    }
+}
+
+impl MediaProbeExecutionGuard {
+    fn new(metrics: Arc<MediaProbeMetrics>) -> Self {
+        metrics.started.fetch_add(1, Ordering::Relaxed);
+        metrics.active.fetch_add(1, Ordering::Relaxed);
+        Self {
+            metrics,
+            succeeded: false,
+        }
+    }
+
+    fn mark_succeeded(&mut self) {
+        self.succeeded = true;
+    }
+}
+
+impl Drop for MediaProbeExecutionGuard {
+    fn drop(&mut self) {
+        self.metrics.active.fetch_sub(1, Ordering::Relaxed);
+        self.metrics.completed.fetch_add(1, Ordering::Relaxed);
+        if !self.succeeded {
+            self.metrics.failed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Drop for MediaProbeLockReservation {
+    fn drop(&mut self) {
+        self.locks.remove_if(&self.key, |_, candidate| {
+            Arc::ptr_eq(candidate, &self.lock) && Arc::strong_count(candidate) == 2
+        });
+    }
+}
+
+fn record_media_probe_result(
+    state: &mut MediaProbePrewarmState,
+    key: &str,
+    succeeded: bool,
+    now: Instant,
+    max_negative_entries: usize,
+) {
+    state.negative_until.retain(|_, deadline| *deadline > now);
+    if succeeded {
+        state.negative_until.remove(key);
+        return;
+    }
+    if max_negative_entries == 0 {
+        return;
+    }
+    if !state.negative_until.contains_key(key)
+        && state.negative_until.len() >= max_negative_entries
+        && let Some(oldest_key) = state
+            .negative_until
+            .iter()
+            .min_by_key(|(_, deadline)| **deadline)
+            .map(|(key, _)| key.clone())
+    {
+        state.negative_until.remove(&oldest_key);
+    }
+    state
+        .negative_until
+        .insert(key.to_owned(), now + MEDIA_PROBE_PREWARM_NEGATIVE_COOLDOWN);
+}
+
+fn lock_media_probe_prewarm_state(
+    state: &StdMutex<MediaProbePrewarmState>,
+) -> std::sync::MutexGuard<'_, MediaProbePrewarmState> {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[derive(Clone)]
 pub struct MediaService {
     config: Config,
@@ -173,6 +479,9 @@ pub struct MediaService {
     opensubtitles_api_key: String,
     subtitle_user_agent: String,
     probe_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    probe_prewarm: MediaProbePrewarmControl,
+    probe_metrics: Arc<MediaProbeMetrics>,
+    benchmark_probe_runs: Arc<DashMap<String, BenchmarkMediaProbeRun>>,
     subtitle_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
     external_subtitle_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
     // (stored_at_ms, tracks) per "imdb|season|episode|lang" key. Resolves hit
@@ -186,6 +495,12 @@ impl MediaService {
     pub fn new(config: Config, db: Db, http_client: reqwest::Client) -> Self {
         let opensubtitles_api_key = config.opensubtitles_api_key.clone();
         let subtitle_user_agent = config.opensubtitles_user_agent.clone();
+        let probe_prewarm = MediaProbePrewarmControl::new(
+            config
+                .remux_max_concurrent
+                .min(MEDIA_PROBE_PREWARM_MAX_CONCURRENT),
+            MEDIA_PROBE_PREWARM_MAX_NEGATIVE_ENTRIES,
+        );
         Self {
             config,
             db,
@@ -193,6 +508,9 @@ impl MediaService {
             opensubtitles_api_key,
             subtitle_user_agent,
             probe_locks: Arc::new(DashMap::new()),
+            probe_prewarm,
+            probe_metrics: Arc::new(MediaProbeMetrics::default()),
+            benchmark_probe_runs: Arc::new(DashMap::new()),
             subtitle_locks: Arc::new(DashMap::new()),
             external_subtitle_locks: Arc::new(DashMap::new()),
             stremio_subtitle_cache: Arc::new(DashMap::new()),
@@ -200,18 +518,49 @@ impl MediaService {
     }
 
     pub async fn probe_media_tracks(&self, source: &str) -> AppResult<MediaProbe> {
+        let mut execution = MediaProbeExecutionGuard::new(self.probe_metrics.clone());
+        let result = self.probe_media_tracks_inner(source).await;
+        if result.is_ok() {
+            execution.mark_succeeded();
+        }
+        result
+    }
+
+    async fn probe_media_tracks_inner(&self, source: &str) -> AppResult<MediaProbe> {
         let source_input = self.resolve_transcode_input(source)?;
         let probe_key = build_media_probe_cache_key(&source_input);
         if let Some(cached) = self.cached_probe(&probe_key).await? {
+            self.probe_prewarm.record_probe_result(&probe_key, true);
             return Ok(cached);
         }
 
-        let lock = key_lock(&self.probe_locks, &probe_key);
-        let _guard = lock.lock().await;
+        let lock = MediaProbeLockReservation::new(self.probe_locks.clone(), probe_key.clone());
+        let _guard = lock.lock().lock().await;
         if let Some(cached) = self.cached_probe(&probe_key).await? {
+            self.probe_prewarm.record_probe_result(&probe_key, true);
             return Ok(cached);
         }
+        if self.probe_prewarm.has_recent_failure(&probe_key) {
+            return Err(ApiError::bad_gateway(MEDIA_PROBE_TEMPORARY_FAILURE_MESSAGE));
+        }
 
+        let result = async {
+            let probe = self.inspect_media_tracks_uncached(&source_input).await?;
+            self.db
+                .set_media_probe_cache(
+                    probe_key.clone(),
+                    serde_json::to_value(&probe).unwrap_or_else(|_| json!({})),
+                )
+                .await?;
+            Ok(probe)
+        }
+        .await;
+        self.probe_prewarm
+            .record_probe_result(&probe_key, result.is_ok());
+        result
+    }
+
+    async fn inspect_media_tracks_uncached(&self, source_input: &str) -> AppResult<MediaProbe> {
         let command = vec![
             "ffprobe".to_owned(),
             "-v".to_owned(),
@@ -220,20 +569,189 @@ impl MediaService {
             "json".to_owned(),
             "-show_streams".to_owned(),
             "-show_format".to_owned(),
-            source_input.clone(),
+            source_input.to_owned(),
         ];
         let raw = run_process_capture_text(&command, 15_000)
             .await
-            .map_err(ApiError::bad_gateway)?;
+            .map_err(|_| ApiError::bad_gateway(MEDIA_PROBE_TEMPORARY_FAILURE_MESSAGE))?;
         let payload = serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
-        let probe = parse_probe_tracks_from_ffprobe_payload(&payload, &source_input);
-        self.db
-            .set_media_probe_cache(
-                probe_key,
-                serde_json::to_value(&probe).unwrap_or_else(|_| json!({})),
+        Ok(parse_probe_tracks_from_ffprobe_payload(
+            &payload,
+            source_input,
+        ))
+    }
+
+    pub(crate) fn probe_stats(&self) -> MediaProbeStats {
+        let prewarm_active = lock_media_probe_prewarm_state(&self.probe_prewarm.state)
+            .in_flight
+            .len();
+        let benchmark_active = self
+            .benchmark_probe_runs
+            .iter()
+            .filter(|entry| !entry.outcome.is_terminal())
+            .count();
+        MediaProbeStats {
+            active: self.probe_metrics.active.load(Ordering::Relaxed),
+            started: self.probe_metrics.started.load(Ordering::Relaxed),
+            completed: self.probe_metrics.completed.load(Ordering::Relaxed),
+            failed: self.probe_metrics.failed.load(Ordering::Relaxed),
+            prewarm_active,
+            benchmark_active,
+        }
+    }
+
+    pub(crate) async fn start_benchmark_media_probe(
+        &self,
+        user_id: i64,
+        source: &str,
+    ) -> AppResult<BenchmarkMediaProbeStart> {
+        self.prune_benchmark_probe_runs();
+        if self.benchmark_probe_runs.len() >= BENCHMARK_PROBE_RUN_MAX_ENTRIES {
+            return Err(ApiError::service_unavailable(
+                "Benchmark media-probe capacity is unavailable.",
+            ));
+        }
+        let source_input = self.resolve_transcode_input(source)?;
+        let probe_key = build_media_probe_cache_key(&source_input);
+        let Some(prewarm_reservation) = self.probe_prewarm.try_reserve(probe_key.clone()) else {
+            return Err(ApiError::failed_dependency(
+                "The exact benchmark media probe is unavailable.",
+            ));
+        };
+        let Some(lock_reservation) =
+            MediaProbeOwnedLockReservation::try_new(self.probe_locks.clone(), probe_key.clone())
+        else {
+            drop(prewarm_reservation);
+            return Err(ApiError::failed_dependency(
+                "The exact benchmark media probe is unavailable.",
+            ));
+        };
+        if self
+            .db
+            .media_probe_cache_row_exists(probe_key.clone())
+            .await?
+        {
+            drop(lock_reservation);
+            drop(prewarm_reservation);
+            return Err(ApiError::failed_dependency(
+                "The exact benchmark media probe is unavailable.",
+            ));
+        }
+
+        let run_nonce = generate_session_token();
+        let probe_key_identity =
+            benchmark_probe_identity(BENCHMARK_PROBE_KEY_IDENTITY_DOMAIN, probe_key.as_bytes());
+        self.benchmark_probe_runs.insert(
+            run_nonce.clone(),
+            BenchmarkMediaProbeRun {
+                user_id,
+                probe_key_identity: probe_key_identity.clone(),
+                outcome: BenchmarkMediaProbeOutcome::Running,
+                payload_identity: None,
+                started_at_ms: crate::utils::now_ms(),
+            },
+        );
+
+        let service = self.clone();
+        let run_nonce_for_task = run_nonce.clone();
+        tokio::spawn(async move {
+            let mut execution = MediaProbeExecutionGuard::new(service.probe_metrics.clone());
+            let result = async {
+                let probe = service.inspect_media_tracks_uncached(&source_input).await?;
+                let payload = serde_json::to_value(&probe).unwrap_or_else(|_| json!({}));
+                service
+                    .db
+                    .insert_media_probe_cache_if_absent(probe_key, payload)
+                    .await
+            }
+            .await;
+            let (outcome, payload_identity, succeeded) = match result {
+                Ok(Some(payload_json)) => (
+                    BenchmarkMediaProbeOutcome::Created,
+                    Some(benchmark_probe_identity(
+                        BENCHMARK_PROBE_PAYLOAD_IDENTITY_DOMAIN,
+                        payload_json.as_bytes(),
+                    )),
+                    true,
+                ),
+                Ok(None) => (BenchmarkMediaProbeOutcome::LostRace, None, false),
+                Err(_) => (BenchmarkMediaProbeOutcome::Failed, None, false),
+            };
+            if succeeded {
+                execution.mark_succeeded();
+            }
+            if let Some(mut run) = service.benchmark_probe_runs.get_mut(&run_nonce_for_task) {
+                run.outcome = outcome;
+                run.payload_identity = payload_identity;
+            }
+            prewarm_reservation.finish(succeeded);
+            drop(lock_reservation);
+        });
+
+        Ok(BenchmarkMediaProbeStart {
+            run_nonce,
+            probe_key_identity,
+        })
+    }
+
+    pub(crate) fn benchmark_media_probe_status(
+        &self,
+        user_id: i64,
+        run_nonce: &str,
+    ) -> Option<BenchmarkMediaProbeStatus> {
+        self.prune_benchmark_probe_runs();
+        let (probe_key_identity, outcome, payload_identity) = {
+            let run = self.benchmark_probe_runs.get(run_nonce)?;
+            if run.user_id != user_id {
+                return None;
+            }
+            (
+                run.probe_key_identity.clone(),
+                run.outcome,
+                run.payload_identity.clone(),
             )
-            .await?;
-        Ok(probe)
+        };
+        let status = BenchmarkMediaProbeStatus {
+            run_nonce: run_nonce.to_owned(),
+            probe_key_identity,
+            outcome: outcome.as_str().to_owned(),
+            terminal: outcome.is_terminal(),
+            payload_identity,
+            active_runs: self
+                .benchmark_probe_runs
+                .iter()
+                .filter(|entry| !entry.outcome.is_terminal())
+                .count(),
+        };
+        Some(status)
+    }
+
+    fn prune_benchmark_probe_runs(&self) {
+        let cutoff = crate::utils::now_ms().saturating_sub(BENCHMARK_PROBE_RUN_TTL_MS);
+        self.benchmark_probe_runs
+            .retain(|_, run| !run.outcome.is_terminal() || run.started_at_ms > cutoff);
+    }
+
+    /// Start a best-effort media probe without adding latency or a queue to
+    /// the playback resolve path. Invalid inputs, duplicate work, cooldowns,
+    /// and a saturated prewarm budget are rejected synchronously.
+    pub fn prewarm_media_probe(&self, source: &str) -> bool {
+        let Ok(source_input) = self.resolve_transcode_input(source) else {
+            return false;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return false;
+        };
+        let probe_key = build_media_probe_cache_key(&source_input);
+        let Some(reservation) = self.probe_prewarm.try_reserve(probe_key) else {
+            return false;
+        };
+        let service = self.clone();
+        runtime.spawn(async move {
+            let succeeded = service.probe_media_tracks(&source_input).await.is_ok();
+            reservation.finish(succeeded);
+        });
+        true
     }
 
     /// Return a previously completed media probe without starting ffprobe.
@@ -1003,6 +1521,13 @@ impl MediaService {
             .trim()
             .to_owned())
     }
+}
+
+fn benchmark_probe_identity(domain: &[u8], value: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(domain);
+    digest.update(value);
+    URL_SAFE_NO_PAD.encode(digest.finalize())
 }
 
 pub async fn probe_local_media_file(path: &Path) -> AppResult<MediaProbe> {
@@ -2694,22 +3219,212 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+    use dashmap::DashMap;
     use url::Url;
 
     use super::{
-        AudioTrack, MediaProbe, MediaService, SubtitleTrack, analyze_english_subtitle_content,
+        AudioTrack, BenchmarkMediaProbeOutcome, BenchmarkMediaProbeRun,
+        MEDIA_PROBE_PREWARM_NEGATIVE_COOLDOWN, MediaProbe, MediaProbeLockReservation,
+        MediaProbePrewarmControl, MediaService, SubtitleTrack, analyze_english_subtitle_content,
         build_english_subtitle_qualities, build_stremio_subtitle_tracks_from_payload,
         choose_audio_track_from_probe, choose_subtitle_track_from_probe,
         extract_sidecar_subtitle_suffix, infer_sidecar_subtitle_language,
         is_allowed_external_subtitle_download_url, is_allowed_remote_transcode_url,
         is_local_app_playback_url, is_local_cache_stream_input, is_local_cache_stream_url,
         is_local_torrent_stream_input, is_local_torrent_stream_url, is_path_inside_root_dir,
-        local_cache_stream_file_path, merge_preferred_subtitle_tracks,
-        normalize_external_subtitle_download_url, normalize_subtitle_text_to_vtt,
-        resolve_local_media_path,
+        local_cache_stream_file_path, lock_media_probe_prewarm_state,
+        merge_preferred_subtitle_tracks, normalize_external_subtitle_download_url,
+        normalize_subtitle_text_to_vtt, resolve_local_media_path,
     };
+
+    #[tokio::test]
+    async fn benchmark_probe_status_is_owner_scoped_and_tracks_terminal_state() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("streamarena-probe-status-{unique}"));
+        let config = test_config(root.clone());
+        let db = crate::persistence::Db::initialize_test_paths(
+            config.persistent_cache_db_path.clone(),
+            config.persistent_users_db_path.clone(),
+        )
+        .await
+        .expect("test database");
+        let service = MediaService::new(config, db.clone(), reqwest::Client::new());
+        let nonce = "a".repeat(64);
+        service.benchmark_probe_runs.insert(
+            nonce.clone(),
+            BenchmarkMediaProbeRun {
+                user_id: 7,
+                probe_key_identity: "b".repeat(43),
+                outcome: BenchmarkMediaProbeOutcome::Running,
+                payload_identity: None,
+                started_at_ms: crate::utils::now_ms(),
+            },
+        );
+
+        assert!(service.benchmark_media_probe_status(8, &nonce).is_none());
+        let running = service
+            .benchmark_media_probe_status(7, &nonce)
+            .expect("owner can inspect run");
+        assert_eq!(running.outcome, "running");
+        assert_eq!(running.active_runs, 1);
+        {
+            let mut run = service
+                .benchmark_probe_runs
+                .get_mut(&nonce)
+                .expect("stored run");
+            run.outcome = BenchmarkMediaProbeOutcome::Created;
+            run.payload_identity = Some("c".repeat(43));
+        }
+        let complete = service
+            .benchmark_media_probe_status(7, &nonce)
+            .expect("terminal status retained");
+        assert!(complete.terminal);
+        assert_eq!(complete.outcome, "created");
+        assert_eq!(complete.active_runs, 0);
+
+        drop(service);
+        drop(db);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn media_probe_prewarm_is_try_only_capped_and_deduped() {
+        let control = MediaProbePrewarmControl::new(2, 8);
+        let now = Instant::now();
+        let first = control
+            .try_reserve_at("source:first".to_owned(), now)
+            .expect("first prewarm reservation");
+        assert!(
+            control
+                .try_reserve_at("source:first".to_owned(), now)
+                .is_none(),
+            "the exact in-flight source must be deduped"
+        );
+        let second = control
+            .try_reserve_at("source:second".to_owned(), now)
+            .expect("second prewarm reservation");
+        assert!(
+            control
+                .try_reserve_at("source:third".to_owned(), now)
+                .is_none(),
+            "a saturated prewarm budget must not queue"
+        );
+
+        drop(first);
+        assert!(
+            control
+                .try_reserve_at("source:third".to_owned(), now)
+                .is_some(),
+            "dropping a reservation must free its exact key and permit"
+        );
+        drop(second);
+    }
+
+    #[test]
+    fn media_probe_prewarm_failures_have_a_bounded_cooldown() {
+        let control = MediaProbePrewarmControl::new(1, 2);
+        let now = Instant::now();
+        for key in ["source:first", "source:second", "source:third"] {
+            control
+                .try_reserve_at(key.to_owned(), now)
+                .expect("prewarm reservation")
+                .finish_at(false, now);
+        }
+        let state = lock_media_probe_prewarm_state(&control.state);
+        assert_eq!(state.in_flight.len(), 0);
+        assert_eq!(state.negative_until.len(), 2);
+        drop(state);
+
+        assert!(
+            control
+                .try_reserve_at(
+                    "source:third".to_owned(),
+                    now + Duration::from_millis(1_999)
+                )
+                .is_none(),
+            "a recently failed source must remain on cooldown"
+        );
+        assert!(
+            control
+                .try_reserve_at(
+                    "source:third".to_owned(),
+                    now + MEDIA_PROBE_PREWARM_NEGATIVE_COOLDOWN,
+                )
+                .is_some(),
+            "the cooldown must expire without a background sweep"
+        );
+    }
+
+    #[test]
+    fn media_probe_failures_are_shared_briefly_then_retryable() {
+        let control = MediaProbePrewarmControl::new(1, 2);
+        let now = Instant::now();
+        let key = "source:failed";
+
+        control.record_probe_result_at(key, false, now);
+        assert!(
+            control.has_recent_failure_at(key, now + Duration::from_millis(1_999)),
+            "a foreground waiter must observe the failed prewarm instead of probing again"
+        );
+        assert!(
+            !control.has_recent_failure_at(key, now + MEDIA_PROBE_PREWARM_NEGATIVE_COOLDOWN),
+            "a source must become probeable again after the short failure window"
+        );
+
+        control.record_probe_result_at(key, false, now);
+        control.record_probe_result_at(key, true, now + Duration::from_millis(1));
+        assert!(
+            !control.has_recent_failure_at(key, now + Duration::from_millis(1)),
+            "a successful probe must clear a prior failure"
+        );
+    }
+
+    #[test]
+    fn media_probe_lock_reservation_prunes_after_the_last_user() {
+        let locks = Arc::new(DashMap::new());
+        let first = MediaProbeLockReservation::new(locks.clone(), "source:one".to_owned());
+        let second = MediaProbeLockReservation::new(locks.clone(), "source:one".to_owned());
+        assert!(Arc::ptr_eq(&first.lock, &second.lock));
+        assert_eq!(locks.len(), 1);
+
+        drop(first);
+        assert_eq!(locks.len(), 1, "an active waiter must keep its lock entry");
+        drop(second);
+        assert!(locks.is_empty(), "the last user must reclaim the idle lock");
+    }
+
+    #[tokio::test]
+    async fn media_probe_lock_reservation_prunes_when_task_is_cancelled() {
+        let locks = Arc::new(DashMap::new());
+        let task_locks = locks.clone();
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let reservation =
+                MediaProbeLockReservation::new(task_locks, "source:cancelled".to_owned());
+            let _guard = reservation.lock().lock().await;
+            let _ = acquired_tx.send(());
+            std::future::pending::<()>().await;
+        });
+
+        acquired_rx.await.expect("probe task acquired its lock");
+        assert_eq!(locks.len(), 1);
+        task.abort();
+        assert!(
+            task.await
+                .expect_err("probe task should be cancelled")
+                .is_cancelled()
+        );
+        assert!(
+            locks.is_empty(),
+            "cancelling an in-flight probe must reclaim its idle lock"
+        );
+    }
 
     fn test_config(root_dir: PathBuf) -> crate::config::Config {
         let assets_dir = root_dir.join("assets");

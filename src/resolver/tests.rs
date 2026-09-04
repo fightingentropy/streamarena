@@ -23,7 +23,7 @@ use super::{
     DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, ExternalEmbedSource,
     LocalTorrentResolvedSource, PlaybackSession, PlaybackSessionRevalidation,
     RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters, ResolveMetadata, ResolvePreferences,
-    ResolvedSource, ResolverExternalGuard, ResolverMetrics, ResolverProvider,
+    ResolvedSource, ResolverExternalGuard, ResolverMetrics, ResolverProvider, ResolverService,
     SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
     build_external_embed_source_summaries, build_movie_resolve_lock_key,
     build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
@@ -61,6 +61,34 @@ use super::{
     torrent_playback_enabled, torznab_download_url_allowed, user_facing_real_debrid_error,
     validate_real_debrid_user_payload,
 };
+
+#[test]
+fn benchmark_exact_session_requires_healthy_hard_freshness_without_revalidation() {
+    let checked_at_ms = 1_000_000;
+    let fresh = PlaybackSession {
+        health_state: "healthy".to_owned(),
+        next_validation_at: checked_at_ms + 15_001,
+        ..PlaybackSession::default()
+    };
+    assert!(ResolverService::benchmark_exact_session_is_fresh(
+        &fresh,
+        checked_at_ms
+    ));
+
+    let mut due_inside_start_window = fresh.clone();
+    due_inside_start_window.next_validation_at = checked_at_ms + 15_000;
+    assert!(!ResolverService::benchmark_exact_session_is_fresh(
+        &due_inside_start_window,
+        checked_at_ms
+    ));
+
+    let mut unhealthy = fresh;
+    unhealthy.health_fail_count = 1;
+    assert!(!ResolverService::benchmark_exact_session_is_fresh(
+        &unhealthy,
+        checked_at_ms
+    ));
+}
 
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;

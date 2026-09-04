@@ -16,10 +16,12 @@ use crate::utils::{
     normalize_session_health_state, normalize_subtitle_preference,
 };
 
+mod benchmark;
 mod continue_watching;
 mod migrations;
 mod user_preferences;
 mod user_state;
+pub(crate) use benchmark::{DatabaseFileIdentity, database_file_identity};
 use continue_watching::{
     ContinueWatchingReconcileInput, continue_watching_target_episode,
     reconcile_continue_watching_source_metadata,
@@ -62,8 +64,10 @@ type Pool = std::sync::Mutex<Vec<Connection>>;
 pub struct Db {
     cache_path: Arc<PathBuf>,
     cache_pool: Arc<Pool>,
+    cache_file_identity: Arc<DatabaseFileIdentity>,
     users_path: Arc<PathBuf>,
     users_pool: Arc<Pool>,
+    users_file_identity: Arc<DatabaseFileIdentity>,
 }
 
 #[allow(non_snake_case)]
@@ -360,39 +364,16 @@ impl Db {
             .await
             .map_err(|error| ApiError::internal(error.to_string()))?
             .map_err(|error| ApiError::internal(error.to_string()))?;
+        let cache_file_identity = database_file_identity(&cache_path)?;
+        let users_file_identity = database_file_identity(&users_path)?;
 
         Ok(Self {
             cache_path: Arc::new(cache_path),
             cache_pool: Arc::new(std::sync::Mutex::new(Vec::new())),
+            cache_file_identity: Arc::new(cache_file_identity),
             users_path: Arc::new(users_path),
             users_pool: Arc::new(std::sync::Mutex::new(Vec::new())),
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn initialize_test_paths(
-        cache_path: PathBuf,
-        users_path: PathBuf,
-    ) -> AppResult<Self> {
-        let cache_dir = cache_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        tokio::fs::create_dir_all(cache_dir)
-            .await
-            .map_err(|error| ApiError::internal(error.to_string()))?;
-        let cache_for_task = cache_path.clone();
-        let users_for_task = users_path.clone();
-        task::spawn_blocking(move || initialize_databases(&cache_for_task, &users_for_task))
-            .await
-            .map_err(|error| ApiError::internal(error.to_string()))?
-            .map_err(|error| ApiError::internal(error.to_string()))?;
-
-        Ok(Self {
-            cache_path: Arc::new(cache_path),
-            cache_pool: Arc::new(std::sync::Mutex::new(Vec::new())),
-            users_path: Arc::new(users_path),
-            users_pool: Arc::new(std::sync::Mutex::new(Vec::new())),
+            users_file_identity: Arc::new(users_file_identity),
         })
     }
 

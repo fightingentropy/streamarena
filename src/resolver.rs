@@ -51,9 +51,12 @@ use crate::utils::{
     normalize_subtitle_preference,
 };
 
+mod benchmark;
 mod external_embed;
 mod real_debrid;
 mod scoring;
+use benchmark::BenchmarkExactSessionRequest;
+pub(crate) use real_debrid::build_real_debrid_cache_scope;
 pub(crate) use real_debrid::is_real_debrid_lazy_hls_input;
 pub(crate) use real_debrid::pick_video_file_ids;
 use real_debrid::{
@@ -66,12 +69,11 @@ use real_debrid::{
 use real_debrid::{
     RealDebridTorrentOwnership, acquire_owned_real_debrid_torrent_lease,
     authorize_real_debrid_lazy_hls_ticket, build_rd_torrent_cache_key,
-    build_real_debrid_cache_scope, build_real_debrid_lazy_hls_playback_source_at,
-    build_real_debrid_unrestrict_form, build_scoped_rd_torrent_cache_key,
-    parse_ready_real_debrid_hashes, parse_ready_real_debrid_torrents,
-    parse_strict_real_debrid_lazy_hls_query, ready_info_has_selected_file_id,
-    real_debrid_apple_transcode_url, reusable_rd_torrent_ready_for_selected_file,
-    user_facing_real_debrid_error,
+    build_real_debrid_lazy_hls_playback_source_at, build_real_debrid_unrestrict_form,
+    build_scoped_rd_torrent_cache_key, parse_ready_real_debrid_hashes,
+    parse_ready_real_debrid_torrents, parse_strict_real_debrid_lazy_hls_query,
+    ready_info_has_selected_file_id, real_debrid_apple_transcode_url,
+    reusable_rd_torrent_ready_for_selected_file, user_facing_real_debrid_error,
 };
 use scoring::{
     build_episode_signature, collect_episode_signatures, extract_stream_title_lines,
@@ -1121,12 +1123,39 @@ impl ResolverService {
         skip_external_embed: bool,
         refresh_resolve: bool,
         record_external_health_events: bool,
+        benchmark_exact_session_reuse: bool,
     ) -> AppResult<Value> {
         self.resolve_metrics
             .movie_requests
             .fetch_add(1, Ordering::Relaxed);
         let resolver_provider = normalize_resolver_provider(resolver_provider);
         let real_debrid = RealDebridRequestContext::for_user(user_id, real_debrid_api_key);
+        if benchmark_exact_session_reuse {
+            if resolver_provider != ResolverProvider::RealDebrid {
+                return Err(ApiError::failed_dependency(
+                    "The exact benchmark playback session is unavailable.",
+                ));
+            }
+            return self
+                .resolve_benchmark_exact_session(
+                    BenchmarkExactSessionRequest {
+                        user_id,
+                        media_type: "movie",
+                        tmdb_id,
+                        title: title_fallback,
+                        year: year_fallback,
+                        season_number: 0,
+                        episode_number: 0,
+                        audio_lang: preferred_audio_lang,
+                        quality: preferred_quality,
+                        subtitle_lang: preferred_subtitle_lang,
+                        source_hash,
+                        session_key,
+                    },
+                    real_debrid.as_ref(),
+                )
+                .await;
+        }
         let lock_key = build_movie_resolve_lock_key(
             tmdb_id,
             preferred_audio_lang,
@@ -1602,12 +1631,55 @@ impl ResolverService {
         skip_external_embed: bool,
         refresh_resolve: bool,
         record_external_health_events: bool,
+        benchmark_exact_session_reuse: bool,
     ) -> AppResult<Value> {
         self.resolve_metrics
             .tv_requests
             .fetch_add(1, Ordering::Relaxed);
         let resolver_provider = normalize_resolver_provider(resolver_provider);
         let real_debrid = RealDebridRequestContext::for_user(user_id, real_debrid_api_key);
+        if benchmark_exact_session_reuse {
+            if resolver_provider != ResolverProvider::RealDebrid {
+                return Err(ApiError::failed_dependency(
+                    "The exact benchmark playback session is unavailable.",
+                ));
+            }
+            let benchmark_season_number = normalize_episode_ordinal(
+                if season_number.trim().is_empty() {
+                    season_alias
+                } else {
+                    season_number
+                },
+                1,
+            );
+            let benchmark_episode_number = normalize_episode_ordinal(
+                if episode_number.trim().is_empty() {
+                    episode_alias
+                } else {
+                    episode_number
+                },
+                1,
+            );
+            return self
+                .resolve_benchmark_exact_session(
+                    BenchmarkExactSessionRequest {
+                        user_id,
+                        media_type: "tv",
+                        tmdb_id,
+                        title: title_fallback,
+                        year: year_fallback,
+                        season_number: benchmark_season_number,
+                        episode_number: benchmark_episode_number,
+                        audio_lang: preferred_audio_lang,
+                        quality: preferred_quality,
+                        subtitle_lang: preferred_subtitle_lang,
+                        source_hash,
+                        session_key,
+                    },
+                    real_debrid.as_ref(),
+                )
+                .await;
+        }
         let lock_key = build_tv_resolve_lock_key(
             tmdb_id,
             season_number,
@@ -2443,6 +2515,7 @@ impl ResolverService {
                     context.user_id,
                     context.real_debrid,
                     true,
+                    true,
                 )
                 .await;
         }
@@ -2479,6 +2552,7 @@ impl ResolverService {
                             context.resolver_provider,
                             context.user_id,
                             context.real_debrid,
+                            true,
                             true,
                         )
                         .await;
@@ -2694,6 +2768,7 @@ impl ResolverService {
         user_id: i64,
         real_debrid: Option<&RealDebridRequestContext>,
         include_session: bool,
+        allow_cached_media_probe: bool,
     ) -> AppResult<Value> {
         // Lazy Real-Debrid HLS tickets are intentionally short-lived. Refresh
         // an authenticated session's still-valid signed identity before it is
@@ -2724,7 +2799,9 @@ impl ResolverService {
                 // straight to remux instead of starting direct playback and
                 // restarting after deferred enrichment. A cache miss remains
                 // fully non-blocking: no ffprobe runs in this resolve request.
-                let cached_tracks = if resolver_provider == ResolverProvider::RealDebrid {
+                let cached_tracks = if resolver_provider == ResolverProvider::RealDebrid
+                    && allow_cached_media_probe
+                {
                     self.media.cached_media_probe(&source_input).await?
                 } else {
                     None
@@ -2951,6 +3028,7 @@ impl ResolverService {
                 ResolverProvider::RealDebrid,
                 context.user_id,
                 Some(real_debrid),
+                true,
                 true,
             ),
         )
@@ -3283,6 +3361,7 @@ impl ResolverService {
                 user_id,
                 real_debrid,
                 persist_session,
+                true,
             )
             .await?;
         if !persist_session {
@@ -3399,6 +3478,7 @@ impl ResolverService {
                     user_id,
                     real_debrid,
                     persist_session,
+                    true,
                 )
                 .await?;
             if !persist_session {
