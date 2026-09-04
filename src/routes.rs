@@ -117,6 +117,7 @@ const USER_PREF_MAX_ENTRIES: usize = 200;
 const USER_PREF_KEY_MAX_BYTES: usize = 128;
 const USER_PREF_VALUE_MAX_BYTES: usize = 2_000_000;
 const RESOLVE_JOB_MAX_WAIT_MS: u64 = 25_000;
+const RESOLVE_JOB_INLINE_WAIT_MS: u64 = 150;
 const USER_SYNC_MAX_ENTRIES: usize = 500;
 const USER_IDENTITY_MAX_BYTES: usize = 512;
 const USER_URL_MAX_BYTES: usize = 4_096;
@@ -1562,6 +1563,29 @@ fn resolve_job_wait_ms(query: Option<&str>) -> u64 {
         .min(RESOLVE_JOB_MAX_WAIT_MS)
 }
 
+async fn resolve_job_registration_payload(
+    resolve_jobs: &crate::resolve_jobs::ResolveJobStore,
+    job_id: &str,
+    user_id: i64,
+    wait: Duration,
+) -> Value {
+    // Warm playback sessions can finish while the registration response is in
+    // flight. Inline only successful results; every other state keeps the
+    // existing job id so the normal long-poll and cancellation path owns it.
+    let snapshot = resolve_jobs.snapshot_wait(job_id, user_id, wait).await;
+    snapshot
+        .as_ref()
+        .filter(|snapshot| snapshot.get("status").and_then(Value::as_str) == Some("done"))
+        .and_then(|snapshot| snapshot.get("result"))
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "jobId": job_id,
+                "status": "pending",
+            })
+        })
+}
+
 async fn provider_benchmark_capability_handler(
     State(state): State<AppState>,
     method: Method,
@@ -1667,11 +1691,15 @@ pub async fn resolve_movie_handler(
                 })
         });
         debug_assert!(spawned, "newly-created resolve job should be present");
+        let payload = resolve_job_registration_payload(
+            &state.resolve_jobs,
+            &job_id,
+            user.id,
+            Duration::from_millis(RESOLVE_JOB_INLINE_WAIT_MS),
+        )
+        .await;
         return Ok(provider_resolve_response(
-            json!({
-                "jobId": job_id,
-                "status": "pending",
-            }),
+            payload,
             record_external_health_events,
         ));
     }
@@ -1901,11 +1929,15 @@ pub async fn resolve_tv_handler(
                 })
         });
         debug_assert!(spawned, "newly-created resolve job should be present");
+        let payload = resolve_job_registration_payload(
+            &state.resolve_jobs,
+            &job_id,
+            user.id,
+            Duration::from_millis(RESOLVE_JOB_INLINE_WAIT_MS),
+        )
+        .await;
         return Ok(provider_resolve_response(
-            json!({
-                "jobId": job_id,
-                "status": "pending",
-            }),
+            payload,
             record_external_health_events,
         ));
     }
@@ -4190,18 +4222,23 @@ impl StringExt for String {
 #[cfg(test)]
 mod tests {
     use super::{
-        USER_IDENTITY_MAX_BYTES, USER_SYNC_MAX_ENTRIES, absolute_request_url_with_authority,
-        apply_security_headers, build_playback_session_key, effective_real_debrid_enabled,
-        find_episode_pattern, is_valid_email, is_valid_real_debrid_api_key,
-        manifest_is_stream_addon, mask_real_debrid_api_key, normalize_bool_json_value,
-        normalize_custom_addon_base, normalize_preferred_audio_lang, normalize_subtitle_preference,
-        normalize_sync_continue_watching_entries, normalize_sync_watch_progress_entries,
-        normalize_user_updated_at, now_ms, plan_real_debrid_update, provider_slugify,
-        query_flag_enabled, resolve_job_method_supported, resolve_job_wait_ms,
+        RESOLVE_JOB_INLINE_WAIT_MS, USER_IDENTITY_MAX_BYTES, USER_SYNC_MAX_ENTRIES,
+        absolute_request_url_with_authority, apply_security_headers, build_playback_session_key,
+        effective_real_debrid_enabled, find_episode_pattern, is_valid_email,
+        is_valid_real_debrid_api_key, manifest_is_stream_addon, mask_real_debrid_api_key,
+        normalize_bool_json_value, normalize_custom_addon_base, normalize_preferred_audio_lang,
+        normalize_subtitle_preference, normalize_sync_continue_watching_entries,
+        normalize_sync_watch_progress_entries, normalize_user_updated_at, now_ms,
+        plan_real_debrid_update, provider_slugify, query_flag_enabled,
+        resolve_job_method_supported, resolve_job_registration_payload, resolve_job_wait_ms,
         sanitize_my_list_entries, signup_admin_status,
     };
+    use std::time::Duration;
+
     use axum::http::header::{CONTENT_TYPE, HOST};
     use axum::http::{HeaderMap, HeaderValue, Method, Uri};
+
+    use crate::resolve_jobs::ResolveJobStore;
 
     #[test]
     fn forwarded_for_takes_left_most_client_ip() {
@@ -4309,6 +4346,53 @@ mod tests {
         assert!(resolve_job_method_supported(&Method::DELETE));
         assert!(!resolve_job_method_supported(&Method::POST));
         assert!(!resolve_job_method_supported(&Method::PUT));
+    }
+
+    #[tokio::test]
+    async fn resolve_job_registration_inlines_only_a_completed_result() {
+        assert!((100..=250).contains(&RESOLVE_JOB_INLINE_WAIT_MS));
+
+        let store = ResolveJobStore::new();
+        let ready_job_id = store.create(42);
+        let completing_store = store.clone();
+        let completing_job_id = ready_job_id.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            completing_store
+                .complete(
+                    &completing_job_id,
+                    serde_json::json!({
+                        "playableUrl": "/api/remux/warm",
+                        "sourceHash": "warm-hash",
+                    }),
+                )
+                .await;
+        });
+
+        let inline =
+            resolve_job_registration_payload(&store, &ready_job_id, 42, Duration::from_millis(100))
+                .await;
+        assert_eq!(inline["playableUrl"], "/api/remux/warm");
+        assert_eq!(inline["sourceHash"], "warm-hash");
+        assert!(inline.get("jobId").is_none());
+
+        let pending_job_id = store.create(42);
+        assert!(store.spawn(&pending_job_id, async {
+            std::future::pending::<()>().await;
+            Ok::<_, String>(serde_json::json!({ "unexpected": true }))
+        }));
+        let pending =
+            resolve_job_registration_payload(&store, &pending_job_id, 42, Duration::from_millis(1))
+                .await;
+        assert_eq!(pending["jobId"], pending_job_id);
+        assert_eq!(pending["status"], "pending");
+
+        assert!(store.cancel(&pending_job_id, 42));
+        let cancelled = store
+            .snapshot(&pending_job_id, 42)
+            .await
+            .expect("pending registration remains cancellable");
+        assert_eq!(cancelled["status"], "cancelled");
     }
 
     #[test]

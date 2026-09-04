@@ -367,6 +367,49 @@ await run("requestJson preserves an external abort signal", async () => {
   }
 });
 
+await run("uses an inline async result without a status round trip", async () => {
+  const cancelledJobs = [];
+  const coordinator = createResolveJobRequestCoordinator({
+    cancelResolveJobFn: async ({ jobId }) => {
+      cancelledJobs.push(jobId);
+      return true;
+    },
+  });
+  const requests = [];
+  let waitCount = 0;
+  const requestResolveJson = createResolveRequester({
+    coordinator,
+    getResolverProvider: () => "real-debrid",
+    requestJsonFn: async (url, options, timeoutMs) => {
+      requests.push({ url, options, timeoutMs });
+      return {
+        playableUrl: "/api/remux/warm",
+        sourceHash: "warm-hash",
+      };
+    },
+    waitForResolveJobFn: async () => {
+      waitCount += 1;
+      throw new Error("inline completion must not poll job status");
+    },
+  });
+
+  const result = await requestResolveJson("/api/resolve/movie?tmdbId=1", 95_000);
+  assert.deepEqual(result, {
+    playableUrl: "/api/remux/warm",
+    sourceHash: "warm-hash",
+  });
+  assert.deepEqual(requests, [
+    {
+      url: "/api/resolve/movie?tmdbId=1&async=1",
+      options: {},
+      timeoutMs: 5_000,
+    },
+  ]);
+  assert.equal(waitCount, 0);
+  assert.equal(await requestResolveJson.cancelActive(), false);
+  assert.deepEqual(cancelledJobs, []);
+});
+
 await run("resolve requester owns async registration and wait transport", async () => {
   const coordinator = createResolveJobRequestCoordinator({
     cancelResolveJobFn: async () => true,
