@@ -1773,15 +1773,39 @@ fn builds_episode_scoped_tv_playback_session_keys() {
 }
 
 #[test]
-fn latest_playback_session_fallback_allows_unpinned_requests() {
+fn latest_playback_session_fallback_allows_container_only_requests() {
     let mut filters = ResolveFilters {
         source_hash: String::new(),
-        preferred_container: String::new(),
+        preferred_container: "mp4".to_owned(),
         source_filters: sample_source_filters(),
     };
     assert!(should_allow_latest_playback_session_fallback(&filters));
 
     filters.source_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned();
+    assert!(!should_allow_latest_playback_session_fallback(&filters));
+}
+
+#[test]
+fn latest_playback_session_fallback_blocks_custom_source_filters() {
+    let mut filters = ResolveFilters {
+        source_hash: String::new(),
+        preferred_container: "mp4".to_owned(),
+        source_filters: sample_source_filters(),
+    };
+
+    filters.source_filters.min_seeders = 1;
+    assert!(!should_allow_latest_playback_session_fallback(&filters));
+
+    filters.source_filters = sample_source_filters();
+    filters.source_filters.allowed_formats = vec!["mp4".to_owned()];
+    assert!(!should_allow_latest_playback_session_fallback(&filters));
+
+    filters.source_filters = sample_source_filters();
+    filters.source_filters.source_language = "any".to_owned();
+    assert!(!should_allow_latest_playback_session_fallback(&filters));
+
+    filters.source_filters = sample_source_filters();
+    filters.source_filters.source_audio_profile = "any".to_owned();
     assert!(!should_allow_latest_playback_session_fallback(&filters));
 }
 
@@ -2789,7 +2813,7 @@ fn pinned_missing_hash_does_not_return_substitute_candidates() {
 }
 
 #[test]
-fn skips_non_mp4_playback_session_for_mp4_container_preference() {
+fn mp4_container_preference_reuses_only_compatible_playback_sessions() {
     let filters = ResolveFilters {
         source_hash: String::new(),
         preferred_container: "mp4".to_owned(),
@@ -2813,6 +2837,10 @@ fn skips_non_mp4_playback_session_for_mp4_container_preference() {
         ..PlaybackSession::default()
     };
 
+    assert!(
+        !should_skip_playback_session_reuse(&filters),
+        "a container preference is enforced by the compatibility check below and must not disable session reuse"
+    );
     assert!(!playback_session_matches_preferred_container(
         &mkv_session,
         &filters

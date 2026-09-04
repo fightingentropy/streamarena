@@ -6634,15 +6634,14 @@ fn resolve_effective_preferred_subtitle_lang(
 }
 
 fn should_skip_playback_session_reuse(filters: &ResolveFilters) -> bool {
-    !filters.preferred_container.is_empty()
-        || filters.source_filters.min_seeders > 0
+    filters.source_filters.min_seeders > 0
         || !filters.source_filters.allowed_formats.is_empty()
         || filters.source_filters.source_language != SOURCE_LANGUAGE_FILTER_DEFAULT
         || filters.source_filters.source_audio_profile != SOURCE_AUDIO_PROFILE_DEFAULT
 }
 
 fn should_allow_latest_playback_session_fallback(filters: &ResolveFilters) -> bool {
-    filters.source_hash.is_empty()
+    filters.source_hash.is_empty() && !should_skip_playback_session_reuse(filters)
 }
 
 fn playback_session_is_local_torrent(session: &PlaybackSession) -> bool {
