@@ -1278,6 +1278,16 @@ fn external_embed_hls_resolver_accepts_public_playlist_hosts() {
         &legacy_videasy_embed
     ));
     assert!(is_supported_external_embed_hls_embed_url(&vidlink_embed));
+    for path in ["watch/movie/1368166", "watch/tv/76331/1/1"] {
+        assert!(is_supported_external_embed_hls_embed_url(
+            &format!("https://cinejoy.to/{path}").parse().unwrap()
+        ));
+        assert!(!is_supported_external_embed_hls_embed_url(
+            &format!("https://cinejoy.to.evil.test/{path}")
+                .parse()
+                .unwrap()
+        ));
+    }
     assert!(!is_supported_external_embed_hls_embed_url(
         &unsupported_embed
     ));

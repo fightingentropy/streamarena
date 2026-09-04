@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resolveCinejoy } from "./resolve-cinejoy-hls.mjs";
+import { resolveCinejoy } from "./lib/resolve-cinejoy-hls.mjs";
 import { CINEJOY_SERVERS, isCinejoyWatchUrl, isCinejoyPlaylistUrl,
   isCinejoySupportRequest, selectCinejoyServer } from "./lib/cinejoy-policy.mjs";
 

@@ -156,7 +156,6 @@ rsync -a --delete -e "$RSYNC_SSH" dist/ "$MINI_HOST:$REMOTE_STAGE/dist/"
 
 rsync -a -e "$RSYNC_SSH" target/release/streamarena-backend "$MINI_HOST:$REMOTE_STAGE/bin/streamarena-backend"
 rsync -a -e "$RSYNC_SSH" scripts/resolve-external-embed-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-external-embed-hls.mjs"
-rsync -a -e "$RSYNC_SSH" scripts/resolve-cinejoy-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-cinejoy-hls.mjs"
 rsync -a -e "$RSYNC_SSH" scripts/resolve-streamed-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-streamed-hls.mjs"
 rsync -a -e "$RSYNC_SSH" scripts/resolve-matchstream-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-matchstream-hls.mjs"
 rsync -a -e "$RSYNC_SSH" scripts/resolve-ntvs-hls.mjs "$MINI_HOST:$REMOTE_STAGE/bin/resolve-ntvs-hls.mjs"

@@ -1,11 +1,6 @@
-use std::path::Path;
-use std::time::Duration;
-
-use tokio::process::Command;
-use tokio::time::timeout;
 use url::Url;
 
-use super::{ExternalEmbedHlsPlaybackSource, ExternalEmbedHlsResolverOutput, ExternalEmbedSource};
+use super::ExternalEmbedHlsPlaybackSource;
 
 fn valid_playlist(url: &Url, server: &str) -> bool {
     if url.scheme() != "https"
@@ -37,59 +32,25 @@ fn valid_playlist(url: &Url, server: &str) -> bool {
     }
 }
 
-pub(super) async fn resolve(
+pub(super) async fn validate(
     client: &reqwest::Client,
-    source: ExternalEmbedSource,
-    embed_url: &str,
+    url: &Url,
+    server: &str,
     timeout_ms: u64,
 ) -> Option<ExternalEmbedHlsPlaybackSource> {
-    let server = source.server.map(|server| server.id).unwrap_or("LISBON");
-    let script = if Path::new("scripts/resolve-cinejoy-hls.mjs").is_file() {
-        "scripts/resolve-cinejoy-hls.mjs"
-    } else {
-        "bin/resolve-cinejoy-hls.mjs"
-    };
-    // The outer deadline bounds launch, discovery, and validation together.
-    // Existing resolver locks/cache and per-provider budgets also apply to this
-    // path. Alternate servers are manual-only, preventing parallel browser fans.
-    timeout(
-        Duration::from_millis(timeout_ms.saturating_add(1000)),
-        async {
-            let output = Command::new("node")
-                .arg(script)
-                .arg(embed_url)
-                .env("EXTERNAL_EMBED_SERVER", server)
-                .env(
-                    "EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS",
-                    timeout_ms.to_string(),
-                )
-                .kill_on_drop(true)
-                .output()
-                .await
-                .ok()?;
-            if !output.status.success() {
-                return None;
-            }
-            let output: ExternalEmbedHlsResolverOutput =
-                serde_json::from_slice(&output.stdout).ok()?;
-            let url = Url::parse(&output.playback_url).ok()?;
-            if !valid_playlist(&url, server) {
-                return None;
-            }
-            // Never trust the helper's referer, or an extensionless Solara URL without
-            // proving it is a fetchable #EXTM3U manifest using the backend's egress.
-            let resolved = super::validate_external_embed_hls_playlist(
-                client,
-                url.as_str(),
-                Some("https://cinejoy.to/"),
-                timeout_ms.min(8000),
-            )
-            .await?;
-            valid_playlist(&resolved.playback_url, server).then_some(resolved)
-        },
+    if !valid_playlist(url, server) {
+        return None;
+    }
+    // Never trust the helper's referer or assume an extensionless Solara URL is
+    // media. Validate #EXTM3U using the backend's egress and the fixed referer.
+    let resolved = super::validate_external_embed_hls_playlist(
+        client,
+        url.as_str(),
+        Some("https://cinejoy.to/"),
+        timeout_ms.min(8000),
     )
-    .await
-    .ok()?
+    .await?;
+    valid_playlist(&resolved.playback_url, server).then_some(resolved)
 }
 
 #[cfg(test)]

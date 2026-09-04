@@ -4963,7 +4963,6 @@ async fn resolve_external_embed_hls_playback_source(
     timeout_ms: u64,
 ) -> Option<ExternalEmbedHlsPlaybackSource> {
     match source.provider.id {
-        "cinejoy" => return cinejoy::resolve(client, source, embed_url, timeout_ms).await,
         "icefy" => return resolve_icefy_hls_playback_source(client, embed_url, timeout_ms).await,
         "vixsrc" => return resolve_vixsrc_hls_playback_source(client, embed_url, timeout_ms).await,
         "vidrock" => {
@@ -5027,34 +5026,46 @@ async fn resolve_external_embed_hls_playback_source(
             EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS_ENV,
             resolve_timeout_ms.to_string(),
         )
+        .env(
+            EXTERNAL_EMBED_SERVER_ENV,
+            source.server.map(|server| server.id).unwrap_or_default(),
+        )
         .kill_on_drop(true);
-    if let Some(server) = source.server {
-        command.env(EXTERNAL_EMBED_SERVER_ENV, server.id);
-    }
 
-    let output = timeout(
+    // One deadline covers browser startup, discovery, and backend validation.
+    timeout(
         Duration::from_millis(resolve_timeout_ms.saturating_add(1_000)),
-        command.output(),
+        async {
+            let output = command.output().await.ok()?;
+            if !output.status.success() {
+                return None;
+            }
+
+            let resolver_output =
+                serde_json::from_slice::<ExternalEmbedHlsResolverOutput>(&output.stdout).ok()?;
+            let playback_url = Url::parse(resolver_output.playback_url.trim()).ok()?;
+            if source.provider.id == "cinejoy" {
+                return cinejoy::validate(
+                    client,
+                    &playback_url,
+                    source.server.map(|server| server.id).unwrap_or("LISBON"),
+                    resolve_timeout_ms,
+                )
+                .await;
+            }
+            if !is_supported_external_embed_hls_url(&playback_url) {
+                return None;
+            }
+            let referer = normalize_external_embed_hls_referer(&resolver_output.referer)
+                .or_else(|| normalize_external_embed_hls_referer(embed_url.as_str()));
+            Some(ExternalEmbedHlsPlaybackSource {
+                playback_url,
+                referer,
+            })
+        },
     )
     .await
     .ok()?
-    .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let resolver_output =
-        serde_json::from_slice::<ExternalEmbedHlsResolverOutput>(&output.stdout).ok()?;
-    let playback_url = Url::parse(resolver_output.playback_url.trim()).ok()?;
-    if !is_supported_external_embed_hls_url(&playback_url) {
-        return None;
-    }
-    let referer = normalize_external_embed_hls_referer(&resolver_output.referer)
-        .or_else(|| normalize_external_embed_hls_referer(embed_url.as_str()));
-    Some(ExternalEmbedHlsPlaybackSource {
-        playback_url,
-        referer,
-    })
 }
 
 async fn resolve_icefy_hls_playback_source(
@@ -5846,6 +5857,9 @@ fn is_supported_external_embed_hls_embed_url(url: &Url) -> bool {
         return false;
     };
     match host.as_str() {
+        "cinejoy.to" => {
+            url.path().starts_with("/watch/movie/") || url.path().starts_with("/watch/tv/")
+        }
         "player.videasy.net" => url.path().starts_with("/movie/") || url.path().starts_with("/tv/"),
         "player.videasy.to" => url.path().starts_with("/movie/") || url.path().starts_with("/tv/"),
         "vidlink.pro" => url.path().starts_with("/movie/") || url.path().starts_with("/tv/"),

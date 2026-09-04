@@ -5,6 +5,8 @@ import {
   shouldAbortEmbedRequest,
 } from "./lib/external-embed-hls-policy.mjs";
 import { loadPlaywright } from "./lib/load-playwright.mjs";
+import { isCinejoyWatchUrl } from "./lib/cinejoy-policy.mjs";
+import { resolveCinejoy } from "./lib/resolve-cinejoy-hls.mjs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,6 +89,7 @@ function normalizeProxyServer(value) {
 }
 
 function isSupportedEmbedUrl(value) {
+  if (isCinejoyWatchUrl(value)) return true;
   try {
     const url = new URL(value);
     const host = url.hostname.toLowerCase();
@@ -377,18 +380,6 @@ function attachPlaylistWatchers(page, onResolved) {
   });
 }
 
-async function resolvePlaylistFromPerformanceEntries(_page) {
-  return "";
-}
-
-async function captureResolvedPlaylistFromPage(page) {
-  if (resolvedUrl) return;
-  const performanceUrl = await resolvePlaylistFromPerformanceEntries(page);
-  if (performanceUrl) {
-    resolvedUrl = performanceUrl;
-  }
-}
-
 async function activateEmbeddedPlayer(page) {
   await page.mouse.click(640, 360).catch(() => {});
   await page
@@ -529,8 +520,6 @@ async function resolveWithPlaywrightBrowser() {
   let activationAttempts = 0;
   let nextActivationAt = Date.now() + 2500;
   while (!resolvedUrl && Date.now() < deadline) {
-    await captureResolvedPlaylistFromPage(page);
-    if (resolvedUrl) break;
     const now = Date.now();
     if (
       activationAttempts < 5 &&
@@ -548,7 +537,7 @@ async function resolveWithPlaywrightBrowser() {
 
 if (!isSupportedEmbedUrl(embedUrl)) {
   console.error(
-    "Usage: resolve-external-embed-hls.mjs https://player.videasy.to/... | https://player.videasy.net/... | https://vidlink.pro/...",
+    "Usage: resolve-external-embed-hls.mjs https://player.videasy.to/... | https://player.videasy.net/... | https://vidlink.pro/... | https://cinejoy.to/watch/...",
   );
   process.exit(2);
 }
@@ -557,7 +546,11 @@ let browser;
 let resolvedUrl = "";
 let playerPageUrl = embedUrl;
 
-try {
+async function resolvePlaylist() {
+  if (isCinejoyWatchUrl(embedUrl)) {
+    return resolveCinejoy(embedUrl, requestedServer || "LISBON", timeoutMs);
+  }
+
   if (parseVidlinkEmbedUrl(embedUrl)) {
     resolvedUrl = await resolveVidlinkPlaylistNative().catch(() => "");
   }
@@ -567,21 +560,26 @@ try {
   }
 
   if (!resolvedUrl) {
-    console.error("Timed out waiting for external embed HLS playlist.");
-    process.exit(1);
+    throw new Error("Timed out waiting for external embed HLS playlist.");
   }
 
   const referer = normalizeReferer(playerPageUrl, embedUrl);
   const playbackUrl = await validateBackendFetchablePlaylist(resolvedUrl, referer);
   if (!playbackUrl) {
-    console.error("Resolved HLS playlist is not fetchable by the backend.");
-    process.exit(1);
+    throw new Error("Resolved HLS playlist is not fetchable by the backend.");
   }
 
-  console.log(JSON.stringify({ playbackUrl, referer }));
+  return { playbackUrl, referer };
+}
+
+try {
+  console.log(JSON.stringify(await resolvePlaylist()));
 } catch (error) {
-  console.error(error?.message || String(error));
-  process.exit(1);
+  // CineJoy launch errors can include signed URLs or proxy details.
+  console.error(isCinejoyWatchUrl(embedUrl)
+    ? "CineJoy could not resolve the selected native HLS source."
+    : error?.message || String(error));
+  process.exitCode = 1;
 } finally {
   if (browser) {
     await browser.close().catch(() => {});

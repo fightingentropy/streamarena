@@ -1,11 +1,8 @@
-#!/usr/bin/env node
-import { pathToFileURL } from "node:url";
-import { realpathSync } from "node:fs";
-import { loadPlaywright } from "./lib/load-playwright.mjs";
+import { loadPlaywright } from "./load-playwright.mjs";
 import {
   CINEJOY_SERVERS, isCinejoyPlaylistUrl, isCinejoySupportRequest,
   isCinejoyWatchUrl, selectCinejoyServer,
-} from "./lib/cinejoy-policy.mjs";
+} from "./cinejoy-policy.mjs";
 
 // Let the site's own player negotiate its current API protocol. No copied keys,
 // expiring playlist constants, third-party decrypt service, or media downloads.
@@ -58,22 +55,5 @@ export async function resolveCinejoy(watchUrl, server = "LISBON", timeoutMs = 30
   } finally {
     clearTimeout(timer);
     await browser.close().catch(() => {});
-  }
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  if (!isCinejoyWatchUrl(process.argv[2])) {
-    console.error("Usage: resolve-cinejoy-hls.mjs https://cinejoy.to/watch/movie/<id> | https://cinejoy.to/watch/tv/<id>/<season>/<episode>");
-    process.exit(2);
-  }
-  try {
-    const result = await resolveCinejoy(process.argv[2],
-      String(process.env.EXTERNAL_EMBED_SERVER || "LISBON").trim().toUpperCase(),
-      Number(process.env.EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS || 30000));
-    console.log(JSON.stringify(result));
-  } catch {
-    // Upstream errors may contain signed URLs; never write them to server logs.
-    console.error("CineJoy could not resolve the selected native HLS source.");
-    process.exitCode = 1;
   }
 }
