@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::task;
@@ -28,6 +28,9 @@ use continue_watching::{
 const TITLE_PREFERENCES_STALE_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 const PLAYBACK_SESSION_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const PLAYBACK_SESSION_VALIDATE_INTERVAL_MS: i64 = 90 * 1000;
+const PLAYBACK_SESSION_VALIDATION_LEASE_MS: i64 = 10 * 1000;
+pub(crate) const PLAYBACK_SESSION_CREDENTIAL_SCOPE_METADATA_KEY: &str =
+    "_realDebridCredentialScope";
 const SOURCE_HEALTH_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const MEDIA_PROBE_STALE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 // Service-health history. Samples drive the 24h dashboard sparklines (we keep a
@@ -102,6 +105,14 @@ pub struct PlaybackSession {
     pub last_error: String,
     pub last_verified_at: i64,
     pub next_validation_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackSessionValidationClaim {
+    Claimed(i64),
+    Fresh,
+    Leased,
+    Unavailable,
 }
 
 #[derive(Debug, Clone)]
@@ -843,16 +854,128 @@ impl Db {
         .map_err(|error: rusqlite::Error| ApiError::internal(error.to_string()))
     }
 
-    pub async fn refresh_playback_session_validation_window(
+    pub async fn try_claim_playback_session_validation(
         &self,
-        user_id: i64,
-        session_key: String,
+        session: PlaybackSession,
+    ) -> AppResult<PlaybackSessionValidationClaim> {
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let result = (|| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    &connection,
+                    TransactionBehavior::Immediate,
+                )?;
+                let current = tx
+                    .query_row(
+                        "
+                        SELECT
+                          playable_url,
+                          source_hash,
+                          selected_file,
+                          metadata_json,
+                          health_state,
+                          next_validation_at
+                        FROM playback_sessions
+                        WHERE user_id = ? AND session_key = ?
+                        ",
+                        params![session.user_id, session.session_key],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, String>(4)?,
+                                row.get::<_, i64>(5)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                let Some((
+                    playable_url,
+                    source_hash,
+                    selected_file,
+                    metadata_json,
+                    health_state,
+                    next_validation_at,
+                )) = current
+                else {
+                    tx.commit()?;
+                    return Ok(PlaybackSessionValidationClaim::Unavailable);
+                };
+                if normalize_session_health_state(&health_state) == "invalid"
+                    || !playback_session_validation_identity_matches(
+                        &session,
+                        &playable_url,
+                        &source_hash,
+                        &selected_file,
+                        &metadata_json,
+                    )
+                {
+                    tx.commit()?;
+                    return Ok(PlaybackSessionValidationClaim::Unavailable);
+                }
+
+                let now = now_ms();
+                if next_validation_at == 0 || next_validation_at > now {
+                    tx.commit()?;
+                    return Ok(PlaybackSessionValidationClaim::Fresh);
+                }
+                if next_validation_at < 0
+                    && next_validation_at
+                        .checked_neg()
+                        .is_some_and(|lease_until| lease_until > now)
+                {
+                    tx.commit()?;
+                    return Ok(PlaybackSessionValidationClaim::Leased);
+                }
+
+                let claim_token = -(now + PLAYBACK_SESSION_VALIDATION_LEASE_MS).max(1);
+                let updated = tx.execute(
+                    "
+                    UPDATE playback_sessions
+                    SET next_validation_at = ?, last_accessed_at = ?
+                    WHERE user_id = ?
+                      AND session_key = ?
+                      AND next_validation_at = ?
+                      AND health_state != 'invalid'
+                    ",
+                    params![
+                        claim_token,
+                        now,
+                        session.user_id,
+                        session.session_key,
+                        next_validation_at,
+                    ],
+                )?;
+                tx.commit()?;
+                Ok(if updated == 1 {
+                    PlaybackSessionValidationClaim::Claimed(claim_token)
+                } else {
+                    PlaybackSessionValidationClaim::Unavailable
+                })
+            })();
+            return_connection(&pool, connection);
+            result
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error: rusqlite::Error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn refresh_playback_session_validation_if_current(
+        &self,
+        session: PlaybackSession,
+        claim_token: i64,
     ) -> AppResult<bool> {
         let path = self.cache_path.clone();
         let pool = self.cache_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
             let now = now_ms();
+            let credential_scope = playback_session_credential_scope(&session);
             let updated = connection.execute(
                 "
                 UPDATE playback_sessions
@@ -861,15 +984,90 @@ impl Db {
                   next_validation_at = ?,
                   updated_at = ?,
                   last_accessed_at = ?
-                WHERE user_id = ? AND session_key = ?
+                WHERE user_id = ?
+                  AND session_key = ?
+                  AND playable_url = ?
+                  AND LOWER(TRIM(source_hash)) = ?
+                  AND selected_file = ?
+                  AND COALESCE(
+                    json_extract(
+                      CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END,
+                      '$._realDebridCredentialScope'
+                    ),
+                    ''
+                  ) = ?
+                  AND health_state != 'invalid'
+                  AND next_validation_at = ?
                 ",
                 params![
                     now,
                     now + PLAYBACK_SESSION_VALIDATE_INTERVAL_MS,
                     now,
                     now,
-                    user_id,
-                    session_key,
+                    session.user_id,
+                    session.session_key,
+                    session.playable_url,
+                    session.source_hash,
+                    session.selected_file,
+                    credential_scope,
+                    claim_token,
+                ],
+            )?;
+            return_connection(&pool, connection);
+            Ok(updated > 0)
+        })
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .map_err(|error: rusqlite::Error| ApiError::internal(error.to_string()))
+    }
+
+    pub async fn invalidate_playback_session_validation_if_current(
+        &self,
+        session: PlaybackSession,
+        claim_token: i64,
+        reason: String,
+    ) -> AppResult<bool> {
+        let path = self.cache_path.clone();
+        let pool = self.cache_pool.clone();
+        task::spawn_blocking(move || {
+            let connection = take_connection(&pool, &path)?;
+            let now = now_ms();
+            let credential_scope = playback_session_credential_scope(&session);
+            let updated = connection.execute(
+                "
+                UPDATE playback_sessions
+                SET
+                  health_state = 'invalid',
+                  health_fail_count = health_fail_count + 1,
+                  last_error = ?,
+                  updated_at = ?,
+                  last_accessed_at = ?
+                WHERE user_id = ?
+                  AND session_key = ?
+                  AND playable_url = ?
+                  AND LOWER(TRIM(source_hash)) = ?
+                  AND selected_file = ?
+                  AND COALESCE(
+                    json_extract(
+                      CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END,
+                      '$._realDebridCredentialScope'
+                    ),
+                    ''
+                  ) = ?
+                  AND health_state != 'invalid'
+                  AND next_validation_at = ?
+                ",
+                params![
+                    reason.chars().take(500).collect::<String>(),
+                    now,
+                    now,
+                    session.user_id,
+                    session.session_key,
+                    session.playable_url,
+                    session.source_hash,
+                    session.selected_file,
+                    credential_scope,
+                    claim_token,
                 ],
             )?;
             return_connection(&pool, connection);
@@ -3794,6 +3992,37 @@ impl Db {
     }
 }
 
+fn playback_session_credential_scope(session: &PlaybackSession) -> String {
+    session
+        .metadata
+        .get(PLAYBACK_SESSION_CREDENTIAL_SCOPE_METADATA_KEY)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn playback_session_validation_identity_matches(
+    session: &PlaybackSession,
+    playable_url: &str,
+    source_hash: &str,
+    selected_file: &str,
+    metadata_json: &str,
+) -> bool {
+    let current_scope = serde_json::from_str::<Value>(metadata_json)
+        .ok()
+        .and_then(|metadata| {
+            metadata
+                .get(PLAYBACK_SESSION_CREDENTIAL_SCOPE_METADATA_KEY)
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_default();
+    session.playable_url == playable_url
+        && session.source_hash == source_hash.trim().to_lowercase()
+        && session.selected_file == selected_file
+        && playback_session_credential_scope(session) == current_scope
+}
+
 fn get_playback_session_inner(
     pool: &Pool,
     path: &Path,
@@ -3850,7 +4079,10 @@ fn get_playback_session_inner(
                     health_fail_count: row.get::<_, i64>(12)?.max(0),
                     last_error: row.get(13)?,
                     last_verified_at: row.get::<_, i64>(14)?.max(0),
-                    next_validation_at: row.get::<_, i64>(15)?.max(0),
+                    // Negative values are short-lived validation claim tokens;
+                    // retaining the sign lets concurrent readers distinguish a
+                    // lease from a genuinely fresh validation deadline.
+                    next_validation_at: row.get::<_, i64>(15)?,
                 })
             },
         )
@@ -5154,8 +5386,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        Db, PLAYBACK_SESSION_VALIDATE_INTERVAL_MS, PersistPlaybackSessionInput,
-        SQLITE_BUSY_TIMEOUT_MS, now_ms, open_connection, parse_movie_resolve_key_quality,
+        Db, PersistPlaybackSessionInput, PlaybackSessionValidationClaim, SQLITE_BUSY_TIMEOUT_MS,
+        now_ms, open_connection, parse_movie_resolve_key_quality,
     };
 
     #[test]
@@ -5718,13 +5950,10 @@ mod tests {
         let _ = tokio::fs::remove_file(&path).await;
     }
 
-    #[tokio::test]
-    async fn refreshes_playback_session_validation_window_without_mutating_other_fields() {
-        let path = unique_temp_db_path("playback-session-refresh");
-        let db = setup_test_playback_session_db(&path).await;
-        db.persist_playback_session(PersistPlaybackSessionInput {
+    fn validation_session_input(session_key: &str, scope: &str) -> PersistPlaybackSessionInput {
+        PersistPlaybackSessionInput {
             user_id: 1,
-            session_key: "123:en:1080p".to_owned(),
+            session_key: session_key.to_owned(),
             tmdb_id: "123".to_owned(),
             audio_lang: "en".to_owned(),
             preferred_quality: "1080p".to_owned(),
@@ -5733,78 +5962,197 @@ mod tests {
             filename: "Movie.en.mkv".to_owned(),
             playable_url: "https://download.real-debrid.com/movie.en.mkv".to_owned(),
             fallback_urls: vec!["https://download.real-debrid.com/movie.en.alt.mkv".to_owned()],
-            metadata: json!({"tmdbId":"123","displayTitle":"Movie"}),
+            metadata: json!({
+                "tmdbId": "123",
+                (super::PLAYBACK_SESSION_CREDENTIAL_SCOPE_METADATA_KEY): scope
+            }),
+        }
+    }
+
+    async fn set_validation_at(db: &Db, session_key: &str, value: i64) {
+        let path = db.cache_path.clone();
+        let session_key = session_key.to_owned();
+        super::task::spawn_blocking(move || {
+            open_connection(&path)?.execute(
+                "UPDATE playback_sessions SET next_validation_at = ?, source_hash = UPPER(source_hash)
+                 WHERE user_id = 1 AND session_key = ?",
+                params![value, session_key],
+            )?;
+            Ok::<(), rusqlite::Error>(())
         })
         .await
-        .expect("persist session");
+        .expect("join validation setup")
+        .expect("set validation time");
+    }
+
+    async fn validation_session(db: &Db, session_key: &str) -> super::PlaybackSession {
+        db.get_playback_session(1, session_key.to_owned())
+            .await
+            .expect("load validation session")
+            .expect("validation session exists")
+    }
+
+    async fn claim_token(db: &Db, session: super::PlaybackSession) -> i64 {
+        match db
+            .try_claim_playback_session_validation(session)
+            .await
+            .expect("claim validation")
+        {
+            PlaybackSessionValidationClaim::Claimed(token) => token,
+            other => panic!("expected validation claim, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn claims_and_refreshes_playback_session_validation_without_mutating_other_fields() {
+        let path = unique_temp_db_path("playback-session-refresh");
+        let db = setup_test_playback_session_db(&path).await;
+        let key = "123:en:1080p";
+        db.persist_playback_session(validation_session_input(key, ""))
+            .await
+            .expect("persist session");
         db.update_playback_session_progress(
             1,
-            "123:en:1080p".to_owned(),
+            key.to_owned(),
             187.0,
             "healthy".to_owned(),
             String::new(),
         )
         .await
         .expect("update session progress");
-
-        let stale_verified_at = super::now_ms() - 120_000;
-        let stale_next_validation_at = super::now_ms() - 60_000;
-        let setup_path = db.cache_path.clone();
-        super::task::spawn_blocking(move || {
-            let connection = open_connection(&setup_path)?;
-            connection.execute(
-                "
-                UPDATE playback_sessions
-                SET
-                  last_verified_at = ?,
-                  next_validation_at = ?
-                WHERE user_id = 1 AND session_key = ?
-                ",
-                params![
-                    stale_verified_at,
-                    stale_next_validation_at,
-                    "123:en:1080p".to_owned(),
-                ],
-            )?;
-            Ok::<(), rusqlite::Error>(())
-        })
-        .await
-        .expect("join setup")
-        .expect("set stale validation times");
-
-        let before_refresh = super::now_ms();
-        assert!(
-            db.refresh_playback_session_validation_window(1, "123:en:1080p".to_owned())
+        set_validation_at(&db, key, now_ms() - 1).await;
+        let stale = validation_session(&db, key).await;
+        let (first, second) = tokio::join!(
+            db.try_claim_playback_session_validation(stale.clone()),
+            db.try_claim_playback_session_validation(stale.clone()),
+        );
+        let token = match (first.unwrap(), second.unwrap()) {
+            (
+                PlaybackSessionValidationClaim::Claimed(token),
+                PlaybackSessionValidationClaim::Leased,
+            )
+            | (
+                PlaybackSessionValidationClaim::Leased,
+                PlaybackSessionValidationClaim::Claimed(token),
+            ) => token,
+            claims => panic!("expected one claim and one lease, got {claims:?}"),
+        };
+        let claimed = validation_session(&db, key).await;
+        assert_eq!(claimed.next_validation_at, token);
+        assert_eq!(
+            db.try_claim_playback_session_validation(claimed)
                 .await
-                .expect("refresh validation window")
+                .unwrap(),
+            PlaybackSessionValidationClaim::Leased
         );
-        let after_refresh = super::now_ms();
-
-        let refreshed = db
-            .get_playback_session(1, "123:en:1080p".to_owned())
-            .await
-            .expect("load refreshed session")
-            .expect("session exists");
-        assert_eq!(
-            refreshed.playable_url,
-            "https://download.real-debrid.com/movie.en.mkv"
+        assert!(
+            db.refresh_playback_session_validation_if_current(stale.clone(), token)
+                .await
+                .unwrap()
         );
-        assert_eq!(refreshed.source_hash, "abc");
+        let refreshed = validation_session(&db, key).await;
         assert_eq!(refreshed.last_position_seconds, 187.0);
+        assert_eq!(refreshed.fallback_urls, stale.fallback_urls);
+        assert!(refreshed.next_validation_at > now_ms());
         assert_eq!(
-            refreshed.fallback_urls,
-            vec!["https://download.real-debrid.com/movie.en.alt.mkv".to_owned()]
+            db.try_claim_playback_session_validation(stale)
+                .await
+                .unwrap(),
+            PlaybackSessionValidationClaim::Fresh
         );
-        assert!(refreshed.last_verified_at >= before_refresh);
-        assert!(refreshed.last_verified_at <= after_refresh);
-        assert!(
-            refreshed.next_validation_at >= before_refresh + PLAYBACK_SESSION_VALIDATE_INTERVAL_MS
-        );
-        assert!(
-            refreshed.next_validation_at <= after_refresh + PLAYBACK_SESSION_VALIDATE_INTERVAL_MS
-        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
 
-        let _ = tokio::fs::remove_file(&path).await;
+    #[tokio::test]
+    async fn stale_validation_cannot_invalidate_a_replaced_credential_scope() {
+        let path = unique_temp_db_path("playback-session-validation-scope");
+        let db = setup_test_playback_session_db(&path).await;
+        let key = "real-debrid:1:123:en:1080p";
+        db.persist_playback_session(validation_session_input(key, "old-scope"))
+            .await
+            .unwrap();
+        set_validation_at(&db, key, now_ms() - 1).await;
+        let old = validation_session(&db, key).await;
+        let old_token = claim_token(&db, old.clone()).await;
+
+        db.persist_playback_session(validation_session_input(key, "new-scope"))
+            .await
+            .unwrap();
+        assert_eq!(
+            db.try_claim_playback_session_validation(old.clone())
+                .await
+                .unwrap(),
+            PlaybackSessionValidationClaim::Unavailable
+        );
+        assert!(
+            !db.invalidate_playback_session_validation_if_current(
+                old,
+                old_token,
+                "Old credential URL failed.".to_owned(),
+            )
+            .await
+            .unwrap()
+        );
+        let replacement = validation_session(&db, key).await;
+        assert_eq!(replacement.health_state, "healthy");
+
+        set_validation_at(&db, key, now_ms() - 1).await;
+        let current = validation_session(&db, key).await;
+        let current_token = claim_token(&db, current.clone()).await;
+        assert!(
+            db.invalidate_playback_session_validation_if_current(
+                current.clone(),
+                current_token,
+                "Current credential URL failed.".to_owned(),
+            )
+            .await
+            .unwrap()
+        );
+        let invalidated = validation_session(&db, key).await;
+        assert_eq!(
+            (
+                invalidated.health_state.as_str(),
+                invalidated.health_fail_count
+            ),
+            ("invalid", 1)
+        );
+        assert_eq!(
+            db.try_claim_playback_session_validation(current)
+                .await
+                .unwrap(),
+            PlaybackSessionValidationClaim::Unavailable
+        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn newer_validation_claim_wins_after_an_older_lease_expires() {
+        let path = unique_temp_db_path("playback-session-validation-generation");
+        let db = setup_test_playback_session_db(&path).await;
+        let key = "real-debrid:1:456:en:1080p";
+        db.persist_playback_session(validation_session_input(key, "scope"))
+            .await
+            .unwrap();
+        let old_token = -(now_ms() - 1);
+        set_validation_at(&db, key, old_token).await;
+        let expired = validation_session(&db, key).await;
+        let new_token = claim_token(&db, expired.clone()).await;
+        assert!(
+            !db.refresh_playback_session_validation_if_current(expired.clone(), old_token)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            validation_session(&db, key).await.next_validation_at,
+            new_token
+        );
+        assert!(
+            db.refresh_playback_session_validation_if_current(expired, new_token)
+                .await
+                .unwrap()
+        );
+        assert!(validation_session(&db, key).await.next_validation_at > now_ms());
+        let _ = tokio::fs::remove_file(path).await;
     }
 
     #[tokio::test]

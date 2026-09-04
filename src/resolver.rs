@@ -24,7 +24,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::process::Command;
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::time::{sleep, timeout};
 use url::Url;
 
@@ -38,7 +38,10 @@ use crate::media::{
     MediaProbe, MediaService, choose_audio_track_from_probe, choose_subtitle_track_from_probe,
     merge_preferred_subtitle_tracks,
 };
-use crate::persistence::{Db, PersistPlaybackSessionInput, PlaybackSession, SourceHealthStats};
+use crate::persistence::{
+    Db, PLAYBACK_SESSION_CREDENTIAL_SCOPE_METADATA_KEY, PersistPlaybackSessionInput,
+    PlaybackSession, PlaybackSessionValidationClaim, SourceHealthStats,
+};
 use crate::provider_budget::ProviderConcurrencyBudgets;
 use crate::rate_limit::RateLimiter;
 use crate::tmdb::TmdbService;
@@ -124,7 +127,8 @@ const TORZNAB_DOWNLOAD_LINK_HYDRATE_LIMIT: usize = 12;
 const RD_TORRENT_CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const RD_READY_HASH_CACHE_TTL_MS: i64 = 30 * 1000;
 const RD_TORRENT_LIST_LIMIT: usize = 500;
-const RD_CREDENTIAL_SCOPE_METADATA_KEY: &str = "_realDebridCredentialScope";
+const PLAYBACK_SESSION_REVALIDATE_TIMEOUT_MS: u64 = 3_000;
+const PLAYBACK_SESSION_REVALIDATE_FOREGROUND_GRACE_MS: u64 = 200;
 const SOURCE_HEALTH_AVOID_SCORE: i64 = -6_000;
 const RD_SELECTED_FILE_MISMATCH_ERROR: &str =
     "Real-Debrid returned a cached torrent with a different selected file.";
@@ -2840,7 +2844,7 @@ impl ResolverService {
                     if resolver_provider == ResolverProvider::RealDebrid
                         && let Some(real_debrid) = real_debrid
                     {
-                        persisted_metadata[RD_CREDENTIAL_SCOPE_METADATA_KEY] =
+                        persisted_metadata[PLAYBACK_SESSION_CREDENTIAL_SCOPE_METADATA_KEY] =
                             json!(real_debrid.cache_scope.clone());
                     }
                     self.db
@@ -3048,6 +3052,88 @@ impl ResolverService {
             .unwrap_or_else(|| "auto".to_owned()))
     }
 
+    /// Give a due persisted URL a brief chance to fail definitively without
+    /// putting the full CDN validation timeout on the playback critical path.
+    /// The database claim is compare-and-set, so differently-shaped resolve
+    /// requests that converge on the same session cannot start a HEAD storm.
+    async fn playback_session_revalidation_allows_reuse(
+        &self,
+        session: &PlaybackSession,
+    ) -> AppResult<PlaybackSessionRevalidation> {
+        let verifiable_url = extract_playable_source_input(&session.playable_url);
+        let needs_revalidation = (session.next_validation_at < 0
+            || (session.next_validation_at > 0 && session.next_validation_at <= now_ms()))
+            && looks_like_http_url(&verifiable_url);
+        if !needs_revalidation {
+            return Ok(PlaybackSessionRevalidation::Fresh);
+        }
+        let claim_token = match self
+            .db
+            .try_claim_playback_session_validation(session.clone())
+            .await?
+        {
+            PlaybackSessionValidationClaim::Claimed(claim_token) => claim_token,
+            PlaybackSessionValidationClaim::Fresh | PlaybackSessionValidationClaim::Leased => {
+                // This snapshot was due or leased when it was read. A newer
+                // validation state now owns the row, so serve it without
+                // re-persisting stale fields over that state.
+                return Ok(PlaybackSessionRevalidation::StaleWhileRevalidate);
+            }
+            PlaybackSessionValidationClaim::Unavailable => {
+                return Ok(PlaybackSessionRevalidation::Invalid);
+            }
+        };
+
+        let resolver = self.clone();
+        let validation_session = session.clone();
+        let validation_user_id = session.user_id;
+        let (result_tx, result_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let definitive_failure = resolver
+                .verify_playable_url(&verifiable_url, PLAYBACK_SESSION_REVALIDATE_TIMEOUT_MS)
+                .await
+                .is_err();
+            let update = if definitive_failure {
+                resolver
+                    .db
+                    .invalidate_playback_session_validation_if_current(
+                        validation_session,
+                        claim_token,
+                        "Playback session validation failed for the stored stream URL.".to_owned(),
+                    )
+                    .await
+            } else {
+                resolver
+                    .db
+                    .refresh_playback_session_validation_if_current(validation_session, claim_token)
+                    .await
+            };
+            let revalidation = match update {
+                Ok(true) if definitive_failure => PlaybackSessionRevalidation::Invalid,
+                Ok(true) => PlaybackSessionRevalidation::Fresh,
+                Ok(false) => PlaybackSessionRevalidation::Invalid,
+                Err(error) => {
+                    tracing::warn!(
+                        user_id = validation_user_id,
+                        error = error.message().unwrap_or("persistence update failed"),
+                        "failed to persist playback-session validation result"
+                    );
+                    PlaybackSessionRevalidation::Invalid
+                }
+            };
+            let _ = result_tx.send(revalidation);
+        });
+
+        // Most explicit CDN rejections arrive within one round trip. If the
+        // validation is slower, return the stale session now and let the same
+        // bounded check update or invalidate it for the next request.
+        Ok(classify_playback_session_revalidation(
+            result_rx,
+            Duration::from_millis(PLAYBACK_SESSION_REVALIDATE_FOREGROUND_GRACE_MS),
+        )
+        .await)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn try_reuse_playback_session(
         &self,
@@ -3147,52 +3233,41 @@ impl ResolverService {
             return Ok(None);
         }
 
-        let verifiable_url = extract_playable_source_input(&session.playable_url);
-        let needs_revalidation = session.next_validation_at > 0
-            && session.next_validation_at <= now_ms()
-            && looks_like_http_url(&verifiable_url);
-        if needs_revalidation {
-            if self
-                .verify_playable_url(&verifiable_url, 3_000)
-                .await
-                .is_err()
-            {
-                self.invalidate_playback_session(
-                    &session,
-                    "Playback session validation failed for the stored stream URL.",
-                )
-                .await;
-                return Ok(None);
-            }
-            let _ = self
-                .db
-                .refresh_playback_session_validation_window(user_id, session.session_key.clone())
-                .await;
+        let revalidation = self
+            .playback_session_revalidation_allows_reuse(&session)
+            .await?;
+        if revalidation == PlaybackSessionRevalidation::Invalid {
+            return Ok(None);
         }
 
-        self.build_resolved_response(
-            ResolvedSource {
-                playable_url: session.playable_url.clone(),
-                fallback_urls: session.fallback_urls.clone(),
-                filename: session.filename.clone(),
-                source_hash: session.source_hash.clone(),
-                selected_file: session.selected_file.clone(),
-                selected_file_path: playback_session_selected_file_path(&session),
-                real_debrid_cached: session
-                    .metadata
-                    .get("realDebridCached")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            },
-            metadata.clone(),
-            preferences.clone(),
-            resolver_provider,
-            user_id,
-            real_debrid,
-            true,
-        )
-        .await
-        .map(Some)
+        let persist_session = revalidation == PlaybackSessionRevalidation::Fresh;
+        let mut payload = self
+            .build_resolved_response(
+                ResolvedSource {
+                    playable_url: session.playable_url.clone(),
+                    fallback_urls: session.fallback_urls.clone(),
+                    filename: session.filename.clone(),
+                    source_hash: session.source_hash.clone(),
+                    selected_file: session.selected_file.clone(),
+                    selected_file_path: playback_session_selected_file_path(&session),
+                    real_debrid_cached: session
+                        .metadata
+                        .get("realDebridCached")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                },
+                metadata.clone(),
+                preferences.clone(),
+                resolver_provider,
+                user_id,
+                real_debrid,
+                persist_session,
+            )
+            .await?;
+        if !persist_session {
+            payload["session"] = build_playback_session_payload(&session);
+        }
+        Ok(Some(payload))
     }
 
     async fn try_reuse_latest_healthy_playback_session(
@@ -3274,33 +3349,15 @@ impl ResolverService {
                 continue;
             }
 
-            let verifiable_url = extract_playable_source_input(&session.playable_url);
-            let needs_revalidation = session.next_validation_at > 0
-                && session.next_validation_at <= now_ms()
-                && looks_like_http_url(&verifiable_url);
-            if needs_revalidation {
-                if self
-                    .verify_playable_url(&verifiable_url, 3_000)
-                    .await
-                    .is_err()
-                {
-                    self.invalidate_playback_session(
-                        &session,
-                        "Playback session validation failed for the stored stream URL.",
-                    )
-                    .await;
-                    continue;
-                }
-                let _ = self
-                    .db
-                    .refresh_playback_session_validation_window(
-                        user_id,
-                        session.session_key.clone(),
-                    )
-                    .await;
+            let revalidation = self
+                .playback_session_revalidation_allows_reuse(&session)
+                .await?;
+            if revalidation == PlaybackSessionRevalidation::Invalid {
+                continue;
             }
 
-            return self
+            let persist_session = revalidation == PlaybackSessionRevalidation::Fresh;
+            let mut payload = self
                 .build_resolved_response(
                     ResolvedSource {
                         playable_url: session.playable_url.clone(),
@@ -3320,10 +3377,13 @@ impl ResolverService {
                     resolver_provider,
                     user_id,
                     real_debrid,
-                    true,
+                    persist_session,
                 )
-                .await
-                .map(Some);
+                .await?;
+            if !persist_session {
+                payload["session"] = build_playback_session_payload(&session);
+            }
+            return Ok(Some(payload));
         }
 
         Ok(None)
@@ -6500,6 +6560,23 @@ enum PlayableUrlVerification {
     Uncertain,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackSessionRevalidation {
+    Fresh,
+    StaleWhileRevalidate,
+    Invalid,
+}
+
+async fn classify_playback_session_revalidation(
+    result_rx: oneshot::Receiver<PlaybackSessionRevalidation>,
+    foreground_grace: Duration,
+) -> PlaybackSessionRevalidation {
+    match timeout(foreground_grace, result_rx).await {
+        Ok(Ok(revalidation)) => revalidation,
+        Ok(Err(_)) | Err(_) => PlaybackSessionRevalidation::StaleWhileRevalidate,
+    }
+}
+
 fn push_unique_tracker(trackers: &mut Vec<String>, tracker: &str) {
     let trimmed = tracker.trim();
     if trimmed.is_empty() {
@@ -6917,7 +6994,7 @@ fn playback_session_matches_real_debrid_scope(
     };
     session
         .metadata
-        .get(RD_CREDENTIAL_SCOPE_METADATA_KEY)
+        .get(PLAYBACK_SESSION_CREDENTIAL_SCOPE_METADATA_KEY)
         .and_then(Value::as_str)
         == Some(real_debrid.cache_scope.as_str())
 }

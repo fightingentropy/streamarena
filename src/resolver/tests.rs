@@ -20,17 +20,19 @@ use super::{
 };
 use super::{
     DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, ExternalEmbedSource,
-    LocalTorrentResolvedSource, PlaybackSession, RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters,
-    ResolveMetadata, ResolvePreferences, ResolvedSource, ResolverExternalGuard, ResolverMetrics,
-    ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
+    LocalTorrentResolvedSource, PlaybackSession, PlaybackSessionRevalidation,
+    RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters, ResolveMetadata, ResolvePreferences,
+    ResolvedSource, ResolverExternalGuard, ResolverMetrics, ResolverProvider,
+    SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
     build_external_embed_source_summaries, build_movie_resolve_lock_key,
     build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
     build_real_debrid_cache_scope, build_real_debrid_unrestrict_form,
     build_scoped_rd_torrent_cache_key, build_torrentio_stream_cache_key,
     build_torznab_download_cache_key, build_torznab_request_url, build_torznab_stream_cache_key,
     build_tv_resolve_lock_key, build_user_scoped_playback_session_key_for_metadata,
-    collect_episode_signatures, compute_external_embed_rank_health_score,
-    compute_source_health_score, compute_torrentio_cache_deadlines, default_external_embed_source,
+    classify_playback_session_revalidation, collect_episode_signatures,
+    compute_external_embed_rank_health_score, compute_source_health_score,
+    compute_torrentio_cache_deadlines, default_external_embed_source,
     does_filename_likely_match_movie, external_embed_hls_candidate_sources,
     external_embed_source_for_source_hash, external_embed_source_hash,
     external_embed_source_rank_score, external_embed_sources, external_embed_url,
@@ -87,6 +89,33 @@ async fn resolver_provider_attempt(
     } else {
         Err(ApiError::bad_gateway(format!("provider {index} failed")))
     }
+}
+
+#[tokio::test]
+async fn playback_session_revalidation_foreground_grace_classifies_results() {
+    let (failed_tx, failed_rx) = oneshot::channel();
+    failed_tx
+        .send(PlaybackSessionRevalidation::Invalid)
+        .expect("send definitive failure");
+    assert_eq!(
+        classify_playback_session_revalidation(failed_rx, Duration::from_secs(1)).await,
+        PlaybackSessionRevalidation::Invalid
+    );
+
+    let (healthy_tx, healthy_rx) = oneshot::channel();
+    healthy_tx
+        .send(PlaybackSessionRevalidation::Fresh)
+        .expect("send reusable result");
+    assert_eq!(
+        classify_playback_session_revalidation(healthy_rx, Duration::from_secs(1)).await,
+        PlaybackSessionRevalidation::Fresh
+    );
+
+    let (_pending_tx, pending_rx) = oneshot::channel();
+    assert_eq!(
+        classify_playback_session_revalidation(pending_rx, Duration::ZERO).await,
+        PlaybackSessionRevalidation::StaleWhileRevalidate
+    );
 }
 
 #[tokio::test]
@@ -1515,7 +1544,7 @@ fn real_debrid_playback_sessions_are_private_to_the_credential_scope() {
     let session = PlaybackSession {
         metadata: json!({
             "resolverProvider": "real-debrid",
-            (super::RD_CREDENTIAL_SCOPE_METADATA_KEY): first.cache_scope.clone()
+            (super::PLAYBACK_SESSION_CREDENTIAL_SCOPE_METADATA_KEY): first.cache_scope.clone()
         }),
         ..PlaybackSession::default()
     };
