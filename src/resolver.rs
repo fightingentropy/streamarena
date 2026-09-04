@@ -54,18 +54,22 @@ use crate::utils::{
 mod external_embed;
 mod real_debrid;
 mod scoring;
+pub(crate) use real_debrid::is_real_debrid_lazy_hls_input;
 pub(crate) use real_debrid::pick_video_file_ids;
 use real_debrid::{
-    RealDebridRequestContext, RealDebridValidationControl, complete_real_debrid_attempt_with_lease,
-    is_real_debrid_transcode_hls_url, real_debrid_api_key_required_error,
+    RealDebridLazyHlsControl, RealDebridRequestContext, RealDebridValidationControl,
+    complete_real_debrid_attempt_with_lease, is_real_debrid_transcode_hls_url,
+    real_debrid_api_key_required_error, refresh_real_debrid_lazy_hls_fallbacks,
     validate_real_debrid_user_payload,
 };
 #[cfg(test)]
 use real_debrid::{
     RealDebridTorrentOwnership, acquire_owned_real_debrid_torrent_lease,
-    build_rd_torrent_cache_key, build_real_debrid_cache_scope, build_real_debrid_unrestrict_form,
-    build_scoped_rd_torrent_cache_key, parse_ready_real_debrid_hashes,
-    parse_ready_real_debrid_torrents, ready_info_has_selected_file_id,
+    authorize_real_debrid_lazy_hls_ticket, build_rd_torrent_cache_key,
+    build_real_debrid_cache_scope, build_real_debrid_lazy_hls_playback_source_at,
+    build_real_debrid_unrestrict_form, build_scoped_rd_torrent_cache_key,
+    parse_ready_real_debrid_hashes, parse_ready_real_debrid_torrents,
+    parse_strict_real_debrid_lazy_hls_query, ready_info_has_selected_file_id,
     real_debrid_apple_transcode_url, reusable_rd_torrent_ready_for_selected_file,
     user_facing_real_debrid_error,
 };
@@ -219,6 +223,7 @@ pub struct ResolverService {
     resolved_embed_cache: ResolvedEmbedCache,
     rd_ready_refreshes: Arc<DashMap<String, ()>>,
     rd_validation: RealDebridValidationControl,
+    rd_lazy_hls: RealDebridLazyHlsControl,
 }
 
 pub struct LocalCacheUpgradeRequest<'a> {
@@ -668,6 +673,7 @@ impl ResolverService {
             resolved_embed_cache: ResolvedEmbedCache::new(),
             rd_ready_refreshes: Arc::new(DashMap::new()),
             rd_validation: RealDebridValidationControl::new(),
+            rd_lazy_hls: RealDebridLazyHlsControl::new(),
         }
     }
 
@@ -676,6 +682,7 @@ impl ResolverService {
         self.resolved_embed_cache.prune();
         self.provider_resolver_permits.prune_idle();
         self.rd_validation.prune();
+        self.rd_lazy_hls.prune();
     }
 
     pub fn stats(&self) -> ResolverStats {
@@ -2688,6 +2695,20 @@ impl ResolverService {
         real_debrid: Option<&RealDebridRequestContext>,
         include_session: bool,
     ) -> AppResult<Value> {
+        // Lazy Real-Debrid HLS tickets are intentionally short-lived. Refresh
+        // an authenticated session's still-valid signed identity before it is
+        // normalized for this response, so a durable playback-session row does
+        // not turn that recovery path into a long-lived bearer capability.
+        // Legacy rows containing a raw Real-Debrid HLS URL are left untouched.
+        let resolved = if resolver_provider == ResolverProvider::RealDebrid {
+            refresh_real_debrid_lazy_hls_fallbacks(
+                &resolved,
+                real_debrid,
+                &self.config.live_hls_proxy_secret,
+            )
+        } else {
+            resolved
+        };
         let source_input = extract_playable_source_input(&resolved.playable_url);
         // The piece-aware local stream is playable as soon as its startup
         // buffer is ready. ffprobe and subtitle providers are enrichment, not
@@ -2781,11 +2802,11 @@ impl ResolverService {
             selected_audio_stream_index,
             selected_subtitle_stream_index,
         );
-        // Real-Debrid's Apple-HLS media host is unreliable from this datacenter,
-        // while its unrestricted download host starts consistently. Prefer the
-        // fragmented-MP4 remux and keep the signed HLS relay as recovery. The
-        // persisted session remains the raw provider response so every delivery
-        // can rebuild fresh, short-lived browser routes.
+        // Real-Debrid's unrestricted download host is the fast path. Legacy
+        // playback-session rows can still contain a raw Apple-HLS primary, so
+        // retain the compatibility transform that prefers their download remux
+        // and converts the raw HLS URL into a signed relay. New resolves already
+        // carry an authenticated lazy-HLS fallback and pass through unchanged.
         let browser_normalized =
             proxy_real_debrid_hls_for_browser(&normalized, &self.config.live_hls_proxy_secret);
         let browser_source_input = if is_remux_playback_url(&browser_normalized.playable_url) {
@@ -7470,7 +7491,15 @@ fn normalize_resolved_source_for_software_decode(
             || is_local_playback_session_url(&current_playable))
             && !remux_fallback.is_empty()
         {
-            push_unique_url(&mut normalized.fallback_urls, &remux_fallback);
+            if is_real_debrid_download_url(&current_playable) {
+                let existing_fallbacks = std::mem::take(&mut normalized.fallback_urls);
+                push_unique_url(&mut normalized.fallback_urls, &remux_fallback);
+                for fallback in existing_fallbacks {
+                    push_unique_url(&mut normalized.fallback_urls, &fallback);
+                }
+            } else {
+                push_unique_url(&mut normalized.fallback_urls, &remux_fallback);
+            }
         }
         return normalized;
     }

@@ -1,7 +1,11 @@
 use super::*;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
+
+type HmacSha256 = Hmac<Sha256>;
 
 const RD_VALIDATION_USER_MAX_ATTEMPTS: usize = 5;
 const RD_VALIDATION_IP_MAX_ATTEMPTS: usize = 20;
@@ -9,11 +13,44 @@ const RD_VALIDATION_WINDOW_MS: i64 = 15 * 60 * 1000;
 const RD_VALIDATION_MAX_CONCURRENT: usize = 2;
 const RD_VALIDATION_QUEUE_TIMEOUT_MS: u64 = 2_000;
 const RD_VALIDATION_SUCCESS_TTL_MS: i64 = 5 * 60 * 1000;
+const RD_LAZY_HLS_TICKET_TTL_SECONDS: i64 = 10 * 60;
+const RD_LAZY_HLS_TICKET_MAX_FUTURE_SECONDS: i64 = RD_LAZY_HLS_TICKET_TTL_SECONDS + 5;
+const RD_LAZY_HLS_SIGNATURE_CONTEXT: &[u8] = b"streamarena-rd-lazy-hls-v1";
+const RD_LAZY_HLS_TICKET_PREFIX: &str = "streamarena-rd-hls-v1.";
+const RD_LAZY_HLS_CACHE_MAX_ENTRIES: usize = 512;
+const RD_LAZY_HLS_CACHE_TTL_MS: i64 = 5 * 60 * 1000;
+const RD_LAZY_HLS_FAILURE_TTL_MS: i64 = 5 * 1000;
+const RD_LAZY_HLS_MAX_CONCURRENT: usize = 4;
+const RD_LAZY_HLS_USER_MAX_ATTEMPTS: usize = 30;
+const RD_LAZY_HLS_USER_WINDOW_MS: i64 = 60 * 1000;
 
 #[derive(Clone)]
 pub(super) struct RealDebridRequestContext {
     pub(super) api_key: String,
     pub(super) cache_scope: String,
+    user_id: i64,
+    credential_binding: [u8; 32],
+    remote_traffic: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct RealDebridLazyHlsControl {
+    entries: Arc<DashMap<String, CachedRealDebridLazyHls>>,
+    locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    permits: Arc<Semaphore>,
+    user_rate_limiter: Arc<RateLimiter>,
+}
+
+#[derive(Clone)]
+struct CachedRealDebridLazyHls {
+    upstream_url: Option<String>,
+    expires_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct AuthorizedRealDebridLazyHlsTicket {
+    pub(super) download_id: String,
+    pub(super) expires_at: i64,
 }
 
 #[derive(Clone)]
@@ -178,6 +215,130 @@ impl RealDebridValidationControl {
     }
 }
 
+impl RealDebridLazyHlsControl {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: Arc::new(DashMap::new()),
+            locks: Arc::new(DashMap::new()),
+            permits: Arc::new(Semaphore::new(RD_LAZY_HLS_MAX_CONCURRENT)),
+            user_rate_limiter: Arc::new(RateLimiter::new(
+                RD_LAZY_HLS_USER_MAX_ATTEMPTS,
+                RD_LAZY_HLS_USER_WINDOW_MS,
+            )),
+        }
+    }
+
+    pub(super) fn prune(&self) {
+        let now = now_ms();
+        self.entries.retain(|_, entry| entry.expires_at_ms > now);
+        self.locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        self.user_rate_limiter.prune();
+        while self.entries.len() > RD_LAZY_HLS_CACHE_MAX_ENTRIES {
+            self.evict_earliest_expiring_entry();
+        }
+    }
+
+    fn fresh(&self, key: &str) -> Option<Option<String>> {
+        self.entries
+            .get(key)
+            .filter(|entry| entry.expires_at_ms > now_ms())
+            .map(|entry| entry.upstream_url.clone())
+    }
+
+    fn lock(&self, key: &str) -> Arc<Mutex<()>> {
+        if self.locks.len() >= RD_LAZY_HLS_CACHE_MAX_ENTRIES {
+            self.locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        }
+        self.locks
+            .entry(key.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    fn store(&self, key: String, upstream_url: Option<String>, expires_at_ms: i64) {
+        if self.entries.len() >= RD_LAZY_HLS_CACHE_MAX_ENTRIES {
+            let now = now_ms();
+            self.entries.retain(|_, entry| entry.expires_at_ms > now);
+            while self.entries.len() >= RD_LAZY_HLS_CACHE_MAX_ENTRIES {
+                self.evict_earliest_expiring_entry();
+            }
+        }
+        self.entries.insert(
+            key,
+            CachedRealDebridLazyHls {
+                upstream_url,
+                expires_at_ms,
+            },
+        );
+    }
+
+    fn evict_earliest_expiring_entry(&self) {
+        let earliest_key = self
+            .entries
+            .iter()
+            .min_by_key(|entry| entry.expires_at_ms)
+            .map(|entry| entry.key().clone());
+        if let Some(key) = earliest_key {
+            self.entries.remove(&key);
+        }
+    }
+
+    fn try_acquire_provider_permit(&self) -> AppResult<OwnedSemaphorePermit> {
+        self.permits.clone().try_acquire_owned().map_err(|_| {
+            ApiError::too_many_requests("Real-Debrid HLS fallback is busy. Try again shortly.")
+        })
+    }
+
+    fn check_user_provider_budget(&self, user_id: i64) -> AppResult<()> {
+        let key = format!("real-debrid-lazy-hls:user:{}", user_id.max(0));
+        self.user_rate_limiter
+            .check_and_record(&key)
+            .then_some(())
+            .ok_or_else(|| {
+                ApiError::too_many_requests(
+                    "Too many Real-Debrid HLS fallback requests. Try again later.",
+                )
+            })
+    }
+
+    async fn resolve<F, Fut>(
+        &self,
+        cache_key: &str,
+        user_id: i64,
+        success_expires_at_ms: i64,
+        fetch: F,
+    ) -> AppResult<Option<String>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Option<String>>,
+    {
+        if let Some(cached) = self.fresh(cache_key) {
+            return Ok(cached);
+        }
+
+        // Lock before taking a global provider permit: retries for the same
+        // ticket wait for the first request and then reuse its cache entry
+        // without consuming the limited slots for distinct provider calls.
+        let flight = self.lock(cache_key);
+        let _guard = flight.lock().await;
+        if let Some(cached) = self.fresh(cache_key) {
+            return Ok(cached);
+        }
+
+        let _provider_permit = self.try_acquire_provider_permit()?;
+        self.check_user_provider_budget(user_id)?;
+        let upstream_url = fetch().await;
+        let now = now_ms();
+        let expires_at_ms = if upstream_url.is_some() {
+            success_expires_at_ms.min(now.saturating_add(RD_LAZY_HLS_CACHE_TTL_MS))
+        } else {
+            now.saturating_add(RD_LAZY_HLS_FAILURE_TTL_MS)
+        };
+        self.store(cache_key.to_owned(), upstream_url.clone(), expires_at_ms);
+        Ok(upstream_url)
+    }
+}
+
 impl OwnedRealDebridTorrentLease {
     pub(super) fn torrent_id(&self) -> &str {
         &self.torrent_id
@@ -272,17 +433,30 @@ where
 
 impl RealDebridRequestContext {
     pub(super) fn for_user(user_id: i64, api_key: &str) -> Option<Self> {
+        Self::for_user_with_delivery(
+            user_id,
+            api_key,
+            crate::config::real_debrid_remote_traffic_enabled(),
+        )
+    }
+
+    pub(super) fn for_user_with_delivery(
+        user_id: i64,
+        api_key: &str,
+        remote_traffic: bool,
+    ) -> Option<Self> {
         let normalized_api_key = api_key.trim();
         if normalized_api_key.is_empty() {
             return None;
         }
+        let user_id = user_id.max(0);
+        let credential_binding = Sha256::digest(normalized_api_key.as_bytes()).into();
         Some(Self {
             api_key: normalized_api_key.to_owned(),
-            cache_scope: build_real_debrid_cache_scope(
-                user_id,
-                normalized_api_key,
-                crate::config::real_debrid_remote_traffic_enabled(),
-            ),
+            cache_scope: build_real_debrid_cache_scope(user_id, normalized_api_key, remote_traffic),
+            user_id,
+            credential_binding,
+            remote_traffic,
         })
     }
 }
@@ -300,16 +474,20 @@ pub(super) fn build_real_debrid_cache_scope(
     api_key: &str,
     remote_traffic: bool,
 ) -> String {
-    let delivery = if remote_traffic {
-        "remote-hls-v1"
-    } else {
-        "direct-v1"
-    };
+    let delivery = real_debrid_delivery_scope(remote_traffic);
     format!(
         "user:{}:credential:{}:delivery:{delivery}",
         user_id.max(0),
         real_debrid_token_fingerprint(api_key.trim())
     )
+}
+
+fn real_debrid_delivery_scope(remote_traffic: bool) -> &'static str {
+    if remote_traffic {
+        "remote-hls-v1"
+    } else {
+        "direct-v1"
+    }
 }
 
 pub(super) fn build_rd_torrent_cache_key(info_hash: &str) -> String {
@@ -337,6 +515,234 @@ pub(super) fn build_real_debrid_unrestrict_form(
     form
 }
 
+fn valid_real_debrid_download_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 64 && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+fn sign_real_debrid_lazy_hls_ticket(
+    download_id: &str,
+    expires_at: i64,
+    real_debrid: &RealDebridRequestContext,
+    secret: &str,
+) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key size");
+    mac.update(RD_LAZY_HLS_SIGNATURE_CONTEXT);
+    mac.update(b"\0");
+    mac.update(download_id.as_bytes());
+    mac.update(b"\0");
+    mac.update(expires_at.to_string().as_bytes());
+    mac.update(b"\0");
+    mac.update(real_debrid.user_id.to_string().as_bytes());
+    mac.update(b"\0");
+    mac.update(&real_debrid.credential_binding);
+    mac.update(b"\0");
+    mac.update(real_debrid_delivery_scope(real_debrid.remote_traffic).as_bytes());
+    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
+fn verify_real_debrid_lazy_hls_ticket_signature(
+    download_id: &str,
+    expires_at: i64,
+    signature: &str,
+    real_debrid: &RealDebridRequestContext,
+    secret: &str,
+) -> bool {
+    if secret.is_empty()
+        || signature.len() != 43
+        || !signature
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return false;
+    }
+    let Ok(signature_bytes) = URL_SAFE_NO_PAD.decode(signature) else {
+        return false;
+    };
+    if signature_bytes.len() != 32 || URL_SAFE_NO_PAD.encode(&signature_bytes) != signature {
+        return false;
+    }
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key size");
+    mac.update(RD_LAZY_HLS_SIGNATURE_CONTEXT);
+    mac.update(b"\0");
+    mac.update(download_id.as_bytes());
+    mac.update(b"\0");
+    mac.update(expires_at.to_string().as_bytes());
+    mac.update(b"\0");
+    mac.update(real_debrid.user_id.to_string().as_bytes());
+    mac.update(b"\0");
+    mac.update(&real_debrid.credential_binding);
+    mac.update(b"\0");
+    mac.update(real_debrid_delivery_scope(real_debrid.remote_traffic).as_bytes());
+    mac.verify_slice(&signature_bytes).is_ok()
+}
+
+fn parse_real_debrid_lazy_hls_ticket(input: &str) -> Option<(&str, i64, &str)> {
+    let payload = input.strip_prefix(RD_LAZY_HLS_TICKET_PREFIX)?;
+    let mut pieces = payload.split('.');
+    let download_id = pieces.next()?;
+    let expiry = pieces.next()?;
+    let signature = pieces.next()?;
+    if pieces.next().is_some()
+        || !valid_real_debrid_download_id(download_id)
+        || expiry.is_empty()
+        || expiry.len() > 19
+        || expiry.len() > 1 && expiry.starts_with('0')
+        || !expiry.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((download_id, expiry.parse::<i64>().ok()?, signature))
+}
+
+pub(super) fn authorize_real_debrid_lazy_hls_ticket(
+    input: &str,
+    real_debrid: &RealDebridRequestContext,
+    secret: &str,
+    now_seconds: i64,
+) -> Option<AuthorizedRealDebridLazyHlsTicket> {
+    if !real_debrid.remote_traffic || secret.trim().is_empty() {
+        return None;
+    }
+    let (download_id, expires_at, signature) = parse_real_debrid_lazy_hls_ticket(input)?;
+    if expires_at <= now_seconds
+        || expires_at > now_seconds.saturating_add(RD_LAZY_HLS_TICKET_MAX_FUTURE_SECONDS)
+        || !verify_real_debrid_lazy_hls_ticket_signature(
+            download_id,
+            expires_at,
+            signature,
+            real_debrid,
+            secret,
+        )
+    {
+        return None;
+    }
+    Some(AuthorizedRealDebridLazyHlsTicket {
+        download_id: download_id.to_owned(),
+        expires_at,
+    })
+}
+
+pub(super) fn build_real_debrid_lazy_hls_playback_source_at(
+    download_id: &str,
+    streamable: bool,
+    real_debrid: &RealDebridRequestContext,
+    secret: &str,
+    now_seconds: i64,
+) -> Option<String> {
+    if !streamable
+        || !real_debrid.remote_traffic
+        || !valid_real_debrid_download_id(download_id)
+        || secret.trim().is_empty()
+    {
+        return None;
+    }
+    let expires_at = now_seconds.saturating_add(RD_LAZY_HLS_TICKET_TTL_SECONDS);
+    let signature = sign_real_debrid_lazy_hls_ticket(download_id, expires_at, real_debrid, secret);
+    let ticket = format!("{RD_LAZY_HLS_TICKET_PREFIX}{download_id}.{expires_at}.{signature}");
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("input", &ticket);
+    Some(format!("/api/hls/master.m3u8?{}", serializer.finish()))
+}
+
+fn build_real_debrid_lazy_hls_playback_source(
+    download_id: &str,
+    streamable: bool,
+    real_debrid: &RealDebridRequestContext,
+    secret: &str,
+) -> Option<String> {
+    build_real_debrid_lazy_hls_playback_source_at(
+        download_id,
+        streamable,
+        real_debrid,
+        secret,
+        now_ms().div_euclid(1_000),
+    )
+}
+
+pub(crate) fn is_real_debrid_lazy_hls_input(input: &str) -> bool {
+    input.starts_with(RD_LAZY_HLS_TICKET_PREFIX)
+}
+
+pub(super) fn parse_strict_real_debrid_lazy_hls_query(query: &str) -> Option<String> {
+    let mut pairs = url::form_urlencoded::parse(query.as_bytes());
+    let (key, value) = pairs.next()?;
+    if key != "input" || pairs.next().is_some() {
+        return None;
+    }
+    let value = value.into_owned();
+    is_real_debrid_lazy_hls_input(&value).then_some(value)
+}
+
+fn real_debrid_lazy_hls_cache_key(
+    download_id: &str,
+    real_debrid: &RealDebridRequestContext,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(RD_LAZY_HLS_SIGNATURE_CONTEXT);
+    digest.update(b"\0cache\0");
+    digest.update(download_id.as_bytes());
+    digest.update(b"\0");
+    digest.update(real_debrid.user_id.to_string().as_bytes());
+    digest.update(b"\0");
+    digest.update(real_debrid.credential_binding);
+    digest.update(b"\0");
+    digest.update(real_debrid_delivery_scope(real_debrid.remote_traffic).as_bytes());
+    URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
+fn refresh_real_debrid_lazy_hls_playback_source(
+    value: &str,
+    real_debrid: &RealDebridRequestContext,
+    secret: &str,
+) -> Option<String> {
+    let url = Url::parse(value)
+        .or_else(|_| Url::parse(&format!("http://localhost{value}")))
+        .ok()?;
+    if url.path() != "/api/hls/master.m3u8" {
+        return None;
+    }
+    let query = url.query()?;
+    let input = parse_strict_real_debrid_lazy_hls_query(query)?;
+    let (download_id, expires_at, signature) = parse_real_debrid_lazy_hls_ticket(&input)?;
+    if !real_debrid.remote_traffic
+        || !verify_real_debrid_lazy_hls_ticket_signature(
+            download_id,
+            expires_at,
+            signature,
+            real_debrid,
+            secret,
+        )
+    {
+        return None;
+    }
+    build_real_debrid_lazy_hls_playback_source(download_id, true, real_debrid, secret)
+}
+
+pub(super) fn refresh_real_debrid_lazy_hls_fallbacks(
+    source: &ResolvedSource,
+    real_debrid: Option<&RealDebridRequestContext>,
+    secret: &str,
+) -> ResolvedSource {
+    let Some(real_debrid) = real_debrid else {
+        return source.clone();
+    };
+    let mut refreshed = source.clone();
+    if let Some(next) =
+        refresh_real_debrid_lazy_hls_playback_source(&refreshed.playable_url, real_debrid, secret)
+    {
+        refreshed.playable_url = next;
+    }
+    refreshed.fallback_urls = refreshed
+        .fallback_urls
+        .iter()
+        .map(|value| {
+            refresh_real_debrid_lazy_hls_playback_source(value, real_debrid, secret)
+                .unwrap_or_else(|| value.clone())
+        })
+        .collect();
+    refreshed
+}
+
 pub(super) fn is_real_debrid_transcode_hls_url(value: &str) -> bool {
     let Ok(url) = url::Url::parse(value.trim()) else {
         return false;
@@ -352,6 +758,24 @@ pub(super) fn is_real_debrid_transcode_hls_url(value: &str) -> bool {
 pub(super) fn real_debrid_apple_transcode_url(payload: &Value) -> Option<String> {
     let url = stringify_json(payload.get("apple").and_then(|value| value.get("full")));
     is_real_debrid_transcode_hls_url(&url).then_some(url)
+}
+
+fn build_real_debrid_private_hls_relay(
+    upstream_url: &str,
+    live_hls_proxy_secret: &str,
+    session_token: &str,
+) -> AppResult<String> {
+    if session_token.trim().is_empty() {
+        return Err(ApiError::unauthorized("Not authenticated."));
+    }
+    crate::live::build_private_real_debrid_hls_playback_source(
+        upstream_url,
+        live_hls_proxy_secret,
+        session_token,
+    )
+    .ok_or_else(|| {
+        ApiError::service_unavailable("Real-Debrid HLS fallback signing is unavailable.")
+    })
 }
 
 fn real_debrid_playback_url_priority(value: &str) -> u8 {
@@ -819,6 +1243,9 @@ impl ResolverService {
                 ApiError::internal("No playable Real-Debrid stream URL was available.")
             }));
         }
+        ranked_candidates.sort_by(|left, right| {
+            real_debrid_playback_url_priority(right).cmp(&real_debrid_playback_url_priority(left))
+        });
 
         let playable_url = ranked_candidates[0].clone();
         let resolved = ResolvedSource {
@@ -1114,7 +1541,7 @@ impl ResolverService {
         real_debrid: &RealDebridRequestContext,
         rd_link: &str,
     ) -> AppResult<(Vec<String>, String)> {
-        let remote_traffic = crate::config::real_debrid_remote_traffic_enabled();
+        let remote_traffic = real_debrid.remote_traffic;
         let form = build_real_debrid_unrestrict_form(rd_link, remote_traffic);
         let unrestricted = self
             .rd_fetch_form(
@@ -1141,28 +1568,79 @@ impl ResolverService {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
         let download_id = stringify_json(unrestricted.get("id"));
-        let valid_download_id = !download_id.is_empty()
-            && download_id.len() <= 64
-            && download_id
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric());
-        if remote_traffic
-            && streamable
-            && valid_download_id
-            && let Ok(transcode_payload) = self
-                .rd_fetch_json(
-                    real_debrid,
-                    &format!("/streaming/transcode/{download_id}"),
-                    reqwest::Method::GET,
-                    6_000,
-                )
-                .await
-            && let Some(apple_hls_url) = real_debrid_apple_transcode_url(&transcode_payload)
-        {
-            playable_urls.push(apple_hls_url);
-        }
         playable_urls.push(download);
+        if let Some(lazy_hls) = build_real_debrid_lazy_hls_playback_source(
+            &download_id,
+            streamable,
+            real_debrid,
+            &self.config.live_hls_proxy_secret,
+        ) {
+            playable_urls.push(lazy_hls);
+        }
         Ok((playable_urls, stringify_json(unrestricted.get("filename"))))
+    }
+
+    pub(crate) async fn resolve_real_debrid_lazy_hls_fallback(
+        &self,
+        query: &str,
+        user_id: i64,
+        api_key: &str,
+        session_token: &str,
+    ) -> AppResult<String> {
+        let real_debrid =
+            RealDebridRequestContext::for_user(user_id, api_key).ok_or_else(|| {
+                ApiError::failed_dependency(
+                    "Enable Real-Debrid and add an API token in Settings to use HLS fallback.",
+                )
+            })?;
+        let input = parse_strict_real_debrid_lazy_hls_query(query)
+            .ok_or_else(|| ApiError::forbidden("Invalid Real-Debrid HLS fallback ticket."))?;
+        let ticket = authorize_real_debrid_lazy_hls_ticket(
+            &input,
+            &real_debrid,
+            &self.config.live_hls_proxy_secret,
+            now_ms().div_euclid(1_000),
+        )
+        .ok_or_else(|| {
+            ApiError::forbidden("Invalid or expired Real-Debrid HLS fallback ticket.")
+        })?;
+        let cache_key = real_debrid_lazy_hls_cache_key(&ticket.download_id, &real_debrid);
+        // A ticket is replayable until its short expiry so a browser retry can
+        // recover, but concurrent retries must cost only one provider call.
+        // A global fail-fast cap bounds distinct-ID fanout while a per-user
+        // window caps sequential valid-ticket replays. The small negative cache
+        // also prevents a failing ticket from burning the account's API quota
+        // in a tight retry loop.
+        let upstream_url = self
+            .rd_lazy_hls
+            .resolve(
+                &cache_key,
+                user_id,
+                ticket.expires_at.saturating_mul(1_000),
+                || async {
+                    self.rd_fetch_json(
+                        &real_debrid,
+                        &format!("/streaming/transcode/{}", ticket.download_id),
+                        reqwest::Method::GET,
+                        6_000,
+                    )
+                    .await
+                    .ok()
+                    .and_then(|payload| real_debrid_apple_transcode_url(&payload))
+                },
+            )
+            .await?;
+        upstream_url
+            .ok_or_else(|| {
+                ApiError::bad_gateway("Real-Debrid HLS fallback is temporarily unavailable.")
+            })
+            .and_then(|upstream| {
+                build_real_debrid_private_hls_relay(
+                    &upstream,
+                    &self.config.live_hls_proxy_secret,
+                    session_token,
+                )
+            })
     }
 
     pub(super) async fn verify_playable_url(
@@ -1294,5 +1772,104 @@ impl ResolverService {
             )
             .await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod lazy_hls_control_tests {
+    use super::*;
+
+    #[test]
+    fn lazy_hls_control_bounds_distinct_provider_calls_and_user_replays() {
+        let control = RealDebridLazyHlsControl::new();
+        let first_lock = control.lock("same-ticket");
+        let second_lock = control.lock("same-ticket");
+        assert!(Arc::ptr_eq(&first_lock, &second_lock));
+
+        let permits = (0..RD_LAZY_HLS_MAX_CONCURRENT)
+            .map(|_| {
+                control
+                    .try_acquire_provider_permit()
+                    .expect("provider permit")
+            })
+            .collect::<Vec<_>>();
+        let busy = control
+            .try_acquire_provider_permit()
+            .expect_err("distinct request beyond the cap must fail fast");
+        assert_eq!(busy.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        drop(permits);
+        assert!(control.try_acquire_provider_permit().is_ok());
+
+        for _ in 0..RD_LAZY_HLS_USER_MAX_ATTEMPTS {
+            control
+                .check_user_provider_budget(7)
+                .expect("attempt within user budget");
+        }
+        let exhausted = control
+            .check_user_provider_budget(7)
+            .expect_err("attempt beyond the user budget must fail");
+        assert_eq!(
+            exhausted.status(),
+            axum::http::StatusCode::TOO_MANY_REQUESTS
+        );
+        control
+            .check_user_provider_budget(8)
+            .expect("another user has an independent budget");
+    }
+
+    #[tokio::test]
+    async fn lazy_hls_same_ticket_retries_single_flight_before_taking_provider_permits() {
+        let control = RealDebridLazyHlsControl::new();
+        let provider_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let expires_at_ms = now_ms().saturating_add(60_000);
+        let attempts = (0..12).map(|_| {
+            let control = control.clone();
+            let provider_calls = Arc::clone(&provider_calls);
+            async move {
+                control
+                    .resolve("same-ticket", 7, expires_at_ms, || async move {
+                        provider_calls.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        Some("https://stream.real-debrid.com/shared.m3u8".to_owned())
+                    })
+                    .await
+            }
+        });
+        let results = futures_util::future::join_all(attempts).await;
+
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+        assert!(results.iter().all(|result| {
+            result.as_ref().is_ok_and(|value| {
+                value.as_deref() == Some("https://stream.real-debrid.com/shared.m3u8")
+            })
+        }));
+        assert_eq!(
+            control.permits.available_permits(),
+            RD_LAZY_HLS_MAX_CONCURRENT
+        );
+    }
+
+    #[test]
+    fn lazy_hls_cache_evicts_one_old_entry_without_flushing_hot_entries() {
+        let control = RealDebridLazyHlsControl::new();
+        let base_expiry = now_ms().saturating_add(60_000);
+        for index in 0..RD_LAZY_HLS_CACHE_MAX_ENTRIES {
+            control.store(
+                format!("ticket-{index}"),
+                Some(format!("https://stream.real-debrid.com/{index}.m3u8")),
+                base_expiry.saturating_add(index as i64),
+            );
+        }
+        control.store(
+            "new-ticket".to_owned(),
+            Some("https://stream.real-debrid.com/new.m3u8".to_owned()),
+            base_expiry.saturating_add(RD_LAZY_HLS_CACHE_MAX_ENTRIES as i64),
+        );
+
+        assert_eq!(control.entries.len(), RD_LAZY_HLS_CACHE_MAX_ENTRIES);
+        assert!(control.fresh("ticket-0").is_none());
+        assert!(control.fresh("ticket-1").is_some());
+        assert!(control.fresh("ticket-511").is_some());
+        assert!(control.fresh("new-ticket").is_some());
     }
 }

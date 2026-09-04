@@ -40,8 +40,11 @@ const LIVE_HLS_EXTERNAL_EMBED_PARAM: &str = "externalEmbed";
 const LIVE_HLS_SIGNATURE_PARAM: &str = "sig";
 const LIVE_HLS_SIGNATURE_V2_PARAM: &str = "sigV2";
 const LIVE_HLS_SIGNATURE_EXPIRY_PARAM: &str = "expires";
+const LIVE_HLS_PRIVATE_SESSION_PARAM: &str = "privateSession";
 const LIVE_HLS_SIGNATURE_CONTEXT_V1: &[u8] = b"streamarena-live-hls-v1";
 const LIVE_HLS_SIGNATURE_CONTEXT_V2: &[u8] = b"streamarena-live-hls-v2";
+const LIVE_HLS_SIGNATURE_CONTEXT_PRIVATE_V1: &[u8] = b"streamarena-live-hls-private-v1";
+const LIVE_HLS_PRIVATE_SESSION_CONTEXT: &[u8] = b"streamarena-live-hls-session-v1";
 // Four hours covers a feature-length VOD or long sports event without allowing
 // a leaked bearer URL to remain useful indefinitely. Verification accepts at
 // most six hours to leave deployment/clock headroom, plus one minute of skew.
@@ -104,12 +107,14 @@ struct LiveHlsRequest {
     trusted_external_embed: bool,
     signature_expires_at: Option<i64>,
     direct_segments: bool,
+    private_session_binding: Option<String>,
 }
 
 #[derive(Clone, Copy)]
 struct LiveHlsSigningContext<'a> {
     secret: &'a str,
     expires_at: i64,
+    private_session_binding: Option<&'a str>,
 }
 
 struct LiveHlsPlaylistFetch {
@@ -144,7 +149,8 @@ pub async fn live_hls_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    let live_request = live_hls_request_input(&state, &uri, LiveHlsRequestKind::Playlist)?;
+    let live_request =
+        live_hls_request_input(&state, &headers, &uri, LiveHlsRequestKind::Playlist)?;
     let live_request = refresh_expiring_ntvs_wideiptv_request(&state, live_request).await;
     let cache_key = live_hls_playlist_cache_key(&live_request);
 
@@ -179,6 +185,7 @@ pub async fn live_hls_handler(
             expires_at: live_request.signature_expires_at.unwrap_or_else(|| {
                 current_unix_seconds().saturating_add(LIVE_HLS_SIGNATURE_TTL_SECONDS)
             }),
+            private_session_binding: live_request.private_session_binding.as_deref(),
         }
     });
     let rewritten = rewrite_live_hls_playlist(
@@ -192,19 +199,14 @@ pub async fn live_hls_handler(
         &state,
         rewritten,
         live_request.trusted_external_embed,
+        live_request.private_session_binding.is_some(),
     );
 
     // Upstream errors returned above and are never stored; only a successful
     // rewrite lands in the cache. The client-facing Cache-Control still says
     // `no-store` for rolling playlists — the micro-cache is backend-only.
-    let (ttl_ms, cache_control) = if immutable {
-        (
-            LIVE_HLS_IMMUTABLE_PLAYLIST_CACHE_TTL_MS,
-            "public, max-age=300",
-        )
-    } else {
-        (LIVE_HLS_ROLLING_PLAYLIST_CACHE_TTL_MS, "no-store")
-    };
+    let (ttl_ms, cache_control) =
+        live_hls_playlist_cache_policy(immutable, live_request.private_session_binding.is_some());
     state.live_hls_playlist_cache.store(
         cache_key,
         Arc::from(rewritten.as_str()),
@@ -226,9 +228,10 @@ fn maybe_route_live_resources_to_worker(
     state: &AppState,
     rewritten: String,
     trusted_external_embed: bool,
+    private_session_bound: bool,
 ) -> String {
     let worker_base = state.config.live_hls_resource_worker_base.trim();
-    if worker_base.is_empty() || !trusted_external_embed {
+    if worker_base.is_empty() || !trusted_external_embed || private_session_bound {
         return rewritten;
     }
     let Some(first_input) = first_live_resource_input(&rewritten)
@@ -297,6 +300,12 @@ pub fn is_signed_live_hls_request(live_hls_proxy_secret: &str, uri: &Uri) -> boo
     {
         return false;
     }
+    // Private Real-Debrid chains deliberately retain session authentication
+    // for every child playlist and resource. Even a valid private signature is
+    // not an auth bypass; the handler also verifies the exact session binding.
+    if params.contains_key(LIVE_HLS_PRIVATE_SESSION_PARAM) {
+        return false;
+    }
     let Some(input) = params.get("input") else {
         return false;
     };
@@ -335,12 +344,14 @@ fn first_live_resource_input(playlist: &str) -> Option<String> {
 pub async fn live_hls_resource_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     uri: Uri,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    let live_request = live_hls_request_input(&state, &uri, LiveHlsRequestKind::Resource)?;
+    let live_request =
+        live_hls_request_input(&state, &headers, &uri, LiveHlsRequestKind::Resource)?;
     // VOD external-embed segments are immutable (the playlist rewriter tags them
     // with `vod=1`, outside the signature), so the browser and Cloudflare may cache
     // them. Live sports / unknown segments stay `no-store`.
@@ -349,11 +360,10 @@ pub async fn live_hls_resource_handler(
             .get("vod")
             .map(String::as_str)
             == Some("1");
-    let cache_control = if is_vod_segment {
-        "public, max-age=3600"
-    } else {
-        "no-store"
-    };
+    let cache_control = live_hls_resource_cache_control(
+        is_vod_segment,
+        live_request.private_session_binding.is_some(),
+    );
 
     // RD's Apple-HLS output is already H.264/AAC browser media. Its signed URLs
     // are IP-bound to the stable provider/WARP egress used by `http_client`, so
@@ -1147,13 +1157,53 @@ pub fn prune_live_proxy_statics() {
 /// resolve naturally produces a new key.
 fn live_hls_playlist_cache_key(live_request: &LiveHlsRequest) -> String {
     format!(
-        "{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}",
         live_request.source_url.as_str(),
         live_request.referer.as_deref().unwrap_or_default(),
         live_request.trusted_external_embed as u8,
         live_request.signature_expires_at.unwrap_or_default(),
         live_request.direct_segments as u8,
+        live_request
+            .private_session_binding
+            .as_deref()
+            .unwrap_or_default(),
     )
+}
+
+fn live_hls_playlist_cache_policy(
+    immutable: bool,
+    private_session_bound: bool,
+) -> (i64, &'static str) {
+    if private_session_bound {
+        (
+            if immutable {
+                LIVE_HLS_IMMUTABLE_PLAYLIST_CACHE_TTL_MS
+            } else {
+                LIVE_HLS_ROLLING_PLAYLIST_CACHE_TTL_MS
+            },
+            "private, no-store, max-age=0",
+        )
+    } else if immutable {
+        (
+            LIVE_HLS_IMMUTABLE_PLAYLIST_CACHE_TTL_MS,
+            "public, max-age=300",
+        )
+    } else {
+        (LIVE_HLS_ROLLING_PLAYLIST_CACHE_TTL_MS, "no-store")
+    }
+}
+
+fn live_hls_resource_cache_control(
+    is_vod_segment: bool,
+    private_session_bound: bool,
+) -> &'static str {
+    if private_session_bound {
+        "private, no-store, max-age=0"
+    } else if is_vod_segment {
+        "public, max-age=3600"
+    } else {
+        "no-store"
+    }
 }
 
 /// True when a playlist is safe to cache + mark publicly cacheable: a master
@@ -1528,6 +1578,7 @@ fn absolute_request_url(state: &AppState, uri: &Uri) -> AppResult<Url> {
 
 fn live_hls_request_input(
     state: &AppState,
+    headers: &HeaderMap,
     uri: &Uri,
     kind: LiveHlsRequestKind,
 ) -> AppResult<LiveHlsRequest> {
@@ -1554,6 +1605,24 @@ fn live_hls_request_input(
     );
     let trusted_external_embed = signature_authorization.is_some();
     let signature_expires_at = signature_authorization.flatten();
+    let private_session_binding = match params.get(LIVE_HLS_PRIVATE_SESSION_PARAM) {
+        Some(binding)
+            if trusted_external_embed
+                && verify_private_live_hls_session_binding(
+                    &state.config.live_hls_proxy_secret,
+                    headers,
+                    binding,
+                ) =>
+        {
+            Some(binding.clone())
+        }
+        Some(_) => {
+            return Err(ApiError::forbidden(
+                "Invalid private live HLS session binding.",
+            ));
+        }
+        None => None,
+    };
     if !is_allowed_live_hls_url(&source_url) && !trusted_external_embed {
         return Err(ApiError::bad_request("Unsupported live HLS URL."));
     }
@@ -1562,14 +1631,16 @@ fn live_hls_request_input(
     // skip the Mini's uplink. Default (and the proxied fallback URL) keep the
     // full Mini proxy behavior. Only ever reduces Mini involvement, never the
     // SSRF surface, so it doesn't need to be part of the signed payload.
-    let direct_segments =
-        trusted_external_embed && params.get("directSeg").map(String::as_str) == Some("1");
+    let direct_segments = trusted_external_embed
+        && private_session_binding.is_none()
+        && params.get("directSeg").map(String::as_str) == Some("1");
     Ok(LiveHlsRequest {
         source_url,
         referer,
         trusted_external_embed,
         signature_expires_at,
         direct_segments,
+        private_session_binding,
     })
 }
 
@@ -1667,6 +1738,45 @@ fn encode_query_value(value: &str) -> String {
     byte_serialize(value.as_bytes()).collect::<String>()
 }
 
+fn build_private_live_hls_session_binding(secret: &str, session_token: &str) -> Option<String> {
+    if secret.trim().is_empty() || session_token.trim().is_empty() {
+        return None;
+    }
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key size");
+    mac.update(LIVE_HLS_PRIVATE_SESSION_CONTEXT);
+    mac.update(b"\0");
+    mac.update(session_token.as_bytes());
+    Some(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+}
+
+fn verify_private_live_hls_session_binding(
+    secret: &str,
+    headers: &HeaderMap,
+    binding: &str,
+) -> bool {
+    if binding.len() != 43
+        || !binding
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return false;
+    }
+    let Some(session_token) = crate::auth::extract_session_token(headers) else {
+        return false;
+    };
+    let Ok(binding_bytes) = URL_SAFE_NO_PAD.decode(binding) else {
+        return false;
+    };
+    if binding_bytes.len() != 32 || URL_SAFE_NO_PAD.encode(&binding_bytes) != binding {
+        return false;
+    }
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key size");
+    mac.update(LIVE_HLS_PRIVATE_SESSION_CONTEXT);
+    mac.update(b"\0");
+    mac.update(session_token.as_bytes());
+    mac.verify_slice(&binding_bytes).is_ok()
+}
+
 pub fn build_trusted_external_embed_hls_playback_source(
     input: &str,
     referer: Option<&str>,
@@ -1679,8 +1789,28 @@ pub fn build_trusted_external_embed_hls_playback_source(
         Some(LiveHlsSigningContext {
             secret: live_hls_proxy_secret,
             expires_at,
+            private_session_binding: None,
         }),
     )
+}
+
+pub fn build_private_real_debrid_hls_playback_source(
+    input: &str,
+    live_hls_proxy_secret: &str,
+    session_token: &str,
+) -> Option<String> {
+    let private_session_binding =
+        build_private_live_hls_session_binding(live_hls_proxy_secret, session_token)?;
+    let expires_at = current_unix_seconds().saturating_add(LIVE_HLS_SIGNATURE_TTL_SECONDS);
+    Some(live_hls_proxy_playlist_url_with_trust(
+        input,
+        None,
+        Some(LiveHlsSigningContext {
+            secret: live_hls_proxy_secret,
+            expires_at,
+            private_session_binding: Some(&private_session_binding),
+        }),
+    ))
 }
 
 pub fn is_browser_bound_live_hls_upstream(url: &Url) -> bool {
@@ -2324,12 +2454,22 @@ fn live_hls_proxy_url_with_legacy_transition(
         url.push_str(&encode_query_value(referer));
     }
     if let Some(context) = signing_context.filter(|value| !value.secret.trim().is_empty()) {
-        let signature_v2 = sign_live_hls_proxy_url(
-            &input,
-            normalized_referer.as_deref(),
-            context.expires_at,
-            context.secret,
-        );
+        let signature_v2 = if let Some(private_session_binding) = context.private_session_binding {
+            sign_private_live_hls_proxy_url(
+                &input,
+                normalized_referer.as_deref(),
+                context.expires_at,
+                private_session_binding,
+                context.secret,
+            )
+        } else {
+            sign_live_hls_proxy_url(
+                &input,
+                normalized_referer.as_deref(),
+                context.expires_at,
+                context.secret,
+            )
+        };
         url.push('&');
         url.push_str(LIVE_HLS_EXTERNAL_EMBED_PARAM);
         url.push_str("=1&");
@@ -2339,7 +2479,7 @@ fn live_hls_proxy_url_with_legacy_transition(
         url.push('&');
         url.push_str(LIVE_HLS_SIGNATURE_PARAM);
         url.push('=');
-        if emit_legacy_signature {
+        if emit_legacy_signature && context.private_session_binding.is_none() {
             url.push_str(&encode_query_value(&sign_live_hls_proxy_url_v1(
                 &input,
                 normalized_referer.as_deref(),
@@ -2350,6 +2490,12 @@ fn live_hls_proxy_url_with_legacy_transition(
             url.push('=');
         }
         url.push_str(&encode_query_value(&signature_v2));
+        if let Some(private_session_binding) = context.private_session_binding {
+            url.push('&');
+            url.push_str(LIVE_HLS_PRIVATE_SESSION_PARAM);
+            url.push('=');
+            url.push_str(&encode_query_value(private_session_binding));
+        }
     }
     url
 }
@@ -2515,21 +2661,47 @@ fn authorize_live_hls_proxy_signature(
     now_seconds: i64,
     legacy_accept_until: Option<i64>,
 ) -> Option<Option<i64>> {
+    let private_session_binding = match params.get(LIVE_HLS_PRIVATE_SESSION_PARAM) {
+        Some(binding)
+            if binding.len() == 43
+                && binding
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')) =>
+        {
+            Some(binding.as_str())
+        }
+        Some(_) => return None,
+        None => None,
+    };
     if let Some(expiry) = params.get(LIVE_HLS_SIGNATURE_EXPIRY_PARAM) {
         let expires_at = parse_live_hls_signature_expiry(expiry, now_seconds)?;
         let signature = params
             .get(LIVE_HLS_SIGNATURE_V2_PARAM)
             .or_else(|| params.get(LIVE_HLS_SIGNATURE_PARAM))?;
-        return verify_live_hls_proxy_url_signature(
-            input,
-            referer,
-            expires_at,
-            signature,
-            live_hls_proxy_secret,
-        )
-        .then_some(Some(expires_at));
+        let valid = if let Some(private_session_binding) = private_session_binding {
+            verify_private_live_hls_proxy_url_signature(
+                input,
+                referer,
+                expires_at,
+                private_session_binding,
+                signature,
+                live_hls_proxy_secret,
+            )
+        } else {
+            verify_live_hls_proxy_url_signature(
+                input,
+                referer,
+                expires_at,
+                signature,
+                live_hls_proxy_secret,
+            )
+        };
+        return valid.then_some(Some(expires_at));
     }
 
+    if private_session_binding.is_some() {
+        return None;
+    }
     if !live_hls_legacy_signature_is_temporarily_allowed(legacy_accept_until, now_seconds) {
         return None;
     }
@@ -2548,6 +2720,7 @@ fn sign_live_hls_proxy_url_v1(
         input,
         referer,
         None,
+        None,
         live_hls_proxy_secret,
     )
 }
@@ -2563,6 +2736,24 @@ fn sign_live_hls_proxy_url(
         input,
         referer,
         Some(expires_at),
+        None,
+        live_hls_proxy_secret,
+    )
+}
+
+fn sign_private_live_hls_proxy_url(
+    input: &str,
+    referer: Option<&str>,
+    expires_at: i64,
+    private_session_binding: &str,
+    live_hls_proxy_secret: &str,
+) -> String {
+    sign_live_hls_proxy_url_with_context(
+        LIVE_HLS_SIGNATURE_CONTEXT_PRIVATE_V1,
+        input,
+        referer,
+        Some(expires_at),
+        Some(private_session_binding),
         live_hls_proxy_secret,
     )
 }
@@ -2572,6 +2763,7 @@ fn sign_live_hls_proxy_url_with_context(
     input: &str,
     referer: Option<&str>,
     expires_at: Option<i64>,
+    private_session_binding: Option<&str>,
     live_hls_proxy_secret: &str,
 ) -> String {
     let mut mac = HmacSha256::new_from_slice(live_hls_proxy_secret.as_bytes())
@@ -2584,6 +2776,10 @@ fn sign_live_hls_proxy_url_with_context(
     if let Some(expires_at) = expires_at {
         mac.update(b"\0");
         mac.update(expires_at.to_string().as_bytes());
+    }
+    if let Some(private_session_binding) = private_session_binding {
+        mac.update(b"\0");
+        mac.update(private_session_binding.as_bytes());
     }
     URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
@@ -2598,6 +2794,7 @@ fn verify_live_hls_proxy_url_signature_v1(
         LIVE_HLS_SIGNATURE_CONTEXT_V1,
         input,
         referer,
+        None,
         None,
         signature,
         live_hls_proxy_secret,
@@ -2616,6 +2813,26 @@ fn verify_live_hls_proxy_url_signature(
         input,
         referer,
         Some(expires_at),
+        None,
+        signature,
+        live_hls_proxy_secret,
+    )
+}
+
+fn verify_private_live_hls_proxy_url_signature(
+    input: &str,
+    referer: Option<&str>,
+    expires_at: i64,
+    private_session_binding: &str,
+    signature: &str,
+    live_hls_proxy_secret: &str,
+) -> bool {
+    verify_live_hls_proxy_url_signature_with_context(
+        LIVE_HLS_SIGNATURE_CONTEXT_PRIVATE_V1,
+        input,
+        referer,
+        Some(expires_at),
+        Some(private_session_binding),
         signature,
         live_hls_proxy_secret,
     )
@@ -2626,6 +2843,7 @@ fn verify_live_hls_proxy_url_signature_with_context(
     input: &str,
     referer: Option<&str>,
     expires_at: Option<i64>,
+    private_session_binding: Option<&str>,
     signature: &str,
     live_hls_proxy_secret: &str,
 ) -> bool {
@@ -2642,6 +2860,10 @@ fn verify_live_hls_proxy_url_signature_with_context(
     if let Some(expires_at) = expires_at {
         mac.update(b"\0");
         mac.update(expires_at.to_string().as_bytes());
+    }
+    if let Some(private_session_binding) = private_session_binding {
+        mac.update(b"\0");
+        mac.update(private_session_binding.as_bytes());
     }
     mac.verify_slice(&signature_bytes).is_ok()
 }
@@ -3412,6 +3634,144 @@ mod tests {
     }
 
     #[test]
+    fn private_real_debrid_hls_chain_stays_session_bound_and_private() {
+        let secret = "test-live-hls-proxy-secret-with-enough-length";
+        let session_token = "session-token-that-must-never-appear-in-a-url";
+        let upstream = "https://3.stream.real-debrid.com/t/download/audio/none/aac/full.m3u8";
+        let source =
+            super::build_private_real_debrid_hls_playback_source(upstream, secret, session_token)
+                .expect("private source");
+        let uri: axum::http::Uri = source.parse().expect("private source uri");
+        let params = query_pairs(uri.query().expect("private source query"));
+        let binding = params
+            .get(super::LIVE_HLS_PRIVATE_SESSION_PARAM)
+            .expect("private session binding");
+        let expires_at = params
+            .get(super::LIVE_HLS_SIGNATURE_EXPIRY_PARAM)
+            .and_then(|value| value.parse::<i64>().ok())
+            .expect("private expiry");
+
+        assert!(!source.contains(session_token));
+        assert!(!super::is_signed_live_hls_request(secret, &uri));
+        assert_eq!(
+            super::authorize_live_hls_proxy_signature(
+                upstream,
+                None,
+                &params,
+                secret,
+                super::current_unix_seconds(),
+                None,
+            ),
+            Some(Some(expires_at))
+        );
+
+        let mut correct_headers = axum::http::HeaderMap::new();
+        correct_headers.insert(
+            "cookie",
+            format!("session={session_token}").parse().expect("cookie"),
+        );
+        let mut wrong_headers = axum::http::HeaderMap::new();
+        wrong_headers.insert(
+            "cookie",
+            "session=a-different-session".parse().expect("cookie"),
+        );
+        assert!(super::verify_private_live_hls_session_binding(
+            secret,
+            &correct_headers,
+            binding,
+        ));
+        assert!(!super::verify_private_live_hls_session_binding(
+            secret,
+            &wrong_headers,
+            binding,
+        ));
+        assert!(!super::verify_private_live_hls_session_binding(
+            secret,
+            &axum::http::HeaderMap::new(),
+            binding,
+        ));
+
+        // Removing or changing the session marker cannot downgrade a private
+        // signature into the public auth-bypass contract.
+        let mut downgraded = params.clone();
+        downgraded.remove(super::LIVE_HLS_PRIVATE_SESSION_PARAM);
+        assert!(
+            super::authorize_live_hls_proxy_signature(
+                upstream,
+                None,
+                &downgraded,
+                secret,
+                super::current_unix_seconds(),
+                None,
+            )
+            .is_none()
+        );
+        let mut tampered = params.clone();
+        tampered.insert(
+            super::LIVE_HLS_PRIVATE_SESSION_PARAM.to_owned(),
+            "A".repeat(43),
+        );
+        assert!(
+            super::authorize_live_hls_proxy_signature(
+                upstream,
+                None,
+                &tampered,
+                secret,
+                super::current_unix_seconds(),
+                None,
+            )
+            .is_none()
+        );
+
+        let signing_context = Some(super::LiveHlsSigningContext {
+            secret,
+            expires_at,
+            private_session_binding: Some(binding),
+        });
+        let base = url::Url::parse(upstream).expect("upstream URL");
+        let master = rewrite_live_hls_playlist(
+            &base,
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\n720/index.m3u8\n",
+            None,
+            signing_context,
+            false,
+        );
+        let media = rewrite_live_hls_playlist(
+            &base,
+            "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n#EXTINF:4.0,\nseg-1.ts\n#EXT-X-ENDLIST\n",
+            None,
+            signing_context,
+            false,
+        );
+        for child in master
+            .lines()
+            .chain(media.lines())
+            .filter(|line| line.starts_with("/api/live/hls"))
+        {
+            assert!(child.contains("privateSession="), "unbound child: {child}");
+            assert!(!child.contains(session_token));
+            let child_uri: axum::http::Uri = child.parse().expect("child uri");
+            assert!(
+                !super::is_signed_live_hls_request(secret, &child_uri),
+                "private child bypassed auth: {child}"
+            );
+        }
+
+        assert_eq!(
+            super::live_hls_playlist_cache_policy(true, true).1,
+            "private, no-store, max-age=0"
+        );
+        assert_eq!(
+            super::live_hls_playlist_cache_policy(false, true).1,
+            "private, no-store, max-age=0"
+        );
+        assert_eq!(
+            super::live_hls_resource_cache_control(true, true),
+            "private, no-store, max-age=0"
+        );
+    }
+
+    #[test]
     fn routes_signed_live_playlists_to_worker_base() {
         let signed =
             "/api/live/hls.m3u8?input=https%3A%2F%2Fcdn%2Flive.m3u8&externalEmbed=1&sig=abc";
@@ -3462,7 +3822,11 @@ mod tests {
                 "/api/live/hls.m3u8",
                 input,
                 referer,
-                Some(super::LiveHlsSigningContext { secret, expires_at }),
+                Some(super::LiveHlsSigningContext {
+                    secret,
+                    expires_at,
+                    private_session_binding: None,
+                }),
                 emit_legacy_signature,
             );
             query_pairs(url.split_once('?').expect("signed query").1)
@@ -3992,6 +4356,7 @@ mod tests {
             Some(super::LiveHlsSigningContext {
                 secret: "test-live-hls-proxy-secret-with-enough-length",
                 expires_at: 1_900_000_000,
+                private_session_binding: None,
             }),
             false,
         );
@@ -4045,6 +4410,7 @@ mod tests {
             Some(super::LiveHlsSigningContext {
                 secret,
                 expires_at: 1_900_000_000,
+                private_session_binding: None,
             }),
             false,
         );
@@ -4263,6 +4629,7 @@ https://other.example.net/seg-2.ts\n#EXT-X-ENDLIST\n";
         let signing_context = Some(super::LiveHlsSigningContext {
             secret: "test-live-hls-proxy-secret-with-enough-length",
             expires_at: 1_900_000_000,
+            private_session_binding: None,
         });
 
         // directSeg ON: tiktokcdn segment stays direct, the other is proxied.

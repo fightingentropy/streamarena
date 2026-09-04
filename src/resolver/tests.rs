@@ -12,11 +12,12 @@ use super::finalize_external_embed_payload;
 use super::race_staggered_first_success;
 use super::{
     BoxResolverAttempt, CachedResolvedEmbed, EXTERNAL_EMBED_HEDGE_STAGGER_MS,
-    FASTEST_PROVIDER_HEDGE_STAGGER, RealDebridValidationControl, ResolvedEmbedCache,
-    acquire_owned_real_debrid_torrent_lease, cache_reuse_provider_for_context,
-    complete_real_debrid_attempt_with_lease, compute_external_embed_provider_rank_health_score,
-    external_embed_resolve_cache_key, race_staggered_resolver_attempts,
-    record_external_embed_health_event_if_enabled,
+    FASTEST_PROVIDER_HEDGE_STAGGER, RealDebridRequestContext, RealDebridValidationControl,
+    ResolvedEmbedCache, acquire_owned_real_debrid_torrent_lease,
+    authorize_real_debrid_lazy_hls_ticket, build_real_debrid_lazy_hls_playback_source_at,
+    cache_reuse_provider_for_context, complete_real_debrid_attempt_with_lease,
+    compute_external_embed_provider_rank_health_score, external_embed_resolve_cache_key,
+    race_staggered_resolver_attempts, record_external_embed_health_event_if_enabled,
 };
 use super::{
     DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, ExternalEmbedSource,
@@ -46,17 +47,19 @@ use super::{
     normalize_source_audio_profile_filter, normalize_source_hash, now_ms,
     parse_ready_real_debrid_hashes, parse_ready_real_debrid_torrents,
     parse_runtime_from_label_seconds, parse_seed_count, parse_size_label_bytes,
-    parse_torrentio_streams_payload, parse_torznab_xml, playback_session_key_allowed_for_user,
-    playback_session_matches_preferred_container, playback_session_matches_preferred_quality,
-    playback_session_matches_source_hash, prefer_mp4_default_candidates,
-    prioritize_local_torrent_first_wave, proxy_real_debrid_hls_for_browser,
-    ready_info_has_selected_file_id, real_debrid_apple_transcode_url, score_stream_episode_match,
-    select_resolved_track_indexes, select_top_episode_candidates, select_top_movie_candidates,
-    should_allow_latest_playback_session_fallback, should_prefer_default_external_embed,
-    should_prefer_software_decode_source, should_resolve_torrent_candidates,
-    should_skip_playback_session_reuse, sort_movie_candidates, stream_list_contains_hash,
-    stremio_addon_stream_url, summarize_stream_candidate_for_client, torrent_playback_enabled,
-    torznab_download_url_allowed, user_facing_real_debrid_error, validate_real_debrid_user_payload,
+    parse_strict_real_debrid_lazy_hls_query, parse_torrentio_streams_payload, parse_torznab_xml,
+    playback_session_key_allowed_for_user, playback_session_matches_preferred_container,
+    playback_session_matches_preferred_quality, playback_session_matches_source_hash,
+    prefer_mp4_default_candidates, prioritize_local_torrent_first_wave,
+    proxy_real_debrid_hls_for_browser, ready_info_has_selected_file_id,
+    real_debrid_apple_transcode_url, refresh_real_debrid_lazy_hls_fallbacks,
+    score_stream_episode_match, select_resolved_track_indexes, select_top_episode_candidates,
+    select_top_movie_candidates, should_allow_latest_playback_session_fallback,
+    should_prefer_default_external_embed, should_prefer_software_decode_source,
+    should_resolve_torrent_candidates, should_skip_playback_session_reuse, sort_movie_candidates,
+    stream_list_contains_hash, stremio_addon_stream_url, summarize_stream_candidate_for_client,
+    torrent_playback_enabled, torznab_download_url_allowed, user_facing_real_debrid_error,
+    validate_real_debrid_user_payload,
 };
 
 use std::sync::Mutex as StdMutex;
@@ -1675,6 +1678,143 @@ fn real_debrid_remote_traffic_is_explicit_on_unrestrict_requests() {
     );
 }
 
+fn real_debrid_lazy_hls_ticket_input(playback_url: &str) -> String {
+    let url =
+        url::Url::parse(&format!("http://localhost{playback_url}")).expect("lazy HLS playback URL");
+    assert_eq!(url.path(), "/api/hls/master.m3u8");
+    let pairs = url.query_pairs().collect::<Vec<_>>();
+    assert_eq!(pairs.len(), 1, "ticket URL must expose only input");
+    assert_eq!(pairs[0].0, "input");
+    pairs[0].1.to_string()
+}
+
+#[test]
+fn real_debrid_lazy_hls_ticket_is_owner_credential_delivery_and_expiry_bound() {
+    const NOW: i64 = 1_800_000_000;
+    const SECRET: &str = "test-live-hls-secret-with-enough-entropy";
+    const TOKEN: &str = "private-real-debrid-token-aaaaaaaa";
+    let owner =
+        RealDebridRequestContext::for_user_with_delivery(42, TOKEN, true).expect("owner context");
+    let playback_url =
+        build_real_debrid_lazy_hls_playback_source_at("abc123XYZ", true, &owner, SECRET, NOW)
+            .expect("remote streamable fallback");
+    let ticket = real_debrid_lazy_hls_ticket_input(&playback_url);
+
+    let authorized = authorize_real_debrid_lazy_hls_ticket(&ticket, &owner, SECRET, NOW)
+        .expect("fresh owner-bound ticket");
+    assert_eq!(authorized.download_id, "abc123XYZ");
+    assert_eq!(authorized.expires_at, NOW + 600);
+    assert!(!playback_url.contains(TOKEN));
+    assert!(!playback_url.contains(&owner.cache_scope));
+
+    let other_user = RealDebridRequestContext::for_user_with_delivery(43, TOKEN, true)
+        .expect("other user context");
+    let other_token = RealDebridRequestContext::for_user_with_delivery(
+        42,
+        "private-real-debrid-token-bbbbbbbb",
+        true,
+    )
+    .expect("rotated token context");
+    let direct_delivery =
+        RealDebridRequestContext::for_user_with_delivery(42, TOKEN, false).expect("direct context");
+    assert!(authorize_real_debrid_lazy_hls_ticket(&ticket, &other_user, SECRET, NOW).is_none());
+    assert!(authorize_real_debrid_lazy_hls_ticket(&ticket, &other_token, SECRET, NOW).is_none());
+    assert!(
+        authorize_real_debrid_lazy_hls_ticket(&ticket, &direct_delivery, SECRET, NOW).is_none()
+    );
+    assert!(authorize_real_debrid_lazy_hls_ticket(&ticket, &owner, SECRET, NOW + 600).is_none());
+    assert!(
+        authorize_real_debrid_lazy_hls_ticket(&ticket, &owner, SECRET, NOW - 6).is_none(),
+        "tickets beyond the bounded future window must fail"
+    );
+}
+
+#[test]
+fn real_debrid_lazy_hls_ticket_rejects_tampering_and_nonstreamable_modes() {
+    const NOW: i64 = 1_800_000_000;
+    const SECRET: &str = "test-live-hls-secret-with-enough-entropy";
+    let remote = RealDebridRequestContext::for_user_with_delivery(
+        42,
+        "private-real-debrid-token-aaaaaaaa",
+        true,
+    )
+    .expect("remote context");
+    let direct = RealDebridRequestContext::for_user_with_delivery(
+        42,
+        "private-real-debrid-token-aaaaaaaa",
+        false,
+    )
+    .expect("direct context");
+    assert!(
+        build_real_debrid_lazy_hls_playback_source_at("abc123", false, &remote, SECRET, NOW)
+            .is_none()
+    );
+    assert!(
+        build_real_debrid_lazy_hls_playback_source_at("abc123", true, &direct, SECRET, NOW)
+            .is_none()
+    );
+    assert!(
+        build_real_debrid_lazy_hls_playback_source_at("bad-id", true, &remote, SECRET, NOW)
+            .is_none()
+    );
+    assert!(
+        build_real_debrid_lazy_hls_playback_source_at(&"a".repeat(65), true, &remote, SECRET, NOW,)
+            .is_none()
+    );
+
+    let playback_url =
+        build_real_debrid_lazy_hls_playback_source_at("abc123", true, &remote, SECRET, NOW)
+            .expect("ticket");
+    let ticket = real_debrid_lazy_hls_ticket_input(&playback_url);
+    let query = playback_url.split_once('?').expect("ticket query").1;
+    assert_eq!(
+        parse_strict_real_debrid_lazy_hls_query(query).as_deref(),
+        Some(ticket.as_str())
+    );
+    assert!(parse_strict_real_debrid_lazy_hls_query(&format!("{query}&audioStream=1")).is_none());
+    assert!(
+        parse_strict_real_debrid_lazy_hls_query(&format!("{query}&{query}")).is_none(),
+        "duplicate inputs must fail closed"
+    );
+    let tampered_id = ticket.replacen("abc123", "abc124", 1);
+    assert!(authorize_real_debrid_lazy_hls_ticket(&tampered_id, &remote, SECRET, NOW).is_none());
+    let mut tampered_signature = ticket.clone();
+    let replacement = if tampered_signature.ends_with('A') {
+        "B"
+    } else {
+        "A"
+    };
+    tampered_signature.pop();
+    tampered_signature.push_str(replacement);
+    assert!(
+        authorize_real_debrid_lazy_hls_ticket(&tampered_signature, &remote, SECRET, NOW).is_none()
+    );
+    assert!(
+        authorize_real_debrid_lazy_hls_ticket(
+            "streamarena-rd-hls-v1.abc123.01800000600.invalid",
+            &remote,
+            SECRET,
+            NOW,
+        )
+        .is_none(),
+        "non-canonical expiry and signature must fail"
+    );
+}
+
+#[test]
+fn real_debrid_hot_unrestrict_path_never_calls_transcode_eagerly() {
+    let source = include_str!("real_debrid.rs");
+    let hot_body = source
+        .split("async fn resolve_playable_url_from_rd_link")
+        .nth(1)
+        .expect("hot unrestrict body")
+        .split("async fn resolve_real_debrid_lazy_hls_fallback")
+        .next()
+        .expect("lazy fallback boundary");
+    assert!(hot_body.contains("/unrestrict/link"));
+    assert!(!hot_body.contains("/streaming/transcode/"));
+}
+
 #[test]
 fn real_debrid_playback_does_not_repeat_the_background_account_list_request() {
     let source = include_str!("real_debrid.rs");
@@ -2200,6 +2340,104 @@ fn real_debrid_transcode_hls_stays_direct_with_safe_remux_recovery() {
     assert_eq!(normalized.fallback_urls.len(), 1);
     assert!(normalized.fallback_urls[0].starts_with("/api/remux?input="));
     assert!(!normalized.fallback_urls.iter().any(|url| url == download));
+}
+
+#[test]
+fn real_debrid_lazy_hls_survives_normalization_behind_download_or_remux() {
+    const NOW: i64 = 1_800_000_000;
+    let real_debrid = RealDebridRequestContext::for_user_with_delivery(
+        42,
+        "private-real-debrid-token-aaaaaaaa",
+        true,
+    )
+    .expect("remote context");
+    let lazy_hls = build_real_debrid_lazy_hls_playback_source_at(
+        "abc123",
+        true,
+        &real_debrid,
+        "test-live-hls-secret-with-enough-entropy",
+        NOW,
+    )
+    .expect("lazy HLS fallback");
+    let download = "https://126-4.download.real-debrid.com/path/Parasite.2019.mkv";
+    let normalized = normalize_resolved_source_for_software_decode(
+        &ResolvedSource {
+            playable_url: download.to_owned(),
+            fallback_urls: vec![lazy_hls.clone()],
+            filename: "Parasite.2019.mkv".to_owned(),
+            ..ResolvedSource::default()
+        },
+        -1,
+        -1,
+    );
+    assert!(normalized.playable_url.starts_with("/api/remux?input="));
+    assert_eq!(normalized.fallback_urls, vec![lazy_hls.clone()]);
+
+    let mp4_download = "https://126-4.download.real-debrid.com/path/Movie.2026.mp4";
+    let direct = normalize_resolved_source_for_software_decode(
+        &ResolvedSource {
+            playable_url: mp4_download.to_owned(),
+            fallback_urls: vec![lazy_hls.clone()],
+            filename: "Movie.2026.mp4".to_owned(),
+            ..ResolvedSource::default()
+        },
+        -1,
+        -1,
+    );
+    assert_eq!(direct.playable_url, mp4_download);
+    assert!(direct.fallback_urls[0].starts_with("/api/remux?input="));
+    assert_eq!(direct.fallback_urls[1], lazy_hls);
+}
+
+#[test]
+fn real_debrid_persisted_lazy_ticket_is_resigned_but_legacy_hls_is_preserved() {
+    const OLD_NOW: i64 = 1_800_000_000;
+    const SECRET: &str = "test-live-hls-secret-with-enough-entropy";
+    let real_debrid = RealDebridRequestContext::for_user_with_delivery(
+        42,
+        "private-real-debrid-token-aaaaaaaa",
+        true,
+    )
+    .expect("remote context");
+    let expired = build_real_debrid_lazy_hls_playback_source_at(
+        "abc123",
+        true,
+        &real_debrid,
+        SECRET,
+        OLD_NOW,
+    )
+    .expect("old lazy ticket");
+    let refreshed = refresh_real_debrid_lazy_hls_fallbacks(
+        &ResolvedSource {
+            playable_url: "https://126-4.download.real-debrid.com/path/Movie.2026.mp4".to_owned(),
+            fallback_urls: vec![expired.clone()],
+            ..ResolvedSource::default()
+        },
+        Some(&real_debrid),
+        SECRET,
+    );
+    assert_ne!(refreshed.fallback_urls[0], expired);
+    let fresh_ticket = real_debrid_lazy_hls_ticket_input(&refreshed.fallback_urls[0]);
+    assert!(
+        authorize_real_debrid_lazy_hls_ticket(
+            &fresh_ticket,
+            &real_debrid,
+            SECRET,
+            now_ms().div_euclid(1_000),
+        )
+        .is_some()
+    );
+
+    let legacy_hls = "https://3.stream.real-debrid.com/t/download/audio/none/aac/full.m3u8";
+    let legacy = refresh_real_debrid_lazy_hls_fallbacks(
+        &ResolvedSource {
+            playable_url: legacy_hls.to_owned(),
+            ..ResolvedSource::default()
+        },
+        Some(&real_debrid),
+        SECRET,
+    );
+    assert_eq!(legacy.playable_url, legacy_hls);
 }
 
 #[test]

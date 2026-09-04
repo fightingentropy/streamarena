@@ -198,6 +198,17 @@ fn apply_security_headers(headers: &mut HeaderMap, include_hsts: bool) {
     }
 }
 
+fn apply_private_no_store(headers: &mut HeaderMap) {
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store, max-age=0"),
+    );
+    headers.insert(
+        axum::http::header::PRAGMA,
+        HeaderValue::from_static("no-cache"),
+    );
+}
+
 async fn security_headers_middleware(
     State(state): State<AppState>,
     request: Request<Body>,
@@ -2169,15 +2180,41 @@ pub async fn download_export_handler(
 pub async fn hls_master_handler(
     State(state): State<AppState>,
     method: Method,
+    headers: HeaderMap,
     uri: Uri,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    let params = query_pairs(uri.query().unwrap_or_default());
+    let query = uri.query().unwrap_or_default();
+    let params = query_pairs(query);
     let input = params.get("input").cloned().unwrap_or_default();
     if input.trim().is_empty() {
         return Err(ApiError::bad_request("Missing input query parameter."));
+    }
+    if crate::resolver::is_real_debrid_lazy_hls_input(&input) {
+        // This route is already behind the API auth middleware, but obtain the
+        // concrete owner again here because the ticket signature is bound to
+        // that user and their current encrypted credential. A copied ticket,
+        // token rotation, disabling Remote Traffic, or adding query params all
+        // fail before the provider API is touched.
+        let user = auth::require_auth(&state.db, &headers).await?;
+        let session_token = auth::extract_session_token(&headers)
+            .ok_or_else(|| ApiError::unauthorized("Not authenticated."))?;
+        let api_key = real_debrid_api_key_for_user(&state, user.id).await?;
+        let relay_url = state
+            .resolver
+            .resolve_real_debrid_lazy_hls_fallback(query, user.id, &api_key, &session_token)
+            .await?;
+        let relay_uri = relay_url
+            .parse::<Uri>()
+            .map_err(|_| ApiError::internal("Real-Debrid HLS fallback route is invalid."))?;
+        let mut response = live_hls_handler(State(state), Method::GET, headers, relay_uri).await?;
+        // The internal live-HLS cache can still coalesce the provider playlist,
+        // but this authenticated outer response must never be stored by a
+        // browser, service worker, reverse proxy, or shared CDN.
+        apply_private_no_store(response.headers_mut());
+        return Ok(response);
     }
     let audio_stream_index = params
         .get("audioStream")
@@ -4223,15 +4260,15 @@ impl StringExt for String {
 mod tests {
     use super::{
         RESOLVE_JOB_INLINE_WAIT_MS, USER_IDENTITY_MAX_BYTES, USER_SYNC_MAX_ENTRIES,
-        absolute_request_url_with_authority, apply_security_headers, build_playback_session_key,
-        effective_real_debrid_enabled, find_episode_pattern, is_valid_email,
-        is_valid_real_debrid_api_key, manifest_is_stream_addon, mask_real_debrid_api_key,
-        normalize_bool_json_value, normalize_custom_addon_base, normalize_preferred_audio_lang,
-        normalize_subtitle_preference, normalize_sync_continue_watching_entries,
-        normalize_sync_watch_progress_entries, normalize_user_updated_at, now_ms,
-        plan_real_debrid_update, provider_slugify, query_flag_enabled,
-        resolve_job_method_supported, resolve_job_registration_payload, resolve_job_wait_ms,
-        sanitize_my_list_entries, signup_admin_status,
+        absolute_request_url_with_authority, apply_private_no_store, apply_security_headers,
+        build_playback_session_key, effective_real_debrid_enabled, find_episode_pattern,
+        is_valid_email, is_valid_real_debrid_api_key, manifest_is_stream_addon,
+        mask_real_debrid_api_key, normalize_bool_json_value, normalize_custom_addon_base,
+        normalize_preferred_audio_lang, normalize_subtitle_preference,
+        normalize_sync_continue_watching_entries, normalize_sync_watch_progress_entries,
+        normalize_user_updated_at, now_ms, plan_real_debrid_update, provider_slugify,
+        query_flag_enabled, resolve_job_method_supported, resolve_job_registration_payload,
+        resolve_job_wait_ms, sanitize_my_list_entries, signup_admin_status,
     };
     use std::time::Duration;
 
@@ -4260,6 +4297,28 @@ mod tests {
         // Blank/empty header yields None so the caller falls back to the peer IP.
         assert_eq!(super::parse_forwarded_for(""), None);
         assert_eq!(super::parse_forwarded_for("   "), None);
+    }
+
+    #[test]
+    fn authenticated_hls_fallback_is_private_and_not_cacheable() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=300"),
+        );
+        apply_private_no_store(&mut headers);
+        assert_eq!(
+            headers
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("private, no-store, max-age=0")
+        );
+        assert_eq!(
+            headers
+                .get(axum::http::header::PRAGMA)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
     }
 
     #[test]

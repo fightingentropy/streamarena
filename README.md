@@ -454,12 +454,21 @@ SHA-256 credential fingerprint (never returned or logged), and replacing or
 clearing a token invalidates that user's Real-Debrid playback sessions.
 
 On a VPS/cloud deployment with `REAL_DEBRID_REMOTE_TRAFFIC=1`, unrestrict calls
-use paid Remote Traffic and StreamArena prefers Real-Debrid's CORS-enabled Apple
-HLS output. That path delivers browser-ready H.264/AAC directly to the viewer
-without relaying the movie through StreamArena's ffmpeg process. The original
-download URL remains available as a direct or server-remux fallback. Delivery
-mode is part of the private playback-session scope, so switching the flag cannot
-reuse an IP-bound URL produced by the other mode.
+use paid Remote Traffic. The unrestricted download URL (direct when the
+container is browser-safe, otherwise server remux) stays on the startup path;
+StreamArena does not wait for Real-Debrid's transcoding API before returning the
+resolve. Streamable files also receive a short-lived, authenticated HLS fallback
+ticket. Only if the player reaches that fallback does the server request
+Real-Debrid's Apple HLS output and pass it through the existing signed byte
+relay; neither the API token nor the raw HLS URL is exposed in the resolve
+payload. The ticket is bound to the user, credential, expiry, and delivery mode;
+every rewritten child playlist and resource remains bound to the exact browser
+session and is served `private, no-store`. Identical retries are coalesced and
+cached briefly, while distinct provider calls are globally and per-user bounded
+to protect the provider quota. Existing playback sessions containing the
+earlier raw-HLS form remain compatible. Delivery mode is also part of the
+private playback-session scope, so switching the flag cannot reuse an IP-bound
+URL produced by the other mode.
 
 Real-Debrid tokens are encrypted at rest with AES-256-GCM. Configure an
 operator-managed key ring before a user saves a token:
