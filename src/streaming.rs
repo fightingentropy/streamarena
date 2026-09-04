@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
 use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
@@ -41,6 +41,15 @@ const FFMPEG_STDERR_MAX_LINES: usize = 80;
 const FFMPEG_STDERR_MAX_BYTES: usize = 16 * 1024;
 const REMUX_STREAM_BUFFER_BYTES: usize = 256 * 1024;
 const HLS_CACHE_SCHEMA_VERSION: &str = "hls-v7";
+
+#[derive(Debug, Clone, Copy)]
+struct RemuxResponseTimings {
+    queue_wait: Duration,
+    media_probe: Option<Duration>,
+    codec_setup: Duration,
+    ffmpeg_spawn: Duration,
+    response_total: Duration,
+}
 
 // Cap transcoded HLS output to 720p. The origin serves from a residential upload
 // (~33 Mbps), so 720p (~2.8 Mbps) roughly doubles how many viewers fit vs 1080p
@@ -360,7 +369,9 @@ impl StreamingService {
         preferred_video_mode: &str,
         browser_video_codecs: &str,
     ) -> AppResult<Response<Body>> {
+        let response_started_at = Instant::now();
         let source = self.media.resolve_remux_input(input).await?;
+        let queue_started_at = Instant::now();
         let permit = match timeout(
             Duration::from_millis(self.config.remux_queue_timeout_ms),
             self.remux_permits.clone().acquire_owned(),
@@ -378,6 +389,7 @@ impl StreamingService {
                 ));
             }
         };
+        let queue_wait = queue_started_at.elapsed();
         let job_id = self.remux_next_job_id.fetch_add(1, Ordering::Relaxed);
         let guard = RemuxStreamGuard::new(
             self.remux_metrics.clone(),
@@ -421,10 +433,12 @@ impl StreamingService {
         };
 
         let should_probe = self.config.auto_audio_sync_enabled || requested_video_mode == "auto";
-        let probe = if should_probe {
-            self.media.probe_media_tracks(&source).await.ok()
+        let (probe, media_probe) = if should_probe {
+            let probe_started_at = Instant::now();
+            let probe = self.media.probe_media_tracks(&source).await.ok();
+            (probe, Some(probe_started_at.elapsed()))
         } else {
-            None
+            (None, None)
         };
 
         let mut effective_audio_stream_index = safe_audio_stream_index;
@@ -469,6 +483,7 @@ impl StreamingService {
         ) {
             resolved_video_mode = "normalize".to_owned();
         }
+        let codec_setup_started_at = Instant::now();
         let resolved_video_codec = probe
             .as_ref()
             .map(|probe| canonical_remux_video_codec(&probe.videoCodec))
@@ -485,6 +500,7 @@ impl StreamingService {
             remux_video_encode_config =
                 build_remux_video_encode_config(&effective_remux_hwaccel_mode);
         }
+        let codec_setup = codec_setup_started_at.elapsed();
 
         let mut auto_audio_delay_ms = 0_i64;
         if self.config.auto_audio_sync_enabled
@@ -657,7 +673,10 @@ impl StreamingService {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = match command.spawn() {
+        let ffmpeg_spawn_started_at = Instant::now();
+        let child_result = command.spawn();
+        let ffmpeg_spawn = ffmpeg_spawn_started_at.elapsed();
+        let mut child = match child_result {
             Ok(child) => child,
             Err(error) => {
                 let mut guard = guard;
@@ -731,10 +750,22 @@ impl StreamingService {
             },
         );
 
+        // The first stdout read occurs only when Axum polls the response body, after
+        // headers have already been constructed, so Server-Timing intentionally stops
+        // at process spawn/response preparation instead of fabricating a first-byte time.
+        let server_timing = format_remux_server_timing(RemuxResponseTimings {
+            queue_wait,
+            media_probe,
+            codec_setup,
+            ffmpeg_spawn,
+            response_total: response_started_at.elapsed(),
+        });
+
         Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "video/mp4")
             .header(CACHE_CONTROL, "no-store")
+            .header("Server-Timing", server_timing)
             .header("X-Audio-Shift-Ms", total_audio_sync_ms.to_string())
             .header("X-Audio-Delay-Ms", total_audio_sync_ms.max(0).to_string())
             .header(
@@ -1634,6 +1665,33 @@ impl StreamingService {
     }
 }
 
+fn format_server_timing_metric(name: &str, duration: Duration) -> String {
+    format!("{name};dur={:.3}", duration.as_secs_f64() * 1_000.0)
+}
+
+fn format_remux_server_timing(timings: RemuxResponseTimings) -> String {
+    let mut metrics = vec![format_server_timing_metric(
+        "remux-queue",
+        timings.queue_wait,
+    )];
+    if let Some(media_probe) = timings.media_probe {
+        metrics.push(format_server_timing_metric("remux-probe", media_probe));
+    }
+    metrics.push(format_server_timing_metric(
+        "remux-codec-setup",
+        timings.codec_setup,
+    ));
+    metrics.push(format_server_timing_metric(
+        "remux-ffmpeg-spawn",
+        timings.ffmpeg_spawn,
+    ));
+    metrics.push(format_server_timing_metric(
+        "remux-response",
+        timings.response_total,
+    ));
+    metrics.join(", ")
+}
+
 fn normalize_remux_video_mode(value: &str) -> String {
     match value.trim().to_lowercase().as_str() {
         "" | "auto" | "default" => "auto".to_owned(),
@@ -2440,14 +2498,51 @@ fn spawn_bounded_ffmpeg_stderr_logger(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use axum::http::HeaderValue;
+
     use crate::media::{AudioTrack, MediaProbe};
 
     use super::{
-        build_hls_on_demand_segment_args, build_hls_transcode_args, build_hls_transcode_job_key,
-        build_hls_video_encode_config, build_remux_video_copy_args, export_download_filename,
-        normalize_remux_video_mode, resolve_auto_remux_video_mode,
-        should_force_accurate_seek_for_remux,
+        RemuxResponseTimings, build_hls_on_demand_segment_args, build_hls_transcode_args,
+        build_hls_transcode_job_key, build_hls_video_encode_config, build_remux_video_copy_args,
+        export_download_filename, format_remux_server_timing, normalize_remux_video_mode,
+        resolve_auto_remux_video_mode, should_force_accurate_seek_for_remux,
     };
+
+    #[test]
+    fn formats_privacy_safe_remux_server_timing_metrics_in_milliseconds() {
+        let value = format_remux_server_timing(RemuxResponseTimings {
+            queue_wait: Duration::from_micros(12_345),
+            media_probe: Some(Duration::from_micros(67_890)),
+            codec_setup: Duration::from_micros(234),
+            ffmpeg_spawn: Duration::from_micros(9_876),
+            response_total: Duration::from_micros(91_234),
+        });
+
+        assert_eq!(
+            value,
+            "remux-queue;dur=12.345, remux-probe;dur=67.890, remux-codec-setup;dur=0.234, remux-ffmpeg-spawn;dur=9.876, remux-response;dur=91.234"
+        );
+        assert!(HeaderValue::from_str(&value).is_ok());
+    }
+
+    #[test]
+    fn omits_media_probe_timing_when_the_probe_is_not_run() {
+        let value = format_remux_server_timing(RemuxResponseTimings {
+            queue_wait: Duration::ZERO,
+            media_probe: None,
+            codec_setup: Duration::ZERO,
+            ffmpeg_spawn: Duration::ZERO,
+            response_total: Duration::ZERO,
+        });
+
+        assert_eq!(
+            value,
+            "remux-queue;dur=0.000, remux-codec-setup;dur=0.000, remux-ffmpeg-spawn;dur=0.000, remux-response;dur=0.000"
+        );
+    }
 
     #[test]
     fn normalizes_remux_video_modes() {
