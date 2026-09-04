@@ -15,6 +15,7 @@ mod media;
 mod persistence;
 mod playback_optimize;
 mod process;
+mod provider_benchmark;
 mod provider_budget;
 mod provider_registry;
 mod rate_limit;

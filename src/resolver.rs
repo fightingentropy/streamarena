@@ -551,6 +551,7 @@ struct ExternalEmbedPlaybackRequest<'a> {
     preferences: &'a ResolvePreferences,
     allow_native_fallback: bool,
     health_scores: &'a HashMap<String, i64>,
+    record_health_events: bool,
     live_hls_proxy_secret: &'a str,
     live_hls_worker_base: &'a str,
     provider_budgets: &'a ProviderConcurrencyBudgets,
@@ -746,6 +747,7 @@ impl ResolverService {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn try_build_external_embed_payload(
         &self,
         metadata: &ResolveMetadata,
@@ -754,6 +756,7 @@ impl ResolverService {
         allow_native_fallback: bool,
         health_scores: &HashMap<String, i64>,
         cache_key: Option<&str>,
+        record_health_events: bool,
     ) -> Option<Value> {
         // A cache hit needs no resolve permit (no node subprocess / upstream work),
         // so serve it before acquiring one — this is what lets concurrent viewers of
@@ -782,6 +785,7 @@ impl ResolverService {
                 preferences,
                 allow_native_fallback,
                 health_scores,
+                record_health_events,
                 live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
                 live_hls_worker_base: &self.config.live_hls_resource_worker_base,
                 provider_budgets: &self.provider_resolver_permits,
@@ -1105,6 +1109,7 @@ impl ResolverService {
         resolver_provider: &str,
         skip_external_embed: bool,
         refresh_resolve: bool,
+        record_external_health_events: bool,
     ) -> AppResult<Value> {
         self.resolve_metrics
             .movie_requests
@@ -1157,6 +1162,7 @@ impl ResolverService {
                 resolver_provider,
                 skip_external_embed,
                 refresh_resolve,
+                record_external_health_events,
             )
             .await?;
         self.attach_external_subtitle_tracks_to_payload(&mut payload)
@@ -1247,6 +1253,7 @@ impl ResolverService {
         resolver_provider: ResolverProvider,
         skip_external_embed: bool,
         refresh_resolve: bool,
+        record_external_health_events: bool,
     ) -> AppResult<Value> {
         let stored_preference = self
             .db
@@ -1327,6 +1334,7 @@ impl ResolverService {
                     preferences: &preferences,
                     allow_native_fallback: false,
                     health_scores: &external_health_scores,
+                    record_health_events: record_external_health_events,
                     live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
                     live_hls_worker_base: &self.config.live_hls_resource_worker_base,
                     provider_budgets: &self.provider_resolver_permits,
@@ -1358,6 +1366,7 @@ impl ResolverService {
                     true,
                     &external_health_scores,
                     Some(&resolve_cache_key),
+                    record_external_health_events,
                 )
                 .await
         {
@@ -1581,6 +1590,7 @@ impl ResolverService {
         resolver_provider: &str,
         skip_external_embed: bool,
         refresh_resolve: bool,
+        record_external_health_events: bool,
     ) -> AppResult<Value> {
         self.resolve_metrics
             .tv_requests
@@ -1643,6 +1653,7 @@ impl ResolverService {
                 resolver_provider,
                 skip_external_embed,
                 refresh_resolve,
+                record_external_health_events,
             )
             .await?;
         self.attach_external_subtitle_tracks_to_payload(&mut payload)
@@ -1676,6 +1687,7 @@ impl ResolverService {
         resolver_provider: ResolverProvider,
         skip_external_embed: bool,
         refresh_resolve: bool,
+        record_external_health_events: bool,
     ) -> AppResult<Value> {
         let stored_preference = self
             .db
@@ -1778,6 +1790,7 @@ impl ResolverService {
                     preferences: &preferences,
                     allow_native_fallback: false,
                     health_scores: &external_health_scores,
+                    record_health_events: record_external_health_events,
                     live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
                     live_hls_worker_base: &self.config.live_hls_resource_worker_base,
                     provider_budgets: &self.provider_resolver_permits,
@@ -1809,6 +1822,7 @@ impl ResolverService {
                     true,
                     &external_health_scores,
                     Some(&resolve_cache_key),
+                    record_external_health_events,
                 )
                 .await
         {
@@ -4394,9 +4408,10 @@ async fn build_external_embed_resolved_playback_payload(
     // sequential walk: the top-ranked candidate runs first; the next is raced in
     // parallel the moment the current one either fails or stalls past the stagger.
     // First success wins and the rest are dropped (their in-flight node/curl
-    // subprocesses are killed on drop). Each attempt records its own failure health
-    // event internally; the winner's success is recorded here so a losing-but-
-    // successful racer can never double-count.
+    // subprocesses are killed on drop). When health recording is enabled, each
+    // attempt records its own failure internally; the winner's success is recorded
+    // here so a losing-but-successful racer can never double-count. Admin benchmark
+    // requests use the identical path with both writes suppressed.
     let attempts = candidates
         .into_iter()
         .map(|candidate| {
@@ -4409,8 +4424,11 @@ async fn build_external_embed_resolved_playback_payload(
     )
     .await?;
 
-    record_external_embed_health_event(request.db, candidate, request.metadata, "success", "")
-        .await;
+    record_external_embed_health_event_if_enabled(
+        request.record_health_events,
+        record_external_embed_health_event(request.db, candidate, request.metadata, "success", ""),
+    )
+    .await;
     if let (Some(cache), Some(key)) = (request.resolve_cache, request.cache_key) {
         cache.store(
             key.to_owned(),
@@ -4484,16 +4502,28 @@ async fn resolve_external_embed_candidate_attempt<'a>(
     match hls_result {
         Some(hls_source) => Some((candidate, hls_source, embed_url)),
         None => {
-            record_external_embed_health_event(
-                request.db,
-                candidate,
-                request.metadata,
-                "playback_error",
-                "Native HLS resolver failed.",
+            record_external_embed_health_event_if_enabled(
+                request.record_health_events,
+                record_external_embed_health_event(
+                    request.db,
+                    candidate,
+                    request.metadata,
+                    "playback_error",
+                    "Native HLS resolver failed.",
+                ),
             )
             .await;
             None
         }
+    }
+}
+
+async fn record_external_embed_health_event_if_enabled<F>(enabled: bool, event: F)
+where
+    F: std::future::Future<Output = ()>,
+{
+    if enabled {
+        event.await;
     }
 }
 

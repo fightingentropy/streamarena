@@ -16,6 +16,7 @@ use super::{
     acquire_owned_real_debrid_torrent_lease, cache_reuse_provider_for_context,
     complete_real_debrid_attempt_with_lease, compute_external_embed_provider_rank_health_score,
     external_embed_resolve_cache_key, race_staggered_resolver_attempts,
+    record_external_embed_health_event_if_enabled,
 };
 use super::{
     DiscoveryBehaviorHints, DiscoveryStream, EXTERNAL_EMBED_PROVIDERS, ExternalEmbedSource,
@@ -448,6 +449,29 @@ async fn hedge_handles_empty_candidate_set() {
     )
     .await;
     assert_eq!(winner, None);
+}
+
+#[tokio::test]
+async fn external_embed_health_recording_flag_controls_event_polling() {
+    let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    record_external_embed_health_event_if_enabled(false, {
+        let writes = writes.clone();
+        async move {
+            writes.fetch_add(1, Ordering::SeqCst);
+        }
+    })
+    .await;
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+
+    record_external_embed_health_event_if_enabled(true, {
+        let writes = writes.clone();
+        async move {
+            writes.fetch_add(1, Ordering::SeqCst);
+        }
+    })
+    .await;
+    assert_eq!(writes.load(Ordering::SeqCst), 1);
 }
 
 fn sample_resolve_metadata(

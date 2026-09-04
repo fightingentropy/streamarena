@@ -9,7 +9,7 @@
     "dev:vite": "vite",
     "test:rust": "cargo test",
     "test:worker": "node --test workers/live-hls-proxy/test/*.test.mjs",
-    "test:ops": "python3 ./scripts/map-mini-ports-test.py && node ./scripts/check-resolver-runtime-test.mjs && node ./scripts/resolve-external-embed-hls-test.mjs",
+    "test:ops": "python3 ./scripts/map-mini-ports-test.py && node ./scripts/check-resolver-runtime-test.mjs && node ./scripts/resolve-external-embed-hls-test.mjs && node ./scripts/provider-playback-benchmark-test.mjs",
     "lint:frontend": "node ./scripts/check-js-syntax.mjs",
     "test:frontend:unit": "node ./scripts/auth-local-state-test.mjs && node ./scripts/real-debrid-settings-test.mjs && node ./scripts/replay-safe-state-test.mjs && node ./scripts/subtitle-offset-test.mjs && node ./scripts/offline-artwork-test.mjs && node ./scripts/media-track-labels-test.mjs && node ./scripts/source-menu-tabs-test.mjs && node ./scripts/source-download-test.mjs && node ./scripts/hover-resolve-prewarm-test.mjs && node ./scripts/featured-hero-test.mjs && node ./scripts/initial-resume-test.mjs && node ./scripts/manual-source-switch-test.mjs && node ./scripts/remux-routing-test.mjs && node ./scripts/resolve-job-test.mjs && node ./scripts/deferred-media-tracks-test.mjs && node ./scripts/hls-autoplay-test.mjs && node ./scripts/live-iframe-playback-clock-test.mjs && node ./scripts/live-iframe-security-test.mjs && node ./scripts/live-channel-catalog-test.mjs && node ./scripts/local-cache-upgrade-watch-test.mjs && node ./scripts/playback-preferences-test.mjs && node ./scripts/resolver-overlay-test.mjs && node ./scripts/continue-watching-pin-test.mjs && node ./scripts/live-stream-cache-test.mjs && node ./scripts/custom-subtitle-overlay-test.mjs && node ./scripts/live-playback-health-test.mjs && node ./scripts/live-seek-test.mjs && node ./scripts/subtitle-placement-test.mjs && node ./scripts/playback-routing-test.mjs",
     "test:frontend": "bun run test:frontend:unit && node ./scripts/frontend-smoke.mjs",
@@ -34,6 +34,7 @@
     "bench:startup": "node ./scripts/startup-scan-benchmark.mjs",
     "bench:load": "node ./scripts/playback-load-benchmark.mjs",
     "bench:resolve": "node ./scripts/resolver-load-benchmark.mjs",
+    "bench:providers": "node ./scripts/provider-playback-benchmark.mjs",
     "bench:playback:install": "playwright install chromium"
   },
   "dependencies": {

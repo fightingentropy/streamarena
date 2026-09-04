@@ -40,6 +40,10 @@ use crate::persistence::{Db, TitlePreference, build_cache_debug_payload};
 use crate::process::{
     RuntimeServices, resolve_effective_remux_hwaccel_mode, to_absolute_playback_url,
 };
+use crate::provider_benchmark::{
+    provider_benchmark_capability_method_supported, provider_benchmark_capability_response,
+    provider_resolve_response, provider_resolve_result, record_external_health_events_for_request,
+};
 use crate::resolver::{LocalCacheUpgradeRequest, ResolverService};
 use crate::secret_store::{REAL_DEBRID_TOKEN_PREF_KEY, RealDebridTokenCipher};
 use crate::static_files::serve_static;
@@ -474,6 +478,10 @@ pub fn build_router(state: AppState) -> Router {
     // missed layer cannot expose the surface; the router layer is the
     // fail-closed default for any new admin route.
     let admin_api = Router::new()
+        .route(
+            "/api/admin/provider-benchmark-capability",
+            get(provider_benchmark_capability_handler),
+        )
         .route("/api/admin/overview", get(admin_overview_handler))
         .route("/api/admin/growth", get(admin_growth_handler))
         .route("/api/admin/users", get(admin_users_handler))
@@ -1554,6 +1562,18 @@ fn resolve_job_wait_ms(query: Option<&str>) -> u64 {
         .min(RESOLVE_JOB_MAX_WAIT_MS)
 }
 
+async fn provider_benchmark_capability_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+) -> AppResult<Response<Body>> {
+    if !provider_benchmark_capability_method_supported(&method) {
+        return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
+    }
+    let user = auth::require_admin(&state.db, &headers).await?;
+    provider_benchmark_capability_response(&headers, &user)
+}
+
 pub async fn resolve_movie_handler(
     State(state): State<AppState>,
     method: Method,
@@ -1575,6 +1595,7 @@ pub async fn resolve_movie_handler(
     // any cached resolved source so a stale/dead upstream URL can't be re-served.
     let refresh_resolve = truthy_query_flag(&params, "refreshResolve");
     let user = auth::require_auth(&state.db, &headers).await?;
+    let record_external_health_events = record_external_health_events_for_request(&headers, &user)?;
     let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
     if truthy_query_flag(&params, "async") {
@@ -1635,6 +1656,7 @@ pub async fn resolve_movie_handler(
                         .unwrap_or_default(),
                     skip_external_embed,
                     refresh_resolve,
+                    record_external_health_events,
                 )
                 .await
                 .map_err(|error| {
@@ -1645,12 +1667,15 @@ pub async fn resolve_movie_handler(
                 })
         });
         debug_assert!(spawned, "newly-created resolve job should be present");
-        return Ok(json_response(json!({
-            "jobId": job_id,
-            "status": "pending",
-        })));
+        return Ok(provider_resolve_response(
+            json!({
+                "jobId": job_id,
+                "status": "pending",
+            }),
+            record_external_health_events,
+        ));
     }
-    let payload = state
+    let result = state
         .resolver
         .resolve_movie(
             user.id,
@@ -1701,9 +1726,10 @@ pub async fn resolve_movie_handler(
                 .unwrap_or_default(),
             skip_external_embed,
             refresh_resolve,
+            record_external_health_events,
         )
-        .await?;
-    Ok(json_response(payload))
+        .await;
+    provider_resolve_result(result, record_external_health_events)
 }
 
 pub async fn resolve_local_upgrade_handler(
@@ -1786,6 +1812,7 @@ pub async fn resolve_tv_handler(
     // any cached resolved source so a stale/dead upstream URL can't be re-served.
     let refresh_resolve = truthy_query_flag(&params, "refreshResolve");
     let user = auth::require_auth(&state.db, &headers).await?;
+    let record_external_health_events = record_external_health_events_for_request(&headers, &user)?;
     let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
     if truthy_query_flag(&params, "async") {
@@ -1863,6 +1890,7 @@ pub async fn resolve_tv_handler(
                         .unwrap_or_default(),
                     skip_external_embed,
                     refresh_resolve,
+                    record_external_health_events,
                 )
                 .await
                 .map_err(|error| {
@@ -1873,12 +1901,15 @@ pub async fn resolve_tv_handler(
                 })
         });
         debug_assert!(spawned, "newly-created resolve job should be present");
-        return Ok(json_response(json!({
-            "jobId": job_id,
-            "status": "pending",
-        })));
+        return Ok(provider_resolve_response(
+            json!({
+                "jobId": job_id,
+                "status": "pending",
+            }),
+            record_external_health_events,
+        ));
     }
-    let payload = state
+    let result = state
         .resolver
         .resolve_tv(
             user.id,
@@ -1946,9 +1977,10 @@ pub async fn resolve_tv_handler(
                 .unwrap_or_default(),
             skip_external_embed,
             refresh_resolve,
+            record_external_health_events,
         )
-        .await?;
-    Ok(json_response(payload))
+        .await;
+    provider_resolve_result(result, record_external_health_events)
 }
 
 pub async fn local_torrent_stream_handler(
