@@ -719,40 +719,64 @@ fn extracts_upstream_origin_and_referer_from_aether_wrapper() {
 fn resolve_cache_key_is_stable_per_title_identity() {
     // Movie: season/episode are 0, tmdb trimmed — matches the handler-side params.
     assert_eq!(
-        external_embed_resolve_cache_key(&sample_resolve_metadata("movie", " 27205 ", 0, 0)),
-        "movie|27205|0|0"
+        external_embed_resolve_cache_key(&sample_resolve_metadata("movie", " 27205 ", 0, 0), ""),
+        "movie|27205|0|0|"
     );
     assert_eq!(
-        external_embed_resolve_cache_key(&sample_resolve_metadata("tv", "1396", 1, 2)),
-        "tv|1396|1|2"
+        external_embed_resolve_cache_key(&sample_resolve_metadata("tv", "1396", 1, 2), ""),
+        "tv|1396|1|2|"
     );
 }
 
 #[test]
-fn resolved_embed_cache_store_get_and_evict() {
+fn resolved_embed_cache_separates_servers_and_refreshes_only_the_selected_title() {
     let cache = ResolvedEmbedCache::new();
-    let source = super::external_embed_sources()
+    let sources: Vec<_> = super::external_embed_sources()
         .into_iter()
-        .next()
-        .expect("at least one embed source");
-    let key = "movie|27205|0|0".to_owned();
-    cache.store(
-        key.clone(),
-        CachedResolvedEmbed {
+        .filter(|source| source.provider.id == "cinejoy")
+        .collect();
+    let metadata = sample_resolve_metadata("tv", "1396", 1, 2);
+    let automatic_key = external_embed_resolve_cache_key(&metadata, "");
+    let mut pinned_keys = Vec::new();
+    for &source in &sources {
+        let key = external_embed_resolve_cache_key(
+            &metadata,
+            &external_embed_source_hash(source, &metadata),
+        );
+        assert!(
+            cache.get_fresh(&key).is_none(),
+            "another server must not satisfy this pin"
+        );
+        let entry = CachedResolvedEmbed {
             source,
             playback_url: "https://up.example/p.m3u8?auth=tok".to_owned(),
-            referer: Some("https://vidlink.pro/".to_owned()),
-            embed_url: "https://vidlink.pro/movie/27205".to_owned(),
+            referer: Some("https://cinejoy.to/".to_owned()),
+            embed_url: "https://cinejoy.to/watch/tv/1396/1/2".to_owned(),
             cached_at_ms: now_ms(),
-        },
-    );
-    let hit = cache.get_fresh(&key).expect("fresh entry");
-    assert_eq!(hit.playback_url, "https://up.example/p.m3u8?auth=tok");
-    cache.evict(&key);
+        };
+        cache.store(key.clone(), entry);
+        assert_eq!(cache.get_fresh(&key).unwrap().source, source);
+        pinned_keys.push(key);
+    }
     assert!(
-        cache.get_fresh(&key).is_none(),
-        "evicted entry must be gone"
+        cache.get_fresh(&automatic_key).is_none(),
+        "manual servers must not populate automatic selection"
     );
+    let entry = cache.get_fresh(&pinned_keys[0]).unwrap();
+    cache.store(automatic_key.clone(), entry.clone());
+    // The trailing delimiter prevents episode 2 from also evicting episode 20.
+    let other_episode =
+        external_embed_resolve_cache_key(&sample_resolve_metadata("tv", "1396", 1, 20), "");
+    cache.store(other_episode.clone(), entry);
+    cache.evict_title(&automatic_key);
+    assert!(cache.get_fresh(&automatic_key).is_none());
+    for key in pinned_keys {
+        assert!(
+            cache.get_fresh(&key).is_none(),
+            "refresh must evict every server for the episode"
+        );
+    }
+    assert!(cache.get_fresh(&other_episode).is_some());
 }
 
 #[test]
