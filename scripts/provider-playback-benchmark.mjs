@@ -37,6 +37,7 @@ const HARD_INTEGRITY_FAILURE_CODES = new Set([
   "NO_PINNED_RESOLVE",
   "BENCHMARK_HEADER_NOT_APPLIED",
   "PROVIDER_HEALTH_SUPPRESSION_NOT_ACKNOWLEDGED",
+  "RESOLVE_IDENTITY_INVALID",
   "PIN_MISMATCH",
   "PROVIDER_MISMATCH",
   "FALLBACK_DETECTED",
@@ -1127,7 +1128,145 @@ function extractResolvedIdentity(payload) {
   };
 }
 
-function createResolveObserver(
+export function classifyResolveResponsePayload(
+  statusCode,
+  payload,
+  { jsonParsed = true } = {},
+) {
+  const status = Number(statusCode) || 0;
+  if (status < 200 || status >= 300) {
+    return {
+      responseKind: "failed",
+      resolvedHash: "",
+      resolverProvider: "",
+      identityComplete: false,
+    };
+  }
+  if (!jsonParsed) {
+    return {
+      responseKind: status === 202 ? "pending" : "terminal",
+      resolvedHash: "",
+      resolverProvider: "",
+      identityComplete: false,
+    };
+  }
+
+  const jobStatus = String(payload?.status || "").trim().toLowerCase();
+  const hasTerminalResultShape = Boolean(
+    payload?.result ||
+      payload?.playableUrl ||
+      payload?.sourceHash ||
+      payload?.resolverProvider ||
+      payload?.metadata?.resolverProvider ||
+      payload?.session?.resolverProvider,
+  );
+  const legacyPendingRegistration =
+    !jobStatus &&
+    Boolean(String(payload?.jobId || "").trim()) &&
+    !hasTerminalResultShape;
+  if (
+    !hasTerminalResultShape &&
+    (jobStatus === "pending" || legacyPendingRegistration)
+  ) {
+    return {
+      responseKind: "pending",
+      resolvedHash: "",
+      resolverProvider: "",
+      identityComplete: false,
+    };
+  }
+  if (
+    !hasTerminalResultShape &&
+    ["error", "failed", "cancelled"].includes(jobStatus)
+  ) {
+    return {
+      responseKind: "failed",
+      resolvedHash: "",
+      resolverProvider: "",
+      identityComplete: false,
+    };
+  }
+  if (status === 202 && !jobStatus && !hasTerminalResultShape) {
+    return {
+      responseKind: "pending",
+      resolvedHash: "",
+      resolverProvider: "",
+      identityComplete: false,
+    };
+  }
+
+  const identity = extractResolvedIdentity(payload);
+  return {
+    responseKind: "terminal",
+    resolvedHash: identity.hash,
+    resolverProvider: identity.provider,
+    identityComplete: Boolean(identity.hash && identity.provider),
+  };
+}
+
+export function summarizeResolveObservations(observations, requestedHash) {
+  const entries = Array.isArray(observations) ? observations : [];
+  const starts = entries.filter((entry) => entry.isResolveStart);
+  const terminals = entries.filter((entry) => entry.responseKind === "terminal");
+  const identities = terminals.filter((entry) => entry.resolvedHash);
+  const matchingIdentities = identities.filter(
+    (entry) =>
+      entry.resolvedHash === requestedHash &&
+      entry.resolverProvider === EXTERNAL_RESOLVER_PROVIDER,
+  );
+  const completionSamples = matchingIdentities
+    .map((entry) => entry.identityCompletedAtMs)
+    .filter(Number.isFinite);
+  return {
+    resolveRequestCount: starts.length,
+    allResolveStartsAcknowledged:
+      allResolveStartsAcknowledgeHealthSuppression(starts),
+    fallbackDetected: starts.some((entry) => !entry.requestPinned),
+    hashMatched: identities.some((entry) => entry.resolvedHash === requestedHash),
+    hashMismatchDetected: identities.some(
+      (entry) => entry.resolvedHash !== requestedHash,
+    ),
+    providerMatched: identities.some(
+      (entry) =>
+        entry.resolvedHash === requestedHash &&
+        entry.resolverProvider === EXTERNAL_RESOLVER_PROVIDER,
+    ),
+    providerMismatchDetected: identities.some(
+      (entry) =>
+        entry.resolvedHash === requestedHash &&
+        Boolean(entry.resolverProvider) &&
+        entry.resolverProvider !== EXTERNAL_RESOLVER_PROVIDER,
+    ),
+    successfulResolveResponse: terminals.length > 0,
+    pendingResolveResponse: entries.some((entry) => entry.responseKind === "pending"),
+    failedResolveResponse: entries.some((entry) => entry.responseKind === "failed"),
+    terminalIdentityInvalid: terminals.some((entry) => !entry.identityComplete),
+    resolveCompletionMs: completionSamples.length
+      ? Math.min(...completionSamples)
+      : null,
+  };
+}
+
+function isResolveObservationResponse(
+  responseUrl,
+  requestMethod,
+  baseOrigin,
+  mediaType,
+) {
+  try {
+    const url = new URL(responseUrl);
+    if (url.origin !== baseOrigin) return false;
+    if (url.pathname === `/api/resolve/${mediaType}`) return true;
+    return (
+      url.pathname.startsWith("/api/resolve/job/") &&
+      String(requestMethod || "").trim().toUpperCase() === "GET"
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function createResolveObserver(
   page,
   baseOrigin,
   requestedHash,
@@ -1140,11 +1279,11 @@ function createResolveObserver(
 
   function isRelevantResponse(response) {
     try {
-      const url = new URL(response.url());
-      return (
-        url.origin === baseOrigin &&
-        (url.pathname === `/api/resolve/${testCase.mediaType}` ||
-          url.pathname.startsWith("/api/resolve/job/"))
+      return isResolveObservationResponse(
+        response.url(),
+        response.request().method(),
+        baseOrigin,
+        testCase.mediaType,
       );
     } catch {
       return false;
@@ -1174,29 +1313,41 @@ function createResolveObserver(
           response.headers()[PROVIDER_HEALTH_RECORDING_ACK_HEADER] || "",
         ),
         status: response.status(),
+        responseKind: "failed",
         resolvedHash: "",
         resolverProvider: "",
+        identityComplete: false,
         identityCompletedAtMs: null,
       };
       if (response.ok()) {
         try {
-          const identity = extractResolvedIdentity(
-            await runWithDeadline(
-              () => response.json(),
-              deadline,
-              "RESOLVE_IDENTITY_TIMEOUT",
-            ),
+          const payload = await runWithDeadline(
+            () => response.json(),
+            deadline,
+            "RESOLVE_IDENTITY_TIMEOUT",
           );
-          observation.resolvedHash = identity.hash;
-          observation.resolverProvider = identity.provider;
-          if (identity.hash) {
-            observation.identityCompletedAtMs = Number(
-              (performance.now() - trialStartedAt).toFixed(1),
-            );
-          }
+          Object.assign(
+            observation,
+            classifyResolveResponsePayload(response.status(), payload),
+          );
         } catch {
-          // A non-JSON/empty successful response cannot establish source identity.
+          Object.assign(
+            observation,
+            classifyResolveResponsePayload(response.status(), null, {
+              jsonParsed: false,
+            }),
+          );
         }
+      } else {
+        Object.assign(
+          observation,
+          classifyResolveResponsePayload(response.status(), null),
+        );
+      }
+      if (observation.responseKind === "terminal") {
+        observation.identityCompletedAtMs = Number(
+          (performance.now() - trialStartedAt).toFixed(1),
+        );
       }
       observations.push(observation);
     })();
@@ -1208,43 +1359,29 @@ function createResolveObserver(
     async result() {
       page.off("response", onResponse);
       await Promise.allSettled([...parsers]);
-      const starts = observations.filter((entry) => entry.isResolveStart);
-      const identities = observations.filter((entry) => entry.resolvedHash);
-      const matchingIdentities = identities.filter(
-        (entry) =>
-          entry.resolvedHash === requestedHash &&
-          entry.resolverProvider === EXTERNAL_RESOLVER_PROVIDER,
-      );
-      const completionSamples = matchingIdentities
-        .map((entry) => entry.identityCompletedAtMs)
-        .filter(Number.isFinite);
-      return {
-        resolveRequestCount: starts.length,
-        allResolveStartsAcknowledged:
-          allResolveStartsAcknowledgeHealthSuppression(starts),
-        fallbackDetected: starts.some((entry) => !entry.requestPinned),
-        hashMatched: identities.some((entry) => entry.resolvedHash === requestedHash),
-        hashMismatchDetected: identities.some(
-          (entry) => entry.resolvedHash !== requestedHash,
-        ),
-        providerMatched: identities.some(
-          (entry) =>
-            entry.resolvedHash === requestedHash &&
-            entry.resolverProvider === EXTERNAL_RESOLVER_PROVIDER,
-        ),
-        providerMismatchDetected: identities.some(
-          (entry) =>
-            entry.resolvedHash === requestedHash &&
-            entry.resolverProvider !== EXTERNAL_RESOLVER_PROVIDER,
-        ),
-        successfulResolveResponse: observations.some(
-          (entry) => entry.status >= 200 && entry.status < 300,
-        ),
-        resolveCompletionMs: completionSamples.length
-          ? Math.min(...completionSamples)
-          : null,
-      };
+      return summarizeResolveObservations(observations, requestedHash);
     },
+  };
+}
+
+export function classifyResolveOutcome(pinning, browserSafety = {}) {
+  const failureCodes = [];
+  if (!pinning?.successfulResolveResponse) failureCodes.push("RESOLVE_FAILED");
+  // Identity mismatches and backend-observed unpinned responses are integrity
+  // failures. A retry stopped by the in-page guard never reached the backend,
+  // so retain it only as a safety diagnostic below.
+  if (pinning?.terminalIdentityInvalid) {
+    failureCodes.push("RESOLVE_IDENTITY_INVALID");
+  }
+  if (pinning?.hashMismatchDetected) failureCodes.push("PIN_MISMATCH");
+  if (pinning?.providerMismatchDetected) failureCodes.push("PROVIDER_MISMATCH");
+  if (pinning?.fallbackDetected) failureCodes.push("FALLBACK_DETECTED");
+  return {
+    failureCodes,
+    blockedFallbackRequests: Math.max(
+      0,
+      Math.floor(Number(browserSafety?.blockedFallbackRequests) || 0),
+    ),
   };
 }
 
@@ -1689,8 +1826,8 @@ async function runTrial({
   safetyStats.providerHealthSuppressionAcknowledged =
     safetyStats.providerHealthSuppressionAcknowledged &&
     allResolveStartsAcknowledged;
-  pinning.fallbackDetected =
-    pinning.fallbackDetected || browserSafety.blockedFallbackRequests > 0;
+  const resolveOutcome = classifyResolveOutcome(pinning, browserSafety);
+  safetyStats.blockedFallbackRequests += resolveOutcome.blockedFallbackRequests;
   const routes = await networkCapture.finish();
   await page.close().catch(() => {});
   const finalState = finalSample?.rawState;
@@ -1713,12 +1850,7 @@ async function runTrial({
   if (!allResolveStartsAcknowledged) {
     failureCodes.push("PROVIDER_HEALTH_SUPPRESSION_NOT_ACKNOWLEDGED");
   }
-  if (!pinning.successfulResolveResponse) failureCodes.push("RESOLVE_FAILED");
-  if (!pinning.hashMatched || pinning.hashMismatchDetected) failureCodes.push("PIN_MISMATCH");
-  if (!pinning.providerMatched || pinning.providerMismatchDetected) {
-    failureCodes.push("PROVIDER_MISMATCH");
-  }
-  if (pinning.fallbackDetected) failureCodes.push("FALLBACK_DETECTED");
+  failureCodes.push(...resolveOutcome.failureCodes);
   if (snapshot.events.errors > 0 || Number(finalState?.mediaErrorCode || 0) > 0) {
     failureCodes.push("MEDIA_ERROR");
   }
@@ -1801,6 +1933,7 @@ async function runTrial({
     safety: {
       blockedMutations: browserSafety.blockedMutations,
       emptyProgressReads: browserSafety.emptyProgressReads,
+      fallbackResolveAttemptsBlocked: resolveOutcome.blockedFallbackRequests,
     },
   };
 
@@ -2301,6 +2434,7 @@ export async function runProviderBenchmark(
   const safetyStats = {
     blockedMutations: 0,
     emptyProgressReads: 0,
+    blockedFallbackRequests: 0,
     providerHealthSuppressionAcknowledged: true,
   };
   const discoveries = [];
@@ -2388,6 +2522,7 @@ export async function runProviderBenchmark(
       liveHlsWorkerOriginCount: liveHlsWorkerOrigins.length,
       progressMutationsBlocked: safetyStats.blockedMutations,
       progressReadsEmptied: safetyStats.emptyProgressReads,
+      fallbackResolveAttemptsBlocked: safetyStats.blockedFallbackRequests,
       externalProviderHealthRecordingSuppressed:
         trialResults.length > 0 &&
         safetyStats.providerHealthSuppressionAcknowledged,

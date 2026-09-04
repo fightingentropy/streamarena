@@ -30,11 +30,14 @@ import {
   chooseAuthenticatedCandidate,
   classifyExternalSourceRows,
   classifyNetworkRoute,
+  classifyResolveOutcome,
+  classifyResolveResponsePayload,
   classifyResponseRole,
   computeGate,
   computeRequiredCoverage,
   createIsolatedAuthenticatedContext,
   createNetworkCapture,
+  createResolveObserver,
   extractConfiguredLiveHlsWorkerOrigins,
   isExternalSourceRow,
   isSameOriginResolveStart,
@@ -52,6 +55,7 @@ import {
   sanitizeProviderLabel,
   assertProviderBenchmarkCapability,
   summarizePlaybackWindow,
+  summarizeResolveObservations,
   writeReportAtomically,
 } from "./provider-playback-benchmark.mjs";
 
@@ -244,6 +248,292 @@ assert.equal(
 assert.equal(
   PROVIDER_HEALTH_RECORDING_ACK_HEADER,
   "x-streamarena-provider-health-recording",
+);
+
+function resolveObservation({
+  isResolveStart = false,
+  requestPinned = true,
+  status = 200,
+  payload = null,
+  jsonParsed = true,
+  completedAtMs = null,
+} = {}) {
+  return {
+    isResolveStart,
+    requestPinned,
+    healthRecordingAcknowledgement: isResolveStart ? "suppressed" : "",
+    status,
+    identityCompletedAtMs: completedAtMs,
+    ...classifyResolveResponsePayload(status, payload, { jsonParsed }),
+  };
+}
+
+const pendingThenFailedPinning = summarizeResolveObservations(
+  [
+    resolveObservation({
+      isResolveStart: true,
+      payload: { jobId: "job-one", status: "pending" },
+    }),
+    resolveObservation({
+      payload: { jobId: "job-one", status: "error", error: "unavailable" },
+    }),
+  ],
+  pinnedHash,
+);
+assert.equal(pendingThenFailedPinning.pendingResolveResponse, true);
+assert.equal(pendingThenFailedPinning.failedResolveResponse, true);
+assert.equal(pendingThenFailedPinning.successfulResolveResponse, false);
+assert.equal(pendingThenFailedPinning.terminalIdentityInvalid, false);
+const failedPinnedResolve = classifyResolveOutcome(pendingThenFailedPinning);
+assert.deepEqual(failedPinnedResolve.failureCodes, ["RESOLVE_FAILED"]);
+assert.equal(
+  computeGate(
+    [{ success: false, failureCodes: failedPinnedResolve.failureCodes }],
+    0,
+    { passed: true },
+  ).integrityPassed,
+  true,
+);
+
+const pinnedHttpFailure = classifyResolveOutcome(
+  summarizeResolveObservations(
+    [resolveObservation({ isResolveStart: true, status: 424 })],
+    pinnedHash,
+  ),
+);
+assert.deepEqual(pinnedHttpFailure.failureCodes, ["RESOLVE_FAILED"]);
+
+const playablePendingPinning = summarizeResolveObservations(
+  [
+    resolveObservation({
+      isResolveStart: true,
+      payload: { status: "pending", playableUrl: "/api/remux" },
+    }),
+  ],
+  pinnedHash,
+);
+assert.equal(playablePendingPinning.successfulResolveResponse, true);
+assert.equal(playablePendingPinning.pendingResolveResponse, false);
+assert.deepEqual(classifyResolveOutcome(playablePendingPinning).failureCodes, [
+  "RESOLVE_IDENTITY_INVALID",
+]);
+
+const playableErrorPinning = summarizeResolveObservations(
+  [
+    resolveObservation({
+      isResolveStart: true,
+      payload: {
+        status: "error",
+        playableUrl: "/api/remux",
+        sourceHash: otherHash,
+        resolverProvider: "external-embed",
+      },
+    }),
+  ],
+  pinnedHash,
+);
+assert.equal(playableErrorPinning.successfulResolveResponse, true);
+assert.equal(playableErrorPinning.failedResolveResponse, false);
+assert.deepEqual(classifyResolveOutcome(playableErrorPinning).failureCodes, [
+  "PIN_MISMATCH",
+]);
+
+const resolveObserverHandlers = new Map();
+const resolveObserverPage = {
+  on(name, handler) {
+    resolveObserverHandlers.set(name, handler);
+  },
+  off(name, handler) {
+    if (resolveObserverHandlers.get(name) === handler) {
+      resolveObserverHandlers.delete(name);
+    }
+  },
+};
+const cancellationObserver = createResolveObserver(
+  resolveObserverPage,
+  "https://stream.example",
+  pinnedHash,
+  { mediaType: "movie" },
+  performance.now(),
+  performance.now() + 1_000,
+);
+const resolveJobUrl = "https://stream.example/api/resolve/job/job-one";
+for (const [method, status] of [
+  ["DELETE", 204],
+  ["POST", 200],
+  ["PATCH", 200],
+]) {
+  resolveObserverHandlers.get("response")({
+    url: () => resolveJobUrl,
+    request: () => ({ method: () => method }),
+    status: () => status,
+    ok: () => status >= 200 && status < 300,
+    headers: () => ({}),
+    json: async () => null,
+  });
+}
+const cancellationPinning = await cancellationObserver.result();
+assert.equal(cancellationPinning.terminalIdentityInvalid, false);
+assert.equal(cancellationPinning.successfulResolveResponse, false);
+assert.deepEqual(classifyResolveOutcome(cancellationPinning).failureCodes, [
+  "RESOLVE_FAILED",
+]);
+
+for (const terminalWithoutIdentity of [
+  resolveObservation({
+    isResolveStart: true,
+    payload: { status: "done", result: { playableUrl: "/api/remux" } },
+  }),
+  resolveObservation({
+    isResolveStart: true,
+    payload: { unexpected: true },
+  }),
+  resolveObservation({
+    isResolveStart: true,
+    payload: null,
+    jsonParsed: false,
+  }),
+  resolveObservation({
+    isResolveStart: true,
+    payload: { playableUrl: "/api/remux" },
+  }),
+  resolveObservation({
+    isResolveStart: true,
+    payload: { playableUrl: "/api/remux", sourceHash: pinnedHash },
+  }),
+  resolveObservation({
+    isResolveStart: true,
+    payload: {
+      playableUrl: "/api/remux",
+      sourceHash: "invalid-hash",
+      resolverProvider: "external-embed",
+    },
+  }),
+]) {
+  const malformedPinning = summarizeResolveObservations(
+    [terminalWithoutIdentity],
+    pinnedHash,
+  );
+  assert.equal(malformedPinning.successfulResolveResponse, true);
+  assert.equal(malformedPinning.terminalIdentityInvalid, true);
+  const malformedOutcome = classifyResolveOutcome(malformedPinning);
+  assert.deepEqual(malformedOutcome.failureCodes, ["RESOLVE_IDENTITY_INVALID"]);
+  assert.equal(
+    computeGate(
+      [{ success: false, failureCodes: malformedOutcome.failureCodes }],
+      0,
+      { passed: true },
+    ).integrityPassed,
+    false,
+  );
+}
+
+const mismatchedResolveHash = classifyResolveOutcome(
+  summarizeResolveObservations(
+    [
+      resolveObservation({
+        isResolveStart: true,
+        payload: {
+          playableUrl: "/api/remux",
+          sourceHash: otherHash,
+          resolverProvider: "external-embed",
+        },
+      }),
+    ],
+    pinnedHash,
+  ),
+);
+assert.deepEqual(mismatchedResolveHash.failureCodes, ["PIN_MISMATCH"]);
+
+const mismatchedResolveProvider = classifyResolveOutcome(
+  summarizeResolveObservations(
+    [
+      resolveObservation({
+        isResolveStart: true,
+        payload: {
+          playableUrl: "/api/remux",
+          sourceHash: pinnedHash,
+          resolverProvider: "real-debrid",
+        },
+      }),
+    ],
+    pinnedHash,
+  ),
+);
+assert.deepEqual(mismatchedResolveProvider.failureCodes, ["PROVIDER_MISMATCH"]);
+for (const mismatch of [mismatchedResolveHash, mismatchedResolveProvider]) {
+  assert.equal(
+    computeGate(
+      [{ success: false, failureCodes: mismatch.failureCodes }],
+      0,
+      { passed: true },
+    ).integrityPassed,
+    false,
+  );
+}
+
+const validResolvedPayload = {
+  playableUrl: "/api/remux",
+  sourceHash: pinnedHash,
+  metadata: { resolverProvider: "external-embed" },
+};
+const validMatchedPinning = summarizeResolveObservations(
+  [
+    resolveObservation({
+      isResolveStart: true,
+      payload: { status: "done", result: validResolvedPayload },
+      completedAtMs: 37,
+    }),
+  ],
+  pinnedHash,
+);
+assert.equal(validMatchedPinning.successfulResolveResponse, true);
+assert.equal(validMatchedPinning.hashMatched, true);
+assert.equal(validMatchedPinning.providerMatched, true);
+assert.equal(validMatchedPinning.terminalIdentityInvalid, false);
+assert.equal(validMatchedPinning.resolveCompletionMs, 37);
+assert.deepEqual(classifyResolveOutcome(validMatchedPinning).failureCodes, []);
+
+const actualUnpinnedFallback = classifyResolveOutcome(
+  summarizeResolveObservations(
+    [
+      resolveObservation({
+        isResolveStart: true,
+        requestPinned: false,
+        payload: validResolvedPayload,
+      }),
+    ],
+    pinnedHash,
+  ),
+);
+assert.deepEqual(actualUnpinnedFallback.failureCodes, ["FALLBACK_DETECTED"]);
+assert.equal(
+  computeGate(
+    [{ success: false, failureCodes: actualUnpinnedFallback.failureCodes }],
+    0,
+    { passed: true },
+  ).integrityPassed,
+  false,
+);
+
+const safelyBlockedFallbackAttempt = classifyResolveOutcome(
+  pendingThenFailedPinning,
+  { blockedFallbackRequests: 1 },
+);
+assert.deepEqual(safelyBlockedFallbackAttempt.failureCodes, ["RESOLVE_FAILED"]);
+assert.equal(safelyBlockedFallbackAttempt.blockedFallbackRequests, 1);
+assert.equal(
+  computeGate(
+    [
+      {
+        success: false,
+        failureCodes: safelyBlockedFallbackAttempt.failureCodes,
+      },
+    ],
+    0,
+    { passed: true },
+  ).integrityPassed,
+  true,
 );
 
 const forwardedFetches = [];
