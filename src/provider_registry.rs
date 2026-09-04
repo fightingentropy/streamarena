@@ -56,6 +56,7 @@ pub const EMBED_IDS: &[&str] = &[
     "meridian",
     "gallic",
     "nebula",
+    "cinejoy",
 ];
 
 /// Replace the whole override map (called once at startup from the DB).
@@ -214,6 +215,7 @@ pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
     ("icefy", 500),
     ("gallic", 450),
     ("nebula", 380),
+    ("cinejoy", 400),
 ];
 
 /// Compiled default ranking weight for an embed provider (custom providers get
@@ -408,6 +410,7 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
         // Reference base only — the real install URL (with its private token) is
         // supplied via the NEBULA_ADDON_BASE env var and never shown/stored here.
         ("nebula", "NebulaStreams", "https://nebula.work.gd"),
+        ("cinejoy", "CineJoy", "https://cinejoy.to"),
     ];
     for (id, label, base) in EMBED_BASES.iter().copied() {
         out.push(ProviderInfo {

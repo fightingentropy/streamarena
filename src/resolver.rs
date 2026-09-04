@@ -52,6 +52,7 @@ use crate::utils::{
 };
 
 mod benchmark;
+mod cinejoy;
 mod external_embed;
 mod real_debrid;
 mod scoring;
@@ -4851,7 +4852,7 @@ fn external_embed_source_resolve_timeout_ms(source: ExternalEmbedSource) -> u64 
         // wider budget only spends leftover time, never starves a better source.
         // meridian/gallic make two sequential round-trips (aether resolve -> unwrap
         // origin -> validate the upstream playlist), so they get the full budget too.
-        "videasy" | "vidlink" | "icefy" | "vixsrc" | "meridian" | "gallic" => {
+        "videasy" | "vidlink" | "icefy" | "vixsrc" | "meridian" | "gallic" | "cinejoy" => {
             external_embed_hls_resolve_timeout_ms()
         }
         _ => external_embed_hls_resolve_timeout_ms().min(EXTERNAL_EMBED_DIRECT_RESOLVE_TIMEOUT_MS),
@@ -4962,6 +4963,7 @@ async fn resolve_external_embed_hls_playback_source(
     timeout_ms: u64,
 ) -> Option<ExternalEmbedHlsPlaybackSource> {
     match source.provider.id {
+        "cinejoy" => return cinejoy::resolve(client, source, embed_url, timeout_ms).await,
         "icefy" => return resolve_icefy_hls_playback_source(client, embed_url, timeout_ms).await,
         "vixsrc" => return resolve_vixsrc_hls_playback_source(client, embed_url, timeout_ms).await,
         "vidrock" => {

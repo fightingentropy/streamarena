@@ -11,6 +11,7 @@ const scriptsDir = dirname(fileURLToPath(import.meta.url));
 const checker = join(scriptsDir, "check-resolver-runtime.mjs");
 const runtimeFiles = [
   "resolve-external-embed-hls.mjs",
+  "resolve-cinejoy-hls.mjs",
   "resolve-streamed-hls.mjs",
   "resolve-matchstream-hls.mjs",
   "resolve-ntvs-hls.mjs",
@@ -47,7 +48,7 @@ test("resolver deployment bundle imports every runtime entrypoint", async (t) =>
 
   const result = checkBundle(runtimeDir);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, /8 entrypoints \+ Playwright loader/);
+  assert.match(result.stdout, /9 entrypoints \+ Playwright loader/);
 });
 
 test("resolver deployment bundle rejects a missing shared loader", async (t) => {

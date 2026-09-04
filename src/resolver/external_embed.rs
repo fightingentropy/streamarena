@@ -80,6 +80,30 @@ pub(super) const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
         label: "NebulaStreams",
         priority: 9,
     },
+    ExternalEmbedProvider {
+        id: "cinejoy",
+        label: "CineJoy",
+        priority: 10,
+    },
+];
+
+// Lisbon is the base source (one automatic attempt); the other independently
+// pinned choices share its provider budget, toggle, cache, and rank controls.
+const CINEJOY_SERVERS: &[ExternalEmbedServer] = &[
+    ExternalEmbedServer {
+        id: "NEBULA",
+        label: "CineJoy Nebula",
+        quality_label: "HLS",
+        detail_label: "CineJoy native HLS",
+        priority: 1,
+    },
+    ExternalEmbedServer {
+        id: "SOLARA",
+        label: "CineJoy Solara",
+        quality_label: "HLS",
+        detail_label: "CineJoy native HLS",
+        priority: 2,
+    },
 ];
 
 const VIDEASY_EXTERNAL_EMBED_SERVERS: &[ExternalEmbedServer] = &[
@@ -270,7 +294,7 @@ pub(super) fn is_default_external_embed_hls_fallback_source(source: ExternalEmbe
             .server
             .map(|server| server.id == "YORU")
             .unwrap_or(true),
-        "vidlink" => source.server.is_none(),
+        "vidlink" | "cinejoy" => source.server.is_none(),
         "vidrock" | "notorrent" | "vixsrc" | "lordflix" | "meridian" | "gallic" | "nebula" => {
             source.server.is_none()
         }
@@ -301,6 +325,7 @@ pub(super) fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) 
             | "meridian"
             | "gallic"
             | "nebula"
+            | "cinejoy"
     ) || crate::provider_registry::is_custom(source.provider.id)
 }
 
@@ -335,6 +360,7 @@ fn external_embed_source_quality_score(source: ExternalEmbedSource) -> i64 {
         // Lowest-tier fallback; keeps Nebula just below meridian/gallic and above
         // the flaky VidEasy server-variants in the rank ordering.
         "nebula" => 350,
+        "cinejoy" => 350,
         "videasy" => 300,
         _ => 0,
     }
@@ -376,6 +402,11 @@ pub(super) fn external_embed_url(
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
         ("vidlink", "movie") => Some(format!("https://vidlink.pro/movie/{tmdb_id}")),
+        ("cinejoy", "movie") => Some(format!("https://cinejoy.to/watch/movie/{tmdb_id}")),
+        ("cinejoy", "tv") => Some(format!(
+            "https://cinejoy.to/watch/tv/{}/{}/{}",
+            tmdb_id, metadata.season_number, metadata.episode_number
+        )),
         ("vidlink", "tv") => Some(format!(
             "https://vidlink.pro/tv/{}/{}/{}",
             tmdb_id, metadata.season_number, metadata.episode_number
@@ -512,11 +543,15 @@ fn external_embed_servers_for_provider(
 ) -> &'static [ExternalEmbedServer] {
     match provider.id {
         "videasy" => VIDEASY_EXTERNAL_EMBED_SERVERS,
+        "cinejoy" => CINEJOY_SERVERS,
         _ => &[],
     }
 }
 
 fn external_embed_source_priority(source: ExternalEmbedSource, _metadata: &ResolveMetadata) -> i64 {
+    if source.provider.id == "cinejoy" {
+        return source.provider.priority + source.server.map(|server| server.priority).unwrap_or(0);
+    }
     if source.provider.id == "vidlink" {
         return 0;
     }
@@ -553,6 +588,9 @@ fn external_embed_source_priority(source: ExternalEmbedSource, _metadata: &Resol
 }
 
 fn external_embed_source_display_name(source: ExternalEmbedSource) -> String {
+    if source.provider.id == "cinejoy" && source.server.is_none() {
+        return "CineJoy Lisbon".to_owned();
+    }
     source
         .server
         .map(|server| server.label.to_owned())
@@ -593,6 +631,7 @@ fn external_embed_source_detail_label(source: ExternalEmbedSource) -> &'static s
         "nebula" => return "Stremio addon HLS",
         "meridian" => return "Native HLS, TV + movies",
         "gallic" => return "Native HLS, up to 4K",
+        "cinejoy" => return "CineJoy native HLS",
         id if crate::provider_registry::is_custom(id) => return "Custom Stremio addon",
         _ => {}
     }

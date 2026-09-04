@@ -609,6 +609,43 @@ fn external_embed_provider(id: &str) -> ExternalEmbedSource {
 }
 
 #[test]
+fn cinejoy_sources_have_unique_pins_and_only_lisbon_is_an_automatic_fallback() {
+    let metadata = sample_movie_metadata();
+    let sources: Vec<_> = external_embed_sources()
+        .into_iter()
+        .filter(|source| source.provider.id == "cinejoy")
+        .collect();
+    assert_eq!(sources.len(), 3);
+    let hashes: std::collections::HashSet<_> = sources
+        .iter()
+        .map(|source| external_embed_source_hash(*source, &metadata))
+        .collect();
+    assert_eq!(hashes.len(), 3);
+    for source in sources {
+        assert!(is_external_embed_hls_capable_source(source));
+        assert_eq!(
+            is_default_external_embed_hls_fallback_source(source),
+            source.server.is_none()
+        );
+        assert_eq!(
+            external_embed_url(source, &metadata).as_deref(),
+            Some("https://cinejoy.to/watch/movie/1368166")
+        );
+        assert_eq!(
+            external_embed_url(source, &sample_tv_metadata()).as_deref(),
+            Some("https://cinejoy.to/watch/tv/76331/1/1")
+        );
+        assert_eq!(
+            external_embed_source_for_source_hash(
+                &metadata,
+                &external_embed_source_hash(source, &metadata)
+            ),
+            Some(source)
+        );
+    }
+}
+
+#[test]
 fn meridian_ranks_first_and_gallic_stays_a_lower_fallback() {
     let movie = sample_resolve_metadata("movie", "872585", 0, 0);
     let meridian = external_embed_provider("meridian");
@@ -776,7 +813,7 @@ fn external_embed_sources_use_stable_hashes_and_hls_urls() {
 
     // Meridian leads, then LordFlix / VidRock, ahead of the flaky providers
     // (VidLink/VixSrc/Icefy), with Gallic and the VidEasy variants trailing.
-    assert_eq!(sources.len(), 16);
+    assert_eq!(sources.len(), 19);
     assert_eq!(sources[0].primary, "Meridian");
     assert_eq!(sources[0].provider, "LivNet");
     assert_eq!(sources[0].filename, "Meridian embed");
@@ -891,9 +928,9 @@ fn external_embed_sources_use_stable_hashes_and_hls_urls() {
         "https://vidlink.pro/tv/76331/1/1"
     );
 
-    // TV gains only Meridian (Gallic's upstream is movie-only), so 15 not 16.
+    // Gallic remains movie-only; CineJoy contributes three movie/TV choices.
     let tv_sources = build_external_embed_source_summaries(&tv_metadata, &health_scores);
-    assert_eq!(tv_sources.len(), 15);
+    assert_eq!(tv_sources.len(), 18);
     assert!(tv_sources.iter().any(|source| source.primary == "Meridian"));
     assert!(!tv_sources.iter().any(|source| source.primary == "Gallic"));
     assert_eq!(tv_sources[0].primary, "Meridian");
@@ -1062,8 +1099,9 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
     assert_eq!(source_ids.get(6), Some(&("videasy", "default")));
     // Gallic (movie-only aether sibling) sits above the flaky VidEasy variants.
     assert_eq!(source_ids.get(7), Some(&("gallic", "default")));
-    assert_eq!(source_ids.get(8), Some(&("videasy", "YORU")));
-    assert_eq!(source_ids.len(), 9);
+    assert_eq!(source_ids.get(8), Some(&("cinejoy", "default")));
+    assert_eq!(source_ids.get(9), Some(&("videasy", "YORU")));
+    assert_eq!(source_ids.len(), 10);
 
     let tv_metadata = sample_tv_metadata();
     let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
@@ -1090,8 +1128,9 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
     assert_eq!(tv_source_ids.get(4), Some(&("vidlink", "default")));
     assert_eq!(tv_source_ids.get(5), Some(&("vixsrc", "default")));
     assert_eq!(tv_source_ids.get(6), Some(&("videasy", "default")));
-    assert_eq!(tv_source_ids.get(7), Some(&("videasy", "YORU")));
-    assert_eq!(tv_source_ids.len(), 8);
+    assert_eq!(tv_source_ids.get(7), Some(&("cinejoy", "default")));
+    assert_eq!(tv_source_ids.get(8), Some(&("videasy", "YORU")));
+    assert_eq!(tv_source_ids.len(), 9);
 
     let neon_source = external_embed_sources()
         .into_iter()

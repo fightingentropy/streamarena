@@ -8,6 +8,7 @@ const runtimeDir = resolve(process.argv[2] || new URL(".", import.meta.url).path
 const loaderPath = resolve(runtimeDir, "lib/load-playwright.mjs");
 const resolverEntrypoints = [
   "resolve-external-embed-hls.mjs",
+  "resolve-cinejoy-hls.mjs",
   "resolve-streamed-hls.mjs",
   "resolve-matchstream-hls.mjs",
   "resolve-ntvs-hls.mjs",
