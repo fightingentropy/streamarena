@@ -1128,6 +1128,7 @@ async function runSmoke() {
       if (
         pageSpec.expectSourceSwitch ||
         pageSpec.expectSourceSwitchFailureRestore ||
+        pageSpec.expectRealDebridCacheRefresh ||
         initialResolveRaceCase
       ) {
         await context.addInitScript(({ sourceHashes, failingHash }) => {
@@ -1142,6 +1143,19 @@ async function runSmoke() {
             const currentSource = String(media.getAttribute("src") || "");
             return currentSource.includes(failingHash);
           };
+          // These sources are fully simulated below. A clean checkout does not
+          // contain the gitignored smoke MP4, so suppress only the browser's
+          // trusted network error and let synthetic failure events keep testing
+          // the recovery path.
+          window.addEventListener("error", (event) => {
+            if (
+              event.isTrusted &&
+              event.target instanceof HTMLMediaElement &&
+              shouldHandleSource(event.target)
+            ) {
+              event.stopImmediatePropagation();
+            }
+          }, true);
           const originalLoad = HTMLMediaElement.prototype.load;
           const originalPlay = HTMLMediaElement.prototype.play;
           HTMLMediaElement.prototype.load = function patchedLoad(...args) {
