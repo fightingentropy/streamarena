@@ -136,9 +136,13 @@ import {
 } from "../player/remux-routing.js";
 import {
   RESUME_CLEAR_AT_END_THRESHOLD_SECONDS,
+  createBoundedWatchProgressRetry,
   createInitialResumeController,
+  isPlayerStartupOwnerCurrent,
   normalizeResumeStartSeconds,
   resolvePendingDirectSeekSeconds,
+  shouldRetryPlayerContinueWatching,
+  shouldRetryPlayerWatchProgress,
   withRemuxResumeStart,
 } from "../player/resume-start.js";
 import {
@@ -154,7 +158,11 @@ import {
   toggleFullscreenMode as togglePlayerFullscreenMode,
 } from "../player/fullscreen.js";
 import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
-import { handleAuthFailureResponse } from "../lib/auth.js";
+import {
+  USER_STATE_OWNER_KEY,
+  getServerHydrationStatus,
+  handleAuthFailureResponse,
+} from "../lib/auth.js";
 import {
   normalizeRealDebridSettings,
   pickTorrentResolverProvider,
@@ -183,7 +191,18 @@ function fetchUserApi(path, options) {
   });
 }
 
+function readPlayerUserStateOwner() {
+  try {
+    return String(localStorage.getItem(USER_STATE_OWNER_KEY) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 export default function PlayerPage() {
+  const startBoundedWatchProgressRetry = createBoundedWatchProgressRetry({
+    fetchUserApiFn: fetchUserApi,
+  });
   // ─── Ref declarations (replacing document.getElementById) ───
   let video, goBack, seekBar, seekPlayedProgress, seekBufferedProgress, seekPreview, seekPreviewCanvas, seekPreviewTime;
   let durationText, togglePlay, rewind10, forward10, volumeControl, volumeSlider;
@@ -1320,41 +1339,6 @@ function applyRememberedTmdbSourcePin({ force = false } = {}) {
 
 applyRememberedTmdbSourcePin();
 clearDisabledTorrentPlaybackState();
-
-try {
-  const storedResume = Number(localStorage.getItem(resumeStorageKey));
-  if (Number.isFinite(storedResume) && storedResume > 0) {
-    resumeTime = storedResume;
-    lastPersistedResumeTime = storedResume;
-  }
-} catch {
-  // Ignore storage access issues.
-}
-// If localStorage has no resume, fetch from server and apply as fallback.
-if (!(resumeTime > 1)) {
-  fetchUserApi("/api/user/watch-progress")
-    .then((res) => (res.ok ? res.json() : null))
-    .then((data) => {
-      if (!data) return;
-      const entry = (data.entries || []).find(
-        (e) => e.sourceIdentity === sourceIdentity,
-      );
-      if (entry && Number.isFinite(entry.resumeSeconds) && entry.resumeSeconds > 1) {
-        resumeTime = entry.resumeSeconds;
-        lastPersistedResumeTime = entry.resumeSeconds;
-        resetInitialResumeApplication();
-        try {
-          localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
-        } catch {}
-        persistContinueWatchingEntry(entry.resumeSeconds);
-        if (!applyInitialResumeIfReady()) {
-          scheduleInitialResumeRetry();
-        }
-      }
-    })
-    .catch(() => {});
-}
-
 function getCanonicalContinueWatchingMetadata() {
   const isTmdbSeriesPlayback = Boolean(isTmdbTvPlayback && tmdbId);
   const normalizedSeriesId = isSeriesPlayback
@@ -8094,12 +8078,37 @@ async function initPlaybackSource() {
   selectRememberedWorkingLiveStreamIfNeeded();
   selectFirstFreshLiveStreamIfNeeded();
   resumeStorageKey = `streamarena-resume:${sourceIdentity}`;
-  // The RD-settings and continue-watching round-trips are independent of each
-  // other, but were previously awaited back-to-back — a full serialized RTT
-  // added to every cold open. Start both in flight now and await each only
-  // where its result is actually consumed: RD settings before the torrent-pin
-  // decisions just below, the continue-watching entry before the resume
-  // position is settled further down.
+  // Authenticated pages finish owner-checked server hydration before this
+  // component mounts. Read the final identity from that cache here; failed
+  // hydration deliberately leaves the same account's offline cache intact.
+  try {
+    const storedResume = Number(localStorage.getItem(resumeStorageKey));
+    if (Number.isFinite(storedResume) && storedResume > 0) {
+      resumeTime = storedResume;
+      lastPersistedResumeTime = storedResume;
+    }
+  } catch {}
+  const startupUserStateOwner = readPlayerUserStateOwner();
+  const startupUserStateOwnerIsCurrent = () =>
+    isPlayerStartupOwnerCurrent(
+      startupUserStateOwner,
+      readPlayerUserStateOwner(),
+    );
+  const hydrationStatus = getServerHydrationStatus();
+  const shouldRetryWatchProgress = shouldRetryPlayerWatchProgress({
+    resumeTime,
+    userStateOwner: startupUserStateOwner,
+    hydrationStatus,
+  });
+  const shouldRetryContinueWatching = shouldRetryPlayerContinueWatching({
+    isTmdbResolvedPlayback,
+    userStateOwner: startupUserStateOwner,
+    hydrationStatus,
+  });
+  // These remaining user-state round-trips are independent. Start them
+  // together and await each only where its result is consumed: RD settings
+  // before the torrent-pin decisions and Continue Watching before source-pin
+  // hydration.
   const userRealDebridSettingsReady = isTmdbResolvedPlayback
     ? loadUserRealDebridPlaybackSettings()
     : null;
@@ -8107,7 +8116,7 @@ async function initPlaybackSource() {
   // to the localStorage resume path (exactly like the old inline try/catch)
   // instead of stalling playback start — and so a rejection that lands while
   // the RD await is still pending can't surface as an unhandled rejection.
-  const serverContinueWatchingFetch = isTmdbResolvedPlayback
+  const serverContinueWatchingFetch = shouldRetryContinueWatching
     ? (async () => {
         const abortController = new AbortController();
         const abortTimer = setTimeout(() => abortController.abort(), 5000);
@@ -8123,45 +8132,48 @@ async function initPlaybackSource() {
         }
       })()
     : null;
+  // A recovered connection may follow an offline/failed pre-mount hydration.
+  // Start one tightly bounded retry alongside the other reads, but only when
+  // progress hydration failed and the final local key is empty. Its internal
+  // catch makes it safe to leave unawaited if Continue Watching supplies the
+  // resume first.
+  const serverWatchProgressRetry = shouldRetryWatchProgress
+    ? startBoundedWatchProgressRetry()
+    : null;
   if (userRealDebridSettingsReady) {
     await userRealDebridSettingsReady;
   }
+  if (!startupUserStateOwnerIsCurrent()) return;
   applyRememberedTmdbSourcePin();
   clearDisabledTorrentPlaybackState();
-
-  // Re-read resume time with the (possibly updated) storage key.
-  try {
-    const storedResume = Number(localStorage.getItem(resumeStorageKey));
-    if (Number.isFinite(storedResume) && storedResume > 0) {
-      resumeTime = storedResume;
-      lastPersistedResumeTime = storedResume;
-    }
-  } catch {}
   if (serverContinueWatchingFetch) {
     try {
       const data = await serverContinueWatchingFetch;
-      const entry = (data?.entries || []).find(
-        (e) => e.sourceIdentity === sourceIdentity,
-      );
-      if (entry) {
-        rememberServerContinueWatchingEntry(entry);
-        applyRememberedTmdbSourcePin({ force: true });
-        clearDisabledTorrentPlaybackState();
-        if (
-          !(resumeTime > 1) &&
-          Number.isFinite(entry.resumeSeconds) &&
-          entry.resumeSeconds > 1
-        ) {
-          resumeTime = entry.resumeSeconds;
-          lastPersistedResumeTime = entry.resumeSeconds;
-          resetInitialResumeApplication();
-          try {
-            localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
-          } catch {}
+      if (startupUserStateOwnerIsCurrent()) {
+        const entry = (data?.entries || []).find(
+          (e) => e.sourceIdentity === sourceIdentity,
+        );
+        if (entry) {
+          rememberServerContinueWatchingEntry(entry);
+          applyRememberedTmdbSourcePin({ force: true });
+          clearDisabledTorrentPlaybackState();
+          if (
+            !(resumeTime > 1) &&
+            Number.isFinite(entry.resumeSeconds) &&
+            entry.resumeSeconds > 1
+          ) {
+            resumeTime = entry.resumeSeconds;
+            lastPersistedResumeTime = entry.resumeSeconds;
+            resetInitialResumeApplication();
+            try {
+              localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
+            } catch {}
+          }
         }
       }
     } catch {}
   }
+  if (!startupUserStateOwnerIsCurrent()) return;
 
   // Real-Debrid's cached path is dramatically faster than resolving a
   // third-party embed. Use it for a fresh automatic start, while retaining any
@@ -8180,26 +8192,33 @@ async function initPlaybackSource() {
     tmdbSkipExternalEmbed = true;
   }
 
-  // If localStorage still has no resume, try the lighter progress endpoint.
-  if (!(resumeTime > 1)) {
-    try {
-      const res = await fetchUserApi("/api/user/watch-progress");
-      if (res.ok) {
-        const data = await res.json();
-        const entry = (data?.entries || []).find(
-          (e) => e.sourceIdentity === sourceIdentity,
-        );
-        if (entry && Number.isFinite(entry.resumeSeconds) && entry.resumeSeconds > 1) {
-          resumeTime = entry.resumeSeconds;
-          lastPersistedResumeTime = entry.resumeSeconds;
-          resetInitialResumeApplication();
-          try {
-            localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
-          } catch {}
-        }
+  if (!(resumeTime > 1) && serverWatchProgressRetry) {
+    const data = await serverWatchProgressRetry;
+    if (
+      data &&
+      !(resumeTime > 1) &&
+      startupUserStateOwner &&
+      startupUserStateOwnerIsCurrent()
+    ) {
+      const entry = (data?.entries || []).find(
+        (candidate) => candidate.sourceIdentity === sourceIdentity,
+      );
+      if (
+        entry &&
+        Number.isFinite(entry.resumeSeconds) &&
+        entry.resumeSeconds > 1
+      ) {
+        resumeTime = entry.resumeSeconds;
+        lastPersistedResumeTime = entry.resumeSeconds;
+        resetInitialResumeApplication();
+        try {
+          localStorage.setItem(resumeStorageKey, String(entry.resumeSeconds));
+        } catch {}
       }
-    } catch {}
+    }
   }
+  if (!startupUserStateOwnerIsCurrent()) return;
+
   if (resumeTime > 1) {
     persistContinueWatchingEntry(resumeTime);
   }

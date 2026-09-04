@@ -7,6 +7,16 @@ export const USER_STATE_OWNER_KEY = "streamarena-user-state-owner-v1";
 export const USER_STATE_CACHED_USER_KEY = "streamarena-user-state-user-v1";
 export const SERVER_HYDRATED_EVENT = "streamarena:server-hydrated";
 
+let latestServerHydrationStatus = Object.freeze({
+  authExpired: false,
+  didLoadProgress: false,
+  didLoadContinueWatching: false,
+});
+
+export function getServerHydrationStatus() {
+  return { ...latestServerHydrationStatus };
+}
+
 const DEPRECATED_BROWSER_PREF_KEYS = new Set([
   "streamarena-hero-trailer-muted-v2",
   "streamarena-stream-quality-pref",
@@ -416,9 +426,6 @@ export async function hydrateFromServer() {
     const serverResumeSources = new Set();
     const didLoadProgress = Boolean(progressRes?.ok);
     const didLoadContinueWatching = Boolean(continueRes?.ok);
-    result.didLoadProgress = didLoadProgress;
-    result.didLoadContinueWatching = didLoadContinueWatching;
-
     if (didLoadProgress) {
       const progress = await progressRes.json();
       if (!stillOwnsHydrationState()) return result;
@@ -436,6 +443,7 @@ export async function hydrateFromServer() {
           );
         }
       }
+      result.didLoadProgress = true;
     }
 
     if (didLoadContinueWatching) {
@@ -464,6 +472,7 @@ export async function hydrateFromServer() {
       } else {
         storage.removeItem(CONTINUE_WATCHING_META_KEY);
       }
+      result.didLoadContinueWatching = true;
     }
 
     if (didLoadProgress && didLoadContinueWatching) {
@@ -490,6 +499,11 @@ export async function hydrateFromServer() {
     // Malformed or temporarily unavailable server data: retain this account's
     // owner-tagged browser cache instead of treating it as an auth failure.
   } finally {
+    latestServerHydrationStatus = Object.freeze({
+      authExpired: Boolean(result.authExpired),
+      didLoadProgress: Boolean(result.didLoadProgress),
+      didLoadContinueWatching: Boolean(result.didLoadContinueWatching),
+    });
     dispatchHydratedEvent(result);
   }
   return result;

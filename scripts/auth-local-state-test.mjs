@@ -75,6 +75,7 @@ const {
   establishUserLocalState,
   getCachedUserForOffline,
   getAuthSession,
+  getServerHydrationStatus,
   hydrateFromServer,
   signOut,
 } = auth;
@@ -200,7 +201,11 @@ const {
     ["/api/user/continue-watching", jsonResponse({ entries: [] })],
     ["/api/user/my-list", jsonResponse({ entries: [{ id: "movie-1" }] })],
   ]);
-  globalThis.fetch = async (path) => payloads.get(path);
+  const hydrationRequests = [];
+  globalThis.fetch = async (path) => {
+    hydrationRequests.push(path);
+    return payloads.get(path);
+  };
   const result = await hydrateFromServer();
   assert(result.ok && result.didLoadPreferences && result.didLoadMyList, "Hydration did not report success.", result);
   assert(
@@ -208,6 +213,28 @@ const {
       state.localStorage.getItem("streamarena-resume:server") === "15" &&
       state.localStorage.getItem("streamarena-resume:stale") === null,
     "Hydration did not apply/prune server state.",
+  );
+  assert(
+    hydrationRequests.filter((path) => path === "/api/user/watch-progress").length === 1,
+    "Successful hydration did not issue exactly one progress read.",
+  );
+  assert(
+    hydrationRequests.filter((path) => path === "/api/user/continue-watching").length === 1,
+    "Successful hydration did not issue exactly one Continue Watching read.",
+  );
+  let hydrationStatus = getServerHydrationStatus();
+  assert(
+    hydrationStatus.didLoadProgress &&
+      hydrationStatus.didLoadContinueWatching &&
+      !hydrationStatus.authExpired &&
+      Object.keys(hydrationStatus).length === 3 &&
+      Object.values(hydrationStatus).every((value) => typeof value === "boolean"),
+    "Successful hydration status was not recorded as boolean-only state.",
+  );
+  hydrationStatus.didLoadProgress = false;
+  assert(
+    getServerHydrationStatus().didLoadProgress,
+    "Hydration status getter exposed mutable shared state.",
   );
 
   state.localStorage.setItem("streamarena-resume:offline-fallback", "44");
@@ -217,10 +244,42 @@ const {
     state.localStorage.getItem("streamarena-resume:offline-fallback") === "44",
     "Partial hydration pruned offline fallback state.",
   );
+  hydrationStatus = getServerHydrationStatus();
+  assert(
+    !hydrationStatus.didLoadProgress &&
+      hydrationStatus.didLoadContinueWatching &&
+      !hydrationStatus.authExpired,
+    "Partial hydration status lost the successful Continue Watching read.",
+  );
+
+  payloads.set("/api/user/continue-watching", jsonResponse({ error: "temporary" }, 503));
+  payloads.set(
+    "/api/user/watch-progress",
+    jsonResponse({ entries: [{ sourceIdentity: "server", resumeSeconds: 15 }] }),
+  );
+  await hydrateFromServer();
+  hydrationStatus = getServerHydrationStatus();
+  assert(
+    hydrationStatus.didLoadProgress &&
+      !hydrationStatus.didLoadContinueWatching &&
+      !hydrationStatus.authExpired,
+    "Partial hydration status lost the successful progress read.",
+  );
+
+  payloads.set("/api/user/watch-progress", jsonResponse({ error: "temporary" }, 503));
+  await hydrateFromServer();
+  hydrationStatus = getServerHydrationStatus();
+  assert(
+    !hydrationStatus.didLoadProgress &&
+      !hydrationStatus.didLoadContinueWatching &&
+      !hydrationStatus.authExpired,
+    "Failed resume hydration did not expose the bounded-retry condition.",
+  );
 
   payloads.set("/api/user/preferences", jsonResponse({ error: "expired" }, 403));
   const expired = await hydrateFromServer();
   assert(expired.authExpired, "Hydration did not surface auth expiry.");
+  assert(getServerHydrationStatus().authExpired, "Hydration status lost auth expiry.");
   assert(state.localStorage.getItem(USER_STATE_OWNER_KEY) === null, "Hydration 403 retained private state.");
   assert(state.window.location.href === "/login.html", "Hydration 403 did not redirect to login.");
 }

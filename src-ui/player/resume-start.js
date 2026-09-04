@@ -5,6 +5,69 @@ export function normalizeResumeStartSeconds(value) {
   return Number.isFinite(seconds) && seconds > 1 ? Math.floor(seconds) : 0;
 }
 
+export function shouldRetryPlayerWatchProgress({
+  resumeTime,
+  userStateOwner,
+  hydrationStatus,
+}) {
+  return Boolean(
+    !(Number(resumeTime) > 1) &&
+      String(userStateOwner || "").trim() &&
+      !hydrationStatus?.authExpired &&
+      !hydrationStatus?.didLoadProgress,
+  );
+}
+
+export function shouldRetryPlayerContinueWatching({
+  isTmdbResolvedPlayback,
+  userStateOwner,
+  hydrationStatus,
+}) {
+  return Boolean(
+    isTmdbResolvedPlayback &&
+      String(userStateOwner || "").trim() &&
+      !hydrationStatus?.authExpired &&
+      !hydrationStatus?.didLoadContinueWatching,
+  );
+}
+
+export function isPlayerStartupOwnerCurrent(startupOwner, currentOwner) {
+  return (
+    String(startupOwner || "").trim() ===
+    String(currentOwner || "").trim()
+  );
+}
+
+export function createBoundedWatchProgressRetry({
+  fetchUserApiFn,
+  timeoutMs = 1200,
+  setTimeoutFn = (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+  clearTimeoutFn = (timeoutId) => globalThis.clearTimeout(timeoutId),
+  createAbortController = () => new AbortController(),
+}) {
+  let retryPromise = null;
+
+  return function startBoundedWatchProgressRetry() {
+    if (retryPromise) return retryPromise;
+    const abortController = createAbortController();
+    const abortTimer = setTimeoutFn(() => abortController.abort(), timeoutMs);
+    retryPromise = (async () => {
+      try {
+        const response = await fetchUserApiFn("/api/user/watch-progress", {
+          cache: "no-store",
+          signal: abortController.signal,
+        });
+        return response?.ok ? await response.json() : null;
+      } catch {
+        return null;
+      } finally {
+        clearTimeoutFn(abortTimer);
+      }
+    })();
+    return retryPromise;
+  };
+}
+
 export function resolvePendingDirectSeekSeconds(
   requestedStartSeconds,
   pendingSeekSeconds,
