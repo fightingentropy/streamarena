@@ -9,13 +9,6 @@ import {
 export const SOURCE_MENU_HLS_TAB = "hls";
 export const SOURCE_MENU_TORRENTS_TAB = "torrents";
 
-export function shouldIgnoreRememberedTorrentSource(
-  shouldResumePlayback = false,
-  torrentProviderEnabled = false,
-) {
-  return !shouldResumePlayback || !torrentProviderEnabled;
-}
-
 function getSourceMenuTab(option) {
   return isSourceOptionEmbed(option)
     ? SOURCE_MENU_HLS_TAB

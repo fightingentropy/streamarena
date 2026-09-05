@@ -3,7 +3,6 @@ import {
   SOURCE_MENU_HLS_TAB,
   SOURCE_MENU_TORRENTS_TAB,
   buildSourceMenuView,
-  shouldIgnoreRememberedTorrentSource,
 } from "../src-ui/player/source-menu-tabs.js";
 import {
   getSourceDisplayHint,
@@ -97,9 +96,6 @@ const emptyTorrentView = buildSourceMenuView({
 assert.deepEqual(emptyTorrentView.sources, []);
 assert.equal(emptyTorrentView.emptyMessage, "No torrent sources available.");
 
-assert.equal(shouldIgnoreRememberedTorrentSource(false, true), true);
-assert.equal(shouldIgnoreRememberedTorrentSource(true, true), false);
-assert.equal(shouldIgnoreRememberedTorrentSource(true, false), true);
 
 const cachedTorrentSource = {
   ...torrentSource,

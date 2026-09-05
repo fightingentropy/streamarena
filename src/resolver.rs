@@ -4817,7 +4817,9 @@ fn external_embed_hls_candidate_sources(
     health_scores: &HashMap<String, i64>,
 ) -> Vec<ExternalEmbedSource> {
     let mut candidates = Vec::new();
-    if allow_native_fallback {
+    // CineJoy is an explicit default, so another provider must not win a startup
+    // race against it. The player's existing recovery still handles a failed stream.
+    if allow_native_fallback && source.provider.id != "cinejoy" {
         for candidate in preferred_external_embed_hls_sources(metadata, health_scores) {
             if !candidates.contains(&candidate) {
                 candidates.push(candidate);

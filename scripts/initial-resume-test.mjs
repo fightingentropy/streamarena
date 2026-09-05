@@ -596,8 +596,8 @@ run("hydrates resume from the finalized playback identity before startup reads",
   const continueGateIndex = initSource.indexOf(
     "const serverContinueWatchingFetch = shouldRetryContinueWatching",
   );
-  const finalIdentityPinIndex = initSource.indexOf(
-    "applyRememberedTmdbSourcePin();",
+  const finalSourceGuardIndex = initSource.indexOf(
+    "clearDisabledTorrentPlaybackState();",
     settingsAwaitIndex,
   );
   const continueAwaitIndex = initSource.indexOf(
@@ -625,11 +625,11 @@ run("hydrates resume from the finalized playback identity before startup reads",
   );
   assert.ok(
     settingsAwaitIndex < ownerGuardIndexes[0] &&
-      ownerGuardIndexes[0] < finalIdentityPinIndex &&
+      ownerGuardIndexes[0] < finalSourceGuardIndex &&
       continueAwaitIndex < ownerGuardIndexes[1] &&
       retryAwaitIndex < ownerGuardIndexes[2] &&
       ownerGuardIndexes[2] < finalPersistenceIndex,
-    "owner/auth changes must stop startup before pins, persistence, or source work",
+    "owner/auth changes must stop startup before source validation, persistence, or source work",
   );
   assert.equal(
     hydrationStatusCalls.length,
@@ -641,9 +641,9 @@ run("hydrates resume from the finalized playback identity before startup reads",
     "Continue Watching recovery must be gated by the captured hydration result",
   );
   assert.ok(
-    settingsAwaitIndex < finalIdentityPinIndex &&
-      finalIdentityPinIndex < continueAwaitIndex,
-    "the finalized identity must apply pre-mount hydrated source metadata without a refetch",
+    settingsAwaitIndex < finalSourceGuardIndex &&
+      finalSourceGuardIndex < continueAwaitIndex,
+    "the finalized identity must validate enabled sources before awaiting Continue Watching",
   );
   assert.match(
     initSource.slice(continueAwaitIndex, continueAwaitIndex + 500),

@@ -228,24 +228,20 @@ pub(super) fn default_external_embed_source(
     metadata: &ResolveMetadata,
     health_scores: &HashMap<String, i64>,
 ) -> Option<ExternalEmbedSource> {
-    let mut sources = external_embed_sources()
+    // Automatic movie/TV playback starts on CineJoy Lisbon. Rankings and past
+    // playback failures must not turn another provider into the user's default.
+    external_embed_sources()
         .into_iter()
-        .filter(|source| is_external_embed_hls_capable_source(*source))
-        .filter(|source| external_embed_url(*source, metadata).is_some())
-        .collect::<Vec<_>>();
-    sources.sort_by(|left, right| {
-        external_embed_source_rank_score(*right, metadata, health_scores)
-            .cmp(&external_embed_source_rank_score(
-                *left,
-                metadata,
-                health_scores,
-            ))
-            .then_with(|| {
-                external_embed_source_display_name(*left)
-                    .cmp(&external_embed_source_display_name(*right))
-            })
-    });
-    sources.into_iter().next()
+        .find(|source| {
+            source.provider.id == "cinejoy"
+                && source.server.is_none()
+                && external_embed_url(*source, metadata).is_some()
+        })
+        .or_else(|| {
+            preferred_external_embed_hls_sources(metadata, health_scores)
+                .into_iter()
+                .next()
+        })
 }
 
 pub(super) fn preferred_external_embed_hls_sources(

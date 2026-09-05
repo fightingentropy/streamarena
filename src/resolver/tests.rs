@@ -964,18 +964,18 @@ fn external_embed_sources_use_stable_hashes_and_hls_urls() {
 }
 
 #[test]
-fn default_external_embed_prefers_hls_sources() {
+fn default_external_embed_prefers_cinejoy_for_movies_and_tv_unless_pinned() {
     let metadata = sample_movie_metadata();
     let health_scores = HashMap::new();
     let source =
         default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-    assert_eq!(source.provider.id, "meridian");
+    assert_eq!(source.provider.id, "cinejoy");
     assert_eq!(source.server.map(|server| server.id), None);
 
     let tv_metadata = sample_tv_metadata();
     let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
         .expect("default tv embed source");
-    assert_eq!(tv_source.provider.id, "meridian");
+    assert_eq!(tv_source.provider.id, "cinejoy");
     assert_eq!(tv_source.server.map(|server| server.id), None);
 
     let filters = ResolveFilters {
@@ -990,6 +990,18 @@ fn default_external_embed_prefers_hls_sources() {
     assert!(!should_prefer_default_external_embed(
         &filters,
         ResolverProvider::LocalTorrent
+    ));
+    assert!(!should_prefer_default_external_embed(
+        &filters,
+        ResolverProvider::RealDebrid
+    ));
+    let pinned = ResolveFilters {
+        source_hash: "a".repeat(40),
+        ..filters.clone()
+    };
+    assert!(!should_prefer_default_external_embed(
+        &pinned,
+        ResolverProvider::Fastest
     ));
     assert!(!should_resolve_torrent_candidates(
         &filters,
@@ -1011,7 +1023,7 @@ fn external_embed_payload_routes_playlists_via_worker_when_configured() {
         subtitle_lang: String::new(),
         quality: "auto".to_owned(),
     };
-    // LordFlix is used here as a direct-segment HLS fixture; Meridian is the
+    // LordFlix is used here as a direct-segment HLS fixture; CineJoy is the
     // current default embed, so construct the source explicitly.
     let lordflix = external_embed_provider("lordflix");
     assert_eq!(lordflix.provider.id, "lordflix");
@@ -1095,8 +1107,7 @@ fn external_embed_payload_routes_playlists_via_worker_when_configured() {
 fn default_external_embed_native_fallback_can_try_hls_sources() {
     let metadata = sample_movie_metadata();
     let health_scores = HashMap::new();
-    let source =
-        default_external_embed_source(&metadata, &health_scores).expect("default embed source");
+    let source = external_embed_provider("meridian");
     assert_eq!(source.provider.id, "meridian");
     assert_eq!(source.server.map(|server| server.id), None);
 
@@ -1128,8 +1139,7 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
     assert_eq!(source_ids.len(), 10);
 
     let tv_metadata = sample_tv_metadata();
-    let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
-        .expect("default tv embed source");
+    let tv_source = external_embed_provider("meridian");
     let tv_candidates =
         external_embed_hls_candidate_sources(tv_source, &tv_metadata, true, &health_scores);
     let tv_source_ids = tv_candidates
@@ -1184,8 +1194,7 @@ fn external_embed_unhealthy_sources_skip_auto_fallback() {
         ),
         SOURCE_HEALTH_AVOID_SCORE - 500,
     )]);
-    let source =
-        default_external_embed_source(&metadata, &health_scores).expect("default embed source");
+    let source = external_embed_provider("meridian");
     let candidates = external_embed_hls_candidate_sources(source, &metadata, true, &health_scores);
     let provider_ids = candidates
         .iter()
@@ -1203,22 +1212,29 @@ fn external_embed_unhealthy_sources_skip_auto_fallback() {
 }
 
 #[test]
-fn external_embed_positive_health_does_not_override_reliable_baseline() {
+fn external_embed_health_does_not_replace_the_cinejoy_default() {
     let metadata = sample_movie_metadata();
     let mut health_scores = HashMap::new();
     for source in external_embed_sources() {
-        if source.provider.id == "meridian" {
+        if source.provider.id == "cinejoy" {
             continue;
         }
         health_scores.insert(external_embed_source_hash(source, &metadata), 150);
     }
 
-    // A max positive-health streak on every other provider still can't lift
-    // one above the un-boosted top Meridian tier (gap 200 > +150).
+    // Rankings and old playback failures do not override the default. Only an
+    // actual failed attempt enters the player's normal source recovery.
+    let cinejoy = external_embed_provider("cinejoy");
+    health_scores.insert(external_embed_source_hash(cinejoy, &metadata), -6_000);
     let source =
         default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-    assert_eq!(source.provider.id, "meridian");
+    assert_eq!(source.provider.id, "cinejoy");
     assert_eq!(source.server.map(|server| server.id), None);
+    assert_eq!(
+        external_embed_hls_candidate_sources(source, &metadata, true, &health_scores),
+        vec![cinejoy],
+        "automatic CineJoy playback must not race another provider"
+    );
 
     let capped = compute_external_embed_rank_health_score(&SourceHealthStats {
         success_count: 12,

@@ -45,16 +45,14 @@ import {
   sortSourcesBySeeders,
   isBrowserSafeAudioCodec,
 } from "../player/sources.js";
-import { buildSourceMenuView, createSourceOptionButton, shouldIgnoreRememberedTorrentSource, syncSourceMenuTabs } from "../player/source-menu-tabs.js";
+import { buildSourceMenuView, createSourceOptionButton, syncSourceMenuTabs } from "../player/source-menu-tabs.js";
 import { createSourceDownloadController } from "../player/source-download.js";
 import { createRealDebridSourceRefreshController } from "../player/real-debrid-cache-refresh.js";
 import { buildTmdbSourceDiscoveryQuery } from "../player/source-discovery.js";
 import {
   isTorrentResolverProvider,
   mergeRememberedServerContinueWatchingEntry,
-  readRememberedContinueWatchingSourceState,
   removeContinueWatchingMeta,
-  shouldIgnoreRememberedTmdbSourcePin as shouldIgnoreRememberedTmdbSourcePinForState,
   writeContinueWatchingEntry,
 } from "../player/continue-watching-pin.js";
 import {
@@ -168,7 +166,6 @@ import {
   pickTorrentResolverProvider,
   resolveTorrentRequestProvider,
   shouldFallbackAutomaticTorrentResolveToExternal,
-  shouldPreferRealDebridAutomaticPlayback,
 } from "../lib/real-debrid-settings.js";
 import { replaySafeMutationBody } from "../lib/replay-safe-state.js";
 import { renderPlayerShell } from "../player/player-shell-template.jsx";
@@ -946,7 +943,6 @@ const subtitleLangParam = (params.get("subtitleLang") || "")
   .trim()
   .toLowerCase();
 const sourceHashParam = (params.get("sourceHash") || "").trim().toLowerCase();
-const shouldResumeRememberedPlayback = /^(1|true|yes|on)$/.test(String(params.get("resumePlayback") || "").trim().toLowerCase());
 const hasDirectSourceHashParam = new URLSearchParams(window.location.search).has(
   "sourceHash",
 );
@@ -1143,10 +1139,6 @@ function shouldPreferMobileLightTmdbSources() {
   return Boolean(isTmdbResolvedPlayback && isMobileOrTabletVideoEnvironment());
 }
 
-function shouldUseFreshMobileTmdbSourceOrder() {
-  return shouldPreferMobileLightTmdbSources() && !normalizeSourceHash(sourceHashParam);
-}
-
 function applyMobileLightTmdbDefaults() {
   if (!shouldPreferMobileLightTmdbSources()) {
     return;
@@ -1254,90 +1246,12 @@ function getTmdbTorrentResolveTimeoutMs() {
   }).resolveTimeoutMs;
 }
 
-function getRememberedContinueWatchingSourceState() {
-  return readRememberedContinueWatchingSourceState(sourceIdentity);
-}
-
 function rememberServerContinueWatchingEntry(entry) {
   return mergeRememberedServerContinueWatchingEntry(sourceIdentity, entry);
 }
 
-function shouldIgnoreRememberedTmdbSourcePinForIframeFirst(remembered) {
-  return shouldIgnoreRememberedTmdbSourcePinForState({
-    remembered,
-    selectedSourceHash,
-    hasDirectSourceHashParam,
-    shouldResumeRememberedPlayback,
-    torrentProviderEnabled: isTorrentResolverProviderEnabledForPlayback(
-      remembered.resolverProvider,
-    ),
-    preferredResolverProvider,
-    preferredTorrentEnabled: isTorrentResolverProviderEnabledForPlayback(
-      preferredResolverProvider,
-    ),
-  });
-}
-
-function applyRememberedTmdbSourcePin({ force = false } = {}) {
-  if (!isTmdbResolvedPlayback) {
-    return false;
-  }
-  const remembered = getRememberedContinueWatchingSourceState();
-  if (shouldIgnoreRememberedTmdbSourcePinForIframeFirst(remembered)) {
-    clearRememberedTmdbSourcePinForFreshResolve();
-    return false;
-  }
-  if (
-    shouldUseFreshMobileTmdbSourceOrder() &&
-    (remembered.sourceHash || remembered.sessionKey || remembered.resolverProvider)
-  ) {
-    clearRememberedTmdbSourcePinForFreshResolve();
-    return false;
-  }
-  if (force) {
-    selectedSourceHash = remembered.sourceHash;
-    sourceSelectionPinned = Boolean(selectedSourceHash);
-    currentTmdbPlaybackSessionKey = remembered.sessionKey;
-    currentTmdbResolverProvider = remembered.resolverProvider;
-    currentTmdbResolvedFilename = remembered.filename;
-    activeTrackSourceInput = remembered.sourceInput;
-    if (isTorrentResolverProvider(remembered.resolverProvider)) {
-      if (!isTorrentResolverProviderEnabledForPlayback(remembered.resolverProvider)) {
-        clearRememberedTmdbSourcePinForFreshResolve();
-        return false;
-      }
-      preferredResolverProvider = remembered.resolverProvider;
-      tmdbSkipExternalEmbed = true;
-    } else if (remembered.resolverProvider === "external-embed") {
-      tmdbSkipExternalEmbed = false;
-    }
-  } else if (!selectedSourceHash && remembered.sourceHash) {
-    selectedSourceHash = remembered.sourceHash;
-  }
-  if (selectedSourceHash) {
-    sourceSelectionPinned = true;
-    if (remembered.sourceHash === selectedSourceHash) {
-      currentTmdbPlaybackSessionKey =
-        currentTmdbPlaybackSessionKey || remembered.sessionKey;
-      currentTmdbResolverProvider = currentTmdbResolverProvider || remembered.resolverProvider;
-      currentTmdbResolvedFilename = currentTmdbResolvedFilename || remembered.filename;
-      activeTrackSourceInput = activeTrackSourceInput || remembered.sourceInput;
-      if (isTorrentResolverProvider(remembered.resolverProvider)) {
-        if (!isTorrentResolverProviderEnabledForPlayback(remembered.resolverProvider)) {
-          clearRememberedTmdbSourcePinForFreshResolve();
-          return false;
-        }
-        preferredResolverProvider = remembered.resolverProvider;
-        tmdbSkipExternalEmbed = true;
-      }
-    }
-    applyPreferredSourceAudioSync(selectedSourceHash);
-    return true;
-  }
-  return false;
-}
-
-applyRememberedTmdbSourcePin();
+// Resume position comes from Continue Watching; source pins come only from
+// explicit URL or saved Server-menu choices. An old automatic pick is not a preference.
 clearDisabledTorrentPlaybackState();
 function getCanonicalContinueWatchingMetadata() {
   const isTmdbSeriesPlayback = Boolean(isTmdbTvPlayback && tmdbId);
@@ -8143,7 +8057,6 @@ async function initPlaybackSource() {
     await userRealDebridSettingsReady;
   }
   if (!startupUserStateOwnerIsCurrent()) return;
-  applyRememberedTmdbSourcePin();
   clearDisabledTorrentPlaybackState();
   if (serverContinueWatchingFetch) {
     try {
@@ -8154,7 +8067,6 @@ async function initPlaybackSource() {
         );
         if (entry) {
           rememberServerContinueWatchingEntry(entry);
-          applyRememberedTmdbSourcePin({ force: true });
           clearDisabledTorrentPlaybackState();
           if (
             !(resumeTime > 1) &&
@@ -8173,23 +8085,6 @@ async function initPlaybackSource() {
     } catch {}
   }
   if (!startupUserStateOwnerIsCurrent()) return;
-
-  // Real-Debrid's cached path is dramatically faster than resolving a
-  // third-party embed. Use it for a fresh automatic start, while retaining any
-  // explicit/manual/Continue-Watching pin. The request layer retries with the
-  // external embed policy if torrent resolution is unavailable.
-  if (
-    shouldPreferRealDebridAutomaticPlayback({
-      realDebridActive: isUserRealDebridPlaybackEnabled(),
-      resolverProvider: preferredResolverProvider,
-      currentResolverProvider: currentTmdbResolverProvider,
-      selectedSourceHash,
-      sessionKey: currentTmdbPlaybackSessionKey,
-      hasDirectSourceHashParam,
-    })
-  ) {
-    tmdbSkipExternalEmbed = true;
-  }
 
   if (!(resumeTime > 1) && serverWatchProgressRetry) {
     const data = await serverWatchProgressRetry;

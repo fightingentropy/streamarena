@@ -23,39 +23,19 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 const {
-  emptyRememberedTmdbSourceState,
   getContinueWatchingSeriesKey,
-  isRememberedIframeOnlyExternalEmbed,
   isTorrentResolverProvider,
   mergeRememberedServerContinueWatchingEntry,
   normalizeRememberedResolverProvider,
   parseTmdbTvSourceIdentity,
-  readRememberedContinueWatchingSourceState,
   removeContinueWatchingMeta,
-  shouldIgnoreRememberedTmdbSourcePin,
   writeContinueWatchingEntry,
 } = await import("../src-ui/player/continue-watching-pin.js");
 
-assert.deepEqual(emptyRememberedTmdbSourceState().sourceHash, "");
 assert.equal(normalizeRememberedResolverProvider("Real-Debrid"), "real-debrid");
 assert.equal(normalizeRememberedResolverProvider("fastest"), "");
 assert.equal(isTorrentResolverProvider("local-torrent"), true);
 assert.equal(isTorrentResolverProvider("external-embed"), false);
-
-assert.equal(
-  isRememberedIframeOnlyExternalEmbed({
-    resolverProvider: "external-embed",
-    sourceInput: "live-iframe:abc",
-  }),
-  true,
-);
-assert.equal(
-  isRememberedIframeOnlyExternalEmbed({
-    resolverProvider: "external-embed",
-    sourceInput: "https://vidlink.pro/movie/1",
-  }),
-  false,
-);
 
 assert.deepEqual(parseTmdbTvSourceIdentity("tmdb:tv:99:s2:e4"), {
   tmdbId: "99",
@@ -71,52 +51,6 @@ assert.equal(
   "series:breaking-bad",
 );
 
-assert.equal(
-  shouldIgnoreRememberedTmdbSourcePin({
-    remembered: emptyRememberedTmdbSourceState(),
-    selectedSourceHash: "",
-    hasDirectSourceHashParam: false,
-    shouldResumeRememberedPlayback: false,
-    torrentProviderEnabled: false,
-    preferredResolverProvider: "fastest",
-    preferredTorrentEnabled: false,
-  }),
-  false,
-);
-assert.equal(
-  shouldIgnoreRememberedTmdbSourcePin({
-    remembered: {
-      ...emptyRememberedTmdbSourceState(),
-      resolverProvider: "external-embed",
-      sourceInput: "live-iframe:x",
-    },
-    selectedSourceHash: "",
-    hasDirectSourceHashParam: false,
-    shouldResumeRememberedPlayback: true,
-    torrentProviderEnabled: true,
-    preferredResolverProvider: "fastest",
-    preferredTorrentEnabled: false,
-  }),
-  true,
-);
-assert.equal(
-  shouldIgnoreRememberedTmdbSourcePin({
-    remembered: {
-      ...emptyRememberedTmdbSourceState(),
-      sourceHash: "b".repeat(40),
-      resolverProvider: "external-embed",
-    },
-    selectedSourceHash: "a".repeat(40),
-    hasDirectSourceHashParam: true,
-    shouldResumeRememberedPlayback: true,
-    torrentProviderEnabled: true,
-    preferredResolverProvider: "fastest",
-    preferredTorrentEnabled: true,
-  }),
-  true,
-  "an explicit sourceHash must win over Continue Watching",
-);
-
 const { applyStoredParamsToSearchParams } = await import(
   "../src-ui/lib/watch-params.js"
 );
@@ -129,6 +63,7 @@ assert.equal(explicitParams.get("sourceHash"), "explicit");
 assert.equal(explicitParams.get("benchmark"), "1");
 assert.equal(explicitParams.get("quality"), "1080p");
 
+const { readContinueWatchingMetaMap } = await import("../src-ui/shared.js");
 const identity = "tmdb:movie:42";
 writeContinueWatchingEntry(identity, 95, {
   title: "Test",
@@ -139,7 +74,7 @@ writeContinueWatchingEntry(identity, 95, {
   resolverProvider: "external-embed",
 });
 assert.equal(
-  readRememberedContinueWatchingSourceState(identity).resolverProvider,
+  readContinueWatchingMetaMap()[identity].resolverProvider,
   "external-embed",
 );
 assert.equal(
@@ -151,12 +86,12 @@ assert.equal(
   true,
 );
 assert.equal(
-  readRememberedContinueWatchingSourceState(identity).sessionKey,
+  readContinueWatchingMetaMap()[identity]?.sessionKey || "",
   "sess-1",
 );
 assert.equal(removeContinueWatchingMeta(identity), true);
 assert.equal(
-  readRememberedContinueWatchingSourceState(identity).sessionKey,
+  readContinueWatchingMetaMap()[identity]?.sessionKey || "",
   "",
 );
 

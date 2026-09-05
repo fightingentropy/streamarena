@@ -1,16 +1,5 @@
 import { CONTINUE_WATCHING_META_KEY, readContinueWatchingMetaMap } from "../shared.js";
 import { normalizeSourceHash } from "./sources.js";
-import { shouldIgnoreRememberedTorrentSource } from "./source-menu-tabs.js";
-
-export function emptyRememberedTmdbSourceState() {
-  return {
-    sourceHash: "",
-    sessionKey: "",
-    resolverProvider: "",
-    sourceInput: "",
-    filename: "",
-  };
-}
 
 export function normalizeRememberedResolverProvider(value) {
   const normalized = String(value || "")
@@ -31,26 +20,6 @@ export function isTorrentResolverProvider(value) {
     .trim()
     .toLowerCase();
   return normalized === "real-debrid" || normalized === "local-torrent";
-}
-
-export function isRememberedIframeOnlyExternalEmbed(remembered) {
-  if (remembered?.resolverProvider !== "external-embed") {
-    return false;
-  }
-  const sourceText = `${remembered.sourceInput || ""} ${remembered.filename || ""}`
-    .trim()
-    .toLowerCase();
-  if (
-    !sourceText ||
-    sourceText.includes("iframe") ||
-    sourceText.includes("live-iframe:")
-  ) {
-    return true;
-  }
-  return !(
-    sourceText.includes("player.videasy.net") ||
-    sourceText.includes("vidlink.pro")
-  );
 }
 
 export function parseTmdbTvSourceIdentity(value) {
@@ -92,74 +61,6 @@ export function getContinueWatchingSeriesKey(sourceValue, metadata = {}) {
         .trim()
         .toLowerCase()}`
     : "";
-}
-
-export function shouldIgnoreRememberedTmdbSourcePin({
-  remembered,
-  selectedSourceHash,
-  hasDirectSourceHashParam,
-  shouldResumeRememberedPlayback,
-  torrentProviderEnabled,
-  preferredResolverProvider,
-  preferredTorrentEnabled,
-}) {
-  const hasRememberedPin = Boolean(
-    normalizeSourceHash(selectedSourceHash) ||
-      remembered.sourceHash ||
-      remembered.sessionKey ||
-      remembered.resolverProvider,
-  );
-  if (!hasRememberedPin) {
-    return false;
-  }
-  // A source hash in the visible URL is an explicit user/deep-link choice.
-  // Continue Watching is only a fallback and must never replace it, including
-  // when the server entry arrives after the initial local-state hydration.
-  if (hasDirectSourceHashParam) {
-    return true;
-  }
-  if (isRememberedIframeOnlyExternalEmbed(remembered)) {
-    return true;
-  }
-  if (isTorrentResolverProvider(remembered.resolverProvider)) {
-    return shouldIgnoreRememberedTorrentSource(
-      shouldResumeRememberedPlayback,
-      torrentProviderEnabled,
-    );
-  }
-  if (remembered.resolverProvider === "external-embed") return false;
-  if (
-    isTorrentResolverProvider(preferredResolverProvider) &&
-    preferredTorrentEnabled
-  ) {
-    return false;
-  }
-  return true;
-}
-
-export function readRememberedContinueWatchingSourceState(sourceIdentity) {
-  const normalizedSource = String(sourceIdentity || "").trim();
-  if (!normalizedSource) {
-    return emptyRememberedTmdbSourceState();
-  }
-  try {
-    const metaMap = readContinueWatchingMetaMap();
-    const entry = metaMap?.[normalizedSource];
-    if (!entry || typeof entry !== "object") {
-      return emptyRememberedTmdbSourceState();
-    }
-    return {
-      sourceHash: normalizeSourceHash(entry.sourceHash || ""),
-      sessionKey: String(entry.sessionKey || "").trim(),
-      resolverProvider: normalizeRememberedResolverProvider(
-        entry.resolverProvider,
-      ),
-      sourceInput: String(entry.sourceInput || "").trim(),
-      filename: String(entry.filename || "").trim(),
-    };
-  } catch {
-    return emptyRememberedTmdbSourceState();
-  }
 }
 
 export function mergeRememberedServerContinueWatchingEntry(

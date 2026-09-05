@@ -542,7 +542,7 @@ const pages = [
     expectSourceSwitchFailureRestore: true,
   },
   {
-    path: `/player.html?tmdbId=${initialResolveRaceTmdbId}&mediaType=movie&title=Resolve%20Ownership&raceCase=active`,
+    path: `/player.html?tmdbId=${initialResolveRaceTmdbId}&mediaType=movie&title=Resolve%20Ownership&raceCase=active&resumePlayback=1`,
     selector: ".player-shell",
     initialResolveSourceDiscoveryCase: "active",
   },
@@ -572,6 +572,7 @@ async function runSmoke() {
       let sawHlsMasterRequest = false;
       let sawRemuxRequest = false;
       let sawSourceSwitchResolveHash = "";
+      let initialSourceSwitchResolveParams = null;
       let sourceSwitchResolveHashes = [];
       let sawSourceSwitchResolverProvider = "";
       let sawSourceSwitchSkipExternalEmbed = "";
@@ -816,10 +817,28 @@ async function runSmoke() {
         ) {
           await route.fulfill(
             jsonResponse({
-              configured: false,
+              configured: true,
+              enabled: true,
               localTorrentEnabled: true,
             }),
           );
+          return;
+        }
+        if (
+          initialResolveRaceCase &&
+          url.pathname === "/api/user/continue-watching" &&
+          request.method() === "GET"
+        ) {
+          await route.fulfill(jsonResponse({ entries: [{
+            sourceIdentity: `tmdb:movie:${initialResolveRaceTmdbId}`,
+            tmdbId: initialResolveRaceTmdbId,
+            mediaType: "movie",
+            title: "Resolve Ownership",
+            sourceHash: initialResolvePreferredHash,
+            resolverProvider: "real-debrid",
+            sessionKey: "previous-automatic-torrent",
+            resumeSeconds: 5,
+          }] }));
           return;
         }
         if (
@@ -948,6 +967,8 @@ async function runSmoke() {
               url.searchParams.get("resolverProvider") || "";
             sawSourceSwitchSkipExternalEmbed =
               url.searchParams.get("skipExternalEmbed") || "";
+          } else if (!initialSourceSwitchResolveParams) {
+            initialSourceSwitchResolveParams = Object.fromEntries(url.searchParams);
           }
         }
         if (
@@ -2440,7 +2461,9 @@ async function runSmoke() {
           sawSourceSwitchResolveHash !== sourceSwitchHashA ||
           !sourceSwitchResolveHashes.includes(sourceSwitchHashA) ||
           (pageSpec.expectRealDebridSourceSwitch &&
-            (sawSourceSwitchResolverProvider !== "real-debrid" ||
+            (initialSourceSwitchResolveParams?.resolverProvider !== "fastest" ||
+              Object.hasOwn(initialSourceSwitchResolveParams || {}, "skipExternalEmbed") ||
+              sawSourceSwitchResolverProvider !== "real-debrid" ||
               sawSourceSwitchSkipExternalEmbed !== "1")) ||
           switchState.selectedHash !== sourceSwitchHashA ||
           !switchState.videoSource.includes(sourceSwitchHashA)
