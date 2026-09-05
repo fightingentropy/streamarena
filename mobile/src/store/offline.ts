@@ -65,10 +65,6 @@ export type OfflineDownloadRecord = {
   addedAt: number;
   updatedAt: number;
   error?: string;
-  // NSURLSession resume blob captured on a deliberate pause (for example, when a
-  // Wi-Fi-only transfer moves to cellular). The next attempt resumeAsync()s the partial.
-  // In-memory only — omitted from recordToRow because it is valid only in this process.
-  resumeData?: string;
 };
 
 const OFFLINE_DIR = `${FileSystem.documentDirectory ?? ""}offline-media/`;
@@ -282,7 +278,6 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
           break;
         }
 
-        const resumeData = queued.resumeData;
         persist({ ...queued, status: "downloading", updatedAt: Date.now() });
         setProgress(key, 0, 0);
         try {
@@ -300,14 +295,13 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
               const frac = totalBytesExpectedToWrite > 0 ? totalBytesWritten / totalBytesExpectedToWrite : 0;
               setProgress(key, frac, totalBytesWritten);
             },
-            resumeData,
           );
           activeDownload = { resumable, key };
-          const result = resumeData ? await resumable.resumeAsync() : await resumable.downloadAsync();
+          const result = await resumable.downloadAsync();
           activeDownload = null;
+          if (pausedKey === key) pausedKey = null;
           if (!result) {
-            // Deliberate Wi-Fi-only pause — already re-queued with a resume blob.
-            pausedKey = null;
+            // Deliberate Wi-Fi-only cancellation — already re-queued.
             clearProgress(key);
             continue;
           }
@@ -366,7 +360,6 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
             backdropPath,
             subtitlePaths: Object.keys(subtitlePaths).length ? subtitlePaths : undefined,
             bytes,
-            resumeData: undefined,
             updatedAt: Date.now(),
             error: undefined,
           });
@@ -383,18 +376,17 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
           if (!getIsOnline()) {
             // Connectivity dropped and raced ahead of our pause — keep it queued to retry
             // from scratch on reconnect rather than stranding it as a manual-retry error.
-            persist({ ...latest, status: "queued", resumeData: undefined, updatedAt: Date.now() });
+            persist({ ...latest, status: "queued", updatedAt: Date.now() });
           } else {
             const attempts = (retryCounts[key] ?? 0) + 1;
             if (attempts <= MAX_DOWNLOAD_RETRIES) {
               retryCounts[key] = attempts;
-              persist({ ...latest, status: "queued", resumeData: undefined, updatedAt: Date.now() });
+              persist({ ...latest, status: "queued", updatedAt: Date.now() });
             } else {
               delete retryCounts[key];
               persist({
                 ...latest,
                 status: "error",
-                resumeData: undefined,
                 updatedAt: Date.now(),
                 error: e instanceof Error ? e.message : "Download failed",
               });
@@ -412,14 +404,16 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
     if (!active) return;
     activeDownload = null;
     pausedKey = active.key;
-    let resumeData: string | undefined;
-    try {
-      const state = await active.resumable.pauseAsync();
-      resumeData = state.resumeData;
-    } catch {}
+    // Exports are generated streams without Range support. Cancel and restart them;
+    // an NSURLSession resume blob cannot resume this endpoint. Queue before awaiting
+    // native cancellation so a quick return to Wi-Fi cannot miss the queued work.
     clearProgress(active.key);
     const latest = get().records[active.key];
-    if (latest) persist({ ...latest, status: "queued", resumeData, updatedAt: Date.now() });
+    if (latest) persist({ ...latest, status: "queued", updatedAt: Date.now() });
+    try {
+      await active.resumable.cancelAsync();
+    } catch {}
+    void runPump();
   };
 
   const refreshStorage = async () => {
@@ -518,8 +512,8 @@ export const useOfflineStore = create<OfflineState>((set, get) => {
         const records: Record<string, OfflineDownloadRecord> = {};
         for (const row of rows) {
           const record = rowToRecord(row);
-          // A row left "downloading" means the app died mid-download; its resume blob was
-          // in-memory only, so restart from scratch as "queued".
+          // A row left "downloading" means the app died mid-download. The streamed export
+          // cannot resume at a byte offset, so restart it as "queued".
           if (record.status === "downloading") record.status = "queued";
           records[row.key] = record;
         }

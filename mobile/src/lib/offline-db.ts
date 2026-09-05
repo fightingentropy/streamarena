@@ -7,8 +7,8 @@ import { toAbsoluteOfflinePath } from "@/lib/offline-paths";
 // status/updatedAt for queries, plus `tmdbId`/`mediaType` columns so "is this title
 // downloaded?" is an index hit. The big `meta` JSON blob denormalizes everything the
 // card + offline player need (export input, titles, subtitle sidecars) so a download
-// is fully self-describing on disk. The NSURLSession resume blob is in-memory only
-// (see store/offline.ts) and is deliberately NOT a column.
+// is fully self-describing on disk. Interrupted streamed exports restart from the
+// beginning; they do not support byte-range resume.
 export type DownloadRow = {
   key: string; // `${accountScope}:${assetId}`
   accountScope: string;

@@ -14,7 +14,7 @@ use tokio::fs::{self, File};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
-use tokio::time::{Instant as TokioInstant, sleep, sleep_until, timeout};
+use tokio::time::{Instant as TokioInstant, sleep, sleep_until, timeout, timeout_at};
 use tokio_util::io::ReaderStream;
 use url::Url;
 use url::form_urlencoded::byte_serialize;
@@ -156,6 +156,38 @@ struct ExportStreamState {
     _permit: OwnedSemaphorePermit,
     deadline: TokioInstant,
     timeout_seconds: u64,
+}
+
+impl ExportStreamState {
+    async fn next_chunk(mut self) -> std::io::Result<Option<(Bytes, Self)>> {
+        let read_chunk = async {
+            let read = self.stdout.read(&mut self.buffer).await?;
+            if read == 0 {
+                let status = self.child.wait().await?;
+                if !status.success() {
+                    return Err(std::io::Error::other(format!(
+                        "Export failed with ffmpeg exit code {}",
+                        status.code().unwrap_or(-1)
+                    )));
+                }
+                return Ok(None);
+            }
+            Ok(Some(Bytes::copy_from_slice(&self.buffer[..read])))
+        };
+        match timeout_at(self.deadline, read_chunk).await {
+            Ok(Ok(Some(bytes))) => Ok(Some((bytes, self))),
+            Ok(Ok(None)) => Ok(None),
+            Ok(Err(error)) => Err(error),
+            Err(_) => {
+                let _ = self.child.kill().await;
+                let _ = self.child.wait().await;
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("Export timed out after {} seconds", self.timeout_seconds),
+                ))
+            }
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -811,7 +843,8 @@ impl StreamingService {
     /// long copy never blanks past the client's idle timeout, and the resulting file still
     /// seeks fine in AVPlayer. Runs under a separate timeout + permit pool so a long
     /// download never starves live remuxes. `Content-Disposition: attachment` marks it a
-    /// file. (No Range/resume — a foreground download that drops restarts; acceptable v1.)
+    /// file. Interrupted downloads restart because the live export has no Range support.
+    /// Process failure or timeout aborts the HTTP body so partial files cannot look complete.
     pub async fn create_export_response(
         &self,
         input: &str,
@@ -928,32 +961,7 @@ impl StreamingService {
                 deadline: TokioInstant::now() + Duration::from_secs(timeout_seconds),
                 timeout_seconds,
             },
-            |mut state| async move {
-                let read = tokio::select! {
-                    read_result = state.stdout.read(&mut state.buffer) => match read_result {
-                        Ok(read) => read,
-                        Err(error) => return Err(error),
-                    },
-                    _ = sleep_until(state.deadline) => {
-                        let _ = state.child.kill().await;
-                        let _ = state.child.wait().await;
-                        eprintln!("[export] ffmpeg timed out after {} seconds", state.timeout_seconds);
-                        return Ok(None);
-                    }
-                };
-                if read == 0 {
-                    let status = state.child.wait().await?;
-                    if !status.success() {
-                        eprintln!(
-                            "[export] ffmpeg exited with code {}",
-                            status.code().unwrap_or(-1)
-                        );
-                    }
-                    return Ok(None);
-                }
-                let bytes = Bytes::copy_from_slice(&state.buffer[..read]);
-                Ok::<_, std::io::Error>(Some((bytes, state)))
-            },
+            ExportStreamState::next_chunk,
         );
 
         Response::builder()
@@ -2510,6 +2518,82 @@ mod tests {
         export_download_filename, format_remux_server_timing, normalize_remux_video_mode,
         resolve_auto_remux_video_mode, should_force_accurate_seek_for_remux,
     };
+
+    async fn export_body(
+        script: &str,
+        budget: Duration,
+    ) -> (axum::body::Body, std::sync::Arc<tokio::sync::Semaphore>) {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let state = super::ExportStreamState {
+            stdout: child.stdout.take().unwrap(),
+            child,
+            buffer: vec![0; 64 * 1024],
+            _permit: permits.clone().acquire_owned().await.unwrap(),
+            deadline: tokio::time::Instant::now() + budget,
+            timeout_seconds: budget.as_secs(),
+        };
+        (
+            axum::body::Body::from_stream(futures_util::stream::try_unfold(
+                state,
+                super::ExportStreamState::next_chunk,
+            )),
+            permits,
+        )
+    }
+
+    #[tokio::test]
+    async fn export_success_delivers_the_complete_body_and_releases_its_permit() {
+        let (body, permits) = export_body("printf complete", Duration::from_secs(2)).await;
+        assert_eq!(
+            axum::body::to_bytes(body, 128 * 1024).await.unwrap(),
+            "complete"
+        );
+        assert_eq!(permits.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn export_process_failure_after_video_bytes_aborts_the_body() {
+        let (body, permits) = export_body(
+            "dd if=/dev/zero bs=65536 count=1 2>/dev/null; exit 7",
+            Duration::from_secs(2),
+        )
+        .await;
+        assert!(axum::body::to_bytes(body, 128 * 1024).await.is_err());
+        assert_eq!(permits.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn export_timeout_aborts_partial_downloads() {
+        let (body, permits) =
+            export_body("printf partial; exec sleep 5", Duration::from_millis(50)).await;
+        assert!(axum::body::to_bytes(body, 128 * 1024).await.is_err());
+        assert_eq!(permits.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn export_deadline_also_covers_a_process_that_closed_stdout() {
+        let (body, permits) = export_body(
+            "printf partial; exec 1>&-; exec sleep 5",
+            Duration::from_millis(50),
+        )
+        .await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            axum::body::to_bytes(body, 128 * 1024),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        assert_eq!(permits.available_permits(), 1);
+    }
 
     #[test]
     fn formats_privacy_safe_remux_server_timing_metrics_in_milliseconds() {
