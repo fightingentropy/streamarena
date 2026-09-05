@@ -89,7 +89,7 @@ function offlineStore() {
   store.setState({ hydrated: true });
   mod.exports.initOfflineSync();
   return {
-    store, tasks, rows,
+    store, tasks, rows, offline: mod.exports,
     record: () => Object.values(store.getState().records)[0],
     network(isOnline, isCellular) {
       online = isOnline;
@@ -162,3 +162,99 @@ test("an interrupted export is retried without becoming a ready partial file", a
   assert.equal(h.record().status, "error");
   assert.equal(h.record().videoPath, undefined);
 });
+
+test("an offline queue starts on cellular when connectivity returns", async () => {
+  const h = offlineStore();
+  h.network(false, false);
+  await h.store.getState().queueDownload(meta);
+  await flush();
+  assert.equal(h.tasks.length, 0);
+  assert.equal(h.record().status, "queued");
+  h.network(true, true);
+  await flush();
+  assert.equal(h.tasks.length, 1);
+  h.tasks[0].finish();
+  await flush();
+  assert.equal(h.record().status, "ready");
+});
+
+test("an allowed Wi-Fi to cellular handoff keeps the native transfer active", async () => {
+  const h = offlineStore();
+  await h.store.getState().queueDownload(meta);
+  await flush();
+  h.network(true, true);
+  await flush();
+  assert.equal(h.tasks.length, 1);
+  assert.equal(h.record().status, "downloading");
+  h.tasks[0].finish();
+  await flush();
+  assert.equal(h.record().status, "ready");
+});
+
+test("a transfer that fails during an outage waits and restarts on reconnect", async () => {
+  const h = offlineStore();
+  await h.store.getState().queueDownload(meta);
+  await flush();
+  h.network(false, false);
+  h.tasks[0].fail(new Error("Network connection lost"));
+  await flush();
+  assert.equal(h.record().status, "queued");
+  assert.equal(h.record().videoPath, undefined);
+  assert.equal(h.tasks.length, 1);
+  h.network(true, true);
+  await flush();
+  assert.equal(h.tasks.length, 2);
+  h.tasks[1].finish();
+  await flush();
+  assert.equal(h.record().status, "ready");
+});
+
+for (const mediaType of ["movie", "tv"]) {
+  test(`a downloaded ${mediaType} opens locally while network resolution and resume are unavailable`, async () => {
+    const h = offlineStore();
+    const request = { tmdbId: "399106", mediaType, seasonNumber: 1, episodeNumber: 2, title: "Offline fixture" };
+    const identityModule = { exports: {} };
+    runInNewContext(ts.transpileModule(
+      readFileSync(join(__dirname, "../src/video/identity.ts"), "utf8"),
+      { compilerOptions: { module: ts.ModuleKind.CommonJS } },
+    ).outputText, { module: identityModule, exports: identityModule.exports });
+    const assetId = identityModule.exports.progressIdentity(request);
+    await h.store.getState().queueDownload({ ...meta, ...request, assetId });
+    await flush();
+    h.tasks[0].finish();
+    await flush();
+    h.network(false, false);
+
+    let resolveCalls = 0;
+    const modules = {
+      zustand: require("zustand"),
+      "@/lib/streamarena": {},
+      "@/store/offline": h.offline,
+      "./identity": identityModule.exports,
+      "./live": {},
+      "./live-recovery": {},
+      "./refresh": {},
+      "./report": { beginReporting() {}, stopReporting() {}, reportNow() {} },
+      "./resolve": { resolveAndRoute: async () => { resolveCalls++; throw new Error("Network unavailable"); } },
+      "./resume": { loadResumeSeconds: () => new Promise(() => {}) },
+      "./tracks": {},
+    };
+    const playerModule = { exports: {} };
+    runInNewContext(ts.transpileModule(
+      readFileSync(join(__dirname, "../src/video/state.ts"), "utf8"),
+      { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } },
+    ).outputText, {
+      module: playerModule, exports: playerModule.exports, AbortController, setTimeout, clearTimeout,
+      require: (id) => { assert.ok(modules[id], `Unexpected dependency: ${id}`); return modules[id]; },
+    });
+    const player = playerModule.exports.usePlayerStore;
+    await player.getState().open(request, "anonymous");
+    assert.equal(resolveCalls, 0);
+    assert.equal(player.getState().source.uri, h.record().videoPath);
+    assert.equal(player.getState().source.isHls, false);
+    player.getState().onLoad(360);
+    assert.equal(player.getState().status, "playing");
+    assert.equal(player.getState().buffering, false);
+    player.getState().close();
+  });
+}
