@@ -423,7 +423,8 @@ pub async fn live_hls_resource_handler(
     }
 
     let fetched = fetch_live_hls_resource_upstream(&state, &live_request).await?;
-    let mut content_type = fetched.content_type;
+    let mut content_type =
+        hls_resource_content_type(&fetched.content_type, &fetched.bytes).to_owned();
     let mut bytes = fetched.bytes;
 
     // PNG-disguised mpeg-ts: strip the prepended PNG header back to clean mpeg-ts (see
@@ -472,6 +473,19 @@ pub async fn live_hls_resource_handler(
 
 fn live_resource_looks_like_playlist(content_type: &str, bytes: &[u8]) -> bool {
     content_type.to_ascii_lowercase().contains("mpegurl") || bytes.starts_with(b"#EXTM3U")
+}
+
+// Some HLS CDNs label fMP4 initialization/media fragments as HTML. Native iOS
+// playback needs the media type; detect the container without buffering a segment.
+fn hls_resource_content_type<'a>(upstream: &'a str, head: &[u8]) -> &'a str {
+    if head.len() >= 8
+        && matches!(&head[4..8], b"ftyp" | b"styp" | b"moof" | b"sidx")
+        && u32::from_be_bytes(head[..4].try_into().unwrap_or_default()) >= 8
+    {
+        "video/mp4"
+    } else {
+        upstream
+    }
 }
 
 fn live_segment_response(
@@ -583,7 +597,18 @@ async fn stream_live_hls_resource_via_http(
             .map(Some)
             .map_err(|error| ApiError::internal(error.to_string()));
     }
-    let body = Body::from_stream(response.bytes_stream());
+    let mut stream = response.bytes_stream();
+    let head = timeout(
+        LIVE_UPSTREAM_REQUEST_TIMEOUT,
+        peek_stream_head(&mut stream, 8),
+    )
+    .await
+    .map_err(|_| ApiError::bad_gateway("Live HLS resource read timed out."))?
+    .map_err(|_| ApiError::bad_gateway("Live HLS resource read failed."))?;
+    let content_type = hls_resource_content_type(&content_type, &head);
+    let body = Body::from_stream(
+        futures_util::stream::iter([Ok::<Bytes, reqwest::Error>(Bytes::from(head))]).chain(stream),
+    );
     Response::builder()
         .status(200)
         .header("content-type", content_type)
@@ -3459,6 +3484,34 @@ mod tests {
         normalize_hls_referer, png_prefixed_ts_strip_offset, query_pairs,
         rewrite_live_hls_playlist, strip_video_only_stream_inf_codecs,
     };
+
+    #[test]
+    fn fmp4_fragments_have_a_media_type_even_when_the_cdn_labels_them_html() {
+        for box_type in [b"ftyp", b"styp", b"moof", b"sidx"] {
+            let mut head = vec![0, 0, 0, 28];
+            head.extend_from_slice(box_type);
+            assert_eq!(
+                super::hls_resource_content_type("text/html; charset=utf-8", &head),
+                "video/mp4"
+            );
+        }
+        for bytes in [
+            b"<!doctype html>".as_slice(),
+            b"#EXTM3U",
+            b"\0\0\0\0ftyp",
+            b"\0\0\0\x1cfty",
+            b"",
+        ] {
+            assert_eq!(
+                super::hls_resource_content_type("text/html", bytes),
+                "text/html"
+            );
+        }
+        assert_eq!(
+            super::hls_resource_content_type("video/mp2t", &[0x47; 188]),
+            "video/mp2t"
+        );
+    }
 
     #[test]
     fn real_debrid_stream_urls_require_https_and_the_exact_host_family() {
