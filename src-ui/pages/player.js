@@ -5812,7 +5812,6 @@ function openHlsQualityPopover({ auto = false } = {}) {
   closeAudioPopover();
   closeSpeedPopover(false);
   window.clearTimeout(hlsQualityPopoverCloseTimeout);
-  hlsQualityControls.renderOptions();
   showControls();
   clearControlsHideTimer();
   hlsQualityControl.classList.add("is-open");

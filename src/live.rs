@@ -2923,16 +2923,8 @@ fn stream_inf_resolution_height(line: &str) -> Option<u32> {
     height.trim().parse::<u32>().ok()
 }
 
-/// Cap an external-embed master playlist to <= 1080p by dropping taller variant
-/// renditions (and their following URI line). External-embed media is proxied
-/// through the mini's home uplink, so an unbounded ladder (1440p/4K, 15+ Mbps/
-/// viewer) would starve it under concurrent load. 1080p is the top rendition
-/// these embeds actually serve (sports embeds ship a 1080p + ~540p ladder, the
-/// same one other front-ends expose), so keeping it matches the source while
-/// still dropping anything taller. The lower renditions stay in place, so hls.js
-/// ABR still drops bandwidth-constrained viewers down automatically. Never strips
-/// every variant: if no rendition is <= 1080p (or none declare a resolution), the
-/// playlist is returned unchanged.
+/// Bound proxied bandwidth by dropping renditions above 1080p and their URIs.
+/// Keep the original ladder when no rendition fits, so playback remains possible.
 fn cap_external_embed_master_to_1080p<'a>(lines: &[&'a str]) -> Vec<&'a str> {
     const MAX_HEIGHT: u32 = 1080;
     let has_keepable = lines
@@ -2986,16 +2978,15 @@ fn rewrite_live_hls_master_playlist(
     signing_context: Option<LiveHlsSigningContext<'_>>,
     direct_segments: bool,
 ) -> String {
-    // Trusted-embed streams (external-embed VOD, and sports — both signed via
-    // build_trusted_external_embed_hls_playback_source) are proxied through the
-    // mini's bandwidth-limited home uplink, so cap their quality ladder to 1080p.
-    // This is a no-op for single-quality streams and for the common 1080p + ~540p
-    // ladders these embeds serve; it only reshapes ladders that advertise a 1440p/
-    // 4K rendition, dropping just that top tier to bound the uplink. Skip the cap
-    // in direct-segment mode: those bytes stream off the source CDN, not the
-    // uplink, so the full quality ladder is free.
+    // CineJoy's full ladder is explicitly supported, including 4K/HDR. Its fixed
+    // referer is covered by the resolver's signature and must follow every child
+    // request, so these renditions stay proxied. Other relayed providers retain
+    // the bandwidth cap; browser-direct streams already keep their full ladder.
     let capped_storage;
-    let lines: &[&str] = if signing_context.is_some() && !direct_segments {
+    let lines: &[&str] = if signing_context.is_some()
+        && !direct_segments
+        && referer != Some("https://cinejoy.to/")
+    {
         capped_storage = cap_external_embed_master_to_1080p(lines);
         &capped_storage
     } else {
@@ -4606,6 +4597,61 @@ mod tests {
             super::cap_external_embed_master_to_1080p(&lines).join("\n"),
             no_res
         );
+    }
+
+    #[test]
+    fn cinejoy_keeps_4k_hdr_and_signed_referrers_while_other_providers_stay_capped() {
+        let secret = "test-live-hls-proxy-secret-with-enough-length";
+        let signing_context = Some(super::LiveHlsSigningContext {
+            secret,
+            expires_at: super::current_unix_seconds() + 60,
+            private_session_binding: None,
+        });
+        let playlist = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=20000000,RESOLUTION=3840x2160,VIDEO-RANGE=PQ,CODECS=\"hvc1.2.4.L150.B0,mp4a.40.2\"\n\
+video_4k_hdr.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS=\"avc1.4D4032,mp4a.40.2\"\n\
+video_1080p.m3u8\n";
+        for upstream in [
+            "https://info.movieboxnoob.cc/playlist/test.m3u8",
+            "https://nebula.bright67.online/hls/test/master.m3u8",
+            "https://lol.movieboxnoob.cc/content?v=test",
+        ] {
+            let base: url::Url = upstream.parse().unwrap();
+            let rewritten = rewrite_live_hls_playlist(
+                &base,
+                playlist,
+                Some("https://cinejoy.to/"),
+                signing_context,
+                false,
+            );
+            assert!(rewritten.contains("RESOLUTION=3840x2160,VIDEO-RANGE=PQ"));
+            assert!(rewritten.contains("hvc1.2.4.L150.B0,mp4a.40.2"));
+            assert!(rewritten.contains("RESOLUTION=1920x1080"));
+            let children: Vec<_> = rewritten
+                .lines()
+                .filter(|line| line.starts_with("/api/"))
+                .collect();
+            assert_eq!(children.len(), 2);
+            for child in children {
+                assert!(child.starts_with("/api/live/hls.m3u8?"));
+                assert!(child.contains("referer=https%3A%2F%2Fcinejoy.to%2F"));
+                assert!(super::is_signed_live_hls_request(
+                    secret,
+                    &child.parse().unwrap()
+                ));
+            }
+            let other = rewrite_live_hls_playlist(
+                &base,
+                playlist,
+                Some("https://other.example/"),
+                signing_context,
+                false,
+            );
+            assert!(!other.contains("3840x2160"));
+            assert!(!other.contains("video_4k_hdr"));
+            assert!(other.contains("1920x1080"));
+        }
     }
 
     #[test]
