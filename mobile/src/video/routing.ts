@@ -25,18 +25,27 @@ function isHlsUrl(url: string): boolean {
   return /\.m3u8(\?|#|$)/i.test(url) || /\/api\/hls\//i.test(url);
 }
 
-// An external-embed VOD served through the live proxy (`/api/live/hls.m3u8`). These are
-// PNG-disguised MPEG-TS that hls.js (web) strips + transmuxes client-side. Native AVPlayer
-// can't strip them, so they play through the on-device strip proxy (strip-proxy.ts), which
-// reproduces the web exactly: fetch each segment from the CDN over the device's residential
-// IP + strip the PNG prefix. (Live channels never reach decideSource — they play through the
-// player's dedicated live path — so this only ever matches embed VOD.)
+// External-embed VOD uses the live proxy. Some providers disguise MPEG-TS as PNG,
+// which needs the on-device strip proxy; standard CineJoy HLS can play natively.
+// Live channels use the player's dedicated live path and never reach decideSource.
 function isLiveProxyEmbed(url: string): boolean {
   return /\/api\/live\//i.test(url);
 }
 
+// CineJoy serves standard HLS, including HEVC/HDR renditions. Keep its signed
+// playlist intact so the native player can adapt quality and decode in hardware.
+export function isCineJoyHls(url: string): boolean {
+  try {
+    const parsed = new URL(toAbsoluteApiUrl(url));
+    return parsed.pathname === "/api/live/hls.m3u8" && parsed.searchParams.get("referer") === "https://cinejoy.to/";
+  } catch {
+    return false;
+  }
+}
+
 // Decide what URI to actually hand the <Video> element for a resolved source.
-//   • External-embed VOD (live proxy) → the on-device strip proxy (default audio), which
+//   • CineJoy HLS → the signed playlist, with native adaptive HEVC/HDR playback.
+//   • Other external-embed VOD (live proxy) → the on-device strip proxy (default audio), which
 //     fetches segments from the CDN over the device's residential IP + strips PNG-stego —
 //     exactly what the web does. Explicit audio-track picks fall back to the transcode
 //     (audio is server-muxed); so does the rare case where the proxy hasn't started yet.
@@ -49,6 +58,10 @@ function isLiveProxyEmbed(url: string): boolean {
 export function decideSource(resolved: ResolvedSource, audioStreamIndex?: number): VideoSource {
   const url = resolved.playableUrl || "";
   const wantsServerAudio = typeof audioStreamIndex === "number" && audioStreamIndex >= 0;
+
+  if (isCineJoyHls(url) && !wantsServerAudio) {
+    return { uri: toAbsoluteApiUrl(url), isHls: true };
+  }
 
   if (isLiveProxyEmbed(url)) {
     const port = getStripProxyPort();

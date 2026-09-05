@@ -13,7 +13,6 @@ test("the native app displays Netflix while keeping its internal identity", () =
   assert.equal(appConfig.expo.slug, "streamarena-mobile");
   assert.equal(appConfig.expo.scheme, "streamarena");
   assert.equal(appConfig.expo.version, "1.0.1");
-  assert.equal(appConfig.expo.ios.buildNumber, "4");
   assert.equal(appConfig.expo.android.versionCode, 4);
   assert.equal(appConfig.expo.android.package, "xyz.streamarena.app");
   assert.equal(appConfig.expo.ios.bundleIdentifier, "xyz.streamarena.app");

@@ -1,5 +1,5 @@
 import { resolveTitle, type ResolvedSource } from "@/lib/streamarena";
-import { decideSource } from "./routing";
+import { decideSource, isCineJoyHls } from "./routing";
 import { ensureStripProxy } from "./strip-proxy";
 import type { PlayRequest, VideoSource } from "./types";
 
@@ -38,9 +38,9 @@ export async function resolveAndRoute(
     opts.signal,
   );
   const audioIdx = opts.audioStreamIndex ?? resolved.selectedAudioStreamIndex;
-  // External-embed VOD plays through the on-device strip proxy; make sure it's listening
+  // Disguised embed streams need the on-device strip proxy; make sure it's listening
   // before routing so decideSource picks it up (it otherwise falls back to the transcode).
-  if (/\/api\/live\//i.test(resolved.playableUrl || "")) {
+  if (/\/api\/live\//i.test(resolved.playableUrl || "") && !isCineJoyHls(resolved.playableUrl || "")) {
     try {
       await ensureStripProxy();
     } catch {
