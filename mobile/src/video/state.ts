@@ -577,6 +577,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
 
     setProgress(position, duration) {
       if (get().status === "idle" || (!get().request && !get().live)) return;
+      const next: Partial<PlayerState> = { position };
       // Real advancement (position climbing past the previous sample) proves the source
       // actually plays — disarm the stall watchdog. A source frozen at 0:00 never advances,
       // so the watchdog survives to fire. The first sample only sets the baseline, which
@@ -584,10 +585,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       if (!get().live) {
         if (lastProgressSample != null && position > lastProgressSample + 0.3) {
           clearStallTimer();
+          // VLC can resume after an adaptive quality switch without another playing
+          // event. Advancing playback also clears that stale buffering indicator.
+          if (!get().paused && (get().status === "loading" || get().status === "playing")) {
+            next.buffering = false;
+            next.status = "playing";
+          }
         }
         lastProgressSample = position;
       }
-      const next: Partial<PlayerState> = { position };
       if (Number.isFinite(duration) && duration > 0) next.duration = duration;
       // Sustained playback means the current source genuinely works — clear the error
       // budget so a later transient failure gets a fresh walk (and can't loop forever

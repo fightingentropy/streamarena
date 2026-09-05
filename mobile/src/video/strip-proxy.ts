@@ -1,25 +1,7 @@
-// On-device HLS strip proxy — the native equivalent of the web's hls.js loader.
-//
-// External-embed CDNs (LordFlix, VidEasy, …) disguise each MPEG-TS fragment as a PNG:
-// a real PNG header is prepended to the .ts payload, served as `image/png`. The web
-// strips this client-side in hls.js (`src-ui/player/hls-controller.js`) and fetches
-// every segment straight from the CDN over the viewer's *residential* connection —
-// which is why the browser plays them. The native backend transcode instead pulls those
-// segments from the server's datacenter IP, which some CDNs anti-bot-block (Cloudflare
-// 1010) → segments 502 → playback freezes.
-//
-// This proxy reproduces the web exactly, on the device:
-//   • A tiny localhost HTTP server (react-native-tcp-socket) the player talks to.
-//   • `/m` fetches an HLS playlist and rewrites every variant/segment URL to point back
-//     at this proxy, so the player never talks to the CDN directly.
-//   • `/s` fetches a segment *from the device* (residential IP + the browser UA the CDN
-//     gates on), strips the PNG prefix, and hands back clean MPEG-TS.
-//
-// The player here is libVLC (MobileVLCKit, via VlcVideo.tsx), NOT AVPlayer: AVPlayer parses
-// the proxied playlist but computes dur=0 and never fetches a segment, whereas libVLC's
-// software demuxer plays it. (react-native-video/AVPlayer also exposes no JS segment-loader
-// hook, so the strip has to happen here regardless.) The CDN fetches run on the device's own
-// network — exactly the residential egress the backend can't offer.
+// On-device HLS relay for the VLC player. CDN requests retain the provider's referer
+// and browser user agent, and use the device's network connection.
+// `/m` rewrites playlists so variants, audio renditions, and segments use this relay.
+// `/s` removes PNG prefixes used by some embed providers and serves the media bytes.
 
 import TcpSocket from "react-native-tcp-socket";
 import { Buffer } from "buffer";
@@ -230,7 +212,10 @@ async function serve(socket: TcpSock, path: string, range: string | null): Promi
         clean = stripPngPrefix(await fetchBytes(target, referer));
         if (!Number.isNaN(cacheId)) segCachePut(cacheId, clean);
       }
-      sendBytes(socket, "video/mp2t", clean, range);
+      const mp4 = clean.length >= 8 && ["ftyp", "styp", "moof", "sidx"].includes(
+        String.fromCharCode(...clean.subarray(4, 8)),
+      );
+      sendBytes(socket, mp4 ? "video/mp4" : "video/mp2t", clean, range);
     } else {
       sendText(socket, 404, "not found");
     }
@@ -379,6 +364,9 @@ async function resolveToMediaPlaylist(startUrl: string, referer: string): Promis
   let url = startUrl;
   for (let hop = 0; hop < 4; hop++) {
     const text = await fetchText(url, referer);
+    // CineJoy carries audio in separate renditions. Flattening its master to a
+    // video-only playlist discards those tracks and the adaptive 4K/HDR ladder.
+    if (referer === "https://cinejoy.to/") return { text, baseUrl: url };
     if (!text.includes("#EXT-X-STREAM-INF")) return { text, baseUrl: url };
     const next = pickBestVariant(text, url);
     if (!next || next === url) return { text, baseUrl: url };
