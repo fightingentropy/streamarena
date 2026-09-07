@@ -185,7 +185,9 @@ Home and browsing:
 - Featured hero sourced from current TMDB/bootstrap data, with a muted official-trailer preview when TMDB provides one and a poster fallback otherwise.
 - Dashboard rails use TMDB discovery with rating/vote-count thresholds, release-date guards, and artwork checks instead of raw popularity/trending lists.
 - Rails for curated movies, series, critically acclaimed titles, local library, continue watching, and My List.
-- TMDB search across movies and TV.
+- Search movies, series, actors, and directors, with genre/year filters, paginated results, and account-scoped recent searches on web and iPhone.
+- Title-specific recommendations prioritize titles the viewer has not started. Related-title cards open details before playback.
+- Home becomes compact when Continue Watching is available; episode and resume captions stay visible. Web previews have a pause control, and iPhone Home Play opens or resumes the player directly.
 - Details modal with metadata, cast, playback launch, and My List actions.
 - Continue watching entries enriched from local library and server state.
 - My List stored locally and synced to `/api/user/my-list`.
@@ -359,7 +361,8 @@ Protected API routes:
 - `GET|POST|DELETE /api/title/preferences`
 - `POST /api/session/progress`
 - `GET /api/tmdb/popular-movies`
-- `GET /api/tmdb/search`
+- `GET /api/tmdb/search` — `query`, `mediaType=all|movie|tv`, `genre`, `year`, `personId`, and `page`; returns normalized titles, people, genres, and `hasMore`. Exact person names expand their filmography; an empty query browses the catalogue.
+- `GET /api/tmdb/recommendations?tmdbId=...&mediaType=movie|tv` — authenticated, private recommendations ordered using the viewer's watch history.
 - `GET /api/tmdb/details`
 - `GET /api/tmdb/tv/season`
 - `GET /api/resolve/sources`

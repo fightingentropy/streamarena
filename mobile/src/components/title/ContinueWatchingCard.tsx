@@ -4,7 +4,7 @@ import { useRouter } from "expo-router";
 import { Play } from "lucide-react-native";
 import { PosterImage } from "@/components/PosterImage";
 import { PressableScale } from "@/components/ui/PressableScale";
-import { buildResumeHref } from "@/lib/continue-watching";
+import { buildResumeHref, tvSeasonEpisode } from "@/lib/continue-watching";
 import { type ContinueWatchingItem, type MediaType, useTitleDetails } from "@/lib/streamarena";
 import { colors, layout, radius } from "@/theme";
 
@@ -26,12 +26,13 @@ const CardItem = memo(function CardItem({ item, onLongPress }: CardProps) {
   const runtimeMinutes = Number(mediaType === "tv" ? details?.episode_run_time?.[0] : details?.runtime) || 0;
   const estDurationSeconds = runtimeMinutes > 0 ? runtimeMinutes * 60 : 0;
   const resumeSeconds = Number(item.resumeSeconds) || 0;
-  // Clamp to 4–96% so a sliver always shows and a near-finished title never looks done;
-  // 24% is the web's fallback for when the runtime isn't known yet.
   const progressPercent =
     estDurationSeconds > 0
-      ? Math.max(4, Math.min(96, Math.round((resumeSeconds / estDurationSeconds) * 100)))
-      : 24;
+      ? Math.max(0, Math.min(100, Math.round((resumeSeconds / estDurationSeconds) * 100)))
+      : null;
+  const progressLabel = estDurationSeconds > resumeSeconds
+    ? `${mediaType === "tv" ? "About " : ""}${Math.ceil((estDurationSeconds - resumeSeconds) / 60)} min left`
+    : resumeSeconds > 0 ? `${Math.floor(resumeSeconds / 60)} min watched` : "Ready to resume";
 
   // These cards are already mid-title, so resume straight into the player. seasonCount (TV)
   // lets the player roll into the next season on finish; see buildResumeHref for the rest.
@@ -39,7 +40,9 @@ const CardItem = memo(function CardItem({ item, onLongPress }: CardProps) {
     const href = buildResumeHref(item, details?.number_of_seasons);
     if (href) router.push(href);
   };
-  const label = item.episode ? `${item.title ?? ""} · ${item.episode}` : item.title ?? "";
+  const episode = mediaType === "tv" ? tvSeasonEpisode(item) : null;
+  const episodeLabel = episode ? `S${episode.season} E${episode.episode}` : item.episode;
+  const caption = [episodeLabel, progressLabel].filter(Boolean).join(" · ");
 
   return (
     <PressableScale
@@ -47,7 +50,7 @@ const CardItem = memo(function CardItem({ item, onLongPress }: CardProps) {
       onLongPress={onLongPress ? () => onLongPress(item) : undefined}
       delayLongPress={300}
       style={{ width: w }}
-      accessibilityLabel={`Resume ${item.title ?? ""}`}
+      accessibilityLabel={`Resume ${item.title ?? ""}, ${caption}`}
     >
       <View style={{ width: w, height: h, borderRadius: radius.control, overflow: "hidden", backgroundColor: colors.surfaceRaised }}>
         <PosterImage uri={item.thumb || item.src} style={{ width: w, height: h }} />
@@ -67,13 +70,14 @@ const CardItem = memo(function CardItem({ item, onLongPress }: CardProps) {
             <Play size={18} color="#fff" fill="#fff" />
           </View>
         </View>
-        <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 2, backgroundColor: colors.line }}>
+        {progressPercent !== null ? <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 2, backgroundColor: colors.line }}>
           <View style={{ height: "100%", width: `${progressPercent}%`, backgroundColor: colors.foreground }} />
-        </View>
+        </View> : null}
       </View>
       <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 14, lineHeight: 19, fontWeight: "600", marginTop: 8, width: w }}>
-        {label}
+        {item.title}
       </Text>
+      <Text numberOfLines={1} style={{ color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 3 }}>{caption}</Text>
     </PressableScale>
   );
 });

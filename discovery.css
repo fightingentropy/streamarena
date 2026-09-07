@@ -1,0 +1,23 @@
+.discovery-filters { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin: 0 0 22px; }
+.discovery-filters label { display: grid; gap: 7px; color: #aaa; font-size: 12px; }
+.discovery-filters select, .discovery-filters input { height: 42px; padding: 0 12px; border: 1px solid #414141; border-radius: 8px; background: #202020; color: #eee; font: inherit; font-size: 14px; }
+.discovery-filters input { width: 108px; }
+.discovery-people { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 20px; }
+.discovery-people > span { font-size: 13px; color: #aaa; margin-right: 4px; }
+.discovery-pill, .discovery-person { border: 1px solid #484848; border-radius: 8px; padding: 10px 14px; color: #eee; background: #202020; font: inherit; font-size: 14px; cursor: pointer; }
+.discovery-person { display: grid; text-align: left; gap: 4px; }
+.discovery-person span { color: #aaa; font-size: 12px; }
+.discovery-person[aria-pressed="true"] { border-color: #eee; }
+.discovery-pill:hover, .discovery-person:hover { background: #303030; }
+.discovery-text-button { border: 0; padding: 12px 4px; background: none; color: #ccc; font: inherit; font-size: 13px; cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
+.discovery-status { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 20px; }
+.discovery-status .search-status { margin: 0; }
+.discovery-card-meta { display: block; color: #aaa; font-size: 12px; margin-top: 5px; }
+.discovery-load-more { display: block; margin: 30px auto; }
+.discovery-pill:disabled { opacity: .6; cursor: wait; }
+.discovery-filters :is(select, input):focus-visible, :is(.discovery-pill, .discovery-person, .discovery-text-button):focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+@media (max-width: 620px) {
+  .discovery-filters { gap: 8px; }
+  .discovery-filters select { max-width: 156px; padding: 0 8px; }
+  .discovery-filters input { width: 86px; }
+}

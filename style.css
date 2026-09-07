@@ -124,6 +124,28 @@
     isolation: isolate;
 }
 
+/* Returning viewers can reach their next watch without scrolling past a full billboard. */
+.home-page.has-continue-watching .featured-hero {
+    height: clamp(260px, 40vh, 360px);
+    margin-bottom: 24px;
+}
+.home-page.has-continue-watching .hero-content {
+    bottom: 24px;
+}
+.home-page.has-continue-watching .hero-title-logo {
+    max-height: 100px;
+    max-width: min(45vw, 340px);
+}
+.home-page.has-continue-watching .hero-content h1 {
+    font-size: clamp(1.8rem, 3.5vw, 3rem);
+}
+.home-page.has-continue-watching .hero-meta {
+    margin-top: 12px;
+}
+.home-page.has-continue-watching .hero-content .hero-actions {
+    margin-top: 16px;
+}
+
 .home-page .hero-poster,
 .home-page .hero-video {
     position: absolute;
@@ -898,6 +920,17 @@
     overflow: hidden;
     background: rgba(255, 255, 255, 0.32);
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.home-page .continue-row .continue-caption {
+    margin: 0;
+    padding: 9px 8px;
+    color: #c4c4c4;
+    font-size: 12px;
+    line-height: 18px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .home-page .continue-row .card-base .progress::-webkit-progress-bar {

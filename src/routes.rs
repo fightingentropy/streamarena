@@ -59,6 +59,7 @@ use crate::upload::UploadService;
 use crate::utils::now_ms;
 
 mod admin;
+mod discovery;
 mod playback_media;
 mod real_debrid_benchmark;
 mod user_settings;
@@ -78,6 +79,7 @@ use admin::{
 };
 #[cfg(test)]
 use admin::{manifest_is_stream_addon, normalize_custom_addon_base, provider_slugify};
+use discovery::{tmdb_recommendations_handler, tmdb_search_handler};
 use playback_media::{media_tracks_handler, remux_handler};
 use real_debrid_benchmark::{
     attach_benchmark_server_instance, benchmark_query_matches_cardinality,
@@ -444,6 +446,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/session/progress", any(session_progress_handler))
         .route("/api/tmdb/popular-movies", any(tmdb_popular_movies_handler))
         .route("/api/tmdb/search", any(tmdb_search_handler))
+        .route(
+            "/api/tmdb/recommendations",
+            get(tmdb_recommendations_handler),
+        )
         .route("/api/tmdb/details", any(tmdb_details_handler))
         .route("/api/tmdb/tv/season", any(tmdb_tv_season_handler))
         .route("/api/upload/infer", any(upload_infer_handler))
@@ -1135,83 +1141,6 @@ pub async fn home_bootstrap_handler(
         .payload_or_refresh(state.clone())
         .await;
     Ok(json_response(payload))
-}
-
-pub async fn tmdb_search_handler(
-    State(state): State<AppState>,
-    method: Method,
-    uri: Uri,
-) -> AppResult<Response<Body>> {
-    if method != Method::GET {
-        return Err(ApiError::method_not_allowed("Method not allowed."));
-    }
-    let params = query_pairs(uri.query().unwrap_or_default());
-    let query = normalize_whitespace(
-        params
-            .get("query")
-            .cloned()
-            .or_else(|| params.get("q").cloned())
-            .unwrap_or_default(),
-    );
-    let requested_limit = params
-        .get("limit")
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(40);
-    let limit = requested_limit.clamp(1, 60) as usize;
-
-    if query.len() < 2 {
-        return Ok(json_response(json!({
-            "query": query,
-            "results": [],
-            "imageBase": "https://image.tmdb.org/t/p"
-        })));
-    }
-
-    let mut search_params = BTreeMap::new();
-    search_params.insert("query".to_owned(), query.clone());
-    search_params.insert("include_adult".to_owned(), "false".to_owned());
-    search_params.insert("page".to_owned(), "1".to_owned());
-    let payload = state
-        .tmdb
-        .fetch("/search/multi", search_params, 20_000)
-        .await?;
-    let results = payload
-        .get("results")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|entry| {
-            entry.get("id").is_some()
-                && matches!(
-                    entry.get("media_type").and_then(Value::as_str),
-                    Some("movie") | Some("tv")
-                )
-        })
-        .take(limit)
-        .map(|entry| {
-            json!({
-                "id": stringify_json(entry.get("id")),
-                "mediaType": if entry.get("media_type").and_then(Value::as_str) == Some("tv") { "tv" } else { "movie" },
-                "title": normalize_whitespace(stringify_json(entry.get("title")).if_empty_then(|| stringify_json(entry.get("name")))),
-                "name": normalize_whitespace(stringify_json(entry.get("name")).if_empty_then(|| stringify_json(entry.get("title")))),
-                "releaseDate": stringify_json(entry.get("release_date")),
-                "firstAirDate": stringify_json(entry.get("first_air_date")),
-                "posterPath": stringify_json(entry.get("poster_path")),
-                "backdropPath": stringify_json(entry.get("backdrop_path")),
-                "overview": stringify_json(entry.get("overview")),
-                "adult": entry.get("adult").and_then(Value::as_bool).unwrap_or(false),
-                "popularity": entry.get("popularity").and_then(Value::as_f64).unwrap_or(0.0),
-                "voteAverage": entry.get("vote_average").and_then(Value::as_f64).unwrap_or(0.0)
-            })
-        })
-        .collect::<Vec<_>>();
-
-    Ok(json_response(json!({
-        "query": query,
-        "results": results,
-        "imageBase": "https://image.tmdb.org/t/p"
-    })))
 }
 
 pub async fn tmdb_details_handler(

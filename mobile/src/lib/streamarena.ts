@@ -159,13 +159,27 @@ export function homeHero(home: HomeBootstrap): Title | null {
 
 // ─────────────────────────── Search ───────────────────────────
 
-export type SearchResponse = { query: string; results: SearchTitle[]; imageBase: string };
+export type SearchPerson = { id: number; name: string; department?: string; profilePath?: string | null };
+export type DiscoveryGenre = { id: string; name: string };
+export type SearchFilters = { mediaType?: "all" | MediaType; genre?: string; year?: string; personId?: string; page?: number };
+export type SearchResponse = {
+  query: string; results: SearchTitle[]; imageBase: string;
+  people?: SearchPerson[]; person?: SearchPerson | null; genres?: DiscoveryGenre[];
+  page?: number; hasMore?: boolean;
+};
 
-export function searchTitles(query: string, limit = 40, signal?: AbortSignal): Promise<SearchResponse> {
+export function searchTitles(query: string, limit = 40, signal?: AbortSignal, filters: SearchFilters = {}): Promise<SearchResponse> {
+  const params = new URLSearchParams({ query, limit: String(limit) });
+  for (const [key, value] of Object.entries(filters)) if (value != null && value !== "") params.set(key, String(value));
   return getJson<SearchResponse>(
-    `/api/tmdb/search?query=${encodeURIComponent(query)}&limit=${limit}`,
-    { timeoutMs: 12_000, signal },
+    `/api/tmdb/search?${params}`,
+    { timeoutMs: 22_000, signal },
   );
+}
+
+const EMPTY_RECOMMENDATIONS = { results: [] as SearchTitle[], imageBase: DEFAULT_IMAGE_BASE };
+export function useRecommendations(tmdbId: string, mediaType: MediaType, scope?: string | null) {
+  return useApiData(withAccountScope(`/api/tmdb/recommendations?tmdbId=${tmdbId}&mediaType=${mediaType}`, scope), EMPTY_RECOMMENDATIONS, { enabled: !!scope && !!tmdbId });
 }
 
 // ─────────────────────────── Title details (raw TMDB) ───────────────────────────

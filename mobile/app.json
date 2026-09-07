@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "xyz.streamarena.app",
-      "buildNumber": "8",
+      "buildNumber": "9",
       "infoPlist": {
         "CFBundleDisplayName": "Netflix",
         "CFBundleName": "Netflix",

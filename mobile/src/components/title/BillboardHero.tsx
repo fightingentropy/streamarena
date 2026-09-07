@@ -17,6 +17,7 @@ export function BillboardHero({
   height = layout.heroHeight,
   onPlay,
   onInfo,
+  playLabel = "Play",
   centerSlot,
 }: {
   title: Title;
@@ -24,6 +25,7 @@ export function BillboardHero({
   height?: number;
   onPlay: () => void;
   onInfo: () => void;
+  playLabel?: "Play" | "Resume";
   centerSlot?: ReactNode;
 }) {
   const backdrop =
@@ -63,7 +65,7 @@ export function BillboardHero({
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 17 }}>
           <PressableScale
             onPress={onPlay}
-            accessibilityLabel={`Play ${title.title}`}
+            accessibilityLabel={`${playLabel} ${title.title}`}
             style={{
               minHeight: 46,
               borderRadius: radius.control,
@@ -76,7 +78,7 @@ export function BillboardHero({
             }}
           >
             <Play size={18} color="#000" fill="#000" />
-            <Text style={{ color: "#000", fontWeight: "800", fontSize: 15 }}>Play</Text>
+            <Text style={{ color: "#000", fontWeight: "800", fontSize: 15 }}>{playLabel}</Text>
           </PressableScale>
 
           {centerSlot}

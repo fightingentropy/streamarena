@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshControl, View } from "react-native";
+import { RefreshControl, useWindowDimensions, View } from "react-native";
 import Animated, { useAnimatedScrollHandler, useSharedValue } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import { getIsOnline } from "@/lib/connectivity";
+import { buildFeaturedPlayHref } from "@/lib/continue-watching";
 import { Wordmark } from "@/components/brand/Wordmark";
 import { GlassHeader } from "@/components/nav/GlassHeader";
 import { ProfileButton } from "@/components/profile/ProfileButton";
@@ -25,6 +26,7 @@ import {
   type Rail,
   useContinueWatching,
   useHomeBootstrap,
+  useTitleDetails,
 } from "@/lib/streamarena";
 import { colors } from "@/theme";
 
@@ -32,6 +34,7 @@ export default function HomeScreen() {
   const scope = useAccountScope();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
   const { data: home, loading, error, refetch } = useHomeBootstrap(scope);
   const { items: continueItems, refetch: refetchContinue } = useContinueWatching(scope);
 
@@ -90,6 +93,8 @@ export default function HomeScreen() {
   });
 
   const hero = useMemo(() => homeHero(home), [home]);
+  const { data: heroDetails } = useTitleDetails(hero?.id ?? "", hero?.mediaType ?? "movie", !!hero && hero.mediaType === "tv");
+  const compactHeroHeight = visibleContinue.length ? Math.max(280, Math.min(360, height * 0.42)) : undefined;
   const imageBase = home.imageBase;
   const rails = useMemo(
     () =>
@@ -117,7 +122,9 @@ export default function HomeScreen() {
           <BillboardHero
             title={hero}
             imageBase={imageBase}
-            onPlay={() => router.push(titleHref(hero.mediaType, hero.id))}
+            height={compactHeroHeight}
+            playLabel={visibleContinue.some((item) => String(item.tmdbId) === hero.id && item.mediaType === hero.mediaType) ? "Resume" : "Play"}
+            onPlay={() => router.push(buildFeaturedPlayHref(hero, visibleContinue, heroDetails))}
             onInfo={() => router.push(titleHref(hero.mediaType, hero.id))}
           />
         ) : (
@@ -162,7 +169,7 @@ export default function HomeScreen() {
         </View>
       </Animated.ScrollView>
 
-      <GlassHeader scrollY={scrollY} left={<Wordmark />} right={<ProfileButton />} fadeStart={180} fadeEnd={380} />
+      <GlassHeader scrollY={scrollY} left={<Wordmark />} right={<ProfileButton />} fadeStart={compactHeroHeight ? compactHeroHeight - 160 : 180} fadeEnd={compactHeroHeight ? compactHeroHeight - 60 : 380} />
 
       <ContinueWatchingActionsSheet item={menuItem} onClose={() => setMenuItem(null)} onRemove={onRemoveCW} />
     </View>

@@ -1,6 +1,6 @@
 import type { Href } from "expo-router";
 import { titleHref, watchHref } from "@/lib/nav";
-import type { ContinueWatchingItem, MediaType } from "@/lib/streamarena";
+import type { ContinueWatchingItem, MediaType, Title, TitleDetails } from "@/lib/streamarena";
 import type { PlayRequest } from "@/video/types";
 
 // Pull season/episode out of a TV continue-watching entry. sourceIdentity is the canonical
@@ -41,6 +41,24 @@ export function buildResumeHref(item: ContinueWatchingItem, seasonCount?: number
     if (seasonCount) extra.seasonCount = String(seasonCount);
   }
   return watchHref(item.tmdbId, extra);
+}
+
+export function buildFeaturedPlayHref(title: Title, items: ContinueWatchingItem[], details?: TitleDetails | null): Href {
+  const resume = items.find((item) => String(item.tmdbId) === title.id && cwMediaType(item) === title.mediaType);
+  if (resume) {
+    const href = buildResumeHref(resume, details?.number_of_seasons);
+    if (href) return href;
+  }
+  const extra: Record<string, string> = { mediaType: title.mediaType, title: title.title, year: title.year };
+  if (title.posterPath) extra.poster = /^https?:\/\//.test(title.posterPath) ? title.posterPath : `https://image.tmdb.org/t/p/w342${title.posterPath}`;
+  if (title.mediaType === "tv") {
+    const season = details?.seasons?.find((entry) => entry.season_number > 0 && (entry.episode_count ?? 0) > 0);
+    extra.seasonNumber = String(season?.season_number || 1);
+    extra.episodeNumber = "1";
+    if (season?.episode_count) extra.episodeCount = String(season.episode_count);
+    if (details?.number_of_seasons) extra.seasonCount = String(details.number_of_seasons);
+  }
+  return watchHref(title.id, extra);
 }
 
 // The PlayRequest a continue-watching row represents — used to key downloads (assetId =

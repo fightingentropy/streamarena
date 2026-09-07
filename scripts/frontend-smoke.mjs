@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium, devices } from "playwright";
+import { createDiscoverySmoke } from "./discovery-smoke.mjs";
 
 const rootDir = resolve(new URL("..", import.meta.url).pathname);
 const port = Number(process.env.FRONTEND_SMOKE_PORT || 4174);
@@ -432,6 +433,7 @@ function apiPayload(url, method) {
 }
 
 const pages = [
+  { path: "/index.html", selector: ".home-page", expectDiscovery: true },
   { path: "/login.html", selector: ".login-page", expectClosedSignup: true },
   {
     path: "/settings.html",
@@ -568,6 +570,7 @@ async function runSmoke() {
         pageSpec.contextOptions || { viewport: { width: 1280, height: 900 } },
       );
       const page = await context.newPage();
+      const discoverySmoke = pageSpec.expectDiscovery ? createDiscoverySmoke(page) : null;
       const failures = [];
       let sawHlsMasterRequest = false;
       let sawRemuxRequest = false;
@@ -720,6 +723,7 @@ async function runSmoke() {
       });
 
       await page.route("**/api/**", async (route) => {
+        if (discoverySmoke && await discoverySmoke.route(route)) return;
         const request = route.request();
         const url = new URL(request.url());
         if (url.pathname === "/api/auth/config") {
@@ -1594,6 +1598,8 @@ async function runSmoke() {
       }
 
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+
+      if (discoverySmoke) await discoverySmoke.verify();
 
       if (pageSpec.expectVideoHero) {
         await page.waitForSelector(

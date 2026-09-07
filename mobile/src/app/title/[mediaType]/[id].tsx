@@ -14,6 +14,7 @@ import { CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
 import { EmptyState } from "@/components/ui/States";
 import { ActionRow } from "@/components/title/ActionRow";
 import { CastRail } from "@/components/title/CastRail";
+import { RecommendationsRail } from "@/components/title/RecommendationsRail";
 import { DownloadButton } from "@/components/title/DownloadButton";
 import { GenreChips } from "@/components/title/GenreChips";
 import { MetaRow } from "@/components/title/MetaRow";
@@ -68,7 +69,7 @@ export default function TitleDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const { data: details, loading, error } = useTitleDetails(id, mediaType);
+  const { data: details, loading, error, refetch } = useTitleDetails(id, mediaType);
 
   const scrollY = useSharedValue(0);
   const onScroll = useAnimatedScrollHandler((e) => {
@@ -87,7 +88,7 @@ export default function TitleDetailScreen() {
     }
   }, [mediaType, seasonNumber, realSeasons]);
 
-  const { data: season, loading: seasonLoading, error: seasonError } = useSeason(
+  const { data: season, loading: seasonLoading, error: seasonError, refetch: refetchSeason } = useSeason(
     id,
     seasonNumber ?? 1,
     mediaType === "tv" && seasonNumber != null,
@@ -154,13 +155,13 @@ export default function TitleDetailScreen() {
     return <DetailSkeleton />;
   }
 
-  if (!details || error) {
+  if (!details) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.background, paddingTop: insets.top }}>
         <View style={{ paddingHorizontal: 16, paddingVertical: 8 }}>
           <BackButton />
         </View>
-        <EmptyState title="Couldn't load this title" subtitle={error ?? "Please try again."} />
+        <EmptyState title="Couldn't load this title" subtitle={error ? "Check your connection and try again." : "Please try again."} actionLabel="Retry details" onAction={refetch} />
       </View>
     );
   }
@@ -279,9 +280,7 @@ export default function TitleDetailScreen() {
                   ))}
                 </View>
               ) : seasonError ? (
-                <Text style={{ color: colors.muted, fontSize: 13, paddingHorizontal: 16, paddingVertical: 12 }}>
-                  Couldn’t load episodes for this season.
-                </Text>
+                <EmptyState title="Episodes couldn’t load" actionLabel="Retry episodes" onAction={refetchSeason} />
               ) : (season?.episodes?.length ?? 0) === 0 ? (
                 <Text style={{ color: colors.muted, fontSize: 13, paddingHorizontal: 16, paddingVertical: 12 }}>
                   No episodes available for this season yet.
@@ -316,6 +315,7 @@ export default function TitleDetailScreen() {
         <View style={{ marginTop: 34 }}>
           <CastRail cast={details.credits?.cast} />
         </View>
+        <RecommendationsRail id={id} mediaType={mediaType} />
       </Animated.ScrollView>
 
       <GlassHeader scrollY={scrollY} title={title} left={<BackButton />} fadeStart={HERO_HEIGHT - 200} fadeEnd={HERO_HEIGHT - 90} />

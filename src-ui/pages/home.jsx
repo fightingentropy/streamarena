@@ -77,15 +77,14 @@ import {
   selectFeaturedHeroCandidate,
   selectFeaturedHeroTrailerKey,
 } from "../lib/featured-hero.js";
+import TitleRecommendations from "../components/title-recommendations.jsx";
+import SearchExperience from "../components/search-experience.jsx";
 import FeedbackNav from "../components/feedback-nav.jsx";
 import BrandWordmark from "../components/brand-wordmark.jsx";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const SEARCH_DEBOUNCE_MS = 280;
-const SEARCH_MIN_QUERY_LENGTH = 2;
-const SEARCH_RESULTS_LIMIT = 40;
 const STALE_HERO_PREVIEW_MUTED_PREF_KEY = "streamarena-hero-trailer-muted-v2";
 const HERO_PREVIEW_ENTER_VISIBLE_RATIO = 0.3;
 const HERO_PREVIEW_LEAVE_VISIBLE_RATIO = 0.08;
@@ -667,14 +666,14 @@ function createSearchResultDetails(item, imageBase = TMDB_IMAGE_BASE) {
     tmdbId: String(item?.id || "").trim(),
     mediaType,
     year,
-    runtime: mediaType === "tv" ? "Series" : "Movie",
+    runtime: "",
     maturity: normalizeCertification(item?.certification),
-    quality: "HD",
-    audio: "Stereo",
+    quality: "",
+    audio: "",
     description,
     cast: "Loading cast...",
-    genres: mediaType === "tv" ? "Series" : "Movie",
-    vibe: "Search result",
+    genres: "",
+    vibe: "",
   };
 }
 
@@ -712,24 +711,16 @@ function getCardModalData(card) {
       card.dataset.thumb ||
       previewImage?.getAttribute("src") ||
       "assets/images/thumbnail.jpg",
-    year: card.dataset.year || "2024",
-    runtime: card.dataset.runtime || "1h 40m",
+    year: card.dataset.year || "",
+    runtime: card.dataset.runtime || "",
     maturity: normalizeCertification(card.dataset.maturity),
-    quality: card.dataset.quality || "HD",
-    audio: card.dataset.audio || "Spatial Audio",
+    quality: card.dataset.quality || "",
+    audio: card.dataset.audio || "",
     description: card.dataset.description || "No description available.",
-    cast: card.dataset.cast || "Cast details unavailable.",
-    genres: card.dataset.genres || "Genres unavailable.",
-    vibe: card.dataset.vibe || "Atmosphere unavailable.",
+    cast: card.dataset.cast || "",
+    genres: card.dataset.genres || "",
+    vibe: card.dataset.vibe || "",
   };
-}
-
-function hasPlayableDestination(details) {
-  return Boolean(
-    String(details?.src || "").trim() ||
-    String(details?.tmdbId || "").trim() ||
-    String(details?.seriesId || "").trim(),
-  );
 }
 
 function getRecommendationIdentity(details) {
@@ -938,12 +929,13 @@ function mapDetailsToModalPatch(rawDetails, currentDetails, mediaType) {
       : formatRuntime(rawDetails.episode_run_time?.[0]);
   return {
     ...currentDetails,
-    runtime: runtime || currentDetails.runtime,
+    year: String(rawDetails.release_date || rawDetails.first_air_date || "").slice(0, 4) || currentDetails.year,
+    runtime: runtime || "",
     maturity: normalizeCertification(
       rawDetails.certification || currentDetails.maturity,
     ),
     description: rawDetails.overview || currentDetails.description,
-    cast: castList.length ? castList.join(", ") : currentDetails.cast,
+    cast: castList.join(", "),
     genres: genresList.length ? genresList.join(", ") : currentDetails.genres,
     vibe: rawDetails.tagline ? rawDetails.tagline : currentDetails.vibe,
   };
@@ -998,9 +990,6 @@ export default function HomePage() {
   let topRatedCardsContainerRef;
   let myListCardsRef;
   let myListLibraryEntries = [];
-  let searchResultsGridRef;
-  let searchExploreLinksRef;
-  let detailsMoreGridRef;
   let libraryEditFieldsRef;
   let navSearchInputRef;
   let detailsCloseButtonRef;
@@ -1012,9 +1001,9 @@ export default function HomePage() {
 
   // ---- Signals ----
   const [isMuted, setIsMuted] = createSignal(true);
+  const [heroMotionPaused, setHeroMotionPaused] = createSignal(false);
   const [isSearchModeActive, setIsSearchModeActive] = createSignal(false);
-  const [searchStatusText, setSearchStatusText] = createSignal("Start typing to search TMDB titles.");
-  const [searchStatusTone, setSearchStatusTone] = createSignal("");
+  const [searchQuery, setSearchQuery] = createSignal("");
   const [showSearchExperience, setShowSearchExperience] = createSignal(false);
   const [showSearchBox, setShowSearchBox] = createSignal(false);
   const [searchBoxOpen, setSearchBoxOpen] = createSignal(false);
@@ -1047,16 +1036,16 @@ export default function HomePage() {
     thumb: DEFAULT_LOCAL_THUMBNAIL,
     title: "POPULAR MOVIES",
     year: "",
-    runtime: "Movie",
+    runtime: "",
     maturity: UNRATED_CERTIFICATION_LABEL,
-    quality: "HD",
+    quality: "",
     audio: "",
     description: "Pick a title to see details.",
     cast: "",
     genres: "",
     vibe: "",
   });
-  const [detailsMoreVisible, setDetailsMoreVisible] = createSignal(false);
+  const [detailsLoadState, setDetailsLoadState] = createSignal("ready");
   const [detailsMyListActive, setDetailsMyListActive] = createSignal(false);
 
   const [libraryEditModalVisible, setLibraryEditModalVisible] = createSignal(false);
@@ -1071,7 +1060,6 @@ export default function HomePage() {
   const [libraryDeleteBtnVisible, setLibraryDeleteBtnVisible] = createSignal(true);
 
   const [searchContextMenuVisible, setSearchContextMenuVisible] = createSignal(false);
-  const [searchExploreVisible, setSearchExploreVisible] = createSignal(false);
 
   const [avatarClassName, setAvatarClassName] = createSignal("avatar avatar-style-blue");
   const [avatarImageSrc, setAvatarImageSrc] = createSignal("");
@@ -1080,16 +1068,14 @@ export default function HomePage() {
 
   // ---- Mutable state (not signals, imperative tracking) ----
   let activeDetails = null;
+  let activeDetailsCard = null;
   let detailsTrigger = null;
   let closeModalTimer = null;
   let detailsRequestVersion = 0;
   let continueWatchingLoadVersion = 0;
-  let searchDebounceTimer = null;
-  let activeSearchRequestToken = 0;
   let featuredHeroDetailsRequestVersion = 0;
   let heroCarouselTimer = null;
   let heroPreviewStartedTrailerKey = "";
-  let searchAbortController = null;
   let searchContextTarget = null;
   let searchBoxHideTimer = null;
   let libraryEditModalCloseTimer = null;
@@ -1861,13 +1847,15 @@ export default function HomePage() {
 
   function populateDetailsModal(details) {
     setDetailsData({
+      tmdbId: details.tmdbId || "",
+      mediaType: details.mediaType || "movie",
       thumb: details.thumb || DEFAULT_LOCAL_THUMBNAIL,
       title: (details.title || "").toUpperCase(),
-      year: details.year || "2023",
-      runtime: details.runtime || "2h 40m",
+      year: details.year || "",
+      runtime: details.runtime || "",
       maturity: normalizeCertification(details.maturity),
-      quality: details.quality || "HD",
-      audio: details.audio || "Spatial Audio",
+      quality: details.quality || "",
+      audio: details.audio || "",
       description: details.description || "",
       cast: details.cast || "",
       genres: details.genres || "",
@@ -1875,95 +1863,24 @@ export default function HomePage() {
     });
   }
 
-  function renderDetailsRecommendations(currentCard) {
-    if (!detailsMoreGridRef) {
-      return;
-    }
-    const currentDetails = getCardDetails(currentCard);
-    const currentIdentity = getRecommendationIdentity(currentDetails);
-    const seen = new Set(currentIdentity ? [currentIdentity] : []);
-    const recommendations = [];
-    const allCards = Array.from(document.querySelectorAll(".card"));
-
-    allCards.forEach((candidateCard) => {
-      if (candidateCard === currentCard || recommendations.length >= 6) {
-        return;
-      }
-      const details = getCardDetails(candidateCard);
-      if (!hasPlayableDestination(details)) {
-        return;
-      }
-      const identity = getRecommendationIdentity(details);
-      if (!identity || seen.has(identity)) {
-        return;
-      }
-      seen.add(identity);
-      recommendations.push({
-        details,
-        title:
-          String(candidateCard.dataset.title || "").trim() ||
-          String(details.title || "").trim() ||
-          "Untitled",
-        thumb:
-          String(candidateCard.dataset.thumb || "").trim() ||
-          candidateCard.querySelector("img")?.getAttribute("src") ||
-          "assets/images/thumbnail.jpg",
-      });
-    });
-
-    detailsMoreGridRef.innerHTML = "";
-    setDetailsMoreVisible(recommendations.length > 0);
-    if (!recommendations.length) {
-      return;
-    }
-
-    const fragment = document.createDocumentFragment();
-    recommendations.forEach((entry) => {
-      const safeTitle = String(entry.title || "").trim() || "Untitled";
-      const item = document.createElement("button");
-      item.className = "details-item";
-      item.type = "button";
-      item.setAttribute("aria-label", `Open ${safeTitle}`);
-      const img = document.createElement("img");
-      img.src = String(entry.thumb || "").trim() || DEFAULT_LOCAL_THUMBNAIL;
-      img.alt = `${safeTitle} artwork`;
-      img.loading = "lazy";
-      item.appendChild(img);
-      const titleEl = document.createElement("p");
-      titleEl.textContent = safeTitle;
-      item.appendChild(titleEl);
-
-      const openSuggestion = () => {
-        activeDetails = {
-          ...entry.details,
-          title: safeTitle,
-          thumb: entry.thumb,
-        };
-        closeDetailsModal({ restoreFocus: false });
-        openPlayerPage(activeDetails);
-      };
-
-      item.addEventListener("click", openSuggestion);
-      fragment.appendChild(item);
-    });
-    detailsMoreGridRef.appendChild(fragment);
-  }
-
   async function hydrateModalFromTmdb(card) {
-    const tmdbId = card.dataset.tmdbId;
-    const mediaType = card.dataset.mediaType;
+    const requestVersion = ++detailsRequestVersion;
+    const tmdbId = activeDetails?.tmdbId;
+    const mediaType = activeDetails?.mediaType;
+    setDetailsLoadState("ready");
     if (!tmdbId || !mediaType) return;
+    setDetailsLoadState("loading");
 
     const cacheKey = `${mediaType}:${tmdbId}`;
-    const requestVersion = ++detailsRequestVersion;
 
     if (tmdbDetailsCache.has(cacheKey)) {
-      applyCardCertification(card, tmdbDetailsCache.get(cacheKey)?.maturity);
+      if (card) applyCardCertification(card, tmdbDetailsCache.get(cacheKey)?.maturity);
       activeDetails = {
         ...activeDetails,
         ...tmdbDetailsCache.get(cacheKey),
       };
       populateDetailsModal(activeDetails);
+      setDetailsLoadState("ready");
       return;
     }
 
@@ -1976,7 +1893,7 @@ export default function HomePage() {
         },
         TMDB_DETAILS_MODAL_TIMEOUT_MS,
       );
-      applyCardCertification(card, details?.certification);
+      if (card) applyCardCertification(card, details?.certification);
 
       if (
         requestVersion !== detailsRequestVersion ||
@@ -1994,22 +1911,27 @@ export default function HomePage() {
       setTmdbDetailsCache(cacheKey, modalPatch);
       activeDetails = modalPatch;
       populateDetailsModal(activeDetails);
-    } catch (error) {
-      console.error("Failed to load TMDB details:", error);
+      setDetailsLoadState("ready");
+    } catch {
+      if (requestVersion !== detailsRequestVersion || !detailsModalVisible()) return;
+      if (activeDetails.cast === "Loading cast...") activeDetails = { ...activeDetails, cast: "" };
+      populateDetailsModal(activeDetails);
+      setDetailsLoadState("error");
     }
   }
 
-  function openDetailsModal(card, trigger) {
+  function openDetailsModal(card, trigger, details = getCardModalData(card)) {
     if (closeModalTimer) {
       clearTimeout(closeModalTimer);
       closeModalTimer = null;
     }
 
-    activeDetails = getCardModalData(card);
+    activeDetails = details;
+    activeDetailsCard = card;
+    suspendHeroPreviewForViewport();
     detailsTrigger = trigger || null;
     populateDetailsModal(activeDetails);
     setDetailsMyListActive(isMyListEntryActive(activeDetails));
-    renderDetailsRecommendations(card);
     setDetailsModalVisible(true);
     setDetailsModalBackgroundInert(true);
     requestAnimationFrame(() => {
@@ -2115,8 +2037,8 @@ export default function HomePage() {
     card.dataset.year = displayYear;
     card.dataset.runtime = contentTypeLabel;
     card.dataset.maturity = UNRATED_CERTIFICATION_LABEL;
-    card.dataset.quality = "HD";
-    card.dataset.audio = "Stereo";
+    card.dataset.quality = "";
+    card.dataset.audio = "";
     card.dataset.description = "Saved in My List.";
     card.dataset.cast = "Local library";
     card.dataset.genres = contentTypeLabel;
@@ -2149,7 +2071,6 @@ export default function HomePage() {
           <div class="card-hover-meta">
             <span class="meta-age">${UNRATED_CERTIFICATION_LABEL}</span>
             <span>${escapeHtml(displayYear)}</span>
-            <span class="meta-chip">HD</span>
             <span class="meta-spatial">${contentTypeLabel}</span>
           </div>
           <p class="card-hover-tags">Saved <span>&bull;</span> My List</p>
@@ -2547,16 +2468,13 @@ export default function HomePage() {
         isSeriesEntry ? tmdbDetails?.episode_run_time?.[0] : tmdbDetails?.runtime,
       ) || 0;
     const estimatedDurationSeconds = runtimeMinutes > 0 ? runtimeMinutes * 60 : 0;
-    const progressPercent =
-      estimatedDurationSeconds > 0
-        ? Math.max(
-            4,
-            Math.min(
-              96,
-              Math.round((entry.resumeSeconds / estimatedDurationSeconds) * 100),
-            ),
-          )
-        : 24;
+    const resumeSeconds = Math.max(0, Number(entry.resumeSeconds) || 0);
+    const progressPercent = estimatedDurationSeconds > 0
+      ? Math.min(100, Math.round((resumeSeconds / estimatedDurationSeconds) * 100))
+      : null;
+    const episodeLabel = isSeriesEntry && entry.seasonNumber > 0 && entry.episodeNumber > 0
+      ? `S${entry.seasonNumber} E${entry.episodeNumber}`
+      : entry.episode || "";
     const genreNames = (tmdbDetails?.genres || [])
       .map((genre) => String(genre?.name || "").trim())
       .filter(Boolean)
@@ -2577,7 +2495,7 @@ export default function HomePage() {
       : posterUrl;
     const safeDescription = tmdbDetails?.overview || "Resume where you left off.";
     const maturity = normalizeCertification(tmdbDetails?.certification);
-    const qualityLabel = "HD";
+    const qualityLabel = "";
     const contentTypeLabel = isSeriesEntry ? "Series" : "Movie";
     const cast = (tmdbDetails?.credits?.cast || [])
       .slice(0, 4)
@@ -2589,23 +2507,18 @@ export default function HomePage() {
     card.className = "card";
     card.dataset.resumeSource = entry.sourceIdentity;
     card.dataset.title = title;
-    card.dataset.episode = "";
+    card.dataset.episode = episodeLabel;
     card.dataset.src = entry.src || "";
     card.dataset.thumb = heroUrl;
-    card.dataset.year = year || (isSeriesEntry ? "Series" : "Movie");
-    card.dataset.runtime =
-      runtimeMinutes > 0
-        ? formatRuntime(runtimeMinutes)
-        : isSeriesEntry
-          ? "Series"
-          : "Movie";
+    card.dataset.year = year;
+    card.dataset.runtime = runtimeMinutes > 0 ? formatRuntime(runtimeMinutes) : "";
     card.dataset.maturity = maturity;
     card.dataset.quality = qualityLabel;
-    card.dataset.audio = "Stereo";
+    card.dataset.audio = "";
     card.dataset.description = safeDescription;
-    card.dataset.cast = cast || "Cast details unavailable.";
-    card.dataset.genres = genreNames.length ? genreNames.join(", ") : "Movie";
-    card.dataset.vibe = "Continue watching";
+    card.dataset.cast = cast;
+    card.dataset.genres = genreNames.join(", ");
+    card.dataset.vibe = "";
     card.dataset.tmdbId = entry.tmdbId || "";
     card.dataset.mediaType = normalizedMediaType || entry.mediaType || "";
     card.dataset.seriesId = entry.seriesId || "";
@@ -2640,9 +2553,11 @@ export default function HomePage() {
               </button>`
       : "";
 
-    const resumeMin = Math.floor((entry.resumeSeconds || 0) / 60);
-    const totalMin = runtimeMinutes || (estimatedDurationSeconds > 0 ? Math.round(estimatedDurationSeconds / 60) : 0);
-    const progressTimeLabel = totalMin > 0 ? `${resumeMin} of ${totalMin}m` : resumeMin > 0 ? `${resumeMin}m watched` : "";
+    const progressTimeLabel = estimatedDurationSeconds > resumeSeconds
+      ? `${isSeriesEntry ? "About " : ""}${Math.ceil((estimatedDurationSeconds - resumeSeconds) / 60)} min left`
+      : resumeSeconds > 0 ? `${Math.floor(resumeSeconds / 60)} min watched` : "Ready to resume";
+    const progressMarkup = progressPercent === null ? "" : `<progress class="progress" value="${progressPercent}" max="100" aria-hidden="true"></progress>`;
+    const resumeCaption = [episodeLabel, progressTimeLabel].filter(Boolean).join(" · ");
 
     card.innerHTML = `
       <div class="card-base">
@@ -2656,8 +2571,9 @@ export default function HomePage() {
           }
           <span class="card-rail-title" aria-hidden="true">${displayTitle}</span>
         </div>
-        <progress class="progress" value="${progressPercent}" max="100" aria-hidden="true"></progress>
+        ${progressMarkup}
       </div>
+      <p class="continue-caption">${escapeHtml(resumeCaption)}</p>
       <div class="card-hover">
         <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" />
         <div class="card-hover-body">
@@ -2679,12 +2595,12 @@ export default function HomePage() {
             </button>
           </div>
           <div class="card-hover-progress">
-            <progress class="progress" value="${progressPercent}" max="100" aria-hidden="true"></progress>
-            ${progressTimeLabel ? `<span class="progress-time">${progressTimeLabel}</span>` : ""}
+            ${progressMarkup}
+            <span class="progress-time">${escapeHtml(resumeCaption)}</span>
           </div>
           <div class="card-hover-meta">
             <span class="meta-age">${maturity}</span>
-            <span class="meta-chip">${qualityLabel}</span>
+            ${qualityLabel ? `<span class="meta-chip">${qualityLabel}</span>` : ""}
             <span class="meta-spatial">${contentTypeLabel}</span>
           </div>
           <p class="card-hover-tags">${tagLine}</p>
@@ -2699,7 +2615,7 @@ export default function HomePage() {
     const mediaType = getTmdbItemMediaType(item);
     const title = getTmdbItemTitle(item);
     const releaseDate = getTmdbItemReleaseDate(item);
-    const year = releaseDate ? releaseDate.slice(0, 4) : "2024";
+    const year = releaseDate ? releaseDate.slice(0, 4) : "";
     const posterPath = item.poster_path || item.backdrop_path;
     const backdropPath = item.backdrop_path || item.poster_path;
     const posterUrl = backdropPath
@@ -2736,9 +2652,6 @@ export default function HomePage() {
     const posterPortraitUrl = posterPortraitPath
       ? `${imageBase}/w500${posterPortraitPath}`
       : "assets/images/thumbnail.jpg";
-    const recentBadgeMarkup = isTop10
-      ? `<span class="card-recent-badge">Recently Added</span>`
-      : "";
 
     const card = document.createElement("article");
     card.className = isTop10 ? "card card--top10" : "card";
@@ -2747,19 +2660,14 @@ export default function HomePage() {
     card.dataset.src = "";
     card.dataset.thumb = heroUrl;
     card.dataset.year = year;
-    card.dataset.runtime = mediaLabel;
+    card.dataset.runtime = "";
     card.dataset.maturity = maturity;
-    card.dataset.quality = "HD";
-    card.dataset.audio = "Stereo";
+    card.dataset.quality = "";
+    card.dataset.audio = "";
     card.dataset.description = item.overview || "No description available.";
     card.dataset.cast = "Loading cast...";
-    card.dataset.genres = genreNames.length
-      ? genreNames.join(", ")
-      : mediaLabel;
-    card.dataset.vibe =
-      mediaType === "tv"
-        ? "Binge-worthy, Popular, Series"
-        : "Trending, Popular, High-energy";
+    card.dataset.genres = genreNames.join(", ");
+    card.dataset.vibe = "";
     card.dataset.tmdbId = String(item.id);
     card.dataset.mediaType = mediaType;
 
@@ -2769,7 +2677,7 @@ export default function HomePage() {
         <span class="card-rank" aria-hidden="true">${cardIndex + 1}</span>
         <div class="card-rank-poster">
           <img src="${escapeHtml(posterPortraitUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />
-          ${recentBadgeMarkup}
+
         </div>
       </div>`
       : `
@@ -2807,7 +2715,6 @@ export default function HomePage() {
           <div class="card-hover-meta">
             <span class="meta-age">${maturity}</span>
             <span>${safeYear}</span>
-            <span class="meta-chip">HD</span>
             <span class="meta-spatial">${mediaLabel}</span>
           </div>
           <p class="card-hover-tags">${tagLine}</p>
@@ -2831,7 +2738,7 @@ export default function HomePage() {
       );
     const year = String(item?.year || "").trim() || "Local";
     const maturity = normalizeCertification(tmdbDetails?.certification);
-    const qualityLabel = "HD";
+    const qualityLabel = "";
     const storedThumb = String(item?.thumb || "").trim();
     const sourceSpecificThumb = getFallbackThumbnailForSource(src);
     const tmdbPosterPath =
@@ -2871,7 +2778,7 @@ export default function HomePage() {
     card.dataset.runtime = mediaLabel;
     card.dataset.maturity = maturity;
     card.dataset.quality = qualityLabel;
-    card.dataset.audio = "Stereo";
+    card.dataset.audio = "";
     card.dataset.description =
       String(item?.description || "").trim() ||
       "Uploaded from your local library.";
@@ -2914,7 +2821,7 @@ export default function HomePage() {
           <div class="card-hover-meta">
             <span class="meta-age">${maturity}</span>
             <span>${safeYear}</span>
-            <span class="meta-chip">${qualityLabel}</span>
+            ${qualityLabel ? `<span class="meta-chip">${qualityLabel}</span>` : ""}
             <span class="meta-spatial">${mediaLabel}</span>
           </div>
           <p class="card-hover-tags">${tagLine}</p>
@@ -3009,8 +2916,8 @@ export default function HomePage() {
     card.dataset.year = year;
     card.dataset.runtime = mediaLabel;
     card.dataset.maturity = maturity;
-    card.dataset.quality = "HD";
-    card.dataset.audio = "Stereo";
+    card.dataset.quality = "";
+    card.dataset.audio = "";
     card.dataset.description =
       String(tmdbDetails?.overview || "").trim() ||
       String(firstEpisode?.description || "").trim() ||
@@ -3062,7 +2969,6 @@ export default function HomePage() {
           <div class="card-hover-meta">
             <span class="meta-age">${maturity}</span>
             <span>${safeYear}</span>
-            <span class="meta-chip">HD</span>
             <span class="meta-spatial">${mediaLabel}</span>
           </div>
           <p class="card-hover-tags">${tagLine}</p>
@@ -3437,7 +3343,7 @@ export default function HomePage() {
 
   function startHeroCarouselTimer() {
     stopHeroCarouselTimer();
-    if (featuredHeroCandidates().length <= 1) {
+    if (heroMotionPaused() || prefersReducedHeroMotion() || featuredHeroCandidates().length <= 1) {
       return;
     }
     const delay = getFeaturedHeroAutoAdvanceDelay(featuredHero(), {
@@ -3824,176 +3730,10 @@ export default function HomePage() {
     });
   }
 
-  function buildSearchResultCardElement(item, imageBase = TMDB_IMAGE_BASE) {
-    const details = createSearchResultDetails(item, imageBase);
-    const safeTitle = String(details.title || "").trim() || "Untitled";
-
-    const card = document.createElement("button");
-    card.className = "search-result-card";
-    card.type = "button";
-    card.setAttribute("aria-label", `Play ${details.title}`);
-    const img = document.createElement("img");
-    img.src = String(details.thumb || "").trim() || DEFAULT_LOCAL_THUMBNAIL;
-    img.alt = safeTitle;
-    img.loading = "lazy";
-    img.addEventListener("error", handleArtworkImageError);
-    card.appendChild(img);
-    const titleEl = document.createElement("p");
-    titleEl.className = "search-result-card-title";
-    titleEl.textContent = safeTitle;
-    card.appendChild(titleEl);
-
-    const openTitle = () => {
-      hideSearchContextMenu();
-      openPlayerPage(details);
-    };
-
-    card.addEventListener("click", openTitle);
-    card.addEventListener("contextmenu", (event) => {
-      openSearchContextMenu(event, details);
-    });
-
-    queueOfflineArtworkCache([details.thumb]);
-    return card;
-  }
-
-  function clearSearchResults() {
-    if (searchResultsGridRef) {
-      searchResultsGridRef.innerHTML = "";
-    }
-    if (searchExploreLinksRef) {
-      searchExploreLinksRef.innerHTML = "";
-    }
-    setSearchExploreVisible(false);
-  }
-
-  function setSearchStatus(message, tone = "") {
-    setSearchStatusText(String(message || ""));
-    setSearchStatusTone(tone);
-  }
-
-  function renderSearchExploreSuggestions(results) {
-    if (!searchExploreLinksRef) {
-      return;
-    }
-    const suggestions = Array.from(
-      new Set(
-        (Array.isArray(results) ? results : [])
-          .map((entry) =>
-            normalizeSearchQuery(entry?.title || entry?.name || entry?.displayTitle || ""),
-          )
-          .filter(Boolean),
-      ),
-    ).slice(0, 12);
-
-    if (!suggestions.length) {
-      searchExploreLinksRef.innerHTML = "";
-      setSearchExploreVisible(false);
-      return;
-    }
-
-    searchExploreLinksRef.innerHTML = suggestions
-      .map(
-        (value) =>
-          `<a class="search-explore-link" href="#" data-search-query="${escapeHtml(value)}">${escapeHtml(value)}</a>`,
-      )
-      .join("");
-    setSearchExploreVisible(true);
-  }
-
-  function renderSearchResults(results, rawQuery, imageBase = TMDB_IMAGE_BASE) {
-    if (!searchResultsGridRef) {
-      return;
-    }
-    const list = Array.isArray(results) ? results : [];
-    searchResultsGridRef.innerHTML = "";
-    renderSearchExploreSuggestions(list);
-    const safeQuery = normalizeSearchQuery(rawQuery);
-
-    if (!list.length) {
-      setSearchStatus(`No results for "${safeQuery}".`, "error");
-      return;
-    }
-
-    const fragment = document.createDocumentFragment();
-    list.forEach((item) => {
-      fragment.appendChild(buildSearchResultCardElement(item, imageBase));
-    });
-    searchResultsGridRef.appendChild(fragment);
-    setSearchStatus(
-      `Showing ${list.length} result${list.length === 1 ? "" : "s"} for "${safeQuery}".`,
-      "success",
-    );
-  }
-
-  async function runTmdbSearch(rawQuery) {
-    const query = normalizeSearchQuery(rawQuery);
-    const requestToken = ++activeSearchRequestToken;
-
-    if (query.length < SEARCH_MIN_QUERY_LENGTH) {
-      clearSearchResults();
-      setSearchStatus("Type at least 2 characters to search.");
-      return;
-    }
-
-    if (searchAbortController) {
-      searchAbortController.abort();
-    }
-    searchAbortController = new AbortController();
-    const signal = searchAbortController.signal;
-
-    setSearchStatus(`Searching for "${query}"...`);
-    try {
-      const params = new URLSearchParams({ query, limit: String(SEARCH_RESULTS_LIMIT) });
-      const url = `/api/tmdb/search?${params.toString()}`;
-      const response = await fetch(url, { signal });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(payload?.error || `Request failed (${response.status})`);
-      }
-      if (requestToken !== activeSearchRequestToken) {
-        return;
-      }
-      renderSearchResults(payload?.results || [], query, payload?.imageBase || TMDB_IMAGE_BASE);
-    } catch (error) {
-      if (error?.name === "AbortError") {
-        return;
-      }
-      if (requestToken !== activeSearchRequestToken) {
-        return;
-      }
-      clearSearchResults();
-      setSearchStatus(
-        error instanceof Error ? error.message : "Search failed.",
-        "error",
-      );
-    }
-  }
-
-  function scheduleTmdbSearchFromInput({ immediate = false } = {}) {
-    if (searchDebounceTimer) {
-      clearTimeout(searchDebounceTimer);
-      searchDebounceTimer = null;
-    }
-    if (!navSearchInputRef) {
-      return;
-    }
-    if (!isSearchModeActive()) {
-      openSearchMode({ focusInput: false });
-    }
-    if (!isSearchModeActive()) {
-      return;
-    }
-
-    if (immediate) {
-      void runTmdbSearch(navSearchInputRef.value);
-      return;
-    }
-
-    searchDebounceTimer = window.setTimeout(() => {
-      searchDebounceTimer = null;
-      void runTmdbSearch(navSearchInputRef.value);
-    }, SEARCH_DEBOUNCE_MS);
+  function scheduleTmdbSearchFromInput() {
+    if (!navSearchInputRef) return;
+    if (!isSearchModeActive()) openSearchMode({ focusInput: false });
+    setSearchQuery(navSearchInputRef.value.trim());
   }
 
   function openSearchMode({ focusInput = true } = {}) {
@@ -4023,18 +3763,12 @@ export default function HomePage() {
       return;
     }
 
-    clearSearchResults();
-    setSearchStatus("Start typing to search TMDB titles.");
+    setSearchQuery(navSearchInputRef?.value.trim() || "");
   }
 
   function closeSearchMode({ clearInput = true } = {}) {
     setIsSearchModeActive(false);
     hideSearchContextMenu();
-    if (searchDebounceTimer) {
-      clearTimeout(searchDebounceTimer);
-      searchDebounceTimer = null;
-    }
-    activeSearchRequestToken += 1;
     document.body.classList.remove("is-search-mode");
     setShowSearchExperience(false);
     setSearchBoxOpen(false);
@@ -4048,8 +3782,7 @@ export default function HomePage() {
     if (clearInput && navSearchInputRef) {
       navSearchInputRef.value = "";
     }
-    clearSearchResults();
-    setSearchStatus("Start typing to search TMDB titles.");
+    setSearchQuery(navSearchInputRef?.value.trim() || "");
   }
 
   // ---- Account menu ----
@@ -4092,6 +3825,8 @@ export default function HomePage() {
 
   function canPlayHeroPreview() {
     return (
+      !heroMotionPaused() &&
+      !detailsModalVisible() &&
       heroPreviewInViewport &&
       activeView() === "home" &&
       !showSearchExperience() &&
@@ -4221,6 +3956,10 @@ export default function HomePage() {
     if (!payload || typeof payload !== "object") {
       return;
     }
+    if (!canPlayHeroPreview()) {
+      sendHeroPreviewCommand("pauseVideo");
+      return;
+    }
     if (payload.event === "onReady") {
       syncHeroPreviewAudio();
       sendHeroPreviewCommand("playVideo");
@@ -4317,6 +4056,17 @@ export default function HomePage() {
     playHeroPreview();
   }
 
+  function handleHeroMotionToggle() {
+    setHeroMotionPaused(!heroMotionPaused());
+    if (heroMotionPaused()) {
+      stopHeroCarouselTimer();
+      suspendHeroPreviewForViewport();
+    } else {
+      startHeroCarouselTimer();
+      playHeroPreview();
+    }
+  }
+
   function handleMuteToggle() {
     applyHeroPreviewMutedState(!isMuted());
   }
@@ -4334,32 +4084,16 @@ export default function HomePage() {
       return;
     }
     const hero = featuredHero();
-    activeDetails = {
+    openDetailsModal(null, event?.currentTarget, {
       ...destination,
       thumb: hero.poster || destination.thumb,
-      runtime: hero.runtime || "Movie",
+      runtime: hero.runtime || "",
       maturity: normalizeCertification(hero.maturity),
-      quality: "HD",
-      audio: "Stereo",
-      description: hero.description || "No description available.",
+      description: hero.description || "",
       cast: "Loading cast...",
-      genres: getFeaturedHeroCallouts(hero).slice(1).join(", ") || "Popular title",
-      vibe: getFeaturedHeroCallouts(hero).join(", "),
-    };
-    detailsTrigger = event?.currentTarget || null;
-    populateDetailsModal(activeDetails);
-    setDetailsMyListActive(isMyListEntryActive(activeDetails));
-    if (detailsMoreGridRef) {
-      detailsMoreGridRef.innerHTML = "";
-    }
-    setDetailsMoreVisible(false);
-    setDetailsModalVisible(true);
-    setDetailsModalBackgroundInert(true);
-    requestAnimationFrame(() => {
-      setDetailsModalOpen(true);
+      genres: getFeaturedHeroCallouts(hero).slice(1).join(", "),
+      vibe: hero.tagline || "",
     });
-    syncBodyModalLock();
-    detailsCloseButtonRef?.focus({ preventScroll: true });
   }
 
   // ---- Sign out ----
@@ -4411,21 +4145,6 @@ export default function HomePage() {
       closeSearchMode();
       pageRootRef?.focus({ preventScroll: true });
     }
-  }
-
-  function handleSearchExploreClick(event) {
-    const link = event.target instanceof Element ? event.target.closest("a") : null;
-    if (!(link instanceof HTMLAnchorElement)) {
-      return;
-    }
-    event.preventDefault();
-    const query = normalizeSearchQuery(link.dataset.searchQuery || "");
-    if (!query || !navSearchInputRef) {
-      return;
-    }
-    navSearchInputRef.value = query;
-    scheduleTmdbSearchFromInput({ immediate: true });
-    navSearchInputRef.focus({ preventScroll: true });
   }
 
   function handleSearchContextSave(event) {
@@ -4877,7 +4596,6 @@ export default function HomePage() {
       window.removeEventListener("message", handleHeroPreviewMessage);
       window.removeEventListener(SERVER_HYDRATED_EVENT, handleServerHydrated);
 
-      if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
       if (searchBoxHideTimer) clearTimeout(searchBoxHideTimer);
       if (closeModalTimer) clearTimeout(closeModalTimer);
       if (libraryEditModalCloseTimer) clearTimeout(libraryEditModalCloseTimer);
@@ -4886,7 +4604,7 @@ export default function HomePage() {
 
   // ---- Template ----
   return <><div data-solid-page-root="" class="solid-page-root">
-    <div class="page home-page" tabindex="0" ref={(el) => (pageRootRef = el)}>
+    <div class={`page home-page${continueRowVisible() ? " has-continue-watching" : ""}`} tabindex="0" ref={(el) => (pageRootRef = el)}>
       <header class="top-nav">
         <div class="nav-left">
           <a href="/" class="nav-logo" aria-label="Go to homepage">
@@ -5029,40 +4747,13 @@ export default function HomePage() {
         </div>
       </header>
 
-      <section
-        id="searchExperience"
-        class="search-experience"
-        hidden={!showSearchExperience()}
-      >
-        <p
-          id="searchStatus"
-          class={(() => {
-            const tone = searchStatusTone();
-            let cls = "search-status";
-            if (tone === "error") cls += " is-error";
-            if (tone === "success") cls += " is-success";
-            return cls;
-          })()}
-        >{searchStatusText()}</p>
-        <div
-          id="searchExplore"
-          class="search-explore"
-          hidden={!searchExploreVisible()}
-        >
-          <span class="search-explore-label">More to explore:</span>
-          <div
-            id="searchExploreLinks"
-            class="search-explore-links"
-            ref={(el) => (searchExploreLinksRef = el)}
-            onClick={handleSearchExploreClick}
-          ></div>
-        </div>
-        <div
-          id="searchResultsGrid"
-          class="search-results-grid"
-          ref={(el) => (searchResultsGridRef = el)}
-        ></div>
-      </section>
+      <SearchExperience
+        active={showSearchExperience()}
+        query={searchQuery()}
+        onQuery={(query) => { navSearchInputRef.value = query; setSearchQuery(query); }}
+        onPlay={(item, imageBase) => openPlayerPage(createSearchResultDetails(item, imageBase))}
+        onContext={(event, item, imageBase) => openSearchContextMenu(event, createSearchResultDetails(item, imageBase))}
+      />
 
       <div
         id="liveTabView"
@@ -5118,6 +4809,9 @@ export default function HomePage() {
 
         <div class="hero-top-controls">
           <div class="hero-controls">
+            <button id="heroMotionToggle" class="control-btn" type="button" aria-label={heroMotionPaused() ? "Resume previews" : "Pause previews"} aria-pressed={heroMotionPaused()} onClick={handleHeroMotionToggle}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d={heroMotionPaused() ? "M7 4v16l13-8z" : "M6 4h4v16H6zM14 4h4v16h-4z"} fill="currentColor" /></svg>
+            </button>
             <button
               id="muteToggle"
               class={`control-btn${isMuted() ? " muted" : ""}`}
@@ -5465,11 +5159,11 @@ export default function HomePage() {
         <div class="details-body">
           <section class="details-main">
             <div class="details-meta">
-              <span id="detailsYear">{detailsData().year}</span>
-              <span id="detailsRuntime">{detailsData().runtime}</span>
+              <span id="detailsYear" hidden={!detailsData().year}>{detailsData().year}</span>
+              <span id="detailsRuntime" hidden={!detailsData().runtime}>{detailsData().runtime}</span>
               <span id="detailsMaturity" class="details-maturity">{detailsData().maturity}</span>
-              <span id="detailsQuality" class="meta-chip">{detailsData().quality}</span>
-              <span id="detailsAudio" class="details-audio">{detailsData().audio}</span>
+              <span id="detailsQuality" hidden={!detailsData().quality} class="meta-chip">{detailsData().quality}</span>
+              <span id="detailsAudio" hidden={!detailsData().audio} class="details-audio">{detailsData().audio}</span>
             </div>
             <p id="detailsDescription" class="details-description">
               {detailsData().description}
@@ -5477,33 +5171,27 @@ export default function HomePage() {
           </section>
 
           <aside class="details-side">
-            <p>
+            <p hidden={!detailsData().cast}>
               <span>Cast:</span>
               <strong id="detailsCast">{detailsData().cast}</strong>
             </p>
-            <p>
+            <p hidden={!detailsData().genres}>
               <span>Genres:</span>
               <strong id="detailsGenres">{detailsData().genres}</strong>
             </p>
-            <p>
+            <p hidden={!detailsData().vibe}>
               <span>This title is:</span>
               <strong id="detailsVibe">{detailsData().vibe}</strong>
             </p>
+            <p hidden={detailsLoadState() !== "error"} role="status">Some details couldn’t load. <button class="discovery-text-button" onClick={() => void hydrateModalFromTmdb(activeDetailsCard)}>Retry details</button></p>
           </aside>
         </div>
 
-        <section
-          id="detailsMoreSection"
-          class="details-more"
-          hidden={!detailsMoreVisible()}
-        >
-          <h4>More Like This</h4>
-          <div
-            id="detailsMoreGrid"
-            class="details-grid"
-            ref={(el) => (detailsMoreGridRef = el)}
-          ></div>
-        </section>
+        <TitleRecommendations
+          visible={detailsModalVisible()}
+          title={detailsData()}
+          onOpen={(item, imageBase) => openDetailsModal(null, detailsTrigger, createSearchResultDetails(item, imageBase))}
+        />
       </article>
     </div>
 
