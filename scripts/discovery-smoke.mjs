@@ -95,6 +95,8 @@ export function createDiscoverySmoke(page) {
       await page.getByLabel("Release year", { exact: true }).fill("2010");
       await page.waitForResponse((response) => response.url().includes("/api/tmdb/search?") && response.url().includes("year=2010"));
       assert.ok(requests.some((request) => request.query === "Christopher Nolan" && request.mediaType === "movie" && request.genre === "science-fiction" && request.year === "2010"));
+      await page.getByRole("button", { name: "Play Inception", exact: true }).waitFor();
+      assert.equal(await page.getByLabel("Genre", { exact: true }).inputValue(), "science-fiction", "Selected genre must remain visible after results refresh");
       await page.getByRole("button", { name: /Christopher Nolan Directing/ }).click();
       await page.locator("#navSearchInput").fill("");
       await page.getByRole("button", { name: "Christopher Nolan", exact: true }).waitFor();

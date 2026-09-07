@@ -58,8 +58,7 @@ const liveStreamSwitchParams = new URLSearchParams({
 });
 const liveStreamSwitchPath = `/player.html?${liveStreamSwitchParams.toString()}`;
 
-function sportsEarlyPlaybackMatches() {
-  const now = Date.now();
+function sportsEarlyPlaybackMatches(now = Date.now()) {
   const buildMatch = ({ id, title, startsInMinutes }) => ({
     id,
     title,
@@ -136,7 +135,7 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
-function apiPayload(url, method) {
+function apiPayload(url, method, fixtureNow) {
   const path = url.pathname;
   if (path === "/api/auth/me") {
     return { id: 1, email: "smoke@example.com", displayName: "Smoke User" };
@@ -416,7 +415,7 @@ function apiPayload(url, method) {
     };
   }
   if (path === "/api/football/matches") {
-    return { matches: sportsEarlyPlaybackMatches(), sourceProvider: "streamed" };
+    return { matches: sportsEarlyPlaybackMatches(fixtureNow), sourceProvider: "streamed" };
   }
   if (path === "/api/football/stream") return { streams: [] };
   if (path === "/api/basketball/matches") return { matches: [] };
@@ -570,6 +569,12 @@ async function runSmoke() {
         pageSpec.contextOptions || { viewport: { width: 1280, height: 900 } },
       );
       const page = await context.newPage();
+      // Keep both kickoff fixtures on the same calendar day even when CI runs
+      // near midnight, when the +11 minute match would otherwise be filtered out.
+      const fixtureNow = pageSpec.expectSportsEarlyPlayback
+        ? new Date().setHours(12, 0, 0, 0)
+        : undefined;
+      if (fixtureNow !== undefined) await page.clock.setFixedTime(fixtureNow);
       const discoverySmoke = pageSpec.expectDiscovery ? createDiscoverySmoke(page) : null;
       const failures = [];
       let sawHlsMasterRequest = false;
@@ -1075,7 +1080,7 @@ async function runSmoke() {
           await route.fulfill(jsonResponse({ entries: [] }));
           return;
         }
-        const payload = apiPayload(url, request.method());
+        const payload = apiPayload(url, request.method(), fixtureNow);
         if (pageSpec.expectLiveStreamSwitch && url.pathname === "/api/live/hls.m3u8") {
           liveStreamHlsInputs.push(url.searchParams.get("input") || "");
         }

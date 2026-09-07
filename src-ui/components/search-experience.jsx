@@ -70,7 +70,9 @@ export default function SearchExperience(props) {
       })]);
       setPeople(payload.people || []);
       setPerson(payload.person || null);
-      setGenres(payload.genres || []);
+      // The catalogue is shared across requests. Replacing option nodes resets
+      // the browser's selected value even when the genre signal is unchanged.
+      if (!genres().length) setGenres(payload.genres || []);
       setImageBase(payload.imageBase || "https://image.tmdb.org/t/p");
       setPage(nextPage);
       setHasMore(Boolean(payload.hasMore));
