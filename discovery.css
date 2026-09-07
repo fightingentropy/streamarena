@@ -12,7 +12,8 @@
 .discovery-text-button { border: 0; padding: 12px 4px; background: none; color: #ccc; font: inherit; font-size: 13px; cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
 .discovery-status { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 20px; }
 .discovery-status .search-status { margin: 0; }
-.discovery-card-meta { display: block; color: #aaa; font-size: 12px; margin-top: 5px; }
+.search-experience .search-result-card-title { bottom: 29px; }
+.discovery-card-meta { position: absolute; z-index: 2; bottom: 10px; left: 10px; right: 10px; color: #ccc; font-size: 12px; line-height: 16px; }
 .discovery-load-more { display: block; margin: 30px auto; }
 .discovery-pill:disabled { opacity: .6; cursor: wait; }
 .discovery-filters :is(select, input):focus-visible, :is(.discovery-pill, .discovery-person, .discovery-text-button):focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
@@ -20,4 +21,7 @@
   .discovery-filters { gap: 8px; }
   .discovery-filters select { max-width: 156px; padding: 0 8px; }
   .discovery-filters input { width: 86px; }
+}
+@media (min-width: 621px) and (max-width: 1279px) {
+  body.is-search-mode .home-page .nav-left nav { display: none; }
 }

@@ -2472,9 +2472,11 @@ export default function HomePage() {
     const progressPercent = estimatedDurationSeconds > 0
       ? Math.min(100, Math.round((resumeSeconds / estimatedDurationSeconds) * 100))
       : null;
-    const episodeLabel = isSeriesEntry && entry.seasonNumber > 0 && entry.episodeNumber > 0
-      ? `S${entry.seasonNumber} E${entry.episodeNumber}`
-      : entry.episode || "";
+    const episodeLabel = isSeriesEntry
+      ? entry.seasonNumber > 0 && entry.episodeNumber > 0
+        ? `S${entry.seasonNumber} E${entry.episodeNumber}`
+        : entry.episode || ""
+      : "";
     const genreNames = (tmdbDetails?.genres || [])
       .map((genre) => String(genre?.name || "").trim())
       .filter(Boolean)

@@ -41,7 +41,7 @@ const CardItem = memo(function CardItem({ item, onLongPress }: CardProps) {
     if (href) router.push(href);
   };
   const episode = mediaType === "tv" ? tvSeasonEpisode(item) : null;
-  const episodeLabel = episode ? `S${episode.season} E${episode.episode}` : item.episode;
+  const episodeLabel = episode ? `S${episode.season} E${episode.episode}` : mediaType === "tv" ? item.episode : "";
   const caption = [episodeLabel, progressLabel].filter(Boolean).join(" · ");
 
   return (
