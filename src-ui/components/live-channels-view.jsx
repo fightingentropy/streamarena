@@ -183,7 +183,7 @@ export default function LiveChannelsView() {
   return <>
     <main class="live-main">
       <section class="live-channel-section">
-        <h2>Live Channels</h2>
+        <h2>Live channels</h2>
         <div class="live-category-filter" role="group" aria-label="Filter channels by category">
           <For each={categories}>
             {(category) => (

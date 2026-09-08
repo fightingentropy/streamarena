@@ -1,5 +1,6 @@
 import "../../style.css";
 import "../../sports.css";
+import "../../browse.css";
 
 import { mountAuthenticatedPage } from "../lib/page-entry.js";
 

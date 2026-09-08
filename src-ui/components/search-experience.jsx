@@ -117,6 +117,7 @@ export default function SearchExperience(props) {
 
   return (
     <section id="searchExperience" class="search-experience" hidden={!props.active}>
+      <h1 class="discovery-heading">Search</h1>
       <div class="discovery-filters" aria-label="Filter titles">
         <label><span>Type</span><select aria-label="Title type" value={mediaType()} onChange={(e) => setMediaType(e.currentTarget.value)}>
           <option value="all">All titles</option><option value="movie">Movies</option><option value="tv">Series</option>
@@ -148,7 +149,7 @@ export default function SearchExperience(props) {
       </div>
       <div id="searchResultsGrid" class="search-results-grid" aria-busy={loading()}>
         <For each={results()}>{(item) => <button class="search-result-card" aria-label={`Play ${item.title || item.name}`} onClick={() => { remember(); props.onPlay(item, imageBase()); }} onContextMenu={(event) => props.onContext(event, item, imageBase())}>
-          <img src={item.backdropPath || item.posterPath ? `${imageBase()}/w780${item.backdropPath || item.posterPath}` : "/assets/images/thumbnail.jpg"} alt={item.title || item.name} loading="lazy" onError={handleArtworkImageError} />
+          <img src={item.posterPath || item.backdropPath ? `${imageBase()}/w500${item.posterPath || item.backdropPath}` : "/assets/images/thumbnail.jpg"} alt={item.title || item.name} loading="lazy" onError={handleArtworkImageError} />
           <p class="search-result-card-title">{item.title || item.name}</p>
           <span class="discovery-card-meta">{item.mediaType === "tv" ? "Series" : "Movie"}{(item.releaseDate || item.firstAirDate) ? ` · ${(item.releaseDate || item.firstAirDate).slice(0, 4)}` : ""}</span>
         </button>}</For>

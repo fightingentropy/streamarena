@@ -46,7 +46,7 @@ export default function TitleRecommendations(props) {
 
   return <Show when={props.title.tmdbId && (items().length || error() || loading())}>
     <section id="detailsMoreSection" class="details-more">
-      <h4>More Like This</h4>
+      <h4>More like this</h4>
       <Show when={loading()}><p class="search-status" role="status">Finding related titles…</p></Show>
       <Show when={error()}><div class="discovery-status"><p class="search-status" role="status">Related titles couldn’t load.</p><button class="discovery-pill" onClick={() => void load()}>Retry recommendations</button></div></Show>
       <div id="detailsMoreGrid" class="details-grid">

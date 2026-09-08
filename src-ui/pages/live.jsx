@@ -86,14 +86,13 @@ export default function LivePage() {
         <header class="top-nav">
           <div class="nav-left">
             <a href="/" class="nav-logo" aria-label="Go to homepage">
-              <BrandWordmark class="brand-wordmark-arc--nav" />
+              <BrandWordmark class="brand-wordmark--nav" />
             </a>
             <nav>
               <a href="/">Home</a>
               <a href="/live" class={liveNavClass("live")}>Live</a>
               <a href="/sports" class={sportsNavClass("")}>Sports</a>
               <a href="/#myListRow" class="optional">My List</a>
-              <FeedbackNav />
             </nav>
           </div>
           <div class="nav-right">
@@ -167,6 +166,7 @@ export default function LivePage() {
                   </span>
                   <span>Help Centre</span>
                 </a>
+                <FeedbackNav menu />
                 <button
                   class="account-menu-item account-menu-signout"
                   type="button"

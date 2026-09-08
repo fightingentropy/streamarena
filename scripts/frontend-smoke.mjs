@@ -1625,7 +1625,6 @@ async function runSmoke() {
             frameSrc: frame?.getAttribute("src") || "",
             insetLeft: rect?.left || 0,
             insetRight: rect ? window.innerWidth - rect.right : 0,
-            borderRadius: Number.parseFloat(getComputedStyle(hero).borderRadius || "0"),
             metadata: document.querySelector(".hero-meta")?.textContent?.replace(/\s+/g, " ").trim() || "",
             muteDisabled: Boolean(mute?.disabled),
             muteLabel: mute?.getAttribute("aria-label") || "",
@@ -1637,7 +1636,6 @@ async function runSmoke() {
           heroState.frameSrc.includes("playlist=") ||
           heroState.insetLeft < 20 ||
           heroState.insetRight < 20 ||
-          heroState.borderRadius < 16 ||
           !heroState.metadata.includes("Film") ||
           !heroState.metadata.includes("Action") ||
           !heroState.metadata.includes("1975") ||

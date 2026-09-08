@@ -64,7 +64,7 @@ async function processImageFile(file) {
   return dataUrl;
 }
 
-export default function FeedbackNav() {
+export default function FeedbackNav(props) {
   const [open, setOpen] = createSignal(false);
   const [message, setMessage] = createSignal("");
   const [image, setImage] = createSignal(""); // data URL of the attached screenshot
@@ -163,7 +163,7 @@ export default function FeedbackNav() {
 
   return (
     <>
-      <a href="#" class="nav-feedback-link" onClick={openModal}>
+      <a href="#" class={props.menu ? "account-menu-item account-menu-link" : "nav-feedback-link"} role={props.menu ? "menuitem" : undefined} onClick={openModal}>
         Feedback
       </a>
       <Show when={open()}>

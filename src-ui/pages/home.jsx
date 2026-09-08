@@ -70,7 +70,6 @@ import {
   getFeaturedHeroAutoAdvanceDelay,
   getFeaturedHeroCallouts,
   getFeaturedHeroMetaItems,
-  getFeaturedHeroTitleLines,
   getPopularRowTitle,
   normalizeHeroTitle,
   normalizeYoutubeVideoKey,
@@ -81,6 +80,7 @@ import TitleRecommendations from "../components/title-recommendations.jsx";
 import SearchExperience from "../components/search-experience.jsx";
 import FeedbackNav from "../components/feedback-nav.jsx";
 import BrandWordmark from "../components/brand-wordmark.jsx";
+import { addBrowseCardCaption } from "../lib/browse-card-presentation.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1011,7 +1011,6 @@ export default function HomePage() {
   const [featuredHero, setFeaturedHero] = createSignal(
     createDefaultFeaturedHero(UNRATED_CERTIFICATION_LABEL),
   );
-  const [failedHeroLogos, setFailedHeroLogos] = createSignal(new Set());
   const [featuredHeroReady, setFeaturedHeroReady] = createSignal(false);
   const [featuredHeroCandidates, setFeaturedHeroCandidates] = createSignal([]);
   const [featuredHeroIndex, setFeaturedHeroIndex] = createSignal(0);
@@ -1064,7 +1063,6 @@ export default function HomePage() {
   const [avatarClassName, setAvatarClassName] = createSignal("avatar avatar-style-blue");
   const [avatarImageSrc, setAvatarImageSrc] = createSignal("");
 
-  const displayName = window.__currentUser?.displayName || "";
 
   // ---- Mutable state (not signals, imperative tracking) ----
   let activeDetails = null;
@@ -1298,25 +1296,6 @@ export default function HomePage() {
         })
       : buildWatchUrl(params);
     window.location.href = playerUrl;
-  }
-
-  // The featured-hero title-logo, unless it has already failed to load (then the hero
-  // falls back to its stacked text title).
-  function heroLogoSrc() {
-    const url = String(featuredHero()?.logoUrl || "").trim();
-    return url && !failedHeroLogos().has(url) ? url : "";
-  }
-
-  function handleHeroLogoError(event) {
-    const url = event.currentTarget?.getAttribute("src");
-    if (!url) {
-      return;
-    }
-    setFailedHeroLogos((previous) => {
-      const next = new Set(previous);
-      next.add(url);
-      return next;
-    });
   }
 
   function getHeroDestination() {
@@ -1850,7 +1829,7 @@ export default function HomePage() {
       tmdbId: details.tmdbId || "",
       mediaType: details.mediaType || "movie",
       thumb: details.thumb || DEFAULT_LOCAL_THUMBNAIL,
-      title: (details.title || "").toUpperCase(),
+      title: details.title || "",
       year: details.year || "",
       runtime: details.runtime || "",
       maturity: normalizeCertification(details.maturity),
@@ -2020,7 +1999,7 @@ export default function HomePage() {
     const playableSrc = details.src || details.librarySrc;
     const contentTypeLabel =
       details.mediaType === "tv" || details.seriesId ? "Series" : "Movie";
-    const displayYear = details.year || "Local";
+    const displayYear = details.year || (details.tmdbId ? "" : "Local");
     const safeTitle = escapeHtml(details.title);
     const safeThumb = escapeHtml(details.thumb);
 
@@ -2309,6 +2288,7 @@ export default function HomePage() {
     if (!card || card.dataset.interactionsBound === "true") {
       return;
     }
+    addBrowseCardCaption(card);
     attachArtworkImageFallbacks(card);
     queueOfflineArtworkFromElement(card);
     ensureCardLibraryEditButton(card);
@@ -2613,7 +2593,7 @@ export default function HomePage() {
     return card;
   }
 
-  function buildCardFromTmdbElement(item, genreMap, imageBase = TMDB_IMAGE_BASE, cardIndex = 0) {
+  function buildCardFromTmdbElement(item, genreMap, imageBase = TMDB_IMAGE_BASE) {
     const mediaType = getTmdbItemMediaType(item);
     const title = getTmdbItemTitle(item);
     const releaseDate = getTmdbItemReleaseDate(item);
@@ -2628,9 +2608,6 @@ export default function HomePage() {
     const heroUrl = backdropPath
       ? `${imageBase}/w1280${backdropPath}`
       : posterUrl;
-    const logoPath =
-      typeof item.logo_path === "string" ? item.logo_path.trim() : "";
-    const logoUrl = logoPath ? `${imageBase}/w500${logoPath}` : "";
     const maturity = normalizeCertification(item?.certification);
     const mediaLabel = mediaType === "tv" ? "Series" : "Movie";
     const genreNames = (item.genre_ids || [])
@@ -2642,21 +2619,13 @@ export default function HomePage() {
       : "Popular <span>&bull;</span> Trending";
     const safeTitle = escapeHtml(title);
     const safeYear = escapeHtml(year);
-    const displayTitle = escapeHtml(
-      String(title || "Untitled")
-        .replace(/\s+/g, " ")
-        .trim()
-        .toUpperCase(),
-    );
-    const isTop10 = cardIndex >= 0 && cardIndex < TOP_TEN_RAIL_LIMIT;
-    // Top 10 cards use the portrait poster (with its title baked in) next to a giant rank.
     const posterPortraitPath = item.poster_path || item.backdrop_path;
     const posterPortraitUrl = posterPortraitPath
       ? `${imageBase}/w500${posterPortraitPath}`
       : "assets/images/thumbnail.jpg";
 
     const card = document.createElement("article");
-    card.className = isTop10 ? "card card--top10" : "card";
+    card.className = "card card--poster";
     card.dataset.title = title;
     card.dataset.episode = year || "";
     card.dataset.src = "";
@@ -2673,31 +2642,10 @@ export default function HomePage() {
     card.dataset.tmdbId = String(item.id);
     card.dataset.mediaType = mediaType;
 
-    const cardBaseMarkup = isTop10
-      ? `
-      <div class="card-base card-base--top10">
-        <span class="card-rank" aria-hidden="true">${cardIndex + 1}</span>
-        <div class="card-rank-poster">
-          <img src="${escapeHtml(posterPortraitUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />
-
-        </div>
-      </div>`
-      : `
-      <div class="card-base">
-        <div class="card-rail-art${logoUrl ? " has-logo" : ""}">
-          <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />
-          <div class="card-rail-shade" aria-hidden="true"></div>
-          ${
-            logoUrl
-              ? `<img class="card-rail-logo" src="${escapeHtml(logoUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />`
-              : ""
-          }
-          <span class="card-rail-title" aria-hidden="true">${displayTitle}</span>
-        </div>
-      </div>`;
-
     card.innerHTML = `
-      ${cardBaseMarkup}
+      <div class="card-base">
+        <img src="${escapeHtml(posterPortraitUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />
+      </div>
       <div class="card-hover">
         <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" decoding="async" />
         <div class="card-hover-body">
@@ -2998,7 +2946,7 @@ export default function HomePage() {
     results,
     genreMap,
     imageBase,
-    { limit = BROWSE_RAIL_LIMIT, top10 = false, seenKeys = null } = {},
+    { limit = BROWSE_RAIL_LIMIT, seenKeys = null } = {},
   ) {
     const seenIds = new Set();
     const sharedSeenKeys = seenKeys instanceof Set ? seenKeys : null;
@@ -3015,7 +2963,6 @@ export default function HomePage() {
           item,
           genreMap,
           imageBase,
-          top10 ? cards.length : -1,
         ),
       );
       return cards.length >= limit;
@@ -3076,7 +3023,7 @@ export default function HomePage() {
     );
     if (popularCards.length > 0) {
       applyFeaturedHeroFromPopularPayload(popularPayload, library, heroPreviewMap);
-      setPopularRowTitle("Bingeworthy Series");
+      setPopularRowTitle("Popular series");
       setPopularRowVisible(true);
       renderPopularCards(popularCards);
     } else if (Array.isArray(popularPayload.results) && popularPayload.results.length > 0) {
@@ -3101,7 +3048,7 @@ export default function HomePage() {
       getBootstrapResults(bootstrap, "topSeries", "nowPlaying"),
       genreMap,
       imageBase,
-      { limit: TOP_TEN_RAIL_LIMIT, top10: true, seenKeys: seenHomeRailKeys },
+      { limit: TOP_TEN_RAIL_LIMIT, seenKeys: seenHomeRailKeys },
     );
     setNowPlayingRowVisible(nowPlayingCards.length > 0);
     renderBrowseRailContainer(nowPlayingCardsContainerRef, nowPlayingCards);
@@ -3260,7 +3207,7 @@ export default function HomePage() {
         return true;
       })
       .slice(0, POPULAR_TITLES_LIMIT)
-      .map((item, index) => buildCardFromTmdbElement(item, genreMap, imageBase, index));
+      .map((item) => buildCardFromTmdbElement(item, genreMap, imageBase));
   }
 
   function buildLocalFallbackCards(entries) {
@@ -4610,14 +4557,13 @@ export default function HomePage() {
       <header class="top-nav">
         <div class="nav-left">
           <a href="/" class="nav-logo" aria-label="Go to homepage">
-            <BrandWordmark class="brand-wordmark-arc--nav" />
+            <BrandWordmark class="brand-wordmark--nav" />
           </a>
           <nav>
             <a href="/" class={activeView() === "home" ? "is-active" : ""} onClick={handleHomeNavClick}>Home</a>
             <a href="/live" class={liveNavClass(activeView() === "live" ? "live" : "")} onClick={handleLiveNavClick}>Live</a>
             <a href="/sports" class={sportsNavLinkClass("")}>Sports</a>
             <a href="#" id="navMyList" class="optional" onClick={handleMyListNavClick}>My List</a>
-            <FeedbackNav />
           </nav>
         </div>
         <div class="nav-right">
@@ -4737,6 +4683,7 @@ export default function HomePage() {
                 </span>
                 <span>Help Centre</span>
               </a>
+              <FeedbackNav menu />
               <button
                 id="signOutBtn"
                 class="account-menu-item account-menu-signout"
@@ -4802,13 +4749,6 @@ export default function HomePage() {
         <div class="hero-preview-shield" aria-hidden="true"></div>
 
         <div class="hero-shade" aria-hidden="true"></div>
-        <img
-          class="hero-brand-mark"
-          src="/assets/icons/streamarena-mark.svg"
-          alt=""
-          aria-hidden="true"
-        />
-
         <div class="hero-top-controls">
           <div class="hero-controls">
             <button id="heroMotionToggle" class="control-btn" type="button" aria-label={heroMotionPaused() ? "Resume previews" : "Pause previews"} aria-pressed={heroMotionPaused()} onClick={handleHeroMotionToggle}>
@@ -4854,41 +4794,24 @@ export default function HomePage() {
           class={`hero-content${featuredHeroReady() ? "" : " is-loading"}`}
           aria-labelledby="heroTitle"
         >
-          <h1
-            id="heroTitle"
-            class={`hero-title-stacked${heroLogoSrc() ? " has-logo" : ""}`}
-          >
-            {heroLogoSrc() ? (
-              <img
-                class="hero-title-logo"
-                src={heroLogoSrc()}
-                alt={featuredHero().title || "Featured title"}
-                decoding="async"
-                onError={handleHeroLogoError}
-              />
-            ) : null}
-            {getFeaturedHeroTitleLines(featuredHero()).map(
-                (line) => <><span>{line}</span></>,
-              )}
-          </h1>
+          <p class="hero-eyebrow">Featured</p>
+          <h1 id="heroTitle">{featuredHero().title}</h1>
           <div
             class="hero-meta"
             aria-label={`Title details: ${[
               ...getFeaturedHeroMetaItems(featuredHero()),
-              getFeaturedHeroMaturityLabel(featuredHero()),
-            ].join(", ")}`}
+              getFeaturedHeroMaturityLabel(featuredHero()) !== UNRATED_CERTIFICATION_LABEL ? getFeaturedHeroMaturityLabel(featuredHero()) : "",
+            ].filter(Boolean).join(", ")}`}
           >
             {(() => {
               const items = getFeaturedHeroMetaItems(featuredHero());
-              return items.map((item) => <>
-                <span>{item}</span>
-                <span class="hero-meta-separator" aria-hidden="true">•</span>
-              </>);
+              return items.map((item) => <span>{item}</span>);
             })()}
-            <span class="hero-meta-rating">
+            <span class="hero-meta-rating" hidden={getFeaturedHeroMaturityLabel(featuredHero()) === UNRATED_CERTIFICATION_LABEL}>
               {getFeaturedHeroMaturityLabel(featuredHero())}
             </span>
           </div>
+          <p class="hero-synopsis">{featuredHero().description}</p>
           <div class="hero-actions">
             <button
               id="heroPlay"
@@ -4929,7 +4852,7 @@ export default function HomePage() {
                 ></line>
                 <circle cx="12" cy="7.5" r="1.25"></circle>
               </svg>
-              More Info
+              Details
             </button>
           </div>
         </section>
@@ -4941,7 +4864,7 @@ export default function HomePage() {
         class="continue-row"
         hidden={activeView() !== "home" || !continueRowVisible()}
       >
-        <h2>Continue watching for <span id="continueWatchingName">{displayName || "you"}</span></h2>
+        <h2>Continue watching</h2>
         <div
           id="continueCards"
           class="cards popular-cards continue-cards"
@@ -4980,7 +4903,7 @@ export default function HomePage() {
       >
         <div class="popular-row-inner">
           <div class="rail-header">
-            <h2>Crowd-pleasers</h2>
+            <h2>Popular films</h2>
           </div>
           <div
             id="trendingCardsContainer"
@@ -4997,7 +4920,7 @@ export default function HomePage() {
       >
         <div class="popular-row-inner">
           <div class="rail-header">
-            <h2>Top 10 Series Worth Watching</h2>
+            <h2>Series worth watching</h2>
           </div>
           <div
             id="nowPlayingCardsContainer"
@@ -5014,7 +4937,7 @@ export default function HomePage() {
       >
         <div class="popular-row-inner">
           <div class="rail-header">
-            <h2>Critically Acclaimed</h2>
+            <h2>Critically acclaimed</h2>
           </div>
           <div
             id="topRatedCardsContainer"
@@ -5052,28 +4975,6 @@ export default function HomePage() {
       aria-label="StreamArena footer"
       hidden={activeView() !== "home"}
     >
-      <div class="member-footer-social">
-        <span aria-hidden="true">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M13.6 21v-7.7h2.6l.4-3h-3V8.4c0-.9.3-1.5 1.6-1.5h1.6V4.2c-.8-.1-1.7-.2-2.5-.2-2.5 0-4.2 1.5-4.2 4.3v2.4H7.8v3h2.8V21h3Z"></path>
-          </svg>
-        </span>
-        <span aria-hidden="true">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M7.4 2.8h9.2a4.6 4.6 0 0 1 4.6 4.6v9.2a4.6 4.6 0 0 1-4.6 4.6H7.4a4.6 4.6 0 0 1-4.6-4.6V7.4a4.6 4.6 0 0 1 4.6-4.6Zm0 2A2.6 2.6 0 0 0 4.8 7.4v9.2a2.6 2.6 0 0 0 2.6 2.6h9.2a2.6 2.6 0 0 0 2.6-2.6V7.4a2.6 2.6 0 0 0-2.6-2.6H7.4Zm4.6 3a4.2 4.2 0 1 1 0 8.4 4.2 4.2 0 0 1 0-8.4Zm0 2a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4Zm4.5-2.35a1.05 1.05 0 1 1 0 2.1 1.05 1.05 0 0 1 0-2.1Z"></path>
-          </svg>
-        </span>
-        <span aria-hidden="true">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M18.9 2.8h3.3l-7.3 8.3 8.5 10.1h-6.7l-5.2-6.2-6 6.2H2.2l7.8-8.2L1.8 2.8h6.8l4.7 5.8 5.6-5.8Zm-1.2 16.6h1.8L7.6 4.5H5.7l12 14.9Z"></path>
-          </svg>
-        </span>
-        <span aria-hidden="true">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M21.5 7.1a3 3 0 0 0-2.1-2.1C17.5 4.5 12 4.5 12 4.5s-5.5 0-7.4.5a3 3 0 0 0-2.1 2.1A31 31 0 0 0 2 12a31 31 0 0 0 .5 4.9 3 3 0 0 0 2.1 2.1c1.9.5 7.4.5 7.4.5s5.5 0 7.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 22 12a31 31 0 0 0-.5-4.9ZM10 15.4V8.6l5.8 3.4L10 15.4Z"></path>
-          </svg>
-        </span>
-      </div>
       <ul class="member-footer-links">
         <li><a href="/help">Help Center</a></li>
         <li><a href="/privacy">Privacy Policy</a></li>
@@ -5180,10 +5081,6 @@ export default function HomePage() {
             <p hidden={!detailsData().genres}>
               <span>Genres:</span>
               <strong id="detailsGenres">{detailsData().genres}</strong>
-            </p>
-            <p hidden={!detailsData().vibe}>
-              <span>This title is:</span>
-              <strong id="detailsVibe">{detailsData().vibe}</strong>
             </p>
             <p hidden={detailsLoadState() !== "error"} role="status">Some details couldn’t load. <button class="discovery-text-button" onClick={() => void hydrateModalFromTmdb(activeDetailsCard)}>Retry details</button></p>
           </aside>
