@@ -697,11 +697,11 @@ media fixture; use the commands above before deployment.
 
 Mac mini:
 
-- `bun run mini:install-server` - install/update Caddy, backend runner, and LaunchDaemons.
-- `bun run mini:install-agents` - install/update log rotation, disk monitor, and watchdog LaunchAgents; also removes obsolete hero-preview jobs/files.
-- `bun run mini:map-ports` - create router UPnP forwards for web TCP 80/443 plus the canonical Mini `LOCAL_TORRENT_LISTEN_PORT_START..END` range (up to 16 torrent ports). Setting the start to `0` removes the managed default torrent forward and leaves BitTorrent inbound mapping disabled.
-- `CF_API_TOKEN=... bun run mini:update-dns` - update Cloudflare-proxied A records with automatic TTL.
-- `bun run mini:check` - verify runtime tree, protected API auth status, HTTPS/canonical redirects, no-index controls, Caddy, launchd, env permissions, closed public sign-up (`OPEN_SIGNUP=0`), sports WARP proxy, resolver helpers, agents, disk space, and public response.
+- `bun run mini:install-server` - on an existing tunnel installation, restart the existing backend system job while preserving its runner/plist and the active Caddy/cloudflared configuration. Installing the full direct-ingress stack is an explicit option.
+- `bun run mini:install-agents` - install/update log rotation, disk monitor, and watchdog system timers.
+- `bun run mini:map-ports` - for an explicit direct-ingress setup, create router UPnP forwards for web TCP 80/443 plus the canonical Mini `LOCAL_TORRENT_LISTEN_PORT_START..END` range (up to 16 torrent ports). Setting the start to `0` removes the managed default torrent forward and leaves BitTorrent inbound mapping disabled.
+- `CF_API_TOKEN=... bun run mini:update-dns` - update Cloudflare-proxied A records for an explicit direct-ingress setup. The current tunnel does not need public origin port forwards or A records.
+- `bun run mini:check` - verify runtime tree, protected API auth status, HTTPS/canonical redirects, no-index controls, the active tunnel/Caddy routes, system launchd timers, env permissions, closed public sign-up (`OPEN_SIGNUP=0`), sports WARP proxy, resolver helpers, disk space, and public response.
 - `bun run mini:deploy` - run quality/tests, stage a release while retaining the previous artifacts, deploy `dist`, backend binary, library metadata, images, and icons, then restart/check. Failed post-restart verification leaves the new binary active because database migrations can be forward-only; the retained artifacts are for deliberate, schema-aware recovery only.
 - `bun run mini:deploy -- --skip-build` - reuse existing `dist/` and release binary.
 - `bun run mini:deploy -- --video assets/videos/<file>.mp4` - copy that symlink target as a real mini video file.
@@ -753,8 +753,12 @@ Server machine:
 - Host: `hermes@m4mini.local`.
 - Runtime path: `/Users/hermes/Developer/streamarena`.
 - Public hosts: `streamarena.xyz` and `www.streamarena.xyz`.
-- Ingress: Cloudflare-proxied A records -> Cloudflare edge -> home public IP -> router TCP 80/443 -> Mac mini. Caddy accepts public origin traffic only from Cloudflare's published edge ranges.
-- Reverse proxy: Caddy on ports 80 and 443.
+- Ingress: Cloudflare edge -> the Mini's `com.cloudflare.cloudflared.streamarena` system tunnel -> loopback services.
+- `streamarena.xyz` and `www.streamarena.xyz` route to Caddy at `127.0.0.1:5180`. Caddy redirects HTTP and the alias to canonical HTTPS, then proxies HTTPS requests to the backend.
+- The separate Worker origin continues to reach `127.0.0.1:5173` directly. Its hostname remains in operator configuration.
+- Music's existing tunnel route and Caddy listener at `127.0.0.1:5175` are shared infrastructure and must be preserved.
+- The tunnel requires no public listeners on ports 80/443. An older `Caddyfile` describes the retired direct-ingress setup; the running Caddy daemon selects `Caddyfile-tunnel`.
+- `scripts/configure-mini-tunnel.py` prepares the canonical loopback route repair and validates it before activation. It defaults to a dry run; `--apply` backs up the active configuration and verifies local/public routes. Run it on the Mini through SSH, as shown below.
 - Backend listener: `127.0.0.1:5173`.
 - Runtime tree only:
   - `assets`
@@ -762,8 +766,21 @@ Server machine:
   - `cache`
   - `dist`
 
+A `.release-commit` file containing the deployed full Git commit is allowed, along with `.deploy-staging`, `.deploy-rollback`, and `.deploy-failed` recovery directories. The health check rejects malformed release metadata and unexpected source/build directories.
+
 The server deploy is intentionally not a git checkout. It should not contain `.git`, source folders, `node_modules`, `target`, `Cargo.toml`, `package.json`, or `.env`.
 Resolver Node dependencies live outside this tree at `~/.local/share/streamarena-node`.
+
+Prepare the tunnel-route repair from the development checkout; inspect the dry run before applying:
+
+```bash
+ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
+  'python3 -' < scripts/configure-mini-tunnel.py
+ssh -i ~/.ssh/id_ed25519_codex_m4mini -o BatchMode=yes hermes@m4mini.local \
+  'python3 - --apply' < scripts/configure-mini-tunnel.py
+```
+
+`mini:check` defaults to `MINI_INGRESS_MODE=tunnel` and `STREAMARENA_CADDY_PORT=5180`. It reads the running Caddy process configuration, checks that Caddy owns only the expected loopback listener for StreamArena, validates the tunnel's selected main/alias routes, and probes redirects and protected requests both locally and publicly. Use `MINI_INGRESS_MODE=direct` only for an explicitly configured direct 80/443 deployment; other services may still require cloudflared in that mode.
 
 Sports proxy/WARP:
 
@@ -775,7 +792,7 @@ Sports proxy/WARP:
 - Required sports env: `SPORTS_HTTP_PROXY=http://127.0.0.1:40000`.
 - Existing full-backend proxy env may also point at the same listener: `OUTBOUND_HTTP_PROXY=http://127.0.0.1:40000`.
 - Streamed may fail directly from the ISP path; the expected healthy path is through WARP's local proxy.
-- `scripts/check-mini.sh` validates WARP status, WARP proxy mode, the `SPORTS_HTTP_PROXY` value, real proxied Streamed/NTVS requests, and a populated direct ESPN football fixture response.
+- `scripts/check-mini.sh` validates WARP status, WARP proxy mode, the `SPORTS_HTTP_PROXY` value, real proxied Streamed/NTVS requests, and a valid direct ESPN football fixture response. A valid empty schedule is healthy; transport failures and malformed responses fail.
 - `scripts/deploy-mini.sh` deploys resolver helpers:
   - `bin/resolve-external-embed-hls.mjs` for movie/TV native HLS.
   - `bin/resolve-streamed-hls.mjs` for Streamed sports native HLS.
@@ -815,9 +832,10 @@ Backend daemon:
 Caddy daemon:
 
 - Binary: `/usr/local/bin/caddy`
-- Config: `/Users/hermes/.config/caddy/Caddyfile`
-- TLS: Caddy-managed public certs by default
-- Data dir: `/var/db/streamarena-caddy`
+- Active config: `/Users/hermes/.config/caddy/Caddyfile-tunnel`, selected by the running daemon
+- TLS: public TLS terminates at Cloudflare; tunnel origins use loopback HTTP
+- Cloudflared config: `/Users/hermes/.cloudflared/config.yml`
+- Changes must preserve the Music block and the separate Worker-origin route.
 
 Secrets:
 
@@ -832,20 +850,23 @@ Logs:
 - Caddy stdout: `/Users/hermes/.local/state/streamarena/caddy.log`
 - Caddy stderr: `/Users/hermes/.local/state/streamarena/caddy.err.log`
 - Caddy access log: `/Users/hermes/.local/state/streamarena/caddy-access.log`
-- Disk monitor log: `/Users/hermes/.local/state/streamarena/disk-monitor.log`
-- Watchdog log: `/Users/hermes/.local/state/streamarena/watchdog.log`
+- Maintenance logs: `/private/var/db/streamarena-maintenance` (root-owned)
 
-Maintenance LaunchAgents:
+Maintenance system timers:
 
-- Log rotation: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-log-rotation.plist`
-- Disk monitor: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-disk-monitor.plist`
-- Watchdog: `/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-watchdog.plist`
+- Log rotation: `/Library/LaunchDaemons/com.fightingentropy.streamarena-log-rotation.plist`
+- Disk monitor: `/Library/LaunchDaemons/com.fightingentropy.streamarena-disk-monitor.plist`
+- Watchdog: `/Library/LaunchDaemons/com.fightingentropy.streamarena-watchdog.plist`
+- Root-owned helper: `/Library/Application Support/StreamArena/maintenance.py`
+- State/logs: `/private/var/db/streamarena-maintenance`
+
+These jobs run without a logged-in GUI session. A loaded, enabled timer may be `not running` between intervals; its last completed run must exit successfully. The installer unloads duplicate GUI jobs and schedules initial runs. Verify each system job's last exit code after installation; `mini:check` also checks their loaded state and program arguments.
 
 Current maintenance defaults:
 
 - Log rotation runs daily at 03:17 and keeps compressed rotated logs.
 - Disk monitor runs hourly, warning at 90 percent disk usage or below 50 GiB free.
-- Watchdog probes `http://127.0.0.1:5173/api/health/live` every 60 seconds with a 10 second timeout, restarts after 3 failed probes by default, kills stale `ffmpeg`, and restarts through launchd or the runner script.
+- Watchdog probes `http://127.0.0.1:5173/api/health/live` every 60 seconds with a 10 second timeout and restarts the backend system job after 3 failed probes by default.
 
 Health checks:
 
@@ -920,11 +941,10 @@ Restore outline:
 2. Restore `config/env` to `/Users/hermes/.config/streamarena/env` and set permissions to `600`.
 3. Restore Caddy config to `/Users/hermes/.config/caddy`.
 4. Restore helper scripts to `/Users/hermes/.local/bin` and make them executable.
-5. Run `bun run mini:install-server`.
-6. Run `bun run mini:install-agents`.
-7. Run `bun run mini:map-ports` or configure router forwards manually.
-8. Verify Cloudflare-proxied A records target the current home public IP.
-9. Run `bun run mini:check`.
+5. Restore the Cloudflare tunnel config/credentials and verify its system job. Preserve the Music and Worker-origin routes.
+6. Run `bun run mini:install-server` and `bun run mini:install-agents`.
+7. Verify the running Caddy daemon selects the tunnel configuration and its StreamArena listener is `127.0.0.1:5180`.
+8. Run `bun run mini:check`. Public port forwards and A-record changes apply only to an intentional direct-ingress migration, not a tunnel restore.
 
 ## Troubleshooting
 
@@ -943,7 +963,7 @@ Home is empty or only shows local titles:
 Resolver errors:
 
 - Check `TMDB_API_KEY`, the user's Real-Debrid token in Settings, and network access.
-- If using Torznab, check `TORZNAB_API_URL`, `TORZNAB_API_KEY`, category IDs, timeout, and that every configured aggregate indexer passes a real title search.
+- If using Torznab, check `TORZNAB_API_URL`, `TORZNAB_API_KEY`, category IDs, and timeout. `mini:check` validates authenticated capabilities; set `TORZNAB_CHECK_QUERY=Interstellar` for an additional search probe. Valid empty RSS passes, while API error XML, malformed responses, and non-200 status fail. Aggregate availability does not prove every indexer works: inspect individual indexer errors separately, including anti-bot challenges. Local Jackett system-job and credential-permission checks apply only when the configured endpoint is local Jackett.
 - If local torrent is selected or auto-used, check the Torrent streaming setting, local disk budget, and `cache/local-torrents`.
 
 Movie/TV external embed fails:
@@ -1005,7 +1025,6 @@ Current cleanup state:
 - Hero-preview generation has been removed from package scripts, deployment, agent installation, and mini checks.
 - `assets/hero-previews.json` and `scripts/refresh-hero-previews.py` are deleted in this worktree.
 - The old one-off Interstellar mini helper scripts have been removed.
-- `scripts/install-mini-agents.sh` removes any stale hero-preview LaunchAgent, helper, manifest, deployed script, and cached preview folder from the Mac mini.
-- `scripts/check-mini.sh` now validates only the current maintenance agents: log rotation, disk monitor, and watchdog.
+- `scripts/check-mini.sh` validates the current maintenance system timers: log rotation, disk monitor, and watchdog, including disabled jobs and failing runs.
 - External movie/TV fallback cleanup is complete: VidLink, VidRock, NoTorrent, VixSrc, LordFlix, Icefy, and VidEasy native HLS remain the active provider stack; VidEasy's named server sources are selectable, and external iframe handoff is not used for movie/TV playback.
 - Dead external providers and experiment knobs from the earlier investigation have been removed from resolver/provider lists, proxy allowlists, tests, and `.env.example`.

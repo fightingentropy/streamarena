@@ -10,6 +10,7 @@ PUBLIC_HOSTS="${PUBLIC_HOSTS:-streamarena.xyz,www.streamarena.xyz}"
 PUBLIC_CANONICAL_HOST="${PUBLIC_CANONICAL_HOST:-streamarena.xyz}"
 DIRECT_ORIGIN_HOSTS="${DIRECT_ORIGIN_HOSTS:-}"
 TLS_MODE="${TLS_MODE:-auto}"
+MINI_INGRESS_MODE="${MINI_INGRESS_MODE:-auto}"
 
 usage() {
   cat <<'USAGE'
@@ -36,6 +37,9 @@ Environment:
                                hosts. When omitted, the Mini reads this value
                                from its mode-600 canonical Streamarena env.
   TLS_MODE                     Default: auto
+  MINI_INGRESS_MODE             auto (preserve existing tunnel), tunnel, or direct.
+                               Tunnel mode restarts only the existing backend;
+                               routing is managed by configure-mini-tunnel.py.
 USAGE
 }
 
@@ -57,6 +61,8 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+case "$MINI_INGRESS_MODE" in auto|tunnel|direct) ;; *) echo "Invalid MINI_INGRESS_MODE" >&2; exit 2 ;; esac
 
 if [[ ! "$PUBLIC_CANONICAL_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
   echo "PUBLIC_CANONICAL_HOST is invalid" >&2
@@ -92,8 +98,61 @@ if [[ -n "${DIRECT_ORIGIN_HOSTS//[[:space:]]/}" ]]; then
 fi
 
 ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$MINI_HOST" \
-  "REMOTE_APP='$REMOTE_APP' CADDY_VERSION='$CADDY_VERSION' PUBLIC_HOSTS='$PUBLIC_HOSTS' PUBLIC_CANONICAL_HOST='$PUBLIC_CANONICAL_HOST' DIRECT_ORIGIN_HOSTS='$DIRECT_ORIGIN_HOSTS' TLS_MODE='$TLS_MODE' bash -s" <<'REMOTE'
+  "REMOTE_APP='$REMOTE_APP' CADDY_VERSION='$CADDY_VERSION' PUBLIC_HOSTS='$PUBLIC_HOSTS' PUBLIC_CANONICAL_HOST='$PUBLIC_CANONICAL_HOST' DIRECT_ORIGIN_HOSTS='$DIRECT_ORIGIN_HOSTS' TLS_MODE='$TLS_MODE' MINI_INGRESS_MODE='$MINI_INGRESS_MODE' bash -s" <<'REMOTE'
 set -euo pipefail
+
+# A backend deploy must never migrate a healthy tunnel installation back to the
+# retired public-port Caddy configuration or overwrite Music's shared proxy.
+existing_caddy_config=$(python3 - <<'PY'
+from pathlib import Path
+import plistlib
+p = Path('/Library/LaunchDaemons/com.fightingentropy.streamarena-caddy.plist')
+if p.exists():
+    args = plistlib.loads(p.read_bytes()).get('ProgramArguments', [])
+    if '--config' in args:
+        print(args[args.index('--config') + 1])
+PY
+)
+if [[ "$MINI_INGRESS_MODE" == auto ]]; then
+  if [[ "$existing_caddy_config" == *"/Caddyfile-tunnel" || -f /Library/LaunchDaemons/com.cloudflare.cloudflared.streamarena.plist ]]; then
+    MINI_INGRESS_MODE=tunnel
+  else
+    MINI_INGRESS_MODE=direct
+  fi
+fi
+if [[ "$MINI_INGRESS_MODE" == tunnel ]]; then
+  [[ "$existing_caddy_config" == *"/Caddyfile-tunnel" ]] || { echo "Existing tunnel Caddy configuration is missing" >&2; exit 1; }
+  for service in com.fightingentropy.streamarena-app com.fightingentropy.streamarena-caddy com.cloudflare.cloudflared.streamarena; do
+    launchctl print "system/$service" >/dev/null
+  done
+  [[ -x "$HOME/.local/bin/streamarena-run-backend" && -x "$REMOTE_APP/bin/streamarena-backend" ]]
+  old_pid=$(/usr/sbin/lsof -nP -t -iTCP:5173 -sTCP:LISTEN 2>/dev/null || true)
+  if [[ -n "$old_pid" ]]; then
+    [[ "$old_pid" =~ ^[0-9]+$ ]] || { echo "Expected one backend listener" >&2; exit 1; }
+    [[ "$(ps -p "$old_pid" -o comm= | xargs)" == "$REMOTE_APP/bin/streamarena-backend" ]] || { echo "Port 5173 is not the expected backend" >&2; exit 1; }
+    kill -TERM "$old_pid"
+  else
+    # A stopped/crashed backend has no listener. Recover the existing managed
+    # job without depending on an old PID or starting an unmanaged process.
+    sudo -n launchctl kickstart -k system/com.fightingentropy.streamarena-app
+  fi
+  for _ in {1..45}; do
+    new_pid=$(/usr/sbin/lsof -nP -t -iTCP:5173 -sTCP:LISTEN 2>/dev/null || true)
+    if [[ "$new_pid" =~ ^[0-9]+$ && "$new_pid" != "$old_pid" ]] \
+      && { [[ -z "$old_pid" ]] || ! kill -0 "$old_pid" 2>/dev/null; } \
+      && [[ "$(ps -p "$new_pid" -o comm= | xargs)" == "$REMOTE_APP/bin/streamarena-backend" ]]; then
+      health=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:5173/api/health/live || true)
+      protected=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:5173/api/library || true)
+      if [[ "$health" == 200 && "$protected" == 401 ]]; then
+        printf 'backend_restarted=%s->%s; tunnel_and_shared_caddy=preserved\n' "${old_pid:-stopped}" "$new_pid"
+        exit 0
+      fi
+    fi
+    sleep 1
+  done
+  echo "Backend replacement did not become healthy; shared ingress was preserved" >&2
+  exit 1
+fi
 
 if [[ -z "$DIRECT_ORIGIN_HOSTS" ]]; then
   DIRECT_ORIGIN_HOSTS="$({

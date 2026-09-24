@@ -31,3 +31,6 @@ tmp/
 *.mts
 *.mp4
 assets/videos/
+# Python operational helpers and their tests.
+__pycache__/
+*.pyc

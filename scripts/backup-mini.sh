@@ -12,14 +12,16 @@ usage() {
 Usage: scripts/backup-mini.sh [--config-only] <backup-root>
 
 Creates a timestamped Mac mini server backup. Use an external drive or another
-large volume for full backups because assets are about 153G.
+large volume for full backups because assets and caches can be large.
 
 Backed up by default:
   - /Users/hermes/Developer/streamarena/{assets,bin,cache,dist}
   - /Users/hermes/.config/streamarena/env
   - /Users/hermes/.config/caddy config
-  - /Users/hermes/.local/bin server helper scripts
-  - LaunchDaemon and LaunchAgent plists for the app/Caddy/maintenance jobs
+  - /Users/hermes/.local/bin/streamarena-run-backend
+  - /Library/Application Support/StreamArena/{maintenance.py,settings.json}
+  - Active StreamArena cloudflared config and its referenced tunnel credential
+  - System LaunchDaemon plists for the app/Caddy/maintenance jobs
 
 Options:
   --config-only   Back up secrets, Caddy config, scripts, and plists only.
@@ -61,8 +63,8 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 snapshot="$backup_root/$stamp"
 mkdir -p "$snapshot"
 
-SSH_BASE=(ssh -i "$SSH_KEY" -o BatchMode=yes)
-RSYNC_SSH="ssh -i $SSH_KEY -o BatchMode=yes"
+SSH_BASE=(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10)
+RSYNC_SSH="ssh -i $SSH_KEY -o BatchMode=yes -o ConnectTimeout=10"
 
 rsync_remote() {
   local src="$1"
@@ -91,12 +93,16 @@ rsync_remote_dir() {
 
 remote_db_snapshot=""
 remote_caddy_snapshot=""
+remote_tunnel_snapshot=""
 cleanup_remote_snapshots() {
   if [[ "$remote_db_snapshot" == /tmp/streamarena-db-backup.* ]]; then
     "${SSH_BASE[@]}" "$MINI_HOST" "rm -rf -- '$remote_db_snapshot'" >/dev/null 2>&1 || true
   fi
   if [[ "$remote_caddy_snapshot" == /tmp/streamarena-caddy-backup.* ]]; then
     "${SSH_BASE[@]}" "$MINI_HOST" "rm -rf -- '$remote_caddy_snapshot'" >/dev/null 2>&1 || true
+  fi
+  if [[ "$remote_tunnel_snapshot" == /tmp/streamarena-tunnel-backup.* ]]; then
+    "${SSH_BASE[@]}" "$MINI_HOST" "rm -rf -- '$remote_tunnel_snapshot'" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup_remote_snapshots EXIT
@@ -144,7 +150,7 @@ REMOTE
   rsync_remote_dir "$REMOTE_APP/dist" "$snapshot/runtime/dist" "${previous:+$previous/runtime/dist}"
 fi
 
-mkdir -p "$snapshot/config" "$snapshot/caddy" "$snapshot/local-bin" "$snapshot/plists"
+mkdir -p "$snapshot/config" "$snapshot/caddy" "$snapshot/local-bin" "$snapshot/plists" "$snapshot/maintenance"
 rsync_remote "/Users/hermes/.config/streamarena/env" "$snapshot/config/env"
 # Caddy's production config is intentionally root-owned and 0600. Stage a
 # short-lived, hermes-readable copy on the mini so rsync can back it up without
@@ -154,8 +160,8 @@ set -euo pipefail
 umask 077
 snapshot_dir="$(mktemp -d /tmp/streamarena-caddy-backup.XXXXXX)"
 trap 'rm -rf "$snapshot_dir"' ERR
-sudo cp -R "$HOME/.config/caddy/." "$snapshot_dir/"
-sudo chown -R "$(id -u):$(id -g)" "$snapshot_dir"
+sudo -n cp -R "$HOME/.config/caddy/." "$snapshot_dir/"
+sudo -n chown -R "$(id -u):$(id -g)" "$snapshot_dir"
 find "$snapshot_dir" -type d -exec chmod 700 {} +
 find "$snapshot_dir" -type f -exec chmod 600 {} +
 trap - ERR
@@ -166,14 +172,90 @@ rsync_remote_dir "$remote_caddy_snapshot" "$snapshot/caddy"
 cleanup_remote_snapshots
 remote_caddy_snapshot=""
 rsync_remote "/Users/hermes/.local/bin/streamarena-run-backend" "$snapshot/local-bin/streamarena-run-backend"
-rsync_remote "/Users/hermes/.local/bin/streamarena-rotate-logs" "$snapshot/local-bin/streamarena-rotate-logs"
-rsync_remote "/Users/hermes/.local/bin/streamarena-disk-monitor" "$snapshot/local-bin/streamarena-disk-monitor"
-rsync_remote "/Users/hermes/.local/bin/streamarena-watchdog" "$snapshot/local-bin/streamarena-watchdog"
+# Stream only the installed root-owned helper/config, not maintenance logs,
+# archives, locks, or prior installer snapshots. Quoting also supports the space
+# in Application Support with the older rsync shipped by macOS.
+"${SSH_BASE[@]}" "$MINI_HOST" \
+  "sudo -n /usr/bin/tar -C '/Library/Application Support/StreamArena' -cf - maintenance.py settings.json" | \
+  tar -xf - -C "$snapshot/maintenance"
 rsync_remote "/Library/LaunchDaemons/com.fightingentropy.streamarena-app.plist" "$snapshot/plists/com.fightingentropy.streamarena-app.plist"
 rsync_remote "/Library/LaunchDaemons/com.fightingentropy.streamarena-caddy.plist" "$snapshot/plists/com.fightingentropy.streamarena-caddy.plist"
-rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-log-rotation.plist" "$snapshot/plists/com.fightingentropy.streamarena-log-rotation.plist"
-rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-disk-monitor.plist" "$snapshot/plists/com.fightingentropy.streamarena-disk-monitor.plist"
-rsync_remote "/Users/hermes/Library/LaunchAgents/com.fightingentropy.streamarena-watchdog.plist" "$snapshot/plists/com.fightingentropy.streamarena-watchdog.plist"
+rsync_remote "/Library/LaunchDaemons/com.fightingentropy.streamarena-log-rotation.plist" "$snapshot/plists/com.fightingentropy.streamarena-log-rotation.plist"
+rsync_remote "/Library/LaunchDaemons/com.fightingentropy.streamarena-disk-monitor.plist" "$snapshot/plists/com.fightingentropy.streamarena-disk-monitor.plist"
+rsync_remote "/Library/LaunchDaemons/com.fightingentropy.streamarena-watchdog.plist" "$snapshot/plists/com.fightingentropy.streamarena-watchdog.plist"
+
+# Derive the active config from this one service, then include only the credential
+# it references. Never copy the shared cloudflared directory or certificate.
+remote_tunnel_snapshot="$("${SSH_BASE[@]}" "$MINI_HOST" 'sudo -n /usr/bin/python3 -' <<'REMOTE'
+import json
+import os
+from pathlib import Path
+import plistlib
+import pwd
+import re
+import shlex
+import shutil
+import tempfile
+import uuid
+
+os.umask(0o077)
+label = "com.cloudflare.cloudflared.streamarena"
+plist = Path("/Library/LaunchDaemons") / (label + ".plist")
+job = plistlib.loads(plist.read_bytes())
+assert job["Label"] == label, "Unexpected tunnel service"
+args = job["ProgramArguments"]
+assert args.count("--config") == 1, "Expected one explicit tunnel config"
+config = Path(args[args.index("--config") + 1])
+assert config.is_absolute() and config.is_file() and not config.is_symlink(), "Invalid tunnel config path"
+original = config.read_text()
+
+def scalar(key):
+    matches = re.findall(r"(?m)^" + re.escape(key) + r":\s*([^\n]+)$", original)
+    assert len(matches) == 1, "Expected one explicit " + key
+    values = shlex.split(matches[0], comments=True)
+    assert len(values) == 1, "Expected simple scalar for " + key
+    return values[0]
+
+tunnel_id = str(uuid.UUID(scalar("tunnel")))
+credential = Path(scalar("credentials-file"))
+assert credential.is_absolute() and credential.is_file() and not credential.is_symlink(), "Invalid tunnel credential path"
+assert credential.parent.resolve() == config.parent.resolve(), "Tunnel credential must be beside its config"
+assert credential.name == tunnel_id + ".json", "Unexpected tunnel credential filename"
+try:
+    data = json.loads(credential.read_text())
+    assert str(uuid.UUID(data["TunnelID"])) == tunnel_id
+    assert data["AccountTag"] and data["TunnelSecret"]
+except (ValueError, KeyError, TypeError, AssertionError):
+    raise RuntimeError("Tunnel credential does not match active config") from None
+
+directory = Path(tempfile.mkdtemp(prefix="streamarena-tunnel-backup.", dir="/tmp"))
+try:
+    owner = pwd.getpwnam("hermes")
+    paths = {"config.yml": config, credential.name: credential, plist.name: plist}
+    for name, source in paths.items():
+        shutil.copyfile(source, directory / name)
+    (directory / "source-paths.json").write_text(json.dumps({name: str(path) for name, path in paths.items()}, indent=2))
+    for path in directory.iterdir():
+        path.chmod(0o600)
+        os.chown(path, owner.pw_uid, owner.pw_gid)
+    directory.chmod(0o700)
+    os.chown(directory, owner.pw_uid, owner.pw_gid)
+except Exception:
+    shutil.rmtree(directory)
+    raise
+print(directory)
+REMOTE
+)"
+rsync_remote_dir "$remote_tunnel_snapshot" "$snapshot/tunnel"
+cleanup_remote_snapshots
+remote_tunnel_snapshot=""
+
+# Archive tools preserve source modes; configuration copies should remain private
+# even when the production helper/plist is intentionally world-readable.
+find "$snapshot/config" "$snapshot/caddy" "$snapshot/local-bin" "$snapshot/plists" "$snapshot/maintenance" "$snapshot/tunnel" \
+  -type d -exec chmod 700 {} +
+find "$snapshot/config" "$snapshot/caddy" "$snapshot/local-bin" "$snapshot/plists" "$snapshot/maintenance" "$snapshot/tunnel" \
+  -type f -exec chmod 600 {} +
 
 "${SSH_BASE[@]}" "$MINI_HOST" "REMOTE_APP='$REMOTE_APP' bash -s" > "$snapshot/manifest.txt" <<'REMOTE'
 set -euo pipefail

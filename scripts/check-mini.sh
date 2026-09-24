@@ -13,6 +13,15 @@ MIN_FREE_GB="${MIN_FREE_GB:-50}"
 PROTECTED_ENDPOINT_STATUS="${PROTECTED_ENDPOINT_STATUS:-401}"
 SPORTS_PROXY_EXPECTED="${SPORTS_PROXY_EXPECTED:-http://127.0.0.1:40000}"
 EXPECTED_OPEN_SIGNUP="${EXPECTED_OPEN_SIGNUP:-0}"
+# Tunnel ingress is the deployed topology. Direct 80/443 ingress is opt-in.
+MINI_INGRESS_MODE="${MINI_INGRESS_MODE:-tunnel}"
+STREAMARENA_CADDY_PORT="${STREAMARENA_CADDY_PORT:-5180}"
+TORZNAB_CHECK_QUERY="${TORZNAB_CHECK_QUERY:-}"
+case "$MINI_INGRESS_MODE" in tunnel|direct) ;; *) echo "Invalid MINI_INGRESS_MODE" >&2; exit 2 ;; esac
+[[ "$STREAMARENA_CADDY_PORT" =~ ^[0-9]+$ && "$STREAMARENA_CADDY_PORT" -ge 1 && "$STREAMARENA_CADDY_PORT" -le 65535 ]] \
+  || { echo "Invalid STREAMARENA_CADDY_PORT" >&2; exit 2; }
+# Quote values for the remote shell without interpolating user input as code.
+shell_quote() { printf '%q' "$1"; }
 
 SSH_OPTS=(
   -i "$SSH_KEY"
@@ -34,7 +43,7 @@ bad() {
 remote_output_file="$(mktemp)"
 trap 'rm -f "$remote_output_file"' EXIT
 ssh "${SSH_OPTS[@]}" "$MINI_HOST" \
-  "REMOTE_APP='$REMOTE_APP' PUBLIC_HOST='$PUBLIC_HOST' MAX_DISK_PERCENT='$MAX_DISK_PERCENT' MIN_FREE_GB='$MIN_FREE_GB' SPORTS_PROXY_EXPECTED='$SPORTS_PROXY_EXPECTED' bash -s" \
+  "REMOTE_APP=$(shell_quote "$REMOTE_APP") PUBLIC_HOST=$(shell_quote "$PUBLIC_HOST") PUBLIC_ALIAS_HOST=$(shell_quote "$PUBLIC_ALIAS_HOST") MAX_DISK_PERCENT=$(shell_quote "$MAX_DISK_PERCENT") MIN_FREE_GB=$(shell_quote "$MIN_FREE_GB") SPORTS_PROXY_EXPECTED=$(shell_quote "$SPORTS_PROXY_EXPECTED") MINI_INGRESS_MODE=$(shell_quote "$MINI_INGRESS_MODE") STREAMARENA_CADDY_PORT=$(shell_quote "$STREAMARENA_CADDY_PORT") TORZNAB_CHECK_QUERY=$(shell_quote "$TORZNAB_CHECK_QUERY") bash -s" \
   >"$remote_output_file" <<'REMOTE'
 set -euo pipefail
 
@@ -50,37 +59,109 @@ node_deps_dir="${STREAMARENA_NODE_DEPS_DIR:-$HOME/.local/share/streamarena-node}
 # backend loads it via dotenvy); exclude it from the structure check and verify
 # its permissions separately below.
 runtime_tree=$(find "$app" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null \
-  | grep -Ev '^(\.env|\.deploy-(staging|rollback|failed))$' \
+  | grep -Ev '^(\.env|\.release-commit|\.deploy-(staging|rollback|failed))$' \
   | sort | paste -sd, - || true)
+release_marker=absent
+if [[ -e "$app/.release-commit" || -L "$app/.release-commit" ]]; then
+  release_marker=invalid
+  if [[ -f "$app/.release-commit" && ! -L "$app/.release-commit" ]] \
+    && [[ "$(cat "$app/.release-commit")" =~ ^[0-9a-f]{40}$ ]]; then
+    release_marker=valid
+  fi
+fi
 app_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/health/live || true)
 library_http=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:5173/api/library || true)
 # The reverse proxy is verified end-to-end through the public hostname below;
 # the backend's loopback health check separately isolates app health from edge
 # and DNS failures.
 listener=$(lsof -nP -iTCP:5173 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
-caddy_80=$(sudo lsof -nP -iTCP:80 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
-caddy_443=$(sudo lsof -nP -iTCP:443 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
-app_pid=$(pgrep -f "$app/bin/streamarena-backend" | head -1 || true)
-caddy_pid=$(pgrep -x caddy | head -1 || true)
-tunnel_pid=$(pgrep -f "cloudflared tunnel run streamarena" | head -1 || true)
+# Read the running job, not an inactive Caddyfile or a coincidental process.
+launch_value() {
+  launchctl print "$1" 2>/dev/null | awk -F= -v key="$2" '
+    {name=$1; gsub(/^[ \t]+|[ \t]+$/, "", name)}
+    name == key {value=$2; gsub(/^[ \t]+|[ \t;]+$/, "", value); print value; exit}' || true
+}
+process_argument() {
+  ps -p "$1" -o command= 2>/dev/null | python3 -c '
+import shlex, sys
+try:
+    args = shlex.split(sys.stdin.read())
+    if sys.argv[1] == "program":
+        print(args[0])
+        raise SystemExit(0)
+    config = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--config=")), "")
+    if "--config" in args:
+        config = args[args.index("--config") + 1]
+    print(config)
+except (ValueError, IndexError):
+    pass
+' "$2" || true
+}
+app_pid=$(launch_value system/com.fightingentropy.streamarena-app pid)
+caddy_pid=$(launch_value system/com.fightingentropy.streamarena-caddy pid)
+tunnel_pid=$(launch_value system/com.cloudflare.cloudflared.streamarena pid)
+tunnel_launch_state=$(launch_value system/com.cloudflare.cloudflared.streamarena state)
 tunnel_daemon=$(test -e "$tunnel_plist" && echo yes || echo no)
 caddy_version=$("$caddy_bin" version 2>/dev/null | awk '{print $1}' || true)
+caddy_config=$(process_argument "${caddy_pid:-0}" config)
+caddy_config_valid=no
+if [[ -n "$caddy_config" ]] && sudo -n "$caddy_bin" validate --config "$caddy_config" --adapter caddyfile >/dev/null 2>&1; then
+  caddy_config_valid=yes
+fi
+caddy_listener() {
+  sudo -n lsof -nP -a -p "${caddy_pid:-0}" -iTCP:"$1" -sTCP:LISTEN -Fn 2>/dev/null \
+    | sed -n 's/^n//p' | sort -u | paste -sd, - || true
+}
+caddy_80=$(caddy_listener 80)
+caddy_443=$(caddy_listener 443)
+caddy_loopback=$(caddy_listener "$STREAMARENA_CADDY_PORT")
 caddy_client_ip_guard=no
 caddy_https_redirect=no
 caddy_direct_origin=no
-caddy_config="$HOME/.config/caddy/Caddyfile"
-if sudo -n grep -q 'trusted_proxies static' "$caddy_config" 2>/dev/null \
-  && sudo -n grep -qi 'header_up cf-connecting-ip' "$caddy_config" 2>/dev/null \
-  && sudo -n grep -qi 'client_ip_headers CF-Connecting-IP' "$caddy_config" 2>/dev/null \
-  && sudo -n grep -q 'remote_ip private_ranges' "$caddy_config" 2>/dev/null; then
-  caddy_client_ip_guard=yes
+if [[ "$MINI_INGRESS_MODE" == "direct" ]]; then
+  if sudo -n grep -q 'trusted_proxies static' "$caddy_config" 2>/dev/null \
+    && sudo -n grep -qi 'header_up cf-connecting-ip' "$caddy_config" 2>/dev/null \
+    && sudo -n grep -qi 'client_ip_headers CF-Connecting-IP' "$caddy_config" 2>/dev/null \
+    && sudo -n grep -q 'remote_ip private_ranges' "$caddy_config" 2>/dev/null; then
+    caddy_client_ip_guard=yes
+  fi
+  if sudo -n grep -Eq 'redir[[:space:]]+https://[^[:space:]]+\{uri\}[[:space:]]+permanent' "$caddy_config" 2>/dev/null; then
+    caddy_https_redirect=yes
+  fi
+  if sudo -n grep -Fq '# BEGIN STREAMARENA DIRECT WORKER ORIGIN' "$caddy_config" 2>/dev/null \
+    && sudo -n grep -Fq '# END STREAMARENA DIRECT WORKER ORIGIN' "$caddy_config" 2>/dev/null; then
+    caddy_direct_origin=yes
+  fi
 fi
-if sudo -n grep -Eq 'redir[[:space:]]+https://[^[:space:]]+\{uri\}[[:space:]]+permanent' "$caddy_config" 2>/dev/null; then
-  caddy_https_redirect=yes
+tunnel_config=$(process_argument "${tunnel_pid:-0}" config)
+cloudflared_bin=$(process_argument "${tunnel_pid:-0}" program)
+# cloudflared uses this standard path when no explicit --config is supplied.
+tunnel_config="${tunnel_config:-$HOME/.cloudflared/config.yml}"
+tunnel_ingress_valid=no
+tunnel_primary_service=missing
+tunnel_alias_service=missing
+if [[ "$MINI_INGRESS_MODE" == "tunnel" ]]; then
+  if [[ -x "$cloudflared_bin" ]] && "$cloudflared_bin" tunnel --config "$tunnel_config" ingress validate >/dev/null 2>&1; then
+    tunnel_ingress_valid=yes
+  fi
+  tunnel_service() {
+    "$cloudflared_bin" tunnel --config "$tunnel_config" ingress rule "https://$1/login.html" 2>/dev/null \
+      | awk '/^[[:space:]]*service:/ {sub(/^[[:space:]]*service:[[:space:]]*/, ""); gsub(/["\047]/, ""); print; exit}' || true
+  }
+  tunnel_primary_service=$(tunnel_service "$PUBLIC_HOST")
+  tunnel_alias_service=$(tunnel_service "$PUBLIC_ALIAS_HOST")
 fi
-if sudo -n grep -Fq '# BEGIN STREAMARENA DIRECT WORKER ORIGIN' "$caddy_config" 2>/dev/null \
-  && sudo -n grep -Fq '# END STREAMARENA DIRECT WORKER ORIGIN' "$caddy_config" 2>/dev/null; then
-  caddy_direct_origin=yes
+local_proxy_http=skipped
+local_http_redirect=skipped
+local_alias_redirect=skipped
+if [[ "$MINI_INGRESS_MODE" == "tunnel" ]]; then
+  local_origin="http://127.0.0.1:$STREAMARENA_CADDY_PORT"
+  local_proxy_http=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+    -H "Host: $PUBLIC_HOST" -H 'X-Forwarded-Proto: https' "$local_origin/api/library" || true)
+  local_http_redirect=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 5 \
+    -H "Host: $PUBLIC_HOST" -H 'X-Forwarded-Proto: http' "$local_origin/login.html?mini_check=1" || true)
+  local_alias_redirect=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 5 \
+    -H "Host: $PUBLIC_ALIAS_HOST" -H 'X-Forwarded-Proto: https' "$local_origin/login.html?mini_check=1" || true)
 fi
 asset_files=$(find "$app/assets" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
 video_files=$(find "$app/assets/videos" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
@@ -91,18 +172,37 @@ app_env_mode=$(stat -f '%Lp' "$app/.env" 2>/dev/null || echo none)
 cache_mode=$(stat -f '%Lp' "$app/cache" 2>/dev/null || echo missing)
 users_db_mode=$(stat -f '%Lp' "$app/cache/users.sqlite" 2>/dev/null || echo missing)
 users_db_quick_check=$(sqlite3 -readonly "$app/cache/users.sqlite" 'PRAGMA quick_check;' 2>/dev/null || echo failed)
-canonical_open_signup=$(awk -F= '/^OPEN_SIGNUP=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true)
-app_open_signup=$(awk -F= '/^OPEN_SIGNUP=/ {print substr($0, length($1) + 2); exit}' "$app/.env" 2>/dev/null || true)
+# Match the runner's literal env reader: strip matching outer quotes and CRLF,
+# retain embedded equals/dollar signs, and let the last assignment win. Never
+# source operator configuration as shell code.
+env_value() {
+  local key="$1" file="$2" line name value result=""
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" == *=* && "$line" != \#* ]] || continue
+    name="${line%%=*}"
+    [[ "$name" == "$key" ]] || continue
+    value="${line#*=}"
+    if [[ ${#value} -ge 2 && ( "$value" == \"*\" || "$value" == \'*\' ) ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    result="$value"
+  done < "$file"
+  printf '%s' "$result"
+}
+canonical_open_signup=$(env_value OPEN_SIGNUP "$HOME/.config/streamarena/env")
+app_open_signup=$(env_value OPEN_SIGNUP "$app/.env")
 effective_open_signup="${canonical_open_signup:-${app_open_signup:-unset}}"
 rd_token_encryption_configured=no
-rd_token_keyring=$(awk -F= '/^REAL_DEBRID_TOKEN_ENCRYPTION_KEYS=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true)
+rd_token_keyring=$(env_value REAL_DEBRID_TOKEN_ENCRYPTION_KEYS "$HOME/.config/streamarena/env")
 if printf '%s\n' "$rd_token_keyring" \
   | grep -Eq '^[A-Za-z0-9._-]{1,48}:[A-Za-z0-9_-]{43}(,[A-Za-z0-9._-]{1,48}:[A-Za-z0-9_-]{43})*$'; then
   rd_token_encryption_configured=yes
 fi
 unset rd_token_keyring
 live_hls_proxy_secret=$(
-  awk -F= '/^LIVE_HLS_PROXY_SECRET=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true
+  env_value LIVE_HLS_PROXY_SECRET "$HOME/.config/streamarena/env"
 )
 live_hls_proxy_secret="${live_hls_proxy_secret#"${live_hls_proxy_secret%%[![:space:]]*}"}"
 live_hls_proxy_secret="${live_hls_proxy_secret%"${live_hls_proxy_secret##*[![:space:]]}"}"
@@ -112,29 +212,75 @@ if [[ ${#live_hls_proxy_secret} -ge 32 ]]; then
 fi
 unset live_hls_proxy_secret
 sports_http_proxy=$(
-  awk -F= '/^SPORTS_HTTP_PROXY=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true
+  env_value SPORTS_HTTP_PROXY "$HOME/.config/streamarena/env"
 )
 sports_proxy_matches_expected=$([[ "$sports_http_proxy" == "$SPORTS_PROXY_EXPECTED" ]] && echo yes || echo no)
-torznab_url=$(awk -F= '/^TORZNAB_API_URL=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true)
-torznab_key=$(awk -F= '/^TORZNAB_API_KEY=/ {print substr($0, length($1) + 2); exit}' "$HOME/.config/streamarena/env" 2>/dev/null || true)
+torznab_url=$(env_value TORZNAB_API_URL "$HOME/.config/streamarena/env")
+torznab_key=$(env_value TORZNAB_API_KEY "$HOME/.config/streamarena/env")
 torznab_configured=$([[ -n "$torznab_url" && -n "$torznab_key" ]] && echo yes || echo no)
-jackett_listener=$(lsof -nP -iTCP:9117 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 {print $9}' || true)
-jackett_launch_state=$(launchctl print "gui/$(id -u)/com.fightingentropy.jackett" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
+torznab_local_jackett=no
+case "$torznab_url" in http://127.0.0.1:9117/*|http://localhost:9117/*) torznab_local_jackett=yes ;; esac
+jackett_listener=$(lsof -nP -iTCP:9117 -sTCP:LISTEN -Fn 2>/dev/null | sed -n 's/^n//p' | sort -u | paste -sd, - || true)
+jackett_launch_state=$(launch_value system/com.fightingentropy.jackett state)
 jackett_indexers_mode=$(stat -f '%Lp' "$HOME/Library/Application Support/Jackett/Indexers" 2>/dev/null || echo missing)
-rutracker_config_mode=$(stat -f '%Lp' "$HOME/Library/Application Support/Jackett/Indexers/rutracker.json" 2>/dev/null || echo missing)
+jackett_credentials_private=yes
+if find "$HOME/Library/Application Support/Jackett/Indexers" -name '*.json' ! -perm 600 -print -quit 2>/dev/null | grep -q .; then
+  jackett_credentials_private=no
+fi
+# Capabilities test API/auth health without a fixed title or upstream catalog hit.
+# Set TORZNAB_CHECK_QUERY for an additional real search. Empty RSS is valid;
+# Torznab <error> responses and malformed XML always fail.
+torznab_caps_http=skipped
+torznab_caps_valid=no
 torznab_search_http=skipped
+torznab_search_valid=skipped
 torznab_search_items=0
+torznab_request_base() {
+  # Match build_torznab_request_url: replace an embedded apikey rather than
+  # sending duplicate values (Jackett rejects even two identical keys).
+  python3 -c '
+import sys
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+try:
+    url = urlsplit(sys.stdin.read().strip())
+    query = [(key, value) for key, value in parse_qsl(url.query, keep_blank_values=True) if key.lower() != "apikey"]
+    print(urlunsplit(url._replace(query=urlencode(query))))
+except ValueError:
+    print("")
+'
+}
+torznab_xml() {
+  python3 - "$1" "$2" <<'XML'
+import sys
+import xml.etree.ElementTree as ET
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+    tag = lambda el: el.tag.rsplit("}", 1)[-1]
+    if any(tag(el) == "error" for el in root.iter()):
+        raise ValueError("Torznab API error")
+    if sys.argv[2] == "caps":
+        valid = tag(root) == "caps" and any(tag(el) == "searching" for el in root)
+        print("yes" if valid else "no")
+    else:
+        valid = tag(root) == "rss" and any(tag(el) == "channel" for el in root)
+        print(sum(tag(el) == "item" for el in root.iter()) if valid else "invalid")
+except (ET.ParseError, OSError, ValueError):
+    print("no" if sys.argv[2] == "caps" else "invalid")
+XML
+}
 if [[ "$torznab_configured" == "yes" ]]; then
   torznab_probe=$(mktemp)
-  torznab_search_http=$(
-    curl -sS -G -o "$torznab_probe" -w "%{http_code}" --max-time 45 "$torznab_url" \
-      --data-urlencode "apikey=$torznab_key" \
-      --data-urlencode "t=search" \
-      --data-urlencode "q=The Avengers 2012" \
-      --data-urlencode "cat=2000,2040,2045" \
-      --data-urlencode "limit=20" || true
-  )
-  torznab_search_items=$(grep -o '<item>' "$torznab_probe" 2>/dev/null | wc -l | tr -d ' ' || true)
+  torznab_base=$(printf '%s' "$torznab_url" | torznab_request_base)
+  torznab_caps_http=$(curl -sS -G -o "$torznab_probe" -w '%{http_code}' --max-time 15 "$torznab_base" \
+    --data-urlencode "apikey=$torznab_key" --data-urlencode 't=caps' 2>/dev/null || true)
+  torznab_caps_valid=$(torznab_xml "$torznab_probe" caps)
+  if [[ -n "$TORZNAB_CHECK_QUERY" ]]; then
+    torznab_search_http=$(curl -sS -G -o "$torznab_probe" -w '%{http_code}' --max-time 45 "$torznab_base" \
+      --data-urlencode "apikey=$torznab_key" --data-urlencode 't=search' \
+      --data-urlencode "q=$TORZNAB_CHECK_QUERY" --data-urlencode 'limit=20' 2>/dev/null || true)
+    torznab_search_items=$(torznab_xml "$torznab_probe" search)
+    torznab_search_valid=$([[ "$torznab_search_items" =~ ^[0-9]+$ ]] && echo yes || echo no)
+  fi
   rm -f "$torznab_probe"
 fi
 unset torznab_key
@@ -146,12 +292,43 @@ app_launch_state=$(launchctl print "system/com.fightingentropy.streamarena-app" 
 caddy_launch_state=$(launchctl print "system/com.fightingentropy.streamarena-caddy" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
 app_runs=$(launchctl print "system/com.fightingentropy.streamarena-app" 2>/dev/null | awk -F= '/runs =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
 caddy_runs=$(launchctl print "system/com.fightingentropy.streamarena-caddy" 2>/dev/null | awk -F= '/runs =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
-log_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.streamarena-log-rotation.plist" && echo yes || echo no)
-disk_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.streamarena-disk-monitor.plist" && echo yes || echo no)
-watchdog_agent=$(test -f "$HOME/Library/LaunchAgents/com.fightingentropy.streamarena-watchdog.plist" && echo yes || echo no)
-watchdog_helper=$(test -x "$HOME/.local/bin/streamarena-watchdog" && echo yes || echo no)
-watchdog_log=$(test -f "$HOME/.local/state/streamarena/watchdog.log" && echo yes || echo no)
-watchdog_launch_state=$(launchctl print "gui/$(id -u)/com.fightingentropy.streamarena-watchdog" 2>/dev/null | awk -F= '/state =/ {gsub(/[ ";]/, "", $2); print $2; exit}' || true)
+maintenance_helper="/Library/Application Support/StreamArena/maintenance.py"
+maintenance_helper_private=no
+if [[ "$(sudo -n stat -f '%u:%Lp' "$maintenance_helper" 2>/dev/null || true)" == "0:644" \
+   && "$(sudo -n stat -f '%u:%Lp' "$(dirname "$maintenance_helper")" 2>/dev/null || true)" == "0:755" \
+   && ! -L "$maintenance_helper" ]]; then
+  maintenance_helper_private=yes
+fi
+maintenance_job() {
+  local mode="$1" label="com.fightingentropy.streamarena-$2" info state last_exit disabled arguments
+  info=$(launchctl print "system/$label" 2>/dev/null || true)
+  [[ -n "$info" ]] || { echo missing; return; }
+  disabled=$(launchctl print-disabled system 2>/dev/null | grep -E "\"$label\"[[:space:]]*=>[[:space:]]*(true|disabled)([[:space:]]|$)" || true)
+  [[ -z "$disabled" ]] || { echo disabled; return; }
+  arguments=$(printf '%s\n' "$info" | awk '
+    /^[[:space:]]*arguments = \{/ {inside=1; next}
+    inside && /^[[:space:]]*}/ {exit}
+    inside {gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print}')
+  if [[ "$arguments" != $'/usr/bin/python3\n'"$maintenance_helper"$'\n'"$mode" ]]; then
+    echo wrong-helper; return
+  fi
+  state=$(launch_value "system/$label" state)
+  last_exit=$(launch_value "system/$label" 'last exit code')
+  if [[ "$state" == "running" || ( "$state" == "not running" && ( -z "$last_exit" || "$last_exit" == "0" ) ) ]]; then
+    echo healthy
+  else
+    echo "failed:$state:exit=$last_exit"
+  fi
+}
+log_maintenance=$(maintenance_job rotate log-rotation)
+disk_maintenance=$(maintenance_job disk disk-monitor)
+watchdog_maintenance=$(maintenance_job watchdog watchdog)
+maintenance_gui_duplicates=no
+for label in log-rotation disk-monitor watchdog; do
+  if launchctl print "gui/$(id -u)/com.fightingentropy.streamarena-$label" >/dev/null 2>&1; then
+    maintenance_gui_duplicates=yes
+  fi
+done
 cron_leftover=$(crontab -l 2>/dev/null | grep -c 'streamarena-rotate-logs' || true)
 
 df_line=$(df -Pk "$app" | awk 'NR == 2 {print $4 " " $5}')
@@ -213,12 +390,34 @@ ntvs_proxy_http=$(
     curl -sS --proxy "$sports_http_proxy" -o /dev/null -w "%{http_code}" --max-time 12 'https://ntvs.cx/api/search?q=football&server=kobra' 2>/dev/null || true
   fi
 )
-espn_football_event_count=$(
-  curl -fsS --max-time 12 \
-    'https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?limit=500' \
-    2>/dev/null | jq -r '.events | length' 2>/dev/null || echo 0
-)
+espn_probe=$(mktemp)
+espn_http=$(curl -sS --max-time 12 -o "$espn_probe" -w '%{http_code}' \
+  'https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?limit=500' 2>/dev/null || true)
+espn_football_event_count=$(jq -er 'if (.events | type) == "array" then (.events | length) else error("missing events") end' "$espn_probe" 2>/dev/null || echo invalid)
+rm -f "$espn_probe"
 
+printf 'release_marker=%s\n' "${release_marker:-missing}"
+printf 'caddy_config=%s\n' "${caddy_config:-missing}"
+printf 'caddy_config_valid=%s\n' "${caddy_config_valid:-missing}"
+printf 'caddy_loopback=%s\n' "${caddy_loopback:-missing}"
+printf 'tunnel_launch_state=%s\n' "${tunnel_launch_state:-missing}"
+printf 'tunnel_ingress_valid=%s\n' "${tunnel_ingress_valid:-missing}"
+printf 'tunnel_primary_service=%s\n' "${tunnel_primary_service:-missing}"
+printf 'tunnel_alias_service=%s\n' "${tunnel_alias_service:-missing}"
+printf 'local_proxy_http=%s\n' "${local_proxy_http:-missing}"
+printf 'local_http_redirect=%s\n' "${local_http_redirect:-missing}"
+printf 'local_alias_redirect=%s\n' "${local_alias_redirect:-missing}"
+printf 'torznab_local_jackett=%s\n' "${torznab_local_jackett:-missing}"
+printf 'jackett_credentials_private=%s\n' "${jackett_credentials_private:-missing}"
+printf 'torznab_caps_http=%s\n' "${torznab_caps_http:-missing}"
+printf 'torznab_caps_valid=%s\n' "${torznab_caps_valid:-missing}"
+printf 'torznab_search_valid=%s\n' "${torznab_search_valid:-missing}"
+printf 'espn_http=%s\n' "${espn_http:-missing}"
+printf 'maintenance_helper_private=%s\n' "${maintenance_helper_private:-missing}"
+printf 'log_maintenance=%s\n' "${log_maintenance:-missing}"
+printf 'disk_maintenance=%s\n' "${disk_maintenance:-missing}"
+printf 'watchdog_maintenance=%s\n' "${watchdog_maintenance:-missing}"
+printf 'maintenance_gui_duplicates=%s\n' "${maintenance_gui_duplicates:-missing}"
 printf 'runtime_tree=%s\n' "$runtime_tree"
 printf 'expected_tree=%s\n' "$expected_tree"
 printf 'app_http=%s\n' "$app_http"
@@ -251,7 +450,6 @@ printf 'torznab_configured=%s\n' "$torznab_configured"
 printf 'jackett_listener=%s\n' "${jackett_listener:-missing}"
 printf 'jackett_launch_state=%s\n' "${jackett_launch_state:-missing}"
 printf 'jackett_indexers_mode=%s\n' "$jackett_indexers_mode"
-printf 'rutracker_config_mode=%s\n' "$rutracker_config_mode"
 printf 'torznab_search_http=%s\n' "$torznab_search_http"
 printf 'torznab_search_items=%s\n' "$torznab_search_items"
 printf 'espn_football_event_count=%s\n' "$espn_football_event_count"
@@ -263,12 +461,6 @@ printf 'app_launch_state=%s\n' "${app_launch_state:-missing}"
 printf 'caddy_launch_state=%s\n' "${caddy_launch_state:-missing}"
 printf 'app_runs=%s\n' "${app_runs:-missing}"
 printf 'caddy_runs=%s\n' "${caddy_runs:-missing}"
-printf 'log_agent=%s\n' "$log_agent"
-printf 'disk_agent=%s\n' "$disk_agent"
-printf 'watchdog_agent=%s\n' "$watchdog_agent"
-printf 'watchdog_helper=%s\n' "$watchdog_helper"
-printf 'watchdog_log=%s\n' "$watchdog_log"
-printf 'watchdog_launch_state=%s\n' "${watchdog_launch_state:-missing}"
 printf 'cron_leftover=%s\n' "$cron_leftover"
 printf 'disk_capacity_percent=%s\n' "$capacity"
 printf 'disk_available_gb=%s\n' "$available_gb"
@@ -304,6 +496,28 @@ value_for() {
   printf '%s\n' "$remote_output" | awk -F= -v key="$1" '$1 == key {print substr($0, length(key) + 2); exit}'
 }
 
+release_marker=$(value_for release_marker)
+caddy_config=$(value_for caddy_config)
+caddy_config_valid=$(value_for caddy_config_valid)
+caddy_loopback=$(value_for caddy_loopback)
+tunnel_launch_state=$(value_for tunnel_launch_state)
+tunnel_ingress_valid=$(value_for tunnel_ingress_valid)
+tunnel_primary_service=$(value_for tunnel_primary_service)
+tunnel_alias_service=$(value_for tunnel_alias_service)
+local_proxy_http=$(value_for local_proxy_http)
+local_http_redirect=$(value_for local_http_redirect)
+local_alias_redirect=$(value_for local_alias_redirect)
+torznab_local_jackett=$(value_for torznab_local_jackett)
+jackett_credentials_private=$(value_for jackett_credentials_private)
+torznab_caps_http=$(value_for torznab_caps_http)
+torznab_caps_valid=$(value_for torznab_caps_valid)
+torznab_search_valid=$(value_for torznab_search_valid)
+espn_http=$(value_for espn_http)
+maintenance_helper_private=$(value_for maintenance_helper_private)
+log_maintenance=$(value_for log_maintenance)
+disk_maintenance=$(value_for disk_maintenance)
+watchdog_maintenance=$(value_for watchdog_maintenance)
+maintenance_gui_duplicates=$(value_for maintenance_gui_duplicates)
 runtime_tree=$(value_for runtime_tree)
 expected_tree=$(value_for expected_tree)
 app_http=$(value_for app_http)
@@ -334,7 +548,6 @@ torznab_configured=$(value_for torznab_configured)
 jackett_listener=$(value_for jackett_listener)
 jackett_launch_state=$(value_for jackett_launch_state)
 jackett_indexers_mode=$(value_for jackett_indexers_mode)
-rutracker_config_mode=$(value_for rutracker_config_mode)
 torznab_search_http=$(value_for torznab_search_http)
 torznab_search_items=$(value_for torznab_search_items)
 espn_football_event_count=$(value_for espn_football_event_count)
@@ -346,12 +559,6 @@ app_launch_state=$(value_for app_launch_state)
 caddy_launch_state=$(value_for caddy_launch_state)
 app_runs=$(value_for app_runs)
 caddy_runs=$(value_for caddy_runs)
-log_agent=$(value_for log_agent)
-disk_agent=$(value_for disk_agent)
-watchdog_agent=$(value_for watchdog_agent)
-watchdog_helper=$(value_for watchdog_helper)
-watchdog_log=$(value_for watchdog_log)
-watchdog_launch_state=$(value_for watchdog_launch_state)
 cron_leftover=$(value_for cron_leftover)
 disk_capacity_percent=$(value_for disk_capacity_percent)
 disk_available_gb=$(value_for disk_available_gb)
@@ -381,14 +588,33 @@ ntvs_proxy_http=$(value_for ntvs_proxy_http)
 # Caddy reverse-proxy correctness is checked via the public hostname (through
 # Cloudflare) in the PUBLIC_URL section below.
 [[ "$listener" == "127.0.0.1:5173" ]] && pass "backend listener is localhost only" || bad "backend listener is '$listener'"
-[[ "$caddy_80" == *":80" ]] && pass "Caddy listens on port 80" || bad "Caddy port 80 listener is '$caddy_80'"
-[[ "$caddy_443" == *":443" ]] && pass "Caddy listens on port 443" || bad "Caddy port 443 listener is '$caddy_443'"
-[[ "$app_pid" != "missing" ]] && pass "backend process is running ($app_pid)" || bad "backend process missing"
-[[ "$caddy_pid" != "missing" ]] && pass "Caddy process is running ($caddy_pid)" || bad "Caddy process missing"
+[[ "$release_marker" == "valid" || "$release_marker" == "absent" ]] && pass "release metadata is $release_marker" || bad "release metadata is malformed or not a regular file"
+[[ "$app_pid" != "missing" ]] && pass "backend launchd process is running ($app_pid)" || bad "backend process missing"
+[[ "$caddy_pid" != "missing" ]] && pass "Caddy launchd process is running ($caddy_pid)" || bad "Caddy process missing"
 [[ "$caddy_version" != "missing" ]] && pass "Caddy is installed ($caddy_version)" || bad "Caddy is missing"
-[[ "$caddy_client_ip_guard" == "yes" ]] && pass "Caddy sanitizes client IP headers using Cloudflare's trusted ranges" || bad "Caddy client IP trust guard is missing"
-[[ "$caddy_https_redirect" == "yes" ]] && pass "Caddy redirects public HTTP requests to HTTPS" || bad "Caddy HTTPS redirect is missing"
-[[ "$caddy_direct_origin" == "yes" ]] && pass "Caddy retains the Cloudflare-only direct Worker origin" || bad "Caddy direct Worker origin is missing"
+[[ "$caddy_config_valid" == "yes" ]] && pass "running Caddy configuration validates ($caddy_config)" || bad "running Caddy configuration is missing or invalid"
+if [[ "$MINI_INGRESS_MODE" == "tunnel" ]]; then
+  [[ "$caddy_loopback" == "127.0.0.1:$STREAMARENA_CADDY_PORT" ]] && pass "Caddy StreamArena listener is loopback only" || bad "Caddy StreamArena listener is '$caddy_loopback'"
+  [[ "$tunnel_daemon" == "yes" && "$tunnel_launch_state" == "running" && "$tunnel_pid" != "missing" ]] && pass "Cloudflare Tunnel daemon is running ($tunnel_pid)" || bad "Cloudflare Tunnel daemon is missing or not running"
+  [[ "$tunnel_ingress_valid" == "yes" ]] && pass "active Cloudflare Tunnel ingress validates" || bad "active Cloudflare Tunnel ingress is invalid"
+  expected_tunnel_service="http://127.0.0.1:$STREAMARENA_CADDY_PORT"
+  [[ "$tunnel_primary_service" == "$expected_tunnel_service" ]] && pass "primary Tunnel route reaches StreamArena Caddy" || bad "primary Tunnel route is '$tunnel_primary_service'"
+  [[ "$tunnel_alias_service" == "$expected_tunnel_service" ]] && pass "alias Tunnel route reaches StreamArena Caddy" || bad "alias Tunnel route is '$tunnel_alias_service'"
+  [[ "$local_proxy_http" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "local Caddy forwards HTTPS protected requests" || bad "local Caddy proxy returned HTTP $local_proxy_http"
+  for kind in http alias; do
+    if [[ "$kind" == "http" ]]; then result="$local_http_redirect"; else result="$local_alias_redirect"; fi
+    status="${result%% *}"; target="${result#* }"
+    [[ ( "$status" == "301" || "$status" == "308" ) && "$target" == "$PUBLIC_URL/login.html?mini_check=1" ]] \
+      && pass "local Caddy $kind redirect preserves the canonical path and query" \
+      || bad "local Caddy $kind redirect returned '$result'"
+  done
+else
+  [[ "$caddy_80" == *":80" ]] && pass "Caddy owns port 80" || bad "Caddy port 80 listener is '$caddy_80'"
+  [[ "$caddy_443" == *":443" ]] && pass "Caddy owns port 443" || bad "Caddy port 443 listener is '$caddy_443'"
+  [[ "$caddy_client_ip_guard" == "yes" ]] && pass "Caddy sanitizes client IP headers using Cloudflare's trusted ranges" || bad "Caddy client IP trust guard is missing"
+  [[ "$caddy_https_redirect" == "yes" ]] && pass "Caddy redirects public HTTP requests to HTTPS" || bad "Caddy HTTPS redirect is missing"
+  [[ "$caddy_direct_origin" == "yes" ]] && pass "Caddy retains the Cloudflare-only direct Worker origin" || bad "Caddy direct Worker origin is missing"
+fi
 [[ "$asset_symlinks" == "0" ]] && pass "mini assets have no symlinks" || bad "mini assets have $asset_symlinks symlink(s)"
 [[ "$hls_resolver" == "yes" ]] && pass "external HLS resolver script is deployed" || bad "external HLS resolver script is missing"
 [[ "$streamed_hls_resolver" == "yes" ]] && pass "Streamed sports HLS resolver script is deployed" || bad "Streamed sports HLS resolver script is missing"
@@ -421,35 +647,35 @@ else
 fi
 [[ "$sports_proxy_matches_expected" == "yes" ]] && pass "SPORTS_HTTP_PROXY points at WARP local proxy" || bad "SPORTS_HTTP_PROXY does not match expected WARP local proxy"
 if [[ "$torznab_configured" == "yes" ]]; then
-  [[ "$jackett_listener" == "127.0.0.1:9117" ]] && pass "Jackett listens on localhost only" || bad "Jackett listener is '$jackett_listener'"
-  [[ "$jackett_launch_state" == "running" ]] && pass "Jackett launchd state is running" || bad "Jackett launchd state is $jackett_launch_state"
-  [[ "$jackett_indexers_mode" == "700" ]] && pass "Jackett indexer configuration directory is private" || bad "Jackett indexer configuration directory mode is $jackett_indexers_mode"
-  [[ "$rutracker_config_mode" == "600" ]] && pass "RuTracker credential configuration is private" || bad "RuTracker credential configuration mode is $rutracker_config_mode"
-  [[ "$torznab_search_http" == "200" ]] && pass "Torznab aggregate search returns HTTP 200" || bad "Torznab aggregate search returned HTTP $torznab_search_http"
-  [[ "$torznab_search_items" =~ ^[1-9][0-9]*$ ]] && pass "Torznab aggregate search returned $torznab_search_items items" || bad "Torznab aggregate search returned no items"
+  if [[ "$torznab_local_jackett" == "yes" ]]; then
+    [[ "$jackett_listener" == "127.0.0.1:9117" ]] && pass "Jackett listens on localhost only" || bad "Jackett listener is '$jackett_listener'"
+    [[ "$jackett_launch_state" == "running" ]] && pass "Jackett system launchd state is running" || bad "Jackett system launchd state is $jackett_launch_state"
+    [[ "$jackett_indexers_mode" == "700" && "$jackett_credentials_private" == "yes" ]] && pass "Jackett indexer credentials are private" || bad "Jackett indexer credential permissions are unsafe"
+  fi
+  [[ "$torznab_caps_http" == "200" && "$torznab_caps_valid" == "yes" ]] && pass "Torznab authenticated capabilities are valid" || bad "Torznab capabilities failed (HTTP $torznab_caps_http, valid=$torznab_caps_valid)"
+  if [[ -n "$TORZNAB_CHECK_QUERY" ]]; then
+    [[ "$torznab_search_http" == "200" && "$torznab_search_valid" == "yes" ]] && pass "Torznab search returned valid RSS ($torznab_search_items items)" || bad "Torznab search failed (HTTP $torznab_search_http, valid=$torznab_search_valid)"
+  fi
 fi
 [[ "$warp_cli" != "missing" ]] && pass "WARP CLI is installed ($warp_cli)" || bad "WARP CLI is missing"
 [[ "$warp_status" == "Connected" ]] && pass "WARP is connected" || bad "WARP status is $warp_status"
 [[ "$warp_mode" == "WarpProxy on port 40000" ]] && pass "WARP is in local proxy mode on port 40000" || bad "WARP mode is $warp_mode"
 [[ "$streamed_proxy_http" == "200" ]] && pass "Streamed schedule is reachable through WARP proxy" || bad "Streamed schedule through WARP proxy returned HTTP $streamed_proxy_http"
 [[ "$ntvs_proxy_http" == "200" ]] && pass "NTVS football search is reachable through WARP proxy" || bad "NTVS football search through WARP proxy returned HTTP $ntvs_proxy_http"
-[[ "$espn_football_event_count" =~ ^[1-9][0-9]*$ ]] && pass "ESPN football fixture schedule is populated ($espn_football_event_count events)" || bad "ESPN football fixture schedule is empty or unreachable"
+[[ "$espn_http" == "200" && "$espn_football_event_count" =~ ^[0-9]+$ ]] && pass "ESPN football schedule is valid ($espn_football_event_count events)" || bad "ESPN football schedule is malformed or unreachable (HTTP $espn_http)"
 [[ "$app_daemon" == "yes" ]] && pass "backend LaunchDaemon exists" || bad "backend LaunchDaemon missing"
 [[ "$caddy_daemon" == "yes" ]] && pass "Caddy LaunchDaemon exists" || bad "Caddy LaunchDaemon missing"
 [[ "$legacy_caddy_daemon" == "no" ]] && pass "legacy Caddy LaunchDaemon file is removed" || bad "legacy Caddy LaunchDaemon file still exists"
 [[ "$legacy_caddy_loaded" == "no" ]] && pass "legacy Caddy launchd service is unloaded" || bad "legacy Caddy launchd service is still loaded"
 [[ "$app_launch_state" == "running" ]] && pass "backend launchd state is running (runs=$app_runs)" || bad "backend launchd state is $app_launch_state"
 [[ "$caddy_launch_state" == "running" ]] && pass "Caddy launchd state is running (runs=$caddy_runs)" || bad "Caddy launchd state is $caddy_launch_state"
-[[ "$log_agent" == "yes" ]] && pass "log rotation LaunchAgent exists" || bad "log rotation LaunchAgent missing"
-[[ "$disk_agent" == "yes" ]] && pass "disk monitor LaunchAgent exists" || bad "disk monitor LaunchAgent missing"
-[[ "$watchdog_agent" == "yes" ]] && pass "watchdog LaunchAgent exists" || bad "watchdog LaunchAgent missing"
-[[ "$watchdog_helper" == "yes" ]] && pass "watchdog helper is executable" || bad "watchdog helper missing or not executable"
-[[ "$watchdog_log" == "yes" ]] && pass "watchdog log exists" || bad "watchdog log missing"
-[[ "$watchdog_launch_state" != "missing" ]] && pass "watchdog launchd state is $watchdog_launch_state" || bad "watchdog LaunchAgent is not loaded"
+[[ "$maintenance_helper_private" == "yes" ]] && pass "maintenance helper is root-owned and not writable by other users" || bad "maintenance helper has unsafe permissions or is missing"
+for task in log disk watchdog; do
+  case "$task" in log) state="$log_maintenance" ;; disk) state="$disk_maintenance" ;; watchdog) state="$watchdog_maintenance" ;; esac
+  [[ "$state" == "healthy" ]] && pass "$task maintenance system timer is healthy" || bad "$task maintenance system timer is $state"
+done
+[[ "$maintenance_gui_duplicates" == "no" ]] && pass "maintenance jobs have no duplicate GUI agents" || bad "duplicate maintenance GUI jobs are loaded"
 [[ "$cron_leftover" == "0" ]] && pass "old cron log rotation removed" || bad "old cron log rotation still present"
-
-[[ "$tunnel_pid" == "missing" ]] && pass "cloudflared tunnel process is removed" || bad "cloudflared tunnel process is still running ($tunnel_pid)"
-[[ "$tunnel_daemon" == "no" ]] && pass "cloudflared LaunchDaemon is removed" || bad "cloudflared LaunchDaemon still exists"
 
 if [[ "$disk_capacity_percent" -ge "$MAX_DISK_PERCENT" ]]; then
   bad "disk usage is ${disk_capacity_percent}% (limit ${MAX_DISK_PERCENT}%)"
@@ -515,8 +741,10 @@ auth_config_file="$(mktemp)"
 auth_config_status="$(curl -sS -o "$auth_config_file" -w '%{http_code}' --max-time 10 "$PUBLIC_URL/api/auth/config" || true)"
 auth_config_open="$(jq -r 'if .signup.open == false then "false" elif .signup.open == true then "true" else "missing" end' "$auth_config_file" 2>/dev/null || echo invalid)"
 rm -f "$auth_config_file"
-if [[ "$auth_config_status" == "200" && "$auth_config_open" == "false" ]]; then
-  pass "public auth config confirms self-signup is closed"
+expected_signup_json=false
+[[ "$EXPECTED_OPEN_SIGNUP" == "1" ]] && expected_signup_json=true
+if [[ "$auth_config_status" == "200" && "$auth_config_open" == "$expected_signup_json" ]]; then
+  pass "public auth config confirms signup.open=$expected_signup_json"
 else
   bad "public auth config returned HTTP $auth_config_status with signup.open=$auth_config_open"
 fi
@@ -532,7 +760,7 @@ public_auth_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PU
 [[ "$public_auth_status" == "401" ]] && pass "$PUBLIC_URL keeps app login active" || bad "$PUBLIC_URL app auth returned HTTP $public_auth_status"
 
 # Reverse-proxy check (replaces the retired direct-origin Caddy probes): a
-# protected route must reach the backend through Cloudflare -> Caddy and come
+# protected route must reach the backend through the configured ingress and come
 # back with the auth-required status, proving the full edge path is intact.
 public_proxy_status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL/api/library" || true)"
 [[ "$public_proxy_status" == "$PROTECTED_ENDPOINT_STATUS" ]] && pass "Caddy reverse-proxies protected routes via $PUBLIC_HOST (HTTP $PROTECTED_ENDPOINT_STATUS)" || bad "$PUBLIC_URL/api/library returned HTTP $public_proxy_status"
