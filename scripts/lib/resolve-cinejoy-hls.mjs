@@ -32,9 +32,9 @@ export async function resolveCinejoy(watchUrl, server = "LISBON", timeoutMs = 30
           if (isCinejoyPlaylistUrl(url, server)) {
             // Capture before fetching: the backend validates the manifest with
             // its own egress, then StreamArena's native HLS player handles media.
-            resolve({ playbackUrl: url, referer: "https://cinejoy.to/" });
+            resolve({ playbackUrl: url, referer: "https://cinejoy.pk/" });
             await route.abort("blockedbyclient");
-          } else if (url === "https://api.shegu.st/servers") {
+          } else if (url === "https://api.wing.st/servers") {
             const response = await route.fetch({ timeout: timeoutMs, maxRedirects: 0 });
             if (!response.ok()) throw new Error("CineJoy server discovery failed.");
             const selected = selectCinejoyServer(await response.json(), server);

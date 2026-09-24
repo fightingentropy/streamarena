@@ -3010,7 +3010,7 @@ fn rewrite_live_hls_master_playlist(
     let capped_storage;
     let lines: &[&str] = if signing_context.is_some()
         && !direct_segments
-        && referer != Some("https://cinejoy.to/")
+        && !matches!(referer, Some("https://cinejoy.pk/" | "https://cinejoy.to/"))
     {
         capped_storage = cap_external_embed_master_to_1080p(lines);
         &capped_storage
@@ -4665,19 +4665,28 @@ mod tests {
 video_4k_hdr.m3u8\n\
 #EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS=\"avc1.4D4032,mp4a.40.2\"\n\
 video_1080p.m3u8\n";
-        for upstream in [
-            "https://info.movieboxnoob.cc/playlist/test.m3u8",
-            "https://nebula.bright67.online/hls/test/master.m3u8",
-            "https://lol.movieboxnoob.cc/content?v=test",
+        for (upstream, referer) in [
+            (
+                "https://ok.solarpanelcleaning.cc/playlist/test.m3u8",
+                "https://cinejoy.pk/",
+            ),
+            (
+                "https://nebula.bright67.online/hls/test/master.m3u8",
+                "https://cinejoy.pk/",
+            ),
+            (
+                "https://asm.solarpanelcleaning.cc/content?v=test",
+                "https://cinejoy.pk/",
+            ),
+            // Existing signed/cache entries retain their original referer.
+            (
+                "https://info.movieboxnoob.cc/playlist/test.m3u8",
+                "https://cinejoy.to/",
+            ),
         ] {
             let base: url::Url = upstream.parse().unwrap();
-            let rewritten = rewrite_live_hls_playlist(
-                &base,
-                playlist,
-                Some("https://cinejoy.to/"),
-                signing_context,
-                false,
-            );
+            let rewritten =
+                rewrite_live_hls_playlist(&base, playlist, Some(referer), signing_context, false);
             assert!(rewritten.contains("RESOLUTION=3840x2160,VIDEO-RANGE=PQ"));
             assert!(rewritten.contains("hvc1.2.4.L150.B0,mp4a.40.2"));
             assert!(rewritten.contains("RESOLUTION=1920x1080"));
@@ -4688,7 +4697,9 @@ video_1080p.m3u8\n";
             assert_eq!(children.len(), 2);
             for child in children {
                 assert!(child.starts_with("/api/live/hls.m3u8?"));
-                assert!(child.contains("referer=https%3A%2F%2Fcinejoy.to%2F"));
+                let encoded: String =
+                    url::form_urlencoded::byte_serialize(referer.as_bytes()).collect();
+                assert!(child.contains(&format!("referer={encoded}")));
                 assert!(super::is_signed_live_hls_request(
                     secret,
                     &child.parse().unwrap()

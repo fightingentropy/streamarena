@@ -24,23 +24,25 @@ function loadProxy(fetcher) {
   return mod.exports;
 }
 
-test("CineJoy retains 4K/HDR and external audio through the device playlist rewrite", async () => {
-  const requests = [];
-  const proxy = loadProxy(async (url, init) => {
-    requests.push({ url, init });
-    return new Response(master);
+for (const referer of ["https://cinejoy.pk/", "https://cinejoy.to/"]) {
+  test(`CineJoy retains 4K/HDR and external audio for ${referer}`, async () => {
+    const requests = [];
+    const proxy = loadProxy(async (url, init) => {
+      requests.push({ url, init });
+      return new Response(master);
+    });
+    const result = await proxy.resolveToMediaPlaylist("https://cdn.example/master.m3u8", referer);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].init.headers.Referer, referer);
+    assert.equal(requests[0].init.credentials, "omit");
+    assert.equal(result.text, master);
+    const rewritten = proxy.rewritePlaylist(result.text, result.baseUrl, referer, 8771);
+    assert.match(rewritten, /RESOLUTION=3840x2160,VIDEO-RANGE=PQ/);
+    assert.match(rewritten, /hvc1\.2\.4\.L150\.B0/);
+    assert.match(rewritten, /TYPE=AUDIO,GROUP-ID="audio",URI="http:\/\/127\.0\.0\.1:8771\/m\?mid=\d+"/);
+    assert.equal(rewritten.match(/#EXT-X-STREAM-INF/g).length, 2);
   });
-  const result = await proxy.resolveToMediaPlaylist("https://cdn.example/master.m3u8", "https://cinejoy.to/");
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].init.headers.Referer, "https://cinejoy.to/");
-  assert.equal(requests[0].init.credentials, "omit");
-  assert.equal(result.text, master);
-  const rewritten = proxy.rewritePlaylist(result.text, result.baseUrl, "https://cinejoy.to/", 8771);
-  assert.match(rewritten, /RESOLUTION=3840x2160,VIDEO-RANGE=PQ/);
-  assert.match(rewritten, /hvc1\.2\.4\.L150\.B0/);
-  assert.match(rewritten, /TYPE=AUDIO,GROUP-ID="audio",URI="http:\/\/127\.0\.0\.1:8771\/m\?mid=\d+"/);
-  assert.equal(rewritten.match(/#EXT-X-STREAM-INF/g).length, 2);
-});
+}
 
 test("other embeds retain the existing highest-variant workaround", async () => {
   const requests = [];

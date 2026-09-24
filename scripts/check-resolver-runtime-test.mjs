@@ -67,12 +67,12 @@ test("shared deployed entrypoint dispatches CineJoy pins without the generic pla
   // An extensionless result must reach Rust's manifest validator unchanged.
   await writeFile(join(runtimeDir, "lib/resolve-cinejoy-hls.mjs"), `
     export async function resolveCinejoy(watchUrl, server, timeoutMs) {
-      return { playbackUrl: "https://lol.movieboxnoob.cc/content?v=test",
-        referer: "https://cinejoy.to/", watchUrl, server, timeoutMs };
+      return { playbackUrl: "https://asm.solarpanelcleaning.cc/content?v=test",
+        referer: "https://cinejoy.pk/", watchUrl, server, timeoutMs };
     }
   `);
   for (const server of ["", "NEBULA", "SOLARA"]) {
-    const watchUrl = "https://cinejoy.to/watch/tv/1396/1/2";
+    const watchUrl = "https://cinejoy.pk/watch/tv/1396/1/2";
     const result = spawnSync(process.execPath,
       [join(runtimeDir, "resolve-external-embed-hls.mjs"), watchUrl], {
         encoding: "utf8", timeout: 5000,
@@ -81,8 +81,8 @@ test("shared deployed entrypoint dispatches CineJoy pins without the generic pla
       });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), {
-      playbackUrl: "https://lol.movieboxnoob.cc/content?v=test",
-      referer: "https://cinejoy.to/", watchUrl,
+      playbackUrl: "https://asm.solarpanelcleaning.cc/content?v=test",
+      referer: "https://cinejoy.pk/", watchUrl,
       server: server || "LISBON", timeoutMs: 12345,
     });
   }

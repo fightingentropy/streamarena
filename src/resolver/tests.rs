@@ -629,11 +629,11 @@ fn cinejoy_sources_have_unique_pins_and_only_lisbon_is_an_automatic_fallback() {
         );
         assert_eq!(
             external_embed_url(source, &metadata).as_deref(),
-            Some("https://cinejoy.to/watch/movie/1368166")
+            Some("https://cinejoy.pk/watch/movie/1368166")
         );
         assert_eq!(
             external_embed_url(source, &sample_tv_metadata()).as_deref(),
-            Some("https://cinejoy.to/watch/tv/76331/1/1")
+            Some("https://cinejoy.pk/watch/tv/76331/1/1")
         );
         assert_eq!(
             external_embed_source_for_source_hash(
@@ -750,8 +750,8 @@ fn resolved_embed_cache_separates_servers_and_refreshes_only_the_selected_title(
         let entry = CachedResolvedEmbed {
             source,
             playback_url: "https://up.example/p.m3u8?auth=tok".to_owned(),
-            referer: Some("https://cinejoy.to/".to_owned()),
-            embed_url: "https://cinejoy.to/watch/tv/1396/1/2".to_owned(),
+            referer: Some("https://cinejoy.pk/".to_owned()),
+            embed_url: "https://cinejoy.pk/watch/tv/1396/1/2".to_owned(),
             cached_at_ms: now_ms(),
         };
         cache.store(key.clone(), entry);
@@ -1320,10 +1320,10 @@ fn external_embed_hls_resolver_accepts_public_playlist_hosts() {
     assert!(is_supported_external_embed_hls_embed_url(&vidlink_embed));
     for path in ["watch/movie/1368166", "watch/tv/76331/1/1"] {
         assert!(is_supported_external_embed_hls_embed_url(
-            &format!("https://cinejoy.to/{path}").parse().unwrap()
+            &format!("https://cinejoy.pk/{path}").parse().unwrap()
         ));
         assert!(!is_supported_external_embed_hls_embed_url(
-            &format!("https://cinejoy.to.evil.test/{path}")
+            &format!("https://cinejoy.pk.evil.test/{path}")
                 .parse()
                 .unwrap()
         ));

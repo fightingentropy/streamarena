@@ -410,7 +410,7 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
         // Reference base only — the real install URL (with its private token) is
         // supplied via the NEBULA_ADDON_BASE env var and never shown/stored here.
         ("nebula", "NebulaStreams", "https://nebula.work.gd"),
-        ("cinejoy", "CineJoy", "https://cinejoy.to"),
+        ("cinejoy", "CineJoy", "https://cinejoy.pk"),
     ];
     for (id, label, base) in EMBED_BASES.iter().copied() {
         out.push(ProviderInfo {

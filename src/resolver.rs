@@ -5846,7 +5846,7 @@ fn is_supported_external_embed_hls_embed_url(url: &Url) -> bool {
         return false;
     };
     match host.as_str() {
-        "cinejoy.to" => {
+        "cinejoy.pk" => {
             url.path().starts_with("/watch/movie/") || url.path().starts_with("/watch/tv/")
         }
         "player.videasy.net" => url.path().starts_with("/movie/") || url.path().starts_with("/tv/"),

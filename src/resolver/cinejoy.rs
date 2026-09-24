@@ -16,13 +16,13 @@ fn valid_playlist(url: &Url, server: &str) -> bool {
         .filter(|part| !part.is_empty())
         .collect();
     match (server, url.host_str()) {
-        ("LISBON", Some("info.movieboxnoob.cc")) => {
+        ("LISBON", Some("ok.solarpanelcleaning.cc")) => {
             parts.len() == 2 && parts[0] == "playlist" && parts[1].ends_with(".m3u8")
         }
         ("NEBULA", Some("nebula.bright67.online")) => {
             parts.len() == 3 && parts[0] == "hls" && parts[2] == "master.m3u8"
         }
-        ("SOLARA", Some("lol.movieboxnoob.cc")) => {
+        ("SOLARA", Some("asm.solarpanelcleaning.cc")) => {
             url.path() == "/content"
                 && url
                     .query_pairs()
@@ -46,7 +46,7 @@ pub(super) async fn validate(
     let resolved = super::validate_external_embed_hls_playlist(
         client,
         url.as_str(),
-        Some("https://cinejoy.to/"),
+        Some("https://cinejoy.pk/"),
         timeout_ms.min(8000),
     )
     .await?;
@@ -61,12 +61,15 @@ mod tests {
     #[test]
     fn cinejoy_playlists_are_server_bound_and_reject_untrusted_urls() {
         let cases = [
-            ("LISBON", "https://info.movieboxnoob.cc/playlist/test.m3u8"),
+            (
+                "LISBON",
+                "https://ok.solarpanelcleaning.cc/playlist/test.m3u8",
+            ),
             (
                 "NEBULA",
                 "https://nebula.bright67.online/hls/test/master.m3u8",
             ),
-            ("SOLARA", "https://lol.movieboxnoob.cc/content?v=test"),
+            ("SOLARA", "https://asm.solarpanelcleaning.cc/content?v=test"),
         ];
         for (server, value) in cases {
             let url = Url::parse(value).unwrap();
@@ -80,7 +83,7 @@ mod tests {
             assert!(!valid_playlist(&malicious, server));
         }
         assert!(!valid_playlist(
-            &Url::parse("https://lol.movieboxnoob.cc/content").unwrap(),
+            &Url::parse("https://asm.solarpanelcleaning.cc/content").unwrap(),
             "SOLARA"
         ));
     }

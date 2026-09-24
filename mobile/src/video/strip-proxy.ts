@@ -366,7 +366,7 @@ async function resolveToMediaPlaylist(startUrl: string, referer: string): Promis
     const text = await fetchText(url, referer);
     // CineJoy carries audio in separate renditions. Flattening its master to a
     // video-only playlist discards those tracks and the adaptive 4K/HDR ladder.
-    if (referer === "https://cinejoy.to/") return { text, baseUrl: url };
+    if (referer === "https://cinejoy.pk/" || referer === "https://cinejoy.to/") return { text, baseUrl: url };
     if (!text.includes("#EXT-X-STREAM-INF")) return { text, baseUrl: url };
     const next = pickBestVariant(text, url);
     if (!next || next === url) return { text, baseUrl: url };

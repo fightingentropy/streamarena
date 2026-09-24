@@ -5,17 +5,17 @@ import { CINEJOY_SERVERS, isCinejoyWatchUrl, isCinejoyPlaylistUrl,
   isCinejoySupportRequest, selectCinejoyServer } from "./lib/cinejoy-policy.mjs";
 
 test("watch routes require an exact origin and numeric movie or episode identity", () => {
-  for (const path of ["movie/27205", "tv/1396/1/2"]) assert.ok(isCinejoyWatchUrl(`https://cinejoy.to/watch/${path}`));
-  for (const url of ["http://cinejoy.to/watch/movie/1", "https://cinejoy.to.evil.test/watch/movie/1",
-    "https://user:pass@cinejoy.to/watch/movie/1", "https://cinejoy.to:8443/watch/movie/1",
-    "https://cinejoy.to/watch/tv/1/0/1", "https://cinejoy.to/watch/movie/1?server=x",
-    "https://127.0.0.1/watch/movie/1", "https://cinejoy.to/watch/movie/abc"]) assert.ok(!isCinejoyWatchUrl(url), url);
+  for (const path of ["movie/27205", "tv/1396/1/2"]) assert.ok(isCinejoyWatchUrl(`https://cinejoy.pk/watch/${path}`));
+  for (const url of ["http://cinejoy.pk/watch/movie/1", "https://cinejoy.pk.evil.test/watch/movie/1", "https://cinejoy.to/watch/movie/1",
+    "https://user:pass@cinejoy.pk/watch/movie/1", "https://cinejoy.pk:8443/watch/movie/1",
+    "https://cinejoy.pk/watch/tv/1/0/1", "https://cinejoy.pk/watch/movie/1?server=x",
+    "https://127.0.0.1/watch/movie/1", "https://cinejoy.pk/watch/movie/abc"]) assert.ok(!isCinejoyWatchUrl(url), url);
 });
 
 test("each pinned server accepts only its own master, never segments or another server", () => {
-  const urls = { LISBON: "https://info.movieboxnoob.cc/playlist/abc.m3u8",
+  const urls = { LISBON: "https://ok.solarpanelcleaning.cc/playlist/abc.m3u8",
     NEBULA: "https://nebula.bright67.online/hls/abc/master.m3u8",
-    SOLARA: "https://lol.movieboxnoob.cc/content?v=abc" };
+    SOLARA: "https://asm.solarpanelcleaning.cc/content?v=abc" };
   for (const [server, url] of Object.entries(urls)) {
     for (const key of Object.keys(CINEJOY_SERVERS)) assert.equal(isCinejoyPlaylistUrl(url, key), key === server);
     assert.ok(!isCinejoyPlaylistUrl(url.replace("https://", "https://user:secret@"), server));
@@ -23,9 +23,11 @@ test("each pinned server accepts only its own master, never segments or another 
     malicious.hostname += ".evil.test";
     assert.ok(!isCinejoyPlaylistUrl(malicious.href, server));
   }
-  assert.ok(!isCinejoyPlaylistUrl("https://info.movieboxnoob.cc/video/id/video_1080p.m3u8", "LISBON"));
-  assert.ok(!isCinejoyPlaylistUrl("https://lol.movieboxnoob.cc/s?segment=x", "SOLARA"));
-  assert.ok(!isCinejoyPlaylistUrl("https://lol.movieboxnoob.cc/content", "SOLARA"));
+  assert.ok(!isCinejoyPlaylistUrl("https://ok.solarpanelcleaning.cc/video/id/video_1080p.m3u8", "LISBON"));
+  assert.ok(!isCinejoyPlaylistUrl("https://asm.solarpanelcleaning.cc/s?segment=x", "SOLARA"));
+  assert.ok(!isCinejoyPlaylistUrl("https://asm.solarpanelcleaning.cc/content", "SOLARA"));
+  assert.ok(!isCinejoyPlaylistUrl("https://info.movieboxnoob.cc/playlist/old.m3u8", "LISBON"));
+  assert.ok(!isCinejoyPlaylistUrl("https://lol.movieboxnoob.cc/content?v=old", "SOLARA"));
 });
 
 function fakeBrowser({ unavailable = false, timeout = false } = {}) {
@@ -43,9 +45,9 @@ function fakeBrowser({ unavailable = false, timeout = false } = {}) {
     on() {}, route: async (_, callback) => { handler = callback; },
     goto: async () => {
       if (timeout) return;
-      await request("https://api.shegu.st/servers");
+      await request("https://api.wing.st/servers");
       if (unavailable) return;
-      await request("https://info.movieboxnoob.cc/playlist/wrong.m3u8");
+      await request("https://ok.solarpanelcleaning.cc/playlist/wrong.m3u8");
       await request("https://nebula.bright67.online/hls/test/segment.ts", "media");
       await request("https://nebula.bright67.online/hls/test/master.m3u8");
     },
@@ -57,11 +59,11 @@ function fakeBrowser({ unavailable = false, timeout = false } = {}) {
 
 test("resolver pins the server, aborts every media request, and closes the browser", async () => {
   const fake = fakeBrowser();
-  const result = await resolveCinejoy("https://cinejoy.to/watch/movie/27205", "NEBULA", 1000, fake.load);
+  const result = await resolveCinejoy("https://cinejoy.pk/watch/movie/27205", "NEBULA", 1000, fake.load);
   assert.equal(result.playbackUrl, "https://nebula.bright67.online/hls/test/master.m3u8");
-  assert.equal(result.referer, "https://cinejoy.to/");
+  assert.equal(result.referer, "https://cinejoy.pk/");
   assert.deepEqual(fake.state.selected, { servers: [{ name: "Nebula", status: "ok" }] });
-  assert.deepEqual(fake.state.fetched, ["https://api.shegu.st/servers"]);
+  assert.deepEqual(fake.state.fetched, ["https://api.wing.st/servers"]);
   assert.equal(fake.state.continued.length, 0);
   assert.equal(fake.state.aborted.length, 3);
   assert.equal(fake.state.closed, 1);
@@ -70,7 +72,7 @@ test("resolver pins the server, aborts every media request, and closes the brows
 test("unavailable servers and timeout close the browser without switching providers", async () => {
   for (const scenario of [{ unavailable: true }, { timeout: true }]) {
     const fake = fakeBrowser(scenario);
-    await assert.rejects(resolveCinejoy("https://cinejoy.to/watch/movie/27205", "NEBULA", 1000, fake.load));
+    await assert.rejects(resolveCinejoy("https://cinejoy.pk/watch/movie/27205", "NEBULA", 1000, fake.load));
     assert.equal(fake.state.closed, 1);
     assert.equal(fake.state.selected, null);
   }
@@ -80,17 +82,18 @@ test("discovery is pinned and unknown or unavailable servers fail closed", () =>
   const servers = Object.values(CINEJOY_SERVERS).map(name => ({ name, status: "ok" }));
   assert.deepEqual(selectCinejoyServer({ servers }, "NEBULA"), { servers: [servers[1]] });
   assert.throws(() => selectCinejoyServer({ servers }, "UNKNOWN"));
+  assert.throws(() => selectCinejoyServer({ servers: [{ name: "Athens", status: "ok" }] }, "ATHENS"));
   assert.throws(() => selectCinejoyServer({ servers: [{ name: "Lisbon", status: "down" }] }, "LISBON"));
 });
 
 test("browser egress allows essential discovery only, with no media or analytics", () => {
-  assert.ok(isCinejoySupportRequest("https://api.shegu.st/g", "fetch", "POST"));
-  assert.ok(isCinejoySupportRequest("https://api.shegu.st/crush.wasm", "fetch"));
-  assert.ok(isCinejoySupportRequest("https://cinejoy.to/_app/immutable/entry/app.hash.js", "script"));
+  assert.ok(isCinejoySupportRequest("https://api.wing.st/g", "fetch", "POST"));
+  assert.ok(isCinejoySupportRequest("https://api.wing.st/crush.wasm", "fetch"));
+  assert.ok(isCinejoySupportRequest("https://cinejoy.pk/_app/immutable/entry/app.hash.js", "script"));
   assert.ok(isCinejoySupportRequest("https://api.themoviedb.org/3/movie/1", "fetch"));
-  for (const url of ["https://a.shegu.st/api/event", "https://api.shegu.st/unknown",
-    "https://127.0.0.1/private", "https://api.shegu.st.evil.test/g",
-    "https://info.movieboxnoob.cc/video/id/segment.html", "https://flagsapi.com/US/flat/64.png"]) {
+  for (const url of ["https://a.wing.st/api/event", "https://api.shegu.st/servers", "https://api.wing.st/unknown",
+    "https://127.0.0.1/private", "https://api.wing.st.evil.test/g",
+    "https://ok.solarpanelcleaning.cc/video/id/segment.html", "https://flagsapi.com/US/flat/64.png"]) {
     assert.ok(!isCinejoySupportRequest(url, "fetch", "GET"));
   }
 });

@@ -537,7 +537,7 @@ async function resolveWithPlaywrightBrowser() {
 
 if (!isSupportedEmbedUrl(embedUrl)) {
   console.error(
-    "Usage: resolve-external-embed-hls.mjs https://player.videasy.to/... | https://player.videasy.net/... | https://vidlink.pro/... | https://cinejoy.to/watch/...",
+    "Usage: resolve-external-embed-hls.mjs https://player.videasy.to/... | https://player.videasy.net/... | https://vidlink.pro/... | https://cinejoy.pk/watch/...",
   );
   process.exit(2);
 }

@@ -398,9 +398,9 @@ pub(super) fn external_embed_url(
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
         ("vidlink", "movie") => Some(format!("https://vidlink.pro/movie/{tmdb_id}")),
-        ("cinejoy", "movie") => Some(format!("https://cinejoy.to/watch/movie/{tmdb_id}")),
+        ("cinejoy", "movie") => Some(format!("https://cinejoy.pk/watch/movie/{tmdb_id}")),
         ("cinejoy", "tv") => Some(format!(
-            "https://cinejoy.to/watch/tv/{}/{}/{}",
+            "https://cinejoy.pk/watch/tv/{}/{}/{}",
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
         ("vidlink", "tv") => Some(format!(
