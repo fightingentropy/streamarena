@@ -134,17 +134,18 @@ Playback flow for TMDB titles:
 1. The player reads URL params such as `tmdbId`, `mediaType`, `title`, `year`, `seasonNumber`, `episodeNumber`, `audioLang`, `quality`, `subtitleLang`, `sourceHash`, and `sessionKey`.
 2. It applies stored quality/audio/subtitle preferences and remembered continue-watching source state.
 3. It calls `/api/resolve/movie` or `/api/resolve/tv`.
-4. For default unpinned TMDB playback, the resolver ranks native HLS providers by quality and learned health, starts with VidLink on a neutral install, then quickly rotates through VidRock, NoTorrent, VixSrc, LordFlix, and VidEasy sources when a provider fails. Providers with poor health are skipped from auto-fallback; Icefy remains manually selectable only.
+4. For default unpinned TMDB playback, the resolver starts with the highest-ranked eligible native HLS source using the same provider rank and learned health as the Server menu. Admin rank overrides apply to automatic selection as well as the menu. If a candidate fails or stalls, the resolver races subsequent eligible candidates with a staggered start. Unhealthy and manual-only sources are excluded from automatic selection; explicit source selections remain pinned.
 5. The player probes tracks when needed through `/api/media/tracks`, selects audio/subtitle streams, and chooses direct, HLS, remux, local torrent, or local cache playback.
 6. If the external HLS path fails in the browser, the player retries with `skipExternalEmbed=1`. Torrentio/Torznab sources are considered whenever the user enables Torrent streaming or explicitly enables Real-Debrid with a saved token. Standalone Torrent streaming resolves magnets through the Mini's local torrent engine; Real-Debrid remains an optional direct-download accelerator.
 7. Playback progress is stored locally for responsiveness and synced to `/api/user/watch-progress`, `/api/user/continue-watching`, and `/api/session/progress` when enabled.
 
 External movie/TV embed stack:
 
-- Default neutral order: VidLink native HLS -> VidRock native HLS -> NoTorrent native HLS -> VixSrc native HLS -> LordFlix native HLS -> VidEasy native HLS. Provider/source health is recorded from resolver and playback success/failure events, so healthier sources move up over time and unhealthy ones are skipped from auto-fallback. Enabling Torrent streaming makes Torrentio/Torznab magnet sources eligible without Real-Debrid and prioritizes the Mini's local torrent engine for automatic playback.
+- Native HLS source order comes from measured provider tiers, admin overrides, and learned health. The [current-domain benchmark](docs/benchmarks/hls-providers-2026-09-24.json) places CineJoy Lisbon first for consistent 1080-class playback (2200), then faster-starting VixSrc (1800), CineJoy Solara (1600), CineJoy Nebula (1400), and VidLink (1000). Other built-ins share 500 and custom providers default to 300; no measured order is inferred among unsuccessful sources. Current CineJoy results supersede its obsolete-domain baseline failures. Automatic playback follows this order among eligible sources; Solara and Nebula remain manual choices. The first candidate gets a 2.5-second exclusive resolve window, then later candidates hedge every 1.2 seconds; a failed attempt advances immediately. Explicit pins and local-torrent timing are unchanged.
+- Variants inherit their family's baseline unless an explicit compiled server tier exists (currently CineJoy Nebula and Solara). An admin family rank shifts every server equally, preserving each compiled server offset; advertised quality labels do not boost the score. Equal scores put automatically eligible sources first, then use alphabetical display order within each group; this does not imply a measured reliability difference. External source rows expose `automaticFallbackEligible` from the existing eligibility and health rules so mobile recovery can skip manual-only or unhealthy sources while keeping them selectable. Provider/source health is recorded from resolver and playback success/failure events, so healthier sources move up over time and unhealthy ones are skipped from auto-fallback. Enabling Torrent streaming makes Torrentio/Torznab magnet sources eligible without Real-Debrid and prioritizes the Mini's local torrent engine for automatic playback.
 - Selectable sources include VidLink, VidRock, NoTorrent, VixSrc, LordFlix, Icefy, the VidEasy default source, and VidEasy server sources Yoru, Neon, Cypher, Sage, Breach, Vyse, and Raze, with original/alternate audio hints shown in the player server menu. Selected movie/TV external sources must resolve to native HLS; the resolver does not hand off to the provider iframe.
 - VidEasy embeds are built from `https://player.videasy.to/movie/...` or `/tv/...`; the legacy `player.videasy.net` redirect is still accepted by the resolver. Extracted HLS playlists are accepted on public HTTPS hosts discovered by the trusted resolver.
-- CineJoy **Lisbon** is the default for movies and series on web and iPhone, including accounts with Real-Debrid enabled. Explicit source selections take precedence. Automatic startup resolves Lisbon without racing another provider against it; normal playback recovery still handles unavailable streams. **Nebula** and **Solara** are manual choices sharing the same provider budget, cache, health, and admin controls (`embed:cinejoy:enabled` / `embed:cinejoy:rank`). CineJoy Nebula is separate from the configured NebulaStreams addon.
+- CineJoy **Lisbon** participates in ranked automatic playback for movies and series on web and iPhone. **Nebula** and **Solara** remain manual choices sharing the same provider budget and admin controls (`embed:cinejoy:enabled` / `embed:cinejoy:rank`), with separate source identities and health records. Explicit selections resolve only the chosen server; automatic requests use the same ranked fallback policy as other providers. CineJoy Nebula is separate from the configured NebulaStreams addon.
 - CineJoy runs through the shared `resolve-external-embed-hls.mjs` entrypoint and its `lib/resolve-cinejoy-hls.mjs` adapter, using the existing Playwright installation, extraction switch, and deadline. The adapter pins one server, captures its master URL without downloading media, and closes Chromium. Rust checks the selected server's URL and validates `#EXTM3U` with the fixed CineJoy referer before signing the existing native HLS proxy path. The provider requires that referer, so playback stays proxied.
 - CineJoy currently uses `cinejoy.pk` and `api.wing.st` (verified 2026-09-25). Lisbon masters use `ok.solarpanelcleaning.cc/playlist/*.m3u8`, Nebula uses `nebula.bright67.online/hls/*/master.m3u8`, and Solara uses `asm.solarpanelcleaning.cc/content?v=...`. Generated requests use the `.pk` referer; existing signed `.to` playback retains its full-quality behavior. The upstream lists Athens, but no pinned Athens playlist has been verified, so it is not exposed yet.
 - CineJoy retains the source's full quality ladder, including 4K/HDR when available. The native Quality menu exposes browser-supported renditions; Auto remains adaptive. Signed child playlists and media requests retain the CineJoy referer. Other proxied providers keep the existing 1080p bandwidth cap.
@@ -690,6 +691,33 @@ Benchmarks:
 - `bun run bench:playback -- --source assets/videos/<file>.mp4 --max-startup-ms 5000` - browser playback benchmark with a startup gate.
 - `bun run bench:load -- --source assets/videos/<file>.mp4 --max-p95-ms 5000` - concurrent HLS benchmark with a segment-latency gate.
 - `bun run bench:resolve -- --tmdb-id <id> --max-p95-ms 30000` - concurrent resolver benchmark with a latency gate.
+
+The [24–25 September 2026 HLS study](docs/benchmarks/hls-providers-2026-09-24.json)
+retains each campaign phase separately. After deploying CineJoy's domain repair
+`32d6411`, a matched seven-title, four-source run at Auto recorded **28/28
+identity-verified video starts and 26/28 full playback-check passes**. Each attempt
+included five seconds of continuous proof and a 15-second steady window.
+
+- Lisbon passed 7/7 at 1080-class decoded output, with a 3.061-second median first
+  frame; VixSrc passed 7/7 at 720-class output, with a 1.999-second median.
+- Solara passed 7/7, with 1080-class output on five titles and 720-class on two,
+  at a 4.492-second median. Nebula started 7/7 but passed 5/7: Oppenheimer and Dune
+  buffered during steady playback. Its all-start median was 5.912 seconds and
+  observed maximum 26.342 seconds; counting only full passes would hide those
+  failures.
+- The repaired CineJoy results supersede its old-domain failures for ranking.
+  Other providers retain their unchanged-integration baseline evidence, including
+  VidLink's 2/10 full passes. Source-filtered runs validate their declared matrix
+  independently of the raw whole-inventory coverage gate.
+
+At this checkpoint the domain repair is deployed, while the selected priority
+update is pending deployment. Lisbon's forced-2160p Oppenheimer check, resumed at
+900 seconds, passed a separate 120-second steady window at **1920 × 1080**, with
+2,880 frames and zero drops or interruptions. The requested 2160p target was **not
+achieved**: the same headless Chromium supported AVC through MSE but reported the
+advertised HEVC/audio codec combination unsupported. The 4K/PQ playlist is
+preserved, but decoded 4K/HDR remains unverified. This validation is excluded from
+the Auto ranking statistics; these samples do not measure perceptual or audio fidelity.
 
 `bun run check` executes the deterministic benchmark contract check and a cold
 startup sample. Resolver and playback thresholds remain explicit live gates

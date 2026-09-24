@@ -191,31 +191,32 @@ pub fn custom_base(id: &str) -> Option<String> {
     })
 }
 
-/// Default ranking weight per embed provider — the de-facto reliability tier that
-/// drives the Server-menu order and the auto-pick/fallback order in the resolver
-/// (see `external_embed_source_availability_score`). Higher = preferred / shown
-/// first. Admins can override any of these live via `embed:<id>:rank`; live
-/// per-title health still nudges the final order by a capped amount on top of
-/// this baseline.
+/// Provider tiers shared by the Server menu and automatic native-HLS selection.
+/// Retesting the current CineJoy integration on seven movie/TV titles found
+/// Lisbon consistently delivered 1080-class playback, while VixSrc started
+/// faster at 720-class quality. Solara also passed every title but started more
+/// slowly; Nebula buffered on two titles. VidLink had narrower baseline coverage.
+/// Sources without verified playback share a fallback tier with no inferred order.
+/// These current-domain results supersede the obsolete CineJoy-domain failures.
+/// These weights express policy tiers, not latency or a probability of success.
+/// Evidence: `docs/benchmarks/hls-providers-2026-09-24.json`.
 ///
-/// Meridian ranks first: it's the most reliable native-HLS path in practice
-/// (TV + movies via aether resolve, origin streamed through our live proxy).
-/// LordFlix/VidRock follow for their off-uplink CDN direct-play. Flaky TLS /
-/// rate-limited providers (VidLink/VixSrc/Icefy) sit lower. Gallic is the
-/// movie-only aether sibling. NebulaStreams (Stremio addon, env-gated) ranks
-/// lowest — usable only for a subset of titles.
+/// Admin `embed:<id>:rank` overrides apply to the whole provider family. Learned
+/// health can reorder tied sources or demote a failing preferred source. The
+/// tier gaps exceed positive health nudges while remaining below the uncapped
+/// dead-source penalty; source eligibility and explicit pins are separate.
 pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
-    ("meridian", 1_800),
-    ("lordflix", 1_600),
-    ("vidrock", 1_400),
-    ("notorrent", 1_100),
-    ("vidlink", 950),
-    ("vixsrc", 800),
-    ("videasy", 700),
+    ("cinejoy", 2_200),
+    ("vixsrc", 1_800),
+    ("vidlink", 1_000),
+    ("meridian", 500),
+    ("lordflix", 500),
+    ("vidrock", 500),
+    ("notorrent", 500),
+    ("videasy", 500),
     ("icefy", 500),
-    ("gallic", 450),
-    ("nebula", 380),
-    ("cinejoy", 400),
+    ("gallic", 500),
+    ("nebula", 500),
 ];
 
 /// Compiled default ranking weight for an embed provider (custom providers get
@@ -234,6 +235,16 @@ pub fn embed_default_rank(id: &str) -> i64 {
         })
 }
 
+/// Compiled tier for an independently measured server. Other sources inherit the
+/// provider baseline; no relative order is inferred for unmeasured variants.
+pub fn embed_source_default_rank(id: &str, server: Option<&str>) -> i64 {
+    match (id, server) {
+        ("cinejoy", Some("NEBULA")) => 1_400,
+        ("cinejoy", Some("SOLARA")) => 1_600,
+        _ => embed_default_rank(id),
+    }
+}
+
 /// The admin rank override for an embed provider, if a valid one is set.
 pub fn embed_rank_override(id: &str) -> Option<i64> {
     get_override(&format!("embed:{id}:rank")).and_then(|raw| raw.trim().parse::<i64>().ok())
@@ -242,6 +253,21 @@ pub fn embed_rank_override(id: &str) -> Option<i64> {
 /// Effective ranking weight: the admin override if set, else the compiled default.
 pub fn embed_rank(id: &str) -> i64 {
     embed_rank_override(id).unwrap_or_else(|| embed_default_rank(id))
+}
+
+fn apply_embed_family_rank_override(family: i64, source: i64, rank_override: Option<i64>) -> i64 {
+    rank_override.unwrap_or(family) + (source - family)
+}
+
+/// An admin rank changes the family baseline while retaining each server's
+/// measured offset. This shifts every family member by the same amount without
+/// promoting a less reliable variant to the base server's compiled tier.
+pub fn embed_source_rank(id: &str, server: Option<&str>) -> i64 {
+    apply_embed_family_rank_override(
+        embed_default_rank(id),
+        embed_source_default_rank(id, server),
+        embed_rank_override(id),
+    )
 }
 
 /// What kind of write a key accepts, or `None` if it is not admin-writable.
@@ -533,14 +559,16 @@ mod tests {
 
     #[test]
     fn embed_rank_prefers_override_then_compiled_default() {
-        // Use a real embed id but restore it after so parallel tests that read the
-        // process-global store aren't affected.
-        let id = "vixsrc";
+        // A synthetic id keeps this process-global override isolated from resolver
+        // tests reading real providers in parallel.
+        let id = "test_fake_embed_rank_probe";
         assert_eq!(embed_rank(id), embed_default_rank(id));
         assert_eq!(embed_rank_override(id), None);
         set(&format!("embed:{id}:rank"), "1750");
         assert_eq!(embed_rank_override(id), Some(1750));
         assert_eq!(embed_rank(id), 1750);
+        assert_eq!(embed_source_rank(id, None), 1750);
+        assert_eq!(embed_source_rank(id, Some("NEBULA")), 1750);
         // A non-numeric override is ignored (falls back to the default).
         set(&format!("embed:{id}:rank"), "oops");
         assert_eq!(embed_rank_override(id), None);
@@ -548,6 +576,47 @@ mod tests {
         // Clearing restores the default.
         set(&format!("embed:{id}:rank"), "");
         assert_eq!(embed_rank(id), embed_default_rank(id));
+    }
+
+    #[test]
+    fn family_override_preserves_measured_variant_gaps_and_fallback_order() {
+        let family = embed_default_rank("cinejoy");
+        let reliable_other_provider = embed_default_rank("vixsrc");
+        for server in ["NEBULA", "SOLARA"] {
+            let variant = embed_source_default_rank("cinejoy", Some(server));
+            for override_rank in [None, Some(2_300), Some(0)] {
+                let base = apply_embed_family_rank_override(family, family, override_rank);
+                let manual = apply_embed_family_rank_override(family, variant, override_rank);
+                assert_eq!(base - manual, family - variant);
+                assert!(manual < reliable_other_provider);
+                assert_eq!(manual - variant, base - family);
+            }
+            // A large explicit admin promotion is intentional and still applies
+            // to the whole family, preserving each measured server's offset.
+            assert_eq!(
+                apply_embed_family_rank_override(family, variant, Some(10_000)),
+                10_000 + variant - family
+            );
+        }
+    }
+
+    #[test]
+    fn only_named_cinejoy_variants_have_independent_compiled_tiers() {
+        assert_eq!(embed_source_default_rank("cinejoy", Some("NEBULA")), 1_400);
+        assert_eq!(embed_source_default_rank("cinejoy", Some("SOLARA")), 1_600);
+        for id in EMBED_IDS {
+            assert_eq!(embed_source_default_rank(id, None), embed_default_rank(id));
+            for server in ["YORU", "RAZE", "UNMEASURED"] {
+                assert_eq!(
+                    embed_source_default_rank(id, Some(server)),
+                    embed_default_rank(id)
+                );
+            }
+        }
+        assert_eq!(
+            embed_source_default_rank("nebula", None),
+            embed_default_rank("nebula")
+        );
     }
 
     #[test]

@@ -9,11 +9,10 @@ use crate::error::ApiError;
 use crate::media::{AudioTrack, MediaProbe};
 
 use super::finalize_external_embed_payload;
-use super::race_staggered_first_success;
 use super::{
     BoxResolverAttempt, CachedResolvedEmbed, EXTERNAL_EMBED_HEDGE_STAGGER_MS,
-    FASTEST_PROVIDER_HEDGE_STAGGER, RealDebridRequestContext, RealDebridValidationControl,
-    ResolvedEmbedCache, acquire_owned_real_debrid_torrent_lease,
+    EXTERNAL_EMBED_INITIAL_GRACE_MS, FASTEST_PROVIDER_HEDGE_STAGGER, RealDebridRequestContext,
+    RealDebridValidationControl, ResolvedEmbedCache, acquire_owned_real_debrid_torrent_lease,
     authorize_real_debrid_lazy_hls_ticket, build_real_debrid_lazy_hls_playback_source_at,
     cache_reuse_provider_for_context, complete_real_debrid_attempt_with_lease,
     compute_external_embed_provider_rank_health_score, external_embed_resolve_cache_key,
@@ -61,6 +60,7 @@ use super::{
     torrent_playback_enabled, torznab_download_url_allowed, user_facing_real_debrid_error,
     validate_real_debrid_user_payload,
 };
+use super::{race_staggered_first_success, race_staggered_first_success_with_initial_grace};
 
 #[test]
 fn benchmark_exact_session_requires_healthy_hard_freshness_without_revalidation() {
@@ -511,6 +511,118 @@ async fn hedge_handles_empty_candidate_set() {
     assert_eq!(winner, None);
 }
 
+#[tokio::test(start_paused = true)]
+async fn initial_grace_keeps_a_healthy_preferred_source_exclusive() {
+    let started = Arc::new(StdMutex::new(Vec::new()));
+    let futures = vec![
+        hedge_attempt(
+            started.clone(),
+            0,
+            Duration::from_millis(2_100),
+            Some("preferred"),
+        ),
+        hedge_attempt(
+            started.clone(),
+            1,
+            Duration::from_millis(700),
+            Some("fallback"),
+        ),
+    ];
+    let winner = race_staggered_first_success_with_initial_grace(
+        futures,
+        Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
+        Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+    )
+    .await;
+    assert_eq!(winner, Some((0, "preferred")));
+    assert_eq!(*started.lock().unwrap(), vec![0]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn initial_grace_still_hedges_a_stalled_preferred_source() {
+    let started = Arc::new(StdMutex::new(Vec::new()));
+    let futures = vec![
+        hedge_attempt(started.clone(), 0, Duration::from_secs(10), Some("slow")),
+        hedge_attempt(
+            started.clone(),
+            1,
+            Duration::from_millis(700),
+            Some("fallback"),
+        ),
+    ];
+    let before = tokio::time::Instant::now();
+    let winner = race_staggered_first_success_with_initial_grace(
+        futures,
+        Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
+        Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+    )
+    .await;
+    assert_eq!(winner, Some((1, "fallback")));
+    assert_eq!(*started.lock().unwrap(), vec![0, 1]);
+    assert!(
+        (Duration::from_millis(3_200)..Duration::from_millis(3_220)).contains(&before.elapsed())
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn fast_failure_consumes_initial_grace_and_uses_normal_later_stagger() {
+    let started = Arc::new(StdMutex::new(Vec::new()));
+    let futures = vec![
+        hedge_attempt(started.clone(), 0, Duration::from_millis(100), None),
+        hedge_attempt(started.clone(), 1, Duration::from_secs(10), Some("slow")),
+        hedge_attempt(
+            started.clone(),
+            2,
+            Duration::from_millis(100),
+            Some("fallback"),
+        ),
+    ];
+    let before = tokio::time::Instant::now();
+    let winner = race_staggered_first_success_with_initial_grace(
+        futures,
+        Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
+        Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+    )
+    .await;
+    assert_eq!(winner, Some((2, "fallback")));
+    assert_eq!(*started.lock().unwrap(), vec![0, 1, 2]);
+    assert!(
+        (Duration::from_millis(1_400)..Duration::from_millis(1_420)).contains(&before.elapsed())
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_first_hedge_gets_the_longer_grace() {
+    let started = Arc::new(StdMutex::new(Vec::new()));
+    let futures = vec![
+        hedge_attempt(started.clone(), 0, Duration::from_secs(10), Some("slow")),
+        hedge_attempt(
+            started.clone(),
+            1,
+            Duration::from_secs(10),
+            Some("also slow"),
+        ),
+        hedge_attempt(
+            started.clone(),
+            2,
+            Duration::from_millis(500),
+            Some("fallback"),
+        ),
+    ];
+    let before = tokio::time::Instant::now();
+    let winner = race_staggered_first_success_with_initial_grace(
+        futures,
+        Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
+        Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+    )
+    .await;
+    assert_eq!(winner, Some((2, "fallback")));
+    assert_eq!(*started.lock().unwrap(), vec![0, 1, 2]);
+    assert!(
+        (Duration::from_millis(4_200)..Duration::from_millis(4_220)).contains(&before.elapsed())
+    );
+}
+
 #[tokio::test]
 async fn external_embed_health_recording_flag_controls_event_polling() {
     let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -646,24 +758,175 @@ fn cinejoy_sources_have_unique_pins_and_only_lisbon_is_an_automatic_fallback() {
 }
 
 #[test]
-fn meridian_ranks_first_and_gallic_stays_a_lower_fallback() {
-    let movie = sample_resolve_metadata("movie", "872585", 0, 0);
-    let meridian = external_embed_provider("meridian");
-    let gallic = external_embed_provider("gallic");
-
-    for source in [meridian, gallic] {
-        assert!(is_external_embed_hls_capable_source(source));
-        assert!(is_default_external_embed_hls_fallback_source(source));
+fn measured_embed_rank_balances_quality_reliability_and_startup_without_label_bonuses() {
+    let metadata = sample_movie_metadata();
+    let health = HashMap::new();
+    let lisbon = external_embed_provider("cinejoy");
+    let top_rank = external_embed_source_rank_score(lisbon, &metadata, &health);
+    assert_eq!(top_rank, 2_200);
+    let summaries = build_external_embed_source_summaries(&metadata, &health);
+    assert_eq!(
+        summaries
+            .iter()
+            .take(5)
+            .map(|source| (source.primary.as_str(), source.score - 1_000_000))
+            .collect::<Vec<_>>(),
+        vec![
+            ("CineJoy Lisbon", 2_200),
+            ("VixSrc", 1_800),
+            ("CineJoy Solara", 1_600),
+            ("CineJoy Nebula", 1_400),
+            ("VidLink", 1_000)
+        ],
+    );
+    let vidlink_rank =
+        external_embed_source_rank_score(external_embed_provider("vidlink"), &metadata, &health);
+    assert_eq!(vidlink_rank, 1_000);
+    assert!(
+        top_rank > 1_800 + 150,
+        "positive health cannot erase the tier gap"
+    );
+    assert!(vidlink_rank > 500 + 150);
+    for source in external_embed_sources() {
+        if matches!(source.provider.id, "cinejoy" | "vixsrc" | "vidlink")
+            || crate::provider_registry::is_custom(source.provider.id)
+        {
+            continue;
+        }
+        assert_eq!(
+            external_embed_source_rank_score(source, &metadata, &health),
+            500,
+            "unverified source must share the fallback tier: {source:?}",
+        );
     }
 
-    let health = HashMap::new();
-    let meridian_rank = external_embed_source_rank_score(meridian, &movie, &health);
-    let lordflix_rank =
-        external_embed_source_rank_score(external_embed_provider("lordflix"), &movie, &health);
-    let icefy_rank =
-        external_embed_source_rank_score(external_embed_provider("icefy"), &movie, &health);
-    assert!(meridian_rank > lordflix_rank);
-    assert!(external_embed_source_rank_score(gallic, &movie, &health) < icefy_rank);
+    let improved_fallback_health = external_embed_sources()
+        .into_iter()
+        .filter(|source| *source != lisbon)
+        .map(|source| (external_embed_source_hash(source, &metadata), 150))
+        .collect();
+    assert_eq!(
+        default_external_embed_source(&metadata, &improved_fallback_health),
+        Some(lisbon),
+    );
+    assert_eq!(
+        build_external_embed_source_summaries(&metadata, &improved_fallback_health)[0].sourceHash,
+        external_embed_source_hash(lisbon, &metadata),
+    );
+}
+
+#[test]
+fn cinejoy_variant_tiers_reach_menu_without_changing_pins_or_health_scope() {
+    let metadata = sample_movie_metadata();
+    let sources = external_embed_sources()
+        .into_iter()
+        .filter(|source| source.provider.id == "cinejoy")
+        .collect::<Vec<_>>();
+    let nebula = *sources
+        .iter()
+        .find(|source| source.server.is_some_and(|server| server.id == "NEBULA"))
+        .unwrap();
+    let health = HashMap::from([(
+        external_embed_source_hash(nebula, &metadata),
+        SOURCE_HEALTH_AVOID_SCORE,
+    )]);
+    let summaries = build_external_embed_source_summaries(&metadata, &health);
+    for source in sources {
+        let hash = external_embed_source_hash(source, &metadata);
+        let tier = crate::provider_registry::embed_source_default_rank(
+            source.provider.id,
+            source.server.map(|server| server.id),
+        );
+        let adjustment = if source == nebula {
+            SOURCE_HEALTH_AVOID_SCORE
+        } else {
+            0
+        };
+        let summary = summaries
+            .iter()
+            .find(|summary| summary.sourceHash == hash)
+            .unwrap();
+        assert_eq!(summary.score, 1_000_000 + tier + adjustment);
+        assert_eq!(
+            summary.automaticFallbackEligible,
+            Some(source.server.is_none())
+        );
+        assert_eq!(
+            external_embed_hls_candidate_sources(source, &metadata, false, &health),
+            vec![source],
+            "manual pins survive independent tier and health changes",
+        );
+    }
+    let nebula_index = summaries
+        .iter()
+        .position(|summary| summary.sourceHash == external_embed_source_hash(nebula, &metadata))
+        .unwrap();
+    let vixsrc_index = summaries
+        .iter()
+        .position(|summary| summary.primary == "VixSrc")
+        .unwrap();
+    assert!(
+        vixsrc_index < nebula_index,
+        "a failed manual variant must not outrank a healthy provider"
+    );
+}
+
+#[test]
+fn external_source_summaries_mark_automatic_eligibility_and_order_tied_manual_choices_last() {
+    for metadata in [sample_movie_metadata(), sample_tv_metadata()] {
+        let vixsrc = external_embed_provider("vixsrc");
+        let unhealthy_hash = external_embed_source_hash(vixsrc, &metadata);
+        let health = HashMap::from([(unhealthy_hash.clone(), SOURCE_HEALTH_AVOID_SCORE)]);
+        let summaries = build_external_embed_source_summaries(&metadata, &health);
+        for summary in &summaries {
+            let source = external_embed_source_for_source_hash(&metadata, &summary.sourceHash)
+                .expect("source identity remains selectable");
+            let expected = is_default_external_embed_hls_fallback_source(source)
+                && summary.sourceHash != unhealthy_hash;
+            assert_eq!(summary.automaticFallbackEligible, Some(expected));
+            assert_eq!(
+                serde_json::to_value(summary).unwrap()["automaticFallbackEligible"],
+                expected,
+            );
+        }
+        let fallback_tier = summaries
+            .iter()
+            .filter(|summary| summary.score == 1_000_500)
+            .collect::<Vec<_>>();
+        let first_manual = fallback_tier
+            .iter()
+            .position(|summary| summary.automaticFallbackEligible == Some(false))
+            .expect("manual-only sources remain in the menu");
+        assert!(first_manual > 0);
+        assert!(
+            fallback_tier[..first_manual]
+                .iter()
+                .all(|summary| summary.automaticFallbackEligible == Some(true))
+        );
+        assert!(
+            fallback_tier[first_manual..]
+                .iter()
+                .all(|summary| summary.automaticFallbackEligible == Some(false))
+        );
+        for group in [
+            &fallback_tier[..first_manual],
+            &fallback_tier[first_manual..],
+        ] {
+            assert!(
+                group
+                    .windows(2)
+                    .all(|pair| pair[0].primary <= pair[1].primary)
+            );
+        }
+        assert!(
+            summaries.iter().any(|summary| summary.primary == "Raze"
+                && summary.automaticFallbackEligible == Some(false))
+        );
+        assert!(
+            summaries.iter().any(|summary| summary.primary == "Yoru"
+                && summary.automaticFallbackEligible == Some(true))
+        );
+    }
 }
 
 #[test]
@@ -835,54 +1098,52 @@ fn external_embed_sources_use_stable_hashes_and_hls_urls() {
     let health_scores = HashMap::new();
     let sources = build_external_embed_source_summaries(&metadata, &health_scores);
 
-    // Meridian leads, then LordFlix / VidRock, ahead of the flaky providers
-    // (VidLink/VixSrc/Icefy), with Gallic and the VidEasy variants trailing.
     assert_eq!(sources.len(), 19);
-    assert_eq!(sources[0].primary, "Meridian");
-    assert_eq!(sources[0].provider, "LivNet");
-    assert_eq!(sources[0].filename, "Meridian embed");
-    assert_eq!(sources[0].qualityLabel, "1080p");
-    assert_eq!(sources[0].container, "hls");
-    assert!(!sources[0].isTorrent);
-    assert_eq!(sources[0].releaseGroup, "Native HLS, TV + movies");
+    let winner = &sources[0];
+    assert_eq!(winner.primary, "CineJoy Lisbon");
+    assert_eq!(winner.provider, "LivNet");
+    assert_eq!(winner.filename, "CineJoy embed");
+    assert_eq!(winner.qualityLabel, "HLS");
+    assert_eq!(winner.container, "hls");
+    assert!(!winner.isTorrent);
+    assert_eq!(winner.releaseGroup, "CineJoy native HLS");
+    assert_eq!(normalize_source_hash(&winner.sourceHash), winner.sourceHash);
+
+    let cinejoy = external_embed_source_for_source_hash(&metadata, &winner.sourceHash)
+        .expect("matching external provider");
+    assert_eq!(cinejoy.provider.id, "cinejoy");
+    assert_eq!(cinejoy.server.map(|server| server.id), None);
+    assert!(external_embed_url(cinejoy, &metadata).is_some_and(|url| !url.is_empty()));
     assert_eq!(
-        normalize_source_hash(&sources[0].sourceHash),
-        sources[0].sourceHash
+        external_embed_source_hash(cinejoy, &metadata),
+        winner.sourceHash
     );
 
-    let meridian = external_embed_source_for_source_hash(&metadata, &sources[0].sourceHash)
-        .expect("matching external provider");
-    assert_eq!(meridian.provider.id, "meridian");
-    assert_eq!(meridian.server.map(|server| server.id), None);
-    assert!(external_embed_url(meridian, &metadata).is_some_and(|url| !url.is_empty()));
-    assert_eq!(
-        external_embed_source_hash(meridian, &metadata),
-        sources[0].sourceHash
-    );
-    // sources[1] is LordFlix; sources[2] VidRock (stable embed URL template).
-    let lordflix = external_embed_source_for_source_hash(&metadata, &sources[1].sourceHash)
-        .expect("matching lordflix provider");
-    assert_eq!(lordflix.provider.id, "lordflix");
-    let vidrock = external_embed_source_for_source_hash(&metadata, &sources[2].sourceHash)
+    let vidrock_summary = sources
+        .iter()
+        .find(|source| source.primary == "VidRock")
+        .unwrap();
+    let vidrock = external_embed_source_for_source_hash(&metadata, &vidrock_summary.sourceHash)
         .expect("matching vidrock provider");
     assert_eq!(vidrock.provider.id, "vidrock");
     assert_eq!(
         external_embed_url(vidrock, &metadata).unwrap(),
         "https://vidrock.net/movie/1368166"
     );
-    assert_eq!(sources[1].primary, "LordFlix");
-    assert_eq!(sources[2].primary, "VidRock");
-    assert_eq!(sources[3].primary, "NoTorrent");
-    assert_eq!(sources[4].primary, "VidLink");
-    assert_eq!(sources[5].primary, "VixSrc");
-    assert_eq!(sources[6].primary, "VidEasy");
-    assert_eq!(sources[6].provider, "LivNet");
-    assert_eq!(sources[6].filename, "VidEasy embed");
-    assert_eq!(sources[7].primary, "Icefy");
-    assert_eq!(sources[7].provider, "LivNet");
-    assert_eq!(sources[7].filename, "Icefy embed");
-    assert_eq!(sources[7].qualityLabel, "1080p");
-    assert_eq!(sources[7].releaseGroup, "Fast native HLS");
+    let videasy = sources
+        .iter()
+        .find(|source| source.primary == "VidEasy")
+        .unwrap();
+    assert_eq!(videasy.provider, "LivNet");
+    assert_eq!(videasy.filename, "VidEasy embed");
+    let icefy = sources
+        .iter()
+        .find(|source| source.primary == "Icefy")
+        .unwrap();
+    assert_eq!(icefy.provider, "LivNet");
+    assert_eq!(icefy.filename, "Icefy embed");
+    assert_eq!(icefy.qualityLabel, "1080p");
+    assert_eq!(icefy.releaseGroup, "Fast native HLS");
 
     let yoru_summary = sources
         .iter()
@@ -957,26 +1218,32 @@ fn external_embed_sources_use_stable_hashes_and_hls_urls() {
     assert_eq!(tv_sources.len(), 18);
     assert!(tv_sources.iter().any(|source| source.primary == "Meridian"));
     assert!(!tv_sources.iter().any(|source| source.primary == "Gallic"));
-    assert_eq!(tv_sources[0].primary, "Meridian");
+    assert_eq!(tv_sources[0].primary, "CineJoy Lisbon");
     assert_eq!(tv_sources[0].provider, "LivNet");
-    assert_eq!(tv_sources[1].primary, "LordFlix");
-    assert_eq!(tv_sources[2].primary, "VidRock");
 }
 
 #[test]
-fn default_external_embed_prefers_cinejoy_for_movies_and_tv_unless_pinned() {
+fn default_external_embed_follows_ranked_menu_for_movies_and_tv_unless_pinned() {
     let metadata = sample_movie_metadata();
     let health_scores = HashMap::new();
     let source =
         default_external_embed_source(&metadata, &health_scores).expect("default embed source");
     assert_eq!(source.provider.id, "cinejoy");
     assert_eq!(source.server.map(|server| server.id), None);
+    assert_eq!(
+        external_embed_source_hash(source, &metadata),
+        build_external_embed_source_summaries(&metadata, &health_scores)[0].sourceHash,
+    );
 
     let tv_metadata = sample_tv_metadata();
     let tv_source = default_external_embed_source(&tv_metadata, &health_scores)
         .expect("default tv embed source");
     assert_eq!(tv_source.provider.id, "cinejoy");
     assert_eq!(tv_source.server.map(|server| server.id), None);
+    assert_eq!(
+        external_embed_source_hash(tv_source, &tv_metadata),
+        build_external_embed_source_summaries(&tv_metadata, &health_scores)[0].sourceHash,
+    );
 
     let filters = ResolveFilters {
         source_hash: String::new(),
@@ -1023,8 +1290,8 @@ fn external_embed_payload_routes_playlists_via_worker_when_configured() {
         subtitle_lang: String::new(),
         quality: "auto".to_owned(),
     };
-    // LordFlix is used here as a direct-segment HLS fixture; CineJoy is the
-    // current default embed, so construct the source explicitly.
+    // Use LordFlix explicitly as a direct-segment HLS fixture, independent of
+    // the currently preferred provider.
     let lordflix = external_embed_provider("lordflix");
     assert_eq!(lordflix.provider.id, "lordflix");
 
@@ -1107,8 +1374,8 @@ fn external_embed_payload_routes_playlists_via_worker_when_configured() {
 fn default_external_embed_native_fallback_can_try_hls_sources() {
     let metadata = sample_movie_metadata();
     let health_scores = HashMap::new();
-    let source = external_embed_provider("meridian");
-    assert_eq!(source.provider.id, "meridian");
+    let source = external_embed_provider("cinejoy");
+    assert_eq!(source.provider.id, "cinejoy");
     assert_eq!(source.server.map(|server| server.id), None);
 
     let candidates = external_embed_hls_candidate_sources(source, &metadata, true, &health_scores);
@@ -1125,21 +1392,39 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(source_ids.first(), Some(&("meridian", "default")));
-    assert_eq!(source_ids.get(1), Some(&("lordflix", "default")));
-    assert_eq!(source_ids.get(2), Some(&("vidrock", "default")));
-    assert_eq!(source_ids.get(3), Some(&("notorrent", "default")));
-    assert_eq!(source_ids.get(4), Some(&("vidlink", "default")));
-    assert_eq!(source_ids.get(5), Some(&("vixsrc", "default")));
-    assert_eq!(source_ids.get(6), Some(&("videasy", "default")));
-    // Gallic (movie-only aether sibling) sits above the flaky VidEasy variants.
-    assert_eq!(source_ids.get(7), Some(&("gallic", "default")));
-    assert_eq!(source_ids.get(8), Some(&("cinejoy", "default")));
-    assert_eq!(source_ids.get(9), Some(&("videasy", "YORU")));
-    assert_eq!(source_ids.len(), 10);
+    assert_eq!(
+        source_ids,
+        vec![
+            ("cinejoy", "default"),
+            ("vixsrc", "default"),
+            ("vidlink", "default"),
+            ("gallic", "default"),
+            ("lordflix", "default"),
+            ("meridian", "default"),
+            ("notorrent", "default"),
+            ("videasy", "default"),
+            ("vidrock", "default"),
+            ("videasy", "YORU"),
+        ]
+    );
+    let eligible_menu_hashes = build_external_embed_source_summaries(&metadata, &health_scores)
+        .into_iter()
+        .filter(|summary| {
+            external_embed_source_for_source_hash(&metadata, &summary.sourceHash)
+                .is_some_and(is_default_external_embed_hls_fallback_source)
+        })
+        .map(|summary| summary.sourceHash)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|source| external_embed_source_hash(*source, &metadata))
+            .collect::<Vec<_>>(),
+        eligible_menu_hashes,
+    );
 
     let tv_metadata = sample_tv_metadata();
-    let tv_source = external_embed_provider("meridian");
+    let tv_source = external_embed_provider("cinejoy");
     let tv_candidates =
         external_embed_hls_candidate_sources(tv_source, &tv_metadata, true, &health_scores);
     let tv_source_ids = tv_candidates
@@ -1155,30 +1440,37 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(tv_source_ids.first(), Some(&("meridian", "default")));
-    assert_eq!(tv_source_ids.get(1), Some(&("lordflix", "default")));
-    assert_eq!(tv_source_ids.get(2), Some(&("vidrock", "default")));
-    assert_eq!(tv_source_ids.get(3), Some(&("notorrent", "default")));
-    assert_eq!(tv_source_ids.get(4), Some(&("vidlink", "default")));
-    assert_eq!(tv_source_ids.get(5), Some(&("vixsrc", "default")));
-    assert_eq!(tv_source_ids.get(6), Some(&("videasy", "default")));
-    assert_eq!(tv_source_ids.get(7), Some(&("cinejoy", "default")));
-    assert_eq!(tv_source_ids.get(8), Some(&("videasy", "YORU")));
-    assert_eq!(tv_source_ids.len(), 9);
+    assert_eq!(
+        tv_source_ids,
+        vec![
+            ("cinejoy", "default"),
+            ("vixsrc", "default"),
+            ("vidlink", "default"),
+            ("lordflix", "default"),
+            ("meridian", "default"),
+            ("notorrent", "default"),
+            ("videasy", "default"),
+            ("vidrock", "default"),
+            // Existing Yoru TV eligibility is unchanged; it remains behind base
+            // sources. Its movie-only hint was never a metadata-specific score rule.
+            ("videasy", "YORU"),
+        ]
+    );
 
-    let neon_source = external_embed_sources()
+    // Equal provider tiers must not promote manual-only variants (including
+    // Portuguese Raze and CineJoy Nebula/Solara) into automatic playback.
+    for manual_source in external_embed_sources()
         .into_iter()
-        .find(|source| {
-            source.provider.id == "videasy"
-                && source
-                    .server
-                    .map(|server| server.id == "NEON")
-                    .unwrap_or(false)
-        })
-        .expect("neon source");
-    let pinned_candidates =
-        external_embed_hls_candidate_sources(neon_source, &metadata, false, &health_scores);
-    assert_eq!(pinned_candidates, vec![neon_source]);
+        .filter(|source| !is_default_external_embed_hls_fallback_source(*source))
+    {
+        assert!(!candidates.contains(&manual_source));
+        assert!(!tv_candidates.contains(&manual_source));
+        assert_eq!(
+            external_embed_hls_candidate_sources(manual_source, &metadata, false, &health_scores),
+            vec![manual_source],
+            "explicit manual source must remain pinned: {manual_source:?}",
+        );
+    }
 }
 
 #[test]
@@ -1212,28 +1504,39 @@ fn external_embed_unhealthy_sources_skip_auto_fallback() {
 }
 
 #[test]
-fn external_embed_health_does_not_replace_the_cinejoy_default() {
+fn external_embed_health_changes_automatic_default_but_not_explicit_pins() {
     let metadata = sample_movie_metadata();
-    let mut health_scores = HashMap::new();
-    for source in external_embed_sources() {
-        if source.provider.id == "cinejoy" {
-            continue;
-        }
-        health_scores.insert(external_embed_source_hash(source, &metadata), 150);
-    }
-
-    // Rankings and old playback failures do not override the default. Only an
-    // actual failed attempt enters the player's normal source recovery.
+    let vixsrc = external_embed_provider("vixsrc");
     let cinejoy = external_embed_provider("cinejoy");
-    health_scores.insert(external_embed_source_hash(cinejoy, &metadata), -6_000);
+    let health_scores = HashMap::from([
+        (
+            external_embed_source_hash(vixsrc, &metadata),
+            SOURCE_HEALTH_AVOID_SCORE,
+        ),
+        (
+            external_embed_source_hash(cinejoy, &metadata),
+            SOURCE_HEALTH_AVOID_SCORE,
+        ),
+    ]);
     let source =
         default_external_embed_source(&metadata, &health_scores).expect("default embed source");
-    assert_eq!(source.provider.id, "cinejoy");
+    assert_eq!(source.provider.id, "vidlink");
     assert_eq!(source.server.map(|server| server.id), None);
+    let candidates = external_embed_hls_candidate_sources(cinejoy, &metadata, true, &health_scores);
+    assert_eq!(candidates.first(), Some(&source));
+    assert!(!candidates.contains(&vixsrc));
+    assert!(!candidates.contains(&cinejoy));
+    assert!(candidates.len() > 1);
     assert_eq!(
-        external_embed_hls_candidate_sources(source, &metadata, true, &health_scores),
+        external_embed_hls_candidate_sources(cinejoy, &metadata, false, &health_scores),
         vec![cinejoy],
-        "automatic CineJoy playback must not race another provider"
+        "an explicitly selected server must remain pinned despite its health score"
+    );
+
+    assert_eq!(
+        external_embed_hls_candidate_sources(vixsrc, &metadata, false, &health_scores),
+        vec![vixsrc],
+        "a failed preferred provider remains manually selectable",
     );
 
     let capped = compute_external_embed_rank_health_score(&SourceHealthStats {
@@ -1247,6 +1550,32 @@ fn external_embed_health_does_not_replace_the_cinejoy_default() {
         ..SourceHealthStats::default()
     });
     assert!(failed < SOURCE_HEALTH_AVOID_SCORE);
+}
+
+#[test]
+fn automatic_external_embed_does_not_revive_unhealthy_or_manual_only_sources() {
+    let metadata = sample_movie_metadata();
+    let health_scores = external_embed_sources()
+        .into_iter()
+        .filter(|source| is_default_external_embed_hls_fallback_source(*source))
+        .map(|source| {
+            (
+                external_embed_source_hash(source, &metadata),
+                SOURCE_HEALTH_AVOID_SCORE,
+            )
+        })
+        .collect();
+    assert!(default_external_embed_source(&metadata, &health_scores).is_none());
+    // Manual-only sources remain listed and selectable, but cannot silently
+    // become the default when every automatically eligible source is unhealthy.
+    let icefy = external_embed_provider("icefy");
+    assert_eq!(
+        external_embed_hls_candidate_sources(icefy, &metadata, false, &health_scores),
+        vec![icefy],
+    );
+    assert!(
+        external_embed_hls_candidate_sources(icefy, &metadata, true, &health_scores).is_empty()
+    );
 }
 
 #[test]
@@ -3338,6 +3667,13 @@ fn torznab_candidates_use_existing_filters_and_hash_pinning() {
     )
     .expect("torrent source summary");
     assert!(summary.isTorrent);
+    assert_eq!(summary.automaticFallbackEligible, None);
+    assert!(
+        serde_json::to_value(&summary)
+            .unwrap()
+            .get("automaticFallbackEligible")
+            .is_none()
+    );
     assert_eq!(summary.seeders, 80);
     assert_eq!(
         selected[0].infoHash,

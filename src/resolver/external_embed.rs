@@ -11,7 +11,6 @@ use super::{
 pub(in crate::resolver) struct ExternalEmbedProvider {
     pub(in crate::resolver) id: &'static str,
     pub(in crate::resolver) label: &'static str,
-    pub(in crate::resolver) priority: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +19,6 @@ pub(in crate::resolver) struct ExternalEmbedServer {
     pub(in crate::resolver) label: &'static str,
     pub(in crate::resolver) quality_label: &'static str,
     pub(in crate::resolver) detail_label: &'static str,
-    pub(in crate::resolver) priority: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,57 +31,46 @@ pub(super) const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
     ExternalEmbedProvider {
         id: "videasy",
         label: "VidEasy",
-        priority: 5,
     },
     ExternalEmbedProvider {
         id: "vidlink",
         label: "VidLink",
-        priority: 0,
     },
     ExternalEmbedProvider {
         id: "vidrock",
         label: "VidRock",
-        priority: 1,
     },
     ExternalEmbedProvider {
         id: "notorrent",
         label: "NoTorrent",
-        priority: 2,
     },
     ExternalEmbedProvider {
         id: "vixsrc",
         label: "VixSrc",
-        priority: 3,
     },
     ExternalEmbedProvider {
         id: "lordflix",
         label: "LordFlix",
-        priority: 4,
     },
     ExternalEmbedProvider {
         id: "icefy",
         label: "Icefy",
-        priority: 6,
     },
     ExternalEmbedProvider {
         id: "meridian",
         label: "Meridian",
-        priority: 7,
     },
     ExternalEmbedProvider {
         id: "gallic",
         label: "Gallic",
-        priority: 8,
     },
     ExternalEmbedProvider {
         id: "nebula",
         label: "NebulaStreams",
-        priority: 9,
     },
     ExternalEmbedProvider {
         id: "cinejoy",
         label: "CineJoy",
-        priority: 10,
     },
 ];
 
@@ -95,14 +82,12 @@ const CINEJOY_SERVERS: &[ExternalEmbedServer] = &[
         label: "CineJoy Nebula",
         quality_label: "HLS",
         detail_label: "CineJoy native HLS",
-        priority: 1,
     },
     ExternalEmbedServer {
         id: "SOLARA",
         label: "CineJoy Solara",
         quality_label: "HLS",
         detail_label: "CineJoy native HLS",
-        priority: 2,
     },
 ];
 
@@ -112,49 +97,42 @@ const VIDEASY_EXTERNAL_EMBED_SERVERS: &[ExternalEmbedServer] = &[
         label: "Yoru",
         quality_label: "4K",
         detail_label: "Movies only, may have 4K",
-        priority: 0,
     },
     ExternalEmbedServer {
         id: "NEON",
         label: "Neon",
         quality_label: "HLS",
         detail_label: "Original audio",
-        priority: 10,
     },
     ExternalEmbedServer {
         id: "CYPHER",
         label: "Cypher",
         quality_label: "HLS",
         detail_label: "Original audio",
-        priority: 11,
     },
     ExternalEmbedServer {
         id: "SAGE",
         label: "Sage",
         quality_label: "HLS",
         detail_label: "Original audio",
-        priority: 12,
     },
     ExternalEmbedServer {
         id: "BREACH",
         label: "Breach",
         quality_label: "HLS",
         detail_label: "Original audio",
-        priority: 13,
     },
     ExternalEmbedServer {
         id: "VYSE",
         label: "Vyse",
         quality_label: "HLS",
         detail_label: "Original audio",
-        priority: 14,
     },
     ExternalEmbedServer {
         id: "RAZE",
         label: "Raze",
         quality_label: "HLS",
         detail_label: "Portuguese audio",
-        priority: 15,
     },
 ];
 
@@ -193,6 +171,14 @@ pub(super) fn build_external_embed_source_summaries(
                 qualityLabel: external_embed_source_quality_label(source).to_owned(),
                 container: "hls".to_owned(),
                 isTorrent: false,
+                automaticFallbackEligible: Some(
+                    is_default_external_embed_hls_fallback_source(source)
+                        && is_external_embed_source_healthy_enough_for_fallback(
+                            source,
+                            metadata,
+                            health_scores,
+                        ),
+                ),
                 realDebridCached: false,
                 seeders: 0,
                 size: String::new(),
@@ -206,6 +192,11 @@ pub(super) fn build_external_embed_source_summaries(
         right
             .score
             .cmp(&left.score)
+            .then_with(|| {
+                right
+                    .automaticFallbackEligible
+                    .cmp(&left.automaticFallbackEligible)
+            })
             .then_with(|| left.primary.cmp(&right.primary))
     });
     sources
@@ -228,20 +219,12 @@ pub(super) fn default_external_embed_source(
     metadata: &ResolveMetadata,
     health_scores: &HashMap<String, i64>,
 ) -> Option<ExternalEmbedSource> {
-    // Automatic movie/TV playback starts on CineJoy Lisbon. Rankings and past
-    // playback failures must not turn another provider into the user's default.
-    external_embed_sources()
+    // Automatic startup and recovery share the menu's rank/health authority.
+    // Eligibility remains separate: manual-only or unhealthy sources must not
+    // become automatic choices just because they have a high display score.
+    preferred_external_embed_hls_sources(metadata, health_scores)
         .into_iter()
-        .find(|source| {
-            source.provider.id == "cinejoy"
-                && source.server.is_none()
-                && external_embed_url(*source, metadata).is_some()
-        })
-        .or_else(|| {
-            preferred_external_embed_hls_sources(metadata, health_scores)
-                .into_iter()
-                .next()
-        })
+        .next()
 }
 
 pub(super) fn preferred_external_embed_hls_sources(
@@ -278,10 +261,13 @@ pub(super) fn external_embed_source_rank_score(
     health_scores: &HashMap<String, i64>,
 ) -> i64 {
     let source_hash = external_embed_source_hash(source, metadata);
-    external_embed_source_availability_score(source)
-        + external_embed_source_quality_score(source)
-        + health_scores.get(&source_hash).copied().unwrap_or_default()
-        - external_embed_source_priority(source, metadata)
+    // Advertised quality labels are not measured playback quality. Explicit
+    // compiled server tiers retain their offset when an admin shifts the family;
+    // unmeasured variants keep equal scores and the shared display-name tie-break.
+    crate::provider_registry::embed_source_rank(
+        source.provider.id,
+        source.server.map(|server| server.id),
+    ) + health_scores.get(&source_hash).copied().unwrap_or_default()
 }
 
 pub(super) fn is_default_external_embed_hls_fallback_source(source: ExternalEmbedSource) -> bool {
@@ -323,43 +309,6 @@ pub(super) fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) 
             | "nebula"
             | "cinejoy"
     ) || crate::provider_registry::is_custom(source.provider.id)
-}
-
-fn external_embed_source_availability_score(source: ExternalEmbedSource) -> i64 {
-    // This is the de-facto reliability tier for the Server menu and the auto-pick/
-    // fallback order (it dominates external_embed_source_rank_score). The per-
-    // provider baseline lives in `provider_registry::EMBED_DEFAULT_RANK` (which
-    // documents the tier rationale) and is admin-overridable live via the Providers
-    // dashboard (`embed:<id>:rank`), so an operator can re-rank sources without a
-    // redeploy. The default Meridian->LordFlix gap (200) exceeds the +75 positive-
-    // health cap, so a transient good streak can't lift a lower tier above a higher
-    // one; only a genuine per-title failure (the uncapped -6000 penalty) demotes a
-    // source, at which point the staggered hedge races the next provider in.
-    //
-    // VidEasy's per-server variants stay a low fallback tier regardless of the
-    // provider weight — they only surface when the base providers miss.
-    if source.provider.id == "videasy" && source.server.is_some() {
-        return 150;
-    }
-    crate::provider_registry::embed_rank(source.provider.id)
-}
-
-fn external_embed_source_quality_score(source: ExternalEmbedSource) -> i64 {
-    match source.provider.id {
-        "videasy" if source.server.map(|server| server.id) == Some("YORU") => 600,
-        "vidlink" | "vidrock" | "notorrent" | "vixsrc" | "lordflix" => 400,
-        "videasy" if source.server.is_none() => 400,
-        "icefy" => 350,
-        // Meridian ~1080p (preferred default); Gallic advertises up to 2160p.
-        "meridian" => 400,
-        "gallic" => 400,
-        // Lowest-tier fallback; keeps Nebula just below meridian/gallic and above
-        // the flaky VidEasy server-variants in the rank ordering.
-        "nebula" => 350,
-        "cinejoy" => 350,
-        "videasy" => 300,
-        _ => 0,
-    }
 }
 
 pub(super) fn should_prefer_default_external_embed(
@@ -481,8 +430,8 @@ static CUSTOM_EMBED_PROVIDER_CACHE: LazyLock<
 > = LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
 
 /// `ExternalEmbedProvider` entries for the admin-registered custom Stremio addons,
-/// so they flow through the whole embed pipeline. Priority 10 keeps them below
-/// every compiled provider (0..=9); effective order is driven by `embed_rank`.
+/// so they flow through the whole embed pipeline with `embed_rank` controlling
+/// their position relative to built-in sources.
 fn custom_embed_providers() -> Vec<ExternalEmbedProvider> {
     crate::provider_registry::list_custom()
         .into_iter()
@@ -498,7 +447,6 @@ fn custom_embed_providers() -> Vec<ExternalEmbedProvider> {
             let entry = ExternalEmbedProvider {
                 id: Box::leak(provider.id.into_boxed_str()),
                 label: Box::leak(provider.label.into_boxed_str()),
-                priority: 10,
             };
             if let Ok(mut cache) = CUSTOM_EMBED_PROVIDER_CACHE.write() {
                 cache.insert(cache_key, entry);
@@ -542,45 +490,6 @@ fn external_embed_servers_for_provider(
         "cinejoy" => CINEJOY_SERVERS,
         _ => &[],
     }
-}
-
-fn external_embed_source_priority(source: ExternalEmbedSource, _metadata: &ResolveMetadata) -> i64 {
-    if source.provider.id == "cinejoy" {
-        return source.provider.priority + source.server.map(|server| server.priority).unwrap_or(0);
-    }
-    if source.provider.id == "vidlink" {
-        return 0;
-    }
-    if matches!(
-        source.provider.id,
-        "vidrock"
-            | "notorrent"
-            | "vixsrc"
-            | "lordflix"
-            | "icefy"
-            | "meridian"
-            | "gallic"
-            | "nebula"
-    ) && source.server.is_none()
-    {
-        return source.provider.priority;
-    }
-    if crate::provider_registry::is_custom(source.provider.id) && source.server.is_none() {
-        return source.provider.priority;
-    }
-    if source.provider.id == "videasy" && source.server.is_none() {
-        return source.provider.priority;
-    }
-    if source.provider.id == "videasy" {
-        return source
-            .server
-            .map(|server| 100 + server.priority)
-            .unwrap_or(150);
-    }
-    if let Some(server) = source.server {
-        return source.provider.priority * 100 + server.priority;
-    }
-    source.provider.priority * 100 + 50
 }
 
 fn external_embed_source_display_name(source: ExternalEmbedSource) -> String {

@@ -283,6 +283,7 @@ export type SourceSummary = {
   qualityLabel?: string;
   container?: string;
   isTorrent?: boolean;
+  automaticFallbackEligible?: boolean;
   seeders?: number;
   size?: string;
   releaseGroup?: string;

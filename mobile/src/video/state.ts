@@ -293,8 +293,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     }
   }
 
-  // Auto-advance to the next untried server from the full source list (lazily fetched —
-  // the same list the manual picker shows). Drives the stall watchdog and the exhausted
+  // Auto-advance to the next eligible untried server from the full source list
+  // (lazily fetched; manual choices remain visible). Drives the stall watchdog and the exhausted
   // error path: a dead/blocked/stego default server is skipped until one actually plays.
   // Bounded by triedHashes (each server tried at most once) so it can't loop.
   async function advanceToNextServer(message?: string) {
@@ -331,7 +331,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     }
     if (ac.signal.aborted) return;
 
-    const next = (list ?? []).find((src) => src.sourceHash && !tried.has(src.sourceHash));
+    const next = (list ?? []).find((src) =>
+      src.automaticFallbackEligible !== false && src.sourceHash && !tried.has(src.sourceHash),
+    );
     if (next?.sourceHash) {
       set({
         triedHashes: [...tried],

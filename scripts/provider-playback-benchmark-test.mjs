@@ -25,6 +25,7 @@ import {
   authAccountFromPayload,
   authAccountIdentifier,
   benchmarkFetchDecision,
+  benchmarkProgressReadPayload,
   buildDiscoveryReportEntry,
   buildProviderBenchmarkInitScript,
   chooseAuthenticatedCandidate,
@@ -34,6 +35,7 @@ import {
   classifyResolveResponsePayload,
   classifyResponseRole,
   computeGate,
+  completeVerifiedTrial,
   computeRequiredCoverage,
   createIsolatedAuthenticatedContext,
   createNetworkCapture,
@@ -42,10 +44,15 @@ import {
   isExternalSourceRow,
   isSameOriginResolveStart,
   orderSources,
+  normalizeBenchmarkQuality,
   parseArgs,
   parseMovieSpec,
+  parseHlsVariantAttributes,
+  inspectHlsManifestBody,
   parseRemuxServerTiming,
   parseTvSpec,
+  playerUrl,
+  sourceDiscoveryUrl,
   PROVIDER_BENCHMARK_HEADER,
   PROVIDER_HEALTH_RECORDING_ACK_HEADER,
   providerBenchmarkHelpText,
@@ -53,9 +60,12 @@ import {
   REQUIRED_BASE_PROVIDERS,
   runWithDeadline,
   sanitizeProviderLabel,
+  safeBenchmarkSnapshot,
   assertProviderBenchmarkCapability,
   summarizePlaybackWindow,
   summarizeResolveObservations,
+  terminalResolveFailureCode,
+  waitForContinuousPlayback,
   writeReportAtomically,
 } from "./provider-playback-benchmark.mjs";
 
@@ -89,6 +99,76 @@ assert.equal(args.cases.length, 2);
 assert.equal(args.trials, 2);
 assert.equal(args.order, "reversed");
 assert.equal(args.includeVariants, false);
+assert.equal(args.resumeSeconds, 0);
+assert.equal(args.quality, "auto");
+for (const quality of ["auto", "2160p", "1080p", "720p"]) {
+  const qualityArgs = parseArgs(["--help", "--quality", quality]);
+  assert.equal(qualityArgs.quality, quality);
+  const watch = playerUrl("https://stream.example", parseMovieSpec("27205"), "a".repeat(40), 300, qualityArgs.quality);
+  assert.equal(watch.searchParams.get("quality"), quality);
+  assert.equal(watch.searchParams.get("benchmarkResumeSeconds"), "300");
+  assert.equal(watch.searchParams.get("sourceHash"), "a".repeat(40));
+  assert.equal(sourceDiscoveryUrl("https://stream.example", parseTvSpec("1396:2:3"), qualityArgs.quality).searchParams.get("quality"), quality);
+  assert.doesNotThrow(() => assertSanitizedReport({ options: { quality }, requestedQuality: quality }));
+}
+for (const [alias, quality] of [["4K", "2160p"], ["uhd", "2160p"], ["2160", "2160p"], ["1080", "1080p"], ["720", "720p"]]) {
+  assert.equal(parseArgs(["--help", "--quality", alias]).quality, quality);
+}
+for (const invalid of ["", "480p", "4320p", "ultra", "__proto__"]) {
+  assert.throws(() => parseArgs(["--help", "--quality", invalid]), /--quality/);
+  assert.throws(() => normalizeBenchmarkQuality(invalid), /--quality/);
+}
+assert.throws(() => parseArgs(["--help", "--quality"]), /requires a value/);
+assert.equal(playerUrl("https://stream.example", parseMovieSpec("27205"), "a".repeat(40)).searchParams.get("quality"), "auto");
+assert.equal(sourceDiscoveryUrl("https://stream.example", parseMovieSpec("27205")).searchParams.get("quality"), "auto");
+assert.match(providerBenchmarkHelpText(), /--quality.*default: auto/);
+const hlsVariants = parseHlsVariantAttributes('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8500000,RESOLUTION=3840x2160,CODECS="hvc1.2.4.L153.B0,mp4a.40.2",VIDEO-RANGE=PQ\nhttps://secret.invalid/stream?token=hidden\n#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2",VIDEO-RANGE=SDR\n/secret-child\n');
+assert.deepEqual(hlsVariants, [
+  { width: 3840, height: 2160, bandwidth: 8500000, codecs: ["hvc1.2.4.L153.B0", "mp4a.40.2"], videoRange: "PQ" },
+  { width: 1920, height: 1080, bandwidth: 2500000, codecs: ["avc1.640028", "mp4a.40.2"], videoRange: "SDR" },
+]);
+assert.doesNotThrow(() => assertSanitizedReport(hlsVariants));
+assert.deepEqual(parseHlsVariantAttributes('#EXTM3U\n#EXT-X-STREAM-INF:CODECS="https://secret.invalid/token",VIDEO-RANGE=secret\nsecret\n'), []);
+assert.deepEqual(parseHlsVariantAttributes('#EXTM3U\n#EXTINF:10,\nsecret.ts\n'), []);
+assert.deepEqual(inspectHlsManifestBody({ body: '#EXTM3U\n#EXTINF:10,\nsecret.ts\n' }), {
+  inspected: 1, master: 0, media: 1, unavailable: 0, truncated: 0, variants: [],
+});
+assert.equal(inspectHlsManifestBody({ body: '#EXTM3U\n#EXTINF:10,\n' + 'x'.repeat(700_000) }).media, 1);
+assert.equal(inspectHlsManifestBody({ body: '#EXTM3U\n#EXTINF:10,\n' + 'x'.repeat(700_000) }).truncated, 1);
+assert.equal(inspectHlsManifestBody(null).unavailable, 1);
+const captureEvents = [];
+const capturePage = { evaluate: async () => { captureEvents.push('hide-controls-after-measurement'); return { verified: true }; }, close: async () => captureEvents.push('closed') };
+const captureTrial = { success: true, provider: 'VidLink', timings: { firstFrameMs: 123 } };
+await completeVerifiedTrial(capturePage, captureTrial, async (page, trial) => {
+  assert.equal(page, capturePage);
+  captureEvents.push('capture');
+  trial.timings.firstFrameMs = 999;
+});
+assert.deepEqual(captureEvents, ['hide-controls-after-measurement', 'capture', 'closed']);
+assert.equal(captureTrial.timings.firstFrameMs, 123);
+captureEvents.length = 0;
+await completeVerifiedTrial(capturePage, { success: false }, () => assert.fail('Must not capture failed playback'));
+assert.deepEqual(captureEvents, ['closed']);
+captureEvents.length = 0;
+await assert.rejects(completeVerifiedTrial(capturePage, captureTrial, () => { throw new Error('capture failed'); }));
+assert.equal(captureEvents.at(-1), 'closed');
+let blockedCaptureClosed = false;
+await assert.rejects(completeVerifiedTrial({ evaluate: async () => ({ verified: false }), close: async () => { blockedCaptureClosed = true; } }, captureTrial,
+  () => assert.fail('Unverified visibility must never reach the screenshot hook')),
+  (error) => error?.benchmarkCode === 'VIDEO_CAPTURE_PREPARATION_FAILED');
+assert.equal(blockedCaptureClosed, true);
+const resumeArgs = parseArgs(["--cdp-endpoint", "http://127.0.0.1:9222", "--movie", "27205", "--resume-seconds", "300"]);
+assert.equal(resumeArgs.resumeSeconds, 300);
+assert.throws(() => parseArgs(["--help", "--resume-seconds", "-1"]));
+assert.throws(() => parseArgs(["--help", "--resume-seconds", "3601"]));
+const resumeUrl = playerUrl("https://stream.example", parseTvSpec("1396:2:3"), "a".repeat(40), 300);
+assert.deepEqual(benchmarkProgressReadPayload("/api/user/watch-progress", resumeUrl), {
+  entries: [{ sourceIdentity: "tmdb:tv:1396:s2:e3", resumeSeconds: 300 }],
+});
+assert.deepEqual(benchmarkProgressReadPayload("/api/user/continue-watching", resumeUrl), { entries: [] });
+assert.deepEqual(benchmarkProgressReadPayload("/api/user/watch-progress", playerUrl("https://stream.example", parseMovieSpec("27205"), "a".repeat(40))), { entries: [] });
+assert.equal(benchmarkFetchDecision("/api/title/preferences", resumeUrl, "https://stream.example", "PUT"), "block-progress-mutation");
+assert.equal(benchmarkFetchDecision("/api/user/preferences", resumeUrl, "https://stream.example", "PUT"), "block-progress-mutation");
 assert.match(
   providerBenchmarkHelpText(),
   /Allow playback failures; coverage and safety gates still apply/,
@@ -148,6 +228,21 @@ assert.throws(
 
 const pinnedHash = "a".repeat(40);
 const otherHash = "b".repeat(40);
+assert.equal(terminalResolveFailureCode([], pinnedHash), "");
+assert.equal(terminalResolveFailureCode([{ responseKind: "pending", requestPinned: true }], pinnedHash), "");
+assert.equal(terminalResolveFailureCode([{ responseKind: "failed", requestPinned: false }], pinnedHash), "");
+assert.equal(terminalResolveFailureCode([{ responseKind: "failed", requestPinned: true, isResolveStart: true }], pinnedHash), "RESOLVE_FAILED");
+assert.equal(terminalResolveFailureCode([{ responseKind: "failed", requestPinned: true, isResolveStart: false, status: 503 }], pinnedHash), "");
+assert.equal(terminalResolveFailureCode([{ responseKind: "failed", requestPinned: true, isResolveStart: false, explicitJobFailure: true }], pinnedHash), "RESOLVE_FAILED");
+assert.equal(terminalResolveFailureCode([
+  { responseKind: "failed", requestPinned: true },
+  { responseKind: "terminal", resolvedHash: pinnedHash, resolverProvider: "external-embed" },
+], pinnedHash), "");
+await assert.rejects(waitForContinuousPlayback({ evaluate() { throw new Error("must not sample after final resolver failure"); } }, {
+  windowMs: 5000,
+  deadline: performance.now() + 60000,
+  resolveFailureCode: () => "RESOLVE_FAILED",
+}), (error) => error?.benchmarkCode === "RESOLVE_FAILED");
 const benchmarkPageUrl = `https://stream.example/watch/movie/27205?sourceHash=${pinnedHash}&benchmark=1`;
 assert.equal(
   benchmarkFetchDecision(
@@ -196,7 +291,7 @@ assert.equal(
     "https://stream.example",
     "POST",
   ),
-  "passthrough",
+  "block-progress-mutation",
 );
 assert.equal(
   benchmarkFetchDecision(
@@ -378,6 +473,36 @@ assert.equal(cancellationPinning.successfulResolveResponse, false);
 assert.deepEqual(classifyResolveOutcome(cancellationPinning).failureCodes, [
   "RESOLVE_FAILED",
 ]);
+
+const asyncObserver = createResolveObserver(resolveObserverPage, "https://stream.example", pinnedHash,
+  { mediaType: "movie" }, performance.now(), performance.now() + 1000);
+async function emitResolveResponse(path, status, payload) {
+  resolveObserverHandlers.get("response")({
+    url: () => `https://stream.example${path}`,
+    request: () => ({ method: () => "GET" }),
+    status: () => status,
+    ok: () => status >= 200 && status < 300,
+    headers: () => ({ [PROVIDER_HEALTH_RECORDING_ACK_HEADER]: "suppressed" }),
+    json: async () => payload,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+}
+await emitResolveResponse(`/api/resolve/movie?sourceHash=${pinnedHash}`, 202, { status: "pending", jobId: "ours" });
+await emitResolveResponse("/api/resolve/job/ours", 503, null);
+assert.equal(asyncObserver.failureCode(), "", "Retryable job poll transport failure must not terminate a trial");
+await emitResolveResponse("/api/resolve/job/other", 200, { status: "failed" });
+assert.equal(asyncObserver.failureCode(), "", "Unrelated job failure must not terminate a pinned trial");
+await emitResolveResponse("/api/resolve/job/other", 200, { status: "done", result: { sourceHash: otherHash, resolverProvider: "external-embed" } });
+await emitResolveResponse("/api/resolve/job/ours", 200, { status: "done", result: { sourceHash: pinnedHash, resolverProvider: "external-embed" } });
+const asyncResult = await asyncObserver.result();
+assert.equal(asyncResult.hashMatched, true);
+assert.equal(asyncResult.hashMismatchDetected, false, "Only a job bound to the pinned registration supplies identity");
+const failedJobObserver = createResolveObserver(resolveObserverPage, "https://stream.example", pinnedHash,
+  { mediaType: "movie" }, performance.now(), performance.now() + 1000);
+await emitResolveResponse(`/api/resolve/movie?sourceHash=${pinnedHash}`, 202, { status: "pending", jobId: "ours" });
+await emitResolveResponse("/api/resolve/job/ours", 200, { status: "failed" });
+assert.equal(failedJobObserver.failureCode(), "RESOLVE_FAILED");
+await failedJobObserver.result();
 
 for (const terminalWithoutIdentity of [
   resolveObservation({
@@ -648,7 +773,7 @@ const baseRows = REQUIRED_BASE_PROVIDERS.movie.map((provider, index) => ({
   isTorrent: false,
   sourceHash: hashFor(index + 1),
   provider: "LivNet",
-  primary: provider,
+  primary: provider === "CineJoy" ? "CineJoy Lisbon" : provider,
 }));
 baseRows.push({
   isTorrent: false,
@@ -665,22 +790,28 @@ baseRows.push({
 baseRows.push({
   isTorrent: false,
   sourceHash: hashFor(22),
-  provider: "CineJoy",
-  primary: "CineJoy",
+  provider: "Unlisted source",
+  primary: "Unlisted source",
 });
+baseRows.push(...["Nebula", "Solara"].map((name, index) => ({
+  isTorrent: false,
+  sourceHash: hashFor(23 + index),
+  provider: "CineJoy",
+  primary: `CineJoy ${name}`,
+})));
 
 const movieManifest = classifyExternalSourceRows(baseRows, {
   mediaType: "movie",
 });
 assert.deepEqual(movieManifest.missingRequiredBaseProviders, []);
-assert.equal(movieManifest.selected.length, 10);
+assert.equal(movieManifest.selected.length, 11);
 assert.deepEqual(
   movieManifest.variants.map((source) => source.provider),
-  ["VidEasy / Yoru"],
+  ["VidEasy / Yoru", "CineJoy / CineJoy Nebula", "CineJoy / CineJoy Solara"],
 );
 assert.deepEqual(
   movieManifest.additional.map((source) => source.provider),
-  ["CineJoy"],
+  ["Unlisted source"],
 );
 const discoveryReportEntry = buildDiscoveryReportEntry(
   parseMovieSpec("27205"),
@@ -688,13 +819,14 @@ const discoveryReportEntry = buildDiscoveryReportEntry(
 );
 assert.equal(discoveryReportEntry.additionalProviderCount, 1);
 assert.equal("additionalProviders" in discoveryReportEntry, false);
-assert.equal(JSON.stringify(discoveryReportEntry).includes("CineJoy"), false);
+assert.equal(JSON.stringify(discoveryReportEntry).includes("Unlisted source"), false);
+assert.equal(movieManifest.selected.find((source) => source.provider === "CineJoy Lisbon").baseProvider, "CineJoy");
 assert.equal(
   classifyExternalSourceRows(baseRows, {
     mediaType: "movie",
     includeVariants: true,
   }).selected.length,
-  11,
+  14,
 );
 const tvManifest = classifyExternalSourceRows(baseRows, { mediaType: "tv" });
 assert.deepEqual(tvManifest.missingRequiredBaseProviders, []);
@@ -707,7 +839,7 @@ assert.deepEqual(
   ["Meridian"],
 );
 const impersonatingCustomRows = baseRows
-  .filter((row) => row.primary !== "VidLink" && row.primary !== "CineJoy")
+  .filter((row) => row.primary !== "VidLink" && row.primary !== "Unlisted source")
   .concat({
     isTorrent: false,
     sourceHash: hashFor(30),
@@ -771,6 +903,9 @@ assert.deepEqual(
     firstFrameMs: 3_300,
   },
 );
+assert.equal(safeBenchmarkSnapshot(null).milestones.firstFrameMs, null);
+assert.equal(alignBenchmarkMilestones({ capturedAtMs: 4_000, milestones: { firstFrameMs: null } }, { timeOriginMs: 10_000, nowMs: 5_000 }, 9_500).firstFrameMs, null);
+assert.equal(alignBenchmarkMilestones({ capturedAtMs: null }, { timeOriginMs: 10_000, nowMs: 5_000 }, 9_500).apiOriginTrialMs, null);
 
 assert.equal(
   classifyNetworkRoute(
@@ -1004,6 +1139,16 @@ const ranking = aggregateTrials([
 ]);
 assert.equal(ranking[0].provider, "Slow reliable");
 assert.equal(ranking[0].successRate, 1);
+const qualityRanking = aggregateTrials([
+  { case: "movie:1", provider: "Measured", success: true, timings: { firstFrameMs: 1000 }, playback: { width: 1920, height: 1080, waitingCount: 3, stalledCount: 1, steady: { waitingDelta: 0, stalledDelta: 0, droppedFrameDelta: 2, sampledDurationMs: 15000, noAdvanceDurationMs: 250 } } },
+  { case: "movie:2", provider: "Measured", success: false, timings: { firstFrameMs: null }, playback: {} },
+]);
+assert.equal(qualityRanking[0].stalls, 0, "Startup wait events must not count as steady stalls");
+assert.equal(qualityRanking[0].medianVideoHeight, 1080);
+assert.equal(qualityRanking[0].medianVideoPixels, 1920 * 1080);
+assert.equal(qualityRanking[0].testedCases, 2);
+assert.equal(qualityRanking[0].worstCaseSuccessRate, 0);
+assert.equal(qualityRanking[0].steadyNoAdvanceRatio, 0.0167);
 
 const discovery = {
   case: "movie:27205",
@@ -1132,6 +1277,34 @@ const sourceAuthContext = {
     },
   ],
 };
+for (const quality of [undefined, "2160p"]) {
+  const storage = new Map([["unrelated-old-value", "cleared"]]);
+  let sessionStorageCleared = false;
+  const disposableContext = {
+    addCookies: async () => {},
+    addInitScript: async (fn, arg) => {
+      vm.runInNewContext(`(${fn.toString()})(arg)`, {
+        arg,
+        localStorage: {
+          clear: () => storage.clear(),
+          setItem: (key, value) => storage.set(key, value),
+        },
+        sessionStorage: { clear: () => { sessionStorageCleared = true; } },
+      });
+    },
+    request: { get: async () => apiResponse(200, { id: 42, isAdmin: true }) },
+    close: async () => {},
+  };
+  const context = await createIsolatedAuthenticatedContext({
+    browser: { newContext: async () => disposableContext },
+    authenticatedContext: sourceAuthContext,
+    authOrigin: "https://stream.example", baseOrigin: "https://stream.example", timeoutMs: 1000,
+    quality,
+  });
+  assert.equal(context, disposableContext);
+  assert.equal(sessionStorageCleared, true);
+  assert.deepEqual([...storage], quality ? [["streamarena-hls-quality-pref", quality]] : []);
+}
 for (const failureStage of ["cookies", "init-script", "target-auth"]) {
   let closeCount = 0;
   const disposableContext = {
@@ -1262,6 +1435,9 @@ assert.deepEqual(
 assert.doesNotThrow(() =>
   assertSanitizedReport({ provider: "VidRock", timings: { firstFrameMs: 123 } }),
 );
+assert.throws(() => assertSanitizedReport({ timing: NaN }), (error) => error?.benchmarkCode === "NONFINITE_REPORT_NUMBER");
+assert.throws(() => assertSanitizedReport({ timing: Infinity }), (error) => error?.benchmarkCode === "NONFINITE_REPORT_NUMBER");
+assert.equal(safeBenchmarkSnapshot({ playbackRate: 1 }).playbackRate, 1);
 assert.throws(() =>
   assertSanitizedReport({ media: "https://secret.invalid/stream.m3u8" }),
 );

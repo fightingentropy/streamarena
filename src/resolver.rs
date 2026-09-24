@@ -170,13 +170,13 @@ const EXTERNAL_EMBED_SERVER_ENV: &str = "EXTERNAL_EMBED_SERVER";
 const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS: u64 = 26_000;
 const EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS_ENV: &str = "EXTERNAL_EMBED_HLS_TOTAL_TIMEOUT_MS";
 const EXTERNAL_EMBED_DIRECT_RESOLVE_TIMEOUT_MS: u64 = 4_500;
-/// Staggered-hedge delay for the external-embed candidate walk: the top-ranked
-/// candidate runs alone first, and only if it hasn't resolved within this window is
-/// the next candidate raced in parallel. Health-score ordering already puts the
-/// best provider first, so a healthy resolve (~0.5–1.5s) usually wins before the
-/// hedge fires; the occasional redundant attempt at the slow end of that band is
-/// an accepted cost for firing the failover sooner, collapsing the cold worst
-/// case from sum-of-dead-providers to roughly best-working-provider + one stagger.
+/// Give the top-ranked HLS source one bounded exclusive window. Current-domain
+/// Lisbon resolves completed within 2.18s in the seven-title benchmark; 2.5s
+/// preserves its measured quality advantage without an 8s sequential wait.
+/// This applies to any ranked provider; fast failures still advance immediately.
+const EXTERNAL_EMBED_INITIAL_GRACE_MS: u64 = 2_500;
+/// After the first candidate, keep recovery hedges short so later sources retain
+/// their chance within the shared total deadline.
 const EXTERNAL_EMBED_HEDGE_STAGGER_MS: u64 = 1_200;
 const EXTERNAL_EMBED_PROVIDER_HEALTH_KEY_PREFIX: &str = "external-embed-provider:";
 const EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP: i64 = 75;
@@ -366,6 +366,8 @@ pub(in crate::resolver) struct SourceSummary {
     pub(in crate::resolver) qualityLabel: String,
     pub(in crate::resolver) container: String,
     pub(in crate::resolver) isTorrent: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(in crate::resolver) automaticFallbackEligible: Option<bool>,
     pub(in crate::resolver) realDebridCached: bool,
     pub(in crate::resolver) seeders: i64,
     pub(in crate::resolver) size: String,
@@ -4567,11 +4569,13 @@ async fn build_external_embed_resolved_playback_payload(
             resolve_external_embed_candidate_attempt(&request, candidate, hls_deadline_ms)
         })
         .collect::<Vec<_>>();
-    let (_index, (candidate, hls_source, embed_url)) = race_staggered_first_success(
-        attempts,
-        Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
-    )
-    .await?;
+    let (_index, (candidate, hls_source, embed_url)) =
+        race_staggered_first_success_with_initial_grace(
+            attempts,
+            Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
+            Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+        )
+        .await?;
 
     record_external_embed_health_event_if_enabled(
         request.record_health_events,
@@ -4690,8 +4694,23 @@ async fn race_staggered_first_success<Fut, T>(
 where
     Fut: Future<Output = Option<T>>,
 {
+    race_staggered_first_success_with_initial_grace(futures, stagger, stagger).await
+}
+
+/// The initial grace is consumed by either the first completion or the first
+/// hedge. Subsequent failures and launches use the normal stagger, including
+/// when the first attempt failed immediately. Single pinned attempts never hedge.
+async fn race_staggered_first_success_with_initial_grace<Fut, T>(
+    futures: Vec<Fut>,
+    initial_grace: Duration,
+    stagger: Duration,
+) -> Option<(usize, T)>
+where
+    Fut: Future<Output = Option<T>>,
+{
     let mut remaining = futures.into_iter().enumerate();
     let mut in_flight = FuturesUnordered::new();
+    let mut next_stagger = initial_grace;
     match remaining.next() {
         Some((index, fut)) => in_flight.push(tag_future_index(index, fut)),
         None => return None,
@@ -4703,7 +4722,8 @@ where
                 None => return None,
             }
         }
-        let stagger_timer = sleep(stagger);
+        let stagger_timer = sleep(next_stagger);
+        next_stagger = stagger;
         tokio::select! {
             biased;
             completed = in_flight.next(), if !in_flight.is_empty() => {
@@ -4817,9 +4837,9 @@ fn external_embed_hls_candidate_sources(
     health_scores: &HashMap<String, i64>,
 ) -> Vec<ExternalEmbedSource> {
     let mut candidates = Vec::new();
-    // CineJoy is an explicit default, so another provider must not win a startup
-    // race against it. The player's existing recovery still handles a failed stream.
-    if allow_native_fallback && source.provider.id != "cinejoy" {
+    // Unpinned requests race eligible sources in rank order; explicit selections
+    // only resolve the selected source, regardless of its provider or health.
+    if allow_native_fallback {
         for candidate in preferred_external_embed_hls_sources(metadata, health_scores) {
             if !candidates.contains(&candidate) {
                 candidates.push(candidate);
@@ -4837,8 +4857,8 @@ fn external_embed_source_resolve_timeout_ms(source: ExternalEmbedSource) -> u64 
         // (videasy/vidlink browser resolve; icefy retries past its upstream's
         // intermittent 429s; vixsrc does api -> embed page -> playlist), so they
         // get the full budget instead of the tight direct-resolve clamp that was
-        // cutting their retries off mid-flight. They are ranked last, so the
-        // wider budget only spends leftover time, never starves a better source.
+        // cutting their retries off mid-flight. Staggered hedging lets the next
+        // ranked candidate start while a slower attempt uses this wider budget.
         // meridian/gallic make two sequential round-trips (aether resolve -> unwrap
         // origin -> validate the upstream playlist), so they get the full budget too.
         "videasy" | "vidlink" | "icefy" | "vixsrc" | "meridian" | "gallic" | "cinejoy" => {

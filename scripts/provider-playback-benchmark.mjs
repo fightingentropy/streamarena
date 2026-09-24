@@ -43,6 +43,7 @@ const HARD_INTEGRITY_FAILURE_CODES = new Set([
   "FALLBACK_DETECTED",
 ]);
 const ORDER_MODES = new Set(["listed", "rotated", "reversed"]);
+const QUALITY_CHOICES = new Set(["auto", "2160p", "1080p", "720p"]);
 const PROGRESS_PATHS = [
   "/api/user/watch-progress",
   "/api/user/continue-watching",
@@ -59,6 +60,7 @@ export const REQUIRED_BASE_PROVIDERS = Object.freeze({
     "Icefy",
     "Meridian",
     "Gallic",
+    "CineJoy",
   ]),
   tv: Object.freeze([
     "VidEasy",
@@ -69,6 +71,7 @@ export const REQUIRED_BASE_PROVIDERS = Object.freeze({
     "LordFlix",
     "Icefy",
     "Meridian",
+    "CineJoy",
   ]),
 });
 const OPTIONAL_BASE_PROVIDERS = Object.freeze(["NebulaStreams"]);
@@ -78,6 +81,7 @@ const BASE_PROVIDER_CANONICAL = new Map(
     name,
   ]),
 );
+BASE_PROVIDER_CANONICAL.set("cinejoy lisbon", "CineJoy");
 const NETWORK_BUCKETS = [
   "resolve",
   "liveHlsManifest",
@@ -161,6 +165,16 @@ export function parseTvSpec(rawValue) {
   };
 }
 
+export function normalizeBenchmarkQuality(value = "auto") {
+  const normalized = String(value).trim().toLowerCase();
+  const aliases = { "4k": "2160p", uhd: "2160p", "2160": "2160p", "1080": "1080p", "720": "720p" };
+  const quality = Object.hasOwn(aliases, normalized) ? aliases[normalized] : normalized;
+  if (!QUALITY_CHOICES.has(quality)) {
+    throw new Error("--quality must be auto, 2160p, 1080p, or 720p (4k/uhd aliases accepted).");
+  }
+  return quality;
+}
+
 export function parseArgs(argv) {
   const options = {
     cdpEndpoint: String(process.env.STREAMARENA_CDP_ENDPOINT || "").trim(),
@@ -172,6 +186,8 @@ export function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     steadyMs: DEFAULT_STEADY_MS,
     advanceMs: DEFAULT_ADVANCE_MS,
+    resumeSeconds: 0,
+    quality: "auto",
     minSuccessRate: 1,
     includeVariants: false,
     outputPath: "",
@@ -210,6 +226,12 @@ export function parseArgs(argv) {
     } else if (arg === "--advance-ms") {
       options.advanceMs = Number(nextArg(argv, index, arg));
       index += 1;
+    } else if (arg === "--resume-seconds") {
+      options.resumeSeconds = Number(nextArg(argv, index, arg));
+      index += 1;
+    } else if (arg === "--quality") {
+      options.quality = normalizeBenchmarkQuality(nextArg(argv, index, arg));
+      index += 1;
     } else if (arg === "--min-success-rate") {
       options.minSuccessRate = Number(nextArg(argv, index, arg));
       index += 1;
@@ -242,6 +264,9 @@ export function parseArgs(argv) {
   }
   if (!ORDER_MODES.has(options.order)) {
     throw new Error("--order must be listed, rotated, or reversed.");
+  }
+  if (!Number.isInteger(options.resumeSeconds) || options.resumeSeconds < 0 || options.resumeSeconds > 3600) {
+    throw new Error("--resume-seconds must be an integer from 0 to 3600.");
   }
   for (const [name, value, allowZero] of [
     ["--timeout-ms", options.timeoutMs, false],
@@ -282,10 +307,12 @@ export function providerBenchmarkHelpText() {
       "  --timeout-ms <ms>             Overall cap for each trial (default: 45000)",
       "  --steady-ms <ms>              Extra steady playback window (default: 15000)",
       "  --advance-ms <ms>             Required media-time advance (default: 5000)",
+      "  --resume-seconds <0..3600>     Synthetic progress for resume tests (default: 0)",
+      "  --quality <quality>          auto | 2160p | 1080p | 720p (default: auto)",
       "  --min-success-rate <0..1>     Required aggregate success rate (default: 1)",
       "  --allow-failures              Allow playback failures; coverage and safety gates still apply",
       "  --base-only                   Benchmark built-in base providers only (default)",
-      "  --include-variants            Also benchmark discovered VidEasy variants",
+      "  --include-variants            Also benchmark discovered VidEasy and CineJoy variants",
       "  --output <path>               Write the sanitised JSON report",
       "  --json                        Print the sanitised JSON report",
     ].join("\n");
@@ -402,17 +429,18 @@ function normalizeExternalRows(rows) {
       const canonicalPrimary = BASE_PROVIDER_CANONICAL.get(
         rawPrimary.toLowerCase(),
       );
-      const isVidEasyVariant = Boolean(
-        canonicalProvider === "VidEasy" && canonicalPrimary !== "VidEasy",
+      const isVariant = Boolean(
+        ["VidEasy", "CineJoy"].includes(canonicalProvider) &&
+        canonicalPrimary !== canonicalProvider,
       );
-      const baseProvider = isVidEasyVariant
-        ? "VidEasy"
+      const baseProvider = isVariant
+        ? canonicalProvider
         : canonicalPrimary || canonicalProvider || "";
       return {
         hash,
         provider: providerLabelForRow(row),
         baseProvider,
-        kind: isVidEasyVariant
+        kind: isVariant
           ? "variant"
           : baseProvider
             ? "base"
@@ -489,12 +517,12 @@ function caseLabel(testCase) {
   return `movie:${testCase.tmdbId}`;
 }
 
-function sourceDiscoveryUrl(baseOrigin, testCase) {
+export function sourceDiscoveryUrl(baseOrigin, testCase, quality = "auto") {
   const url = new URL("/api/resolve/sources", baseOrigin);
   url.searchParams.set("tmdbId", testCase.tmdbId);
   url.searchParams.set("mediaType", testCase.mediaType);
   url.searchParams.set("audioLang", "auto");
-  url.searchParams.set("quality", "auto");
+  url.searchParams.set("quality", normalizeBenchmarkQuality(quality));
   url.searchParams.set("resolverProvider", "fastest");
   // Current servers prepend every external row ahead of the independently
   // limited torrent rows. A deliberately high request also avoids truncating
@@ -507,7 +535,7 @@ function sourceDiscoveryUrl(baseOrigin, testCase) {
   return url;
 }
 
-function playerUrl(baseOrigin, testCase, sourceHash) {
+export function playerUrl(baseOrigin, testCase, sourceHash, resumeSeconds = 0, quality = "auto") {
   const path =
     testCase.mediaType === "tv"
       ? `/watch/tv/${testCase.tmdbId}/s${testCase.seasonNumber}e${testCase.episodeNumber}`
@@ -517,7 +545,11 @@ function playerUrl(baseOrigin, testCase, sourceHash) {
   url.searchParams.set("benchmark", "1");
   url.searchParams.set("resolverProvider", "fastest");
   url.searchParams.set("audioLang", "auto");
-  url.searchParams.set("quality", "auto");
+  url.searchParams.set("quality", normalizeBenchmarkQuality(quality));
+  url.searchParams.set("subtitleLang", "off");
+  if (resumeSeconds > 0) {
+    url.searchParams.set("benchmarkResumeSeconds", String(resumeSeconds));
+  }
   return url;
 }
 
@@ -599,6 +631,10 @@ export function benchmarkFetchDecision(rawUrl, pageUrl, baseOrigin, method = "GE
       ? "empty-progress-read"
       : "block-progress-mutation";
   }
+  if (!["GET", "HEAD"].includes(normalizedMethod) &&
+      (url.pathname.startsWith("/api/user/") || url.pathname === "/api/title/preferences")) {
+    return "block-progress-mutation";
+  }
   if (url.pathname !== "/api/resolve/movie" && url.pathname !== "/api/resolve/tv") {
     return "passthrough";
   }
@@ -660,7 +696,7 @@ function installProviderBenchmarkBrowserGuards({ baseOrigin, headerName }) {
     if (decision === "empty-progress-read") {
       state.emptyProgressReads += 1;
       return Promise.resolve(
-        new Response(JSON.stringify({ entries: [] }), {
+        new Response(JSON.stringify(benchmarkProgressReadPayload(rawUrl, location.href)), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
@@ -715,11 +751,24 @@ function installProviderBenchmarkBrowserGuards({ baseOrigin, headerName }) {
   }
 }
 
+export function benchmarkProgressReadPayload(rawUrl, pageUrl) {
+  const page = new URL(pageUrl);
+  const request = new URL(rawUrl, page);
+  const resumeSeconds = Number(page.searchParams.get("benchmarkResumeSeconds"));
+  const match = /^\/watch\/(movie|tv)\/(\d+)(?:\/s(\d+)e(\d+))?$/.exec(page.pathname);
+  if (request.pathname !== "/api/user/watch-progress" || !match ||
+      !Number.isInteger(resumeSeconds) || resumeSeconds <= 0 || resumeSeconds > 3600 ||
+      (match[1] === "tv" && (!match[3] || !match[4]))) return { entries: [] };
+  const sourceIdentity = `tmdb:${match[1]}:${match[2]}${match[1] === "tv" ? `:s${match[3]}:e${match[4]}` : ""}`;
+  return { entries: [{ sourceIdentity, resumeSeconds }] };
+}
+
 export function buildProviderBenchmarkInitScript(baseOrigin) {
   return [
     `const SOURCE_HASH_PATTERN = ${SOURCE_HASH_PATTERN.toString()};`,
     `const PROGRESS_PATHS = ${JSON.stringify(PROGRESS_PATHS)};`,
     `const benchmarkFetchDecision = ${benchmarkFetchDecision.toString()};`,
+    `const benchmarkProgressReadPayload = ${benchmarkProgressReadPayload.toString()};`,
     `(${installProviderBenchmarkBrowserGuards.toString()})(${JSON.stringify({
       baseOrigin,
       headerName: PROVIDER_BENCHMARK_HEADER,
@@ -845,6 +894,9 @@ function emptyNetworkBucket() {
   return {
     requestCount: 0,
     responseCount: 0,
+    browserCacheHitCount: 0,
+    manifestVariants: new Map(),
+    manifestBodies: { inspected: 0, master: 0, media: 0, unavailable: 0, truncated: 0 },
     failedCount: 0,
     statuses: {},
     ttfbSamples: [],
@@ -862,6 +914,47 @@ function emptyNetworkBucket() {
   };
 }
 
+export function parseHlsVariantAttributes(text) {
+  if (typeof text !== "string" || text.length > 512_000 || !text.trimStart().startsWith("#EXTM3U")) return [];
+  const variants = new Map();
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith("#EXT-X-STREAM-INF:")) continue;
+    const attributes = Object.fromEntries([...line.slice(18).matchAll(/([A-Z-]+)=("[^"]*"|[^,]*)/g)]
+      .map((match) => [match[1], match[2].replace(/^"|"$/g, "")]));
+    const resolution = /^(\d{1,5})x(\d{1,5})$/.exec(attributes.RESOLUTION || "");
+    const bandwidth = Number(attributes.BANDWIDTH);
+    const codecs = String(attributes.CODECS || "").split(",").map((value) => value.trim());
+    const variant = {};
+    if (resolution && resolution.slice(1).every((value) => Number(value) > 0 && Number(value) <= 16384)) {
+      variant.width = Number(resolution[1]);
+      variant.height = Number(resolution[2]);
+    }
+    if (Number.isInteger(bandwidth) && bandwidth > 0 && bandwidth <= 10_000_000_000) variant.bandwidth = bandwidth;
+    if (codecs.length && codecs.length <= 8 && codecs.every((value) => /^(?:(?:avc[13]|hev1|hvc1|vp0[89]|av01|mp4a|dvh[1e])(?:\.[A-Za-z0-9]{1,12}){0,8}|ac-3|ec-3|opus|flac|vorbis|aac)$/i.test(value))) variant.codecs = codecs;
+    if (["SDR", "PQ", "HLG"].includes(attributes["VIDEO-RANGE"])) variant.videoRange = attributes["VIDEO-RANGE"];
+    if (Object.keys(variant).length) variants.set(JSON.stringify(variant), variant);
+    if (variants.size >= 64) break;
+  }
+  return [...variants.values()];
+}
+
+export function inspectHlsManifestBody(body) {
+  if (typeof body?.body !== "string" || body.body.length > 2_000_000) {
+    return { inspected: 0, master: 0, media: 0, unavailable: 1, truncated: 0, variants: [] };
+  }
+  const text = body.base64Encoded ? Buffer.from(body.body, "base64").toString("utf8") : body.body;
+  const prefix = text.slice(0, 512_000);
+  const hls = prefix.trimStart().startsWith("#EXTM3U");
+  return {
+    inspected: 1,
+    master: Number(hls && /^#EXT-X-STREAM-INF:/m.test(prefix)),
+    media: Number(hls && /^#EXTINF:/m.test(prefix)),
+    unavailable: 0,
+    truncated: Number(text.length > prefix.length),
+    variants: parseHlsVariantAttributes(prefix),
+  };
+}
+
 export function createNetworkCapture(
   page,
   baseOrigin,
@@ -872,6 +965,8 @@ export function createNetworkCapture(
     NETWORK_BUCKETS.map((bucket) => [bucket, emptyNetworkBucket()]),
   );
   const requests = new Map();
+  const manifestParsers = [];
+  let manifestBodiesRead = 0;
   let cdpSession;
 
   function cdpDeltaMs(record, eventTimestamp) {
@@ -922,6 +1017,7 @@ export function createNetworkCapture(
       record.resourceType,
       status,
     );
+    record.isManifest = role === "manifest" || role === "childManifest";
     bucket.responseRoles[role] = (bucket.responseRoles[role] || 0) + 1;
     if (
       role === "manifest" &&
@@ -1001,9 +1097,18 @@ export function createNetworkCapture(
           receivedBytes: 0,
           encodedBytes: 0,
           bytesRetained: false,
+          servedFromCache: false,
         });
       });
+      cdpSession.on("Network.requestServedFromCache", (event) => {
+        const record = requests.get(event.requestId);
+        if (record) record.servedFromCache = true;
+      });
       cdpSession.on("Network.responseReceived", (event) => {
+        const record = requests.get(event.requestId);
+        if (record && (record.servedFromCache || event.response?.fromDiskCache || event.response?.fromPrefetchCache || event.response?.fromServiceWorker)) {
+          buckets[record.bucket].browserCacheHitCount += 1;
+        }
         registerResponse(
           requests.get(event.requestId),
           event.response?.status,
@@ -1022,6 +1127,17 @@ export function createNetworkCapture(
         const record = requests.get(event.requestId);
         if (!record) return;
         const bucket = buckets[record.bucket];
+        if (record.isManifest && manifestBodiesRead < 24) {
+          manifestBodiesRead += 1;
+          manifestParsers.push(runWithDeadline(async () => {
+            const body = await cdpSession.send("Network.getResponseBody", { requestId: event.requestId });
+            const metadata = inspectHlsManifestBody(body);
+            for (const key of Object.keys(bucket.manifestBodies)) bucket.manifestBodies[key] += metadata[key];
+            for (const variant of metadata.variants) {
+              if (bucket.manifestVariants.size < 64) bucket.manifestVariants.set(JSON.stringify(variant), variant);
+            }
+          }, performance.now() + 1500, "MANIFEST_METADATA_TIMEOUT").catch(() => { bucket.manifestBodies.unavailable += 1; }));
+        }
         const durationMs = cdpDeltaMs(record, event.timestamp);
         if (Number.isFinite(durationMs)) bucket.durationSamples.push(durationMs);
         record.encodedBytes = Math.max(
@@ -1047,6 +1163,7 @@ export function createNetworkCapture(
         retainRecordBytes(record);
       }
       if (cdpSession) {
+        await Promise.allSettled(manifestParsers);
         await cdpSession.detach().catch(() => {});
       }
       return Object.fromEntries(
@@ -1057,6 +1174,9 @@ export function createNetworkCapture(
             {
               requestCount: bucket.requestCount,
               responseCount: bucket.responseCount,
+              browserCacheHitCount: bucket.browserCacheHitCount,
+              manifestVariants: [...bucket.manifestVariants.values()],
+              manifestBodies: { ...bucket.manifestBodies },
               failedCount: bucket.failedCount,
               statuses: Object.fromEntries(
                 Object.entries(bucket.statuses).sort(([left], [right]) => Number(left) - Number(right)),
@@ -1247,6 +1367,17 @@ export function summarizeResolveObservations(observations, requestedHash) {
   };
 }
 
+export function terminalResolveFailureCode(observations, requestedHash) {
+  // Pending registrations and polls are not failures. Once the exact pinned
+  // provider returns a final error, waiting for media cannot rescue that trial.
+  const entries = Array.isArray(observations) ? observations : [];
+  if (entries.some((entry) => entry.responseKind === "terminal" &&
+      entry.resolvedHash === requestedHash && entry.resolverProvider === EXTERNAL_RESOLVER_PROVIDER)) return "";
+  return entries.some((entry) => entry.responseKind === "failed" && entry.requestPinned === true &&
+    (entry.isResolveStart === true || entry.explicitJobFailure === true))
+    ? "RESOLVE_FAILED" : "";
+}
+
 function isResolveObservationResponse(
   responseUrl,
   requestMethod,
@@ -1276,6 +1407,14 @@ export function createResolveObserver(
 ) {
   const observations = [];
   const parsers = [];
+  const pinnedJobIds = new Set();
+
+  function boundObservations() {
+    return observations.map((entry) => entry.isResolveStart ? entry : {
+      ...entry,
+      requestPinned: pinnedJobIds.has(entry.jobId),
+    });
+  }
 
   function isRelevantResponse(response) {
     try {
@@ -1308,7 +1447,9 @@ export function createResolveObserver(
       }
       const observation = {
         isResolveStart: pathname === `/api/resolve/${testCase.mediaType}`,
-        requestPinned: pathname.startsWith("/api/resolve/job/") || requestHash === requestedHash,
+        requestPinned: requestHash === requestedHash,
+        jobId: pathname.startsWith("/api/resolve/job/") ? pathname.slice("/api/resolve/job/".length) : "",
+        explicitJobFailure: false,
         healthRecordingAcknowledgement: String(
           response.headers()[PROVIDER_HEALTH_RECORDING_ACK_HEADER] || "",
         ),
@@ -1330,6 +1471,12 @@ export function createResolveObserver(
             observation,
             classifyResolveResponsePayload(response.status(), payload),
           );
+          if (observation.isResolveStart && observation.requestPinned &&
+              typeof payload?.jobId === "string" && payload.jobId.length <= 128) {
+            pinnedJobIds.add(payload.jobId);
+          }
+          observation.explicitJobFailure = !observation.isResolveStart &&
+            ["error", "failed", "cancelled"].includes(String(payload?.status || "").trim().toLowerCase());
         } catch {
           Object.assign(
             observation,
@@ -1356,10 +1503,13 @@ export function createResolveObserver(
   page.on("response", onResponse);
 
   return {
+    failureCode() {
+      return terminalResolveFailureCode(boundObservations(), requestedHash);
+    },
     async result() {
       page.off("response", onResponse);
       await Promise.allSettled([...parsers]);
-      return summarizeResolveObservations(observations, requestedHash);
+      return summarizeResolveObservations(boundObservations().filter((entry) => entry.isResolveStart || entry.requestPinned), requestedHash);
     },
   };
 }
@@ -1385,14 +1535,14 @@ export function classifyResolveOutcome(pinning, browserSafety = {}) {
   };
 }
 
-function safeBenchmarkSnapshot(snapshot) {
+export function safeBenchmarkSnapshot(snapshot) {
   const timings = snapshot?.timings || {};
   const counters = snapshot?.counters || {};
   const quality = snapshot?.quality || {};
   const frameStats = snapshot?.frameStats || {};
   const videoMetrics = snapshot?.videoMetrics || {};
   const finiteOrNull = (value) =>
-    Number.isFinite(Number(value)) ? Number(value) : null;
+    value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
   const count = (value) => Math.max(0, Math.floor(Number(value) || 0));
   return {
     capturedAtMs: finiteOrNull(snapshot?.capturedAtMs),
@@ -1400,6 +1550,7 @@ function safeBenchmarkSnapshot(snapshot) {
     readyState: count(snapshot?.readyState),
     networkState: count(snapshot?.networkState),
     paused: Boolean(snapshot?.paused),
+    playbackRate: finiteOrNull(snapshot?.playbackRate),
     playbackMode: sanitizeProviderLabel(snapshot?.source?.mode, "unknown"),
     video: {
       width: count(videoMetrics.videoWidth),
@@ -1438,9 +1589,10 @@ export function alignBenchmarkMilestones(
   clock,
   trialStartedEpochMs,
 ) {
-  const capturedAtMs = Number(snapshot?.capturedAtMs);
-  const pageNowMs = Number(clock?.nowMs);
-  const pageTimeOriginMs = Number(clock?.timeOriginMs);
+  const numberOrNaN = (value) => value === null || value === undefined || value === "" ? NaN : Number(value);
+  const capturedAtMs = numberOrNaN(snapshot?.capturedAtMs);
+  const pageNowMs = numberOrNaN(clock?.nowMs);
+  const pageTimeOriginMs = numberOrNaN(clock?.timeOriginMs);
   if (
     !Number.isFinite(capturedAtMs) ||
     !Number.isFinite(pageNowMs) ||
@@ -1462,7 +1614,7 @@ export function alignBenchmarkMilestones(
   const navigationOriginTrialMs = pageTimeOriginMs - Number(trialStartedEpochMs);
   const apiOriginTrialMs = navigationOriginTrialMs + apiOriginFromNavigationMs;
   const aligned = (value) => {
-    const number = Number(value);
+    const number = numberOrNaN(value);
     return Number.isFinite(number)
       ? Number((apiOriginTrialMs + number).toFixed(1))
       : null;
@@ -1503,6 +1655,8 @@ async function readPlayerState(page) {
         ? Number(bufferAheadSeconds.toFixed(3))
         : 0,
       mediaErrorCode: Number(video?.error?.code || 0) || 0,
+      videoDurationSeconds: Number.isFinite(video?.duration) && video.duration >= 0
+        ? Number(video.duration.toFixed(3)) : null,
     };
   });
 }
@@ -1524,6 +1678,7 @@ function hasPlayableState(sample) {
   return Boolean(
     snapshot &&
       snapshot.readyState >= 3 &&
+      Math.abs(snapshot.playbackRate - 1) <= 0.01 &&
       !snapshot.paused &&
       snapshot.video.width > 0 &&
       snapshot.video.height > 0 &&
@@ -1578,16 +1733,19 @@ async function takePlayerSample(page) {
   return playerSample(await readPlayerState(page));
 }
 
-async function waitForContinuousPlayback(
+export async function waitForContinuousPlayback(
   page,
-  { windowMs, deadline, sampleIntervalMs = 250 },
+  { windowMs, deadline, minimumCurrentTime = 0, resolveFailureCode = () => "", sampleIntervalMs = 250 },
 ) {
   let windowStart = null;
   let previous = null;
   let sampleCount = 0;
+  let firstTargetAdvanceAtMs = null;
   while (performance.now() < deadline) {
+    const failure = resolveFailureCode();
+    if (failure) throw benchmarkError(failure);
     const current = await takePlayerSample(page);
-    if (!hasPlayableState(current)) {
+    if (!hasPlayableState(current) || current.snapshot.currentTime < minimumCurrentTime) {
       windowStart = null;
       previous = null;
       sampleCount = 0;
@@ -1610,6 +1768,7 @@ async function waitForContinuousPlayback(
         previous = current;
         sampleCount = 1;
       } else {
+        if (firstTargetAdvanceAtMs === null) firstTargetAdvanceAtMs = current.observedAtMs;
         previous = current;
         sampleCount += 1;
         const proof = summarizePlaybackWindow(
@@ -1625,7 +1784,7 @@ async function waitForContinuousPlayback(
           proof.waitingDelta === 0 &&
           proof.stalledDelta === 0
         ) {
-          return { endSample: current, proof };
+          return { endSample: current, proof, firstTargetAdvanceAtMs };
         }
       }
     }
@@ -1659,15 +1818,19 @@ async function measureSteadyPlayback(
   let sampleCount = 1;
   let lastAdvanceAtMs = startSample.observedAtMs;
   let maxNoAdvanceMs = 0;
+  let noAdvanceDurationMs = 0;
+  const dimensions = [startSample.snapshot.video];
   while (performance.now() < expectedEndAt) {
     await delay(
       Math.min(sampleIntervalMs, expectedEndAt - performance.now()),
     );
     endSample = await takePlayerSample(page);
+    dimensions.push(endSample.snapshot.video);
     sampleCount += 1;
     if (hasPlayableState(endSample) && pairAdvanced(previous, endSample)) {
       lastAdvanceAtMs = endSample.observedAtMs;
     } else {
+      noAdvanceDurationMs += Math.max(0, endSample.observedAtMs - previous.observedAtMs);
       maxNoAdvanceMs = Math.max(
         maxNoAdvanceMs,
         endSample.observedAtMs - lastAdvanceAtMs,
@@ -1678,6 +1841,9 @@ async function measureSteadyPlayback(
   const proof = {
     ...summarizePlaybackWindow(startSample, endSample, sampleCount),
     maxNoAdvanceMs: Number(maxNoAdvanceMs.toFixed(1)),
+    noAdvanceDurationMs: Number(noAdvanceDurationMs.toFixed(1)),
+    minVideoHeight: Math.min(...dimensions.filter((value) => value?.height > 0).map((value) => value.height)),
+    maxVideoHeight: Math.max(...dimensions.filter((value) => value?.height > 0).map((value) => value.height)),
     verified: false,
   };
   const minimumAdvanceSeconds = Math.max(0.05, (durationMs / 1000) * 0.8);
@@ -1699,6 +1865,7 @@ async function runTrial({
   trialNumber,
   options,
   safetyStats,
+  onVerifiedPlayback,
 }) {
   const page = await context.newPage();
   const trialStartedAt = performance.now();
@@ -1724,6 +1891,7 @@ async function runTrial({
   let continuousProof = null;
   let steadyProof = null;
   let advanceReachedAtMs = null;
+  let resumeTargetFrameMs = null;
   let steadyCompletedAtMs = null;
   let trialErrorCode = "";
 
@@ -1753,7 +1921,7 @@ async function runTrial({
 
   await networkCapture.start();
   try {
-    await page.goto(playerUrl(baseOrigin, testCase, source.hash).toString(), {
+    await page.goto(playerUrl(baseOrigin, testCase, source.hash, options.resumeSeconds, options.quality).toString(), {
       waitUntil: "domcontentloaded",
       timeout: remainingMs(deadline),
     });
@@ -1764,7 +1932,14 @@ async function runTrial({
     );
     await page.evaluate(() => {
       const video = document.querySelector("video");
-      if (video) video.muted = true;
+      // This storage belongs only to the disposable benchmark context. Prevent
+      // account-hydrated speed from changing decode load between providers.
+      try { localStorage.setItem("streamarena-playback-speed", "1"); } catch {}
+      if (video) {
+        video.muted = true;
+        video.defaultPlaybackRate = 1;
+        video.playbackRate = 1;
+      }
       const api = window.__STREAMARENA_PLAYBACK_BENCHMARK__;
       try {
         const playAttempt = api?.play?.();
@@ -1776,7 +1951,12 @@ async function runTrial({
     const continuous = await waitForContinuousPlayback(page, {
       windowMs: Math.max(DEFAULT_ADVANCE_MS, options.advanceMs),
       deadline,
+      minimumCurrentTime: options.resumeSeconds || 0,
+      resolveFailureCode: () => resolveObserver.failureCode(),
     });
+    if (options.resumeSeconds > 0) {
+      resumeTargetFrameMs = Number((continuous.firstTargetAdvanceAtMs - trialStartedAt).toFixed(1));
+    }
     advanceReachedAtMs = Number((performance.now() - trialStartedAt).toFixed(1));
     continuousProof = continuous.proof;
     const steady = await measureSteadyPlayback(page, continuous.endSample, {
@@ -1829,7 +2009,6 @@ async function runTrial({
   const resolveOutcome = classifyResolveOutcome(pinning, browserSafety);
   safetyStats.blockedFallbackRequests += resolveOutcome.blockedFallbackRequests;
   const routes = await networkCapture.finish();
-  await page.close().catch(() => {});
   const finalState = finalSample?.rawState;
   const snapshot = finalSample?.snapshot || safeBenchmarkSnapshot(null);
   const milestones = alignBenchmarkMilestones(
@@ -1856,11 +2035,15 @@ async function runTrial({
   }
   if (snapshot.readyState < 3) failureCodes.push("READY_STATE_TOO_LOW");
   if (snapshot.paused) failureCodes.push("PLAYBACK_PAUSED");
+  if (snapshot.playbackRate !== null && Math.abs(snapshot.playbackRate - 1) > 0.01) failureCodes.push("PLAYBACK_RATE_CHANGED");
   if (snapshot.video.width <= 0 || snapshot.video.height <= 0) {
     failureCodes.push("NO_VIDEO_DIMENSIONS");
   }
   if (snapshot.frames.callbacks <= 0 && snapshot.frames.decoded <= 0) {
     failureCodes.push("NO_DECODED_FRAMES");
+  }
+  if (options.resumeSeconds > 0 && !(snapshot.currentTime >= options.resumeSeconds + continuousWindowMs / 1000)) {
+    failureCodes.push("RESUME_TARGET_NOT_REACHED");
   }
   if (advanceReachedAtMs === null) failureCodes.push("ADVANCE_TARGET_NOT_REACHED");
   if (
@@ -1885,8 +2068,15 @@ async function runTrial({
     provider: source.provider,
     providerKind: source.kind,
     baseProvider: source.baseProvider || null,
+    serverIdentityEvidence: source.baseProvider === "CineJoy" ? "server-bound-extractor" : source.kind === "variant"
+      ? "upstream-preference-only"
+      : "provider-hash",
     eligible: true,
     trial: trialNumber,
+    startMode: options.resumeSeconds > 0 ? "synthetic-resume" : "from-start",
+    requestedResumeSeconds: options.resumeSeconds || 0,
+    requestedQuality: options.quality,
+    cache: { server: "uncontrolled", sourceObservation: trialNumber === 1 ? "first-in-run" : "repeat-in-run", playerShell: "warmed" },
     success: uniqueFailures.length === 0,
     failureCodes: uniqueFailures,
     pinning,
@@ -1901,6 +2091,7 @@ async function runTrial({
       playingMs: milestones.playingMs,
       firstTimeUpdateMs: milestones.firstTimeUpdateMs,
       firstFrameMs: milestones.firstFrameMs,
+      resumeTargetFrameMs,
       advanceTargetMs: advanceReachedAtMs,
       steadyCompletedMs: steadyCompletedAtMs,
     },
@@ -1909,6 +2100,8 @@ async function runTrial({
       readyState: snapshot.readyState,
       networkState: snapshot.networkState,
       mode: snapshot.playbackMode,
+      playbackRate: snapshot.playbackRate,
+      videoDurationSeconds: finalState?.videoDurationSeconds ?? null,
       width: snapshot.video.width,
       height: snapshot.video.height,
       decodedFrames: snapshot.frames.decoded,
@@ -1937,7 +2130,57 @@ async function runTrial({
     },
   };
 
-  return result;
+  return completeVerifiedTrial(page, result, onVerifiedPlayback);
+}
+
+export async function completeVerifiedTrial(page, result, onVerifiedPlayback) {
+  try {
+    assertSanitizedReport(result);
+    if (result.success && typeof onVerifiedPlayback === "function") {
+      // This runs after the final measured sample, pause, and network capture.
+      // Check the computed result: production CSP can reject injected styles.
+      const capture = await page.evaluate(prepareVerifiedVideoCapture);
+      if (capture?.verified !== true) throw benchmarkError("VIDEO_CAPTURE_PREPARATION_FAILED");
+      result.capture = capture;
+      await onVerifiedPlayback(page, structuredClone(result));
+    }
+    return result;
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+export function prepareVerifiedVideoCapture() {
+  const video = document.querySelector("video");
+  if (!video) return { verified: false };
+  video.pause();
+  const before = {
+    source: video.currentSrc,
+    attribute: video.getAttribute("src"),
+    object: video.srcObject,
+    time: video.currentTime,
+  };
+  video.controls = false;
+  video.setAttribute("data-provider-benchmark-frame", "1");
+  // CSSOM property assignment works under style-src without unsafe-inline;
+  // replacing/reparenting the video would risk resetting playback.
+  const elements = [...document.body.querySelectorAll("*")];
+  for (const element of elements) element.style?.setProperty("visibility", "hidden", "important");
+  video.style.setProperty("visibility", "visible", "important");
+  const videoVisible = getComputedStyle(video).visibility === "visible";
+  const otherElementsHidden = elements.every((element) => element === video || getComputedStyle(element).visibility === "hidden");
+  const mediaStatePreserved = video.currentSrc === before.source &&
+    video.getAttribute("src") === before.attribute && video.srcObject === before.object &&
+    Math.abs(video.currentTime - before.time) <= 0.05 && video.readyState >= 3;
+  const nativeControlsHidden = !video.controls;
+  return {
+    verified: videoVisible && otherElementsHidden && mediaStatePreserved && nativeControlsHidden && video.paused,
+    videoVisible,
+    otherElementsHidden,
+    mediaStatePreserved,
+    nativeControlsHidden,
+    paused: video.paused,
+  };
 }
 
 export function aggregateTrials(trials, mediaType = "") {
@@ -1951,18 +2194,26 @@ export function aggregateTrials(trials, mediaType = "") {
   }
   const ranking = [...groups.entries()].map(([provider, entries]) => {
     const successes = entries.filter((entry) => entry.success);
-    const firstFrames = successes.map((entry) => entry.timings?.firstFrameMs);
+    const firstFrames = successes.map((entry) => entry.startMode === "synthetic-resume" ? entry.timings?.resumeTargetFrameMs : entry.timings?.firstFrameMs);
     const stalls = entries.reduce(
       (total, entry) =>
         total +
-        Number(entry.playback?.waitingCount || 0) +
-        Number(entry.playback?.stalledCount || 0),
+        Number(entry.playback?.steady?.waitingDelta || 0) +
+        Number(entry.playback?.steady?.stalledDelta || 0),
       0,
     );
     const droppedFrames = entries.reduce(
-      (total, entry) => total + Number(entry.playback?.droppedFrames || 0),
+      (total, entry) => total + Number(entry.playback?.steady?.droppedFrameDelta || 0),
       0,
     );
+    const steadyDurationMs = entries.reduce((total, entry) => total + Number(entry.playback?.steady?.sampledDurationMs || 0), 0);
+    const noAdvanceDurationMs = entries.reduce((total, entry) => total + Number(entry.playback?.steady?.noAdvanceDurationMs || 0), 0);
+    const cases = [...new Set(entries.map((entry) => entry.case).filter(Boolean))];
+    const caseSuccessRates = cases.map((name) => {
+      const caseEntries = entries.filter((entry) => entry.case === name);
+      return caseEntries.filter((entry) => entry.success).length / caseEntries.length;
+    });
+    const positiveDimensions = (key) => successes.map((entry) => entry.playback?.[key]).filter((value) => Number.isFinite(value) && value > 0);
     return {
       provider,
       trials: entries.length,
@@ -1970,6 +2221,12 @@ export function aggregateTrials(trials, mediaType = "") {
       successRate: Number((successes.length / entries.length).toFixed(4)),
       medianFirstFrameMs: median(firstFrames),
       p95FirstFrameMs: percentile(firstFrames, 95),
+      testedCases: cases.length,
+      worstCaseSuccessRate: caseSuccessRates.length ? Math.min(...caseSuccessRates) : null,
+      medianVideoWidth: median(positiveDimensions("width")),
+      medianVideoHeight: median(positiveDimensions("height")),
+      medianVideoPixels: median(successes.map((entry) => Number(entry.playback?.width || 0) * Number(entry.playback?.height || 0)).filter((value) => value > 0)),
+      steadyNoAdvanceRatio: steadyDurationMs > 0 ? Number((noAdvanceDurationMs / steadyDurationMs).toFixed(4)) : null,
       stalls,
       droppedFrames,
     };
@@ -2064,8 +2321,10 @@ export async function createIsolatedAuthenticatedContext({
   authOrigin,
   baseOrigin,
   timeoutMs,
+  quality = "auto",
 }) {
   assertSameAuthOrigin(baseOrigin, authOrigin);
+  const requestedQuality = normalizeBenchmarkQuality(quality);
   const candidate = authenticatedContext
     ? {
         context: authenticatedContext,
@@ -2096,14 +2355,18 @@ export async function createIsolatedAuthenticatedContext({
         expires: sessionCookie.expires,
       },
     ]);
-    await context.addInitScript(() => {
+    await context.addInitScript(({ quality }) => {
       try {
         localStorage.clear();
         sessionStorage.clear();
+        // The watch URL controls resolver preferences; native HLS rendition
+        // selection reads its separate preference before the player mounts.
+        // Set it only in this disposable context, after its storage is cleared.
+        if (quality !== "auto") localStorage.setItem("streamarena-hls-quality-pref", quality);
       } catch {
         // This context is disposable; storage can also be unavailable by policy.
       }
-    });
+    }, { quality: requestedQuality });
 
     const targetAccount = await readAuthenticatedAccount(
       context,
@@ -2223,10 +2486,11 @@ async function discoverSources(
   testCase,
   timeoutMs,
   includeVariants,
+  quality,
 ) {
   const deadline = performance.now() + timeoutMs;
   const response = await context.request.get(
-    sourceDiscoveryUrl(baseOrigin, testCase).toString(),
+    sourceDiscoveryUrl(baseOrigin, testCase, quality).toString(),
     { timeout: timeoutMs, failOnStatusCode: false },
   );
   if (response.status() !== 200) throw benchmarkError("SOURCE_DISCOVERY_FAILED");
@@ -2272,6 +2536,9 @@ function assertSanitizedString(value) {
 }
 
 export function assertSanitizedReport(value, path = "report") {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw benchmarkError("NONFINITE_REPORT_NUMBER");
+  }
   if (typeof value === "string") {
     assertSanitizedString(value);
     return;
@@ -2420,8 +2687,16 @@ export function computeGate(trials, minSuccessRate, coverage = { passed: true })
 
 export async function runProviderBenchmark(
   options,
-  { browser: suppliedBrowser = null, authenticatedContext = null } = {},
+  {
+    browser: suppliedBrowser = null,
+    authenticatedContext = null,
+    sourceFilter = null,
+    onTrial = null,
+    onCheckpoint = null,
+    onVerifiedPlayback = null,
+  } = {},
 ) {
+  options = { ...options, quality: normalizeBenchmarkQuality(options.quality) };
   const baseOrigin = normalizeOrigin(options.baseUrl, "INVALID_BASE_ORIGIN");
   const authOrigin = normalizeOrigin(
     options.authOrigin || options.baseUrl,
@@ -2447,6 +2722,7 @@ export async function runProviderBenchmark(
       authOrigin,
       baseOrigin,
       timeoutMs: options.timeoutMs,
+      quality: options.quality,
     });
     await installProviderBenchmarkGuards(context, baseOrigin);
     await assertProviderBenchmarkCapability(
@@ -2468,8 +2744,9 @@ export async function runProviderBenchmark(
         testCase,
         options.timeoutMs,
         options.includeVariants,
+        options.quality,
       );
-      const sources = manifest.selected;
+      const sources = typeof sourceFilter === "function" ? manifest.selected.filter(sourceFilter) : manifest.selected;
       discoveries.push(buildDiscoveryReportEntry(testCase, manifest));
 
       for (let trialIndex = 0; trialIndex < options.trials; trialIndex += 1) {
@@ -2480,8 +2757,7 @@ export async function runProviderBenchmark(
           caseIndex,
         );
         for (const source of orderedSources) {
-          trialResults.push(
-            await runTrial({
+          const trial = await runTrial({
               context,
               baseOrigin,
               liveHlsWorkerOrigins,
@@ -2490,8 +2766,27 @@ export async function runProviderBenchmark(
               trialNumber: trialIndex + 1,
               options,
               safetyStats,
-            }),
-          );
+              onVerifiedPlayback,
+            });
+          trialResults.push(trial);
+          assertSanitizedReport(trial);
+          if (onTrial) await onTrial(structuredClone(trial));
+          if (onCheckpoint) {
+            const coverage = computeRequiredCoverage(discoveries, trialResults, options.trials);
+            const checkpoint = {
+              schemaVersion: 3,
+              generatedAt: new Date().toISOString(),
+              partial: true,
+              providerFilterApplied: typeof sourceFilter === "function",
+              discoveries,
+              trials: trialResults,
+              rankings: { overall: aggregateTrials(trialResults), movie: aggregateTrials(trialResults, "movie"), tv: aggregateTrials(trialResults, "tv") },
+              coverage,
+              gate: computeGate(trialResults, options.minSuccessRate, coverage),
+            };
+            assertSanitizedReport(checkpoint);
+            await onCheckpoint(structuredClone(checkpoint));
+          }
         }
       }
     }
@@ -2505,7 +2800,7 @@ export async function runProviderBenchmark(
     options.trials,
   );
   const report = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     generatedAt: new Date().toISOString(),
     options: {
       trials: options.trials,
@@ -2513,7 +2808,13 @@ export async function runProviderBenchmark(
       timeoutMs: options.timeoutMs,
       steadyMs: options.steadyMs,
       advanceMs: options.advanceMs,
+      resumeSeconds: options.resumeSeconds || 0,
+      quality: options.quality,
       providerPolicy: options.includeVariants ? "base-and-variants" : "base-only",
+      concurrency: 1,
+      serverCachePolicy: "uncontrolled-no-invalidation",
+      browserCachePolicy: "shared-disposable-context-observed-hits",
+      providerFilterApplied: typeof sourceFilter === "function",
     },
     safety: {
       disposableBrowserContext: true,

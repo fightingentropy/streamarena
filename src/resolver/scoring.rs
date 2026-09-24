@@ -317,6 +317,7 @@ pub(super) fn summarize_stream_candidate_for_client(
         },
         container,
         isTorrent: true,
+        automaticFallbackEligible: None,
         realDebridCached: stream.real_debrid_cached,
         seeders,
         size: extract_stream_size_label(stream),
