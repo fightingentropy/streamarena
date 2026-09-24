@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "status": "current-domain-retest-complete-ranking-selected-pending-release",
+  "status": "ranking-deployed-and-live-verified",
   "baseline": {
     "schemaVersion": 1,
-    "status": "startup-baselines-complete-ranking-held-for-integration-review",
+    "status": "historical-baseline-cinejoy-domain-results-superseded",
     "sourceFiles": [
       {
         "name": "baseline-a.json",
@@ -1307,15 +1307,15 @@
       "noAdvanceDurationMs": 0
     },
     "preparedRankingPolicy": {
-      "status": "superseded-by-current-domain-retest",
+      "status": "historical-draft-superseded",
       "VixSrc": 1800,
       "VidLink": 1000,
       "allOtherIdentities": 500,
-      "note": "Previously prepared priority weights, not statistical scores or a final approved ranking. Hold deployment pending CineJoy integration review and retest."
+      "note": "Historical draft superseded by selectedRanking after the repaired-domain comparison; these draft priorities do not describe the released policy."
     },
     "integrationReview": {
-      "status": "repaired-and-retested",
-      "reason": "The user supplied a current CineJoy watch page that appears fast and questioned whether the app integration uses outdated domains. The recorded baseline measures the deployed app integration, not the independent health or speed of the provider website. No fresh CineJoy results are included yet.",
+      "status": "repaired-retested-and-ranking-released",
+      "reason": "The original CineJoy attempts used the obsolete deployed domain/API integration. Repair32d6411 migrated it to the observed current domains; currentDomainRetest provides the fresh app-player evidence. Original failures are retained as history, not current upstream reliability.",
       "rankingDecision": "Use currentDomainRetest for CineJoy. The original CineJoy attempts document the stale deployed integration, not current upstream reliability."
     },
     "trials": [
@@ -9535,7 +9535,7 @@
   },
   "currentDomainRetest": {
     "schemaVersion": 1,
-    "status": "retest-complete-awaiting-ranking-review",
+    "status": "complete-used-for-deployed-ranking",
     "sourceFiles": [
       {
         "name": "cinejoy-current-domain.json",
@@ -13874,7 +13874,7 @@
     ]
   },
   "selectedRanking": {
-    "status": "selected-pending-validation-and-deployment",
+    "status": "deployed-and-live-verified",
     "policy": "Prefer consistent high-resolution playback with a short start; retain the fastest lower-resolution source as the next fallback. Compare current CineJoy data separately from its stale-domain baseline. These are priority weights, not statistical scores.",
     "sources": [
       {
@@ -13912,11 +13912,12 @@
     "adminOverridePolicy": "A family override shifts all of its sources by the same amount, preserving compiled variant offsets.",
     "initialPreferredResolveGraceMs": 2500,
     "subsequentHedgeStaggerMs": 1200,
-    "graceEvidence": "All seven Lisbon resolveCompletionMs values were 1943.0-2176.7 ms (including page/bootstrap time), so 2500 ms conservatively gives the preferred source time to complete. Fast failures advance immediately."
+    "graceEvidence": "All seven Lisbon resolveCompletionMs values were 1943.0-2176.7 ms (including page/bootstrap time), so 2500 ms conservatively gives the preferred source time to complete. Fast failures advance immediately.",
+    "runtimeCodeCommit": "d5ead419db93f2021b96ef0fd4e9217c694bd4d7"
   },
   "requested2160pEndurance": {
     "schemaVersion": 1,
-    "status": "retest-complete-awaiting-ranking-review",
+    "status": "complete-1080p-endurance-requested2160p-not-achieved",
     "sourceFiles": [
       {
         "name": "cinejoy-2160p-endurance.json",
@@ -14225,5 +14226,345 @@
         }
       }
     }
+  },
+  "releaseVerification": {
+    "status": "deployed-and-live-verified",
+    "verifiedAt": "2026-09-24T23:44:21.118163+00:00",
+    "runtimeCodeCommit": "d5ead419db93f2021b96ef0fd4e9217c694bd4d7",
+    "backendSha256": "9286bb1dee6d4b955e02e28a42c8173e5ebbca1d5c763884a03404f0b18be400",
+    "installedArtifactSha256": {
+      "bin/streamarena-backend": "9286bb1dee6d4b955e02e28a42c8173e5ebbca1d5c763884a03404f0b18be400",
+      "bin/resolve-external-embed-hls.mjs": "219ea178181fc44c857ed6a7e7cc6a59d2a2ccf1169ca90085e7f6b9e0b44153",
+      "bin/lib/cinejoy-policy.mjs": "76eea90264164a33e54bbe88829398457be99a8b1e0c17abe85052f2dd775605",
+      "bin/lib/resolve-cinejoy-hls.mjs": "2b940b5ac2e5952da73ae4521dc75a517f09fc924972728400cfd58a02916e72"
+    },
+    "rollbackBackupSuffix": "20260924T233907Z",
+    "rollbackRetained": true,
+    "checks": {
+      "fullBunRunCheck": "passed",
+      "githubCI": {
+        "url": "https://github.com/fightingentropy/streamarena/actions/runs/36073698246",
+        "status": "success",
+        "jobs": [
+          "full check",
+          "Mobile checks"
+        ]
+      },
+      "miniCheck": "passed",
+      "healthHttpStatus": 200,
+      "protectedApiUnauthenticatedHttpStatus": 401,
+      "backendPid": 60794,
+      "preservedServicePids": {
+        "sharedCaddyAndMusic": 94753,
+        "Jackett": 326
+      }
+    },
+    "providerRankState": {
+      "storedOverridesCleared": 9,
+      "remainingOverrides": 0,
+      "enabledProviderFamilies": 11,
+      "families": [
+        {
+          "label": "VidEasy",
+          "rank": 500,
+          "rankDefault": 500,
+          "rankOverridden": false,
+          "enabled": true,
+          "custom": false
+        },
+        {
+          "label": "VidLink",
+          "rank": 1000,
+          "rankDefault": 1000,
+          "rankOverridden": false,
+          "enabled": true,
+          "custom": false
+        },
+        {
+          "label": "VidRock",
+          "rank": 500,
+          "rankDefault": 500,
+          "rankOverridden": false,
+          "enabled": true,
+          "custom": false
+        },
+        {
+          "label": "NoTorrent",
+          "rank": 500,
+          "rankDefault": 500,
+          "rankOverridden": false,
+          "enabled": true,
+          "custom": false
+        },
+        {
+          "label": "VixSrc",
+          "rank": 1800,
+          "rankDefault": 1800,
+          "rankOverridden": false,
+          "enabled": true,
+          "custom": false
+        },
+        {
+          "label": "LordFlix",
+          "rank": 500,
+          "rankDefault": 500,
+          "rankOverridden": false,
+          "enabled": true,
+          "custom": false
+        },
+        {
+          "label": "Icefy",
+          "rank": 500,
+          "rankDefault": 500,
+          "rankOverridden": false,
+          "enabled": true,
+          "custom": false
+        },
+        {
+          "label": "Meridian",
+          "rank": 500,
+          "rankDefault": 500,
+          "rankOverridden": false,
+          "enabled": true,
+          "custom": false
+        },
+        {
+          "label": "Gallic",
+          "rank": 500,
+          "rankDefault": 500,
+          "rankOverridden": false,
+          "enabled": true,
+          "custom": false
+        },
+        {
+          "label": "NebulaStreams",
+          "rank": 500,
+          "rankDefault": 500,
+          "rankOverridden": false,
+          "enabled": true,
+          "custom": false
+        },
+        {
+          "label": "CineJoy",
+          "rank": 2200,
+          "rankDefault": 2200,
+          "rankOverridden": false,
+          "enabled": true,
+          "custom": false
+        }
+      ]
+    },
+    "staleTitleHealthRepair": {
+      "removedRows": 3,
+      "provider": "CineJoy Lisbon",
+      "titles": [
+        "Interstellar (2014)",
+        "Stranger Things S1E2",
+        "Breaking Bad S1E1"
+      ],
+      "completedAt": "2026-09-24T23:43:01.043348+00:00",
+      "reason": "Three obsolete per-title Native HLS resolver failures predated the domain repair and still affected selection because active lifetime health errors do not decay.",
+      "backupRetained": true,
+      "compareAndSwapRemoval": true,
+      "onlyVerifiedPreRepairRowsRemoved": true,
+      "providerAggregatesPreserved": true,
+      "otherHealthPreserved": true,
+      "accountsDatabasePreserved": true
+    },
+    "defaultSelection": {
+      "mode": "fresh unpinned authenticated admin-benchmark API resolves",
+      "healthRecordingSuppressed": true,
+      "resolvedEmbedCacheBypassed": true,
+      "timingMetric": "API resolve duration in milliseconds; not first decoded frame",
+      "beforeStaleHealthRepair": [
+        {
+          "case": "Oppenheimer",
+          "status": 200,
+          "healthSuppressed": true,
+          "selected": "CineJoy Lisbon",
+          "menuFirst": "CineJoy Lisbon",
+          "resolveMs": 1802
+        },
+        {
+          "case": "Interstellar",
+          "status": 200,
+          "healthSuppressed": true,
+          "selected": "VixSrc",
+          "menuFirst": "CineJoy Solara",
+          "resolveMs": 437
+        },
+        {
+          "case": "Stranger Things S1E2",
+          "status": 200,
+          "healthSuppressed": true,
+          "selected": "VixSrc",
+          "menuFirst": "VixSrc",
+          "resolveMs": 514
+        },
+        {
+          "case": "Severance S1E1",
+          "status": 200,
+          "healthSuppressed": true,
+          "selected": "CineJoy Lisbon",
+          "menuFirst": "CineJoy Lisbon",
+          "resolveMs": 1742
+        }
+      ],
+      "verifiedAfterRepair": [
+        {
+          "case": "Oppenheimer",
+          "status": 200,
+          "healthSuppressed": true,
+          "selected": "CineJoy Lisbon",
+          "menuFirst": "CineJoy Lisbon",
+          "resolveMs": 1769
+        },
+        {
+          "case": "Interstellar",
+          "status": 200,
+          "healthSuppressed": true,
+          "selected": "CineJoy Lisbon",
+          "menuFirst": "CineJoy Lisbon",
+          "resolveMs": 1768
+        },
+        {
+          "case": "Stranger Things S1E2",
+          "status": 200,
+          "healthSuppressed": true,
+          "selected": "CineJoy Lisbon",
+          "menuFirst": "CineJoy Lisbon",
+          "resolveMs": 1734
+        },
+        {
+          "case": "Breaking Bad S1E1",
+          "status": 200,
+          "healthSuppressed": true,
+          "selected": "CineJoy Lisbon",
+          "menuFirst": "CineJoy Lisbon",
+          "resolveMs": 1701
+        },
+        {
+          "case": "Severance S1E1",
+          "status": 200,
+          "healthSuppressed": true,
+          "selected": "CineJoy Lisbon",
+          "menuFirst": "CineJoy Lisbon",
+          "resolveMs": 1732
+        }
+      ],
+      "verifiedCount": 5,
+      "lisbonSelectedAndMenuFirstCount": 5
+    },
+    "explicitPinPlayback": {
+      "timingMetric": "navigation to actual first decoded frame",
+      "selectedMatrixComplete": true,
+      "attempts": 2,
+      "fullPlaybackPasses": 2,
+      "integrityPassed": true,
+      "rawWholeInventoryCoveragePassed": false,
+      "rawGatePassed": false,
+      "coverageInterpretation": "The two explicitly selected Interstellar source pins both passed. The raw full-inventory gate is false because the run filters to these two sources.",
+      "trials": [
+        {
+          "case": "movie:157336",
+          "title": "Interstellar (2014)",
+          "source": "VixSrc",
+          "quality": "auto",
+          "fullPlaybackPass": true,
+          "firstFrameMs": 2237,
+          "decodedWidth": 1282,
+          "decodedHeight": 534,
+          "steady": {
+            "sampledDurationMs": 15003.8,
+            "mediaTimeDeltaSeconds": 15.003,
+            "decodedFrameDelta": 360,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "noAdvanceDurationMs": 0,
+            "verified": true
+          },
+          "identityVerified": true,
+          "fallbackDetected": false
+        },
+        {
+          "case": "movie:157336",
+          "title": "Interstellar (2014)",
+          "source": "CineJoy Lisbon",
+          "quality": "auto",
+          "fullPlaybackPass": true,
+          "firstFrameMs": 3395.4,
+          "decodedWidth": 1920,
+          "decodedHeight": 1080,
+          "steady": {
+            "sampledDurationMs": 15001.5,
+            "mediaTimeDeltaSeconds": 15.001,
+            "decodedFrameDelta": 360,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "noAdvanceDurationMs": 0,
+            "verified": true
+          },
+          "identityVerified": true,
+          "fallbackDetected": false
+        }
+      ]
+    },
+    "benchmarkAccounting": {
+      "campaignTrials": 240,
+      "phases": {
+        "originalA": 78,
+        "originalB": 117,
+        "resumeConfirmation": 12,
+        "enduranceConfirmation": 4,
+        "currentDomainAuto": 28,
+        "requested2160pEndurance": 1
+      },
+      "postDeploymentApiResolves": 5,
+      "postDeploymentExplicitPinTrials": 2,
+      "postDeploymentChecksExcludedFromCampaignStatistics": true
+    },
+    "cleanup": {
+      "isolatedAuthenticatedRunnersClosed": true
+    },
+    "sourceFiles": [
+      {
+        "name": "final-check.log",
+        "sha256": "bd3d6baccdb25751310c5508e15ca51d23fbf1dc8bf0f6bb498397b95c144459"
+      },
+      {
+        "name": "mini-check-after-ranking.log",
+        "sha256": "75005a0ff3f692aa6e01df8a82d372ea45314c8027e96a73b72d976599de773e"
+      },
+      {
+        "name": "deployment-ranking.json",
+        "sha256": "293001f8b3dc5ccc199219629301660b8edb7e88cedf6af65ab9dacfb804eb60"
+      },
+      {
+        "name": "ranking-after.json",
+        "sha256": "be7f516ba3589a12bd68b2690525651e42d725e7346c7ef12ccc1be2a2bed37a"
+      },
+      {
+        "name": "ranking-default-verification.json",
+        "sha256": "ecf92176566a66249c900fb1d45d9bdb984001308428e3d9fc328a1c95d640d2"
+      },
+      {
+        "name": "ranking-explicit-pin.json",
+        "sha256": "a993e00b6d1a9e51111baeb73882b8bccdc1faa351ac6f6e3fda2b4f06d4210e"
+      },
+      {
+        "name": "stale-health-repair.json",
+        "sha256": "bd711361a7c59d0755137d57226f84968ff2c66997323f5bc8fdc8fdb50317b1"
+      },
+      {
+        "name": "ranking-default-before-health-repair.json",
+        "sha256": "639d4ae6e90f239ac1e5477af7485bfc0a9b181830a4d0d10ed8a4b358290501"
+      },
+      {
+        "name": "release-verification.json",
+        "sha256": "e4c9fc69f8e434bca2d8b59122c947df912b8126f986293ac9e4601bbb616845"
+      }
+    ]
   }
 }

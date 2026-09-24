@@ -710,9 +710,19 @@ included five seconds of continuous proof and a 15-second steady window.
   VidLink's 2/10 full passes. Source-filtered runs validate their declared matrix
   independently of the raw whole-inventory coverage gate.
 
-At this checkpoint the domain repair is deployed, while the selected priority
-update is pending deployment. Lisbon's forced-2160p Oppenheimer check, resumed at
-900 seconds, passed a separate 120-second steady window at **1920 × 1080**, with
+Ranking release `d5ead419` is deployed and verified on the Mac mini; the full
+local check, GitHub CI and `mini:check` passed. Nine stored rank overrides were
+cleared, with zero remaining and all 11 provider families enabled. Exactly three
+verified pre-domain-repair Lisbon title-health rows were backed up and removed;
+provider aggregates, other health records and accounts data were preserved. Five
+fresh unpinned checks all selected Lisbon and listed it first, with **API resolve**
+times of 1.701–1.769 seconds (not decoded first-frame times). Two explicit
+Interstellar pins also passed: VixSrc at 2.237 seconds / 1282 × 534 and Lisbon at
+3.395 seconds / 1920 × 1080. These post-deployment checks are separate from the
+240-trial campaign and its startup statistics.
+
+Lisbon's forced-2160p Oppenheimer check, resumed at 900 seconds, passed a separate
+120-second steady window at **1920 × 1080**, with
 2,880 frames and zero drops or interruptions. The requested 2160p target was **not
 achieved**: the same headless Chromium supported AVC through MSE but reported the
 advertised HEVC/audio codec combination unsupported. The 4K/PQ playlist is
