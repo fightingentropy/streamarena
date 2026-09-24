@@ -150,11 +150,12 @@ pub(super) fn local_torrent_required_error() -> ApiError {
 
 pub(super) async fn user_preferences_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     match method {
         Method::GET => {
             let prefs = state.db.get_user_preferences(user.id).await?;
@@ -186,11 +187,12 @@ pub(super) async fn user_preferences_handler(
 
 pub(super) async fn user_real_debrid_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     match method {
         Method::GET => {
             let api_key = configured_real_debrid_api_key_for_user(&state, user.id).await?;
@@ -333,11 +335,12 @@ pub(super) async fn user_real_debrid_handler(
 
 pub(super) async fn user_watch_progress_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     match method {
         Method::GET => {
             let progress = state.db.get_user_watch_progress(user.id).await?;

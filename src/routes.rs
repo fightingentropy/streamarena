@@ -275,8 +275,9 @@ async fn parse_json_body(request: Request<Body>) -> AppResult<Value> {
 
 async fn api_auth_middleware(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     headers: HeaderMap,
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
 ) -> Result<Response<Body>, ApiError> {
     // The Cloudflare live-HLS Worker relays signed playlist/segment requests
@@ -292,17 +293,20 @@ async fn api_auth_middleware(
     ) {
         return Ok(next.run(request).await);
     }
-    auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
+    request.extensions_mut().insert(user);
     Ok(next.run(request).await)
 }
 
 async fn api_admin_middleware(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     headers: HeaderMap,
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
 ) -> Result<Response<Body>, ApiError> {
-    auth::require_admin(&state.db, &headers).await?;
+    let user = request_auth.require_admin(&state.db, &headers).await?;
+    request.extensions_mut().insert(user);
     Ok(next.run(request).await)
 }
 
@@ -511,7 +515,7 @@ pub fn build_router(state: AppState) -> Router {
             api_auth_middleware,
         ));
 
-    // Admin dashboard API. Handlers still call `auth::require_admin` so a
+    // Admin dashboard API. Handlers still require an administrator so a
     // missed layer cannot expose the surface; the router layer is the
     // fail-closed default for any new admin route.
     let admin_api = Router::new()
@@ -603,13 +607,14 @@ pub fn build_router(state: AppState) -> Router {
 /// without a redeploy. Login-gated (not admin) since any viewer plays these.
 async fn live_channel_overrides_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_auth(&state.db, &headers).await?;
+    request_auth.require_auth(&state.db, &headers).await?;
     let overrides: std::collections::BTreeMap<String, String> =
         crate::provider_registry::live_overrides()
             .into_iter()
@@ -621,6 +626,7 @@ async fn live_channel_overrides_handler(
 
 pub async fn debug_cache(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -628,7 +634,7 @@ pub async fn debug_cache(
     if method != Method::GET && method != Method::POST {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let clear_requested = query_flag_enabled(uri.query().unwrap_or_default(), "clear");
     if clear_requested && method != Method::POST {
         return Err(ApiError::method_not_allowed(
@@ -664,13 +670,14 @@ pub async fn debug_cache(
 
 pub async fn debug_sports(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     Ok(json_response(json!({
         "scheduleCache": state.sports_schedule_cache.debug_payload(),
         "streamResolveCache": state.sports_stream_resolve_cache.stats(),
@@ -684,13 +691,14 @@ pub async fn debug_sports(
 
 pub async fn config_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    auth::require_auth(&state.db, &headers).await?;
+    request_auth.require_auth(&state.db, &headers).await?;
     let ffmpeg = state.runtime.get_ffmpeg_capabilities(false).await;
     Ok(json_response(json!({
         "realDebridConfigured": false,
@@ -743,6 +751,7 @@ pub async fn auth_config_handler(State(state): State<AppState>) -> AppResult<Res
 
 pub async fn health_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -750,12 +759,13 @@ pub async fn health_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    auth::require_auth(&state.db, &headers).await?;
+    request_auth.require_auth(&state.db, &headers).await?;
     let refresh = query_flag_enabled(uri.query().unwrap_or_default(), "refresh");
     if refresh {
-        auth::require_admin(&state.db, &headers).await?;
+        request_auth.require_admin(&state.db, &headers).await?;
     }
-    let benchmark_instance = real_debrid_benchmark_instance_for_request(&state, &headers).await?;
+    let benchmark_instance =
+        real_debrid_benchmark_instance_for_request(&state, &request_auth, &headers).await?;
     let ffmpeg = state.runtime.get_ffmpeg_capabilities(refresh).await;
     let mut response = json_response(json!({
         "ok": true,
@@ -789,10 +799,11 @@ pub async fn library_get_handler(State(state): State<AppState>) -> AppResult<Res
 
 pub async fn library_put_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let updated = write_local_library(&state.config.local_library_path, payload).await?;
     Ok(json_response(json!({
@@ -803,12 +814,13 @@ pub async fn library_put_handler(
 
 pub async fn title_preferences_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     match method {
         Method::GET => {
             let params = query_pairs(uri.query().unwrap_or_default());
@@ -937,6 +949,7 @@ pub async fn title_preferences_handler(
 
 pub async fn session_progress_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -953,7 +966,7 @@ pub async fn session_progress_handler(
             "session": null
         })));
     }
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let tmdb_id = payload
         .get("tmdbId")
@@ -1129,13 +1142,14 @@ pub async fn tmdb_popular_movies_handler(
 
 pub async fn home_bootstrap_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed."));
     }
-    auth::require_auth(&state.db, &headers).await?;
+    request_auth.require_auth(&state.db, &headers).await?;
     let payload = state
         .home_bootstrap_cache
         .payload_or_refresh(state.clone())
@@ -1268,6 +1282,7 @@ pub async fn tmdb_tv_season_handler(
 
 pub async fn upload_infer_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -1277,7 +1292,7 @@ pub async fn upload_infer_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let file_name = normalize_whitespace(
         payload
@@ -1297,6 +1312,7 @@ pub async fn upload_infer_handler(
 
 pub async fn upload_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -1306,13 +1322,14 @@ pub async fn upload_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let payload = state.upload.handle_direct_upload(request).await?;
     Ok(json_response(payload))
 }
 
 pub async fn upload_session_start_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -1322,13 +1339,14 @@ pub async fn upload_session_start_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     Ok(json_response(state.upload.start_session(payload).await?))
 }
 
 pub async fn upload_session_chunk_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -1339,7 +1357,7 @@ pub async fn upload_session_chunk_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let params = query_pairs(uri.query().unwrap_or_default());
     let session_id = params.get("sessionId").cloned().unwrap_or_default();
     Ok(json_response(
@@ -1352,6 +1370,7 @@ pub async fn upload_session_chunk_handler(
 
 pub async fn upload_session_finish_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -1361,13 +1380,14 @@ pub async fn upload_session_finish_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     Ok(json_response(state.upload.finish_session(payload).await?))
 }
 
 pub async fn gallery_save_stream_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -1377,13 +1397,14 @@ pub async fn gallery_save_stream_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     Ok(json_response(state.upload.queue_gallery_save(payload)?))
 }
 
 pub async fn resolve_sources_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -1410,7 +1431,7 @@ pub async fn resolve_sources_handler(
             "Unsupported mediaType. Use movie or tv.",
         ));
     }
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
 
@@ -1488,12 +1509,13 @@ fn truthy_query_flag(params: &BTreeMap<String, String>, key: &str) -> bool {
 
 pub async fn resolve_job_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     AxumPath(job_id): AxumPath<String>,
     uri: Uri,
 ) -> AppResult<Response<Body>> {
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     let normalized_job_id = job_id.trim();
     if normalized_job_id.is_empty() {
         return Err(ApiError::bad_request("Missing resolve job id."));
@@ -1563,6 +1585,7 @@ async fn resolve_job_registration_payload(
 
 pub async fn resolve_movie_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -1581,7 +1604,7 @@ pub async fn resolve_movie_handler(
     // Set by the player when re-resolving after a playback failure: bypass + evict
     // any cached resolved source so a stale/dead upstream URL can't be re-served.
     let refresh_resolve = truthy_query_flag(&params, "refreshResolve");
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     let playback_intent = playback_intent_requested(&headers);
     let record_external_health_events = record_external_health_events_for_request(&headers, &user)?;
     let real_debrid_benchmark_exact_reuse =
@@ -1619,7 +1642,7 @@ pub async fn resolve_movie_handler(
         );
     }
     if real_debrid_benchmark_exact_reuse {
-        real_debrid_benchmark_instance_for_request(&state, &headers)
+        real_debrid_benchmark_instance_for_request(&state, &request_auth, &headers)
             .await?
             .ok_or_else(|| ApiError::bad_request("Real-Debrid benchmark mode is required."))?;
     }
@@ -1799,6 +1822,7 @@ pub async fn resolve_movie_handler(
 
 pub async fn resolve_local_upgrade_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -1813,7 +1837,7 @@ pub async fn resolve_local_upgrade_handler(
             "Missing or invalid tmdbId query parameter.",
         ));
     }
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
     if !local_torrent_enabled {
         return Ok(json_response(json!({ "ready": false })));
@@ -1858,6 +1882,7 @@ pub async fn resolve_local_upgrade_handler(
 
 pub async fn resolve_tv_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -1876,7 +1901,7 @@ pub async fn resolve_tv_handler(
     // Set by the player when re-resolving after a playback failure: bypass + evict
     // any cached resolved source so a stale/dead upstream URL can't be re-served.
     let refresh_resolve = truthy_query_flag(&params, "refreshResolve");
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     let playback_intent = playback_intent_requested(&headers);
     let record_external_health_events = record_external_health_events_for_request(&headers, &user)?;
     let real_debrid_benchmark_exact_reuse =
@@ -1914,7 +1939,7 @@ pub async fn resolve_tv_handler(
         );
     }
     if real_debrid_benchmark_exact_reuse {
-        real_debrid_benchmark_instance_for_request(&state, &headers)
+        real_debrid_benchmark_instance_for_request(&state, &request_auth, &headers)
             .await?
             .ok_or_else(|| ApiError::bad_request("Real-Debrid benchmark mode is required."))?;
     }
@@ -2128,13 +2153,14 @@ pub async fn resolve_tv_handler(
 
 pub async fn local_torrent_stream_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if !crate::local_torrent::is_internal_stream_request(&state.config.live_hls_proxy_secret, &uri)
     {
-        let user = auth::require_auth(&state.db, &headers).await?;
+        let user = request_auth.require_auth(&state.db, &headers).await?;
         let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
         if !local_torrent_enabled {
             return Err(local_torrent_required_error());
@@ -2157,13 +2183,14 @@ pub async fn local_torrent_stream_handler(
 
 pub async fn local_cache_stream_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if !crate::local_torrent::is_internal_stream_request(&state.config.live_hls_proxy_secret, &uri)
     {
-        let user = auth::require_auth(&state.db, &headers).await?;
+        let user = request_auth.require_auth(&state.db, &headers).await?;
         let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
         if real_debrid_api_key.is_empty() {
             return Err(real_debrid_api_key_required_error());
@@ -2228,6 +2255,7 @@ pub async fn download_export_handler(
 
 pub async fn hls_master_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -2242,12 +2270,12 @@ pub async fn hls_master_handler(
         return Err(ApiError::bad_request("Missing input query parameter."));
     }
     if crate::resolver::is_real_debrid_lazy_hls_input(&input) {
-        // This route is already behind the API auth middleware, but obtain the
-        // concrete owner again here because the ticket signature is bound to
-        // that user and their current encrypted credential. A copied ticket,
+        // Reuse the API middleware's authenticated owner because the ticket
+        // signature is bound to that user and their current encrypted
+        // credential. A copied ticket,
         // token rotation, disabling Remote Traffic, or adding query params all
         // fail before the provider API is touched.
-        let user = auth::require_auth(&state.db, &headers).await?;
+        let user = request_auth.require_auth(&state.db, &headers).await?;
         let session_token = auth::extract_session_token(&headers)
             .ok_or_else(|| ApiError::unauthorized("Not authenticated."))?;
         let api_key = real_debrid_api_key_for_user(&state, user.id).await?;
@@ -2739,13 +2767,14 @@ async fn auth_logout_handler(
 
 async fn auth_me_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     let email_verified = state.db.email_verified_at(user.id).await?.is_some();
     Ok(json_response(json!({
         "id": user.id,
@@ -2798,6 +2827,7 @@ async fn auth_verify_handler(
 /// account state.
 async fn auth_resend_verification_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
@@ -2806,7 +2836,7 @@ async fn auth_resend_verification_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
 
     if !state
         .auth_rate_limiter
@@ -3182,11 +3212,12 @@ fn sanitize_my_list_entries(entries: &[Value]) -> Vec<Value> {
 
 async fn user_continue_watching_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     match method {
         Method::GET => {
             let entries = state.db.get_user_continue_watching(user.id).await?;
@@ -3253,6 +3284,7 @@ async fn user_continue_watching_handler(
 /// activity feed + top-live panel. The player dedupes per session.
 async fn user_live_watch_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -3262,7 +3294,7 @@ async fn user_live_watch_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let title: String = payload
         .get("title")
@@ -3298,11 +3330,12 @@ async fn user_live_watch_handler(
 
 async fn user_my_list_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
 ) -> AppResult<Response<Body>> {
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     match method {
         Method::GET => {
             let entries = state.db.get_user_my_list(user.id).await?;
@@ -3367,6 +3400,7 @@ fn normalize_sync_continue_watching_entries(value: Option<&Value>) -> Vec<Value>
 
 async fn user_sync_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -3376,7 +3410,7 @@ async fn user_sync_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
 
     // Preferences
@@ -3484,6 +3518,7 @@ async fn user_sync_handler(
 /// dashboard via `GET /api/admin/feedback`.
 async fn feedback_submit_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -3493,7 +3528,7 @@ async fn feedback_submit_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let message = payload
         .get("message")

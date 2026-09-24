@@ -216,8 +216,6 @@ export function createFeaturedHeroFromTmdbItem(
     : posterPath
       ? `${imageBase}/w780${posterPath}`
       : "assets/images/thumbnail-top10-h.jpg";
-  const logoPath = String(item?.logo_path || "").trim();
-  const logoUrl = logoPath ? `${imageBase}/w500${logoPath}` : "";
   const genreNames = (Array.isArray(item?.genre_ids) ? item.genre_ids : [])
     .map((id) => genreMap.get(id))
     .filter(Boolean)
@@ -235,7 +233,6 @@ export function createFeaturedHeroFromTmdbItem(
     year,
     runtime: "Movie",
     maturity,
-    logoUrl,
     tagline: String(item?.tagline || "").trim(),
     description:
       String(item?.overview || "").trim() || "No description available.",

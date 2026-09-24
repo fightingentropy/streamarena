@@ -7,14 +7,35 @@ export const USER_STATE_OWNER_KEY = "streamarena-user-state-owner-v1";
 export const USER_STATE_CACHED_USER_KEY = "streamarena-user-state-user-v1";
 export const SERVER_HYDRATED_EVENT = "streamarena:server-hydrated";
 
-let latestServerHydrationStatus = Object.freeze({
-  authExpired: false,
-  didLoadProgress: false,
-  didLoadContinueWatching: false,
-});
+function emptyHydrationState() {
+  return {
+    ok: false,
+    pending: false,
+    authExpired: false,
+    didLoadPreferences: false,
+    didLoadProgress: false,
+    didLoadContinueWatching: false,
+    didLoadMyList: false,
+  };
+}
+
+let latestHydrationState = Object.freeze(emptyHydrationState());
+let hydrationGeneration = 0;
+let userStateGeneration = 0;
+let activeHydration = null;
+
+export function getHydrationState() {
+  return { ...latestHydrationState };
+}
 
 export function getServerHydrationStatus() {
-  return { ...latestServerHydrationStatus };
+  const { authExpired, didLoadProgress, didLoadContinueWatching } = latestHydrationState;
+  return { authExpired, didLoadProgress, didLoadContinueWatching };
+}
+
+function publishHydrationState(result) {
+  latestHydrationState = Object.freeze({ ...result });
+  dispatchHydratedEvent(latestHydrationState);
 }
 
 const DEPRECATED_BROWSER_PREF_KEYS = new Set([
@@ -149,6 +170,10 @@ export function isAuthFailureResponse(response) {
 }
 
 export function clearUserLocalState() {
+  userStateGeneration += 1;
+  hydrationGeneration += 1;
+  activeHydration = null;
+  latestHydrationState = Object.freeze(emptyHydrationState());
   if (typeof window !== "undefined") {
     delete window.__currentUser;
   }
@@ -223,16 +248,36 @@ export function handleAuthFailureResponse(response, { redirect = true } = {}) {
   return true;
 }
 
+/** Ignore auth failures belonging to a request from a previous local session. */
+export async function fetchUserApi(path, options) {
+  const owner = readStorageValue(getBrowserStorage("localStorage"), USER_STATE_OWNER_KEY);
+  const userId = normalizeUserId(typeof window !== "undefined" && window.__currentUser);
+  const generation = userStateGeneration;
+  const response = await fetch(path, options);
+  if (generation === userStateGeneration &&
+      owner === readStorageValue(getBrowserStorage("localStorage"), USER_STATE_OWNER_KEY) &&
+      userId === normalizeUserId(typeof window !== "undefined" && window.__currentUser)) {
+    handleAuthFailureResponse(response);
+  }
+  return response;
+}
+
 /**
  * Resolve the current session without conflating an invalid session with a
  * temporary network/server outage. A matching owner-tagged cache can be used
  * while offline, but never after a confirmed 401/403.
  */
 export async function getAuthSession({ allowOffline = true, signal } = {}) {
+  const owner = readStorageValue(getBrowserStorage("localStorage"), USER_STATE_OWNER_KEY);
+  const generation = userStateGeneration;
+  const isCurrent = () => generation === userStateGeneration &&
+    owner === readStorageValue(getBrowserStorage("localStorage"), USER_STATE_OWNER_KEY);
+  const superseded = () => ({ status: "superseded", user: null });
   let response;
   try {
     response = await fetch("/api/auth/me", { cache: "no-store", signal });
   } catch (error) {
+    if (!isCurrent()) return superseded();
     const cachedUser = allowOffline ? getCachedUserForOffline() : null;
     activateCachedUser(cachedUser);
     return {
@@ -242,6 +287,7 @@ export async function getAuthSession({ allowOffline = true, signal } = {}) {
     };
   }
 
+  if (!isCurrent()) return superseded();
   if (isAuthFailureResponse(response)) {
     clearUserLocalState();
     return { status: "unauthorized", user: null, response };
@@ -259,12 +305,14 @@ export async function getAuthSession({ allowOffline = true, signal } = {}) {
 
   try {
     const user = await response.json();
+    if (!isCurrent()) return superseded();
     const state = establishUserLocalState(user);
     if (!state.ok) {
       throw new Error("The session response did not include a valid user.");
     }
     return { status: "authenticated", user: window.__currentUser, response };
   } catch (error) {
+    if (!isCurrent()) return superseded();
     const cachedUser = allowOffline ? getCachedUserForOffline() : null;
     activateCachedUser(cachedUser);
     return {
@@ -329,182 +377,167 @@ export async function signOut() {
   return true;
 }
 
-function pruneLocalResumeKeys(serverResumeSources) {
-  if (!(serverResumeSources instanceof Set)) return;
-  const storage = getBrowserStorage("localStorage");
-  if (!storage) return;
-  const keys = [];
-  for (let index = 0; index < storage.length; index += 1) {
-    const key = storage.key(index);
-    if (key?.startsWith(RESUME_STORAGE_PREFIX)) {
-      keys.push(key);
-    }
-  }
-  keys.forEach((key) => {
-    const sourceIdentity = key.slice(RESUME_STORAGE_PREFIX.length);
-    if (!serverResumeSources.has(sourceIdentity)) {
-      storage.removeItem(key);
-    }
-  });
-}
-
+// Bound the whole response, including its body, so a stalled noncritical
+// endpoint cannot leave Home in a permanent hydration/loading state.
 async function fetchHydrationEndpoint(path) {
+  const controller = new AbortController();
+  let timer;
   try {
-    return await fetch(path, { cache: "no-store" });
+    return await Promise.race([
+      (async () => {
+        const response = await fetch(path, { cache: "no-store", signal: controller.signal });
+        const payload = response?.ok ? await response.json() : null;
+        return { response, payload };
+      })(),
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          resolve(null);
+        }, 8000);
+      }),
+    ]);
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+function hydrationEntries(payload) {
+  return Array.isArray(payload?.entries) ? payload.entries : Array.isArray(payload) ? payload : [];
 }
 
 /**
- * Hydrate localStorage from server data on page load. Successful server
- * responses replace their corresponding local cache. Failed network/5xx
- * responses leave the matching account's cache intact for offline use.
+ * Start all account reads together. Home waits only for preferences; the player
+ * still awaits complete hydration before deciding whether/how far to resume.
+ * Every response is scoped to the validated owner and this hydration generation.
  */
-export async function hydrateFromServer() {
-  const result = {
-    ok: false,
-    authExpired: false,
-    didLoadPreferences: false,
-    didLoadProgress: false,
-    didLoadContinueWatching: false,
-    didLoadMyList: false,
-  };
-  try {
-    const currentUser =
-      (typeof window !== "undefined" && window.__currentUser) ||
-      getCachedUserForOffline();
-    const hydrationOwner = normalizeUserId(currentUser);
-    const initialStorage = getBrowserStorage("localStorage");
-    if (
-      !hydrationOwner ||
-      readStorageValue(initialStorage, USER_STATE_OWNER_KEY) !== hydrationOwner
-    ) {
-      return result;
-    }
-
-    const [prefsRes, progressRes, continueRes, listRes] = await Promise.all([
-      fetchHydrationEndpoint("/api/user/preferences"),
-      fetchHydrationEndpoint("/api/user/watch-progress"),
-      fetchHydrationEndpoint("/api/user/continue-watching"),
-      fetchHydrationEndpoint("/api/user/my-list"),
-    ]);
-    const responses = [prefsRes, progressRes, continueRes, listRes];
-
-    if (responses.some(isAuthFailureResponse)) {
-      result.authExpired = true;
-      clearUserLocalState();
-      redirectToLogin();
-      return result;
-    }
-
-    const storage = getBrowserStorage("localStorage");
-    if (!storage) {
-      return result;
-    }
-    const stillOwnsHydrationState = () =>
-      readStorageValue(storage, USER_STATE_OWNER_KEY) === hydrationOwner;
-    if (!stillOwnsHydrationState()) {
-      return result;
-    }
-
-    if (prefsRes?.ok) {
-      result.didLoadPreferences = true;
-      const prefs = await prefsRes.json();
-      if (!stillOwnsHydrationState()) return result;
-      if (prefs && typeof prefs === "object") {
-        for (const [key, value] of Object.entries(prefs)) {
-          if (DEPRECATED_BROWSER_PREF_KEYS.has(key)) {
-            storage.removeItem(key);
-            continue;
-          }
-          storage.setItem(key, String(value));
-        }
-      }
-    }
-
-    const serverResumeSources = new Set();
-    const didLoadProgress = Boolean(progressRes?.ok);
-    const didLoadContinueWatching = Boolean(continueRes?.ok);
-    if (didLoadProgress) {
-      const progress = await progressRes.json();
-      if (!stillOwnsHydrationState()) return result;
-      const progressEntries = Array.isArray(progress?.entries)
-        ? progress.entries
-        : Array.isArray(progress)
-          ? progress
-          : [];
-      for (const entry of progressEntries) {
-        if (entry.sourceIdentity && entry.resumeSeconds > 0) {
-          serverResumeSources.add(entry.sourceIdentity);
-          storage.setItem(
-            `${RESUME_STORAGE_PREFIX}${entry.sourceIdentity}`,
-            String(entry.resumeSeconds),
-          );
-        }
-      }
-      result.didLoadProgress = true;
-    }
-
-    if (didLoadContinueWatching) {
-      const continueData = await continueRes.json();
-      if (!stillOwnsHydrationState()) return result;
-      const continueEntries = Array.isArray(continueData?.entries)
-        ? continueData.entries
-        : Array.isArray(continueData)
-          ? continueData
-          : [];
-      const metaMap = {};
-      for (const entry of continueEntries) {
-        if (entry.sourceIdentity) {
-          serverResumeSources.add(entry.sourceIdentity);
-          metaMap[entry.sourceIdentity] = entry;
-          if (entry.resumeSeconds > 0) {
-            storage.setItem(
-              `${RESUME_STORAGE_PREFIX}${entry.sourceIdentity}`,
-              String(entry.resumeSeconds),
-            );
-          }
-        }
-      }
-      if (Object.keys(metaMap).length > 0) {
-        storage.setItem(CONTINUE_WATCHING_META_KEY, JSON.stringify(metaMap));
-      } else {
-        storage.removeItem(CONTINUE_WATCHING_META_KEY);
-      }
-      result.didLoadContinueWatching = true;
-    }
-
-    if (didLoadProgress && didLoadContinueWatching) {
-      pruneLocalResumeKeys(serverResumeSources);
-    }
-
-    if (listRes?.ok) {
-      result.didLoadMyList = true;
-      const list = await listRes.json();
-      if (!stillOwnsHydrationState()) return result;
-      const listEntries = Array.isArray(list?.entries)
-        ? list.entries
-        : Array.isArray(list)
-          ? list
-          : [];
-      if (listEntries.length > 0) {
-        storage.setItem(MY_LIST_STORAGE_KEY, JSON.stringify(listEntries));
-      } else {
-        storage.removeItem(MY_LIST_STORAGE_KEY);
-      }
-    }
-    result.ok = responses.every((response) => response?.ok);
-  } catch {
-    // Malformed or temporarily unavailable server data: retain this account's
-    // owner-tagged browser cache instead of treating it as an auth failure.
-  } finally {
-    latestServerHydrationStatus = Object.freeze({
-      authExpired: Boolean(result.authExpired),
-      didLoadProgress: Boolean(result.didLoadProgress),
-      didLoadContinueWatching: Boolean(result.didLoadContinueWatching),
-    });
-    dispatchHydratedEvent(result);
+export function beginServerHydration() {
+  const currentUser = (typeof window !== "undefined" && window.__currentUser) || getCachedUserForOffline();
+  const owner = normalizeUserId(currentUser);
+  const storage = getBrowserStorage("localStorage");
+  const result = emptyHydrationState();
+  if (!owner || readStorageValue(storage, USER_STATE_OWNER_KEY) !== owner) {
+    const complete = Promise.resolve(result);
+    return { preferencesReady: complete, myListReady: complete, progressReady: complete, continueWatchingReady: complete, complete };
   }
-  return result;
+  if (activeHydration?.owner === owner && activeHydration.generation === hydrationGeneration) {
+    return activeHydration;
+  }
+
+  const generation = ++hydrationGeneration;
+  const stillOwnsState = () =>
+    generation === hydrationGeneration && readStorageValue(storage, USER_STATE_OWNER_KEY) === owner;
+  result.pending = true;
+  publishHydrationState(result);
+  let progressEntries = [];
+  let continueEntries = [];
+  const initialList = storage.getItem(MY_LIST_STORAGE_KEY);
+  const initialContinue = storage.getItem(CONTINUE_WATCHING_META_KEY);
+  const expectedResumes = new Map();
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key?.startsWith(RESUME_STORAGE_PREFIX)) expectedResumes.set(key, storage.getItem(key));
+  }
+  function applyResume(sourceIdentity, resumeSeconds) {
+    const key = `${RESUME_STORAGE_PREFIX}${sourceIdentity}`;
+    // Another tab or a Home action may save/delete progress while the GET is
+    // pending. A snapshot taken before that action must not undo it.
+    if (storage.getItem(key) !== (expectedResumes.get(key) ?? null)) return;
+    const value = String(resumeSeconds);
+    storage.setItem(key, value);
+    expectedResumes.set(key, value);
+  }
+
+  function applyResumes() {
+    const sources = new Set();
+    for (const entry of progressEntries) {
+      if (entry.sourceIdentity && entry.resumeSeconds > 0) {
+        sources.add(entry.sourceIdentity);
+        applyResume(entry.sourceIdentity, entry.resumeSeconds);
+      }
+    }
+    for (const entry of continueEntries) {
+      if (!entry.sourceIdentity) continue;
+      sources.add(entry.sourceIdentity);
+      if (entry.resumeSeconds > 0) {
+        applyResume(entry.sourceIdentity, entry.resumeSeconds);
+      }
+    }
+    if (result.didLoadProgress && result.didLoadContinueWatching) {
+      for (const [key, expected] of expectedResumes) {
+        if (!sources.has(key.slice(RESUME_STORAGE_PREFIX.length)) && storage.getItem(key) === expected) {
+          storage.removeItem(key);
+          expectedResumes.set(key, null);
+        }
+      }
+    }
+  }
+
+  async function hydrateEndpoint(path, flag, apply) {
+    const data = await fetchHydrationEndpoint(path);
+    if (!stillOwnsState()) return { ...result };
+    if (isAuthFailureResponse(data?.response)) {
+      result.authExpired = true;
+      result.pending = false;
+      clearUserLocalState();
+      publishHydrationState(result);
+      redirectToLogin();
+      return { ...result };
+    }
+    if (data?.response?.ok) {
+      try {
+        result[flag] = apply(data.payload) !== false;
+        if (result[flag] && (flag === "didLoadProgress" || flag === "didLoadContinueWatching")) applyResumes();
+      } catch {
+        // Preserve any remaining matching-account cache on storage/JSON failure.
+        result[flag] = false;
+      }
+    }
+    if (stillOwnsState()) publishHydrationState(result);
+    return { ...result };
+  }
+
+  const preferencesReady = hydrateEndpoint("/api/user/preferences", "didLoadPreferences", (prefs) => {
+    if (!prefs || typeof prefs !== "object" || Array.isArray(prefs)) throw new Error("Invalid preferences");
+    for (const [key, value] of Object.entries(prefs)) {
+      if (DEPRECATED_BROWSER_PREF_KEYS.has(key)) storage.removeItem(key);
+      else storage.setItem(key, String(value));
+    }
+  });
+  const progressReady = hydrateEndpoint("/api/user/watch-progress", "didLoadProgress", (payload) => {
+    progressEntries = hydrationEntries(payload);
+  });
+  const continueReady = hydrateEndpoint("/api/user/continue-watching", "didLoadContinueWatching", (payload) => {
+    if (storage.getItem(CONTINUE_WATCHING_META_KEY) !== initialContinue) return false;
+    continueEntries = hydrationEntries(payload);
+    const metaMap = {};
+    for (const entry of continueEntries) {
+      if (entry.sourceIdentity) metaMap[entry.sourceIdentity] = entry;
+    }
+    if (Object.keys(metaMap).length) storage.setItem(CONTINUE_WATCHING_META_KEY, JSON.stringify(metaMap));
+    else storage.removeItem(CONTINUE_WATCHING_META_KEY);
+  });
+  const listReady = hydrateEndpoint("/api/user/my-list", "didLoadMyList", (payload) => {
+    if (storage.getItem(MY_LIST_STORAGE_KEY) !== initialList) return false;
+    const entries = hydrationEntries(payload);
+    if (entries.length) storage.setItem(MY_LIST_STORAGE_KEY, JSON.stringify(entries));
+    else storage.removeItem(MY_LIST_STORAGE_KEY);
+  });
+  const complete = Promise.all([preferencesReady, progressReady, continueReady, listReady]).then(() => {
+    result.pending = false;
+    result.ok = !result.authExpired && result.didLoadPreferences && result.didLoadProgress && result.didLoadContinueWatching && result.didLoadMyList;
+    if (stillOwnsState()) {
+      publishHydrationState(result);
+      activeHydration = null;
+    }
+    return { ...result };
+  });
+  activeHydration = { owner, generation, preferencesReady, progressReady, continueWatchingReady: continueReady, myListReady: listReady, complete };
+  return activeHydration;
+}
+
+/** Await complete server state for pages whose initial behavior depends on it. */
+export async function hydrateFromServer() {
+  return beginServerHydration().complete;
 }

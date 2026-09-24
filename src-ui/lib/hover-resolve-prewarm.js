@@ -1,12 +1,10 @@
-import { DEFAULT_STREAM_QUALITY_PREFERENCE } from "./preferences.js";
-
 export function buildMovieResolvePrewarmUrl({
   tmdbId = "",
   title = "",
   year = "",
   audioLang = "en",
   subtitleLang = "",
-  quality = DEFAULT_STREAM_QUALITY_PREFERENCE,
+  quality = "auto",
 } = {}) {
   const normalizedTmdbId = String(tmdbId || "").trim();
   if (!/^\d+$/.test(normalizedTmdbId)) {
@@ -17,7 +15,7 @@ export function buildMovieResolvePrewarmUrl({
     title: String(title || "").trim(),
     year: String(year || "").trim(),
     audioLang: String(audioLang || "en").trim() || "en",
-    quality: String(quality || DEFAULT_STREAM_QUALITY_PREFERENCE).trim(),
+    quality: String(quality || "auto").trim(),
     resolverProvider: "fastest",
     sourceLang: "en",
     sourceAudioProfile: "single",
@@ -37,7 +35,8 @@ export function buildTvResolvePrewarmUrl({
   episodeNumber = 1,
   audioLang = "en",
   subtitleLang = "",
-  quality = DEFAULT_STREAM_QUALITY_PREFERENCE,
+  quality = "auto",
+  preferredContainer = "",
 } = {}) {
   const normalizedTmdbId = String(tmdbId || "").trim();
   if (!/^\d+$/.test(normalizedTmdbId)) {
@@ -52,11 +51,12 @@ export function buildTvResolvePrewarmUrl({
     seasonNumber: String(safeSeason),
     episodeNumber: String(safeEpisode),
     audioLang: String(audioLang || "en").trim() || "en",
-    quality: String(quality || DEFAULT_STREAM_QUALITY_PREFERENCE).trim(),
+    quality: String(quality || "auto").trim(),
     resolverProvider: "fastest",
     sourceLang: "en",
     sourceAudioProfile: "single",
   });
+  if (preferredContainer) params.set("preferredContainer", preferredContainer);
   const normalizedSubtitleLang = String(subtitleLang || "").trim();
   if (normalizedSubtitleLang) {
     params.set("subtitleLang", normalizedSubtitleLang);
@@ -73,19 +73,23 @@ export function buildResolvePrewarmUrl(details = {}) {
 export function createMovieResolvePrewarmer({
   fetchFn,
   buildUrl = buildMovieResolvePrewarmUrl,
-  maxConcurrent = 2,
+  maxConcurrent = 1,
   maxRemembered = 48,
+  timeoutMs = 15_000,
+  setTimeoutFn = globalThis.setTimeout,
+  clearTimeoutFn = globalThis.clearTimeout,
 } = {}) {
   const requestFetch = typeof fetchFn === "function" ? fetchFn : globalThis.fetch;
   const buildRequestUrl = typeof buildUrl === "function" ? buildUrl : buildMovieResolvePrewarmUrl;
   const safeMaxConcurrent = Math.max(1, Math.floor(Number(maxConcurrent) || 1));
   const safeMaxRemembered = Math.max(1, Math.floor(Number(maxRemembered) || 1));
   const requests = new Map();
-  let activeCount = 0;
+  const pending = new Map();
+  let paused = false;
 
   function pruneRemembered() {
     while (requests.size > safeMaxRemembered) {
-      const oldestKey = requests.keys().next().value;
+      const oldestKey = [...requests].find(([, status]) => status === "ready")?.[0];
       if (!oldestKey) break;
       requests.delete(oldestKey);
     }
@@ -93,24 +97,32 @@ export function createMovieResolvePrewarmer({
 
   function prewarm(details = {}) {
     const url = buildRequestUrl(details);
-    if (!url || typeof requestFetch !== "function" || requests.has(url)) {
+    if (paused || !url || typeof requestFetch !== "function" || requests.has(url)) {
       return false;
     }
-    if (activeCount >= safeMaxConcurrent) {
+    if (pending.size >= safeMaxConcurrent) {
       return false;
     }
 
-    activeCount += 1;
+    const controller = new AbortController();
+    const timeoutId = setTimeoutFn(() => controller.abort(), Math.max(1, Number(timeoutMs) || 15_000));
+    pending.set(url, { controller, timeoutId });
     requests.set(url, "pending");
-    void Promise.resolve(
-      requestFetch(url, {
+    let request;
+    try {
+      request = requestFetch(url, {
         cache: "no-store",
         credentials: "same-origin",
         headers: { Accept: "application/json" },
-        keepalive: true,
-      }),
-    )
+        signal: controller.signal,
+        priority: "low",
+      });
+    } catch (error) {
+      request = Promise.reject(error);
+    }
+    void Promise.resolve(request)
       .then((response) => {
+        if (controller.signal.aborted) return;
         if (!response?.ok) {
           throw new Error(`Resolve prewarm failed (${response?.status || 0}).`);
         }
@@ -119,17 +131,33 @@ export function createMovieResolvePrewarmer({
         pruneRemembered();
       })
       .catch(() => {
-        requests.delete(url);
+        if (pending.get(url)?.controller === controller) requests.delete(url);
       })
       .finally(() => {
-        activeCount = Math.max(0, activeCount - 1);
+        clearTimeoutFn(timeoutId);
+        if (pending.get(url)?.controller === controller) {
+          pending.delete(url);
+          if (requests.get(url) === "pending") requests.delete(url);
+        }
       });
     return true;
   }
 
+  function cancelAll() {
+    for (const [url, { controller, timeoutId }] of pending) {
+      controller.abort();
+      clearTimeoutFn(timeoutId);
+      requests.delete(url);
+    }
+    pending.clear();
+  }
+
   return {
     prewarm,
-    getActiveCount: () => activeCount,
+    cancelAll,
+    pause() { paused = true; cancelAll(); },
+    resume() { paused = false; },
+    getActiveCount: () => pending.size,
     getStatus: (details = {}) => requests.get(buildRequestUrl(details)) || "",
   };
 }

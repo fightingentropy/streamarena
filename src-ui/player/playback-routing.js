@@ -1,3 +1,4 @@
+import { isAppleMobileOrTabletVideoEnvironment, isMobileOrTabletVideoEnvironment } from "./playback-environment.js";
 import { isHlsPlaybackSource, shouldUseHlsJsForPlayback } from "./hls-playback.js";
 import {
   getDetectedSourceOptionLanguages,
@@ -107,16 +108,6 @@ export function looksLikeBrowserUnsafeVideoSource(source) {
   );
 }
 
-function isAppleMobileOrTabletVideoEnvironment() {
-  const nav = window.navigator || {};
-  const userAgent = String(nav.userAgent || "");
-  const platform = String(nav.platform || "");
-  return (
-    /\b(iPad|iPhone|iPod)\b/i.test(userAgent) ||
-    (platform === "MacIntel" && Number(nav.maxTouchPoints || 0) > 1)
-  );
-}
-
 function isDesktopSafariVideoEnvironment() {
   const nav = window.navigator || {};
   const userAgent = String(nav.userAgent || "");
@@ -128,31 +119,6 @@ function isDesktopSafariVideoEnvironment() {
     !/\b(Chrome|Chromium|CriOS|FxiOS|Edg|EdgiOS|OPR|Opera)\b/i.test(userAgent);
   const isDesktopApple = /\bMac\b/i.test(platform) || /\bMacintosh\b/i.test(userAgent);
   return isSafari && isDesktopApple && !isAppleMobileOrTabletVideoEnvironment();
-}
-
-function isMobileOrTabletVideoEnvironment() {
-  if (isAppleMobileOrTabletVideoEnvironment()) {
-    return true;
-  }
-
-  const nav = window.navigator || {};
-  const userAgent = String(nav.userAgent || "");
-  const platform = String(nav.platform || "");
-  if (/\b(Android|Mobile|Phone|Tablet|Silk|Kindle)\b/i.test(userAgent)) {
-    return true;
-  }
-  if (/\b(Android|iPad|iPhone|iPod)\b/i.test(platform)) {
-    return true;
-  }
-
-  try {
-    return Boolean(
-      window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches &&
-        window.matchMedia?.("(max-width: 1180px)")?.matches,
-    );
-  } catch {
-    return false;
-  }
 }
 
 function getNativeHlsSupport(video) {

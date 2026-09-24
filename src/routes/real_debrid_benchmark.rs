@@ -2,13 +2,14 @@ use super::*;
 
 pub(super) async fn provider_benchmark_capability_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if !provider_benchmark_capability_method_supported(&method) {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    let user = auth::require_admin(&state.db, &headers).await?;
+    let user = request_auth.require_admin(&state.db, &headers).await?;
     let real_debrid_exact_session_reuse =
         real_debrid_benchmark_exact_reuse_for_request(&headers, &user)?;
     let attestations = if real_debrid_exact_session_reuse {
@@ -88,6 +89,7 @@ pub(super) fn benchmark_query_matches_cardinality(
 
 pub(super) async fn real_debrid_benchmark_instance_for_request(
     state: &AppState,
+    request_auth: &auth::RequestAuth,
     headers: &HeaderMap,
 ) -> AppResult<Option<String>> {
     if !headers.contains_key(REAL_DEBRID_BENCHMARK_HEADER_NAME) {
@@ -98,7 +100,7 @@ pub(super) async fn real_debrid_benchmark_instance_for_request(
         }
         return Ok(None);
     }
-    let user = auth::require_admin(&state.db, headers).await?;
+    let user = request_auth.require_admin(&state.db, headers).await?;
     if !real_debrid_benchmark_exact_reuse_for_request(headers, &user)? {
         return Err(ApiError::bad_request(
             "Real-Debrid benchmark mode is required.",
@@ -143,18 +145,20 @@ pub(super) fn attach_benchmark_server_instance(
 
 pub(super) async fn provider_benchmark_probe_status_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     headers: HeaderMap,
     uri: Uri,
 ) -> AppResult<Response<Body>> {
-    let user = auth::require_admin(&state.db, &headers).await?;
+    let user = request_auth.require_admin(&state.db, &headers).await?;
     if !real_debrid_benchmark_exact_reuse_for_request(&headers, &user)? {
         return Err(ApiError::bad_request(
             "Real-Debrid benchmark mode is required.",
         ));
     }
-    let server_instance_identity = real_debrid_benchmark_instance_for_request(&state, &headers)
-        .await?
-        .ok_or_else(|| ApiError::bad_request("Real-Debrid benchmark mode is required."))?;
+    let server_instance_identity =
+        real_debrid_benchmark_instance_for_request(&state, &request_auth, &headers)
+            .await?
+            .ok_or_else(|| ApiError::bad_request("Real-Debrid benchmark mode is required."))?;
     let run_nonce = exact_single_query_value(uri.query().unwrap_or_default(), "run")
         .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .ok_or_else(|| ApiError::bad_request("A single valid benchmark run is required."))?;

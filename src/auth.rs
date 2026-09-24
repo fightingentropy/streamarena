@@ -2,8 +2,9 @@ use std::sync::LazyLock;
 
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use axum::extract::FromRequestParts;
 use axum::http::HeaderMap;
-use tokio::sync::Semaphore;
+use tokio::sync::{OnceCell, Semaphore};
 
 use crate::error::{ApiError, AppResult};
 use crate::persistence::Db;
@@ -28,6 +29,46 @@ pub struct AuthUser {
     pub email: String,
     pub display_name: String,
     pub is_admin: bool,
+}
+
+/// Authentication shared only within the current request. Middleware publishes
+/// a validated AuthUser in request extensions; a directly mounted handler still
+/// validates the session itself. Client headers cannot populate this cache.
+#[derive(Debug, Default)]
+pub struct RequestAuth {
+    user: OnceCell<AuthUser>,
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for RequestAuth {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self {
+            user: OnceCell::new_with(parts.extensions.get::<AuthUser>().cloned()),
+        })
+    }
+}
+
+impl RequestAuth {
+    // Authentication remains explicit so handlers with narrowly signed internal
+    // media URLs can retain their existing bypass without requiring a cookie.
+    pub async fn require_auth(&self, db: &Db, headers: &HeaderMap) -> AppResult<AuthUser> {
+        self.user
+            .get_or_try_init(|| require_auth(db, headers))
+            .await
+            .cloned()
+    }
+
+    pub async fn require_admin(&self, db: &Db, headers: &HeaderMap) -> AppResult<AuthUser> {
+        let user = self.require_auth(db, headers).await?;
+        if !user.is_admin {
+            return Err(ApiError::forbidden("Admin access required."));
+        }
+        Ok(user)
+    }
 }
 
 pub fn hash_password(password: &str) -> Result<String, String> {
@@ -145,16 +186,6 @@ pub async fn require_auth(db: &Db, headers: &HeaderMap) -> AppResult<AuthUser> {
     })
 }
 
-/// Like `require_auth`, but additionally requires the `is_admin` flag.
-/// Returns 403 for a valid, non-admin session.
-pub async fn require_admin(db: &Db, headers: &HeaderMap) -> AppResult<AuthUser> {
-    let user = require_auth(db, headers).await?;
-    if !user.is_admin {
-        return Err(ApiError::forbidden("Admin access required."));
-    }
-    Ok(user)
-}
-
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -167,13 +198,14 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthUser, extract_session_token, generate_session_token, hash_password,
-        hash_password_async, require_admin, require_auth, verify_password, verify_password_async,
+        AuthUser, RequestAuth, extract_session_token, generate_session_token, hash_password,
+        hash_password_async, require_auth, verify_password, verify_password_async,
     };
     use crate::config::Config;
     use crate::error::AppResult;
     use crate::persistence::Db;
     use crate::utils::now_ms;
+    use axum::extract::FromRequestParts;
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
     use axum::response::IntoResponse;
     use std::path::PathBuf;
@@ -446,11 +478,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_auth_reuses_validation_only_inside_the_current_request() {
+        let db = fresh_db().await;
+        let id = seed_user(&db, "request-cache@example.com").await;
+        let token = open_session(&db, id).await;
+        let (mut parts, ()) = axum::http::Request::builder()
+            .header(header::COOKIE, format!("session={token}"))
+            .body(())
+            .unwrap()
+            .into_parts();
+        let middleware_auth = RequestAuth::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+        let user = middleware_auth
+            .require_auth(&db, &parts.headers)
+            .await
+            .unwrap();
+        // The middleware passes only this server-validated identity forward.
+        parts.extensions.insert(user);
+        db.delete_session(token.clone()).await.unwrap();
+
+        // No second session query: both repeated checks and the handler's
+        // extractor share the authorization snapshot for this one request.
+        assert_eq!(
+            middleware_auth
+                .require_auth(&db, &parts.headers)
+                .await
+                .unwrap()
+                .id,
+            id
+        );
+        let handler_auth = RequestAuth::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+        assert_eq!(
+            handler_auth
+                .require_auth(&db, &parts.headers)
+                .await
+                .unwrap()
+                .id,
+            id
+        );
+        assert_eq!(
+            error_status(handler_auth.require_admin(&db, &parts.headers).await),
+            StatusCode::FORBIDDEN,
+            "reusing a viewer identity must not confer admin access"
+        );
+
+        let (mut next_parts, ()) = axum::http::Request::builder()
+            .header(header::COOKIE, format!("session={token}"))
+            .body(())
+            .unwrap()
+            .into_parts();
+        let next_auth = RequestAuth::from_request_parts(&mut next_parts, &())
+            .await
+            .unwrap();
+        assert_eq!(
+            error_status(next_auth.require_auth(&db, &next_parts.headers).await),
+            StatusCode::UNAUTHORIZED,
+            "logout must take effect on the next request"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_auth_does_not_trust_identity_headers_or_cache_failed_checks() {
+        let db = fresh_db().await;
+        let id = seed_user(&db, "spoofed-header@example.com").await;
+        let (mut parts, ()) = axum::http::Request::builder()
+            .header("x-streamarena-user-id", id.to_string())
+            .header("x-streamarena-is-admin", "true")
+            .header("x-authenticated-user", id.to_string())
+            .header(header::COOKIE, "session=not-created-yet")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let request_auth = RequestAuth::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+        assert_eq!(
+            error_status(request_auth.require_auth(&db, &parts.headers).await),
+            StatusCode::UNAUTHORIZED
+        );
+        db.create_session("not-created-yet".into(), id, now_ms() + 60_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            request_auth
+                .require_auth(&db, &parts.headers)
+                .await
+                .unwrap()
+                .id,
+            id
+        );
+        assert_eq!(
+            error_status(request_auth.require_admin(&db, &parts.headers).await),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn request_auth_without_middleware_checks_expiry_and_disabled_accounts() {
+        let db = fresh_db().await;
+        let id = seed_user(&db, "direct-handler@example.com").await;
+        db.create_session("expired-request".into(), id, now_ms() - 1)
+            .await
+            .unwrap();
+        let expired = RequestAuth::default()
+            .require_auth(&db, &headers_with_cookie("session=expired-request"))
+            .await
+            .unwrap_err();
+        assert_eq!(expired.message(), Some("Session expired."));
+
+        db.admin_set_disabled(id, true).await.unwrap();
+        let token = open_session(&db, id).await;
+        let disabled = RequestAuth::default()
+            .require_auth(&db, &headers_with_cookie(&format!("session={token}")))
+            .await
+            .unwrap_err();
+        assert_eq!(disabled.message(), Some("Account disabled."));
+    }
+
+    #[tokio::test]
     async fn require_admin_forbids_non_admins() {
         let db = fresh_db().await;
         let id = seed_user(&db, "peasant@example.com").await;
         let token = open_session(&db, id).await;
-        let err = require_admin(&db, &headers_with_cookie(&format!("session={token}")))
+        let err = RequestAuth::default()
+            .require_admin(&db, &headers_with_cookie(&format!("session={token}")))
             .await
             .expect_err("non-admin must be forbidden");
         assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
@@ -462,7 +616,8 @@ mod tests {
         let id = seed_user(&db, "boss@example.com").await;
         db.admin_set_admin(id, true).await.expect("promote");
         let token = open_session(&db, id).await;
-        let user = require_admin(&db, &headers_with_cookie(&format!("session={token}")))
+        let user = RequestAuth::default()
+            .require_admin(&db, &headers_with_cookie(&format!("session={token}")))
             .await
             .expect("admin authorized");
         assert!(user.is_admin);

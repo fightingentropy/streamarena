@@ -4,6 +4,30 @@ import {
   DEFAULT_STREAM_QUALITY_PREFERENCE,
   normalizeDefaultAudioLanguage,
 } from "../lib/preferences.js";
+import { isMobileOrTabletVideoEnvironment } from "./playback-environment.js";
+
+// Keep speculative resolves and foreground playback on the same cache key.
+export function getInitialTmdbResolvePreferences({
+  mediaType = "movie", tmdbId = "", seasonNumber = 1, episodeNumber = 1,
+  audioLang, subtitleLang, quality, preferredContainer = "",
+  mobile = isMobileOrTabletVideoEnvironment(),
+} = {}) {
+  const defaultAudio = getStoredDefaultAudioLanguage();
+  const movieAudio = mediaType === "movie" ? getStoredAudioLangForTmdbMovie(tmdbId) : "auto";
+  const target = mediaType === "tv"
+    ? { scope: "tv", key: getTvSubtitlePreferenceKey(tmdbId, seasonNumber, episodeNumber) }
+    : { scope: "movie", key: String(tmdbId || "").trim() };
+  return {
+    audioLang: audioLang !== undefined
+      ? (isRecognizedAudioLang(audioLang) ? audioLang : defaultAudio)
+      : (isRecognizedAudioLang(movieAudio) && movieAudio !== "auto" ? movieAudio : defaultAudio),
+    subtitleLang: subtitleLang !== undefined
+      ? normalizeSubtitlePreference(subtitleLang)
+      : getStoredSubtitleLangForTarget(target),
+    quality: quality !== undefined ? normalizePreferredQuality(quality) : mobile ? "720p" : "auto",
+    preferredContainer: preferredContainer || (mobile && mediaType === "tv" ? "mp4" : ""),
+  };
+}
 
 export const SUBTITLE_LANG_PREF_KEY_PREFIX = "streamarena-subtitle-lang:movie:";
 export const SUBTITLE_STREAM_PREF_KEY_PREFIX = "streamarena-subtitle-stream:movie:";

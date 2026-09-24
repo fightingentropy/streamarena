@@ -1,7 +1,16 @@
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 pub(super) const WATCH_PROGRESS_DOMAIN: &str = "watch_progress";
 pub(super) const CONTINUE_WATCHING_DOMAIN: &str = "continue_watching";
+
+pub(super) fn write_transaction(
+    connection: &Connection,
+) -> Result<Transaction<'_>, rusqlite::Error> {
+    // Reserve the writer before reading timestamps or tombstones. In WAL mode,
+    // upgrading a deferred read transaction can fail with SQLITE_BUSY_SNAPSHOT
+    // even with busy_timeout. BEGIN IMMEDIATE waits before taking that snapshot.
+    Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
+}
 
 pub(super) const TOMBSTONE_MIGRATION_SQL: &str = "
     CREATE TABLE IF NOT EXISTS user_state_tombstones (
@@ -76,10 +85,12 @@ pub(super) fn tombstone_watch_progress_series(
     let series_prefix = format!("series:{series_id}:episode:");
     let tmdb_prefix = tmdb_id.map(|value| format!("tmdb:tv:{value}"));
     let identities = {
-        let mut statement = connection
-            .prepare("SELECT source_identity FROM user_watch_progress WHERE user_id = ?")?;
+        let mut statement = connection.prepare(
+            "SELECT source_identity FROM user_watch_progress
+             WHERE user_id = ? AND updated_at <= ?",
+        )?;
         statement
-            .query_map([user_id], |row| row.get::<_, String>(0))?
+            .query_map([user_id, deleted_at], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?
     };
     for identity in identities {
@@ -116,10 +127,10 @@ pub(super) fn tombstone_continue_series(
     let rows = {
         let mut statement = connection.prepare(
             "SELECT source_identity, lower(series_id), tmdb_id, lower(media_type)
-             FROM user_continue_watching WHERE user_id = ?",
+             FROM user_continue_watching WHERE user_id = ? AND updated_at <= ?",
         )?;
         statement
-            .query_map([user_id], |row| {
+            .query_map([user_id, deleted_at], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -209,7 +220,7 @@ pub(super) fn upsert_watch_progress(
     resume_seconds: f64,
     updated_at: i64,
 ) -> Result<bool, rusqlite::Error> {
-    let tx = connection.unchecked_transaction()?;
+    let tx = write_transaction(connection)?;
     if mutation_is_blocked_by_tombstone(&tx, user_id, WATCH_PROGRESS_DOMAIN, identity, updated_at)?
     {
         tx.commit()?;
@@ -242,11 +253,15 @@ pub(super) fn delete_item(
         table,
         "user_watch_progress" | "user_continue_watching"
     ));
-    let tx = connection.unchecked_transaction()?;
+    let tx = write_transaction(connection)?;
     record_tombstone(&tx, user_id, domain, identity, deleted_at)?;
+    // A delayed completion/delete can arrive after a newer restart or seek.
+    // Keep the newer checkpoint, just as the upsert path rejects stale saves.
     tx.execute(
-        &format!("DELETE FROM {table} WHERE user_id = ? AND source_identity = ?"),
-        params![user_id, identity],
+        &format!(
+            "DELETE FROM {table} WHERE user_id = ? AND source_identity = ? AND updated_at <= ?"
+        ),
+        params![user_id, identity, deleted_at],
     )?;
     tx.commit()
 }

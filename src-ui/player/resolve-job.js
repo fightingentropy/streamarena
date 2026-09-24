@@ -299,7 +299,7 @@ export function createResolveRequester({
     }
   }
 
-  async function requestResolveJson(url, timeoutMs) {
+  async function requestResolveJson(url, timeoutMs, { retryTransient = true } = {}) {
     if (disposed) {
       throw createResolveAbortError();
     }
@@ -315,7 +315,7 @@ export function createResolveRequester({
     activeInvocation = invocation;
     const { signal } = invocation.controller;
     const provider = String(getResolverProvider() || "").trim();
-    const retryDelays = provider === "real-debrid" ? [900, 1800] : [];
+    const retryDelays = retryTransient && provider === "real-debrid" ? [900, 1800] : [];
     // Only an explicit timeout opts into a server-side async job. Background
     // page-load resolves must stay short so they cannot starve manual sources.
     const hasExplicitTimeout =

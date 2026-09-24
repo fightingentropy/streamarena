@@ -598,4 +598,21 @@ await run("disposing a requester prevents a sleeping retry from waking", async (
   assert.equal(registrationCount, 1);
 });
 
+await run("bounds a remembered-source attempt without provider retry multiplication", async () => {
+  let requests = 0;
+  const requester = createResolveRequester({
+    coordinator: createResolveJobRequestCoordinator(),
+    getResolverProvider: () => "real-debrid",
+    requestJsonFn: async (_url, _options, timeout) => {
+      requests += 1;
+      assert.equal(timeout, 5000);
+      throw new Error("Request timed out.");
+    },
+    sleepFn: async () => assert.fail("a bounded resume hint must fall back instead of sleeping/retrying"),
+  });
+  await assert.rejects(requester("/api/resolve/movie?sourceHash=known", 5000, { retryTransient: false }), /timed out/);
+  assert.equal(requests, 1);
+  await requester.dispose();
+});
+
 console.log("Resolve job tests passed.");

@@ -564,7 +564,10 @@ async function runSmoke() {
 
   const browser = await chromium.launch({ headless: true });
   try {
-    for (const pageSpec of pages) {
+    const requestedCase = process.env.FRONTEND_SMOKE_CASE || "";
+    const selectedPages = requestedCase ? pages.filter((spec) => spec[requestedCase] || spec.path === requestedCase) : pages;
+    if (!selectedPages.length) throw new Error(`Unknown frontend smoke case: ${requestedCase}`);
+    for (const pageSpec of selectedPages) {
       const context = await browser.newContext(
         pageSpec.contextOptions || { viewport: { width: 1280, height: 900 } },
       );
@@ -621,6 +624,7 @@ async function runSmoke() {
       });
 
       let hlsBundleHoldActive = false;
+      let previewCancellationExpected = false;
       page.on("pageerror", (error) => {
         failures.push(`page error: ${error.message}`);
       });
@@ -636,8 +640,20 @@ async function runSmoke() {
         }
       });
       page.on("requestfailed", (request) => {
-        if (["document", "script", "stylesheet"].includes(request.resourceType())) {
-          failures.push(`request failed: ${request.method()} ${request.url()}`);
+        const errorText = request.failure()?.errorText || "unknown error";
+        const isSubframe = Boolean(request.frame().parentFrame());
+        const url = new URL(request.url());
+        // After verified playback this case advances the carousel, opens details
+        // and leaves Home. Those actions remove/replace #heroPreview.src and can
+        // cancel its pending mocked navigation. Keep real failures and all app
+        // documents/scripts/styles fatal, including initial preview failures.
+        const cancelledMockPreview = previewCancellationExpected &&
+          request.resourceType() === "document" && isSubframe &&
+          errorText === "net::ERR_ABORTED" &&
+          url.origin === "https://www.youtube-nocookie.com" &&
+          url.pathname === `/embed/${heroTrailerKey}`;
+        if (!cancelledMockPreview && ["document", "script", "stylesheet"].includes(request.resourceType())) {
+          failures.push(`request failed: ${request.method()} ${request.url()} (${errorText}; ${isSubframe ? "subframe" : "main frame"})`);
         }
       });
       page.on("response", (response) => {
@@ -716,7 +732,11 @@ async function runSmoke() {
         });
       }
 
+      let mockPreviewNavigations = 0;
       await page.route("https://www.youtube-nocookie.com/**", async (route) => {
+        mockPreviewNavigations += 1;
+        // Exercise cancellation while the next trailer is still loading.
+        if (pageSpec.expectVideoHero && mockPreviewNavigations > 1) await delay(250);
         await route.fulfill({
           status: 200,
           contentType: "text/html",
@@ -1662,6 +1682,7 @@ async function runSmoke() {
         if (!heroFrame || !activeHeroBeforeEnd) {
           throw new Error(`${pageSpec.path}\nVideo hero carousel state was unavailable.`);
         }
+        previewCancellationExpected = true;
         await heroFrame.evaluate(() => {
           parent.postMessage(
             JSON.stringify({ event: "onStateChange", info: 0 }),

@@ -409,10 +409,11 @@ fn rank_recommendations(
 
 pub(super) async fn tmdb_recommendations_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     headers: HeaderMap,
     uri: Uri,
 ) -> AppResult<Response<Body>> {
-    let user = auth::require_auth(&state.db, &headers).await?;
+    let user = request_auth.require_auth(&state.db, &headers).await?;
     let params = query_pairs(uri.query().unwrap_or_default());
     let tmdb_id = params.get("tmdbId").cloned().unwrap_or_default();
     let media_type = params

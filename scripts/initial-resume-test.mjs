@@ -281,7 +281,7 @@ const [playerSource, playerEntrySource, pageEntrySource, resumeStartSource] =
 run("owns startup progress hydration before the authenticated player mount", () => {
   const hydrationIndex = pageEntrySource.indexOf("await hydrateFromServer()");
   const authExpiryIndex = pageEntrySource.indexOf("hydration.authExpired");
-  const mountIndex = pageEntrySource.indexOf("mountPage(await componentPromise");
+  const mountIndex = pageEntrySource.indexOf("mountPage(component, options)");
 
   assert.match(playerEntrySource, /await mountAuthenticatedPage/);
   assert.ok(hydrationIndex >= 0, "authenticated progress hydration is missing");
@@ -289,17 +289,8 @@ run("owns startup progress hydration before the authenticated player mount", () 
     hydrationIndex < authExpiryIndex && authExpiryIndex < mountIndex,
     "hydration and auth-expiry handling must finish before player mount",
   );
-  const playerProgressCalls = [
-    ...playerSource.matchAll(/["']\/api\/user\/watch-progress["']/g),
-  ];
-  assert.ok(playerProgressCalls.length > 0, "progress persistence calls are missing");
-  playerProgressCalls.forEach((match) => {
-    assert.match(
-      playerSource.slice(match.index, match.index + 180),
-      /method:\s*["'](?:PUT|DELETE)["']/,
-      "player progress calls must remain persistence mutations",
-    );
-  });
+  assert.match(playerSource, /createCheckpointSaveQueue/, "player must persist through the checked, serialized save queue");
+  assert.doesNotMatch(playerSource, /["']\/api\/user\/watch-progress["']/, "direct unchecked progress requests bypass the queue");
   const recoveryProgressCalls = [
     ...resumeStartSource.matchAll(/["']\/api\/user\/watch-progress["']/g),
   ];

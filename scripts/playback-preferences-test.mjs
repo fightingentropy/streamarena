@@ -24,6 +24,7 @@ Object.defineProperty(globalThis, "localStorage", {
 
 const {
   getAudioLangPreferenceStorageKey,
+  getInitialTmdbResolvePreferences,
   getStoredAudioLangForTmdbMovie,
   getStoredSubtitleLangForTmdbMovie,
   getStoredSubtitleStreamPreferenceForTmdbMovie,
@@ -83,3 +84,16 @@ persistAudioLangPreference("99", "auto");
 assert.equal(getStoredAudioLangForTmdbMovie("99"), "auto");
 
 console.log("playback-preferences tests passed");
+
+// Prewarm and playback share initial desktop/mobile and account preferences.
+assert.equal(getInitialTmdbResolvePreferences({ tmdbId: "987", mobile: false }).quality, "auto");
+assert.equal(getInitialTmdbResolvePreferences({ tmdbId: "987", mobile: true }).quality, "720p");
+assert.equal(getInitialTmdbResolvePreferences({ tmdbId: "987", mobile: true, quality: "2160p" }).quality, "2160p");
+storage.setItem("streamarena-default-audio-lang", "fr");
+storage.setItem("streamarena-audio-lang:movie:987", "ja");
+storage.setItem("streamarena-subtitle-lang:tv:987:s2:e3", "off");
+assert.equal(getInitialTmdbResolvePreferences({ tmdbId: "987", mobile: false }).audioLang, "ja");
+assert.equal(getInitialTmdbResolvePreferences({ tmdbId: "987", audioLang: "auto", mobile: false }).audioLang, "auto");
+assert.deepEqual(getInitialTmdbResolvePreferences({ mediaType: "tv", tmdbId: "987", seasonNumber: 2, episodeNumber: 3, mobile: true }), {
+  audioLang: "fr", subtitleLang: "off", quality: "720p", preferredContainer: "mp4",
+});

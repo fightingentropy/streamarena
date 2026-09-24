@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) async fn remux_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -14,7 +15,8 @@ pub(super) async fn remux_handler(
     if input.trim().is_empty() {
         return Err(ApiError::bad_request("Missing input query parameter."));
     }
-    let benchmark_instance = real_debrid_benchmark_instance_for_request(&state, &headers).await?;
+    let benchmark_instance =
+        real_debrid_benchmark_instance_for_request(&state, &request_auth, &headers).await?;
     if benchmark_instance.is_some()
         && (!benchmark_query_matches_cardinality(
             uri.query().unwrap_or_default(),
@@ -77,6 +79,7 @@ pub(super) async fn remux_handler(
 
 pub(super) async fn media_tracks_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -97,7 +100,8 @@ pub(super) async fn media_tracks_handler(
     if source_input.is_empty() {
         return Err(ApiError::bad_request("Missing input query parameter."));
     }
-    let benchmark_instance = real_debrid_benchmark_instance_for_request(&state, &headers).await?;
+    let benchmark_instance =
+        real_debrid_benchmark_instance_for_request(&state, &request_auth, &headers).await?;
     if benchmark_instance.is_some()
         && (!benchmark_query_matches_cardinality(
             uri.query().unwrap_or_default(),

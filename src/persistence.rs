@@ -3252,7 +3252,7 @@ impl Db {
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
-            let tx = connection.unchecked_transaction()?;
+            let tx = user_state::write_transaction(&connection)?;
             let normalized_series_id = series_id.trim().to_ascii_lowercase();
             let source_prefix = format!("series:{normalized_series_id}:episode:%");
             if let Some(tmdb_id) = tmdb_tv_id_from_series_id(&normalized_series_id) {
@@ -3272,8 +3272,14 @@ impl Db {
                          source_identity LIKE ?
                          OR source_identity = ?
                          OR source_identity LIKE ?
-                       )",
-                    params![user_id, source_prefix, tmdb_source, tmdb_source_prefix],
+                       ) AND updated_at <= ?",
+                    params![
+                        user_id,
+                        source_prefix,
+                        tmdb_source,
+                        tmdb_source_prefix,
+                        deleted_at
+                    ],
                 )?;
             } else {
                 user_state::tombstone_watch_progress_series(
@@ -3285,8 +3291,8 @@ impl Db {
                 )?;
                 tx.execute(
                     "DELETE FROM user_watch_progress
-                     WHERE user_id = ? AND source_identity LIKE ?",
-                    params![user_id, source_prefix],
+                     WHERE user_id = ? AND source_identity LIKE ? AND updated_at <= ?",
+                    params![user_id, source_prefix, deleted_at],
                 )?;
             }
             tx.commit()?;
@@ -3628,7 +3634,7 @@ impl Db {
             )?;
             return_connection(&cache_pool, cache_connection);
             let connection = take_connection(&pool, &path)?;
-            let tx = connection.unchecked_transaction()?;
+            let tx = user_state::write_transaction(&connection)?;
             let canonical_series_id = normalized_series_id.as_str();
             let derived_tmdb_id = tmdb_tv_id_from_series_id(&normalized_series_id);
             let canonical_tmdb_id =
@@ -3845,7 +3851,7 @@ impl Db {
         let pool = self.users_pool.clone();
         task::spawn_blocking(move || {
             let connection = take_connection(&pool, &path)?;
-            let tx = connection.unchecked_transaction()?;
+            let tx = user_state::write_transaction(&connection)?;
             let normalized_series_id = series_id.trim().to_ascii_lowercase();
             let source_prefix = format!("series:{normalized_series_id}:episode:%");
             if let Some(tmdb_id) = tmdb_tv_id_from_series_id(&normalized_series_id) {
@@ -3868,14 +3874,15 @@ impl Db {
                          OR source_identity = ?
                          OR source_identity LIKE ?
                          OR (tmdb_id = ? AND lower(media_type) = 'tv')
-                       )",
+                       ) AND updated_at <= ?",
                     params![
                         user_id,
                         normalized_series_id,
                         source_prefix,
                         tmdb_source,
                         tmdb_source_prefix,
-                        tmdb_id
+                        tmdb_id,
+                        deleted_at
                     ],
                 )?;
             } else {
@@ -3890,8 +3897,9 @@ impl Db {
                 tx.execute(
                     "DELETE FROM user_continue_watching
                      WHERE user_id = ?
-                       AND (lower(series_id) = ? OR source_identity LIKE ?)",
-                    params![user_id, normalized_series_id, source_prefix],
+                       AND (lower(series_id) = ? OR source_identity LIKE ?)
+                       AND updated_at <= ?",
+                    params![user_id, normalized_series_id, source_prefix, deleted_at],
                 )?;
             }
             tx.commit()?;
@@ -5361,6 +5369,8 @@ pub fn build_cache_debug_payload(
 
 #[cfg(test)]
 mod tests {
+    mod user_state_concurrency;
+
     use std::path::{Path, PathBuf};
 
     use rusqlite::params;

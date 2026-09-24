@@ -305,3 +305,19 @@ body.live-route .page, body.sports-route .page, .home-page .live-tab-view { back
 @media (prefers-reduced-motion: reduce) {
   .home-page .hero-poster, .home-page .hero-preview-stage, .card-hover { transition: none; }
 }
+
+/* Keep late account and metadata responses from moving the browsing rails. */
+.home-page .continue-row { --continue-card-width: calc((100vw - var(--browse-gutter) * 2 - 54px) / 4); }
+.home-page .continue-cards { min-height: calc(var(--continue-card-width) * 9 / 16 + 72px); }
+.home-page .continue-row .card-rail-art { aspect-ratio: 16 / 9; }
+.home-page .continue-row .card-rail-art > img { width: 100%; height: 100%; object-fit: cover; }
+.home-page .continue-row .continue-empty { position: absolute; top: 46px; left: 0; margin-top: 0; }
+.home-page .continue-row.is-loading .continue-cards:empty::before { content: ""; display: block; width: var(--continue-card-width); aspect-ratio: 16 / 9; border-radius: 8px; background: var(--browse-surface); }
+.home-page .hero-meta { min-height: 2.8em; align-content: flex-start; }
+.home-page .hero-synopsis { height: 3.2em; }
+@media (max-width: 1100px) {
+  .home-page .continue-row { --continue-card-width: calc((100vw - var(--browse-gutter) * 2 - 36px) / 3); }
+}
+@media (max-width: 760px) {
+  .home-page .continue-row { --continue-card-width: 62vw; }
+}

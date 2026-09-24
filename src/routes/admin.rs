@@ -25,13 +25,14 @@ fn admin_query_i64(uri: &Uri, key: &str, fallback: i64) -> i64 {
 
 pub(super) async fn admin_overview_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let overview = state.db.admin_overview().await?;
     let value =
         serde_json::to_value(overview).map_err(|error| ApiError::internal(error.to_string()))?;
@@ -40,6 +41,7 @@ pub(super) async fn admin_overview_handler(
 
 pub(super) async fn admin_growth_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -47,7 +49,7 @@ pub(super) async fn admin_growth_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let days = admin_query_i64(&uri, "days", 30);
     let rows = state.db.admin_growth(days).await?;
     let value =
@@ -57,6 +59,7 @@ pub(super) async fn admin_growth_handler(
 
 pub(super) async fn admin_users_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -64,7 +67,7 @@ pub(super) async fn admin_users_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let search = admin_query_param(&uri, "search").unwrap_or_default();
     let limit = admin_query_i64(&uri, "limit", 200);
     let offset = admin_query_i64(&uri, "offset", 0);
@@ -76,6 +79,7 @@ pub(super) async fn admin_users_handler(
 
 pub(super) async fn admin_user_detail_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -83,7 +87,7 @@ pub(super) async fn admin_user_detail_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let user_id = admin_query_i64(&uri, "id", 0);
     if user_id <= 0 {
         return Err(ApiError::bad_request(
@@ -102,6 +106,7 @@ pub(super) async fn admin_user_detail_handler(
 
 pub(super) async fn admin_activity_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -109,7 +114,7 @@ pub(super) async fn admin_activity_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let limit = admin_query_i64(&uri, "limit", 50);
     let rows = state.db.admin_activity(limit).await?;
     let value =
@@ -119,6 +124,7 @@ pub(super) async fn admin_activity_handler(
 
 pub(super) async fn admin_live_top_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -126,7 +132,7 @@ pub(super) async fn admin_live_top_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let days = admin_query_i64(&uri, "days", 7);
     let rows = state.db.admin_top_live_streams(days, 12).await?;
     let value =
@@ -136,6 +142,7 @@ pub(super) async fn admin_live_top_handler(
 
 pub(super) async fn admin_feedback_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -143,7 +150,7 @@ pub(super) async fn admin_feedback_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let limit = admin_query_i64(&uri, "limit", 100);
     let rows = state.db.admin_feedback(limit).await?;
     let value =
@@ -155,6 +162,7 @@ pub(super) async fn admin_feedback_handler(
 /// bytes with their original content type.
 pub(super) async fn admin_feedback_image_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     AxumPath(id): AxumPath<i64>,
@@ -162,7 +170,7 @@ pub(super) async fn admin_feedback_image_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let (bytes, mime) = state
         .db
         .feedback_image(id)
@@ -180,6 +188,7 @@ pub(super) async fn admin_feedback_image_handler(
 /// tell "already removed" apart from a successful delete.
 pub(super) async fn admin_delete_feedback_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     AxumPath(id): AxumPath<i64>,
@@ -189,7 +198,7 @@ pub(super) async fn admin_delete_feedback_handler(
             "Method not allowed. Use DELETE.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let changed = state.db.admin_delete_feedback(id).await?;
     if changed == 0 {
         return Err(ApiError::not_found("Feedback not found."));
@@ -199,6 +208,7 @@ pub(super) async fn admin_delete_feedback_handler(
 
 pub(super) async fn admin_reset_password_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -208,7 +218,7 @@ pub(super) async fn admin_reset_password_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let user_id = payload
         .get("userId")
@@ -235,6 +245,7 @@ pub(super) async fn admin_reset_password_handler(
 
 pub(super) async fn admin_set_disabled_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -244,7 +255,7 @@ pub(super) async fn admin_set_disabled_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let admin = auth::require_admin(&state.db, &headers).await?;
+    let admin = request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let user_id = payload
         .get("userId")
@@ -268,6 +279,7 @@ pub(super) async fn admin_set_disabled_handler(
 
 pub(super) async fn admin_set_admin_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -277,7 +289,7 @@ pub(super) async fn admin_set_admin_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let admin = auth::require_admin(&state.db, &headers).await?;
+    let admin = request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let user_id = payload
         .get("userId")
@@ -301,6 +313,7 @@ pub(super) async fn admin_set_admin_handler(
 
 pub(super) async fn admin_delete_user_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -310,7 +323,7 @@ pub(super) async fn admin_delete_user_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    let admin = auth::require_admin(&state.db, &headers).await?;
+    let admin = request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let user_id = payload
         .get("userId")
@@ -506,13 +519,14 @@ pub async fn record_health_sample(state: &AppState) {
 
 pub(super) async fn admin_health_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let report = gather_health(&state).await?;
     Ok(json_response(json!({
         "status": report.status,
@@ -542,6 +556,7 @@ pub(super) async fn admin_health_handler(
 
 pub(super) async fn admin_health_history_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
@@ -549,7 +564,7 @@ pub(super) async fn admin_health_history_handler(
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let hours = admin_query_i64(&uri, "hours", 24).clamp(1, 48);
     let since = now_ms() - hours * 60 * 60 * 1000;
     let samples = state.db.recent_health_samples(since).await?;
@@ -564,13 +579,14 @@ pub(super) async fn admin_health_history_handler(
 /// merges over its compiled channel list.
 pub(super) async fn admin_providers_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
 ) -> AppResult<Response<Body>> {
     if method != Method::GET {
         return Err(ApiError::method_not_allowed("Method not allowed. Use GET."));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let providers = crate::provider_registry::catalog(&state.config);
     let providers_value =
         serde_json::to_value(providers).map_err(|error| ApiError::internal(error.to_string()))?;
@@ -590,6 +606,7 @@ pub(super) async fn admin_providers_handler(
 /// empty value resets to the default); embed providers take a "0"/"1" enable flag.
 pub(super) async fn admin_provider_set_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -599,7 +616,7 @@ pub(super) async fn admin_provider_set_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let key = payload
         .get("key")
@@ -677,6 +694,7 @@ pub(super) async fn admin_provider_set_handler(
 /// here is a hint, not proof the stream is dead in-app.
 pub(super) async fn admin_provider_test_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -686,7 +704,7 @@ pub(super) async fn admin_provider_test_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let url = payload
         .get("url")
@@ -795,6 +813,7 @@ pub(super) fn manifest_is_stream_addon(manifest: &Value) -> bool {
 /// Providers dashboard. Admin-only.
 pub(super) async fn admin_provider_add_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -804,7 +823,7 @@ pub(super) async fn admin_provider_add_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let raw_url = payload
         .get("url")
@@ -905,6 +924,7 @@ pub(super) async fn admin_provider_add_handler(
 /// Admin-only; refuses to touch compiled providers.
 pub(super) async fn admin_provider_remove_handler(
     State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
     method: Method,
     headers: HeaderMap,
     request: Request<Body>,
@@ -914,7 +934,7 @@ pub(super) async fn admin_provider_remove_handler(
             "Method not allowed. Use POST.",
         ));
     }
-    auth::require_admin(&state.db, &headers).await?;
+    request_auth.require_admin(&state.db, &headers).await?;
     let payload = parse_json_body(request).await?;
     let id = payload
         .get("id")

@@ -1,5 +1,5 @@
 // Bump CACHE_PREFIX when shell assets change so clients pick up updates.
-const CACHE_PREFIX = "streamarena-pwa-v31";
+const CACHE_PREFIX = "streamarena-pwa-v32";
 const SHELL_CACHE = `${CACHE_PREFIX}:shell`;
 const PAGE_CACHE = `${CACHE_PREFIX}:pages`;
 const API_CACHE = `${CACHE_PREFIX}:api`;
@@ -18,15 +18,12 @@ const ARTWORK_CACHE_MAX_ENTRIES = 320;
 const API_CACHE_MAX_ENTRIES = 140;
 const RUNTIME_CACHE_MAX_ENTRIES = 90;
 const WARM_CACHE_LIMIT = 100;
+const WARM_CACHE_CONCURRENCY = 3;
+const pendingWarmJobs = [];
+const warmJobsByUrl = new Map();
+let activeWarmJobs = 0;
 
 const APP_SHELL_URLS = [
-  "/",
-  "/index.html",
-  "/login.html",
-  "/settings.html",
-  "/live.html",
-  "/sports.html",
-  "/player.html",
   OFFLINE_URL,
   "/offline.css",
   "/offline.js",
@@ -440,7 +437,33 @@ async function warmUrls(urls) {
     ),
   ).slice(0, WARM_CACHE_LIMIT);
 
-  await Promise.allSettled(normalizedUrls.map((url) => warmUrl(url)));
+  await Promise.allSettled(normalizedUrls.map((url) => queueWarmUrl(url)));
+}
+
+function queueWarmUrl(url) {
+  const existing = warmJobsByUrl.get(url);
+  if (existing) return existing;
+  // Bound both active work and queued work across overlapping messages/tabs.
+  if (warmJobsByUrl.size >= WARM_CACHE_LIMIT) return Promise.resolve();
+  let complete;
+  const promise = new Promise((resolve) => { complete = resolve; });
+  warmJobsByUrl.set(url, promise);
+  pendingWarmJobs.push({ url, complete });
+  drainWarmJobs();
+  return promise;
+}
+
+function drainWarmJobs() {
+  while (activeWarmJobs < WARM_CACHE_CONCURRENCY && pendingWarmJobs.length) {
+    const { url, complete } = pendingWarmJobs.shift();
+    activeWarmJobs += 1;
+    void warmUrl(url).catch(() => {}).finally(() => {
+      activeWarmJobs -= 1;
+      warmJobsByUrl.delete(url);
+      complete();
+      drainWarmJobs();
+    });
+  }
 }
 
 async function deleteCachedUrls(urls) {
@@ -469,6 +492,7 @@ function normalizeWarmUrl(value) {
     if (url.protocol !== "http:" && url.protocol !== "https:") {
       return "";
     }
+    if (url.pathname.startsWith("/assets/images/")) return "";
     if (url.origin === self.location.origin && isLocalArtworkRequest(new Request(url.href), url)) {
       return url.href;
     }

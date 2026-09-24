@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 
-const scheduledCallbacks = [];
 const workerMessages = [];
 const activeWorker = {
   postMessage(message) {
@@ -18,6 +18,10 @@ class FakeElement {
 
   querySelectorAll(selector) {
     if (selector === "img") return this.images;
+    if (selector === "img[data-src]") return this.images.filter((image) => image.dataset.src);
+    if (selector === "img[data-src]:not(.card-hover-image)") {
+      return this.images.filter((image) => image.dataset.src && !image.classList.contains("card-hover-image"));
+    }
     if (selector === "[data-thumb]") return this.thumbs;
     return [];
   }
@@ -52,6 +56,10 @@ class FakeHTMLImageElement extends FakeHTMLElement {
     return name === "src" ? this.src : null;
   }
 
+  removeAttribute(name) {
+    if (name === "srcset") this.srcset = "";
+  }
+
   closest() {
     return {
       classList: {
@@ -73,10 +81,8 @@ Object.defineProperty(globalThis, "window", {
       href: "https://streamarena.test/home.html",
       origin: "https://streamarena.test",
     },
-    setTimeout(callback) {
-      scheduledCallbacks.push(callback);
-      return scheduledCallbacks.length;
-    },
+    setTimeout,
+    clearTimeout,
   },
   configurable: true,
 });
@@ -97,12 +103,12 @@ Object.defineProperties(globalThis, {
 
 const {
   attachArtworkImageFallbacks,
-  collectHomeBootstrapArtworkUrls,
-  collectLocalLibraryArtworkUrls,
+  buildTmdbArtworkSrcSet,
+  observeDeferredArtwork,
+  revealDeferredArtwork,
+  stopObservingDeferredArtwork,
   deleteCachedArtworkUrls,
   handleArtworkImageError,
-  queueOfflineArtworkCache,
-  queueOfflineArtworkFromElement,
   toCacheableArtworkUrl,
 } = await import("../src-ui/lib/offline-artwork.js");
 const { DEFAULT_LOCAL_THUMBNAIL } = await import(
@@ -113,7 +119,7 @@ const serviceWorkerSource = await readFile(
   new URL("../public/sw.js", import.meta.url),
   "utf8",
 );
-assert.match(serviceWorkerSource, /CACHE_PREFIX = "streamarena-pwa-v31"/);
+assert.match(serviceWorkerSource, /CACHE_PREFIX = "streamarena-pwa-v32"/);
 assert.match(
   serviceWorkerSource,
   /url\.pathname\.startsWith\("\/assets\/images\/"\)[\s\S]*?return;/,
@@ -152,94 +158,50 @@ for (const rejectedUrl of [
   );
 }
 
-const libraryArtwork = collectLocalLibraryArtworkUrls({
-  movies: [{ thumb: "/movie.jpg" }, { title: "No artwork" }],
-  series: [
-    {
-      episodes: [{ thumb: "/episode-1.jpg" }, { thumb: "/episode-2.jpg" }],
-    },
-  ],
+const deferredHover = new FakeHTMLImageElement({
+  dataset: { src: "https://image.tmdb.org/t/p/w780/preview.jpg" },
+  classes: ["card-hover-image"], complete: true, naturalWidth: 0,
 });
-assert.deepEqual(libraryArtwork, [
-  "/movie.jpg",
-  "",
-  "/episode-1.jpg",
-  "/episode-2.jpg",
-]);
-
-const bootstrapArtwork = collectHomeBootstrapArtworkUrls(
-  {
-    popular: {
-      results: [{ poster_path: "/popular-p.jpg", backdrop_path: "/popular-b.jpg" }],
-    },
-    trending: {
-      results: [{ posterPath: "/trending-p.jpg", backdropPath: "/trending-b.jpg" }],
-    },
-    ignoredRail: {
-      results: [{ poster_path: "/ignored.jpg" }],
-    },
-    library: {
-      movies: [{ thumb: "/local.jpg" }],
-    },
-  },
-  "https://images.test",
-);
-assert.deepEqual(bootstrapArtwork, [
-  "https://images.test/w1280/popular-b.jpg",
-  "https://images.test/w780/popular-b.jpg",
-  "https://images.test/w780/popular-p.jpg",
-  "https://images.test/w500/popular-p.jpg",
-  "https://images.test/w1280/trending-b.jpg",
-  "https://images.test/w780/trending-b.jpg",
-  "https://images.test/w780/trending-p.jpg",
-  "https://images.test/w500/trending-p.jpg",
-  "/local.jpg",
-]);
-
-queueOfflineArtworkCache([
-  "/one.jpg",
-  "/one.jpg",
-  "https://image.tmdb.org/t/p/w500/two.jpg",
-  "https://example.com/rejected.jpg",
-]);
-queueOfflineArtworkCache(["/three.jpg"]);
-assert.equal(
-  scheduledCallbacks.length,
-  1,
-  "cache requests should share one warm-up timer",
-);
-scheduledCallbacks.shift()();
-await new Promise((resolve) => setImmediate(resolve));
-assert.deepEqual(workerMessages.shift(), {
-  type: "CACHE_URLS",
-  urls: [
-    "https://streamarena.test/one.jpg",
-    "https://image.tmdb.org/t/p/w500/two.jpg",
-    "https://streamarena.test/three.jpg",
-  ],
+const deferredPoster = new FakeHTMLImageElement({
+  dataset: { src: "https://image.tmdb.org/t/p/w500/poster.jpg", srcset: "small.jpg 185w, large.jpg 500w" },
+  complete: true, naturalWidth: 0,
 });
-
-const scannedImage = new FakeHTMLImageElement({
-  currentSrc: "https://streamarena.test/scanned.jpg",
-});
-const scannedThumb = new FakeHTMLElement({ dataset: { thumb: "/nested-thumb.jpg" } });
-const scannedRoot = new FakeHTMLElement({
-  images: [scannedImage],
-  thumbs: [scannedThumb],
-  dataset: { thumb: "/root-thumb.jpg" },
-});
-queueOfflineArtworkFromElement(scannedRoot);
-assert.equal(scheduledCallbacks.length, 1, "element scans should queue one timer");
-scheduledCallbacks.shift()();
-await new Promise((resolve) => setImmediate(resolve));
-assert.deepEqual(workerMessages.shift(), {
-  type: "CACHE_URLS",
-  urls: [
-    "https://streamarena.test/scanned.jpg",
-    "https://streamarena.test/root-thumb.jpg",
-    "https://streamarena.test/nested-thumb.jpg",
-  ],
-});
+const deferredRoot = new FakeElement({ images: [deferredHover, deferredPoster] });
+attachArtworkImageFallbacks(deferredRoot);
+assert.equal(deferredHover.src, "", "missing src is deferred, not a failed image");
+assert.equal(deferredPoster.src, "", "fallback handling must not download a placeholder");
+let observeCallback;
+const observedImages = new Set();
+window.IntersectionObserver = class {
+  constructor(callback, options) {
+    observeCallback = callback;
+    assert.equal(options.rootMargin, "200px");
+  }
+  observe(image) { observedImages.add(image); }
+  unobserve(image) { observedImages.delete(image); }
+  disconnect() { observedImages.clear(); }
+};
+observeDeferredArtwork(deferredRoot);
+assert.deepEqual([...observedImages], [deferredPoster], "offscreen previews must never be observed as visible artwork");
+observeCallback([{ target: deferredPoster, isIntersecting: false }]);
+assert.equal(deferredPoster.src, "", "offscreen cards must not start downloads");
+observeCallback([{ target: deferredPoster, isIntersecting: true }]);
+assert.equal(deferredPoster.src, "https://image.tmdb.org/t/p/w500/poster.jpg");
+assert.equal(deferredPoster.srcset, "small.jpg 185w, large.jpg 500w");
+assert.equal(deferredPoster.loading, "eager");
+assert.equal(observedImages.size, 0);
+assert.equal(deferredHover.src, "");
+revealDeferredArtwork(deferredRoot);
+assert.equal(deferredHover.src, "https://image.tmdb.org/t/p/w780/preview.jpg", "explicit hover/focus activates the preview");
+assert.equal(deferredHover.dataset.src, undefined);
+stopObservingDeferredArtwork();
+delete window.IntersectionObserver;
+const legacyImage = new FakeHTMLImageElement({ dataset: { src: "/legacy.jpg" } });
+observeDeferredArtwork(new FakeElement({ images: [legacyImage] }));
+assert.equal(legacyImage.src, "/legacy.jpg", "browsers without IntersectionObserver still display cards");
+assert.equal(buildTmdbArtworkSrcSet("https://image.tmdb.org/t/p/w1280/backdrop.jpg", [780, 1280]),
+  "https://image.tmdb.org/t/p/w780/backdrop.jpg 780w, https://image.tmdb.org/t/p/w1280/backdrop.jpg 1280w");
+assert.equal(buildTmdbArtworkSrcSet("/local.jpg", [780, 1280]), "", "local thumbnails must retain their original URL");
 
 deleteCachedArtworkUrls([
   "/broken.jpg",
@@ -257,12 +219,14 @@ const brokenImage = new FakeHTMLImageElement({
   complete: true,
   naturalWidth: 0,
 });
+brokenImage.srcset = "https://image.tmdb.org/t/p/w780/broken.jpg 780w";
 const fallbackRoot = new FakeElement({ images: [brokenImage] });
 attachArtworkImageFallbacks(fallbackRoot);
 brokenImage.complete = false;
 attachArtworkImageFallbacks(fallbackRoot);
 assert.equal(brokenImage.listeners.size, 1, "fallback listener should attach once");
 assert.equal(brokenImage.src, DEFAULT_LOCAL_THUMBNAIL);
+assert.equal(brokenImage.srcset, "", "broken responsive candidates must not override the local fallback");
 await new Promise((resolve) => setImmediate(resolve));
 assert.deepEqual(workerMessages.shift(), {
   type: "DELETE_CACHED_URLS",
@@ -275,4 +239,70 @@ assert.equal(brokenLogo.artworkClassRemoved, true);
 assert.equal(brokenLogo.removed, true);
 assert.equal(workerMessages.length, 0);
 
-console.log("Offline artwork tests passed.");
+// Execute the unchanged worker implementation: overlapping messages must share
+// one bounded queue, deduplicate in-flight work, and retain ordinary fetch caching.
+const storedArtwork = new Map();
+const fetchedUrls = [];
+let activeFetches = 0;
+let maxActiveFetches = 0;
+const cache = {
+  match: async (request) => storedArtwork.get(request.url),
+  put: async (request, response) => storedArtwork.set(request.url, response),
+  keys: async () => [...storedArtwork.keys()].map((url) => new Request(url)),
+  delete: async (request) => storedArtwork.delete(request.url),
+};
+const listeners = new Map();
+const workerContext = vm.createContext({
+  URL, Request, Response, AbortController, setTimeout, clearTimeout,
+  self: { location: { origin: "https://streamarena.test" }, addEventListener: (type, callback) => listeners.set(type, callback) },
+  caches: { open: async () => cache, match: cache.match },
+  fetch: async (request) => {
+    fetchedUrls.push(request.url);
+    activeFetches += 1;
+    maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    activeFetches -= 1;
+    if (request.url.endsWith("/broken.jpg")) throw new Error("temporary image failure");
+    return new Response("image", { headers: { "Cache-Control": "public, max-age=3600" } });
+  },
+});
+vm.runInContext(serviceWorkerSource, workerContext);
+const warmUrls = vm.runInContext("warmUrls", workerContext);
+const artworkUrl = (id) => `https://image.tmdb.org/t/p/w500/${id}.jpg`;
+await Promise.all([
+  warmUrls([1, 2, 3, 4, 5].map(artworkUrl)),
+  warmUrls([3, 4, 5, 6, 7, "broken", 8].map(artworkUrl)),
+]);
+assert.equal(maxActiveFetches, 3, "parallel messages must never exceed three artwork fetches globally");
+assert.equal(fetchedUrls.length, 9, "overlapping warm requests should share in-flight work");
+assert.equal(storedArtwork.size, 8, "one failed image must not stop the queue");
+await warmUrls([artworkUrl(1)]);
+assert.equal(fetchedUrls.length, 9, "cached artwork must not be downloaded again");
+await warmUrls(["https://streamarena.test/assets/images/private-poster.jpg"]);
+assert.equal(fetchedUrls.length, 9, "authenticated local artwork must not enter the warming cache");
+let fetchResponse;
+listeners.get("fetch")({
+  request: new Request(artworkUrl(20)),
+  respondWith: (promise) => { fetchResponse = promise; },
+});
+await fetchResponse;
+assert(storedArtwork.has(artworkUrl(20)), "requested artwork must still be available offline without speculative warming");
+assert.doesNotMatch(appShellSource, /"\/(?:index|login|settings|live|sports|player)\.html"/, "protected/no-store pages do not belong in the install precache");
+
+// Ready injected data must not trigger a second bootstrap request.
+let bootstrapJson = JSON.stringify({ popular: { results: [{ id: 1 }] }, library: { movies: [], series: [] } });
+globalThis.document = { getElementById: () => ({ textContent: bootstrapJson }) };
+const { loadInitialHomeBootstrap } = await import("../src-ui/lib/home-bootstrap.js");
+let bootstrapFetches = 0;
+globalThis.fetch = async () => { bootstrapFetches += 1; return { ok: true, json: async () => ({ popular: { results: [{ id: 2 }] } }) }; };
+assert.equal((await loadInitialHomeBootstrap()).popular.results[0].id, 1);
+assert.equal(bootstrapFetches, 0);
+delete window.__HOME_BOOTSTRAP__;
+bootstrapJson = JSON.stringify({ _meta: { status: "warming" } });
+assert.equal((await loadInitialHomeBootstrap()).popular.results[0].id, 2);
+assert.equal(bootstrapFetches, 1, "warming snapshots must still be refreshed");
+delete window.__HOME_BOOTSTRAP__;
+bootstrapJson = "invalid json";
+assert.equal((await loadInitialHomeBootstrap()).popular.results[0].id, 2);
+assert.equal(bootstrapFetches, 2, "invalid snapshots must retain the normal fetch fallback");
+console.log("Offline artwork and Home bootstrap tests passed.");

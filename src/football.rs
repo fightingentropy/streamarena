@@ -28,6 +28,8 @@ use crate::routes::AppState;
 use crate::utils::now_ms;
 
 mod falcon;
+mod lazy_candidates;
+use lazy_candidates::resolve_lazy_candidates;
 mod schedule;
 use falcon::{
     is_safe_ntvs_channel_code, is_supported_ntvs_falcon_player_url,
@@ -3192,33 +3194,51 @@ async fn resolve_verified_ntvs_live_stream_uncached(
         return Err(ApiError::bad_request("Unsupported NTVS live stream URL."));
     }
 
+    let started = std::time::Instant::now();
     let player_page_urls = ntvs_player_page_candidates(state, source_url).await?;
-    let mut errors = Vec::new();
-    for player_page_url in player_page_urls {
-        if let Some((playback_url, resolved_player_page_url)) =
-            resolve_ntvs_player_hls_url(state, &player_page_url).await
-        {
-            return Ok(ResolvedLiveStream {
-                source_url: source_url.clone(),
-                player_page_url: resolved_player_page_url,
-                playback_url,
-                playback_type: "hls",
-                candidate_index,
-                attempted_streams: candidate_index + 1,
-            });
-        }
-        errors.push(format!(
-            "{} could not produce an HLS playlist.",
-            player_page_url.as_str()
-        ));
+    tracing::debug!(
+        provider = NTVS_SOURCE_ID,
+        stage = "candidate_discovery",
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        candidates = player_page_urls.len(),
+        "Sports resolve stage completed"
+    );
+    let resolve_started = std::time::Instant::now();
+    let result = resolve_lazy_candidates(
+        player_page_urls,
+        MAX_LIVE_STREAM_CANDIDATES,
+        |url| url.as_str().trim_end_matches('/').to_owned(),
+        is_supported_ntvs_wrapper_embed_url,
+        |wrapper| async move {
+            fetch_ntvs_direct_embed_candidates(state, &wrapper)
+                .await
+                .unwrap_or_default()
+        },
+        |player| async move { resolve_ntvs_player_hls_url(state, &player).await },
+    )
+    .await;
+    tracing::debug!(
+        provider = NTVS_SOURCE_ID,
+        stage = "player_resolution",
+        elapsed_ms = resolve_started.elapsed().as_millis() as u64,
+        attempted = result.attempted,
+        expanded_wrappers = result.expanded,
+        success = result.value.is_some(),
+        "Sports resolve stage completed"
+    );
+    if let Some((playback_url, player_page_url)) = result.value {
+        return Ok(ResolvedLiveStream {
+            source_url: source_url.clone(),
+            player_page_url,
+            playback_url,
+            playback_type: "hls",
+            candidate_index,
+            attempted_streams: candidate_index + 1,
+        });
     }
-
-    let latest_error = errors
-        .last()
-        .map(|error| format!(" Last error: {error}"))
-        .unwrap_or_default();
     Err(ApiError::bad_gateway(format!(
-        "No playable NTVS embed found.{latest_error}"
+        "No playable NTVS embed found after checking {} candidate(s).",
+        result.attempted
     )))
 }
 
@@ -4023,7 +4043,7 @@ async fn ntvs_player_page_candidates(state: &AppState, source_url: &Url) -> AppR
     }
 
     if is_supported_ntvs_wrapper_embed_url(source_url) {
-        return fetch_ntvs_direct_embed_candidates(state, source_url).await;
+        return Ok(vec![source_url.clone()]);
     }
 
     if !is_supported_ntvs_watch_url(source_url) && !is_supported_ntvs_channel_url(source_url) {
@@ -4036,36 +4056,14 @@ async fn ntvs_player_page_candidates(state: &AppState, source_url: &Url) -> AppR
     let mut seen = BTreeSet::new();
 
     for url in extract_ntvs_candidate_urls(&html, source_url) {
-        if is_supported_ntvs_embed_url(&url) {
-            push_unique_stream_candidate(&mut candidates, &mut seen, url);
-            continue;
-        }
-        if is_supported_ntvs_hesgoaler_player_url(&url) {
-            push_unique_stream_candidate(&mut candidates, &mut seen, url);
-            continue;
-        }
-        if is_supported_ntvs_falcon_player_url(&url) || is_supported_ntvs_wideiptv_player_url(&url)
+        if is_supported_ntvs_embed_url(&url)
+            || is_supported_ntvs_hesgoaler_player_url(&url)
+            || is_supported_ntvs_falcon_player_url(&url)
+            || is_supported_ntvs_wideiptv_player_url(&url)
+            || is_supported_cdnlivetv_stream_url(&url)
+            || is_supported_ntvs_wrapper_embed_url(&url)
         {
             push_unique_stream_candidate(&mut candidates, &mut seen, url);
-            continue;
-        }
-        if is_supported_cdnlivetv_stream_url(&url) {
-            push_unique_stream_candidate(&mut candidates, &mut seen, url);
-            continue;
-        }
-        if !is_supported_ntvs_wrapper_embed_url(&url) {
-            continue;
-        }
-        if let Ok(embed_urls) = fetch_ntvs_direct_embed_candidates(state, &url).await {
-            for embed_url in embed_urls {
-                push_unique_stream_candidate(&mut candidates, &mut seen, embed_url);
-                if candidates.len() >= MAX_LIVE_STREAM_CANDIDATES {
-                    break;
-                }
-            }
-        }
-        if candidates.len() >= MAX_LIVE_STREAM_CANDIDATES {
-            break;
         }
     }
 

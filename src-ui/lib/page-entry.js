@@ -1,4 +1,4 @@
-import { getAuthSession, hydrateFromServer } from "./auth.js";
+import { beginServerHydration, getAuthSession, getCachedUserForOffline, getHydrationState, hydrateFromServer } from "./auth.js";
 import { initEmailVerificationBanner } from "./email-verification-banner.js";
 import { mountPage } from "./mount-page.js";
 import { migrateLegacyStorageKeys } from "./storage-migration.js";
@@ -17,6 +17,7 @@ export async function mountAuthenticatedPage(loadPage, options = {}) {
   // browser preferences are settled.
   const componentPromise = loadPageComponent(loadPage);
   const session = await getAuthSession();
+  if (session.status === "superseded") return;
 
   if (session.status === "unauthorized") {
     window.location.href = "/login.html";
@@ -31,13 +32,22 @@ export async function mountAuthenticatedPage(loadPage, options = {}) {
   }
 
   if (session.status === "authenticated") {
-    const hydration = await hydrateFromServer();
+    const hydration = options.deferHydration
+      ? await beginServerHydration().preferencesReady
+      : await hydrateFromServer();
     if (hydration.authExpired) {
       return;
     }
   }
 
-  mountPage(await componentPromise, options);
+  const component = await componentPromise;
+  // A background response or another tab can invalidate/change the account
+  // while the page module downloads. Never mount that stale account's UI.
+  const cachedUser = getCachedUserForOffline();
+  if (getHydrationState().authExpired ||
+      String(window.__currentUser?.id || "") !== String(session.user.id) ||
+      (cachedUser && String(cachedUser.id) !== String(session.user.id))) return;
+  mountPage(component, options);
   initEmailVerificationBanner(session.user);
 }
 

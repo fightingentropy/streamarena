@@ -1,22 +1,6 @@
 import { TMDB_IMAGE_BASE } from "../shared.js";
 import { DEFAULT_LOCAL_THUMBNAIL } from "./continue-watching.js";
 
-const OFFLINE_ARTWORK_WARM_DELAY_MS = 300;
-const OFFLINE_ARTWORK_WARM_LIMIT = 100;
-const HOME_BOOTSTRAP_ARTWORK_KEYS = [
-  "popular",
-  "bingeworthy",
-  "crowdPleasers",
-  "topSeries",
-  "criticallyAcclaimed",
-  "trending",
-  "nowPlaying",
-  "topRated",
-];
-
-let offlineArtworkWarmTimer = null;
-const pendingOfflineArtworkUrls = new Set();
-
 export function toCacheableArtworkUrl(value) {
   try {
     const raw = String(value || "").trim();
@@ -44,37 +28,6 @@ export function toCacheableArtworkUrl(value) {
   }
 }
 
-export function queueOfflineArtworkCache(urls) {
-  if (!("serviceWorker" in navigator) || !Array.isArray(urls)) {
-    return;
-  }
-  urls
-    .map(toCacheableArtworkUrl)
-    .filter(Boolean)
-    .forEach((url) => pendingOfflineArtworkUrls.add(url));
-  if (!pendingOfflineArtworkUrls.size || offlineArtworkWarmTimer) {
-    return;
-  }
-  offlineArtworkWarmTimer = window.setTimeout(() => {
-    offlineArtworkWarmTimer = null;
-    const urlsToCache = Array.from(pendingOfflineArtworkUrls).slice(
-      0,
-      OFFLINE_ARTWORK_WARM_LIMIT,
-    );
-    urlsToCache.forEach((url) => pendingOfflineArtworkUrls.delete(url));
-    navigator.serviceWorker.ready
-      .then((registration) => {
-        const worker =
-          registration.active || navigator.serviceWorker.controller;
-        worker?.postMessage({ type: "CACHE_URLS", urls: urlsToCache });
-      })
-      .catch(() => {});
-    if (pendingOfflineArtworkUrls.size) {
-      queueOfflineArtworkCache([]);
-    }
-  }, OFFLINE_ARTWORK_WARM_DELAY_MS);
-}
-
 export function deleteCachedArtworkUrls(urls) {
   if (!("serviceWorker" in navigator) || !Array.isArray(urls)) {
     return;
@@ -91,74 +44,60 @@ export function deleteCachedArtworkUrls(urls) {
     .catch(() => {});
 }
 
-export function queueOfflineArtworkFromElement(root) {
-  if (!(root instanceof Element)) {
+// The service worker caches artwork fetched by the browser. Do not scan hidden
+// DOM or whole catalogues to fetch additional sizes speculatively.
+let artworkObserver;
+
+function activateDeferredImage(image) {
+  const src = image.dataset.src;
+  if (!src) return;
+  image.loading = "eager";
+  if (image.dataset.srcset) {
+    image.srcset = image.dataset.srcset;
+    delete image.dataset.srcset;
+  }
+  image.src = src;
+  delete image.dataset.src;
+}
+
+export function revealDeferredArtwork(root) {
+  if (!(root instanceof Element)) return;
+  root.querySelectorAll("img[data-src]").forEach(activateDeferredImage);
+}
+
+export function observeDeferredArtwork(root) {
+  if (!(root instanceof Element)) return;
+  const images = root.querySelectorAll("img[data-src]:not(.card-hover-image)");
+  if (!("IntersectionObserver" in window)) {
+    images.forEach(activateDeferredImage);
     return;
   }
-  const urls = [];
-  root.querySelectorAll("img").forEach((image) => {
-    urls.push(image.currentSrc || image.src || image.getAttribute("src") || "");
-  });
-  if (root instanceof HTMLElement) {
-    urls.push(root.dataset.thumb || "");
-  }
-  root.querySelectorAll("[data-thumb]").forEach((element) => {
-    if (element instanceof HTMLElement) {
-      urls.push(element.dataset.thumb || "");
-    }
-  });
-  queueOfflineArtworkCache(urls);
-}
-
-export function collectLocalLibraryArtworkUrls(localLibrary) {
-  const urls = [];
-  (Array.isArray(localLibrary?.movies) ? localLibrary.movies : []).forEach(
-    (movie) => {
-      urls.push(movie?.thumb || "");
-    },
-  );
-  (Array.isArray(localLibrary?.series) ? localLibrary.series : []).forEach(
-    (series) => {
-      (Array.isArray(series?.episodes) ? series.episodes : []).forEach(
-        (episode) => {
-          urls.push(episode?.thumb || "");
-        },
-      );
-    },
-  );
-  return urls;
-}
-
-function collectTmdbItemArtworkUrls(item, imageBase = TMDB_IMAGE_BASE) {
-  const posterPath = String(item?.poster_path || item?.posterPath || "").trim();
-  const backdropPath = String(
-    item?.backdrop_path || item?.backdropPath || "",
-  ).trim();
-  const urls = [];
-  if (backdropPath) {
-    urls.push(`${imageBase}/w1280${backdropPath}`);
-    urls.push(`${imageBase}/w780${backdropPath}`);
-  }
-  if (posterPath) {
-    urls.push(`${imageBase}/w780${posterPath}`);
-    urls.push(`${imageBase}/w500${posterPath}`);
-  }
-  return urls;
-}
-
-export function collectHomeBootstrapArtworkUrls(
-  bootstrap,
-  imageBase = TMDB_IMAGE_BASE,
-) {
-  const urls = [];
-  HOME_BOOTSTRAP_ARTWORK_KEYS.forEach((key) => {
-    const results = bootstrap?.[key]?.results;
-    (Array.isArray(results) ? results : []).forEach((item) => {
-      urls.push(...collectTmdbItemArtworkUrls(item, imageBase));
+  artworkObserver ||= new window.IntersectionObserver((entries) => {
+    entries.forEach(({ target, isIntersecting }) => {
+      if (!isIntersecting) return;
+      artworkObserver.unobserve(target);
+      activateDeferredImage(target);
     });
-  });
-  urls.push(...collectLocalLibraryArtworkUrls(bootstrap?.library));
-  return urls;
+  }, { rootMargin: "200px" });
+  images.forEach((image) => artworkObserver.observe(image));
+}
+
+export function unobserveDeferredArtwork(root) {
+  if (!(root instanceof Element)) return;
+  root.querySelectorAll("img").forEach((image) => artworkObserver?.unobserve(image));
+}
+
+export function stopObservingDeferredArtwork() {
+  artworkObserver?.disconnect();
+  artworkObserver = null;
+}
+
+export function buildTmdbArtworkSrcSet(value, widths) {
+  const url = String(value || "");
+  if (!url.startsWith(`${TMDB_IMAGE_BASE}/`)) return "";
+  return widths.map((width) =>
+    `${url.replace(/\/(?:w\d+|original)\//, `/w${width}/`)} ${width}w`,
+  ).join(", ");
 }
 
 function setArtworkImageFallback(image) {
@@ -183,6 +122,9 @@ function setArtworkImageFallback(image) {
     deleteCachedArtworkUrls([failedUrl]);
   }
   if (image.src !== fallbackUrl) {
+    image.removeAttribute("srcset");
+    delete image.dataset.srcset;
+    delete image.dataset.src;
     image.src = fallbackPath;
   }
 }
@@ -203,7 +145,7 @@ export function attachArtworkImageFallbacks(root) {
       image.dataset.artworkFallbackAttached = "true";
       image.addEventListener("error", handleArtworkImageError);
     }
-    if (image.complete && image.naturalWidth === 0) {
+    if (image.getAttribute("src") && image.complete && image.naturalWidth === 0) {
       setArtworkImageFallback(image);
     }
   });

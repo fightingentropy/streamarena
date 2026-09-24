@@ -16,13 +16,10 @@ import {
   TMDB_IMAGE_BASE,
 } from "../shared.js";
 import {
-  supportedAudioLangs,
-  DEFAULT_AUDIO_LANGUAGE_PREF_KEY,
-  DEFAULT_STREAM_QUALITY_PREFERENCE,
   getStoredAudioLangForTmdbMovie,
-  normalizeDefaultAudioLanguage,
 } from "../lib/preferences.js";
-import { hydrateFromServer, SERVER_HYDRATED_EVENT, signOut } from "../lib/auth.js";
+import { beginServerHydration, getHydrationState, hydrateFromServer, SERVER_HYDRATED_EVENT, signOut } from "../lib/auth.js";
+import { getInitialTmdbResolvePreferences } from "../player/playback-preferences.js";
 import { bindHorizontalRailScrollers } from "../lib/horizontal-rail-scroll.js";
 import { bindTopNavScrollState } from "../lib/top-nav-scroll.js";
 import {
@@ -39,7 +36,6 @@ import {
   DEFAULT_LOCAL_THUMBNAIL,
   RESUME_STORAGE_PREFIX,
   enrichContinueEntriesWithLocalLibrary,
-  fetchServerContinueWatchingState,
   formatResumeTimestamp,
   formatRuntime,
   getContinueWatchingEntries,
@@ -52,11 +48,12 @@ import {
 } from "../lib/continue-watching.js";
 import {
   attachArtworkImageFallbacks,
-  collectHomeBootstrapArtworkUrls,
-  collectLocalLibraryArtworkUrls,
+  buildTmdbArtworkSrcSet,
   handleArtworkImageError,
-  queueOfflineArtworkCache,
-  queueOfflineArtworkFromElement,
+  revealDeferredArtwork,
+  observeDeferredArtwork,
+  stopObservingDeferredArtwork,
+  unobserveDeferredArtwork,
 } from "../lib/offline-artwork.js";
 import { liveNavClass, sportsNavLinkClass } from "../lib/browse-nav.js";
 import {
@@ -79,6 +76,7 @@ import {
 import TitleRecommendations from "../components/title-recommendations.jsx";
 import SearchExperience from "../components/search-experience.jsx";
 import FeedbackNav from "../components/feedback-nav.jsx";
+import { readInjectedHomeBootstrap } from "../lib/home-bootstrap.js";
 import BrandWordmark from "../components/brand-wordmark.jsx";
 import { addBrowseCardCaption } from "../lib/browse-card-presentation.js";
 
@@ -111,29 +109,6 @@ function normalizeCertification(value) {
 
 function isWarmingHomeBootstrap(payload) {
   return String(payload?._meta?.status || "").trim() === "warming";
-}
-
-function readInjectedHomeBootstrap() {
-  if (window.__HOME_BOOTSTRAP__ && typeof window.__HOME_BOOTSTRAP__ === "object") {
-    return window.__HOME_BOOTSTRAP__;
-  }
-
-  const element = document.getElementById("home-bootstrap");
-  const json = element?.textContent || "";
-  if (!json.trim()) {
-    return null;
-  }
-
-  try {
-    const payload = JSON.parse(json);
-    if (payload && typeof payload === "object") {
-      window.__HOME_BOOTSTRAP__ = payload;
-      return payload;
-    }
-  } catch {
-    // Fall through to the normal bootstrap fetch path.
-  }
-  return null;
 }
 
 async function resolveHomeBootstrap() {
@@ -893,7 +868,15 @@ function isMyListEntryActive(details) {
   );
 }
 
-function toggleMyList(details) {
+async function toggleMyList(details) {
+  const owner = String(window.__currentUser?.id || "");
+  const hydration = getHydrationState();
+  if (hydration.pending && !hydration.didLoadMyList) {
+    await beginServerHydration().myListReady;
+  }
+  if (!owner || getHydrationState().authExpired || String(window.__currentUser?.id || "") !== owner) {
+    return null;
+  }
   const normalizedDetails = normalizeMyListEntry(details);
   const targetIdentity = getRecommendationIdentity(normalizedDetails);
   if (!targetIdentity) {
@@ -990,6 +973,12 @@ export default function HomePage() {
   let topRatedCardsContainerRef;
   let myListCardsRef;
   let myListLibraryEntries = [];
+  let homeLibrarySnapshot = readInjectedHomeBootstrap()?.library || null;
+  let continueEntriesSignature = "";
+  const continueDetailsCache = new Map();
+  const continueDetailsRequests = new Map();
+  const initialHydration = getHydrationState();
+  const initiallyPendingContinue = initialHydration.pending && !initialHydration.didLoadContinueWatching;
   let libraryEditFieldsRef;
   let navSearchInputRef;
   let detailsCloseButtonRef;
@@ -1017,7 +1006,10 @@ export default function HomePage() {
   const [heroPreviewActive, setHeroPreviewActive] = createSignal(false);
   const [heroPreviewPlaying, setHeroPreviewPlaying] = createSignal(false);
 
-  const [continueRowVisible, setContinueRowVisible] = createSignal(false);
+  const [continueRowVisible, setContinueRowVisible] = createSignal(
+    initiallyPendingContinue || getContinueWatchingEntries().length > 0,
+  );
+  const [continueLoading, setContinueLoading] = createSignal(initiallyPendingContinue);
   const [continueEmptyVisible, setContinueEmptyVisible] = createSignal(false);
   const [popularRowVisible, setPopularRowVisible] = createSignal(false);
   const [popularRowTitle, setPopularRowTitle] = createSignal("Trending Now");
@@ -1087,6 +1079,7 @@ export default function HomePage() {
   });
 
   function prewarmCardMovieSource(card) {
+    if (document.hidden || isConstrainedConnection() || activeView() !== "home") return false;
     const details = getCardDetails(card);
     const tmdbId = String(details.tmdbId || "").trim();
     const mediaType = String(details.mediaType || "").trim();
@@ -1098,22 +1091,6 @@ export default function HomePage() {
     ) {
       return false;
     }
-    let audioLang = "en";
-    let subtitleLang = "";
-    try {
-      audioLang = normalizeDefaultAudioLanguage(
-        localStorage.getItem(DEFAULT_AUDIO_LANGUAGE_PREF_KEY),
-      );
-      if (mediaType === "movie") {
-        const storedMovieAudioLang = getStoredAudioLangForTmdbMovie(tmdbId);
-        if (storedMovieAudioLang !== "auto") audioLang = storedMovieAudioLang;
-        subtitleLang = String(
-          localStorage.getItem(`streamarena-subtitle-lang:movie:${tmdbId}`) || "",
-        ).trim();
-      }
-    } catch {
-      // Storage can be unavailable in privacy modes; resolver defaults remain safe.
-    }
     return movieResolvePrewarmer.prewarm({
       tmdbId,
       mediaType,
@@ -1121,9 +1098,11 @@ export default function HomePage() {
       year: details.year,
       seasonNumber: details.seasonNumber || 1,
       episodeNumber: details.episodeNumber || 1,
-      audioLang,
-      subtitleLang,
-      quality: DEFAULT_STREAM_QUALITY_PREFERENCE,
+      ...getInitialTmdbResolvePreferences({
+        tmdbId, mediaType,
+        seasonNumber: details.seasonNumber || 1,
+        episodeNumber: details.episodeNumber || 1,
+      }),
     });
   }
 
@@ -1139,6 +1118,11 @@ export default function HomePage() {
       accountHydratePromise = null;
     });
     return accountHydratePromise;
+  }
+
+  function isConstrainedConnection() {
+    const connection = navigator.connection;
+    return connection?.saveData || ["slow-2g", "2g", "3g"].includes(connection?.effectiveType);
   }
 
   // ---- Player navigation ----
@@ -1158,6 +1142,8 @@ export default function HomePage() {
     resumeSource,
     saveToGallery = false,
   }) {
+    movieResolvePrewarmer.pause();
+    stopHeroPreview();
     const normalizePlaybackSource = (value) => {
       const raw = String(value || "").trim();
       if (!raw) {
@@ -1637,6 +1623,8 @@ export default function HomePage() {
         activeLibraryEditContext.itemType = updatedEntry.itemType;
         activeLibraryEditContext.itemIndex = updatedEntry.itemIndex;
       }
+      applyLibrarySnapshot(activeLibraryEditContext.library);
+      if (window.__HOME_BOOTSTRAP__) window.__HOME_BOOTSTRAP__.library = homeLibrarySnapshot;
       renderLibraryEditModalFields();
       setLibraryEditModalStatus(successMessage, "success");
       void loadContinueWatching();
@@ -2028,11 +2016,11 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
-        <img src="${safeThumb}" alt="${safeTitle}" loading="lazy" />
+        <img data-src="${safeThumb}" alt="${safeTitle}" loading="lazy" />
         <progress class="progress" value="100" max="100" aria-hidden="true"></progress>
       </div>
       <div class="card-hover">
-        <img class="card-hover-image" src="${safeThumb}" alt="${safeTitle} preview" loading="lazy" />
+        <img class="card-hover-image" data-src="${safeThumb}" alt="${safeTitle} preview" loading="lazy" />
         <div class="card-hover-body">
           <div class="card-hover-controls">
             <div class="card-hover-actions">
@@ -2068,12 +2056,15 @@ export default function HomePage() {
     const hydratedEntries = storedEntries.map((entry) =>
       hydrateMyListEntryWithLocalLibrary(entry, myListLibraryEntries),
     );
-    if (JSON.stringify(storedEntries) !== JSON.stringify(hydratedEntries)) {
+    const hydration = getHydrationState();
+    if ((!hydration.pending || hydration.didLoadMyList) &&
+        JSON.stringify(storedEntries) !== JSON.stringify(hydratedEntries)) {
       writeMyListEntries(hydratedEntries);
     }
     const savedEntries = hydratedEntries.sort(
       (left, right) => Number(right.addedAt || 0) - Number(left.addedAt || 0),
     );
+    unobserveDeferredArtwork(myListCardsRef);
     myListCardsRef.innerHTML = "";
 
     const cards = [];
@@ -2119,7 +2110,6 @@ export default function HomePage() {
     });
     myListCardsRef.appendChild(fragment);
     attachArtworkImageFallbacks(myListCardsRef);
-    queueOfflineArtworkFromElement(myListCardsRef);
     syncAllMyListButtons();
     setMyListRowVisible(true);
     setMyListEmptyVisible(false);
@@ -2212,6 +2202,7 @@ export default function HomePage() {
     }
     card.closest(".continue-row, .popular-row")?.classList.add("is-card-hovering");
     const hover = card.querySelector(".card-hover");
+    revealDeferredArtwork(hover);
     hover?.removeAttribute("inert");
     hover?.setAttribute("aria-hidden", "false");
     positionCardHover(card);
@@ -2290,7 +2281,7 @@ export default function HomePage() {
     }
     addBrowseCardCaption(card);
     attachArtworkImageFallbacks(card);
-    queueOfflineArtworkFromElement(card);
+    observeDeferredArtwork(card);
     ensureCardLibraryEditButton(card);
     prepareCardTouchSurfaces(card);
     ensureCardTouchActions(card);
@@ -2390,6 +2381,13 @@ export default function HomePage() {
       }
 
       void (async () => {
+        const owner = String(window.__currentUser?.id || "");
+        const hydration = getHydrationState();
+        if (hydration.pending && (!hydration.didLoadProgress || !hydration.didLoadContinueWatching)) {
+          const pending = beginServerHydration();
+          await Promise.all([pending.progressReady, pending.continueWatchingReady]);
+        }
+        if (!owner || getHydrationState().authExpired || String(window.__currentUser?.id || "") !== owner) return;
         await removeContinueWatchingEntry(resumeSource, card.dataset.seriesId);
         await loadContinueWatching();
       })();
@@ -2401,10 +2399,10 @@ export default function HomePage() {
       .forEach((button) => {
         if (!(button instanceof HTMLButtonElement)) return;
         setMyListButtonState(button, isCardInMyList);
-        button.addEventListener("click", (event) => {
+        button.addEventListener("click", async (event) => {
           event.stopPropagation();
           event.preventDefault();
-          toggleMyList(getCardDetails(card));
+          if (await toggleMyList(getCardDetails(card)) === null) return;
           renderMyListRow();
           syncAllMyListButtons();
         });
@@ -2465,13 +2463,6 @@ export default function HomePage() {
       ? genreNames.map(escapeHtml).join(" <span>&bull;</span> ")
       : "Continue <span>&bull;</span> Resume";
     const safeTitle = escapeHtml(title);
-    // Mirror the other rails: render the show's wordmark when TMDB has one, with the styled
-    // uppercase title as the fallback, over a backdrop-first art crop.
-    const displayTitle = escapeHtml(
-      String(title || "Untitled").replace(/\s+/g, " ").trim().toUpperCase(),
-    );
-    const logoPath = String(tmdbDetails?.logo_path || "").trim();
-    const logoUrl = logoPath ? `${TMDB_IMAGE_BASE}/w500${logoPath}` : "";
     const artUrl = backdropPath
       ? `${TMDB_IMAGE_BASE}/w780${backdropPath}`
       : posterUrl;
@@ -2543,21 +2534,14 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
-        <div class="card-rail-art${logoUrl ? " has-logo" : ""}">
-          <img src="${escapeHtml(artUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />
-          <div class="card-rail-shade" aria-hidden="true"></div>
-          ${
-            logoUrl
-              ? `<img class="card-rail-logo" src="${escapeHtml(logoUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />`
-              : ""
-          }
-          <span class="card-rail-title" aria-hidden="true">${displayTitle}</span>
+        <div class="card-rail-art">
+          <img data-srcset="${escapeHtml(buildTmdbArtworkSrcSet(artUrl, [300, 780]))}" sizes="(max-width: 760px) 62vw, (max-width: 1100px) 33vw, 25vw" width="780" height="439" data-src="${escapeHtml(artUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" fetchpriority="low" />
         </div>
         ${progressMarkup}
       </div>
       <p class="continue-caption">${escapeHtml(resumeCaption)}</p>
       <div class="card-hover">
-        <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" />
+        <img class="card-hover-image" data-src="${escapeHtml(heroUrl.replace("/w1280/", "/w780/"))}" alt="${safeTitle} preview" loading="lazy" />
         <div class="card-hover-body">
           <div class="card-hover-controls">
             <div class="card-hover-actions">
@@ -2644,10 +2628,10 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
-        <img src="${escapeHtml(posterPortraitUrl)}" alt="${safeTitle}" loading="lazy" decoding="async" />
+        <img data-srcset="${escapeHtml(buildTmdbArtworkSrcSet(posterPortraitUrl, [185, 342, 500]))}" sizes="(max-width: 760px) 34vw, (max-width: 1100px) 20vw, (min-width: 1600px) 12.5vw, 17vw" data-src="${escapeHtml(posterPortraitUrl)}" width="500" height="750" alt="${safeTitle}" loading="lazy" decoding="async" fetchpriority="low" />
       </div>
       <div class="card-hover">
-        <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" decoding="async" />
+        <img class="card-hover-image" data-src="${escapeHtml(heroUrl.replace("/w1280/", "/w780/"))}" alt="${safeTitle} preview" loading="lazy" decoding="async" fetchpriority="low" />
         <div class="card-hover-body">
           <div class="card-hover-controls">
             <div class="card-hover-actions">
@@ -2748,11 +2732,11 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
-        <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
+        <img data-src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
         <progress class="progress" value="90" max="100" aria-hidden="true"></progress>
       </div>
       <div class="card-hover">
-        <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" />
+        <img class="card-hover-image" data-src="${escapeHtml(heroUrl.replace("/w1280/", "/w780/"))}" alt="${safeTitle} preview" loading="lazy" />
         <div class="card-hover-body">
           <div class="card-hover-controls">
             <div class="card-hover-actions">
@@ -2896,11 +2880,11 @@ export default function HomePage() {
 
     card.innerHTML = `
       <div class="card-base">
-        <img src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
+        <img data-src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
         <progress class="progress" value="94" max="100" aria-hidden="true"></progress>
       </div>
       <div class="card-hover">
-        <img class="card-hover-image" src="${escapeHtml(heroUrl)}" alt="${safeTitle} preview" loading="lazy" />
+        <img class="card-hover-image" data-src="${escapeHtml(heroUrl.replace("/w1280/", "/w780/"))}" alt="${safeTitle} preview" loading="lazy" />
         <div class="card-hover-body">
           <div class="card-hover-controls">
             <div class="card-hover-actions">
@@ -2974,6 +2958,7 @@ export default function HomePage() {
     if (!(container instanceof HTMLElement)) {
       return;
     }
+    unobserveDeferredArtwork(container);
     container.innerHTML = "";
     const fragment = document.createDocumentFragment();
     cardsToRender.forEach((card, index) => {
@@ -2985,14 +2970,13 @@ export default function HomePage() {
     });
     container.appendChild(fragment);
     attachArtworkImageFallbacks(container);
-    queueOfflineArtworkFromElement(container);
   }
 
   function applyLibrarySnapshot(localLibrary) {
     if (!localLibrary || typeof localLibrary !== "object") {
       return;
     }
-    queueOfflineArtworkCache(collectLocalLibraryArtworkUrls(localLibrary));
+    homeLibrarySnapshot = localLibrary;
     myListLibraryEntries = buildLibraryMyListEntries(localLibrary);
     renderMyListRow();
   }
@@ -3012,7 +2996,6 @@ export default function HomePage() {
     const library = bootstrap.library || null;
     const seenHomeRailKeys = new Set();
 
-    queueOfflineArtworkCache(collectHomeBootstrapArtworkUrls(bootstrap, imageBase));
     applyLibrarySnapshot(library);
 
     const popularCards = buildBrowseRailCards(
@@ -3087,6 +3070,7 @@ export default function HomePage() {
   function renderPopularCards(cardsToRender) {
     const container = getPopularCardsContainer();
     if (!container) return;
+    unobserveDeferredArtwork(container);
     container.innerHTML = "";
     const fragment = document.createDocumentFragment();
     cardsToRender.forEach((card, index) => {
@@ -3098,7 +3082,6 @@ export default function HomePage() {
     });
     container.appendChild(fragment);
     attachArtworkImageFallbacks(container);
-    queueOfflineArtworkFromElement(container);
   }
 
   function getLocalSeriesIdentity(item) {
@@ -3259,7 +3242,6 @@ export default function HomePage() {
     }
     setFeaturedHeroReady(true);
     setFeaturedHero(selected);
-    queueOfflineArtworkCache([selected.poster, selected.thumb]);
     void hydrateFeaturedHeroFromTmdb(selected);
   }
 
@@ -3370,7 +3352,6 @@ export default function HomePage() {
         ? `${TMDB_IMAGE_BASE}/w1280${backdropPath}`
         : hero.poster;
       const trailerKey = selectFeaturedHeroTrailerKey(details);
-      queueOfflineArtworkCache([poster]);
       setFeaturedHero((current) => {
         if (String(current?.tmdbId || "").trim() !== tmdbId) {
           return current;
@@ -3424,7 +3405,9 @@ export default function HomePage() {
       return;
     }
 
-    const libraryRequest = apiFetch("/api/library").then(
+    const libraryRequest = (homeLibrarySnapshot
+      ? Promise.resolve(homeLibrarySnapshot)
+      : apiFetch("/api/library")).then(
       (value) => ({ status: "fulfilled", value }),
       (reason) => ({ status: "rejected", reason }),
     );
@@ -3536,25 +3519,26 @@ export default function HomePage() {
     if (!continueCardsRef) {
       return;
     }
-    const loadVersion = ++continueWatchingLoadVersion;
-
-    const [entriesRaw, serverState, localLibrary] = await Promise.all([
-      Promise.resolve(getContinueWatchingEntries()),
-      fetchServerContinueWatchingState(),
-      apiFetch("/api/library").catch(() => ({ movies: [], series: [] })),
-    ]);
-    const accountEntries = serverState.ok ? serverState.entries : entriesRaw;
+    const hydration = getHydrationState();
+    setContinueLoading(hydration.pending && !hydration.didLoadContinueWatching);
+    setContinueEmptyVisible(getContinueWatchingEntries().length === 0);
+    // Authentication owns and clears these caches. Hydration already fetched the
+    // authoritative row; using it here avoids a duplicate endpoint and render gate.
     const entries = enrichContinueEntriesWithLocalLibrary(
-      accountEntries,
-      localLibrary,
+      getContinueWatchingEntries(),
+      homeLibrarySnapshot,
     );
-    if (loadVersion !== continueWatchingLoadVersion) {
-      return;
-    }
+    const signature = JSON.stringify(entries);
+    if (signature === continueEntriesSignature) return;
+    continueEntriesSignature = signature;
+    const loadVersion = ++continueWatchingLoadVersion;
     if (!entries.length) {
+      unobserveDeferredArtwork(continueCardsRef);
       continueCardsRef.innerHTML = "";
       setContinueEmptyVisible(true);
-      setContinueRowVisible(false);
+      // Keep a reserved row's footprint when an empty response arrives after
+      // paint. A known-empty offline session can still omit the row entirely.
+      setContinueRowVisible(initiallyPendingContinue);
       renderMyListRow();
       return;
     }
@@ -3579,10 +3563,11 @@ export default function HomePage() {
       ),
     );
 
-    const renderEntries = (detailsMap = new Map()) => {
+    const renderEntries = () => {
       if (loadVersion !== continueWatchingLoadVersion || !continueCardsRef) {
         return;
       }
+      unobserveDeferredArtwork(continueCardsRef);
       continueCardsRef.innerHTML = "";
       const fragment = document.createDocumentFragment();
       entries.forEach((entry, index) => {
@@ -3596,7 +3581,7 @@ export default function HomePage() {
           ? `${normalizedMediaType}:${String(entry.tmdbId).trim()}`
           : "";
         const details = detailsLookupKey
-          ? detailsMap.get(detailsLookupKey) || null
+          ? continueDetailsCache.get(detailsLookupKey) || null
           : null;
         const card = buildContinueWatchingCardElement(entry, details);
         if (index >= Math.max(1, entries.length - 2)) {
@@ -3607,7 +3592,6 @@ export default function HomePage() {
       });
       continueCardsRef.appendChild(fragment);
       attachArtworkImageFallbacks(continueCardsRef);
-      queueOfflineArtworkFromElement(continueCardsRef);
 
       setContinueRowVisible(true);
       setContinueEmptyVisible(false);
@@ -3621,31 +3605,59 @@ export default function HomePage() {
     }
 
     void (async () => {
-      const detailsMap = new Map();
       await Promise.allSettled(
         tmdbDetailKeys.map(async (detailKey) => {
-          const separatorIndex = detailKey.indexOf(":");
-          if (separatorIndex <= 0) {
-            return;
+          if (!continueDetailsCache.has(detailKey)) {
+            let request = continueDetailsRequests.get(detailKey);
+            if (!request) {
+              const [mediaType, tmdbId] = detailKey.split(":");
+              request = apiFetchWithTimeout(
+                "/api/tmdb/details", { tmdbId, mediaType },
+                TMDB_DETAILS_ENRICHMENT_TIMEOUT_MS,
+              ).then((details) => {
+                if (details && typeof details === "object") {
+                  continueDetailsCache.set(detailKey, details);
+                }
+              }).finally(() => continueDetailsRequests.delete(detailKey));
+              continueDetailsRequests.set(detailKey, request);
+            }
+            await request;
           }
-          const mediaType = detailKey.slice(0, separatorIndex);
-          const tmdbId = detailKey.slice(separatorIndex + 1);
-          const details = await apiFetchWithTimeout(
-            "/api/tmdb/details",
-            {
-              tmdbId,
-              mediaType,
-            },
-            TMDB_DETAILS_ENRICHMENT_TIMEOUT_MS,
-          );
-          if (details && typeof details === "object") {
-            detailsMap.set(detailKey, details);
-          }
+          if (loadVersion !== continueWatchingLoadVersion || !continueCardsRef) return;
+          const details = continueDetailsCache.get(detailKey);
+          if (!details) return;
+          entries.forEach((entry) => {
+            const mediaType = inferContinueMediaType(
+              entry.sourceIdentity, entry.mediaType, entry.seriesId,
+            ) || "movie";
+            if (`${mediaType}:${entry.tmdbId}` !== detailKey) return;
+            const card = Array.from(continueCardsRef.children).find(
+              (element) => element.dataset.resumeSource === entry.sourceIdentity,
+            );
+            if (!card) return;
+            const enriched = buildContinueWatchingCardElement(entry, details);
+            Object.assign(card.dataset, enriched.dataset);
+            card.querySelector(".card-primary-action")?.setAttribute("aria-label", `Play ${card.dataset.title}`);
+            card.querySelector(".hover-play")?.setAttribute("aria-label", `Resume ${card.dataset.title}`);
+            card.querySelector(".hover-remove")?.setAttribute("aria-label", `Remove ${card.dataset.title} from row`);
+            addBrowseCardCaption(enriched);
+            // Preserve the existing artwork, focused controls and card geometry.
+            // Only richer text/progress changes after the first render.
+            [".continue-caption", ".browse-card-title", ".browse-card-meta", ".card-hover-title",
+              ".card-hover-meta", ".card-hover-tags", ".card-hover-progress"].forEach((selector) => {
+              const target = card.querySelector(selector);
+              const source = enriched.querySelector(selector);
+              if (target && source) target.innerHTML = source.innerHTML;
+            });
+            const progress = enriched.querySelector(".card-base > .progress");
+            if (progress) {
+              const existing = card.querySelector(".card-base > .progress");
+              if (existing) existing.value = progress.value;
+              else card.querySelector(".card-base")?.appendChild(progress);
+            }
+          });
         }),
       );
-      if (detailsMap.size > 0) {
-        renderEntries(detailsMap);
-      }
     })();
   }
 
@@ -3775,6 +3787,7 @@ export default function HomePage() {
   function canPlayHeroPreview() {
     return (
       !heroMotionPaused() &&
+      !isConstrainedConnection() &&
       !detailsModalVisible() &&
       heroPreviewInViewport &&
       activeView() === "home" &&
@@ -4190,12 +4203,14 @@ export default function HomePage() {
     openPlayerPage(activeDetails);
   }
 
-  function handleDetailsMyList() {
+  async function handleDetailsMyList() {
     if (!activeDetails) {
       return;
     }
-    const isAdded = toggleMyList(activeDetails);
-    setDetailsMyListActive(isAdded);
+    const details = activeDetails;
+    const isAdded = await toggleMyList(details);
+    if (isAdded === null) return;
+    if (activeDetails === details) setDetailsMyListActive(isAdded);
     renderMyListRow();
     syncAllMyListButtons();
   }
@@ -4332,7 +4347,6 @@ export default function HomePage() {
     renderMyListRow();
     if (pageRootRef) {
       attachArtworkImageFallbacks(pageRootRef);
-      queueOfflineArtworkFromElement(pageRootRef);
     }
     void loadContinueWatching();
     let appliedInjectedBootstrap = false;
@@ -4480,6 +4494,7 @@ export default function HomePage() {
     };
 
     const handlePageshow = () => {
+      movieResolvePrewarmer.resume();
       applyLibraryEditModeClass();
       stopHeroPreview();
       void refreshAccountBackedCaches();
@@ -4487,15 +4502,30 @@ export default function HomePage() {
 
     const handleVisibilityChange = () => {
       if (document.hidden) {
+        movieResolvePrewarmer.pause();
         stopHeroPreview();
         return;
       }
+      movieResolvePrewarmer.resume();
       void refreshAccountBackedCaches();
+    };
+
+    const handlePagehide = () => {
+      movieResolvePrewarmer.pause();
+      stopHeroPreview();
+    };
+    const handleConnectionChange = () => {
+      if (isConstrainedConnection()) {
+        movieResolvePrewarmer.pause();
+        stopHeroPreview();
+      } else if (!document.hidden) {
+        movieResolvePrewarmer.resume();
+      }
     };
 
     const handleServerHydrated = (event) => {
       const detail = event.detail || {};
-      if (detail.didLoadContinueWatching || detail.didLoadProgress) {
+      if (detail.didLoadContinueWatching || detail.didLoadProgress || !getHydrationState().pending) {
         void loadContinueWatching();
       }
       if (detail.didLoadMyList) {
@@ -4523,11 +4553,15 @@ export default function HomePage() {
     });
     window.addEventListener("storage", handleStorage);
     window.addEventListener("pageshow", handlePageshow);
+    window.addEventListener("pagehide", handlePagehide);
+    navigator.connection?.addEventListener?.("change", handleConnectionChange);
     window.addEventListener("popstate", handlePopstate);
     window.addEventListener("message", handleHeroPreviewMessage);
     window.addEventListener(SERVER_HYDRATED_EVENT, handleServerHydrated);
 
     onCleanup(() => {
+      movieResolvePrewarmer.cancelAll();
+      stopObservingDeferredArtwork();
       cleanupHorizontalRailScrollers();
       cleanupTopNavScrollState();
       stopHeroCarouselTimer();
@@ -4541,6 +4575,8 @@ export default function HomePage() {
       document.removeEventListener("scroll", dismissCardHoversOnScroll, true);
       window.removeEventListener("storage", handleStorage);
       window.removeEventListener("pageshow", handlePageshow);
+      window.removeEventListener("pagehide", handlePagehide);
+      navigator.connection?.removeEventListener?.("change", handleConnectionChange);
       window.removeEventListener("popstate", handlePopstate);
       window.removeEventListener("message", handleHeroPreviewMessage);
       window.removeEventListener(SERVER_HYDRATED_EVENT, handleServerHydrated);
@@ -4724,6 +4760,8 @@ export default function HomePage() {
       >
         <img
           class="hero-poster"
+          srcset={buildTmdbArtworkSrcSet(featuredHero().poster, [780, 1280])}
+          sizes="(max-width: 760px) 100vw, 72vw"
           src={featuredHero().poster}
           alt=""
           aria-hidden="true"
@@ -4861,7 +4899,8 @@ export default function HomePage() {
 
       <section
         id="continueRow"
-        class="continue-row"
+        class={`continue-row${continueLoading() ? " is-loading" : ""}`}
+        aria-busy={continueLoading()}
         hidden={activeView() !== "home" || !continueRowVisible()}
       >
         <h2>Continue watching</h2>
@@ -4875,7 +4914,7 @@ export default function HomePage() {
           class="continue-empty"
           hidden={!continueEmptyVisible()}
         >
-          Start a movie and it will appear here.
+          {continueLoading() ? "Loading your progress…" : "Start a movie and it will appear here."}
         </p>
       </section>
 

@@ -1,4 +1,6 @@
 import { onMount, onCleanup } from "solid-js";
+import { createCheckpointSaveQueue } from "../player/checkpoint-save.js";
+import { createRecentPlaybackSourceCache } from "../player/recent-playback-source.js";
 import { createCustomSubtitleOverlay } from "../player/custom-subtitle-overlay.js";
 import {
   getAudioTrackDisplayLabel,
@@ -64,6 +66,7 @@ import {
 import {
   getLocalSubtitlePreferenceSourceKey as buildLocalSubtitlePreferenceSourceKey,
   getStoredAudioLangForTmdbMovie,
+  getInitialTmdbResolvePreferences,
   getStoredDefaultAudioLanguage,
   getStoredSubtitleLangForTarget,
   getStoredSubtitleStreamPreferenceForTarget,
@@ -159,7 +162,7 @@ import { setRuntimeStyleRule } from "../lib/runtime-styles.js";
 import {
   USER_STATE_OWNER_KEY,
   getServerHydrationStatus,
-  handleAuthFailureResponse,
+  fetchUserApi,
 } from "../lib/auth.js";
 import {
   normalizeRealDebridSettings,
@@ -181,13 +184,6 @@ import {
   slugifyTitle,
 } from "../lib/watch-params.js";
 
-function fetchUserApi(path, options) {
-  return fetch(path, options).then((response) => {
-    handleAuthFailureResponse(response);
-    return response;
-  });
-}
-
 function readPlayerUserStateOwner() {
   try {
     return String(localStorage.getItem(USER_STATE_OWNER_KEY) || "").trim();
@@ -197,6 +193,19 @@ function readPlayerUserStateOwner() {
 }
 
 export default function PlayerPage() {
+  const playerUserStateOwner = readPlayerUserStateOwner();
+  const checkpointSaveQueue = createCheckpointSaveQueue({
+    fetchFn: fetchUserApi,
+    owner: playerUserStateOwner,
+    getOwner: readPlayerUserStateOwner,
+    onError: (error) => console.warn("Watch progress remains saved locally; server sync failed.", error),
+  });
+  const recentPlaybackSources = createRecentPlaybackSourceCache({
+    owner: playerUserStateOwner,
+    getOwner: readPlayerUserStateOwner,
+  });
+  let lastRememberedWorkingSource = "";
+  let lastRememberedWorkingSourceAt = 0;
   const startBoundedWatchProgressRetry = createBoundedWatchProgressRetry({
     fetchUserApiFn: fetchUserApi,
   });
@@ -1078,21 +1087,19 @@ function persistAudioLangPreference(lang) {
   persistAudioLangPreferenceForMovie(tmdbId, lang);
 }
 
-let preferredAudioLang = hasAudioLangParam
-  ? isRecognizedAudioLang(audioLangParam)
-    ? audioLangParam
-    : getStoredDefaultAudioLanguage()
-  : getStoredDefaultAudioLanguage();
-if (isTmdbMoviePlayback && !hasAudioLangParam) {
-  const storedAudioLang = getStoredAudioLangForTmdbMovie(tmdbId);
-  if (isRecognizedAudioLang(storedAudioLang) && storedAudioLang !== "auto") {
-    preferredAudioLang = storedAudioLang;
-  }
-}
+const initialResolvePreferences = getInitialTmdbResolvePreferences({
+  mediaType, tmdbId, seasonNumber, episodeNumber,
+  mobile: shouldPreferMobileLightTmdbSources(),
+  audioLang: hasAudioLangParam ? audioLangParam : undefined,
+  subtitleLang: hasSubtitleLangParam ? subtitleLangParam : undefined,
+  quality: hasQualityParam ? qualityParam : undefined,
+  preferredContainer,
+});
+let preferredAudioLang = initialResolvePreferences.audioLang;
 if (isTmdbMoviePlayback && hasAudioLangParam) {
   persistAudioLangPreference(preferredAudioLang);
 }
-let preferredQuality = normalizePreferredQuality(qualityParam);
+let preferredQuality = initialResolvePreferences.quality;
 applyMobileLightTmdbDefaults();
 let preferredSourceMinSeeders = DEFAULT_SOURCE_MIN_SEEDERS;
 let preferredSourceResultsLimit = DEFAULT_SOURCE_RESULTS_LIMIT;
@@ -1134,6 +1141,7 @@ let resumeTime = 0;
 let lastPersistedResumeTime = 0;
 let lastPersistedResumeAt = 0;
 let resumeFlushIntervalId = 0;
+let lastCompletedSourceIdentity = "";
 
 function shouldPreferMobileLightTmdbSources() {
   return Boolean(isTmdbResolvedPlayback && isMobileOrTabletVideoEnvironment());
@@ -1246,12 +1254,63 @@ function getTmdbTorrentResolveTimeoutMs() {
   }).resolveTimeoutMs;
 }
 
+function getWorkingSourcePreferenceKey() {
+  return JSON.stringify([
+    preferredAudioLang, preferredSubtitleLang, preferredQuality, preferredContainer,
+    preferredSourceLanguage, preferredSourceAudioProfile, preferredSourceFormats,
+  ]);
+}
+
+function rememberCurrentWorkingTmdbSource() {
+  if (!isTmdbResolvedPlayback || isManualSourceSwitchPending() || video?.paused ||
+      !(video?.readyState >= 3) || !(video?.played?.length > 0) || !(video?.currentTime > 0.5)) return;
+  const preferences = getWorkingSourcePreferenceKey();
+  const key = `${sourceIdentity}:${selectedSourceHash}:${preferences}`;
+  if (key === lastRememberedWorkingSource && Date.now() - lastRememberedWorkingSourceAt < 60_000) return;
+  if (recentPlaybackSources.remember({
+    sourceIdentity, preferences, sourceHash: selectedSourceHash,
+    provider: currentTmdbResolverProvider,
+  })) {
+    lastRememberedWorkingSource = key;
+    lastRememberedWorkingSourceAt = Date.now();
+  }
+}
+
+async function resolveInitialTmdbPlayback() {
+  const hint = recentPlaybackSources.get({
+    sourceIdentity,
+    preferences: getWorkingSourcePreferenceKey(),
+    resumeSeconds: resumeTime,
+    explicitSourceHash: getPinnedSourceHashForRequests(),
+    providerAllowed: isTorrentResolverProviderEnabledForPlayback,
+  });
+  if (hint) {
+    const previousProvider = preferredResolverProvider;
+    preferredResolverProvider = hint.provider;
+    try {
+      return await resolveTmdbSourcesAndPlay({
+        requestSourceHash: hint.sourceHash,
+        allowSourceFallback: false,
+        allowContainerFallback: false,
+        resolveTimeoutMs: 5000,
+        retryTransientResolve: false,
+      });
+    } catch (error) {
+      recentPlaybackSources.forget(sourceIdentity);
+      preferredResolverProvider = previousProvider;
+      if (isResolveAbortError(error)) throw error;
+      // A stale resume hint must not trap the viewer on a failed source.
+    }
+  }
+  return resolveTmdbSourcesAndPlay();
+}
+
 function rememberServerContinueWatchingEntry(entry) {
   return mergeRememberedServerContinueWatchingEntry(sourceIdentity, entry);
 }
 
-// Resume position comes from Continue Watching; source pins come only from
-// explicit URL or saved Server-menu choices. An old automatic pick is not a preference.
+// Explicit source pins remain Server choices. A recent source that actually
+// played is only a bounded resume hint and falls back to normal resolution.
 clearDisabledTorrentPlaybackState();
 function getCanonicalContinueWatchingMetadata() {
   const isTmdbSeriesPlayback = Boolean(isTmdbTvPlayback && tmdbId);
@@ -1325,27 +1384,13 @@ function persistContinueWatchingEntry(resumeSeconds) {
   );
 }
 
-function syncContinueWatchingEntryToServer(resumeSeconds, { keepalive = false } = {}) {
-  const normalizedSource = String(sourceIdentity || "").trim();
-  if (
-    !normalizedSource ||
-    !Number.isFinite(resumeSeconds) ||
-    resumeSeconds < 1
-  ) {
-    return;
-  }
-
-  const metadata = getCanonicalContinueWatchingMetadata();
-  fetchUserApi("/api/user/continue-watching", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: replaySafeMutationBody({
-      sourceIdentity: normalizedSource,
-      resumeSeconds,
-      ...metadata,
-    }),
-    keepalive,
-  }).catch(() => {});
+function syncContinueWatchingEntryToServer(resumeSeconds) {
+  lastCompletedSourceIdentity = "";
+  checkpointSaveQueue.enqueue({
+    sourceIdentity,
+    resumeSeconds,
+    metadata: getCanonicalContinueWatchingMetadata(),
+  });
 }
 
 // Live playback has no resume position, so it never lands in continue-watching.
@@ -1400,12 +1445,10 @@ function removeContinueWatchingEntry() {
 
   removeContinueWatchingMeta(normalizedSource);
 
-  // Sync deletion to server in background
-  fetchUserApi("/api/user/continue-watching", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: replaySafeMutationBody({ sourceIdentity: normalizedSource }),
-  }).catch(() => {});
+  if (lastCompletedSourceIdentity !== normalizedSource) {
+    checkpointSaveQueue.enqueue({ sourceIdentity: normalizedSource, remove: true });
+    lastCompletedSourceIdentity = normalizedSource;
+  }
 }
 
 const {
@@ -3043,6 +3086,8 @@ function reportCurrentTmdbPlaybackFailure(
   { includeSourceHash = true, dedupe = true } = {},
 ) {
   const sourceHash = normalizeSourceHash(selectedSourceHash);
+  recentPlaybackSources.forget(sourceIdentity);
+  lastRememberedWorkingSource = "";
   if (
     !isTmdbResolvedPlayback ||
     !tmdbId ||
@@ -3461,6 +3506,7 @@ async function resolveTmdbSourcesAndPlay({
   requiredSourceHash = "",
   requestSourceHash = "",
   resolveTimeoutMs = undefined,
+  retryTransientResolve = true,
   skipExternalEmbed = tmdbSkipExternalEmbed,
   refreshResolve = false,
   startSeconds = 0,
@@ -3515,6 +3561,7 @@ async function resolveTmdbSourcesAndPlay({
               allowSourceFallback,
               requestSourceHash: normalizedRequestSourceHash,
               resolveTimeoutMs: effectiveResolveTimeoutMs,
+            retryTransientResolve,
               skipExternalEmbed,
               refreshResolve,
             },
@@ -3523,6 +3570,7 @@ async function resolveTmdbSourcesAndPlay({
             allowSourceFallback,
             requestSourceHash: normalizedRequestSourceHash,
             resolveTimeoutMs: effectiveResolveTimeoutMs,
+            retryTransientResolve,
             skipExternalEmbed,
             refreshResolve,
           }),
@@ -6212,6 +6260,7 @@ function syncSeekState() {
 }
 
 function persistResumeTime(force = false) {
+  if (!playerUserStateOwner || playerUserStateOwner !== readPlayerUserStateOwner()) return;
   if (isLivePlayback) {
     maybeRecordLiveWatch();
     return;
@@ -6245,12 +6294,6 @@ function persistResumeTime(force = false) {
     if (isNearEnd) {
       localStorage.removeItem(resumeStorageKey);
       removeContinueWatchingEntry();
-      fetchUserApi("/api/user/watch-progress", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: replaySafeMutationBody({ sourceIdentity }),
-        keepalive: Boolean(force),
-      }).catch(() => {});
       resumeTime = 0;
       lastPersistedResumeTime = 0;
       lastPersistedResumeAt = 0;
@@ -6292,17 +6335,7 @@ function persistResumeTime(force = false) {
     lastPersistedResumeAt = now;
     syncEpisodeProgressIndicators();
 
-    // Sync watch progress to server in background
-    fetchUserApi("/api/user/watch-progress", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: replaySafeMutationBody({ sourceIdentity, resumeSeconds: nextResumeTime }),
-      keepalive: Boolean(force),
-    }).catch(() => {});
-
-    syncContinueWatchingEntryToServer(nextResumeTime, {
-      keepalive: Boolean(force),
-    });
+    syncContinueWatchingEntryToServer(nextResumeTime);
   } catch {
     // Ignore storage access issues.
   }
@@ -7082,10 +7115,12 @@ async function resolveTmdbMovieViaBackend(
     allowSourceFallback = true,
     requestSourceHash = "",
     resolveTimeoutMs = undefined,
+    retryTransientResolve = true,
     skipExternalEmbed = false,
     refreshResolve = false,
   } = {},
 ) {
+  const requestPlaybackResolve = (url, timeout) => requestResolveJson(url, timeout, { retryTransient: retryTransientResolve });
   const buildQuery = ({
     sourceHash = "",
     sessionKey = "",
@@ -7140,7 +7175,7 @@ async function resolveTmdbMovieViaBackend(
   const pinnedSessionKey = requestedSourceHash ? "" : getPinnedSessionKeyForRequests();
   let lastError = null;
   try {
-    return await requestResolveJson(
+    return await requestPlaybackResolve(
       `/api/resolve/movie?${buildQuery({
         sourceHash: pinnedSourceHash,
         sessionKey: pinnedSessionKey,
@@ -7158,7 +7193,7 @@ async function resolveTmdbMovieViaBackend(
         shouldAllowTorrentResolveFallback() &&
         (skipExternalEmbed || isSourceFallbackResolveError(error));
       try {
-        return await requestResolveJson(
+        return await requestPlaybackResolve(
           `/api/resolve/movie?${buildQuery({
             skipExternalEmbed: skipEmbedFallback,
           }).toString()}`,
@@ -7182,7 +7217,7 @@ async function resolveTmdbMovieViaBackend(
     })
   ) {
     try {
-      return await requestResolveJson(
+      return await requestPlaybackResolve(
         `/api/resolve/movie?${buildQuery({
           skipExternalEmbed: false,
           resolverProvider: DEFAULT_RESOLVER_PROVIDER,
@@ -7201,7 +7236,7 @@ async function resolveTmdbMovieViaBackend(
     allowSourceFallback &&
     (isTransientResolveError(lastError) || isSourceFallbackResolveError(lastError))
   ) {
-    return requestResolveJson(
+    return requestPlaybackResolve(
       `/api/resolve/movie?${buildQuery({
         includeSourceFilters: false,
         audioLang: "auto",
@@ -7226,10 +7261,12 @@ async function resolveTmdbTvEpisodeViaBackend(
     allowSourceFallback = true,
     requestSourceHash = "",
     resolveTimeoutMs = undefined,
+    retryTransientResolve = true,
     skipExternalEmbed = false,
     refreshResolve = false,
   } = {},
 ) {
+  const requestPlaybackResolve = (url, timeout) => requestResolveJson(url, timeout, { retryTransient: retryTransientResolve });
   const buildQuery = (
     containerPreference = "",
     sourceHash = "",
@@ -7293,7 +7330,7 @@ async function resolveTmdbTvEpisodeViaBackend(
   const pinnedSourceHash = requestedSourceHash || getPinnedSourceHashForRequests();
   const pinnedSessionKey = requestedSourceHash ? "" : getPinnedSessionKeyForRequests();
   try {
-    return await requestResolveJson(
+    return await requestPlaybackResolve(
       `/api/resolve/tv?${buildQuery(preferredContainer, pinnedSourceHash, {
         sessionKey: pinnedSessionKey,
         includeSourceFilters: !pinnedSourceHash,
@@ -7314,7 +7351,7 @@ async function resolveTmdbTvEpisodeViaBackend(
       })
     ) {
       try {
-        return await requestResolveJson(
+        return await requestPlaybackResolve(
           `/api/resolve/tv?${buildQuery(preferredContainer, "", {
             skipExternalEmbed: false,
             resolverProvider: DEFAULT_RESOLVER_PROVIDER,
@@ -7364,7 +7401,7 @@ async function resolveTmdbTvEpisodeViaBackend(
 
     for (const [fallbackContainer, fallbackSource, fallbackSessionKey] of fallbackAttempts) {
       try {
-        return await requestResolveJson(
+        return await requestPlaybackResolve(
           `/api/resolve/tv?${buildQuery(fallbackContainer, fallbackSource, {
             sessionKey: fallbackSessionKey,
             includeSourceFilters: !fallbackSource,
@@ -7384,7 +7421,7 @@ async function resolveTmdbTvEpisodeViaBackend(
       allowSourceFallback &&
       (isTransientResolveError(lastError) || isSourceFallbackResolveError(lastError))
     ) {
-      return requestResolveJson(
+      return requestPlaybackResolve(
         `/api/resolve/tv?${buildQuery("", "", {
           includeSourceFilters: false,
           audioLang: "auto",
@@ -8284,7 +8321,7 @@ async function initPlaybackSource() {
 
   try {
     showResolver("Loading video...");
-    await resolveTmdbSourcesAndPlay();
+    await resolveInitialTmdbPlayback();
   } catch (error) {
     console.error("Failed to resolve TMDB playback:", error);
     showResolverError(error, "Unable to resolve this stream.", {
@@ -8315,6 +8352,7 @@ async function initPlaybackSource() {
   clearLiveStartupHealthWatch({ resetRequest: true });
   clearPlaybackRecovery();
   persistResumeTime(true);
+  checkpointSaveQueue.flushForExit();
 }
   function handleDocumentVisibilityChange() {
     if (document.visibilityState === "hidden") {
@@ -9508,6 +9546,7 @@ trackListener(video, "playing", () => {
   }
 });
 trackListener(video, "timeupdate", () => {
+  rememberCurrentWorkingTmdbSource();
   if (getEffectiveCurrentTime() > 0.5) {
     completeManualSourceSwitchIfActive();
     clearPlaybackRecovery();
@@ -9595,11 +9634,6 @@ trackListener(video, "ended", () => {
   } catch {
     // Ignore storage access issues.
   }
-  fetchUserApi("/api/user/watch-progress", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: replaySafeMutationBody({ sourceIdentity }),
-  }).catch(() => {});
   resumeTime = 0;
   lastPersistedResumeTime = 0;
   lastPersistedResumeAt = 0;
@@ -9804,6 +9838,7 @@ async function handleKeydown(event) {
 _handleKeydownRef = handleKeydown;
 
 trackListener(window, "keydown", handleKeydown, { capture: true });
+trackListener(window, "online", () => checkpointSaveQueue.retryPending());
 trackListener(window, "storage", (event) => {
   if (!event.key || event.key === SUBTITLE_COLOR_PREF_KEY) {
     applySubtitleCueColor(event.newValue);
@@ -9872,6 +9907,9 @@ trackListener(window, "storage", (event) => {
   });
 
   onCleanup(() => {
+    persistResumeTime(true);
+    checkpointSaveQueue.flushForExit();
+    checkpointSaveQueue.dispose();
     void requestResolveJson.dispose();
     deferredMediaTracks.dispose();
     _cleanups.forEach(fn => fn());
