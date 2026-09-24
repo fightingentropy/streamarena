@@ -187,7 +187,7 @@
 #myListRow .card,
 #myListRow .popular-cards .card { flex: 0 0 calc((100vw - var(--browse-gutter) * 2 - 54px) / 4); width: calc((100vw - var(--browse-gutter) * 2 - 54px) / 4); border-radius: 8px; background: transparent; }
 :is(.home-popular-row, .continue-row, #myListRow) .card-base { border-radius: 8px; background: var(--browse-surface); overflow: hidden; }
-.home-popular-row .card--poster .card-base > img { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; }
+.home-popular-row .card--poster .card-base > img { width: 100%; height: auto; aspect-ratio: 2 / 3; object-fit: cover; }
 :is(.home-popular-row, .continue-row, #myListRow) .card img { border-radius: 0; }
 .home-page .continue-row :is(.card-rail-logo, .card-rail-title, .card-rail-shade) { display: none; }
 .home-page .continue-row .card-base .progress { position: absolute; left: 0; bottom: 0; width: 100%; height: 3px; border-radius: 0; margin: 0; }
