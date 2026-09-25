@@ -44,11 +44,33 @@ for (const referer of ["https://cinejoy.pk/", "https://cinejoy.to/"]) {
   });
 }
 
-test("other embeds retain the existing highest-variant workaround", async () => {
+for (const audioTag of [
+  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio.m3u8"',
+  '#EXT-X-MEDIA:URI="audio.m3u8",GROUP-ID="audio",TYPE=AUDIO,NAME="English"',
+]) {
+  test(`non-CineJoy external audio survives variant selection: ${audioTag}`, async () => {
+    const playlist = master.replace(/^#EXT-X-MEDIA:.*$/m, audioTag);
+    const requests = [];
+    const proxy = loadProxy(async (url) => {
+      requests.push(url);
+      return new Response(requests.length === 1 ? playlist : media);
+    });
+    const result = await proxy.resolveToMediaPlaylist("https://cdn.example/master.m3u8", "https://vixsrc.to/");
+    assert.deepEqual(requests, ["https://cdn.example/master.m3u8"]);
+    assert.equal(result.text, playlist);
+    const rewritten = proxy.rewritePlaylist(result.text, result.baseUrl, "https://vixsrc.to/", 8771);
+    assert.match(rewritten, /TYPE=AUDIO/);
+    assert.match(rewritten, /URI="http:\/\/127\.0\.0\.1:8771\/m\?mid=\d+"/);
+    assert.equal(rewritten.match(/#EXT-X-STREAM-INF/g).length, 2);
+  });
+}
+
+test("embeds with in-band audio retain the highest-variant workaround", async () => {
+  const muxedMaster = master.replace(',URI="audio.m3u8"', '');
   const requests = [];
   const proxy = loadProxy(async (url) => {
     requests.push(url);
-    return new Response(requests.length === 1 ? master : media);
+    return new Response(requests.length === 1 ? muxedMaster : media);
   });
   const result = await proxy.resolveToMediaPlaylist("https://cdn.example/master.m3u8", "https://another.example/");
   assert.deepEqual(requests, ["https://cdn.example/master.m3u8", "https://cdn.example/4k.m3u8"]);

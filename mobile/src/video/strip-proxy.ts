@@ -364,9 +364,17 @@ async function resolveToMediaPlaylist(startUrl: string, referer: string): Promis
   let url = startUrl;
   for (let hop = 0; hop < 4; hop++) {
     const text = await fetchText(url, referer);
-    // CineJoy carries audio in separate renditions. Flattening its master to a
-    // video-only playlist discards those tracks and the adaptive 4K/HDR ladder.
-    if (referer === "https://cinejoy.pk/" || referer === "https://cinejoy.to/") return { text, baseUrl: url };
+    // Separate audio belongs to the master, not its video variant. Preserve it
+    // for any provider (including VixSrc), or playback can silently lose audio.
+    // CineJoy also keeps its adaptive 4K/HDR ladder when no external audio exists.
+    const hasExternalAudio = text.split(/\r?\n/).some((line) =>
+      line.startsWith("#EXT-X-MEDIA:") &&
+      /(?:[:,])TYPE=AUDIO(?:,|$)/.test(line) &&
+      /(?:[:,])URI="[^"]+"/.test(line),
+    );
+    if (hasExternalAudio || referer === "https://cinejoy.pk/" || referer === "https://cinejoy.to/") {
+      return { text, baseUrl: url };
+    }
     if (!text.includes("#EXT-X-STREAM-INF")) return { text, baseUrl: url };
     const next = pickBestVariant(text, url);
     if (!next || next === url) return { text, baseUrl: url };
