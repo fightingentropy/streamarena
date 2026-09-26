@@ -78,6 +78,13 @@ try {
     });
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#popularRow .card");
+    const initialPosition = await page.evaluate(() => ({
+      scrollY: window.scrollY,
+      heroTop: document.querySelector(".featured-hero").getBoundingClientRect().top,
+      headerBottom: document.querySelector(".top-nav").getBoundingClientRect().bottom,
+    }));
+    assert.equal(initialPosition.scrollY, 0, "Home startup focus must not scroll past the top of the hero");
+    assert(initialPosition.heroTop >= initialPosition.headerBottom - 1, "the full hero must start below the fixed header");
     assert.equal(myListResponded, false, "My List must not block the initial Home render");
     await page.waitForFunction(() => !document.querySelector("#continueRow")?.hidden);
     const before = await page.locator("#popularRow").boundingBox();

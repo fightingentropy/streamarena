@@ -4451,7 +4451,7 @@ export default function HomePage() {
     if (initialSearch.active) {
       openSearchMode({ focusInput: false, push: false });
     } else {
-      pageRootRef?.focus();
+      pageRootRef?.focus({ preventScroll: true });
     }
 
     let heroVisibilityObserver = null;
