@@ -11,7 +11,7 @@ server.stdout.on("data", (chunk) => { serverOutput += chunk; });
 server.stderr.on("data", (chunk) => { serverOutput += chunk; });
 const series = { id: 920, name: "Signal", media_type: "tv", first_air_date: "2020-01-01", poster_path: "/poster.jpg", backdrop_path: "/backdrop.jpg", overview: "A signal brings old friends back together.", genre_ids: [] };
 const resume = { tmdbId: "920", mediaType: "tv", sourceIdentity: "tmdb:tv:920:s2:e2", title: "Signal", seasonNumber: 2, episodeNumber: 2, resumeSeconds: 120, updatedAt: Date.now() };
-const bootstrap = { bingeworthy: { results: [series] }, popular: { results: [] }, topSeries: { results: [] }, genres: [], library: { movies: [], series: [{ id: "local-series", title: "Local Series", episodes: [{ title: "Getting started", src: "/videos/first.mp4" }, { title: "Next steps", src: "/videos/second.mp4" }] }] } };
+const bootstrap = { bingeworthy: { results: [series, { ...series, id: 921, name: "New Series" }] }, popular: { results: [] }, topSeries: { results: [] }, genres: [], library: { movies: [], series: [{ id: "local-series", title: "Local Series", episodes: [{ title: "Getting started", src: "/videos/first.mp4" }, { title: "Next steps", src: "/videos/second.mp4" }] }] } };
 const details = { ...series, number_of_seasons: 3, seasons: [1, 2, 3].map((number) => ({ season_number: number, episode_count: 3, name: `Season ${number}` })), credits: { cast: [] }, videos: { results: [] }, genres: [] };
 const json = (payload, status = 200) => ({ status, contentType: "application/json", body: JSON.stringify(payload) });
 const image = '<svg xmlns="http://www.w3.org/2000/svg" width="500" height="750"><rect width="500" height="750" fill="#263e54"/></svg>';
@@ -63,10 +63,23 @@ try {
       return route.fulfill(json({}));
     });
 
-    const card = page.locator('.card:not([data-resume-source])[data-tmdb-id="920"]').first().locator(".card-primary-action");
+    const catalogCard = page.locator('.card:not([data-resume-source])[data-tmdb-id="920"]').first();
+    const card = catalogCard.locator(".card-primary-action");
+    const openCardDetails = async (target) => {
+      if (!mobile) await target.locator(".card-primary-action").focus();
+      await target.locator(mobile ? ".card-touch-details" : ".hover-details").click();
+    };
     await page.goto(baseUrl);
     await card.waitFor();
+    await page.locator('.card[data-tmdb-id="921"] .card-primary-action').click();
+    await page.waitForURL("**/watch/tv/921/new-series/s1e1");
+    assert.deepEqual(seasonRequests, [], "One click plays an unwatched series without fetching a details dialog");
+    await page.goto(baseUrl);
     await card.click();
+    await page.waitForURL("**/watch/tv/920/signal/s2e2");
+    assert.deepEqual(seasonRequests, [], "One click resumes the saved episode without opening details");
+    await page.goto(baseUrl);
+    await openCardDetails(catalogCard);
     await page.getByRole("dialog", { name: "Signal", exact: true }).waitFor();
     await page.getByRole("button", { name: "Resume S2 E2", exact: true }).waitFor();
     await page.getByRole("button", { name: "Retry episodes", exact: true }).click();
@@ -95,10 +108,11 @@ try {
     const browseY = await page.evaluate(() => window.scrollY);
     await page.keyboard.press("Escape");
     await page.locator("#detailsModal").waitFor({ state: "hidden" });
-    assert.equal(await card.evaluate((element) => element === document.activeElement), true, "Closing details restores the initiating card");
+    const detailsReturnTarget = mobile ? catalogCard.locator(".card-touch-details") : card;
+    assert.equal(await detailsReturnTarget.evaluate((element) => element === document.activeElement), true, "Closing details restores the initiating control");
     assert.ok(Math.abs(await page.evaluate(() => window.scrollY) - browseY) < 2, "Closing details preserves the browsing position");
 
-    await card.click();
+    await openCardDetails(catalogCard);
     await page.getByLabel("Season", { exact: true }).selectOption("1");
     await page.getByRole("button", { name: "Play season 1, episode 2: Chapter 1.2", exact: true }).click();
     await page.waitForURL("**/watch/tv/920/signal/s1e2");
@@ -107,7 +121,6 @@ try {
     assert.equal(params.has("src"), false, "Selecting another episode must not reuse the previous source URL");
     await page.goto(baseUrl);
     await card.click();
-    await page.getByRole("button", { name: "Resume S2 E2", exact: true }).click();
     await page.waitForURL("**/watch/tv/920/signal/s2e2");
     params = new URLSearchParams(await page.evaluate(() => sessionStorage.getItem("watch:signal")));
     assert.equal(params.get("resumePlayback"), "1");
@@ -118,21 +131,26 @@ try {
     const searchCard = page.getByRole("button", { name: "Details for Signal", exact: true });
     await searchCard.click();
     await page.getByRole("dialog", { name: "Signal", exact: true }).waitFor();
-    assert.equal(new URL(page.url()).pathname, "/", "Search results open details without launching the player");
+    assert.equal(new URL(page.url()).pathname, "/", "The explicit Search info button opens details without launching the player");
     await page.keyboard.press("Escape");
     await page.locator("#detailsModal").waitFor({ state: "hidden" });
     assert.equal(await searchCard.evaluate((element) => element === document.activeElement), true);
+    await page.getByRole("button", { name: "Play Signal", exact: true }).click();
+    await page.waitForURL("**/watch/tv/920/signal/s2e2");
     await page.goto(baseUrl);
     const localCard = page.locator('#libraryRow .card[data-series-id="local-series"]');
-    if (mobile) await localCard.getByRole("button", { name: "More details for Local Series", exact: true }).click();
-    else await localCard.locator(".card-primary-action").press("Enter");
+    await openCardDetails(localCard);
     await page.getByRole("button", { name: "Play season 1, episode 2: Next steps", exact: true }).click();
     await page.waitForURL("**/watch?**");
     const localTarget = new URL(page.url());
     assert.equal(localTarget.searchParams.get("src"), "/videos/second.mp4");
     assert.equal(localTarget.searchParams.get("episodeIndex"), "1");
+    await page.goto(baseUrl);
+    await localCard.locator(".card-primary-action").press("Enter");
+    await page.waitForURL("**/watch?**");
+    assert.equal(new URL(page.url()).searchParams.get("src"), "/videos/first.mp4", "Keyboard activation starts a local series directly");
     assert.deepEqual(errors, []);
-    console.log(`${mobile ? "Mobile" : "Desktop"}: details-first browsing, resume, selected-season loading/cache, retry, stale-response protection, upcoming episodes, focus/scroll restoration and search passed.`);
+    console.log(`${mobile ? "Mobile" : "Desktop"}: direct playback, separate details, resume, selected-season loading/cache, retry, stale-response protection, upcoming episodes, focus/scroll restoration and search passed.`);
     await context.close();
   }
 } finally {

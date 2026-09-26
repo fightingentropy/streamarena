@@ -22,11 +22,13 @@
 .discovery-status .search-status { margin: 0; color: var(--sa-muted); font-size: 16px; }
 .discovery-status .search-status.is-error { color: #ffa6ab; }
 .search-experience .search-results-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 36px 24px; }
-.search-experience .search-result-card { background: transparent; border-radius: 14px; text-align: left; overflow: visible; align-self: start; }
+.search-result { min-width: 0; }
+.search-experience .search-result-card { display: block; width: 100%; background: transparent; border-radius: 14px; text-align: left; overflow: visible; align-self: start; }
 .search-experience .search-result-card::after { display: none; }
 .search-experience .search-result-card img { aspect-ratio: 2 / 3; height: auto; border-radius: 14px; }
 .search-experience .search-result-card-title { position: static; margin: 15px 0 6px; color: var(--sa-text); font-size: 17px; font-weight: 600; line-height: 1.4; text-shadow: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .discovery-card-meta { display: block; color: var(--sa-muted); font-size: 14px; line-height: 1.4; }
+.discovery-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .discovery-load-more { display: block; margin: 36px auto; min-width: 140px; }
 .discovery-pill:disabled { opacity: .6; cursor: wait; }
 .discovery-filters :is(select, input):focus-visible, :is(.discovery-pill, .discovery-person, .discovery-text-button):focus-visible { outline: 2px solid #fff; outline-offset: 3px; }

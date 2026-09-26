@@ -50,7 +50,6 @@ import {
   attachArtworkImageFallbacks,
   buildTmdbArtworkSrcSet,
   handleArtworkImageError,
-  revealDeferredArtwork,
   observeDeferredArtwork,
   stopObservingDeferredArtwork,
   unobserveDeferredArtwork,
@@ -1317,6 +1316,15 @@ export default function HomePage() {
     window.location.href = playerUrl;
   }
 
+  function playTitle(details) {
+    const target = titlePlaybackTarget(details, findTitleResume(details, getContinueWatchingEntries()));
+    if (target.mediaType === "tv") {
+      target.seasonNumber ||= 1;
+      target.episodeNumber ||= 1;
+    }
+    openPlayerPage(target);
+  }
+
   function getHeroDestination() {
     const hero = featuredHero();
     if (!hero?.tmdbId && !hero?.src && !hero?.seriesId) {
@@ -2066,30 +2074,6 @@ export default function HomePage() {
         <img data-src="${safeThumb}" alt="${safeTitle}" loading="lazy" />
         <progress class="progress" value="100" max="100" aria-hidden="true"></progress>
       </div>
-      <div class="card-hover">
-        <img class="card-hover-image" data-src="${safeThumb}" alt="${safeTitle} preview" loading="lazy" />
-        <div class="card-hover-body">
-          <div class="card-hover-controls">
-            <div class="card-hover-actions">
-              <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
-              </button>
-              <button class="hover-round hover-my-list" type="button" aria-label="Add to My List" aria-pressed="false" data-tooltip="Add to My List">
-                ${myListIconMarkup(false)}
-              </button>
-            </div>
-            <button class="hover-round hover-details" type="button" aria-label="More details">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-            </button>
-          </div>
-          <div class="card-hover-meta">
-            <span class="meta-age">${UNRATED_CERTIFICATION_LABEL}</span>
-            <span>${escapeHtml(displayYear)}</span>
-            <span class="meta-spatial">${contentTypeLabel}</span>
-          </div>
-          <p class="card-hover-tags">Saved <span>&bull;</span> My List</p>
-        </div>
-      </div>
     `;
 
     return card;
@@ -2178,8 +2162,7 @@ export default function HomePage() {
     action.className = "card-primary-action";
     action.type = "button";
     const isContinue = Boolean(card.dataset.resumeSource);
-    action.setAttribute("aria-label", `${isContinue ? "Resume" : "Details for"} ${title}`);
-    if (!isContinue) action.setAttribute("aria-haspopup", "dialog");
+    action.setAttribute("aria-label", `${isContinue ? "Resume" : "Play"} ${title}`);
     card.prepend(action);
     return action;
   }
@@ -2211,55 +2194,41 @@ export default function HomePage() {
     actions.appendChild(editButton);
   }
 
-  function positionCardHover(card) {
-    if (!(card instanceof HTMLElement)) {
-      return;
-    }
-    const hover = card.querySelector(".card-hover");
-    if (!(hover instanceof HTMLElement)) {
-      return;
-    }
-
-    const cardRect = card.getBoundingClientRect();
-    const hoverWidth = hover.offsetWidth || Math.min(470, window.innerWidth * 0.34);
-    const hoverHeight = hover.offsetHeight || Math.round((hoverWidth * 9) / 16);
-    const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
-    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-    const gutter = 12;
-
-    const preferredLeft = card.classList.contains("card--align-right")
-      ? cardRect.right - hoverWidth
-      : cardRect.left;
-    const maxLeft = Math.max(gutter, viewportWidth - hoverWidth - gutter);
-    const left = Math.max(gutter, Math.min(preferredLeft, maxLeft));
-
-    const preferredTop = cardRect.bottom - hoverHeight;
-    const maxTop = Math.max(gutter, viewportHeight - hoverHeight - gutter);
-    const top = Math.max(gutter, Math.min(preferredTop, maxTop));
-
-    setRuntimeStyleRule(".card.is-hovering .card-hover", {
-      left: `${left}px`,
-      top: `${top}px`,
-    });
+  function ensureCardHover(card) {
+    const title = escapeHtml(card.dataset.title || "title");
+    const resume = Boolean(card.dataset.resumeSource);
+    const hover = document.createElement("div");
+    hover.className = "card-hover";
+    hover.innerHTML = `
+      <div class="card-hover-body">
+        <div class="card-hover-controls">
+          <div class="card-hover-actions">
+            <button class="hover-round hover-play" type="button" aria-label="${resume ? "Resume" : "Play"} ${title}" title="${resume ? "Resume" : "Play"}">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16l13-8z" /></svg>
+            </button>
+            <button class="hover-round hover-my-list" type="button" aria-label="Add ${title} to My List" aria-pressed="false" title="My List">${myListIconMarkup(false)}</button>
+            ${resume ? `<button class="hover-round hover-remove" type="button" aria-label="Remove ${title} from row" title="Remove from row"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg></button>` : ""}
+          </div>
+          <button class="hover-round hover-details" type="button" aria-label="More details for ${title}" aria-haspopup="dialog" title="Details and episodes">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" /><path d="M12 10.5v6M12 7.5h.01" fill="none" stroke-linecap="round" /></svg>
+          </button>
+        </div>
+      </div>`;
+    card.querySelector(".card-base")?.appendChild(hover);
   }
 
-  // Wait for a brief lingering hover before expanding the preview, so a
-  // pointer merely sweeping across a row never triggers the popup.
+  // Reveal actions after a lingering hover without replacing or moving artwork.
   const CARD_HOVER_INTENT_DELAY = 400;
 
   function showCardHover(card) {
     if (!(card instanceof HTMLElement)) {
       return;
     }
-    card.closest(".continue-row, .popular-row")?.classList.add("is-card-hovering");
     const hover = card.querySelector(".card-hover");
-    revealDeferredArtwork(hover);
     hover?.removeAttribute("inert");
     hover?.setAttribute("aria-hidden", "false");
-    positionCardHover(card);
     card.classList.add("is-hovering");
     prewarmCardMovieSource(card);
-    requestAnimationFrame(() => positionCardHover(card));
   }
 
   function hideCardHover(card, { force = false } = {}) {
@@ -2267,7 +2236,6 @@ export default function HomePage() {
       return;
     }
     card.classList.remove("is-hovering");
-    card.closest(".continue-row, .popular-row")?.classList.remove("is-card-hovering");
     const hover = card.querySelector(".card-hover");
     hover?.setAttribute("inert", "");
     hover?.setAttribute("aria-hidden", "true");
@@ -2316,6 +2284,7 @@ export default function HomePage() {
         class="card-touch-action card-touch-details"
         type="button"
         aria-label="More details for ${safeTitle}"
+        aria-haspopup="dialog"
       >
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="12" cy="12" r="8.5" fill="none" />
@@ -2331,6 +2300,7 @@ export default function HomePage() {
       return;
     }
     addBrowseCardCaption(card);
+    ensureCardHover(card);
     attachArtworkImageFallbacks(card);
     observeDeferredArtwork(card);
     ensureCardLibraryEditButton(card);
@@ -2387,21 +2357,18 @@ export default function HomePage() {
       if (event.target.closest("button")) {
         return;
       }
-      if (card.dataset.resumeSource) openPlayerPage(getCardDetails(card));
-      else openDetailsModal(card, primaryAction);
+      playTitle(getCardDetails(card));
     });
 
     primaryAction?.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (card.dataset.resumeSource) openPlayerPage(getCardDetails(card));
-      else openDetailsModal(card, primaryAction);
+      playTitle(getCardDetails(card));
     });
 
     const hoverPlayButton = card.querySelector(".hover-play");
     hoverPlayButton?.addEventListener("click", (event) => {
       event.stopPropagation();
-      const details = getCardDetails(card);
-      openPlayerPage(titlePlaybackTarget(details, findTitleResume(details, getContinueWatchingEntries())));
+      playTitle(getCardDetails(card));
     });
 
     card.querySelectorAll(".hover-details, .card-touch-details").forEach((button) => {
@@ -2511,9 +2478,6 @@ export default function HomePage() {
       .map((genre) => String(genre?.name || "").trim())
       .filter(Boolean)
       .slice(0, 3);
-    const tagLine = genreNames.length
-      ? genreNames.map(escapeHtml).join(" <span>&bull;</span> ")
-      : "Continue <span>&bull;</span> Resume";
     const safeTitle = escapeHtml(title);
     const artUrl = backdropPath
       ? `${TMDB_IMAGE_BASE}/w780${backdropPath}`
@@ -2521,7 +2485,6 @@ export default function HomePage() {
     const safeDescription = tmdbDetails?.overview || "Resume where you left off.";
     const maturity = normalizeCertification(tmdbDetails?.certification);
     const qualityLabel = "";
-    const contentTypeLabel = isSeriesEntry ? "Series" : "Movie";
     const cast = (tmdbDetails?.credits?.cast || [])
       .slice(0, 4)
       .map((person) => person?.name)
@@ -2571,12 +2534,6 @@ export default function HomePage() {
       card.dataset.libraryType = "movie";
       card.dataset.librarySrc = continueSrc || continueSourceIdentity;
     }
-    const hasEditTarget = Boolean(getLibraryEditTargetFromCard(card));
-    const editButtonMarkup = hasEditTarget
-      ? `<button class="hover-round hover-edit" type="button" aria-label="Edit ${safeTitle}">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.5-1 9-9-3.5-3.5-9 9L4 20Zm10.5-12.5 3.5 3.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-              </button>`
-      : "";
 
     const progressTimeLabel = estimatedDurationSeconds > resumeSeconds
       ? `${isSeriesEntry ? "About " : ""}${Math.ceil((estimatedDurationSeconds - resumeSeconds) / 60)} min left`
@@ -2592,38 +2549,6 @@ export default function HomePage() {
         ${progressMarkup}
       </div>
       <p class="continue-caption">${escapeHtml(resumeCaption)}</p>
-      <div class="card-hover">
-        <img class="card-hover-image" data-src="${escapeHtml(heroUrl.replace("/w1280/", "/w780/"))}" alt="${safeTitle} preview" loading="lazy" />
-        <div class="card-hover-body">
-          <div class="card-hover-controls">
-            <div class="card-hover-actions">
-              <button class="hover-round hover-play" type="button" aria-label="Resume ${safeTitle}">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
-              </button>
-              <button class="hover-round hover-my-list" type="button" aria-label="Add to My List" aria-pressed="false" data-tooltip="Add to My List">
-                ${myListIconMarkup(false)}
-              </button>
-              <button class="hover-round hover-remove" type="button" aria-label="Remove ${safeTitle} from row" data-tooltip="Remove from row">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke-linecap="round" /></svg>
-              </button>
-              ${editButtonMarkup}
-            </div>
-            <button class="hover-round hover-details" type="button" aria-label="More details">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-            </button>
-          </div>
-          <div class="card-hover-progress">
-            ${progressMarkup}
-            <span class="progress-time">${escapeHtml(resumeCaption)}</span>
-          </div>
-          <div class="card-hover-meta">
-            <span class="meta-age">${maturity}</span>
-            ${qualityLabel ? `<span class="meta-chip">${qualityLabel}</span>` : ""}
-            <span class="meta-spatial">${contentTypeLabel}</span>
-          </div>
-          <p class="card-hover-tags">${tagLine}</p>
-        </div>
-      </div>
     `;
 
     return card;
@@ -2645,16 +2570,11 @@ export default function HomePage() {
       ? `${imageBase}/w1280${backdropPath}`
       : posterUrl;
     const maturity = normalizeCertification(item?.certification);
-    const mediaLabel = mediaType === "tv" ? "Series" : "Movie";
     const genreNames = (item.genre_ids || [])
       .map((id) => genreMap.get(id))
       .filter(Boolean)
       .slice(0, 3);
-    const tagLine = genreNames.length
-      ? genreNames.map(escapeHtml).join(" <span>&bull;</span> ")
-      : "Popular <span>&bull;</span> Trending";
     const safeTitle = escapeHtml(title);
-    const safeYear = escapeHtml(year);
     const posterPortraitPath = item.poster_path || item.backdrop_path;
     const posterPortraitUrl = posterPortraitPath
       ? `${imageBase}/w500${posterPortraitPath}`
@@ -2681,30 +2601,6 @@ export default function HomePage() {
     card.innerHTML = `
       <div class="card-base">
         <img data-srcset="${escapeHtml(buildTmdbArtworkSrcSet(posterPortraitUrl, [185, 342, 500]))}" sizes="(max-width: 760px) 34vw, (max-width: 1100px) 20vw, (min-width: 1600px) 12.5vw, 17vw" data-src="${escapeHtml(posterPortraitUrl)}" width="500" height="750" alt="${safeTitle}" loading="lazy" decoding="async" fetchpriority="low" />
-      </div>
-      <div class="card-hover">
-        <img class="card-hover-image" data-src="${escapeHtml(heroUrl.replace("/w1280/", "/w780/"))}" alt="${safeTitle} preview" loading="lazy" decoding="async" fetchpriority="low" />
-        <div class="card-hover-body">
-          <div class="card-hover-controls">
-            <div class="card-hover-actions">
-              <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
-              </button>
-              <button class="hover-round hover-my-list" type="button" aria-label="Add to My List" aria-pressed="false" data-tooltip="Add to My List">
-                ${myListIconMarkup(false)}
-              </button>
-            </div>
-            <button class="hover-round hover-details" type="button" aria-label="More details">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-            </button>
-          </div>
-          <div class="card-hover-meta">
-            <span class="meta-age">${maturity}</span>
-            <span>${safeYear}</span>
-            <span class="meta-spatial">${mediaLabel}</span>
-          </div>
-          <p class="card-hover-tags">${tagLine}</p>
-        </div>
       </div>
     `;
 
@@ -2748,11 +2644,7 @@ export default function HomePage() {
     const posterUrl = normalizeArtworkPath(preferredThumb);
     const heroUrl = tmdbHeroUrl || posterUrl;
     const safeTitle = escapeHtml(title);
-    const safeYear = escapeHtml(year);
     const mediaLabel = looksLikeCourse ? "Course" : "Movie";
-    const tagLine = looksLikeCourse
-      ? "Uploaded <span>&bull;</span> Course"
-      : "Uploaded <span>&bull;</span> Local Library";
 
     const card = document.createElement("article");
     card.className = "card";
@@ -2778,40 +2670,11 @@ export default function HomePage() {
     if (item?.tmdbId) {
       card.dataset.tmdbId = String(item.tmdbId).trim();
     }
-    const editButtonMarkup = `<button class="hover-round hover-edit" type="button" aria-label="Edit ${safeTitle}">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.5-1 9-9-3.5-3.5-9 9L4 20Zm10.5-12.5 3.5 3.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-              </button>`;
 
     card.innerHTML = `
       <div class="card-base">
         <img data-src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
         <progress class="progress" value="90" max="100" aria-hidden="true"></progress>
-      </div>
-      <div class="card-hover">
-        <img class="card-hover-image" data-src="${escapeHtml(heroUrl.replace("/w1280/", "/w780/"))}" alt="${safeTitle} preview" loading="lazy" />
-        <div class="card-hover-body">
-          <div class="card-hover-controls">
-            <div class="card-hover-actions">
-              <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
-              </button>
-              <button class="hover-round hover-my-list" type="button" aria-label="Add to My List" aria-pressed="false" data-tooltip="Add to My List">
-                ${myListIconMarkup(false)}
-              </button>
-              ${editButtonMarkup}
-            </div>
-            <button class="hover-round hover-details" type="button" aria-label="More details">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-            </button>
-          </div>
-          <div class="card-hover-meta">
-            <span class="meta-age">${maturity}</span>
-            <span>${safeYear}</span>
-            ${qualityLabel ? `<span class="meta-chip">${qualityLabel}</span>` : ""}
-            <span class="meta-spatial">${mediaLabel}</span>
-          </div>
-          <p class="card-hover-tags">${tagLine}</p>
-        </div>
       </div>
     `;
 
@@ -2879,15 +2742,11 @@ export default function HomePage() {
       ? `${imageBase}/w1280${backdropPath}`
       : posterUrl;
     const safeTitle = escapeHtml(title);
-    const safeYear = escapeHtml(year);
     const maturity = normalizeCertification(tmdbDetails?.certification);
     const genreNames = (tmdbDetails?.genres || [])
       .map((genre) => String(genre?.name || "").trim())
       .filter(Boolean)
       .slice(0, 3);
-    const tagLine = genreNames.length
-      ? genreNames.map(escapeHtml).join(" <span>&bull;</span> ")
-      : `Uploaded <span>&bull;</span> ${mediaLabel}`;
     const shouldHideEpisodePrefix =
       isCourse || /\b(webinar|lesson|module|class)\b/i.test(firstEpisodeTitle);
 
@@ -2926,39 +2785,11 @@ export default function HomePage() {
     if (item?.tmdbId) {
       card.dataset.tmdbId = String(item.tmdbId).trim();
     }
-    const editButtonMarkup = `<button class="hover-round hover-edit" type="button" aria-label="Edit ${safeTitle}">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.5-1 9-9-3.5-3.5-9 9L4 20Zm10.5-12.5 3.5 3.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-              </button>`;
 
     card.innerHTML = `
       <div class="card-base">
         <img data-src="${escapeHtml(posterUrl)}" alt="${safeTitle}" loading="lazy" />
         <progress class="progress" value="94" max="100" aria-hidden="true"></progress>
-      </div>
-      <div class="card-hover">
-        <img class="card-hover-image" data-src="${escapeHtml(heroUrl.replace("/w1280/", "/w780/"))}" alt="${safeTitle} preview" loading="lazy" />
-        <div class="card-hover-body">
-          <div class="card-hover-controls">
-            <div class="card-hover-actions">
-              <button class="hover-round hover-play" type="button" aria-label="Play ${safeTitle}">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5v17L20 12 5 3.5Z" /></svg>
-              </button>
-              <button class="hover-round hover-my-list" type="button" aria-label="Add to My List" aria-pressed="false" data-tooltip="Add to My List">
-                ${myListIconMarkup(false)}
-              </button>
-              ${editButtonMarkup}
-            </div>
-            <button class="hover-round hover-details" type="button" aria-label="More details">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
-            </button>
-          </div>
-          <div class="card-hover-meta">
-            <span class="meta-age">${maturity}</span>
-            <span>${safeYear}</span>
-            <span class="meta-spatial">${mediaLabel}</span>
-          </div>
-          <p class="card-hover-tags">${tagLine}</p>
-        </div>
       </div>
     `;
 
@@ -3695,8 +3526,7 @@ export default function HomePage() {
             addBrowseCardCaption(enriched);
             // Preserve the existing artwork, focused controls and card geometry.
             // Only richer text/progress changes after the first render.
-            [".continue-caption", ".browse-card-title", ".browse-card-meta", ".card-hover-title",
-              ".card-hover-meta", ".card-hover-tags", ".card-hover-progress"].forEach((selector) => {
+            [".continue-caption", ".browse-card-title", ".browse-card-meta"].forEach((selector) => {
               const target = card.querySelector(selector);
               const source = enriched.querySelector(selector);
               if (target && source) target.innerHTML = source.innerHTML;
@@ -4515,15 +4345,6 @@ export default function HomePage() {
 
     const handleGlobalResize = () => {
       hideSearchContextMenu();
-      document
-        .querySelectorAll(".card.is-hovering")
-        .forEach((card) => positionCardHover(card));
-    };
-
-    const dismissCardHoversOnScroll = () => {
-      document.querySelectorAll(".card.is-hovering").forEach((card) => {
-        hideCardHover(card, { force: true });
-      });
     };
 
     const handleStorage = (event) => {
@@ -4636,10 +4457,6 @@ export default function HomePage() {
     document.addEventListener("pointerdown", handleGlobalPointerdownAccountMenu);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("resize", handleGlobalResize);
-    document.addEventListener("scroll", dismissCardHoversOnScroll, {
-      passive: true,
-      capture: true,
-    });
     window.addEventListener("storage", handleStorage);
     window.addEventListener("pageshow", handlePageshow);
     window.addEventListener("pagehide", handlePagehide);
@@ -4661,7 +4478,6 @@ export default function HomePage() {
       document.removeEventListener("pointerdown", handleGlobalPointerdownAccountMenu);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("resize", handleGlobalResize);
-      document.removeEventListener("scroll", dismissCardHoversOnScroll, true);
       window.removeEventListener("storage", handleStorage);
       window.removeEventListener("pageshow", handlePageshow);
       window.removeEventListener("pagehide", handlePagehide);
@@ -4828,7 +4644,8 @@ export default function HomePage() {
         restoreFocus={searchRestoreFocus()}
         onChange={updateSearchState}
         onCaptureReady={(capture) => { captureSearchReturnState = capture; }}
-        onOpen={(item, imageBase, trigger) => openDetailsModal(null, trigger, createSearchResultDetails(item, imageBase))}
+        onPlay={(item, imageBase) => playTitle(createSearchResultDetails(item, imageBase))}
+        onDetails={(item, imageBase, trigger) => openDetailsModal(null, trigger, createSearchResultDetails(item, imageBase))}
         onContext={(event, item, imageBase) => openSearchContextMenu(event, createSearchResultDetails(item, imageBase))}
       />
 
@@ -4842,7 +4659,8 @@ export default function HomePage() {
         sort={myListSort()}
         onFilter={handleMyListFilter}
         onRetry={() => void refreshAccountBackedCaches()}
-        onOpen={(entry, trigger) => openDetailsModal(null, trigger, getCardModalData(buildMyListCardElement(entry)))}
+        onPlay={(entry) => playTitle(getCardDetails(buildMyListCardElement(entry)))}
+        onDetails={(entry, trigger) => openDetailsModal(null, trigger, getCardModalData(buildMyListCardElement(entry)))}
         onRemove={handleMyListToggle}
         onBrowse={() => openSearchMode()}
       />
@@ -5249,7 +5067,7 @@ export default function HomePage() {
         <TitleRecommendations
           visible={detailsModalVisible()}
           title={detailsData()}
-          onOpen={(item, imageBase) => openDetailsModal(null, detailsTrigger, createSearchResultDetails(item, imageBase))}
+          onOpen={(item, imageBase) => playTitle(createSearchResultDetails(item, imageBase))}
         />
       </article>
     </div>

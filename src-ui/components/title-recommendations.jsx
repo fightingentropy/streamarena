@@ -50,7 +50,7 @@ export default function TitleRecommendations(props) {
       <Show when={loading()}><p class="search-status" role="status">Finding related titles…</p></Show>
       <Show when={error()}><div class="discovery-status"><p class="search-status" role="status">Related titles couldn’t load.</p><button class="discovery-pill" onClick={() => void load()}>Retry recommendations</button></div></Show>
       <div id="detailsMoreGrid" class="details-grid">
-        <For each={items()}>{(item) => <button class="details-item" aria-label={`Open ${item.title || item.name}`} onClick={(event) => props.onOpen(item, imageBase(), event.currentTarget)}>
+        <For each={items()}>{(item) => <button class="details-item" aria-label={`Play ${item.title || item.name}`} onClick={(event) => props.onOpen(item, imageBase(), event.currentTarget)}>
           <img src={item.backdropPath || item.posterPath ? `${imageBase()}/w780${item.backdropPath || item.posterPath}` : "/assets/images/thumbnail.jpg"} alt={`${item.title || item.name} artwork`} loading="lazy" onError={handleArtworkImageError} />
           <p>{item.title || item.name}</p>
         </button>}</For>

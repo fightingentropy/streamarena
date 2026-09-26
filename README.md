@@ -190,9 +190,9 @@ Home and browsing:
 - Rails for curated movies, series, critically acclaimed titles, local library, continue watching, and My List.
 - Search movies, series, actors, and directors, with genre/year filters, paginated results, and account-scoped recent searches on web and iPhone.
 - Web search links retain the query and filters. Returning from playback restores loaded results, pagination, scroll position, and the selected card without repeating catalogue requests; the current tab keeps one account-scoped search for up to six hours.
-- Title-specific recommendations prioritize titles the viewer has not started. Related-title cards open details before playback.
+- Title-specific recommendations prioritize titles the viewer has not started. Related-title cards play directly.
 - Home becomes compact when Continue Watching is available; episode and resume captions stay visible. Web previews have a pause control, and iPhone Home Play opens or resumes the player directly.
-- Web catalogue and search cards open title details with metadata, cast, Play/Resume, and My List actions. Continue Watching still resumes directly; desktop hover cards retain quick Play.
+- Clicking a title on Home, Search, My List, or recommendations starts playback or resumes the saved episode directly. Separate info buttons open details and episode selection. Desktop hover controls stay inside the original artwork without changing its crop or downloading another preview image.
 - Series details include a season picker and episode artwork, summaries, runtime, and saved-episode progress. Only the selected season loads, successful responses are cached briefly, failed loads can be retried, and future episodes show their air date. Local series use their own episode files. Closing details restores focus and the browsing position.
 - Continue watching entries enriched from local library and server state.
 - My List has a dedicated `/?view=my-list` grid with Movies/Series filters, recently added/title/release-year sorting, and a return path from playback that preserves those choices. Home retains a saved-title rail; unsaved local files appear separately under Local library.

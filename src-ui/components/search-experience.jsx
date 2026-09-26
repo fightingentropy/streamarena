@@ -55,6 +55,12 @@ export default function SearchExperience(props) {
     try { localStorage.setItem(recentKey(), JSON.stringify(next)); } catch { /* optional */ }
   }
 
+  function rememberSelection(item) {
+    remember();
+    selectedKey = `${item.mediaType}:${item.id}`;
+    captureSearch();
+  }
+
   async function load(nextPage = 1) {
     controller?.abort();
     const request = ++version;
@@ -199,11 +205,18 @@ export default function SearchExperience(props) {
         <Show when={error()}><button class="discovery-pill" onClick={() => void load(failedPage)}>Retry search</button></Show>
       </div>
       <div id="searchResultsGrid" class="search-results-grid" ref={(element) => (gridRef = element)} aria-busy={loading()}>
-        <For each={results()}>{(item) => <button class="search-result-card" data-search-key={`${item.mediaType}:${item.id}`} aria-label={`Details for ${item.title || item.name}`} aria-haspopup="dialog" onClick={(event) => { remember(); selectedKey = `${item.mediaType}:${item.id}`; captureSearch(); props.onOpen(item, imageBase(), event.currentTarget); }} onContextMenu={(event) => props.onContext(event, item, imageBase())}>
-          <img src={item.posterPath || item.backdropPath ? `${imageBase()}/w500${item.posterPath || item.backdropPath}` : "/assets/images/thumbnail.jpg"} alt={item.title || item.name} loading="lazy" onError={handleArtworkImageError} />
-          <p class="search-result-card-title">{item.title || item.name}</p>
-          <span class="discovery-card-meta">{item.mediaType === "tv" ? "Series" : "Movie"}{(item.releaseDate || item.firstAirDate) ? ` · ${(item.releaseDate || item.firstAirDate).slice(0, 4)}` : ""}</span>
-        </button>}</For>
+        <For each={results()}>{(item) => <article class="search-result">
+          <button class="search-result-card" data-search-key={`${item.mediaType}:${item.id}`} aria-label={`Play ${item.title || item.name}`} onClick={() => { rememberSelection(item); props.onPlay(item, imageBase()); }} onContextMenu={(event) => props.onContext(event, item, imageBase())}>
+            <img src={item.posterPath || item.backdropPath ? `${imageBase()}/w500${item.posterPath || item.backdropPath}` : "/assets/images/thumbnail.jpg"} alt="" loading="lazy" onError={handleArtworkImageError} />
+            <p class="search-result-card-title">{item.title || item.name}</p>
+          </button>
+          <div class="discovery-card-footer">
+            <span class="discovery-card-meta">{item.mediaType === "tv" ? "Series" : "Movie"}{(item.releaseDate || item.firstAirDate) ? ` · ${(item.releaseDate || item.firstAirDate).slice(0, 4)}` : ""}</span>
+            <button class="title-details-button" type="button" aria-label={`Details for ${item.title || item.name}`} aria-haspopup="dialog" title="Details and episodes" onClick={(event) => { rememberSelection(item); props.onDetails(item, imageBase(), event.currentTarget); }}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" /><path d="M12 10.5v6M12 7.5h.01" fill="none" stroke-linecap="round" /></svg>
+            </button>
+          </div>
+        </article>}</For>
       </div>
       <Show when={hasMore() && !error()}><button class="discovery-load-more discovery-pill" disabled={loading()} onClick={() => void load(page() + 1)}>{loading() ? "Loading…" : "Load more"}</button></Show>
     </section>

@@ -134,8 +134,15 @@ try {
       await page.mouse.move(1, 1);
       await page.waitForTimeout(450);
       assert.equal(await firstCard.locator(".card-hover-image[src]").count(), 0);
+      const originalArtwork = await firstCard.locator(".card-base > img").getAttribute("src");
+      const originalBounds = await firstCard.locator(".card-base").boundingBox();
       await firstCard.locator(".card-primary-action").focus();
-      await page.waitForFunction(() => Boolean(document.querySelector("#popularRow .card .card-hover-image[src]")));
+      await page.waitForFunction(() => document.querySelector("#popularRow .card")?.classList.contains("is-hovering"));
+      assert.equal(await firstCard.locator(".card-base > img").getAttribute("src"), originalArtwork, "hover keeps the original artwork and crop");
+      assert.equal(await firstCard.locator(".card-hover img").count(), 0, "hover must not download another preview image");
+      const hoverBounds = await firstCard.locator(".card-hover").boundingBox();
+      assert.deepEqual(await firstCard.locator(".card-base").boundingBox(), originalBounds, "hover must not resize the artwork");
+      assert(Math.abs(hoverBounds.width - originalBounds.width) < 1 && Math.abs(hoverBounds.height - originalBounds.height) < 1, "hover actions stay inside the original card crop");
     }
     await page.locator("#topRatedCardsContainer .card").last().scrollIntoViewIfNeeded();
     await page.waitForTimeout(100);

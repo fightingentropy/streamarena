@@ -432,7 +432,7 @@ function apiPayload(url, method, fixtureNow) {
 }
 
 const pages = [
-  { path: "/index.html", selector: ".home-page", expectDiscovery: true },
+  { path: "/index.html", selector: ".home-page", expectDiscovery: true, contextOptions: { viewport: { width: 1280, height: 900 }, serviceWorkers: "block" } },
   { path: "/login.html", selector: ".login-page", expectClosedSignup: true },
   {
     path: "/settings.html",
@@ -1855,7 +1855,8 @@ async function runSmoke() {
           if (await continueAction.count() !== 1) {
             throw new Error(`${pageSpec.path}\nContinue Watching action is missing or ambiguous.`);
           }
-          await continueAction.click();
+          // The artwork's lower edge contains separate My List/remove controls.
+          await continueAction.click({ position: { x: 30, y: 30 } });
           await page.waitForURL(
             (nextUrl) =>
               nextUrl.pathname.startsWith("/watch") ||

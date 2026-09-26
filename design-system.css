@@ -27,6 +27,9 @@ button, input, select, textarea { font-family: inherit; }
 button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
 ::selection { background: #f0526352; color: #fff; }
 :where(button, a, input, select, textarea):focus-visible { outline: 2px solid var(--sa-text); outline-offset: 5px; }
+.title-details-button { display: grid; place-items: center; flex: 0 0 44px; width: 44px; height: 44px; padding: 10px; border: 0; border-radius: 12px; background: transparent; color: var(--sa-muted); cursor: pointer; }
+.title-details-button:hover { background: #ffffff15; color: var(--sa-text); }
+.title-details-button svg { width: 21px; height: 21px; stroke: currentColor; stroke-width: 1.6; }
 
 @media (max-width: 760px) {
   :root { --sa-gutter: 22px; }

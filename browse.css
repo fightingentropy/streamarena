@@ -171,8 +171,6 @@
   margin: 0; padding: 0 0 52px;
   background: var(--bg); z-index: 12;
 }
-.home-page .continue-row.is-card-hovering,
-.popular-row.is-card-hovering { z-index: 70; }
 .home-page .continue-row h2,
 .home-popular-row .popular-row-inner h2,
 #myListRow .popular-row-inner h2 { margin: 0 var(--browse-gutter) 24px; color: var(--sa-text); font-size: clamp(25px, 2.2vw, 34px); line-height: 1.2; font-weight: 650; letter-spacing: -.045em; }
@@ -217,8 +215,9 @@
 .saved-title-art img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform 160ms ease; }
 .saved-title-open:hover .saved-title-art img { transform: scale(1.03); }
 .saved-title-open strong { display: block; margin: 16px 0 0; font-size: 18px; font-weight: 600; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.saved-title-footer > span { margin-right: auto; }
 .saved-title-footer { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 4px; color: var(--sa-muted); font-size: 14px; }
-.saved-title-remove { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; border: 0; border-radius: 50%; padding: 10px; background: transparent; color: #bec4ce; cursor: pointer; }
+.saved-title-remove { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; border: 0; border-radius: 12px; padding: 10px; background: transparent; color: #bec4ce; cursor: pointer; }
 .saved-title-remove:hover { background: #ffffff15; color: #fff; }
 .saved-title-remove:disabled, #detailsMyList:disabled { opacity: .45; cursor: wait; }
 .saved-title-remove svg { width: 20px; height: 20px; }
@@ -250,13 +249,17 @@
 .home-page .continue-caption { margin: 5px 0 0; padding: 0 1px; color: var(--sa-muted); font-size: 14px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .home-page .continue-empty, #myListRow .continue-empty { margin: 16px var(--browse-gutter); }
 .card.is-hovering .card-base { opacity: 1; transform: none; }
-.card-hover { width: min(340px, calc(100vw - 24px)); background: var(--browse-surface); border: 1px solid #ffffff20; border-radius: 10px; box-shadow: 0 12px 36px #0008; }
-.card-hover-body { background: var(--browse-surface); padding: 16px; }
-.card-hover-title { margin: 0 0 14px; font-size: 16px; font-weight: 600; }
-.card-hover .hover-round { border-width: 1px; }
-.card-hover .card-hover-meta { font-size: 13px; }
-.card-hover .meta-age { border-width: 1px; border-radius: 3px; }
-.card-hover .card-hover-tags { color: var(--sa-muted); font-size: 15px; }
+.card-hover, .card.is-hovering .card-hover { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; border-radius: inherit; box-shadow: none; transform: none; background: linear-gradient(180deg, transparent 45%, #08090dc9 100%); z-index: 4; pointer-events: none; }
+.card-hover { transition: opacity 160ms ease; }
+.card-hover-body { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px; background: transparent; }
+.card-hover-controls, .card-hover-actions { gap: 8px; flex-wrap: wrap; }
+.card-hover .hover-round { flex: 0 0 44px; width: 44px; height: 44px; border: 1px solid #ffffff30; border-radius: 12px; background: #17191ee6; }
+.card-hover .hover-play { background: var(--sa-text); border-color: var(--sa-text); color: var(--sa-bg); }
+.card-hover .hover-round:hover { background: #343740; border-color: #ffffff80; }
+.card-hover .hover-play:hover { background: #fff; }
+.card.is-hovering .hover-round { pointer-events: auto; }
+.card-hover .hover-round:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.card-touch-action { border-radius: 12px; border-color: #ffffff30; background: #17191ee6; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .home-member-footer { margin: 0; padding: 28px var(--browse-gutter) 36px; border-top: 1px solid #ffffff0b; color: var(--muted); background: var(--bg); }
 .member-footer-links { display: flex; flex-wrap: wrap; gap: 16px 32px; margin: 0; padding: 0; list-style: none; }
 .member-footer-links a { color: #949ba5; font-size: 13px; text-decoration: none; }

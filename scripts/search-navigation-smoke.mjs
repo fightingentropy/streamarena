@@ -67,7 +67,7 @@ try {
     await page.goto(`${baseUrl}${origin}`);
     await page.locator("#openSearchButton").click();
     await page.locator("#navSearchInput").fill("Christopher Nolan");
-    await page.getByRole("button", { name: "Details for Film 1", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Play Film 1", exact: true }).waitFor();
     await page.getByRole("button", { name: "Christopher Nolan Directing", exact: true }).click();
     await page.getByLabel("Title type", { exact: true }).selectOption("movie");
     await page.getByLabel("Genre", { exact: true }).selectOption("science-fiction");
@@ -77,14 +77,13 @@ try {
     const params = new URL(searchUrl).searchParams;
     for (const [key, value] of Object.entries({ search: "1", q: "Christopher Nolan", mediaType: "movie", genre: "science-fiction", year: "2010", personId: "525", view: "my-list", type: "movie", sort: "title" })) assert.equal(params.get(key), value);
     await page.getByRole("button", { name: "Load more", exact: true }).click();
-    const target = page.getByRole("button", { name: "Details for Film 40", exact: true });
+    const target = page.getByRole("button", { name: "Play Film 40", exact: true });
     await target.waitFor();
     await target.scrollIntoViewIfNeeded();
     const scrollY = await page.evaluate(() => window.scrollY);
     assert.ok(scrollY > 500, "The chosen result must be far enough down to test scroll restoration");
     const requestCount = requests.length;
     await target.click();
-    await page.locator("#detailsPlay").click();
     await page.waitForURL("**/watch/movie/40/film-40");
     await page.waitForFunction(() => { const video = document.querySelector("video"); return video?.currentTime > 0.3 && video.videoWidth > 0 && !video.error; });
     await page.getByRole("button", { name: "Back to browse", exact: true }).click();
@@ -93,7 +92,7 @@ try {
     await page.waitForFunction(() => document.activeElement?.dataset.searchKey === "movie:40");
     const restoredScrollY = await page.evaluate(() => window.scrollY);
     assert.ok(Math.abs(restoredScrollY - scrollY) < 3, `Player Back restores the selected row's scroll position: expected ${scrollY}, got ${restoredScrollY}`);
-    assert.equal(await page.locator("#searchResultsGrid > button").count(), 48);
+    assert.equal(await page.locator("#searchResultsGrid .search-result-card").count(), 48);
     assert.equal(await page.getByLabel("Genre", { exact: true }).inputValue(), "science-fiction");
     assert.equal(await page.getByLabel("Title type", { exact: true }).inputValue(), "movie");
     assert.equal(await page.getByLabel("Release year", { exact: true }).inputValue(), "2010");
@@ -102,7 +101,7 @@ try {
 
     await page.reload();
     await target.waitFor();
-    assert.equal(await page.locator("#searchResultsGrid > button").count(), 48);
+    assert.equal(await page.locator("#searchResultsGrid .search-result-card").count(), 48);
     assert.equal(requests.length, requestCount, "Reload retains the loaded result pages");
     await page.locator("#closeSearchButton").click();
     await page.waitForURL(`${baseUrl}${origin}`);
@@ -117,13 +116,13 @@ try {
     await page.locator("#openSearchButton").click();
     await page.waitForFunction(() => document.activeElement?.id === "navSearchInput");
     await page.getByRole("button", { name: "Load more", exact: true }).click();
-    await page.getByRole("button", { name: "Details for Film 72", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Play Film 72", exact: true }).waitFor();
     assert.equal(requests.at(-1).page, "3", "Pagination resumes after the last restored page");
 
     // A shared link has no cached results or preceding Search history entry.
     await page.evaluate(() => sessionStorage.clear());
     await page.goto(`${baseUrl}/?search=1&mediaType=tv&genre=science-fiction`);
-    await page.getByRole("button", { name: "Details for Film 1", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Play Film 1", exact: true }).waitFor();
     assert.equal(await page.getByLabel("Title type", { exact: true }).inputValue(), "tv");
     assert.equal(await page.getByLabel("Genre", { exact: true }).inputValue(), "science-fiction");
     assert.equal(requests.at(-1).query, "");

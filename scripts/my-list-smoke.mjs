@@ -88,7 +88,7 @@ try {
     await page.getByLabel("Sort My List").selectOption("year");
     assert.deepEqual(await titles(), ["Arrival", "Zodiac"]);
     await page.getByRole("link", { name: "Home", exact: true }).click();
-    await page.locator("#libraryRow").getByRole("button", { name: "Details for Local Film", exact: true }).waitFor();
+    await page.locator("#libraryRow").getByRole("button", { name: "Play Local Film", exact: true }).waitFor();
     assert.equal(await page.locator("#myListRow").getByText("Local Film").count(), 0);
     await page.goBack();
     await page.locator("#myListView").waitFor({ state: "visible" });
@@ -98,8 +98,7 @@ try {
     await page.locator("#closeSearchButton").click();
     assert.equal(await page.locator("#myListView").isVisible(), true);
 
-    await page.locator("#myListView").getByRole("button", { name: "Details for Arrival", exact: true }).click();
-    await page.locator("#detailsPlay").click();
+    await page.locator("#myListView").getByRole("button", { name: "Play Arrival", exact: true }).click();
     await page.waitForURL("**/watch/movie/901/arrival");
     const params = new URLSearchParams(await page.evaluate(() => sessionStorage.getItem("watch:arrival")));
     assert.equal(params.get("returnTo"), "/?view=my-list&type=movie&sort=year");
@@ -121,7 +120,7 @@ try {
     await page.waitForFunction(() => document.querySelectorAll(".saved-title").length === 1);
     assert.equal(writes.length, writesBefore + 1);
     assert.deepEqual(entries.map((entry) => entry.title).sort(), ["Signal", "Zodiac"]);
-    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Details for Zodiac");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Play Zodiac");
 
     if (mobile) await page.setViewportSize({ width: 320, height: 700 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, "My List fits narrow screens without horizontal page scrolling");
@@ -145,7 +144,9 @@ try {
     entries = Array.from({ length: 100 }, (_, index) => ({ ...initialEntries[0], title: `Saved ${index + 1}`, tmdbId: String(1000 + index), addedAt: index + 1 }));
     await page.goto(baseUrl);
     await page.waitForFunction(() => JSON.parse(localStorage.getItem("streamarena-my-list-v1") || "[]").length === 100);
-    await page.locator("#cardsContainer").getByRole("button", { name: "Details for Arrival", exact: true }).click();
+    const arrivalCard = page.locator('#cardsContainer .card[data-tmdb-id="901"]');
+    if (!mobile) await arrivalCard.locator(".card-primary-action").focus();
+    await arrivalCard.locator(mobile ? ".card-touch-details" : ".hover-details").click();
     const writesAtLimit = writes.length;
     await page.locator("#detailsMyList").click();
     await page.getByText("Your list has 100 titles. Remove one before adding another.", { exact: true }).last().waitFor();

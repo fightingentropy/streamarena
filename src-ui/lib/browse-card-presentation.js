@@ -15,10 +15,4 @@ export function addBrowseCardCaption(card) {
     caption.appendChild(metadata);
   }
   card.querySelector('.card-base')?.after(caption);
-  const hoverBody = card.querySelector('.card-hover-body');
-  if (hoverBody) {
-    const hoverTitle = title.cloneNode(true);
-    hoverTitle.className = 'card-hover-title';
-    hoverBody.prepend(hoverTitle);
-  }
 }

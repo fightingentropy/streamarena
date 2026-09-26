@@ -1052,10 +1052,6 @@ body.is-search-mode #libraryRow {
     outline-offset: 3px;
 }
 
-.card.is-hovering .card-primary-action {
-    pointer-events: none;
-}
-
 .card-base {
     position: relative;
     border-radius: 4px;
