@@ -91,7 +91,8 @@ try {
     await page.waitForURL(searchUrl);
     await target.waitFor();
     await page.waitForFunction(() => document.activeElement?.dataset.searchKey === "movie:40");
-    assert.ok(Math.abs((await page.evaluate(() => window.scrollY)) - scrollY) < 3, "Player Back restores the selected row's scroll position");
+    const restoredScrollY = await page.evaluate(() => window.scrollY);
+    assert.ok(Math.abs(restoredScrollY - scrollY) < 3, `Player Back restores the selected row's scroll position: expected ${scrollY}, got ${restoredScrollY}`);
     assert.equal(await page.locator("#searchResultsGrid > button").count(), 48);
     assert.equal(await page.getByLabel("Genre", { exact: true }).inputValue(), "science-fiction");
     assert.equal(await page.getByLabel("Title type", { exact: true }).inputValue(), "movie");

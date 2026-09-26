@@ -1,4 +1,5 @@
 import { createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import BrandWordmark from "../components/brand-wordmark.jsx";
 import {
   PROFILE_AVATAR_STYLE_PREF_KEY,
   PROFILE_AVATAR_MODE_PREF_KEY,
@@ -578,7 +579,7 @@ export default function SettingsPage() {
 
     <header class="settings-topbar">
       <a class="settings-wordmark-link" href="/" aria-label="Back to browse">
-        <span class="brand-wordmark settings-wordmark">StreamArena</span>
+        <BrandWordmark class="settings-wordmark" />
       </a>
       <a class="settings-profile-control" href="/" aria-label="Back to browse">
         <span

@@ -1,17 +1,14 @@
+@import "./design-system.css";
+
 :root {
     --player-bg: #000;
-    --ui-white: #f8f8f8;
+    --ui-white: var(--sa-text);
     --ui-muted: rgba(248, 248, 248, 0.86);
     --ui-dim: rgba(12, 12, 12, 0.78);
-    --ui-line: rgba(245, 245, 245, 0.42);
+    --ui-line: #ffffff30;
     --ui-buffered: rgba(245, 245, 245, 0.72);
-    --ui-accent: #e50914;
-    --font-brand-sans:
-        "Helvetica Neue",
-        "Segoe UI",
-        Roboto,
-        Ubuntu,
-        sans-serif;
+    --ui-accent: var(--sa-accent);
+    --font-brand-sans: var(--font-ui);
 }
 
 * {
@@ -396,7 +393,7 @@ body {
 .top-row {
     position: relative;
     z-index: 46;
-    padding: 18px 24px 0;
+    padding: 24px 32px 0;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
@@ -493,7 +490,7 @@ body {
 .controls-panel {
     grid-row: 3;
     align-self: end;
-    padding: 0 24px 26px;
+    padding: 0 32px 30px;
     pointer-events: auto;
 }
 
@@ -633,10 +630,12 @@ body {
 .duration {
     min-width: 62px;
     text-align: right;
-    font-size: 1.02rem;
+    font-size: 16px;
     font-weight: 400;
     letter-spacing: -0.015em;
     color: var(--ui-muted);
+
+    font-variant-numeric: tabular-nums;
 }
 
 .duration.is-live {
@@ -746,11 +745,11 @@ body {
 .episode-label {
     margin: 0;
     text-align: center;
-    font-size: clamp(1.08rem, 1.45vw, 1.58rem);
-    font-weight: 500;
+    font-size: 20px;
+    font-weight: 600;
     line-height: 1.1;
     color: #f3f3f3;
-    letter-spacing: -0.02em;
+    letter-spacing: -.025em;
 }
 
 .episode-label b {
@@ -1489,19 +1488,9 @@ body {
     width: min(760px, calc(100vw - 22px));
     max-height: min(62vh, 520px);
     padding: 16px 0 14px;
-    border-radius: 12px;
-    background:
-        linear-gradient(
-            90deg,
-            rgba(39, 39, 42, 0.97) 0%,
-            rgba(30, 31, 35, 0.96) 44%,
-            rgba(26, 27, 30, 0.95) 100%
-        ),
-        radial-gradient(
-            circle at 20% 88%,
-            rgba(255, 255, 255, 0.06),
-            transparent 58%
-        );
+    border: 1px solid var(--sa-line);
+    border-radius: 18px;
+    background: var(--sa-surface);
 }
 
 .audio-popover.subtitles-popover {
@@ -2191,11 +2180,11 @@ body {
     background: transparent;
     color: rgba(245, 245, 245, 0.68);
     font-family: inherit;
-    font-size: clamp(1.85rem, 2.2vw, 2.35rem);
+    font-size: 16px;
     font-weight: 400;
     line-height: 1.24;
     text-align: left;
-    border-radius: 7px;
+    border-radius: 10px;
     padding: 9px 12px 9px 54px;
     min-height: 56px;
     cursor: pointer;
@@ -3131,11 +3120,11 @@ body {
     display: flex;
     align-items: center;
     gap: 16px;
-    background: rgba(20, 20, 20, 0.92);
+    background: var(--sa-surface);
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
     border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 6px;
+    border-radius: 18px;
     padding: 14px 16px;
     min-width: 320px;
     max-width: 460px;
@@ -3222,7 +3211,7 @@ body {
 
 .autoplay-series-title {
     margin: 0;
-    font-size: 15px;
+    font-size: 18px;
     font-weight: 700;
     color: #fff;
     white-space: nowrap;
@@ -3254,14 +3243,16 @@ body {
     background: #fff;
     color: #111;
     border: none;
-    border-radius: 4px;
+    border-radius: 10px;
     padding: 8px 16px;
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 700;
     font-family: inherit;
     cursor: pointer;
     white-space: nowrap;
     transition: background 120ms ease;
+
+    min-height: 44px;
 }
 
 .autoplay-play-btn:hover {

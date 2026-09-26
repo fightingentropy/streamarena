@@ -185,6 +185,7 @@ Authentication and user sync:
 Home and browsing:
 
 - Featured hero sourced from current TMDB/bootstrap data, with a muted official-trailer preview when TMDB provides one and a poster fallback otherwise.
+- The web interface uses self-hosted Manrope, a shared dark palette, larger headings and artwork, and responsive layouts across browsing, search, account, help, and playback. Search restoration waits for font metrics so returning from playback keeps the saved scroll position.
 - Dashboard rails use TMDB discovery with rating/vote-count thresholds, release-date guards, and artwork checks instead of raw popularity/trending lists.
 - Rails for curated movies, series, critically acclaimed titles, local library, continue watching, and My List.
 - Search movies, series, actors, and directors, with genre/year filters, paginated results, and account-scoped recent searches on web and iPhone.

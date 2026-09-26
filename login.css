@@ -1,6 +1,8 @@
+@import "./design-system.css";
+
 :root {
   color-scheme: dark;
-  --page-bg: #0a0a0a;
+  --page-bg: var(--sa-bg);
   --panel: #111111;
   --panel-raised: #131313;
   --surface: #161616;
@@ -8,17 +10,12 @@
   --line: #1e1e1e;
   --line-strong: #2c2c2c;
   --text: #e5e5e5;
-  --muted: #707070;
-  --muted-soft: #555555;
+  --muted: var(--sa-muted);
+  --muted-soft: #828793;
   --danger: #ff8a7a;
-  --font-sans:
-    "Helvetica Neue",
-    "Segoe UI",
-    Roboto,
-    Ubuntu,
-    sans-serif;
-  --radius: 6px;
-  --radius-lg: 10px;
+  --font-sans: var(--font-ui);
+  --radius: 12px;
+  --radius-lg: 20px;
 }
 
 * {
@@ -87,18 +84,18 @@ a:focus-visible {
 
 .login-card {
   width: 100%;
-  max-width: 400px;
-  padding: 40px 36px 36px;
-  border: 1px solid var(--line);
+  max-width: 480px;
+  padding: 48px 40px;
+  border: 0;
   border-radius: var(--radius-lg);
-  background: var(--panel);
+  background: transparent;
 }
 
 .login-logo {
   display: flex;
   align-items: center;
-  justify-content: center;
-  margin-bottom: 28px;
+  justify-content: flex-start;
+  margin-bottom: 44px;
   text-decoration: none;
 }
 
@@ -109,11 +106,13 @@ a:focus-visible {
 }
 
 .login-card h1 {
-  margin: 0 0 24px;
-  font-size: 1.5rem;
-  font-weight: 600;
-  text-align: center;
-  letter-spacing: -0.01em;
+  margin: 0 0 32px;
+  font-size: clamp(36px, 5vw, 46px);
+  font-weight: 650;
+  text-align: left;
+  letter-spacing: -.05em;
+
+  line-height: 1.12;
 }
 
 /* ─── Form ─── */
@@ -130,21 +129,21 @@ a:focus-visible {
 
 .login-field label {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 14px;
   font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .login-field input {
   width: 100%;
-  min-height: 44px;
-  padding: 10px 14px;
+  min-height: 54px;
+  padding: 14px 16px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
-  background: #0c0c0c;
+  background: var(--sa-surface);
   color: var(--text);
-  font-size: 0.95rem;
+  font-size: 16px;
   outline: none;
   transition:
     border-color 140ms ease,
@@ -175,13 +174,13 @@ a:focus-visible {
 /* ─── Button ─── */
 
 .login-btn {
-  min-height: 44px;
+  min-height: 52px;
   padding: 0 24px;
   border: 0;
   border-radius: var(--radius);
   background: #e5e5e5;
   color: #0a0a0a;
-  font-size: 0.92rem;
+  font-size: 1rem;
   font-weight: 600;
   cursor: pointer;
   transition: opacity 140ms ease;

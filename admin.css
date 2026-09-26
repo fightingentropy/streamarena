@@ -1,3 +1,5 @@
+@import "./design-system.css";
+
 :root {
   /* Railway-flavoured dark canvas: a near-black base with surfaces that sit
      only a hair above it, and HAIRLINE borders (white at low alpha) that read

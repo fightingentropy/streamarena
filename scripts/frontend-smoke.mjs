@@ -1644,7 +1644,7 @@ async function runSmoke() {
           return {
             frameSrc: frame?.getAttribute("src") || "",
             insetLeft: rect?.left || 0,
-            insetRight: rect ? window.innerWidth - rect.right : 0,
+            insetRight: rect ? document.documentElement.clientWidth - rect.right : 0,
             metadata: document.querySelector(".hero-meta")?.textContent?.replace(/\s+/g, " ").trim() || "",
             muteDisabled: Boolean(mute?.disabled),
             muteLabel: mute?.getAttribute("aria-label") || "",
@@ -1654,8 +1654,8 @@ async function runSmoke() {
           !heroState.frameSrc.startsWith("https://www.youtube-nocookie.com/embed/") ||
           heroState.frameSrc.includes("loop=1") ||
           heroState.frameSrc.includes("playlist=") ||
-          heroState.insetLeft < 20 ||
-          heroState.insetRight < 20 ||
+          Math.abs(heroState.insetLeft) > 1 ||
+          Math.abs(heroState.insetRight) > 1 ||
           !heroState.metadata.includes("Film") ||
           !heroState.metadata.includes("Action") ||
           !heroState.metadata.includes("1975") ||

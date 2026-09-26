@@ -1,19 +1,13 @@
+@import "./design-system.css";
+
 :root {
-    --bg: #0e1012;
-    --text: #f6f6f6;
-    --muted: #a0a3a8;
-    --brand-red: #d63743;
+    --bg: var(--sa-bg);
+    --text: var(--sa-text);
+    --muted: var(--sa-muted);
+    --brand-red: var(--sa-accent);
     --glass: rgba(10, 10, 10, 0.38);
     --card-bg: rgba(20, 20, 20, 0.72);
-    --font-brand-sans:
-        -apple-system,
-        BlinkMacSystemFont,
-        "SF Pro Display",
-        "SF Pro Text",
-        "Segoe UI",
-        "Helvetica Neue",
-        Roboto,
-        sans-serif;
+    --font-brand-sans: var(--font-ui);
 }
 
 [hidden] {

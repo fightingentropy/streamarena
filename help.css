@@ -1,15 +1,16 @@
-/* StreamArena Help Center — light theme, modeled on a typical help-center
-   layout. Self-contained: the /help page does not load the app's style.css. */
+@import "./design-system.css";
+
+/* Help uses the same palette and typography as the browsing pages. */
 
 :root {
-  --help-red: #e50914;
-  --help-ink: #1a1a1a;
-  --help-muted: #6b6b6b;
-  --help-line: #e6e6e6;
-  --help-bg: #ffffff;
-  --help-hero-top: #eaf1f8;
-  --help-font:
-    "Helvetica Neue", "Segoe UI", Roboto, Ubuntu, sans-serif;
+  color-scheme: dark;
+  --help-red: var(--sa-accent);
+  --help-ink: var(--sa-text);
+  --help-muted: var(--sa-muted);
+  --help-line: var(--sa-line);
+  --help-bg: var(--sa-bg);
+  --help-hero-top: var(--sa-bg);
+  --help-font: var(--font-ui);
 }
 
 * {
@@ -58,8 +59,8 @@ body {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: saturate(180%) blur(8px);
+  background: #0b0c0ff2;
+  backdrop-filter: none;
   border-bottom: 1px solid var(--help-line);
 }
 
@@ -90,7 +91,7 @@ body {
 .help-brand-label {
   font-size: 1.15rem;
   font-weight: 500;
-  color: #2a2a2a;
+  color: var(--sa-text);
 }
 
 .help-back {
@@ -107,14 +108,15 @@ body {
 
 /* ─── Hero / search ─── */
 .help-hero {
-  background: linear-gradient(180deg, var(--help-hero-top) 0%, #ffffff 70%);
+  background: var(--sa-bg);
   padding: 72px 24px 56px;
   text-align: center;
 }
 
 .help-hero h1 {
   margin: 0 0 28px;
-  font-size: clamp(2rem, 4vw, 3rem);
+  font-size: clamp(38px, 5.5vw, 64px);
+  letter-spacing: -.05em;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
@@ -125,7 +127,7 @@ body {
   gap: 12px;
   max-width: 760px;
   margin: 0 auto;
-  background: #fff;
+  background: var(--sa-surface);
   border: 1px solid #cfd6de;
   border-radius: 10px;
   padding: 0 16px;
@@ -151,7 +153,7 @@ body {
   outline: none;
   background: transparent;
   font-family: inherit;
-  font-size: 1.1rem;
+  font-size: 1.125rem;
   padding: 18px 0;
   color: var(--help-ink);
 }
@@ -166,7 +168,7 @@ body {
 
 .help-recommended > span {
   font-weight: 600;
-  color: #3a3a3a;
+  color: var(--sa-text);
 }
 
 .help-reco-link {
@@ -182,7 +184,7 @@ body {
 }
 
 .help-reco-link:hover {
-  color: #b20710;
+  color: #ff8895;
 }
 
 /* ─── Body / topics ─── */
@@ -195,7 +197,7 @@ body {
 }
 
 .help-section-title {
-  font-size: 1.5rem;
+  font-size: 1.75rem;
   font-weight: 700;
   margin: 0 0 24px;
   text-align: center;
@@ -218,15 +220,15 @@ body {
 }
 
 .help-topic {
-  border-top: 2px solid var(--help-ink);
-  padding-top: 6px;
+  border-top: 1px solid var(--help-line);
+  padding-top: 12px;
 }
 
 .help-topic-title {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 1.1rem;
+  font-size: 1.125rem;
   font-weight: 700;
   margin: 14px 0 4px;
 }
@@ -259,7 +261,7 @@ body {
   border: none;
   cursor: pointer;
   font-family: inherit;
-  font-size: 1rem;
+  font-size: 1.0625rem;
   font-weight: 500;
   color: var(--help-ink);
   padding: 16px 4px;
@@ -281,7 +283,7 @@ body {
 
 .help-chevron {
   flex: 0 0 auto;
-  font-size: 1.5rem;
+  font-size: 1.75rem;
   font-weight: 300;
   line-height: 1;
   color: var(--help-muted);
@@ -296,7 +298,7 @@ body {
 .help-article-a {
   margin: 0;
   padding: 0 4px 18px;
-  color: #444;
+  color: #c4c7ce;
   font-size: 0.98rem;
   line-height: 1.6;
   max-width: 64ch;
@@ -310,7 +312,7 @@ body {
 .help-cta {
   margin-top: 56px;
   text-align: center;
-  background: #f6f8fb;
+  background: var(--sa-surface);
   border: 1px solid var(--help-line);
   border-radius: 14px;
   padding: 40px 24px;
@@ -331,8 +333,8 @@ body {
 
 .help-cta-btn {
   display: inline-block;
-  background: var(--help-red);
-  color: #fff;
+  background: var(--sa-text);
+  color: var(--sa-bg);
   text-decoration: none;
   font-weight: 700;
   padding: 12px 24px;
@@ -341,7 +343,7 @@ body {
 }
 
 .help-cta-btn:hover {
-  background: #b20710;
+  background: #deddda;
 }
 
 /* ─── Footer ─── */
@@ -372,7 +374,7 @@ body {
   }
 
   .help-search input {
-    font-size: 1rem;
+    font-size: 1.0625rem;
     padding: 15px 0;
   }
 
@@ -381,6 +383,13 @@ body {
   }
 
   .help-brand-label {
-    font-size: 1rem;
+    font-size: 1.0625rem;
   }
+}
+
+@media (max-width: 600px) {
+  .help-brand-divider, .help-brand-label { display: none; }
+  .help-header-inner { padding: 20px; gap: 16px; }
+  .help-brand .brand-wordmark { font-size: 23px; }
+  .help-back { font-size: 14px; }
 }

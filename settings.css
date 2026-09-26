@@ -1,26 +1,23 @@
+@import "./design-system.css";
+
 :root {
-  color-scheme: light;
-  --page-bg: #f7f7f7;
-  --panel: #ffffff;
-  --panel-soft: #fbfbfb;
-  --surface: #f5f5f5;
-  --surface-strong: #eeeeee;
-  --line: #d6d6d6;
-  --line-soft: #e8e8e8;
-  --text: #111111;
-  --muted: #525252;
-  --muted-soft: #747474;
-  --brand-red: #e50914;
-  --focus: #1f73e8;
-  --success: #0f8a47;
-  --warning: #8a6400;
-  --danger: #b42318;
-  --font-sans:
-    "Helvetica Neue",
-    "Segoe UI",
-    Roboto,
-    Ubuntu,
-    sans-serif;
+  color-scheme: dark;
+  --page-bg: var(--sa-bg);
+  --panel: var(--sa-surface);
+  --panel-soft: var(--sa-surface);
+  --surface: var(--sa-raised);
+  --surface-strong: #2d3038;
+  --line: var(--sa-line);
+  --line-soft: var(--sa-line);
+  --text: var(--sa-text);
+  --muted: var(--sa-muted);
+  --muted-soft: #9296a0;
+  --brand-red: var(--sa-accent);
+  --focus: #e4e3dd;
+  --success: #9ee4b7;
+  --warning: #efd290;
+  --danger: #ff9a9a;
+  --font-sans: var(--font-ui);
   --font-mono:
     ui-monospace,
     SFMono-Regular,
@@ -28,8 +25,8 @@
     Menlo,
     Consolas,
     monospace;
-  --radius: 6px;
-  --radius-card: 8px;
+  --radius: 12px;
+  --radius-card: 18px;
 }
 
 * {
@@ -88,8 +85,8 @@ a:focus-visible {
   height: 76px;
   padding: 0 clamp(22px, 3vw, 42px);
   border-bottom: 1px solid var(--line-soft);
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(16px);
+  background: #0b0c0ff2;
+  backdrop-filter: none;
 }
 
 .settings-wordmark-link {
@@ -103,8 +100,8 @@ a:focus-visible {
 .settings-wordmark {
   font-family: var(--font-sans);
   font-weight: 800;
-  color: var(--brand-red);
-  letter-spacing: -0.02em;
+  color: var(--sa-text);
+  letter-spacing: -0.05em;
   line-height: 1;
   white-space: nowrap;
   font-size: clamp(1.15rem, 1.8vw, 1.5rem);
@@ -125,7 +122,7 @@ a:focus-visible {
   height: 9px;
   border-right: 2px solid currentColor;
   border-bottom: 2px solid currentColor;
-  color: #222222;
+  color: var(--muted);
 }
 
 .settings-profile-caret {
@@ -164,7 +161,7 @@ a:focus-visible {
   align-items: center;
   gap: 12px;
   margin-bottom: 48px;
-  color: #151515;
+  color: var(--text);
   font-size: 1rem;
   font-weight: 500;
   text-decoration: none;
@@ -215,7 +212,7 @@ a:focus-visible {
   align-items: center;
   gap: 16px;
   min-height: 36px;
-  color: #555555;
+  color: var(--muted);
   font-size: 1.05rem;
   font-weight: 700;
   text-decoration: none;
@@ -223,7 +220,7 @@ a:focus-visible {
 
 .settings-nav-item:hover,
 .settings-nav-item.is-active {
-  color: #050505;
+  color: var(--text);
 }
 
 .settings-nav-glyph,
@@ -290,16 +287,17 @@ a:focus-visible {
 
 .settings-page-heading h1 {
   margin: 0;
-  color: #000000;
+  color: var(--text);
   font-size: clamp(2.8rem, 5vw, 4rem);
-  font-weight: 800;
-  line-height: 0.95;
+  font-weight: 650;
+  line-height: 1.08;
+  letter-spacing: -.055em;
 }
 
 .settings-page-heading p {
   margin: 8px 0 0;
-  color: #363636;
-  font-size: 1.35rem;
+  color: var(--muted);
+  font-size: 1.1rem;
   line-height: 1.25;
 }
 
@@ -324,8 +322,8 @@ a:focus-visible {
 
 .settings-section-title {
   margin: 0;
-  color: #303030;
-  font-size: 1.4rem;
+  color: var(--text);
+  font-size: 1.55rem;
   font-weight: 500;
   line-height: 1.25;
 }
@@ -366,7 +364,7 @@ a:focus-visible {
 .settings-row-icon {
   width: 32px;
   height: 32px;
-  color: #555555;
+  color: var(--muted);
 }
 
 .settings-row-icon::before {
@@ -466,7 +464,7 @@ a:focus-visible {
 
 .settings-row-copy h3 {
   margin: 0;
-  color: #0a0a0a;
+  color: var(--sa-text);
   font-size: 1.18rem;
   font-weight: 750;
   line-height: 1.25;
@@ -560,7 +558,7 @@ a:focus-visible {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
-  color: #1c1c1c;
+  color: var(--sa-text);
   font-size: 0.88rem;
   font-weight: 700;
   cursor: pointer;
@@ -642,7 +640,7 @@ a:focus-visible {
 }
 
 .settings-toggle-control input:checked + .settings-toggle-track .settings-toggle-thumb {
-  background: #1f73e8;
+  background: var(--sa-accent);
   transform: translateX(20px);
 }
 
@@ -693,7 +691,7 @@ a:focus-visible {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
-  color: #1c1c1c;
+  color: var(--sa-text);
   font-size: 0.88rem;
   font-weight: 700;
   cursor: pointer;
@@ -802,7 +800,7 @@ a:focus-visible {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
-  color: #303030;
+  color: var(--text);
   font-size: 0.88rem;
   font-weight: 650;
   transition:
@@ -856,13 +854,13 @@ a:focus-visible {
 }
 
 .save-btn {
-  min-height: 42px;
+  min-height: 50px;
   padding: 0 22px;
   border: 0;
   border-radius: var(--radius);
-  background: #111111;
-  color: #ffffff;
-  font-size: 0.92rem;
+  background: var(--sa-text);
+  color: var(--sa-bg);
+  font-size: 1rem;
   font-weight: 750;
   cursor: pointer;
   transition:
@@ -871,7 +869,7 @@ a:focus-visible {
 }
 
 .save-btn:hover {
-  background: #333333;
+  background: #dddcd8;
 }
 
 .save-btn:active {
@@ -894,9 +892,9 @@ a:focus-visible {
   padding: 13px 20px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: var(--radius);
-  background: #111111;
-  color: #ffffff;
-  font-size: 0.92rem;
+  background: var(--sa-text);
+  color: var(--sa-bg);
+  font-size: 1rem;
   font-weight: 750;
   box-shadow:
     0 14px 32px rgba(0, 0, 0, 0.22),

@@ -4868,7 +4868,7 @@ export default function HomePage() {
         <img
           class="hero-poster"
           srcset={buildTmdbArtworkSrcSet(featuredHero().poster, [780, 1280])}
-          sizes="(max-width: 760px) 100vw, 72vw"
+          sizes="(max-width: 760px) 100vw, 76vw"
           src={featuredHero().poster}
           alt=""
           aria-hidden="true"

@@ -198,7 +198,7 @@ export default function HelpPage() {
             <span class="help-brand-divider" aria-hidden="true"></span>
             <span class="help-brand-label">Help Center</span>
           </a>
-          <a class="help-back" href="/">Back to StreamArena</a>
+          <a class="help-back" href="/" aria-label="Back to StreamArena">Browse</a>
         </div>
       </header>
 

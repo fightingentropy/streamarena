@@ -131,9 +131,14 @@ export default function SearchExperience(props) {
       setHasMore(Boolean(cached.hasMore));
       loadedState = { ...props.state };
       selectedKey = cached.selectedKey || "";
-      restoreFrame = requestAnimationFrame(() => {
-        window.scrollTo({ top: Math.max(0, Number(cached.scrollY) || 0), behavior: "auto" });
-        if (props.restoreFocus) Array.from(gridRef?.querySelectorAll(".search-result-card") || []).find((card) => card.dataset.searchKey === selectedKey)?.focus({ preventScroll: true });
+      const restoredVersion = version;
+      // Restore against final text metrics so a font swap cannot shift the row.
+      Promise.resolve(document.fonts?.ready).then(() => {
+        if (restoredVersion !== version || !props.active) return;
+        restoreFrame = requestAnimationFrame(() => {
+          window.scrollTo({ top: Math.max(0, Number(cached.scrollY) || 0), behavior: "auto" });
+          if (props.restoreFocus) Array.from(gridRef?.querySelectorAll(".search-result-card") || []).find((card) => card.dataset.searchKey === selectedKey)?.focus({ preventScroll: true });
+        });
       });
       return;
     }
