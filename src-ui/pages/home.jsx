@@ -74,6 +74,8 @@ import {
   selectFeaturedHeroTrailerKey,
 } from "../lib/featured-hero.js";
 import TitleRecommendations from "../components/title-recommendations.jsx";
+import TitleEpisodes from "../components/title-episodes.jsx";
+import { episodePlaybackTarget, findTitleResume, titlePlaybackTarget } from "../lib/title-playback.js";
 import SearchExperience from "../components/search-experience.jsx";
 import FeedbackNav from "../components/feedback-nav.jsx";
 import { readInjectedHomeBootstrap } from "../lib/home-bootstrap.js";
@@ -911,9 +913,10 @@ function mapDetailsToModalPatch(rawDetails, currentDetails, mediaType) {
       ? formatRuntime(rawDetails.runtime)
       : formatRuntime(rawDetails.episode_run_time?.[0]);
   return {
-    ...currentDetails,
     year: String(rawDetails.release_date || rawDetails.first_air_date || "").slice(0, 4) || currentDetails.year,
-    runtime: runtime || "",
+    runtime: mediaType === "tv" && rawDetails.number_of_seasons > 0
+      ? `${rawDetails.number_of_seasons} ${rawDetails.number_of_seasons === 1 ? "season" : "seasons"}`
+      : runtime || "",
     maturity: normalizeCertification(
       rawDetails.certification || currentDetails.maturity,
     ),
@@ -921,6 +924,7 @@ function mapDetailsToModalPatch(rawDetails, currentDetails, mediaType) {
     cast: castList.join(", "),
     genres: genresList.length ? genresList.join(", ") : currentDetails.genres,
     vibe: rawDetails.tagline ? rawDetails.tagline : currentDetails.vibe,
+    seasons: mediaType === "tv" ? rawDetails.seasons || [] : [],
   };
 }
 
@@ -1038,6 +1042,7 @@ export default function HomePage() {
   });
   const [detailsLoadState, setDetailsLoadState] = createSignal("ready");
   const [detailsMyListActive, setDetailsMyListActive] = createSignal(false);
+  const [detailsResume, setDetailsResume] = createSignal(null);
 
   const [libraryEditModalVisible, setLibraryEditModalVisible] = createSignal(false);
   const [libraryEditModalOpen, setLibraryEditModalOpen] = createSignal(false);
@@ -1084,7 +1089,9 @@ export default function HomePage() {
     const tmdbId = String(details.tmdbId || "").trim();
     const mediaType = String(details.mediaType || "").trim();
     if (
-      (mediaType !== "movie" && mediaType !== "tv") ||
+      // Browsing a series doesn't choose an episode. Resolving S1 E1 here
+      // wastes a provider request, especially when the viewer will resume later.
+      mediaType !== "movie" ||
       !tmdbId ||
       details.resumeSource ||
       String(details.src || details.librarySrc || "").trim()
@@ -1814,6 +1821,17 @@ export default function HomePage() {
 
   function populateDetailsModal(details) {
     setDetailsData({
+      seriesId: details.seriesId || "",
+      seasonNumber: details.seasonNumber || 1,
+      seasons: details.seasons,
+      localEpisodes: homeLibrarySnapshot?.series?.find((series) =>
+        details.seriesId && series.id === details.seriesId,
+      )?.episodes?.map((episode, index) => ({
+        ...episode,
+        seasonNumber: Math.max(1, Number(episode.seasonNumber) || 1),
+        episodeNumber: Math.max(1, Number(episode.episodeNumber) || index + 1),
+        episodeIndex: index,
+      })),
       tmdbId: details.tmdbId || "",
       mediaType: details.mediaType || "movie",
       thumb: details.thumb || DEFAULT_LOCAL_THUMBNAIL,
@@ -1828,6 +1846,7 @@ export default function HomePage() {
       genres: details.genres || "",
       vibe: details.vibe || "",
     });
+    setDetailsResume(findTitleResume(details, getContinueWatchingEntries()));
   }
 
   async function hydrateModalFromTmdb(card) {
@@ -1876,7 +1895,7 @@ export default function HomePage() {
         mediaType,
       );
       setTmdbDetailsCache(cacheKey, modalPatch);
-      activeDetails = modalPatch;
+      activeDetails = { ...activeDetails, ...modalPatch };
       populateDetailsModal(activeDetails);
       setDetailsLoadState("ready");
     } catch {
@@ -1900,6 +1919,7 @@ export default function HomePage() {
     populateDetailsModal(activeDetails);
     setDetailsMyListActive(isMyListEntryActive(activeDetails));
     setDetailsModalVisible(true);
+    if (detailsSheetRef) detailsSheetRef.scrollTop = 0;
     setDetailsModalBackgroundInert(true);
     requestAnimationFrame(() => {
       setDetailsModalOpen(true);
@@ -2128,7 +2148,9 @@ export default function HomePage() {
     const action = document.createElement("button");
     action.className = "card-primary-action";
     action.type = "button";
-    action.setAttribute("aria-label", `Play ${title}`);
+    const isContinue = Boolean(card.dataset.resumeSource);
+    action.setAttribute("aria-label", `${isContinue ? "Resume" : "Details for"} ${title}`);
+    if (!isContinue) action.setAttribute("aria-haspopup", "dialog");
     card.prepend(action);
     return action;
   }
@@ -2336,18 +2358,21 @@ export default function HomePage() {
       if (event.target.closest("button")) {
         return;
       }
-      openPlayerPage(getCardDetails(card));
+      if (card.dataset.resumeSource) openPlayerPage(getCardDetails(card));
+      else openDetailsModal(card, primaryAction);
     });
 
     primaryAction?.addEventListener("click", (event) => {
       event.stopPropagation();
-      openPlayerPage(getCardDetails(card));
+      if (card.dataset.resumeSource) openPlayerPage(getCardDetails(card));
+      else openDetailsModal(card, primaryAction);
     });
 
     const hoverPlayButton = card.querySelector(".hover-play");
     hoverPlayButton?.addEventListener("click", (event) => {
       event.stopPropagation();
-      openPlayerPage(getCardDetails(card));
+      const details = getCardDetails(card);
+      openPlayerPage(titlePlaybackTarget(details, findTitleResume(details, getContinueWatchingEntries())));
     });
 
     card.querySelectorAll(".hover-details, .card-touch-details").forEach((button) => {
@@ -4036,7 +4061,7 @@ export default function HomePage() {
   function handleHeroPlay() {
     const destination = getHeroDestination();
     if (destination) {
-      openPlayerPage(destination);
+      openPlayerPage(titlePlaybackTarget(destination, findTitleResume(destination, getContinueWatchingEntries())));
     }
   }
 
@@ -4200,7 +4225,16 @@ export default function HomePage() {
   // ---- Details modal handlers ----
   function handleDetailsPlay() {
     if (!activeDetails) return;
-    openPlayerPage(activeDetails);
+    openPlayerPage(titlePlaybackTarget(activeDetails, findTitleResume(activeDetails, getContinueWatchingEntries())));
+  }
+
+  function handleDetailsEpisodePlay(episode) {
+    if (!activeDetails) return;
+    const target = episodePlaybackTarget(activeDetails, episode);
+    const resume = findTitleResume(activeDetails, getContinueWatchingEntries());
+    const isCurrent = resume && Number(resume.seasonNumber) === Number(episode.seasonNumber) &&
+      Number(resume.episodeNumber) === Number(episode.episodeNumber);
+    openPlayerPage(isCurrent ? titlePlaybackTarget(target, resume) : target);
   }
 
   async function handleDetailsMyList() {
@@ -4527,6 +4561,9 @@ export default function HomePage() {
       const detail = event.detail || {};
       if (detail.didLoadContinueWatching || detail.didLoadProgress || !getHydrationState().pending) {
         void loadContinueWatching();
+        if (detailsModalVisible() && activeDetails) {
+          setDetailsResume(findTitleResume(activeDetails, getContinueWatchingEntries()));
+        }
       }
       if (detail.didLoadMyList) {
         renderMyListRow();
@@ -4736,7 +4773,7 @@ export default function HomePage() {
         active={showSearchExperience()}
         query={searchQuery()}
         onQuery={(query) => { navSearchInputRef.value = query; setSearchQuery(query); }}
-        onPlay={(item, imageBase) => openPlayerPage(createSearchResultDetails(item, imageBase))}
+        onOpen={(item, imageBase, trigger) => openDetailsModal(null, trigger, createSearchResultDetails(item, imageBase))}
         onContext={(event, item, imageBase) => openSearchContextMenu(event, createSearchResultDetails(item, imageBase))}
       />
 
@@ -5038,7 +5075,7 @@ export default function HomePage() {
         aria-modal="true"
         aria-labelledby="detailsTitle"
       >
-        <button
+        <div class="details-close-bar"><button
           id="detailsClose"
           ref={(el) => (detailsCloseButtonRef = el)}
           class="details-close"
@@ -5053,7 +5090,7 @@ export default function HomePage() {
               stroke-linecap="round"
             ></path>
           </svg>
-        </button>
+        </button></div>
 
         <header class="details-hero">
           <img
@@ -5075,7 +5112,8 @@ export default function HomePage() {
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M5 3.5v17L20 12 5 3.5Z"></path>
                 </svg>
-                Play
+                {detailsResume() ? detailsResume().mediaType === "tv" && detailsResume().seasonNumber > 0 && detailsResume().episodeNumber > 0
+                  ? `Resume S${detailsResume().seasonNumber} E${detailsResume().episodeNumber}` : "Resume" : "Play"}
               </button>
               <button
                 id="detailsMyList"
@@ -5124,6 +5162,14 @@ export default function HomePage() {
             <p hidden={detailsLoadState() !== "error"} role="status">Some details couldn’t load. <button class="discovery-text-button" onClick={() => void hydrateModalFromTmdb(activeDetailsCard)}>Retry details</button></p>
           </aside>
         </div>
+
+        <TitleEpisodes
+          visible={detailsModalVisible()}
+          title={detailsData()}
+          metadataLoading={detailsLoadState() === "loading"}
+          resume={detailsResume()}
+          onPlay={handleDetailsEpisodePlay}
+        />
 
         <TitleRecommendations
           visible={detailsModalVisible()}

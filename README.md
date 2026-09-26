@@ -190,7 +190,8 @@ Home and browsing:
 - Search movies, series, actors, and directors, with genre/year filters, paginated results, and account-scoped recent searches on web and iPhone.
 - Title-specific recommendations prioritize titles the viewer has not started. Related-title cards open details before playback.
 - Home becomes compact when Continue Watching is available; episode and resume captions stay visible. Web previews have a pause control, and iPhone Home Play opens or resumes the player directly.
-- Details modal with metadata, cast, playback launch, and My List actions.
+- Web catalogue and search cards open title details with metadata, cast, Play/Resume, and My List actions. Continue Watching still resumes directly; desktop hover cards retain quick Play.
+- Series details include a season picker and episode artwork, summaries, runtime, and saved-episode progress. Only the selected season loads, successful responses are cached briefly, failed loads can be retried, and future episodes show their air date. Local series use their own episode files. Closing details restores focus and the browsing position.
 - Continue watching entries enriched from local library and server state.
 - My List stored locally and synced to `/api/user/my-list`.
 - Library editor mode via `streamarena-library-edit-mode`, with edit/delete support for local movies and series entries.

@@ -213,6 +213,8 @@ body.is-search-mode :is(.featured-hero, .home-member-footer) { display: none; }
 
 /* Detail sheets, recommendations and secondary browsing pages. */
 .details-sheet { width: min(940px, 94vw); background: #17191d; border: 1px solid #ffffff12; border-radius: 16px; }
+.details-close-bar { position: sticky; top: 0; height: 0; z-index: 30; display: flex; justify-content: flex-end; padding-inline: 14px; pointer-events: none; }
+.details-close-bar .details-close { position: relative; right: auto; top: max(14px, env(safe-area-inset-top)); flex-shrink: 0; pointer-events: auto; }
 .details-hero { min-height: 360px; }
 .details-hero-image { position: absolute; inset: 0; width: 100%; height: 100%; }
 .details-hero-fade { background: linear-gradient(0deg, #17191d, #17191d05 80%); }
@@ -233,6 +235,31 @@ body.is-search-mode :is(.featured-hero, .home-member-footer) { display: none; }
 .details-item:hover, .details-item:focus-visible { background: #ffffff08; transform: none; }
 .details-item img { border-radius: 8px; }
 .details-item p { margin: 10px 0; padding: 0; font-size: 14px; font-weight: 500; }
+.details-episodes { margin: 32px 36px; padding-top: 28px; border-top: 1px solid #ffffff12; }
+.details-episodes-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.details-episodes-heading h4 { margin: 0; font-size: 22px; font-weight: 600; }
+.details-season-picker select { max-width: 100%; min-height: 44px; padding: 10px 36px 10px 14px; border: 1px solid #ffffff40; border-radius: 6px; color: #f4f4f5; background: #22252b; font: inherit; cursor: pointer; }
+.details-episode { width: 100%; display: grid; grid-template-columns: 24px 150px minmax(0, 1fr); gap: 18px; align-items: center; padding: 22px 12px; border: 0; border-top: 1px solid #ffffff12; border-radius: 6px; color: #f4f4f5; background: transparent; text-align: left; font: inherit; cursor: pointer; }
+.details-episode:is(:hover, :focus-visible), .details-episode.is-current { background: #ffffff08; }
+.details-episode:focus-visible, .details-season-picker select:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.details-episode:disabled { color: #a6abb3; cursor: default; }
+.details-episode-number { color: #a6abb3; text-align: center; font-size: 22px; font-variant-numeric: tabular-nums; }
+.details-episode-art { position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 6px; background: #252930; }
+.details-episode-art img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.details-episode-play { display: grid; place-items: center; position: absolute; inset: 0; background: #0003; opacity: 0; transition: opacity 150ms; }
+.details-episode-play svg { width: 32px; height: 32px; padding: 4px; box-sizing: content-box; fill: #fff; border: 2px solid #fff; border-radius: 50%; background: #0008; }
+.details-episode:not(:disabled):is(:hover, :focus-visible) .details-episode-play { opacity: 1; }
+.details-episode-copy { min-width: 0; display: grid; gap: 8px; }
+.details-episode-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 15px; line-height: 1.4; }
+.details-episode-title strong { font-weight: 600; }
+.details-episode-mobile-number { display: none; }
+.details-episode-title > span { flex-shrink: 0; color: #b1b7c0; font-size: 13px; }
+.details-episode-description { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; color: #b1b7c0; font-size: 14px; line-height: 1.5; }
+.details-episode-status { color: #d2d6dd; font-size: 12px; line-height: 1.5; }
+.details-episode-progress { width: 100%; height: 3px; appearance: none; border: 0; border-radius: 2px; overflow: hidden; background: #ffffff25; }
+.details-episode-progress::-webkit-progress-bar { background: #ffffff25; }
+.details-episode-progress::-webkit-progress-value { background: var(--brand-red); }
+.details-episode-progress::-moz-progress-bar { background: var(--brand-red); }
 body.live-route .page, body.sports-route .page, .home-page .live-tab-view { background: var(--bg); }
 .home-page .live-channel-section h2, .home-page .sports-hero-title { font-size: 32px; font-weight: 600; letter-spacing: -.03em; }
 .home-page .sports-hero-eyebrow { letter-spacing: .09em; color: #a1a8b3; }
@@ -296,6 +323,15 @@ body.live-route .page, body.sports-route .page, .home-page .live-tab-view { back
   .details-hero { min-height: 300px; }
   .details-hero-content { left: 24px; right: 24px; }
   .details-more { margin: 28px 24px; }
+  .details-episodes { margin: 28px 24px; }
+  .details-episode { grid-template-columns: 92px minmax(0, 1fr); gap: 12px; padding: 18px 0; align-items: start; }
+  .details-episode-number { display: none; }
+  .details-episode-mobile-number { display: inline; }
+  .details-episode-title { font-size: 14px; gap: 8px; }
+  .details-episode-description { font-size: 12px; }
+  .details-episode-title > span { font-size: 12px; }
+  .details-episode:not(:disabled) .details-episode-play { opacity: 1; }
+  .details-episode-play svg { width: 18px; height: 18px; border-width: 1px; }
   .details-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   body.is-search-mode .home-page .top-nav { grid-template-rows: 62px; height: calc(62px + env(safe-area-inset-top)); }
   body.is-search-mode .home-page :is(.nav-left, .account-menu, #openSearchButton) { display: none; }
@@ -303,7 +339,7 @@ body.live-route .page, body.sports-route .page, .home-page .live-tab-view { back
   body.is-search-mode .home-page .nav-search-box.is-open { display: flex; width: 100%; max-width: none; flex: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .home-page .hero-poster, .home-page .hero-preview-stage, .card-hover { transition: none; }
+  .home-page .hero-poster, .home-page .hero-preview-stage, .card-hover, .details-episode-play { transition: none; }
 }
 
 /* Keep late account and metadata responses from moving the browsing rails. */

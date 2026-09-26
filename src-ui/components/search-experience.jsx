@@ -148,7 +148,7 @@ export default function SearchExperience(props) {
         <Show when={error()}><button class="discovery-pill" onClick={() => void load(failedPage)}>Retry search</button></Show>
       </div>
       <div id="searchResultsGrid" class="search-results-grid" aria-busy={loading()}>
-        <For each={results()}>{(item) => <button class="search-result-card" aria-label={`Play ${item.title || item.name}`} onClick={() => { remember(); props.onPlay(item, imageBase()); }} onContextMenu={(event) => props.onContext(event, item, imageBase())}>
+        <For each={results()}>{(item) => <button class="search-result-card" aria-label={`Details for ${item.title || item.name}`} aria-haspopup="dialog" onClick={(event) => { remember(); props.onOpen(item, imageBase(), event.currentTarget); }} onContextMenu={(event) => props.onContext(event, item, imageBase())}>
           <img src={item.posterPath || item.backdropPath ? `${imageBase()}/w500${item.posterPath || item.backdropPath}` : "/assets/images/thumbnail.jpg"} alt={item.title || item.name} loading="lazy" onError={handleArtworkImageError} />
           <p class="search-result-card-title">{item.title || item.name}</p>
           <span class="discovery-card-meta">{item.mediaType === "tv" ? "Series" : "Movie"}{(item.releaseDate || item.firstAirDate) ? ` · ${(item.releaseDate || item.firstAirDate).slice(0, 4)}` : ""}</span>

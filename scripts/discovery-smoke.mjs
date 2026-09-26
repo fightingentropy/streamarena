@@ -82,20 +82,20 @@ export function createDiscoverySmoke(page) {
       await page.getByRole("button", { name: "Retry search", exact: true }).waitFor();
       assert.equal(await page.locator("#navSearchInput").inputValue(), "Retry test");
       await page.getByRole("button", { name: "Retry search", exact: true }).click();
-      await page.getByRole("button", { name: "Play Search Film", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Details for Search Film", exact: true }).waitFor();
       await page.getByRole("button", { name: "Load more", exact: true }).click();
-      await page.getByRole("button", { name: "Play Next Page Film", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Details for Next Page Film", exact: true }).waitFor();
       assert.equal(await page.locator("#searchResultsGrid > button").count(), 2);
 
       await page.locator("#navSearchInput").fill("Christopher Nolan");
-      await page.getByRole("button", { name: "Play Inception", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Details for Inception", exact: true }).waitFor();
       assert.match(await page.locator("#searchStatus").textContent(), /Films and series with Christopher Nolan/);
       await page.getByLabel("Title type", { exact: true }).selectOption("movie");
       await page.getByLabel("Genre", { exact: true }).selectOption("science-fiction");
       await page.getByLabel("Release year", { exact: true }).fill("2010");
       await page.waitForResponse((response) => response.url().includes("/api/tmdb/search?") && response.url().includes("year=2010"));
       assert.ok(requests.some((request) => request.query === "Christopher Nolan" && request.mediaType === "movie" && request.genre === "science-fiction" && request.year === "2010"));
-      await page.getByRole("button", { name: "Play Inception", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Details for Inception", exact: true }).waitFor();
       assert.equal(await page.getByLabel("Genre", { exact: true }).inputValue(), "science-fiction", "Selected genre must remain visible after results refresh");
       await page.getByRole("button", { name: /Christopher Nolan Directing/ }).click();
       await page.locator("#navSearchInput").fill("");
