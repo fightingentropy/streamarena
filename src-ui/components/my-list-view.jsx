@@ -34,7 +34,7 @@ export default function MyListView(props) {
     <div class="my-list-grid" aria-busy={props.loading}>
       <For each={filtered()}>{(entry) => <article class="saved-title">
         <button type="button" class="saved-title-open" aria-label={`Details for ${entry.title}`} aria-haspopup="dialog" onClick={(event) => props.onOpen(entry, event.currentTarget)}>
-          <div class="saved-title-art"><img src={entry.thumb} srcset={buildTmdbArtworkSrcSet(entry.thumb, [185, 342, 500])} sizes="(max-width: 600px) 45vw, (max-width: 1100px) 23vw, 15vw" alt="" loading="lazy" decoding="async" onError={handleArtworkImageError} /></div>
+          <div class="saved-title-art"><img src={entry.thumb} srcset={buildTmdbArtworkSrcSet(entry.thumb, [342, 500, 780])} sizes="(max-width: 600px) 45vw, (max-width: 1100px) 30vw, 23vw" alt="" loading="lazy" decoding="async" onError={handleArtworkImageError} /></div>
           <strong>{entry.title}</strong>
         </button>
         <div class="saved-title-footer"><span>{[entry.mediaType === "tv" || entry.seriesId ? "Series" : "Movie", entry.year].filter(Boolean).join(" · ")}</span>
