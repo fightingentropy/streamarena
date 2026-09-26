@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright";
 
 const port = Number(process.env.SEARCH_TEST_PORT || 4197);
 const baseUrl = `http://127.0.0.1:${port}`;
+// Use a generated clip so a fresh CI checkout needs no ignored local movies.
+const video = "/assets/videos/search-navigation-fixture.mp4";
+const clip = execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "12", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]);
 const server = spawn("node_modules/.bin/vite", ["--host", "127.0.0.1", "--port", String(port), "--strictPort"], { stdio: ["ignore", "pipe", "pipe"] });
 let output = "";
 server.stdout.on("data", (chunk) => { output += chunk; });
@@ -12,7 +15,6 @@ server.stderr.on("data", (chunk) => { output += chunk; });
 const json = (body) => ({ contentType: "application/json", body: JSON.stringify(body) });
 const library = { movies: [], series: [] };
 const bootstrap = { popular: { results: [] }, bingeworthy: { results: [] }, genres: [], library };
-const video = "/assets/videos/fantozzi-1975-1080p-h264-aac-4k-restored.mp4";
 const image = '<svg xmlns="http://www.w3.org/2000/svg" width="500" height="750"><rect width="500" height="750" fill="#263e54"/></svg>';
 let browser;
 try {
@@ -33,6 +35,7 @@ try {
       const url = new URL(route.request().url());
       if (url.hostname === "image.tmdb.org") return route.fulfill({ contentType: "image/svg+xml", body: image });
       if (url.origin !== baseUrl) return route.abort();
+      if (url.pathname === video) return route.fulfill({ contentType: "video/mp4", body: clip });
       if (!url.pathname.startsWith("/api/")) return route.continue();
       if (url.pathname === "/api/auth/me") return route.fulfill(json({ id: 950, email: "search@example.test", emailVerified: true }));
       if (url.pathname === "/api/home/bootstrap") return route.fulfill(json(bootstrap));
