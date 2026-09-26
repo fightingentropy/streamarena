@@ -123,7 +123,7 @@ try {
     await page.locator("#detailsModal").waitFor({ state: "hidden" });
     assert.equal(await searchCard.evaluate((element) => element === document.activeElement), true);
     await page.goto(baseUrl);
-    const localCard = page.locator('#myListRow .card[data-series-id="local-series"]');
+    const localCard = page.locator('#libraryRow .card[data-series-id="local-series"]');
     if (mobile) await localCard.getByRole("button", { name: "More details for Local Series", exact: true }).click();
     else await localCard.locator(".card-primary-action").press("Enter");
     await page.getByRole("button", { name: "Play season 1, episode 2: Next steps", exact: true }).click();

@@ -92,7 +92,7 @@ export default function LivePage() {
               <a href="/">Home</a>
               <a href="/live" class={liveNavClass("live")}>Live</a>
               <a href="/sports" class={sportsNavClass("")}>Sports</a>
-              <a href="/#myListRow" class="optional">My List</a>
+              <a href="/?view=my-list" class="optional">My List</a>
             </nav>
           </div>
           <div class="nav-right">

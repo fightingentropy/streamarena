@@ -951,7 +951,8 @@ body.is-search-mode #popularRow,
 body.is-search-mode #trendingRow,
 body.is-search-mode #nowPlayingRow,
 body.is-search-mode #topRatedRow,
-body.is-search-mode #myListRow {
+body.is-search-mode #myListRow,
+body.is-search-mode #libraryRow {
     display: none !important;
 }
 

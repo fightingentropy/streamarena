@@ -109,11 +109,11 @@ const TOPICS = [
     articles: [
       {
         q: "How do I add something to My List?",
-        a: "Open any title and click the + (My List) button. Everything you save shows up in the My List row, reachable from the top navigation.",
+        a: "Open any title and click the + (My List) button. Open My List in the top navigation to browse your saved titles, filter movies or series, and sort by recently added, title, or release year.",
       },
       {
         q: "How do I remove a title from My List?",
-        a: "Open the title again and click the ✓ button to remove it from your list.",
+        a: "Use the remove button on a title in My List, or open its details and click the ✓ button. Local files remain available in the Local library row on Home.",
       },
     ],
   },

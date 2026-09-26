@@ -193,7 +193,8 @@ Home and browsing:
 - Web catalogue and search cards open title details with metadata, cast, Play/Resume, and My List actions. Continue Watching still resumes directly; desktop hover cards retain quick Play.
 - Series details include a season picker and episode artwork, summaries, runtime, and saved-episode progress. Only the selected season loads, successful responses are cached briefly, failed loads can be retried, and future episodes show their air date. Local series use their own episode files. Closing details restores focus and the browsing position.
 - Continue watching entries enriched from local library and server state.
-- My List stored locally and synced to `/api/user/my-list`.
+- My List has a dedicated `/?view=my-list` grid with Movies/Series filters, recently added/title/release-year sorting, and a return path from playback that preserves those choices. Home retains a saved-title rail; unsaved local files appear separately under Local library.
+- My List waits for account hydration before edits and confirms `/api/user/my-list` saves before changing its local cache. Failed loads/saves have retry/error states, and a full 100-title list asks for a removal instead of silently dropping the oldest title.
 - Library editor mode via `streamarena-library-edit-mode`, with edit/delete support for local movies and series entries.
 - `/live` can be opened as a full page or as an in-home live view.
 - `/sports` is linked from navigation.

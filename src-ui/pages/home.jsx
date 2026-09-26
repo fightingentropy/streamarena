@@ -75,6 +75,7 @@ import {
 } from "../lib/featured-hero.js";
 import TitleRecommendations from "../components/title-recommendations.jsx";
 import TitleEpisodes from "../components/title-episodes.jsx";
+import MyListView from "../components/my-list-view.jsx";
 import { episodePlaybackTarget, findTitleResume, titlePlaybackTarget } from "../lib/title-playback.js";
 import SearchExperience from "../components/search-experience.jsx";
 import FeedbackNav from "../components/feedback-nav.jsx";
@@ -842,21 +843,19 @@ function readMyListEntries() {
   }
 }
 
-function writeMyListEntries(entries) {
+async function writeMyListEntries(entries, owner) {
   const safeEntries = Array.isArray(entries)
     ? entries.map(normalizeMyListEntry)
     : [];
-  try {
-    localStorage.setItem(MY_LIST_STORAGE_KEY, JSON.stringify(safeEntries));
-  } catch {
-    // Ignore storage write issues.
-  }
-  // Sync my-list to server in background
-  fetch("/api/user/my-list", {
+  const response = await fetch("/api/user/my-list", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ entries: safeEntries }),
-  }).catch(() => {});
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error("Couldn’t save your list. Please try again.");
+  if (getHydrationState().authExpired || String(window.__currentUser?.id || "") !== owner) return null;
+  localStorage.setItem(MY_LIST_STORAGE_KEY, JSON.stringify(safeEntries));
   return safeEntries;
 }
 
@@ -873,8 +872,9 @@ function isMyListEntryActive(details) {
 async function toggleMyList(details) {
   const owner = String(window.__currentUser?.id || "");
   const hydration = getHydrationState();
-  if (hydration.pending && !hydration.didLoadMyList) {
-    await beginServerHydration().myListReady;
+  if (hydration.pending || !hydration.didLoadMyList) {
+    const result = await beginServerHydration().myListReady;
+    if (!result.didLoadMyList) throw new Error("Your list couldn’t sync. Try again before making changes.");
   }
   if (!owner || getHydrationState().authExpired || String(window.__currentUser?.id || "") !== owner) {
     return null;
@@ -890,15 +890,30 @@ async function toggleMyList(details) {
   );
   if (existingIndex >= 0) {
     entries.splice(existingIndex, 1);
-    writeMyListEntries(entries);
-    return false;
+    return await writeMyListEntries(entries, owner) ? false : null;
   }
+  if (entries.length >= 100) throw new Error("Your list has 100 titles. Remove one before adding another.");
   entries.unshift({
     ...normalizedDetails,
     addedAt: Date.now(),
   });
-  writeMyListEntries(entries.slice(0, 100));
-  return true;
+  return await writeMyListEntries(entries, owner) ? true : null;
+}
+
+function readMyListViewState() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    active: params.get("view") === "my-list" || window.location.hash === "#myListRow",
+    type: ["movie", "tv"].includes(params.get("type")) ? params.get("type") : "all",
+    sort: ["title", "year"].includes(params.get("sort")) ? params.get("sort") : "recent",
+  };
+}
+
+function myListViewUrl(type = "all", sort = "recent") {
+  const params = new URLSearchParams({ view: "my-list" });
+  if (type !== "all") params.set("type", type);
+  if (sort !== "recent") params.set("sort", sort);
+  return `/?${params}`;
 }
 
 function mapDetailsToModalPatch(rawDetails, currentDetails, mediaType) {
@@ -976,7 +991,9 @@ export default function HomePage() {
   let nowPlayingCardsContainerRef;
   let topRatedCardsContainerRef;
   let myListCardsRef;
+  let libraryCardsRef;
   let myListLibraryEntries = [];
+  let myListRenderSignature = "";
   let homeLibrarySnapshot = readInjectedHomeBootstrap()?.library || null;
   let continueEntriesSignature = "";
   const continueDetailsCache = new Map();
@@ -1021,8 +1038,17 @@ export default function HomePage() {
   const [nowPlayingRowVisible, setNowPlayingRowVisible] = createSignal(false);
   const [topRatedRowVisible, setTopRatedRowVisible] = createSignal(false);
   const [myListRowVisible, setMyListRowVisible] = createSignal(false);
-  const [myListEmptyVisible, setMyListEmptyVisible] = createSignal(false);
-  const [activeView, setActiveView] = createSignal("home");
+  const [libraryRowVisible, setLibraryRowVisible] = createSignal(false);
+  const [savedTitles, setSavedTitles] = createSignal([]);
+  const [myListLoading, setMyListLoading] = createSignal(initialHydration.pending && !initialHydration.didLoadMyList);
+  const [myListLoadError, setMyListLoadError] = createSignal(!initialHydration.pending && !initialHydration.didLoadMyList);
+  const [myListSaving, setMyListSaving] = createSignal(false);
+  const [myListNotice, setMyListNotice] = createSignal("");
+  const [myListNoticeError, setMyListNoticeError] = createSignal(false);
+  const initialListView = readMyListViewState();
+  const [myListType, setMyListType] = createSignal(initialListView.type);
+  const [myListSort, setMyListSort] = createSignal(initialListView.sort);
+  const [activeView, setActiveView] = createSignal(initialListView.active ? "my-list" : "home");
   const [LiveChannelsComponent, setLiveChannelsComponent] = createSignal(null);
 
   const [detailsModalVisible, setDetailsModalVisible] = createSignal(false);
@@ -1073,6 +1099,7 @@ export default function HomePage() {
   let heroPreviewStartedTrailerKey = "";
   let searchContextTarget = null;
   let searchBoxHideTimer = null;
+  let myListNoticeTimer = null;
   let libraryEditModalCloseTimer = null;
   let activeLibraryEditContext = null;
   let isSavingLibraryEdit = false;
@@ -1962,6 +1989,7 @@ export default function HomePage() {
       return;
     }
     const itemTitle = String(button.dataset.itemTitle || "").trim();
+    button.disabled = myListSaving();
     button.classList.toggle("is-active", Boolean(isActive));
     button.setAttribute(
       "aria-label",
@@ -2069,70 +2097,72 @@ export default function HomePage() {
   }
 
   function renderMyListRow() {
-    if (!myListCardsRef) {
-      return;
-    }
-    const storedEntries = readMyListEntries();
-    const hydratedEntries = storedEntries.map((entry) =>
-      hydrateMyListEntryWithLocalLibrary(entry, myListLibraryEntries),
-    );
-    const hydration = getHydrationState();
-    if ((!hydration.pending || hydration.didLoadMyList) &&
-        JSON.stringify(storedEntries) !== JSON.stringify(hydratedEntries)) {
-      writeMyListEntries(hydratedEntries);
-    }
-    const savedEntries = hydratedEntries.sort(
-      (left, right) => Number(right.addedAt || 0) - Number(left.addedAt || 0),
-    );
-    unobserveDeferredArtwork(myListCardsRef);
-    myListCardsRef.innerHTML = "";
-
-    const cards = [];
-    const seenIdentities = new Set();
-    const appendCard = (card) => {
-      if (!(card instanceof HTMLElement)) {
-        return;
-      }
-      const identity = getRecommendationIdentity(getCardDetails(card));
-      if (identity && seenIdentities.has(identity)) {
-        return;
-      }
-      if (identity) {
-        seenIdentities.add(identity);
-      }
-      cards.push(card);
+    const seen = new Set();
+    const savedEntries = readMyListEntries()
+      .map((entry) => hydrateMyListEntryWithLocalLibrary(entry, myListLibraryEntries))
+      .filter((entry) => {
+        const identity = getRecommendationIdentity(entry);
+        if (!identity || seen.has(identity)) return false;
+        seen.add(identity);
+        return true;
+      })
+      .sort((left, right) => Number(right.addedAt || 0) - Number(left.addedAt || 0));
+    const signature = JSON.stringify([savedEntries, myListLibraryEntries]);
+    if (signature === myListRenderSignature) return;
+    myListRenderSignature = signature;
+    // Local file availability enriches presentation; it must not rewrite the
+    // account's saved list merely because Home rendered.
+    setSavedTitles(savedEntries);
+    const renderCards = (container, cards) => {
+      if (!container) return;
+      unobserveDeferredArtwork(container);
+      container.replaceChildren();
+      const fragment = document.createDocumentFragment();
+      cards.forEach((card, index) => {
+        if (index >= Math.max(1, cards.length - 2)) card.classList.add("card--align-right");
+        fragment.appendChild(card);
+        attachCardInteractions(card);
+      });
+      container.appendChild(fragment);
+      attachArtworkImageFallbacks(container);
     };
-
-    savedEntries.forEach((entry) => {
-      appendCard(buildMyListCardElement(entry));
-    });
-    myListLibraryEntries.forEach((entry) => {
-      appendCard(
-        entry.type === "series"
-          ? buildCardFromLocalSeriesElement(entry.item)
-          : buildCardFromLocalMovieElement(entry.item),
-      );
-    });
-
-    if (!cards.length) {
-      setMyListRowVisible(true);
-      setMyListEmptyVisible(true);
-      return;
-    }
-
-    const fragment = document.createDocumentFragment();
-    cards.forEach((card, index) => {
-      if (index >= Math.max(1, cards.length - 2)) {
-        card.classList.add("card--align-right");
-      }
-      fragment.appendChild(card);
-      attachCardInteractions(card);
-    });
-    myListCardsRef.appendChild(fragment);
-    attachArtworkImageFallbacks(myListCardsRef);
+    renderCards(myListCardsRef, savedEntries.slice(0, BROWSE_RAIL_LIMIT).map(buildMyListCardElement));
+    renderCards(libraryCardsRef, myListLibraryEntries.map((entry) => entry.type === "series"
+      ? buildCardFromLocalSeriesElement(entry.item)
+      : buildCardFromLocalMovieElement(entry.item)));
+    setMyListRowVisible(savedEntries.length > 0);
+    setLibraryRowVisible(myListLibraryEntries.length > 0);
     syncAllMyListButtons();
-    setMyListRowVisible(true);
-    setMyListEmptyVisible(false);
+  }
+
+  async function handleMyListToggle(details, trigger = null) {
+    if (myListSaving()) return;
+    setMyListSaving(true);
+    setMyListNotice("");
+    if (myListNoticeTimer) clearTimeout(myListNoticeTimer);
+    syncAllMyListButtons();
+    const savedCard = trigger?.closest?.(".saved-title");
+    const focusIndex = savedCard ? Array.from(savedCard.parentElement.children).indexOf(savedCard) : -1;
+    try {
+      const isAdded = await toggleMyList(details);
+      if (isAdded === null) return;
+      renderMyListRow();
+      setMyListNoticeError(false);
+      setMyListNotice(`${details.title} ${isAdded ? "added to" : "removed from"} My List.`);
+      myListNoticeTimer = window.setTimeout(() => setMyListNotice(""), 5000);
+      if (focusIndex >= 0 && activeView() === "my-list") {
+        requestAnimationFrame(() => {
+          const cards = document.querySelectorAll("#myListView .saved-title-open");
+          (cards[Math.min(focusIndex, cards.length - 1)] || document.getElementById("myListHeading"))?.focus({ preventScroll: true });
+        });
+      }
+    } catch (error) {
+      setMyListNoticeError(true);
+      setMyListNotice(error.name === "TimeoutError" ? "Saving took too long. Please try again." : error.name === "Error" ? error.message : "Couldn’t save your list. Check your connection and try again.");
+    } finally {
+      setMyListSaving(false);
+      syncAllMyListButtons();
+    }
   }
 
   // ---- Card interactions ----
@@ -2427,9 +2457,7 @@ export default function HomePage() {
         button.addEventListener("click", async (event) => {
           event.stopPropagation();
           event.preventDefault();
-          if (await toggleMyList(getCardDetails(card)) === null) return;
-          renderMyListRow();
-          syncAllMyListButtons();
+          await handleMyListToggle(getCardDetails(card), button);
         });
       });
   }
@@ -4155,7 +4183,8 @@ export default function HomePage() {
       closeSearchMode({ clearInput: false });
     }
     setActiveView("home");
-    if (push && window.location.pathname !== "/") {
+    if (push && (window.location.pathname !== "/" || window.location.search || window.location.hash)) {
+      window.history.replaceState({ ...window.history.state, scrollY: window.scrollY }, "");
       window.history.pushState({ view: "home" }, "", "/");
     }
     stopHeroPreview();
@@ -4187,6 +4216,7 @@ export default function HomePage() {
     void ensureLiveViewLoaded();
     setActiveView("live");
     if (push && window.location.pathname !== "/live") {
+      window.history.replaceState({ ...window.history.state, scrollY: window.scrollY }, "");
       window.history.pushState({ view: "live" }, "", "/live");
     }
     stopHeroPreview();
@@ -4204,22 +4234,33 @@ export default function HomePage() {
     showLiveView();
   }
 
-  // ---- My List nav link ----
+  function showMyListView({ push = true } = {}) {
+    if (isSearchModeActive()) closeSearchMode({ clearInput: false });
+    const url = myListViewUrl(myListType(), myListSort());
+    if (push && `${window.location.pathname}${window.location.search}` !== url) {
+      window.history.replaceState({ ...window.history.state, scrollY: window.scrollY }, "");
+      window.history.pushState({ view: "my-list" }, "", url);
+    }
+    setActiveView("my-list");
+    stopHeroPreview();
+    stopHeroCarouselTimer();
+    document.querySelectorAll(".card.is-hovering").forEach((card) => hideCardHover(card, { force: true }));
+    if (push) {
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      document.getElementById("myListHeading")?.focus({ preventScroll: true });
+    }
+  }
+
   function handleMyListNavClick(event) {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    if (isSearchModeActive()) {
-      closeSearchMode({ clearInput: false });
-    }
-    if (activeView() !== "home") {
-      showHomeView();
-    }
-    const myListRowEl = document.getElementById("myListRow");
-    if (myListRowEl && !myListRowEl.hidden) {
-      myListRowEl.scrollIntoView({ behavior: "smooth", block: "start" });
-      return;
-    }
-    const popRow = document.getElementById("popularRow");
-    popRow?.scrollIntoView({ behavior: "smooth", block: "start" });
+    showMyListView();
+  }
+
+  function handleMyListFilter(type, sort) {
+    setMyListType(type);
+    setMyListSort(sort);
+    window.history.replaceState({ ...window.history.state, view: "my-list" }, "", myListViewUrl(type, sort));
   }
 
   // ---- Details modal handlers ----
@@ -4241,12 +4282,7 @@ export default function HomePage() {
     if (!activeDetails) {
       return;
     }
-    const details = activeDetails;
-    const isAdded = await toggleMyList(details);
-    if (isAdded === null) return;
-    if (activeDetails === details) setDetailsMyListActive(isAdded);
-    renderMyListRow();
-    syncAllMyListButtons();
+    await handleMyListToggle(activeDetails);
   }
 
   function handleDetailsClose() {
@@ -4395,6 +4431,8 @@ export default function HomePage() {
     closeAccountMenu();
     if (window.location.pathname === "/live") {
       showLiveView({ push: false });
+    } else if (initialListView.active) {
+      showMyListView({ push: false });
     }
 
     // Handle initial search query
@@ -4565,18 +4603,26 @@ export default function HomePage() {
           setDetailsResume(findTitleResume(activeDetails, getContinueWatchingEntries()));
         }
       }
+      setMyListLoading(Boolean(detail.pending && !detail.didLoadMyList));
+      setMyListLoadError(!detail.pending && !detail.didLoadMyList);
       if (detail.didLoadMyList) {
         renderMyListRow();
         syncAllMyListButtons();
       }
     };
 
-    const handlePopstate = () => {
+    const handlePopstate = (event) => {
+      const listState = readMyListViewState();
       if (window.location.pathname === "/live") {
         showLiveView({ push: false });
+      } else if (listState.active) {
+        setMyListType(listState.type);
+        setMyListSort(listState.sort);
+        showMyListView({ push: false });
       } else {
         showHomeView({ push: false });
       }
+      requestAnimationFrame(() => window.scrollTo({ top: Number(event.state?.scrollY) || 0, behavior: "auto" }));
     };
 
     document.addEventListener("keydown", handleGlobalKeydown);
@@ -4619,6 +4665,7 @@ export default function HomePage() {
       window.removeEventListener(SERVER_HYDRATED_EVENT, handleServerHydrated);
 
       if (searchBoxHideTimer) clearTimeout(searchBoxHideTimer);
+      if (myListNoticeTimer) clearTimeout(myListNoticeTimer);
       if (closeModalTimer) clearTimeout(closeModalTimer);
       if (libraryEditModalCloseTimer) clearTimeout(libraryEditModalCloseTimer);
     });
@@ -4633,10 +4680,10 @@ export default function HomePage() {
             <BrandWordmark class="brand-wordmark--nav" />
           </a>
           <nav>
-            <a href="/" class={activeView() === "home" ? "is-active" : ""} onClick={handleHomeNavClick}>Home</a>
+            <a href="/" class={activeView() === "home" ? "is-active" : ""} aria-current={activeView() === "home" ? "page" : undefined} onClick={handleHomeNavClick}>Home</a>
             <a href="/live" class={liveNavClass(activeView() === "live" ? "live" : "")} onClick={handleLiveNavClick}>Live</a>
             <a href="/sports" class={sportsNavLinkClass("")}>Sports</a>
-            <a href="#" id="navMyList" class="optional" onClick={handleMyListNavClick}>My List</a>
+            <a href="/?view=my-list" id="navMyList" class={`optional${activeView() === "my-list" ? " is-active" : ""}`} aria-current={activeView() === "my-list" ? "page" : undefined} onClick={handleMyListNavClick}>My List</a>
           </nav>
         </div>
         <div class="nav-right">
@@ -4775,6 +4822,21 @@ export default function HomePage() {
         onQuery={(query) => { navSearchInputRef.value = query; setSearchQuery(query); }}
         onOpen={(item, imageBase, trigger) => openDetailsModal(null, trigger, createSearchResultDetails(item, imageBase))}
         onContext={(event, item, imageBase) => openSearchContextMenu(event, createSearchResultDetails(item, imageBase))}
+      />
+
+      <MyListView
+        active={activeView() === "my-list" && !showSearchExperience()}
+        entries={savedTitles()}
+        loading={myListLoading()}
+        error={myListLoadError()}
+        saving={myListSaving()}
+        type={myListType()}
+        sort={myListSort()}
+        onFilter={handleMyListFilter}
+        onRetry={() => void refreshAccountBackedCaches()}
+        onOpen={(entry, trigger) => openDetailsModal(null, trigger, getCardModalData(buildMyListCardElement(entry)))}
+        onRemove={handleMyListToggle}
+        onBrowse={() => openSearchMode()}
       />
 
       <div
@@ -5030,26 +5092,29 @@ export default function HomePage() {
       hidden={activeView() !== "home" || !myListRowVisible()}
     >
       <div class="popular-row-inner">
-        <h2>My List</h2>
+        <div class="rail-header"><h2>My List</h2><a class="rail-view-all" href="/?view=my-list" onClick={handleMyListNavClick}>View all</a></div>
         <div
           id="myListCards"
           class="cards popular-cards"
           ref={(el) => (myListCardsRef = el)}
         ></div>
-        <p
-          id="myListEmpty"
-          class="continue-empty"
-          hidden={!myListEmptyVisible()}
-        >
-          Add titles using the plus icon.
-        </p>
       </div>
     </section>
+
+    <section id="libraryRow" class="popular-row home-popular-row" hidden={activeView() !== "home" || !libraryRowVisible()}>
+      <div class="popular-row-inner"><div class="rail-header"><h2>Local library</h2></div>
+        <div id="libraryCards" class="cards popular-cards" ref={(el) => (libraryCardsRef = el)}></div>
+      </div>
+    </section>
+
+    <div class={`my-list-notice${myListNoticeError() ? " is-error" : ""}`} hidden={!myListNotice() || detailsModalVisible()}>
+      <p role="status">{myListNotice()}</p><button type="button" aria-label="Dismiss list message" onClick={() => setMyListNotice("")}>×</button>
+    </div>
 
     <footer
       class="member-footer home-member-footer"
       aria-label="StreamArena footer"
-      hidden={activeView() !== "home"}
+      hidden={activeView() === "live"}
     >
       <ul class="member-footer-links">
         <li><a href="/help">Help Center</a></li>
@@ -5119,6 +5184,7 @@ export default function HomePage() {
                 id="detailsMyList"
                 class={`details-round${detailsMyListActive() ? " is-active" : ""}`}
                 type="button"
+                disabled={myListSaving()}
                 aria-label={detailsMyListActive() ? "Remove from My List" : "Add to My List"}
                 aria-pressed={detailsMyListActive() ? "true" : "false"}
                 onClick={handleDetailsMyList}
@@ -5136,6 +5202,7 @@ export default function HomePage() {
           </div>
         </header>
 
+        <p class={`details-list-notice${myListNoticeError() ? " is-error" : ""}`} hidden={!myListNotice()} role="status">{myListNotice()}</p>
         <div class="details-body">
           <section class="details-main">
             <div class="details-meta">
