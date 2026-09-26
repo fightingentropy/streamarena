@@ -76,6 +76,7 @@ import {
 import TitleRecommendations from "../components/title-recommendations.jsx";
 import TitleEpisodes from "../components/title-episodes.jsx";
 import MyListView from "../components/my-list-view.jsx";
+import { normalizeSearchState, readSearchLocation, searchLocation } from "../lib/search-state.js";
 import { episodePlaybackTarget, findTitleResume, titlePlaybackTarget } from "../lib/title-playback.js";
 import SearchExperience from "../components/search-experience.jsx";
 import FeedbackNav from "../components/feedback-nav.jsx";
@@ -512,12 +513,6 @@ async function apiFetchWithTimeout(path, params = {}, timeoutMs = 2500) {
   } finally {
     window.clearTimeout(timeout);
   }
-}
-
-function normalizeSearchQuery(value) {
-  return String(value || "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function getFeaturedHeroMaturityLabel(feature) {
@@ -1008,12 +1003,15 @@ export default function HomePage() {
   let searchContextMenuRef;
   let liveViewLoadPromise = null;
   let accountHydratePromise = null;
+  let captureSearchReturnState = null;
+  const initialSearch = readSearchLocation(window.location.href);
 
   // ---- Signals ----
   const [isMuted, setIsMuted] = createSignal(true);
   const [heroMotionPaused, setHeroMotionPaused] = createSignal(false);
   const [isSearchModeActive, setIsSearchModeActive] = createSignal(false);
-  const [searchQuery, setSearchQuery] = createSignal("");
+  const [searchState, setSearchState] = createSignal(initialSearch.state);
+  const [searchRestoreFocus, setSearchRestoreFocus] = createSignal(false);
   const [showSearchExperience, setShowSearchExperience] = createSignal(false);
   const [showSearchBox, setShowSearchBox] = createSignal(false);
   const [searchBoxOpen, setSearchBoxOpen] = createSignal(false);
@@ -1176,6 +1174,7 @@ export default function HomePage() {
     resumeSource,
     saveToGallery = false,
   }) {
+    if (isSearchModeActive()) captureSearchReturnState?.();
     movieResolvePrewarmer.pause();
     stopHeroPreview();
     const normalizePlaybackSource = (value) => {
@@ -3747,10 +3746,26 @@ export default function HomePage() {
   function scheduleTmdbSearchFromInput() {
     if (!navSearchInputRef) return;
     if (!isSearchModeActive()) openSearchMode({ focusInput: false });
-    setSearchQuery(navSearchInputRef.value.trim());
+    updateSearchState({ query: navSearchInputRef.value, personId: "" });
   }
 
-  function openSearchMode({ focusInput = true } = {}) {
+  function updateSearchState(patch) {
+    const next = normalizeSearchState({ ...searchState(), ...patch });
+    setSearchState(next);
+    if (navSearchInputRef && "query" in patch && navSearchInputRef.value.trim() !== next.query) navSearchInputRef.value = next.query;
+    if (isSearchModeActive()) {
+      window.history.replaceState(window.history.state, "", searchLocation(window.location.href, next));
+    }
+  }
+
+  function openSearchMode({ focusInput = true, push = true } = {}) {
+    const wasActive = isSearchModeActive();
+    setSearchRestoreFocus(!focusInput);
+    if (push && !wasActive) {
+      const origin = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      window.history.replaceState({ ...window.history.state, scrollY: window.scrollY }, "");
+      window.history.pushState({ searchOrigin: origin }, "", searchLocation(window.location.href, searchState()));
+    }
     if (searchBoxHideTimer) {
       clearTimeout(searchBoxHideTimer);
       searchBoxHideTimer = null;
@@ -3761,6 +3776,8 @@ export default function HomePage() {
     document.body.classList.add("is-search-mode");
     setShowSearchExperience(true);
     setShowSearchBox(true);
+    if (navSearchInputRef) navSearchInputRef.value = searchState().query;
+    if (push && !wasActive) window.scrollTo({ top: 0, behavior: "auto" });
     requestAnimationFrame(() => {
       setSearchBoxOpen(true);
     });
@@ -3771,16 +3788,10 @@ export default function HomePage() {
         navSearchInputRef.select();
       });
     }
-
-    if (navSearchInputRef && navSearchInputRef.value.trim()) {
-      scheduleTmdbSearchFromInput({ immediate: true });
-      return;
-    }
-
-    setSearchQuery(navSearchInputRef?.value.trim() || "");
   }
 
-  function closeSearchMode({ clearInput = true } = {}) {
+  function closeSearchMode() {
+    if (isSearchModeActive()) captureSearchReturnState?.();
     setIsSearchModeActive(false);
     hideSearchContextMenu();
     document.body.classList.remove("is-search-mode");
@@ -3793,10 +3804,14 @@ export default function HomePage() {
       setShowSearchBox(false);
       searchBoxHideTimer = null;
     }, 220);
-    if (clearInput && navSearchInputRef) {
-      navSearchInputRef.value = "";
-    }
-    setSearchQuery(navSearchInputRef?.value.trim() || "");
+  }
+
+  function closeSearchAndReturn() {
+    const origin = window.history.state?.searchOrigin;
+    closeSearchMode();
+    if (origin && window.history.length > 1) window.history.back();
+    else window.history.replaceState(window.history.state, "", searchLocation(window.location.href, searchState(), false));
+    pageRootRef?.focus({ preventScroll: true });
   }
 
   // ---- Account menu ----
@@ -4131,8 +4146,7 @@ export default function HomePage() {
   function handleCloseSearch(event) {
     event.preventDefault();
     event.stopPropagation();
-    closeSearchMode({ clearInput: false });
-    pageRootRef?.focus({ preventScroll: true });
+    closeSearchAndReturn();
   }
 
   function handleSearchInput() {
@@ -4157,8 +4171,7 @@ export default function HomePage() {
     }
     if (event.key === "Escape") {
       event.preventDefault();
-      closeSearchMode();
-      pageRootRef?.focus({ preventScroll: true });
+      closeSearchAndReturn();
     }
   }
 
@@ -4180,7 +4193,7 @@ export default function HomePage() {
 
   function showHomeView({ push = true } = {}) {
     if (isSearchModeActive()) {
-      closeSearchMode({ clearInput: false });
+      closeSearchMode();
     }
     setActiveView("home");
     if (push && (window.location.pathname !== "/" || window.location.search || window.location.hash)) {
@@ -4211,7 +4224,7 @@ export default function HomePage() {
 
   function showLiveView({ push = true } = {}) {
     if (isSearchModeActive()) {
-      closeSearchMode({ clearInput: false });
+      closeSearchMode();
     }
     void ensureLiveViewLoaded();
     setActiveView("live");
@@ -4235,7 +4248,7 @@ export default function HomePage() {
   }
 
   function showMyListView({ push = true } = {}) {
-    if (isSearchModeActive()) closeSearchMode({ clearInput: false });
+    if (isSearchModeActive()) closeSearchMode();
     const url = myListViewUrl(myListType(), myListSort());
     if (push && `${window.location.pathname}${window.location.search}` !== url) {
       window.history.replaceState({ ...window.history.state, scrollY: window.scrollY }, "");
@@ -4435,20 +4448,8 @@ export default function HomePage() {
       showMyListView({ push: false });
     }
 
-    // Handle initial search query
-    const initialSearchQuery = normalizeSearchQuery(
-      new URLSearchParams(window.location.search).get("q") || "",
-    );
-    const shouldRestoreSearchMode = Boolean(
-      initialSearchQuery ||
-        (showSearchBox() && searchBoxOpen()),
-    );
-    if (shouldRestoreSearchMode && navSearchInputRef) {
-      navSearchInputRef.value = initialSearchQuery;
-      openSearchMode({ focusInput: false });
-      if (initialSearchQuery) {
-        scheduleTmdbSearchFromInput({ immediate: true });
-      }
+    if (initialSearch.active) {
+      openSearchMode({ focusInput: false, push: false });
     } else {
       pageRootRef?.focus();
     }
@@ -4490,8 +4491,7 @@ export default function HomePage() {
           return;
         }
         if (isSearchModeActive()) {
-          closeSearchMode();
-          pageRootRef?.focus({ preventScroll: true });
+          closeSearchAndReturn();
         }
       }
     };
@@ -4612,6 +4612,7 @@ export default function HomePage() {
     };
 
     const handlePopstate = (event) => {
+      const restoredSearch = readSearchLocation(window.location.href);
       const listState = readMyListViewState();
       if (window.location.pathname === "/live") {
         showLiveView({ push: false });
@@ -4622,7 +4623,12 @@ export default function HomePage() {
       } else {
         showHomeView({ push: false });
       }
-      requestAnimationFrame(() => window.scrollTo({ top: Number(event.state?.scrollY) || 0, behavior: "auto" }));
+      if (restoredSearch.active) {
+        setSearchState(restoredSearch.state);
+        openSearchMode({ focusInput: false, push: false });
+      } else {
+        requestAnimationFrame(() => window.scrollTo({ top: Number(event.state?.scrollY) || 0, behavior: "auto" }));
+      }
     };
 
     document.addEventListener("keydown", handleGlobalKeydown);
@@ -4818,8 +4824,10 @@ export default function HomePage() {
 
       <SearchExperience
         active={showSearchExperience()}
-        query={searchQuery()}
-        onQuery={(query) => { navSearchInputRef.value = query; setSearchQuery(query); }}
+        state={searchState()}
+        restoreFocus={searchRestoreFocus()}
+        onChange={updateSearchState}
+        onCaptureReady={(capture) => { captureSearchReturnState = capture; }}
         onOpen={(item, imageBase, trigger) => openDetailsModal(null, trigger, createSearchResultDetails(item, imageBase))}
         onContext={(event, item, imageBase) => openSearchContextMenu(event, createSearchResultDetails(item, imageBase))}
       />

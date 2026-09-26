@@ -188,6 +188,7 @@ Home and browsing:
 - Dashboard rails use TMDB discovery with rating/vote-count thresholds, release-date guards, and artwork checks instead of raw popularity/trending lists.
 - Rails for curated movies, series, critically acclaimed titles, local library, continue watching, and My List.
 - Search movies, series, actors, and directors, with genre/year filters, paginated results, and account-scoped recent searches on web and iPhone.
+- Web search links retain the query and filters. Returning from playback restores loaded results, pagination, scroll position, and the selected card without repeating catalogue requests; the current tab keeps one account-scoped search for up to six hours.
 - Title-specific recommendations prioritize titles the viewer has not started. Related-title cards open details before playback.
 - Home becomes compact when Continue Watching is available; episode and resume captions stay visible. Web previews have a pause control, and iPhone Home Play opens or resumes the player directly.
 - Web catalogue and search cards open title details with metadata, cast, Play/Resume, and My List actions. Continue Watching still resumes directly; desktop hover cards retain quick Play.
