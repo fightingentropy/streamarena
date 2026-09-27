@@ -4,6 +4,7 @@ import {
   getSourceDisplayName,
   isSourceOptionEmbed,
   normalizeSourceHash,
+  parseSourceOptionVerticalResolution,
 } from "./sources.js";
 
 export const SOURCE_MENU_HLS_TAB = "hls";
@@ -71,7 +72,9 @@ export function syncSourceMenuTabs(tabList, view) {
     button.classList.toggle("is-active", selected);
     button.setAttribute("aria-selected", selected ? "true" : "false");
     button.tabIndex = selected ? 0 : -1;
-    button.dataset.count = String(view.counts[tab] || 0);
+    const count = view.counts[tab] || 0;
+    button.dataset.count = String(count);
+    button.setAttribute("aria-label", `${tab === SOURCE_MENU_HLS_TAB ? "Streaming" : "Torrents"}, ${count} ${count === 1 ? "source" : "sources"}`);
   });
 }
 
@@ -81,32 +84,39 @@ const SOURCE_OPTION_DOWNLOAD_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" st
   <path d="M5 21h14"></path>
 </svg>`;
 
+// HLS provider/container labels describe the delivery plumbing, not quality.
+// Only show resolution when the source actually supplies that metadata.
+export function getSourceMenuHint(option) {
+  if (!isSourceOptionEmbed(option)) {
+    return [getSourceDisplayHint(option), getSourceDisplayMeta(option)]
+      .filter(Boolean).join(" · ");
+  }
+  const resolution = parseSourceOptionVerticalResolution(option);
+  return resolution ? `${resolution}p` : "";
+}
+
+export function syncSourceOptionState(button, { selected, loading }) {
+  button.classList.toggle("is-loading", loading);
+  button.setAttribute("aria-pressed", selected && !loading ? "true" : "false");
+  button.setAttribute("aria-busy", loading ? "true" : "false");
+  const state = button.querySelector(".source-option-state");
+  if (state) {
+    state.hidden = !loading && !selected;
+    state.textContent = loading ? "Connecting…" : "Selected";
+  }
+}
+
 export function createSourceOptionButton({
-  iconSvg,
   option,
   selectedSourceHash,
   sourceHash,
   loadingSourceHash = "",
-  downloadingSourceHash = "",
 }) {
   const button = document.createElement("button");
-  button.className = "audio-option source-option";
+  button.className = "source-option";
   button.type = "button";
-  button.setAttribute("role", "option");
   button.dataset.sourceHash = sourceHash;
-  const isLoading =
-    Boolean(loadingSourceHash) && sourceHash === loadingSourceHash;
-  button.classList.toggle("is-loading", isLoading);
-  button.setAttribute(
-    "aria-selected",
-    !isLoading && sourceHash === selectedSourceHash ? "true" : "false",
-  );
-  button.setAttribute("aria-busy", isLoading ? "true" : "false");
-
-  const iconBadge = document.createElement("span");
-  iconBadge.className = "source-option-icon";
-  iconBadge.setAttribute("aria-hidden", "true");
-  iconBadge.innerHTML = iconSvg;
+  button.setAttribute("aria-label", `Play from ${getSourceDisplayName(option)}`);
 
   const textWrap = document.createElement("span");
   textWrap.className = "source-option-text";
@@ -115,25 +125,32 @@ export function createSourceOptionButton({
   nameLine.textContent = getSourceDisplayName(option);
   textWrap.appendChild(nameLine);
 
-  [
-    ["source-option-hint", getSourceDisplayHint(option)],
-    ["source-option-meta", getSourceDisplayMeta(option)],
-  ].forEach(([className, text]) => {
-    if (!text) return;
+  const hint = getSourceMenuHint(option);
+  if (hint) {
     const line = document.createElement("span");
-    line.className = className;
-    line.textContent = text;
+    line.className = "source-option-hint";
+    line.id = `source-hint-${sourceHash}`;
+    line.textContent = hint;
+    button.setAttribute("aria-describedby", line.id);
     textWrap.appendChild(line);
-  });
+  }
+  const state = document.createElement("span");
+  state.className = "source-option-state";
+  textWrap.appendChild(state);
 
   const status = document.createElement("span");
   status.className = "source-option-status";
   status.setAttribute("aria-hidden", "true");
+  status.innerHTML = `<svg class="source-option-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4 10-10" /></svg>`;
   const spinner = document.createElement("span");
   spinner.className = "source-option-spinner";
   status.appendChild(spinner);
 
-  button.append(iconBadge, textWrap, status);
+  button.append(status, textWrap);
+  syncSourceOptionState(button, {
+    selected: sourceHash === selectedSourceHash,
+    loading: Boolean(loadingSourceHash) && sourceHash === loadingSourceHash,
+  });
 
   const downloadButton = document.createElement("button");
   downloadButton.className = "source-option-download";
@@ -141,16 +158,8 @@ export function createSourceOptionButton({
   downloadButton.dataset.sourceHash = sourceHash;
   const downloadLabel = `Download ${getSourceDisplayName(option)}`;
   downloadButton.dataset.downloadLabel = downloadLabel;
-  const isDownloading =
-    Boolean(downloadingSourceHash) && sourceHash === downloadingSourceHash;
-  downloadButton.classList.toggle("is-loading", isDownloading);
-  downloadButton.disabled = Boolean(downloadingSourceHash);
-  downloadButton.setAttribute("aria-busy", isDownloading ? "true" : "false");
-  downloadButton.setAttribute(
-    "aria-label",
-    isDownloading ? "Preparing download" : downloadLabel,
-  );
-  downloadButton.title = isDownloading ? "Preparing download" : "Download";
+  downloadButton.setAttribute("aria-label", downloadLabel);
+  downloadButton.title = "Download MP4";
   const downloadIcon = document.createElement("span");
   downloadIcon.className = "source-option-download-icon";
   downloadIcon.setAttribute("aria-hidden", "true");
@@ -158,10 +167,14 @@ export function createSourceOptionButton({
   const downloadSpinner = document.createElement("span");
   downloadSpinner.className = "source-option-spinner";
   downloadSpinner.setAttribute("aria-hidden", "true");
-  downloadButton.append(downloadIcon, downloadSpinner);
+  const downloadText = document.createElement("span");
+  downloadText.className = "source-option-download-label";
+  downloadText.textContent = "Download";
+  downloadButton.append(downloadIcon, downloadSpinner, downloadText);
 
   const row = document.createElement("div");
   row.className = "source-option-row";
+  row.setAttribute("role", "listitem");
   row.append(button, downloadButton);
   return row;
 }

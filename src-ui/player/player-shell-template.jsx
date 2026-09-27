@@ -161,8 +161,8 @@ export function renderPlayerShell({
                     ref={refs.toggleSource}
                     class="control-btn source-btn bottom-server-btn"
                     type="button"
-                    aria-label="Server"
-                    aria-haspopup="listbox"
+                    aria-label="Sources"
+                    aria-haspopup="dialog"
                     aria-controls="sourceMenu"
                     aria-expanded="false"
                   >
@@ -180,9 +180,17 @@ export function renderPlayerShell({
                     ref={refs.sourceMenu}
                     class="speed-popover source-popover"
                     role="dialog"
-                    aria-label="Server"
+                    aria-label="Sources"
                   >
-                    <p class="speed-popover-title source-popover-title">Server</p>
+                    <div class="source-popover-header">
+                      <div>
+                        <p class="speed-popover-title source-popover-title">Sources</p>
+                        <p class="source-popover-subtitle">Switch streams or save for later.</p>
+                      </div>
+                      <button class="source-popover-close" type="button" data-close-sources aria-label="Close sources">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+                      </button>
+                    </div>
                     <div class="source-type-tabs" role="tablist" aria-label="Source type" hidden>
                       <button
                         id="sourceTabHls"
@@ -192,7 +200,7 @@ export function renderPlayerShell({
                         data-source-tab="hls"
                         aria-controls="sourceOptions"
                         aria-selected="true"
-                      >HLS</button>
+                      >Streaming</button>
                       <button
                         id="sourceTabTorrents"
                         class="source-type-tab"
@@ -208,9 +216,19 @@ export function renderPlayerShell({
                       id="sourceOptions"
                       ref={refs.sourceOptionsContainer}
                       class="audio-options source-options source-popover-options"
-                      role="listbox"
-                      aria-label="Playback servers"
+                      role="list"
+                      aria-label="Playback sources"
                     ></div>
+                    <p ref={refs.sourceOptionDetails} class="source-option-details" role="status" hidden></p>
+                    <div ref={refs.sourceDownloadStatus} class="source-download-status" data-state="idle" role="status" aria-live="polite" aria-atomic="true">
+                      <span class="source-download-status-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-5-4 5 5 5-5M5 17v4h14v-4" /></svg>
+                      </span>
+                      <div>
+                        <p class="source-download-status-title" data-download-status-title>Save a copy</p>
+                        <p class="source-download-status-detail" data-download-status-detail>MP4 file · Progress in your browser’s downloads.</p>
+                      </div>
+                    </div>
                   </div>
                 </div>
                 <button

@@ -39,14 +39,12 @@ import {
 import {
   normalizeSourceHash,
   getSourceDisplayName,
-  getSourceDisplayHint,
-  getSourceDisplayMeta,
   isSourceOptionEmbed,
   promoteSelectedSourceWithinCacheTier,
   sortSourcesBySeeders,
   isBrowserSafeAudioCodec,
 } from "../player/sources.js";
-import { buildSourceMenuView, createSourceOptionButton, syncSourceMenuTabs } from "../player/source-menu-tabs.js";
+import { buildSourceMenuView, createSourceOptionButton, getSourceMenuHint, syncSourceMenuTabs, syncSourceOptionState } from "../player/source-menu-tabs.js";
 import { createSourceDownloadController } from "../player/source-download.js";
 import { createRealDebridSourceRefreshController } from "../player/real-debrid-cache-refresh.js";
 import { buildTmdbSourceDiscoveryQuery } from "../player/source-discovery.js";
@@ -98,7 +96,6 @@ import {
   renderLiveStreamOptions as renderLiveStreamOptionsDom,
   shouldShowLiveStreamControls as shouldShowLiveStreamControlsForState,
   syncLiveStreamControls as syncLiveStreamControlsDom,
-  SOURCE_OPTION_ICON_SVG,
 } from "../player/live-streams.js";
 import {
   createLiveStreamCache,
@@ -216,6 +213,7 @@ export default function PlayerPage() {
   let audioStatusBadge, subtitlePanel, audioTabSubtitles, audioTabSources;
   let subtitleSyncValue, subtitleSyncEarlier, subtitleSyncLater, subtitleSyncReset;
   let sourcePanel, sourceOptionsContainer, sourceOptionDetails, episodeLabel;
+  let sourceDownloadStatus;
   let subtitleOverlay, resolverOverlay, resolverStatus, resolverLoader;
   let resolverTitle, resolverDetail, resolverCountdown;
   let resolverRetryButton, resolverAlternateButton;
@@ -1667,7 +1665,7 @@ function applyPreferredSourceAudioSync(sourceHash = selectedSourceHash) {
   subtitleOffset.applyForSource(normalizedHash);
 }
 
-// getSourceDisplayName, getSourceDisplayHint, getSourceDisplayMeta — imported from ./src-ui/player/sources.js
+// Source display helpers are imported from ../player/sources.js.
 
 // sortSourcesBySeeders — imported from ./src-ui/player/sources.js
 
@@ -1725,7 +1723,7 @@ function getCurrentResolvedSourceOptionFallback(sourceHash = selectedSourceHash)
 
 function getSourceSelectLabel(option = {}) {
   const name = getSourceDisplayName(option);
-  const hint = getSourceDisplayHint(option);
+  const hint = getSourceMenuHint(option);
   if (hint) {
     return `${name} — ${hint}`;
   }
@@ -1733,25 +1731,10 @@ function getSourceSelectLabel(option = {}) {
 }
 
 function renderSelectedSourceDetails() {
+  sourceDownload.applyStatus(sourceDownloadStatus);
   if (!sourceOptionDetails) return;
-  if (sourceDownload.applyStatus(sourceOptionDetails)) return;
-  const selectedOption =
-    getSourceOptionByHash(selectedSourceHash) ||
-    availablePlaybackSources[0] ||
-    null;
-  if (!selectedOption) {
-    sourceOptionDetails.hidden = true;
-    sourceOptionDetails.textContent = "";
-    return;
-  }
-  const details = [
-    getSourceDisplayMeta(selectedOption),
-    getSourceDisplayName(selectedOption),
-  ]
-    .filter(Boolean)
-    .join("  ");
-  sourceOptionDetails.hidden = !details;
-  sourceOptionDetails.textContent = details;
+  sourceOptionDetails.hidden = true;
+  sourceOptionDetails.textContent = "";
 }
 
 function shouldShowTmdbSourceControls() {
@@ -1775,15 +1758,15 @@ function syncTmdbSourceControls() {
     ? getSourceSelectLabel(selectedOption)
     : "Playback sources";
   if (toggleSource) {
-    toggleSource.setAttribute("aria-label", `Server (${sourceLabel})`);
-    toggleSource.setAttribute("title", "Server");
+    toggleSource.setAttribute("aria-label", `Sources (${sourceLabel})`);
+    toggleSource.setAttribute("title", "Sources");
     toggleSource.setAttribute(
       "aria-expanded",
       sourceControl?.classList.contains("is-open") ? "true" : "false",
     );
   }
   if (sourceMenu) {
-    sourceMenu.setAttribute("aria-label", `Server (${sourceLabel})`);
+    sourceMenu.setAttribute("aria-label", `Sources (${sourceLabel})`);
   }
 }
 
@@ -1859,17 +1842,10 @@ function syncSourceSelectionState() {
     );
     const isLoading =
       Boolean(loadingHash) && Boolean(optionHash) && optionHash === loadingHash;
-    optionButton.classList.toggle("is-loading", isLoading);
-    optionButton.setAttribute("aria-busy", isLoading ? "true" : "false");
-    optionButton.setAttribute(
-      "aria-selected",
-      !isLoading &&
-        optionHash &&
-        normalizedHash &&
-        optionHash === normalizedHash
-        ? "true"
-        : "false",
-    );
+    syncSourceOptionState(optionButton, {
+      loading: isLoading,
+      selected: Boolean(optionHash) && optionHash === normalizedHash,
+    });
   });
   sourceDownload.syncButtons(sourceOptionsContainer);
 }
@@ -1935,12 +1911,10 @@ function renderSourceOptionButtons() {
     seenHashes.add(sourceHash);
 
     fragment.appendChild(createSourceOptionButton({
-      iconSvg: SOURCE_OPTION_ICON_SVG,
       option,
       selectedSourceHash,
       sourceHash,
       loadingSourceHash: pendingSourceSwitchHash,
-      downloadingSourceHash: sourceDownload.getDownloadingSourceHash(),
     }));
   }
 
@@ -9149,6 +9123,14 @@ if (sourceMenu) trackListener(sourceMenu, "click", (event) => {
   if (!(event.target instanceof Element)) {
     return;
   }
+  // Preserve focus inside the dialog; the player surface otherwise takes it.
+  event.stopPropagation();
+
+  if (event.target.closest("[data-close-sources]")) {
+    closeSourcePopover(false, { force: true });
+    toggleSource?.focus({ preventScroll: true });
+    return;
+  }
 
   const sourceTab = event.target.closest("[data-source-tab]");
   if (sourceTab instanceof HTMLButtonElement) {
@@ -9173,6 +9155,18 @@ if (sourceMenu) trackListener(sourceMenu, "click", (event) => {
   event.preventDefault();
   event.stopPropagation();
   void handleSourceOptionSelection(sourceOption.dataset.sourceHash || "");
+});
+
+if (sourceMenu) trackListener(sourceMenu, "keydown", (event) => {
+  if (!event.target?.matches?.("[data-source-tab]")) return;
+  const tabs = [...sourceMenu.querySelectorAll("[data-source-tab]")];
+  const index = tabs.indexOf(event.target);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+    : event.key === "ArrowRight" ? (index + 1) % tabs.length
+      : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length : -1;
+  if (next < 0) return;
+  event.preventDefault();
+  tabs[next].click();
 });
 
 if (liveStreamOptionsContainer) {
@@ -9687,7 +9681,10 @@ async function handleKeydown(event) {
     }
 
     if (sourceControl?.classList.contains("is-open")) {
+      event.preventDefault();
+      event.stopPropagation();
       closeSourcePopover(false, { force: true });
+      toggleSource?.focus({ preventScroll: true });
       return;
     }
 
@@ -9879,6 +9876,8 @@ trackListener(window, "storage", (event) => {
       sourceControl: (el) => { sourceControl = el; },
       sourceMenu: (el) => { sourceMenu = el; },
       sourceOptionsContainer: (el) => { sourceOptionsContainer = el; },
+      sourceOptionDetails: (el) => { sourceOptionDetails = el; },
+      sourceDownloadStatus: (el) => { sourceDownloadStatus = el; },
       speedControl: (el) => { speedControl = el; },
       subtitleOptionsContainer: (el) => { subtitleOptionsContainer = el; },
       subtitleOverlay: (el) => { subtitleOverlay = el; },

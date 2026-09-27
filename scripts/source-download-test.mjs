@@ -199,4 +199,45 @@ assert.equal(resolveCalls[0].requestSourceHash, hashB);
 assert.match(downloadClicks[1], /sourceHash%3Db/);
 assert.equal(preferredProvider, "fastest");
 
+assert.equal(otherDownload.getState(), "handedOff");
+assert.match(otherDownload.getStatusMessage(), /browser’s downloads/);
+
+let releaseHead;
+let pendingHeadCalls = 0;
+const pendingDownload = createDownloadController({
+  fetchImpl: () => {
+    pendingHeadCalls += 1;
+    return new Promise((resolve) => { releaseHead = resolve; });
+  },
+});
+const pending = pendingDownload.download(hashA);
+await Promise.resolve();
+assert.equal(pendingDownload.getState(), "preparing");
+assert.equal(pendingDownload.getDownloadingSourceHash(), hashA);
+await pendingDownload.download(hashB);
+assert.equal(pendingHeadCalls, 1, "repeated clicks must not launch competing exports");
+releaseHead({ ok: true, status: 200 });
+await pending;
+assert.equal(pendingDownload.getDownloadingSourceHash(), "");
+assert.equal(pendingDownload.getState(), "handedOff", "handoff is not completed-download proof");
+
+let failExport = true;
+const retryDownload = createDownloadController({
+  fetchImpl: async () => ({ ok: !failExport, status: failExport ? 503 : 200 }),
+});
+const clicksBeforeFailure = downloadClicks.length;
+await retryDownload.download(hashA);
+assert.equal(retryDownload.getState(), "error");
+assert.equal(downloadClicks.length, clicksBeforeFailure, "a failed readiness check must not start a transfer");
+assert.equal(retryDownload.getDownloadingSourceHash(), "", "a failed export must allow retry");
+assert.equal(preferredProvider, "fastest");
+failExport = false;
+await retryDownload.download(hashA);
+assert.equal(retryDownload.getState(), "handedOff");
+assert.equal(downloadClicks.length, clicksBeforeFailure + 1);
+
+const unavailableBrowser = createDownloadController({ documentRef: null });
+await unavailableBrowser.download(hashA);
+assert.equal(unavailableBrowser.getState(), "error");
+
 console.log("source-download-test: ok");

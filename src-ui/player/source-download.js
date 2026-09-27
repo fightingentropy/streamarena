@@ -162,7 +162,8 @@ export function createSourceDownloadController({
   documentRef = globalThis.document,
 } = {}) {
   let downloadingSourceHash = "";
-  let requestToken = 0;
+  let statusSourceHash = "";
+  let downloadState = "idle";
   let statusMessage = "";
 
   async function resolveSourceExportInput(sourceHash, option) {
@@ -212,11 +213,18 @@ export function createSourceDownloadController({
   }
 
   function applyStatus(detailsEl) {
-    if (!detailsEl || !statusMessage) {
-      return false;
-    }
-    detailsEl.hidden = false;
-    detailsEl.textContent = statusMessage;
+    if (!detailsEl) return false;
+    detailsEl.dataset.state = downloadState;
+    const title = detailsEl.querySelector("[data-download-status-title]");
+    const detail = detailsEl.querySelector("[data-download-status-detail]");
+    if (title) title.textContent = {
+      idle: "Save a copy",
+      preparing: "Preparing your MP4…",
+      handedOff: "Sent to your browser",
+      error: "Download unavailable",
+    }[downloadState];
+    if (detail) detail.textContent = statusMessage ||
+      "MP4 file · Progress in your browser’s downloads.";
     return true;
   }
 
@@ -229,24 +237,31 @@ export function createSourceDownloadController({
       const optionHash = normalizeSourceHash(button.dataset.sourceHash || "");
       const isDownloading =
         Boolean(downloadingHash) && optionHash === downloadingHash;
+      const hasError = optionHash === statusSourceHash && downloadState === "error";
       button.classList.toggle("is-loading", isDownloading);
-      button.disabled = Boolean(downloadingHash);
+      button.classList.toggle("has-error", hasError);
+      // Keep focus on the preparing action so keyboard users can still close
+      // the panel. The controller ignores repeat clicks while an export starts.
+      button.disabled = Boolean(downloadingHash) && !isDownloading;
+      button.setAttribute("aria-disabled", downloadingHash ? "true" : "false");
       button.setAttribute("aria-busy", isDownloading ? "true" : "false");
       const idleLabel = button.dataset.downloadLabel || "Download";
       button.setAttribute(
         "aria-label",
-        isDownloading ? "Preparing download" : idleLabel,
+        isDownloading ? `Preparing: ${idleLabel}`
+          : hasError ? `Retry: ${idleLabel}` : idleLabel,
       );
-      button.title = isDownloading ? "Preparing download" : "Download";
+      button.title = isDownloading ? "Preparing download" : hasError ? "Retry download" : "Download MP4";
+      const label = button.querySelector(".source-option-download-label");
+      if (label) label.textContent = isDownloading ? "Preparing…" : hasError ? "Retry" : "Download";
     });
   }
 
   async function download(nextSourceHash) {
     const sourceHash = normalizeSourceHash(nextSourceHash);
-    if (!sourceHash) {
+    if (!sourceHash || downloadingSourceHash) {
       return;
     }
-    const token = ++requestToken;
     const option = getSourceOptionByHash(sourceHash);
     const previousResolverProvider = getPreferredResolverProvider();
     setPreferredResolverProvider(pickTorrentResolverProvider({
@@ -256,7 +271,9 @@ export function createSourceDownloadController({
       localTorrentEnabled: getUserLocalTorrentEnabled(),
     }));
     downloadingSourceHash = sourceHash;
-    statusMessage = "Preparing download — current stream keeps playing.";
+    statusSourceHash = sourceHash;
+    downloadState = "preparing";
+    statusMessage = "Your stream keeps playing while we prepare the file.";
     syncSourceSelectionState();
     renderSelectedSourceDetails();
     try {
@@ -264,9 +281,6 @@ export function createSourceDownloadController({
         sourceHash,
         option,
       );
-      if (token !== requestToken) {
-        return;
-      }
       const exportUrl = buildSourceExportUrl(input, {
         audioStreamIndex: currentExportAudioStreamIndex(
           resolved,
@@ -278,26 +292,23 @@ export function createSourceDownloadController({
         }),
       });
       await ensureExportUrlReady(exportUrl, fetchImpl);
-      if (token !== requestToken) {
-        return;
+      if (!startBrowserFileDownload(exportUrl, documentRef)) {
+        throw new Error("Unable to start the download. Please try again.");
       }
-      startBrowserFileDownload(exportUrl, documentRef);
-      statusMessage = "";
+      downloadState = "handedOff";
+      // The browser owns the transfer. A link click is not proof of completion.
+      statusMessage = "Track progress in your browser’s downloads.";
     } catch (error) {
-      if (token !== requestToken) {
-        return;
-      }
+      downloadState = "error";
       statusMessage = normalizeResolverFailureMessage(
         error,
         "Unable to download this source.",
       );
     } finally {
-      if (token === requestToken) {
-        downloadingSourceHash = "";
-        setPreferredResolverProvider(previousResolverProvider);
-        syncSourceSelectionState();
-        renderSelectedSourceDetails();
-      }
+      downloadingSourceHash = "";
+      setPreferredResolverProvider(previousResolverProvider);
+      syncSourceSelectionState();
+      renderSelectedSourceDetails();
     }
   }
 
@@ -307,5 +318,6 @@ export function createSourceDownloadController({
     syncButtons,
     getDownloadingSourceHash: () => downloadingSourceHash,
     getStatusMessage: () => statusMessage,
+    getState: () => downloadState,
   };
 }

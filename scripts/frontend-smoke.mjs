@@ -590,6 +590,8 @@ async function runSmoke() {
       let sawSourceSwitchResolveHash = "";
       let initialSourceSwitchResolveParams = null;
       let sourceSwitchResolveHashes = [];
+      let sourceDownloadHeadRequests = 0;
+      let sourceDownloadTransfers = 0;
       let sawSourceSwitchResolverProvider = "";
       let sawSourceSwitchSkipExternalEmbed = "";
       let sawHlsManagedResolve = false;
@@ -756,6 +758,21 @@ async function runSmoke() {
       await page.route("**/api/**", async (route) => {
         if (discoverySmoke && await discoverySmoke.route(route)) return;
         const request = route.request();
+        if (pageSpec.expectSourceSwitch && new URL(request.url()).pathname === "/api/download/export.mp4") {
+          if (request.method() === "HEAD") {
+            sourceDownloadHeadRequests += 1;
+            await delay(400);
+            await route.fulfill({ status: sourceDownloadHeadRequests === 1 ? 503 : 200, body: "" });
+          } else {
+            sourceDownloadTransfers += 1;
+            await route.fulfill({
+              status: 200,
+              path: resolve(rootDir, smokeVideo),
+              headers: { "content-type": "video/mp4", "content-disposition": 'attachment; filename="source-download-test.mp4"' },
+            });
+          }
+          return;
+        }
         const url = new URL(request.url());
         if (pageSpec.expectAutomaticHlsResolveRetry) {
           if (url.pathname === "/api/user/torrent-settings") {
@@ -1382,7 +1399,7 @@ async function runSmoke() {
                 cachedOption
                   .querySelector(".source-option-hint")
                   ?.textContent?.startsWith("RD cached") &&
-                document.querySelector(".source-option[aria-selected='true']")
+                document.querySelector(".source-option[aria-pressed='true']")
                   ?.dataset.sourceHash === selectedHash &&
                 (document.querySelector("video")?.getAttribute("src") || "").includes(
                   selectedHash,
@@ -1401,7 +1418,7 @@ async function runSmoke() {
             document.querySelectorAll(".source-option"),
           ).map((option) => option.dataset.sourceHash || ""),
           selectedHash:
-            document.querySelector(".source-option[aria-selected='true']")
+            document.querySelector(".source-option[aria-pressed='true']")
               ?.dataset.sourceHash || "",
           videoSource: document.querySelector("video")?.getAttribute("src") || "",
         }));
@@ -1469,7 +1486,7 @@ async function runSmoke() {
                 "data-source-tab",
               ) || "",
             selectedRowHash:
-              document.querySelector(".source-option[aria-selected='true']")
+              document.querySelector(".source-option[aria-pressed='true']")
                 ?.dataset.sourceHash || "",
           }));
           if (
@@ -1525,7 +1542,7 @@ async function runSmoke() {
           await page.waitForFunction(
             (actualHash) => {
               const selectedHash =
-                document.querySelector(".source-option[aria-selected='true']")
+                document.querySelector(".source-option[aria-pressed='true']")
                   ?.dataset.sourceHash || "";
               const videoSource =
                 document.querySelector("video")?.getAttribute("src") || "";
@@ -1543,13 +1560,13 @@ async function runSmoke() {
             const resolverText = overlay?.textContent?.replace(/\s+/g, " ").trim() || "";
             return {
               selectedHash:
-                document.querySelector(".source-option[aria-selected='true']")
+                document.querySelector(".source-option[aria-pressed='true']")
                   ?.dataset.sourceHash || "",
               sourceOptions: Array.from(
                 document.querySelectorAll(".source-option"),
               ).map((option) => ({
                 hash: option.dataset.sourceHash || "",
-                selected: option.getAttribute("aria-selected") || "",
+                selected: option.getAttribute("aria-pressed") || "",
               })),
               activeSourceTab:
                 document.querySelector("[data-source-tab].is-active")?.getAttribute(
@@ -2438,7 +2455,7 @@ async function runSmoke() {
         for (let attempt = 0; attempt < 150; attempt += 1) {
           const recovered = await page.evaluate((hash) => {
             const selectedHash =
-              document.querySelector(".source-option[aria-selected='true']")
+              document.querySelector(".source-option[aria-pressed='true']")
                 ?.dataset.sourceHash || "";
             const videoSource = document.querySelector("video")?.getAttribute("src") || "";
             return selectedHash === hash && videoSource.includes(hash);
@@ -2451,7 +2468,7 @@ async function runSmoke() {
 
         const fallbackState = await page.evaluate(() => ({
           selectedHash:
-            document.querySelector(".source-option[aria-selected='true']")
+            document.querySelector(".source-option[aria-pressed='true']")
               ?.dataset.sourceHash || "",
           videoSource: document.querySelector("video")?.getAttribute("src") || "",
           resolverText:
@@ -2506,7 +2523,7 @@ async function runSmoke() {
         for (let attempt = 0; attempt < 80; attempt += 1) {
           const switched = await page.evaluate((expectedHash) => {
             const selectedHash =
-              document.querySelector(".source-option[aria-selected='true']")
+              document.querySelector(".source-option[aria-pressed='true']")
                 ?.dataset.sourceHash || "";
             const videoSource = document.querySelector("video")?.getAttribute("src") || "";
             const sourcePopoverOpen =
@@ -2541,7 +2558,7 @@ async function runSmoke() {
         }
         const switchState = await page.evaluate(() => ({
           selectedHash:
-            document.querySelector(".source-option[aria-selected='true']")
+            document.querySelector(".source-option[aria-pressed='true']")
               ?.dataset.sourceHash || "",
           videoSource: document.querySelector("video")?.getAttribute("src") || "",
           sourcePopoverOpen:
@@ -2570,6 +2587,41 @@ async function runSmoke() {
         }
       }
 
+      if (pageSpec.expectSourceSwitch) {
+        // Download a different source: prepare, fail, retry, and hand off the
+        // correct URL, while selected playback stays unchanged. The browser
+        // download is cancelled here: this Vite harness has no export backend.
+        if (await page.locator("#toggleSource").getAttribute("aria-expanded") !== "true") {
+          await page.locator("#toggleSource").click();
+        }
+        const downloadButton = page.locator(`.source-option-download[data-source-hash="${sourceSwitchHashB}"]`);
+        await downloadButton.click();
+        await page.locator('.source-download-status[data-state="error"]').waitFor({ state: "visible" });
+        if (await downloadButton.innerText() !== "Retry" || sourceDownloadTransfers !== 0) {
+          throw new Error("A failed download must show Retry without starting a transfer.");
+        }
+        const downloadEvent = page.waitForEvent("download");
+        await downloadButton.click();
+        await page.locator('.source-download-status[data-state="preparing"]').waitFor({ state: "visible" });
+        const download = await downloadEvent;
+        const exportUrl = new URL(download.url());
+        if (exportUrl.pathname !== "/api/download/export.mp4" || exportUrl.searchParams.get("input") !== `mock://${sourceSwitchHashB}`) {
+          throw new Error("Download handoff must target the chosen source.");
+        }
+        await download.cancel();
+        await page.locator('.source-download-status[data-state="handedOff"]').waitFor({ state: "visible" });
+        const selected = await page.locator('.source-option[aria-pressed="true"]').getAttribute("data-source-hash");
+        const afterDownloadSource = await page.locator("video").getAttribute("src");
+        if (selected !== sourceSwitchHashA || !afterDownloadSource.includes(sourceSwitchHashA) || sourceDownloadHeadRequests !== 2) {
+          throw new Error("Downloading an alternate source must not switch playback or create duplicate transfers.");
+        }
+        await downloadButton.press("Escape");
+        if (await page.locator("#toggleSource").getAttribute("aria-expanded") !== "false" ||
+            !(await page.locator("#toggleSource").evaluate((element) => element === document.activeElement))) {
+          throw new Error("Escape must close Sources and restore keyboard focus to its toggle.");
+        }
+      }
+
       if (pageSpec.expectSourceSwitchFailureRestore) {
         // The player defaults to the 4K source (hashB). Manually switching to a
         // source that fails to play (hashA — see failingHash below) surfaces the
@@ -2578,7 +2630,7 @@ async function runSmoke() {
           (hash) =>
             document
               .querySelector(`.source-option[data-source-hash="${hash}"]`)
-              ?.getAttribute("aria-selected") === "true" &&
+              ?.getAttribute("aria-pressed") === "true" &&
             (document.querySelector("video")?.getAttribute("src") || "").includes(hash),
           sourceSwitchHashB,
           { timeout: 8_000 },
@@ -2610,7 +2662,7 @@ async function runSmoke() {
         for (let attempt = 0; attempt < 150; attempt += 1) {
           const recovered = await page.evaluate((hash) => {
             const selectedHash =
-              document.querySelector(".source-option[aria-selected='true']")
+              document.querySelector(".source-option[aria-pressed='true']")
                 ?.dataset.sourceHash || "";
             const videoSource = document.querySelector("video")?.getAttribute("src") || "";
             return selectedHash === hash && videoSource.includes(hash);
@@ -2622,7 +2674,7 @@ async function runSmoke() {
         }
         const restoreState = await page.evaluate(() => ({
           selectedHash:
-            document.querySelector(".source-option[aria-selected='true']")
+            document.querySelector(".source-option[aria-pressed='true']")
               ?.dataset.sourceHash || "",
           videoSource: document.querySelector("video")?.getAttribute("src") || "",
         }));

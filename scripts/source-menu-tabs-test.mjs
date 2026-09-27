@@ -3,6 +3,7 @@ import {
   SOURCE_MENU_HLS_TAB,
   SOURCE_MENU_TORRENTS_TAB,
   buildSourceMenuView,
+  getSourceMenuHint,
 } from "../src-ui/player/source-menu-tabs.js";
 import {
   getSourceDisplayHint,
@@ -25,6 +26,11 @@ const torrentSource = {
   container: "mp4",
 };
 const sources = [hlsSource, torrentSource];
+
+assert.equal(getSourceMenuHint({ ...hlsSource, provider: "LivNet", qualityLabel: "HLS", releaseGroup: "Native HLS" }), "");
+assert.equal(getSourceMenuHint({ ...hlsSource, qualityLabel: "1080p" }), "1080p");
+assert.equal(getSourceMenuHint({ ...hlsSource, qualityLabel: "4K" }), "2160p");
+assert.match(getSourceMenuHint({ ...torrentSource, size: "2 GB" }), /MP4 · 2 GB/);
 
 const disabledView = buildSourceMenuView({ sources, torrentsEnabled: false });
 assert.equal(disabledView.showTabs, false);
