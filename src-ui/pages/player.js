@@ -45,7 +45,8 @@ import {
   isBrowserSafeAudioCodec,
 } from "../player/sources.js";
 import { buildSourceMenuView, createSourceOptionButton, getSourceMenuHint, syncSourceMenuTabs, syncSourceOptionState } from "../player/source-menu-tabs.js";
-import { createSourceDownloadController } from "../player/source-download.js";
+import { createSourceDownloadController, pickCurrentPlaybackExportInput } from "../player/source-download.js";
+import { createVideoContextMenu, getCopyableVideoLink } from "../player/video-context-menu.js";
 import { createRealDebridSourceRefreshController } from "../player/real-debrid-cache-refresh.js";
 import { buildTmdbSourceDiscoveryQuery } from "../player/source-discovery.js";
 import {
@@ -213,7 +214,7 @@ export default function PlayerPage() {
   let audioStatusBadge, subtitlePanel, audioTabSubtitles, audioTabSources;
   let subtitleSyncValue, subtitleSyncEarlier, subtitleSyncLater, subtitleSyncReset;
   let sourcePanel, sourceOptionsContainer, sourceOptionDetails, episodeLabel;
-  let sourceDownloadStatus;
+  let videoContextMenu;
   let subtitleOverlay, resolverOverlay, resolverStatus, resolverLoader;
   let resolverTitle, resolverDetail, resolverCountdown;
   let resolverRetryButton, resolverAlternateButton;
@@ -515,23 +516,44 @@ const {
   resolveExplicit: resolveExplicitSourceTrackSelection,
 } = deferredMediaTracks;
 
+function getCurrentVideoPlayback() {
+  if (isResolvingSource() || pendingSourceSwitchHash) return null;
+  const source = lastRequestedPlaybackSource || video?.currentSrc || video?.getAttribute("src") || "";
+  const input = pickCurrentPlaybackExportInput({
+    activeTrackSourceInput,
+    lastRequestedPlaybackSource: source,
+    extractPlaybackSourceInput,
+    parseLiveIframePlaybackSource,
+  });
+  return {
+    input,
+    link: getCopyableVideoLink(parseLiveIframePlaybackSource(source) || source, window.location.href),
+    audioStreamIndex: activeAudioStreamIndex >= 0 ? activeAudioStreamIndex : selectedAudioStreamIndex,
+    filename: currentTmdbResolvedFilename || title,
+  };
+}
+
 const sourceDownload = createSourceDownloadController({
-  normalizeSourceHash, extractPlaybackSourceInput, parseLiveIframePlaybackSource,
-  getSourceOptionByHash, isSourceOptionEmbed, getManualSourceSwitchTimeouts,
-  resolveTmdbSourcesAndPlay, normalizeResolverFailureMessage,
-  syncSourceSelectionState, renderSelectedSourceDetails,
-  getSelectedSourceHash: () => selectedSourceHash,
-  getPendingSourceSwitchHash: () => pendingSourceSwitchHash,
-  getActiveTrackSourceInput: () => activeTrackSourceInput,
-  getLastRequestedPlaybackSource: () => lastRequestedPlaybackSource,
-  isTmdbResolvedPlayback: () => isTmdbResolvedPlayback,
-  getUserLocalTorrentEnabled: () => userLocalTorrentEnabled,
-  getUserRealDebridConfigured: () => isUserRealDebridPlaybackEnabled(),
-  getPreferredResolverProvider: () => preferredResolverProvider,
-  setPreferredResolverProvider: (value) => { preferredResolverProvider = value; },
-  getActiveAudioStreamIndex: () => activeAudioStreamIndex,
-  getSelectedAudioStreamIndex: () => selectedAudioStreamIndex,
-  getCurrentTmdbResolvedFilename: () => currentTmdbResolvedFilename,
+  getCurrentPlayback: getCurrentVideoPlayback,
+  onStateChange: () => videoActions.sync(),
+});
+const videoActions = createVideoContextMenu({
+  getElements: () => ({ shell: playerShell, menu: videoContextMenu }),
+  getCurrentPlayback: getCurrentVideoPlayback,
+  download: sourceDownload,
+  listen: trackListener,
+  onOpen: () => {
+    clearSingleClickPlaybackToggle();
+    clearControlsHideTimer();
+    showControls();
+    closeSourcePopover(false, { force: true });
+    closeAudioPopover(false, { force: true });
+    closeEpisodesPopover(false, { force: true });
+    closeLiveStreamPopover(false, { force: true });
+    closeHlsQualityPopover(false, { force: true });
+    closeSpeedPopover(false, { force: true });
+  },
+  onClose: scheduleControlsHide,
 });
 
 const realDebridSourceRefresh = createRealDebridSourceRefreshController({
@@ -1731,7 +1753,6 @@ function getSourceSelectLabel(option = {}) {
 }
 
 function renderSelectedSourceDetails() {
-  sourceDownload.applyStatus(sourceDownloadStatus);
   if (!sourceOptionDetails) return;
   sourceOptionDetails.hidden = true;
   sourceOptionDetails.textContent = "";
@@ -1847,7 +1868,6 @@ function syncSourceSelectionState() {
       selected: Boolean(optionHash) && optionHash === normalizedHash,
     });
   });
-  sourceDownload.syncButtons(sourceOptionsContainer);
 }
 
 function setPendingSourceSwitchHash(nextHash = "") {
@@ -6054,6 +6074,7 @@ function renderSourceOptionsWhenStable() {
 }
 
 function hideControls() {
+  if (videoActions.isOpen()) return;
   if (video.paused && !isLiveIframePlaybackActive()) {
     return;
   }
@@ -6072,6 +6093,7 @@ function showControls() {
 
 function scheduleControlsHide() {
   clearControlsHideTimer();
+  if (videoActions.isOpen()) return;
   if ((video.paused && !isLiveIframePlaybackActive()) || isResolvingSource()) {
     return;
   }
@@ -9140,13 +9162,6 @@ if (sourceMenu) trackListener(sourceMenu, "click", (event) => {
     return;
   }
 
-  const downloadButton = event.target.closest(".source-option-download");
-  if (downloadButton instanceof HTMLButtonElement) {
-    event.preventDefault(); event.stopPropagation();
-    void sourceDownload.download(downloadButton.dataset.sourceHash || "");
-    return;
-  }
-
   const sourceOption = event.target.closest(".source-option");
   if (!(sourceOption instanceof HTMLButtonElement)) {
     return;
@@ -9577,6 +9592,8 @@ function shouldSurfaceTapOnlyRevealControls(event) {
   );
 }
 
+videoActions.mount();
+
 trackListener(playerShell, "click", (event) => {
   showControls();
   scheduleControlsHide();
@@ -9612,6 +9629,7 @@ trackListener(playerShell, "touchstart", handleUserActivity, {
 trackListener(playerShell, "pointerdown", handleUserActivity);
 
 async function handleKeydown(event) {
+  if (videoActions.handleKeydown(event)) return;
   handleUserActivity();
 
   if (event.key === " " || event.key === "Spacebar" || event.code === "Space") {
@@ -9877,7 +9895,7 @@ trackListener(window, "storage", (event) => {
       sourceMenu: (el) => { sourceMenu = el; },
       sourceOptionsContainer: (el) => { sourceOptionsContainer = el; },
       sourceOptionDetails: (el) => { sourceOptionDetails = el; },
-      sourceDownloadStatus: (el) => { sourceDownloadStatus = el; },
+      videoContextMenu: (el) => { videoContextMenu = el; },
       speedControl: (el) => { speedControl = el; },
       subtitleOptionsContainer: (el) => { subtitleOptionsContainer = el; },
       subtitleOverlay: (el) => { subtitleOverlay = el; },

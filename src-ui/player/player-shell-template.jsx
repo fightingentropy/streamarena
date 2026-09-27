@@ -12,6 +12,21 @@ export function renderPlayerShell({
         preload="metadata"
         aria-label="Video player"
       ></video>
+      <div id="videoContextMenu" ref={refs.videoContextMenu} class="video-context-menu" role="menu" aria-label="Video actions" tabindex="-1" hidden>
+        <button type="button" role="menuitem" data-video-action="copy" tabindex="-1">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m10 13 4-4m-6 6-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 2 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" /></svg>
+          <span>Copy video link</span>
+        </button>
+        <button type="button" role="menuitem" data-video-action="download" tabindex="-1">
+          <svg class="video-download-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-4 5 5 5-5M5 17v4h14v-4" /></svg>
+          <span class="source-option-spinner" aria-hidden="true"></span>
+          <span data-video-download-label>Download video</span>
+        </button>
+        <div class="video-action-status" role="status" aria-live="polite" aria-atomic="true" hidden>
+          <p data-video-action-title></p>
+          <p data-video-action-detail></p>
+        </div>
+      </div>
       <div id="subtitleOverlay" ref={refs.subtitleOverlay} class="custom-subtitle-overlay" hidden></div>
       <div class="player-ui">
         <header class="top-row">
@@ -185,7 +200,7 @@ export function renderPlayerShell({
                     <div class="source-popover-header">
                       <div>
                         <p class="speed-popover-title source-popover-title">Sources</p>
-                        <p class="source-popover-subtitle">Switch streams or save for later.</p>
+                        <p class="source-popover-subtitle">Choose a stream.</p>
                       </div>
                       <button class="source-popover-close" type="button" data-close-sources aria-label="Close sources">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
@@ -220,15 +235,6 @@ export function renderPlayerShell({
                       aria-label="Playback sources"
                     ></div>
                     <p ref={refs.sourceOptionDetails} class="source-option-details" role="status" hidden></p>
-                    <div ref={refs.sourceDownloadStatus} class="source-download-status" data-state="idle" role="status" aria-live="polite" aria-atomic="true">
-                      <span class="source-download-status-icon" aria-hidden="true">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-5-4 5 5 5-5M5 17v4h14v-4" /></svg>
-                      </span>
-                      <div>
-                        <p class="source-download-status-title" data-download-status-title>Save a copy</p>
-                        <p class="source-download-status-detail" data-download-status-detail>MP4 file · Progress in your browser’s downloads.</p>
-                      </div>
-                    </div>
                   </div>
                 </div>
                 <button

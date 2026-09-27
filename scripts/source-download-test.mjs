@@ -4,12 +4,10 @@ import {
   createSourceDownloadController,
   ensureExportUrlReady,
   pickCurrentPlaybackExportInput,
-  pickExportFilename,
-  pickResolvedExportInput,
   sanitizeExportFilename,
   startBrowserFileDownload,
 } from "../src-ui/player/source-download.js";
-import { normalizeSourceHash } from "../src-ui/player/sources.js";
+import { getCopyableVideoLink } from "../src-ui/player/video-context-menu.js";
 
 assert.equal(sanitizeExportFilename("Game.of.Thrones.S02E10.mkv"), "Game.of.Thrones.S02E10");
 assert.equal(sanitizeExportFilename("Game.of.Thrones.S02E10"), "Game.of.Thrones.S02E10");
@@ -51,20 +49,11 @@ assert.equal(
   }),
   "/api/live/hls.m3u8?sig=1",
 );
-assert.equal(
-  pickResolvedExportInput({
-    sourceInput: torrentInput,
-    playableUrl: "/api/hls/master.m3u8?input=other",
-  }),
-  torrentInput,
-);
-assert.equal(
-  pickExportFilename(
-    { primary: "Fallback name", filename: "shown.mkv" },
-    { filename: "resolved.mkv" },
-  ),
-  "resolved.mkv",
-);
+assert.equal(getCopyableVideoLink("/api/hls/master.m3u8?input=abc", "https://streamarena.xyz/watch/movie/1"), "https://streamarena.xyz/api/hls/master.m3u8?input=abc");
+assert.equal(getCopyableVideoLink("https://cdn.test/video.m3u8?sig=123", "https://streamarena.xyz"), "https://cdn.test/video.m3u8?sig=123");
+for (const value of ["", "blob:https://streamarena.xyz/123", "javascript:alert(1)", "data:video/mp4;base64,abc"]) {
+  assert.equal(getCopyableVideoLink(value, "https://streamarena.xyz"), "", "copy links must not be blobs or non-network URLs");
+}
 
 const clicks = [];
 const removed = [];
@@ -111,11 +100,7 @@ await assert.rejects(
   /isn't ready to download/,
 );
 
-const hashA = "a".repeat(40);
-const hashB = "b".repeat(40);
 const downloadClicks = [];
-const resolveCalls = [];
-let preferredProvider = "fastest";
 const downloadDoc = {
   body: {
     appendChild() {},
@@ -136,48 +121,11 @@ const downloadDoc = {
 
 function createDownloadController(overrides = {}) {
   return createSourceDownloadController({
-    normalizeSourceHash,
-    getSelectedSourceHash: () => hashA,
-    getPendingSourceSwitchHash: () => "",
-    getActiveTrackSourceInput: () => "/api/local-torrent/stream?sourceHash=a",
-    getLastRequestedPlaybackSource: () => "",
-    extractPlaybackSourceInput: (value) => String(value || "").trim(),
-    parseLiveIframePlaybackSource: () => "",
-    isTmdbResolvedPlayback: () => true,
-    getSourceOptionByHash: (hash) => ({
-      sourceHash: hash,
-      primary: "Game.of.Thrones.S02E10.mkv",
+    getCurrentPlayback: () => ({
+      input: "/api/local-torrent/stream?sourceHash=a",
       filename: "Game.of.Thrones.S02E10.mkv",
-      container: hash === hashB ? "mkv" : "mkv",
+      audioStreamIndex: 1,
     }),
-    isSourceOptionEmbed: () => false,
-    getManualSourceSwitchTimeouts: () => ({
-      resolveTimeoutMs: 300_000,
-      startupTimeoutMs: 120_000,
-    }),
-    getUserLocalTorrentEnabled: () => true,
-    getUserRealDebridConfigured: () => false,
-    getPreferredResolverProvider: () => preferredProvider,
-    setPreferredResolverProvider: (value) => {
-      preferredProvider = value;
-    },
-    resolveTmdbSourcesAndPlay: async (options) => {
-      resolveCalls.push(options);
-      return {
-        resolved: {
-          sourceInput: "/api/local-torrent/stream?sourceHash=b",
-          filename: "Other.Source.mkv",
-          selectedAudioStreamIndex: 1,
-        },
-      };
-    },
-    getActiveAudioStreamIndex: () => -1,
-    getSelectedAudioStreamIndex: () => 0,
-    getCurrentTmdbResolvedFilename: () => "Game.of.Thrones.S02E10.mkv",
-    normalizeResolverFailureMessage: (error, fallback) =>
-      error instanceof Error ? error.message : fallback,
-    syncSourceSelectionState: () => {},
-    renderSelectedSourceDetails: () => {},
     fetchImpl: async () => ({ ok: true, status: 200 }),
     documentRef: downloadDoc,
     ...overrides,
@@ -185,40 +133,32 @@ function createDownloadController(overrides = {}) {
 }
 
 const currentDownload = createDownloadController();
-await currentDownload.download(hashA);
-assert.equal(resolveCalls.length, 0, "playing source should not re-resolve");
+await currentDownload.download();
 assert.equal(downloadClicks.length, 1);
 assert.match(downloadClicks[0], /input=%2Fapi%2Flocal-torrent%2Fstream/);
 assert.match(downloadClicks[0], /filename=Game.of.Thrones.S02E10/);
-
-const otherDownload = createDownloadController();
-await otherDownload.download(hashB);
-assert.equal(resolveCalls.length, 1);
-assert.equal(resolveCalls[0].applyPlayback, false);
-assert.equal(resolveCalls[0].requestSourceHash, hashB);
-assert.match(downloadClicks[1], /sourceHash%3Db/);
-assert.equal(preferredProvider, "fastest");
-
-assert.equal(otherDownload.getState(), "handedOff");
-assert.match(otherDownload.getStatusMessage(), /browser’s downloads/);
+assert.match(downloadClicks[0], /audioStream=1/);
+assert.equal(currentDownload.getState(), "handedOff");
+assert.match(currentDownload.getStatusMessage(), /browser’s downloads/);
 
 let releaseHead;
 let pendingHeadCalls = 0;
+let currentInput = "/api/video-a.mp4";
 const pendingDownload = createDownloadController({
+  getCurrentPlayback: () => ({ input: currentInput }),
   fetchImpl: () => {
     pendingHeadCalls += 1;
     return new Promise((resolve) => { releaseHead = resolve; });
   },
 });
-const pending = pendingDownload.download(hashA);
-await Promise.resolve();
+const pending = pendingDownload.download();
 assert.equal(pendingDownload.getState(), "preparing");
-assert.equal(pendingDownload.getDownloadingSourceHash(), hashA);
-await pendingDownload.download(hashB);
+currentInput = "/api/video-b.mp4";
+await pendingDownload.download();
 assert.equal(pendingHeadCalls, 1, "repeated clicks must not launch competing exports");
 releaseHead({ ok: true, status: 200 });
 await pending;
-assert.equal(pendingDownload.getDownloadingSourceHash(), "");
+assert.match(downloadClicks.at(-1), /input=%2Fapi%2Fvideo-a.mp4/, "capture the current video at the moment Download was clicked");
 assert.equal(pendingDownload.getState(), "handedOff", "handoff is not completed-download proof");
 
 let failExport = true;
@@ -226,18 +166,21 @@ const retryDownload = createDownloadController({
   fetchImpl: async () => ({ ok: !failExport, status: failExport ? 503 : 200 }),
 });
 const clicksBeforeFailure = downloadClicks.length;
-await retryDownload.download(hashA);
+await retryDownload.download();
 assert.equal(retryDownload.getState(), "error");
 assert.equal(downloadClicks.length, clicksBeforeFailure, "a failed readiness check must not start a transfer");
-assert.equal(retryDownload.getDownloadingSourceHash(), "", "a failed export must allow retry");
-assert.equal(preferredProvider, "fastest");
 failExport = false;
-await retryDownload.download(hashA);
+await retryDownload.download();
 assert.equal(retryDownload.getState(), "handedOff");
 assert.equal(downloadClicks.length, clicksBeforeFailure + 1);
 
 const unavailableBrowser = createDownloadController({ documentRef: null });
-await unavailableBrowser.download(hashA);
+await unavailableBrowser.download();
 assert.equal(unavailableBrowser.getState(), "error");
+const loadingVideo = createDownloadController({ getCurrentPlayback: () => null });
+const clicksBeforeLoading = downloadClicks.length;
+await loadingVideo.download();
+assert.equal(loadingVideo.getState(), "error");
+assert.equal(downloadClicks.length, clicksBeforeLoading);
 
 console.log("source-download-test: ok");

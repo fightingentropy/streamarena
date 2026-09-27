@@ -2588,39 +2588,73 @@ async function runSmoke() {
       }
 
       if (pageSpec.expectSourceSwitch) {
-        // Download a different source: prepare, fail, retry, and hand off the
-        // correct URL, while selected playback stays unchanged. The browser
-        // download is cancelled here: this Vite harness has no export backend.
+        // Video actions belong to the current picture, not to source choices.
+        if (await page.locator("#sourceMenu [data-video-action], .source-option-download, .source-download-status").count()) {
+          throw new Error("Sources must contain stream choices only.");
+        }
         if (await page.locator("#toggleSource").getAttribute("aria-expanded") !== "true") {
           await page.locator("#toggleSource").click();
         }
-        const downloadButton = page.locator(`.source-option-download[data-source-hash="${sourceSwitchHashB}"]`);
-        await downloadButton.click();
-        await page.locator('.source-download-status[data-state="error"]').waitFor({ state: "visible" });
-        if (!(await downloadButton.getAttribute("aria-label"))?.startsWith("Retry:") ||
-            (await downloadButton.innerText()).trim() || sourceDownloadTransfers !== 0) {
-          throw new Error("A failed download must offer an accessible, icon-only retry without starting a transfer.");
-        }
-        const downloadEvent = page.waitForEvent("download");
-        await downloadButton.click();
-        await page.locator('.source-download-status[data-state="preparing"]').waitFor({ state: "visible" });
-        const download = await downloadEvent;
-        const exportUrl = new URL(download.url());
-        if (exportUrl.pathname !== "/api/download/export.mp4" || exportUrl.searchParams.get("input") !== `mock://${sourceSwitchHashB}`) {
-          throw new Error("Download handoff must target the chosen source.");
-        }
-        await download.cancel();
-        await page.locator('.source-download-status[data-state="handedOff"]').waitFor({ state: "visible" });
-        const selected = await page.locator('.source-option[aria-pressed="true"]').getAttribute("data-source-hash");
-        const afterDownloadSource = await page.locator("video").getAttribute("src");
-        if (selected !== sourceSwitchHashA || !afterDownloadSource.includes(sourceSwitchHashA) || sourceDownloadHeadRequests !== 2) {
-          throw new Error("Downloading an alternate source must not switch playback or create duplicate transfers.");
-        }
-        await downloadButton.press("Escape");
+        await page.locator("#toggleSource").press("Escape");
         if (await page.locator("#toggleSource").getAttribute("aria-expanded") !== "false" ||
             !(await page.locator("#toggleSource").evaluate((element) => element === document.activeElement))) {
           throw new Error("Escape must close Sources and restore keyboard focus to its toggle.");
         }
+        const menu = page.locator("#videoContextMenu");
+        const picture = page.locator("video");
+        await picture.click({ button: "right", position: { x: 350, y: 200 } });
+        await menu.waitFor({ state: "visible" });
+        await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+        await menu.getByRole("menuitem", { name: "Copy video link", exact: true }).click();
+        await page.waitForFunction(() => document.querySelector("[data-video-action-title]")?.textContent === "Video link copied");
+        const copiedLink = await page.evaluate(() => navigator.clipboard.readText());
+        if (!copiedLink.startsWith("http") || !copiedLink.includes(sourceSwitchHashA) || copiedLink.startsWith("blob:")) {
+          throw new Error("Copy video link must copy the active stream URL, not the page or a media blob.");
+        }
+        const downloadButton = menu.getByRole("menuitem", { name: "Download video", exact: true });
+        await downloadButton.click();
+        await menu.locator('.video-action-status[data-state="error"]').waitFor({ state: "visible" });
+        if (sourceDownloadTransfers !== 0) throw new Error("A failed readiness check must not start a transfer.");
+        const downloadEvent = page.waitForEvent("download");
+        await menu.getByRole("menuitem", { name: "Retry download", exact: true }).click();
+        await menu.locator('.video-action-status[data-state="preparing"]').waitFor({ state: "visible" });
+        const download = await downloadEvent;
+        const exportUrl = new URL(download.url());
+        if (exportUrl.pathname !== "/api/download/export.mp4" || exportUrl.searchParams.get("input") !== `mock://${sourceSwitchHashA}`) {
+          throw new Error("Download must target the currently playing video.");
+        }
+        await download.cancel();
+        await menu.locator('.video-action-status[data-state="handedOff"]').waitFor({ state: "visible" });
+        const selected = await page.locator('.source-option[aria-pressed="true"]').getAttribute("data-source-hash");
+        const afterDownloadSource = await picture.getAttribute("src");
+        if (selected !== sourceSwitchHashA || !afterDownloadSource.includes(sourceSwitchHashA) || sourceDownloadHeadRequests !== 2) {
+          throw new Error("Video actions must not switch playback or create duplicate transfers.");
+        }
+        await menu.getByRole("menuitem", { name: "Download video", exact: true }).press("Escape");
+        if (await menu.isVisible() || !page.url().includes("/watch/") ||
+            !(await page.locator(".player-shell").evaluate((element) => element === document.activeElement))) {
+          throw new Error("Escape must close video actions and return focus without leaving the player.");
+        }
+        await page.locator(".player-shell").press("Shift+F10");
+        await menu.waitFor({ state: "visible" });
+        await menu.getByRole("menuitem", { name: "Copy video link", exact: true }).press("ArrowDown");
+        if (!(await menu.getByRole("menuitem", { name: "Download video", exact: true }).evaluate((element) => element === document.activeElement))) {
+          throw new Error("Video actions must support keyboard navigation.");
+        }
+        const pausedBeforeDismiss = await picture.evaluate((video) => video.paused);
+        await picture.click({ position: { x: 40, y: 250 } });
+        await delay(400);
+        if (await menu.isVisible() || await picture.evaluate((video) => video.paused) !== pausedBeforeDismiss) {
+          throw new Error("Dismissing video actions must not toggle playback.");
+        }
+        const viewport = page.viewportSize();
+        await page.mouse.click(viewport.width - 8, viewport.height - 120, { button: "right" });
+        await menu.waitFor({ state: "visible" });
+        const menuBox = await menu.boundingBox();
+        if (menuBox.x < 0 || menuBox.y < 0 || menuBox.x + menuBox.width > viewport.width || menuBox.y + menuBox.height > viewport.height) {
+          throw new Error("Video actions must stay within the viewport near its edges.");
+        }
+        await menu.getByRole("menuitem", { name: "Copy video link", exact: true }).press("Escape");
       }
 
       if (pageSpec.expectSourceSwitchFailureRestore) {
