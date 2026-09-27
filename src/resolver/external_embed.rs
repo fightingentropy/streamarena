@@ -1,11 +1,48 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::time::Duration;
+
 use std::sync::LazyLock;
+use tokio::time::timeout;
 
 use super::{
     GALLIC_API_BASE, MERIDIAN_API_BASE, NOTORRENT_API_BASE, ResolveFilters, ResolveMetadata,
     ResolvePreferences, ResolverProvider, SOURCE_HEALTH_AVOID_SCORE, SourceSummary,
-    lordflix_source_url, nebula_addon_base, normalize_source_hash, stremio_addon_stream_url,
+    lordflix_source_url, nebula_addon_base, normalize_source_hash,
+    race_staggered_first_success_with_initial_grace, stremio_addon_stream_url,
 };
+
+/// Keep fallback hosts lazy until the preferred family fails or spends its
+/// bounded window. Both groups preserve ranked hedging; pinned single-source
+/// requests use the ordinary race with no additional family timeout.
+pub(super) async fn race_preferred_then_fallback<Fut, T>(
+    mut futures: Vec<Fut>,
+    preferred_count: usize,
+    initial_grace: Duration,
+    stagger: Duration,
+    preferred_timeout: Duration,
+) -> Option<(usize, T)>
+where
+    Fut: Future<Output = Option<T>>,
+{
+    let preferred_count = preferred_count.min(futures.len());
+    if preferred_count == 0 {
+        return race_staggered_first_success_with_initial_grace(futures, initial_grace, stagger)
+            .await;
+    }
+    let fallback = futures.split_off(preferred_count);
+    if let Ok(Some(winner)) = timeout(
+        preferred_timeout,
+        race_staggered_first_success_with_initial_grace(futures, initial_grace, stagger),
+    )
+    .await
+    {
+        return Some(winner);
+    }
+    race_staggered_first_success_with_initial_grace(fallback, initial_grace, stagger)
+        .await
+        .map(|(index, result)| (preferred_count + index, result))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::resolver) struct ExternalEmbedProvider {

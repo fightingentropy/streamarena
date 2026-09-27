@@ -95,7 +95,8 @@ use external_embed::{
     external_embed_playback_url, external_embed_source_filename,
     external_embed_source_for_source_hash, external_embed_source_hash, external_embed_sources,
     is_external_embed_hls_capable_source, preferred_external_embed_hls_sources,
-    should_prefer_default_external_embed, should_resolve_torrent_candidates,
+    race_preferred_then_fallback, should_prefer_default_external_embed,
+    should_resolve_torrent_candidates,
 };
 
 #[cfg(test)]
@@ -178,6 +179,9 @@ const EXTERNAL_EMBED_INITIAL_GRACE_MS: u64 = 2_500;
 /// After the first candidate, keep recovery hedges short so later sources retain
 /// their chance within the shared total deadline.
 const EXTERNAL_EMBED_HEDGE_STAGGER_MS: u64 = 1_200;
+// Give the preferred CineJoy family a bounded attempt before racing other hosts.
+// A faster fallback must not override the user's preferred provider by default.
+const EXTERNAL_EMBED_PREFERRED_FAMILY_TIMEOUT_MS: u64 = 8_000;
 const EXTERNAL_EMBED_PROVIDER_HEALTH_KEY_PREFIX: &str = "external-embed-provider:";
 const EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP: i64 = 75;
 const EXTERNAL_EMBED_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36";
@@ -776,7 +780,11 @@ impl ResolverService {
         // so serve it before acquiring one — this is what lets concurrent viewers of
         // a warm title skip the 2-permit bottleneck entirely.
         // Admin provider benchmarks measure discovery without reading or training this cache.
-        if record_health_events && let Some(hit) = self.resolved_embed_cache.get_fresh(cache_key) {
+        if record_health_events
+            && let Some(hit) = self
+                .resolved_embed_cache
+                .get_fresh_for_source(cache_key, source)
+        {
             return Ok(Some(finalize_external_embed_payload(
                 metadata,
                 hit.source,
@@ -4437,6 +4445,17 @@ impl ResolvedEmbedCache {
         Some(entry.clone())
     }
 
+    fn get_fresh_for_source(
+        &self,
+        key: &str,
+        source: ExternalEmbedSource,
+    ) -> Option<CachedResolvedEmbed> {
+        // The requested source is the current top-ranked eligible source for
+        // automatic playback. A cached fallback must not bypass new rankings,
+        // health changes, or a provider being disabled since the last play.
+        self.get_fresh(key).filter(|entry| entry.source == source)
+    }
+
     fn store(&self, key: String, value: CachedResolvedEmbed) {
         if resolved_embed_cache_ttl_ms() == 0 {
             return;
@@ -4532,7 +4551,9 @@ async fn build_external_embed_resolved_playback_payload(
 ) -> Option<Value> {
     // Another request may have populated the cache while this one waited for a permit.
     if request.record_health_events
-        && let Some(hit) = request.resolve_cache.get_fresh(request.cache_key)
+        && let Some(hit) = request
+            .resolve_cache
+            .get_fresh_for_source(request.cache_key, request.source)
     {
         return Some(finalize_external_embed_payload(
             request.metadata,
@@ -4555,27 +4576,36 @@ async fn build_external_embed_resolved_playback_payload(
     );
     let hls_deadline_ms = now_ms() + external_embed_hls_total_timeout_ms() as i64;
 
-    // Resolve candidates with an adaptive staggered hedge instead of a strict
-    // sequential walk: the top-ranked candidate runs first; the next is raced in
-    // parallel the moment the current one either fails or stalls past the stagger.
-    // First success wins and the rest are dropped (their in-flight node/curl
+    // Hedge within the leading CineJoy family first, then use other hosts only
+    // when that family fails or exceeds its bounded window. Admin ranking and
+    // health still determine the leading candidates; explicit pins stay single.
+    // The winner's remaining futures are dropped (their in-flight node/curl
     // subprocesses are killed on drop). When health recording is enabled, each
     // attempt records its own failure internally; the winner's success is recorded
     // here so a losing-but-successful racer can never double-count. Admin benchmark
     // requests use the identical path with both writes suppressed.
+    let preferred_count = if request.allow_native_fallback {
+        candidates
+            .iter()
+            .take_while(|candidate| candidate.provider.id == "cinejoy")
+            .count()
+    } else {
+        0
+    };
     let attempts = candidates
         .into_iter()
         .map(|candidate| {
             resolve_external_embed_candidate_attempt(&request, candidate, hls_deadline_ms)
         })
         .collect::<Vec<_>>();
-    let (_index, (candidate, hls_source, embed_url)) =
-        race_staggered_first_success_with_initial_grace(
-            attempts,
-            Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
-            Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
-        )
-        .await?;
+    let (_index, (candidate, hls_source, embed_url)) = race_preferred_then_fallback(
+        attempts,
+        preferred_count,
+        Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
+        Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+        Duration::from_millis(EXTERNAL_EMBED_PREFERRED_FAMILY_TIMEOUT_MS),
+    )
+    .await?;
 
     record_external_embed_health_event_if_enabled(
         request.record_health_events,

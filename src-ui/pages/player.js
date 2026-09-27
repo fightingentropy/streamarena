@@ -1,6 +1,5 @@
 import { onMount, onCleanup } from "solid-js";
 import { createCheckpointSaveQueue } from "../player/checkpoint-save.js";
-import { createRecentPlaybackSourceCache } from "../player/recent-playback-source.js";
 import { createCustomSubtitleOverlay } from "../player/custom-subtitle-overlay.js";
 import {
   getAudioTrackDisplayLabel,
@@ -199,12 +198,6 @@ export default function PlayerPage() {
     getOwner: readPlayerUserStateOwner,
     onError: (error) => console.warn("Watch progress remains saved locally; server sync failed.", error),
   });
-  const recentPlaybackSources = createRecentPlaybackSourceCache({
-    owner: playerUserStateOwner,
-    getOwner: readPlayerUserStateOwner,
-  });
-  let lastRememberedWorkingSource = "";
-  let lastRememberedWorkingSourceAt = 0;
   const startBoundedWatchProgressRetry = createBoundedWatchProgressRetry({
     fetchUserApiFn: fetchUserApi,
   });
@@ -1251,57 +1244,6 @@ function getTmdbTorrentResolveTimeoutMs() {
     realDebridConfigured: isUserRealDebridPlaybackEnabled(),
     resolverProvider: preferredResolverProvider,
   }).resolveTimeoutMs;
-}
-
-function getWorkingSourcePreferenceKey() {
-  return JSON.stringify([
-    preferredAudioLang, preferredSubtitleLang, preferredQuality, preferredContainer,
-    preferredSourceLanguage, preferredSourceAudioProfile, preferredSourceFormats,
-  ]);
-}
-
-function rememberCurrentWorkingTmdbSource() {
-  if (!isTmdbResolvedPlayback || isManualSourceSwitchPending() || video?.paused ||
-      !(video?.readyState >= 3) || !(video?.played?.length > 0) || !(video?.currentTime > 0.5)) return;
-  const preferences = getWorkingSourcePreferenceKey();
-  const key = `${sourceIdentity}:${selectedSourceHash}:${preferences}`;
-  if (key === lastRememberedWorkingSource && Date.now() - lastRememberedWorkingSourceAt < 60_000) return;
-  if (recentPlaybackSources.remember({
-    sourceIdentity, preferences, sourceHash: selectedSourceHash,
-    provider: currentTmdbResolverProvider,
-  })) {
-    lastRememberedWorkingSource = key;
-    lastRememberedWorkingSourceAt = Date.now();
-  }
-}
-
-async function resolveInitialTmdbPlayback() {
-  const hint = recentPlaybackSources.get({
-    sourceIdentity,
-    preferences: getWorkingSourcePreferenceKey(),
-    resumeSeconds: resumeTime,
-    explicitSourceHash: getPinnedSourceHashForRequests(),
-    providerAllowed: isTorrentResolverProviderEnabledForPlayback,
-  });
-  if (hint) {
-    const previousProvider = preferredResolverProvider;
-    preferredResolverProvider = hint.provider;
-    try {
-      return await resolveTmdbSourcesAndPlay({
-        requestSourceHash: hint.sourceHash,
-        allowSourceFallback: false,
-        allowContainerFallback: false,
-        resolveTimeoutMs: 5000,
-        retryTransientResolve: false,
-      });
-    } catch (error) {
-      recentPlaybackSources.forget(sourceIdentity);
-      preferredResolverProvider = previousProvider;
-      if (isResolveAbortError(error)) throw error;
-      // A stale resume hint must not trap the viewer on a failed source.
-    }
-  }
-  return resolveTmdbSourcesAndPlay();
 }
 
 function rememberServerContinueWatchingEntry(entry) {
@@ -3075,8 +3017,6 @@ function reportCurrentTmdbPlaybackFailure(
   { includeSourceHash = true, dedupe = true } = {},
 ) {
   const sourceHash = normalizeSourceHash(selectedSourceHash);
-  recentPlaybackSources.forget(sourceIdentity);
-  lastRememberedWorkingSource = "";
   if (
     !isTmdbResolvedPlayback ||
     !tmdbId ||
@@ -8258,7 +8198,9 @@ async function initPlaybackSource() {
 
   try {
     showResolver("Loading video...");
-    await resolveInitialTmdbPlayback();
+    // Resume the position through the current automatic policy. A previously
+    // working fallback must not become a silent source pin on the next visit.
+    await resolveTmdbSourcesAndPlay();
   } catch (error) {
     console.error("Failed to resolve TMDB playback:", error);
     showResolverError(error, "Unable to resolve this stream.", {
@@ -9483,7 +9425,6 @@ trackListener(video, "playing", () => {
   }
 });
 trackListener(video, "timeupdate", () => {
-  rememberCurrentWorkingTmdbSource();
   if (getEffectiveCurrentTime() > 0.5) {
     completeManualSourceSwitchIfActive();
     clearPlaybackRecovery();

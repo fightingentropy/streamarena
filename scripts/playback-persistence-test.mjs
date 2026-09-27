@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { createCheckpointSaveQueue } from "../src-ui/player/checkpoint-save.js";
-import { createRecentPlaybackSourceCache } from "../src-ui/player/recent-playback-source.js";
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; }
@@ -123,29 +122,4 @@ const identity = "tmdb:movie:42";
   queue.dispose();
 }
 
-const entries = new Map();
-const storage = { getItem: (key) => entries.get(key), setItem: (key, value) => entries.set(key, value) };
-let time = 1000, owner = "viewer";
-const cache = createRecentPlaybackSourceCache({ storage, owner, getOwner: () => owner, now: () => time, ttlMs: 1000 });
-const hash = "a".repeat(40), preferences = '["en","off","auto"]';
-for (const provider of ["real-debrid", "local-torrent"]) {
-  assert.equal(cache.remember({ sourceIdentity: identity, sourceHash: hash, provider, preferences }), false);
-  // Also reject a hint written by the old version, even if its integration is enabled.
-  storage.setItem("streamarena-recent-working-sources-v1", JSON.stringify({ owner, entries: {
-    [identity]: { sourceHash: hash, provider, preferences, updatedAt: time },
-  } }));
-  assert.equal(cache.get({ sourceIdentity: identity, preferences, resumeSeconds: 50, providerAllowed: () => true }), null);
-}
-assert.equal(cache.remember({ sourceIdentity: identity, sourceHash: hash, provider: "external-embed", preferences }), true);
-const lookup = { sourceIdentity: identity, preferences, resumeSeconds: 50 };
-assert.deepEqual(cache.get(lookup), { sourceHash: hash, provider: "external-embed" });
-assert.equal(cache.get({ ...lookup, explicitSourceHash: "b".repeat(40) }), null, "manual source pins win over automatic resume hints");
-assert.equal(cache.get({ ...lookup, resumeSeconds: 0 }), null, "new playback keeps the normal default source policy");
-assert.equal(cache.get({ ...lookup, preferences: "different" }), null, "changed playback preferences invalidate hints");
-assert.equal(cache.get({ ...lookup, providerAllowed: () => false }), null, "disabled torrent integrations are respected");
-owner = "other-viewer"; assert.equal(cache.get(lookup), null); owner = "viewer";
-time += 1000; assert.equal(cache.get(lookup), null, "expired sources are not replayed");
-time += 1; cache.remember({ sourceIdentity: identity, sourceHash: hash, provider: "external-embed", preferences });
-cache.forget(identity); assert.equal(cache.get(lookup), null, "failed playback clears the resume hint");
-assert.equal(cache.remember({ sourceIdentity: identity, sourceHash: "invalid", provider: "real-debrid" }), false);
-console.log("Playback checkpoint and resume source tests passed.");
+console.log("Playback checkpoint tests passed.");

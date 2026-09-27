@@ -60,7 +60,10 @@ use super::{
     torrent_playback_enabled, torznab_download_url_allowed, user_facing_real_debrid_error,
     validate_real_debrid_user_payload,
 };
-use super::{race_staggered_first_success, race_staggered_first_success_with_initial_grace};
+use super::{
+    race_preferred_then_fallback, race_staggered_first_success,
+    race_staggered_first_success_with_initial_grace,
+};
 
 #[test]
 fn benchmark_exact_session_requires_healthy_hard_freshness_without_revalidation() {
@@ -105,6 +108,96 @@ async fn hedge_attempt(
     started.lock().unwrap().push(index);
     tokio::time::sleep(delay).await;
     result
+}
+
+#[tokio::test(start_paused = true)]
+async fn preferred_family_finishes_before_a_faster_fallback_can_win() {
+    let started = Arc::new(StdMutex::new(Vec::new()));
+    let winner = race_preferred_then_fallback(
+        vec![
+            hedge_attempt(started.clone(), 0, Duration::from_secs(6), Some("nebula")),
+            hedge_attempt(started.clone(), 1, Duration::from_secs(4), Some("lisbon")),
+            hedge_attempt(started.clone(), 2, Duration::from_millis(1), Some("vixsrc")),
+        ],
+        2,
+        Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
+        Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+        Duration::from_secs(8),
+    )
+    .await;
+    assert_eq!(winner, Some((0, "nebula")));
+    assert_eq!(*started.lock().unwrap(), vec![0, 1]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn preferred_family_failure_releases_fallback_immediately() {
+    let started = Arc::new(StdMutex::new(Vec::new()));
+    let start = tokio::time::Instant::now();
+    let winner = race_preferred_then_fallback(
+        vec![
+            hedge_attempt(started.clone(), 0, Duration::from_millis(100), None),
+            hedge_attempt(started.clone(), 1, Duration::from_millis(100), None),
+            hedge_attempt(
+                started.clone(),
+                2,
+                Duration::from_millis(100),
+                Some("vixsrc"),
+            ),
+        ],
+        2,
+        Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
+        Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+        Duration::from_secs(8),
+    )
+    .await;
+    assert_eq!(winner, Some((2, "vixsrc")));
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert_eq!(*started.lock().unwrap(), vec![0, 1, 2]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn preferred_family_timeout_keeps_fallback_and_manual_selection_available() {
+    let started = Arc::new(StdMutex::new(Vec::new()));
+    let start = tokio::time::Instant::now();
+    let winner = race_preferred_then_fallback(
+        vec![
+            hedge_attempt(started.clone(), 0, Duration::from_secs(30), Some("stalled")),
+            hedge_attempt(
+                started.clone(),
+                1,
+                Duration::from_millis(100),
+                Some("vixsrc"),
+            ),
+        ],
+        1,
+        Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
+        Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+        Duration::from_secs(8),
+    )
+    .await;
+    assert_eq!(winner, Some((1, "vixsrc")));
+    assert!(start.elapsed() >= Duration::from_secs(8));
+    assert!(start.elapsed() < Duration::from_secs(9));
+    assert_eq!(*started.lock().unwrap(), vec![0, 1]);
+
+    let winner = race_preferred_then_fallback(
+        vec![hedge_attempt(
+            started,
+            2,
+            Duration::from_secs(9),
+            Some("manual"),
+        )],
+        0,
+        Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
+        Duration::from_millis(EXTERNAL_EMBED_HEDGE_STAGGER_MS),
+        Duration::from_secs(8),
+    )
+    .await;
+    assert_eq!(
+        winner,
+        Some((0, "manual")),
+        "manual pins do not inherit the family timeout"
+    );
 }
 
 async fn resolver_provider_attempt(
@@ -1060,6 +1153,54 @@ fn resolved_embed_cache_expires_entries_past_ttl() {
     assert!(
         cache.get_fresh("k").is_none(),
         "entry older than the TTL must read as stale"
+    );
+}
+
+#[test]
+fn resolved_embed_cache_cannot_pin_a_fallback_over_the_current_preference() {
+    let cache = ResolvedEmbedCache::new();
+    let metadata = sample_resolve_metadata("tv", "1399", 1, 2);
+    let preferred = default_external_embed_source(&metadata, &HashMap::new()).unwrap();
+    assert_eq!(preferred.provider.id, "cinejoy");
+    let fallback = external_embed_sources()
+        .into_iter()
+        .find(|source| source.provider.id == "vixsrc")
+        .unwrap();
+    let key = external_embed_resolve_cache_key(&metadata, "");
+    let entry = CachedResolvedEmbed {
+        source: fallback,
+        playback_url: "https://up.example/fallback.m3u8".to_owned(),
+        referer: None,
+        embed_url: "https://vixsrc.to/tv/1399/1/2".to_owned(),
+        cached_at_ms: now_ms(),
+    };
+    cache.store(key.clone(), entry.clone());
+    assert!(
+        cache.get_fresh(&key).is_some(),
+        "the fallback is still fresh"
+    );
+    assert!(
+        cache.get_fresh_for_source(&key, preferred).is_none(),
+        "freshness cannot override the current source policy"
+    );
+    assert!(
+        cache.get_fresh_for_source(&key, fallback).is_some(),
+        "the fallback can be reused if health or an explicit selection makes it preferred"
+    );
+    cache.store(
+        key.clone(),
+        CachedResolvedEmbed {
+            source: preferred,
+            ..entry
+        },
+    );
+    assert!(
+        cache.get_fresh_for_source(&key, preferred).is_some(),
+        "a matching preferred source retains the fast cache path"
+    );
+    assert!(
+        cache.get_fresh_for_source(&key, fallback).is_none(),
+        "a rank or eligibility change invalidates reuse in either direction"
     );
 }
 

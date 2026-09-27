@@ -548,7 +548,7 @@ const pages = [
     expectSourceSwitchFailureRestore: true,
   },
   {
-    path: `/player.html?tmdbId=${initialResolveRaceTmdbId}&mediaType=movie&title=Resolve%20Ownership&raceCase=active&resumePlayback=1`,
+    path: `/player.html?tmdbId=${initialResolveRaceTmdbId}&mediaType=movie&title=Resolve%20Ownership&raceCase=active&resumePlayback=1&audioLang=en&subtitleLang=off&quality=auto&preferredContainer=mp4`,
     selector: ".player-shell",
     initialResolveSourceDiscoveryCase: "active",
   },
@@ -906,7 +906,7 @@ async function runSmoke() {
             mediaType: "movie",
             title: "Resolve Ownership",
             sourceHash: initialResolvePreferredHash,
-            resolverProvider: "real-debrid",
+            resolverProvider: initialResolveRaceCase === "active" ? "external-embed" : "real-debrid",
             sessionKey: "previous-automatic-torrent",
             resumeSeconds: 5,
           }] }));
@@ -938,8 +938,8 @@ async function runSmoke() {
                 {
                   sourceHash: initialResolvePreferredHash,
                   infoHash: initialResolvePreferredHash,
-                  primary: "Meridian",
-                  filename: "Meridian embed",
+                  primary: "VixSrc",
+                  filename: "VixSrc embed",
                   provider: "LivNet",
                   qualityLabel: "1080p",
                   container: "hls",
@@ -1186,6 +1186,27 @@ async function runSmoke() {
         }
         await route.fulfill(jsonResponse(payload));
       });
+
+      if (initialResolveRaceCase === "active") {
+        // Simulate reopening a title after the old web player cached VixSrc as
+        // its working HLS source. Resume must keep the position, not that pin.
+        await context.addInitScript(({ tmdbId, sourceHash }) => {
+          if (window.top !== window) return;
+          const sourceIdentity = `tmdb:movie:${tmdbId}`;
+          localStorage.setItem("streamarena-user-state-owner-v1", "1");
+          localStorage.setItem("streamarena-user-state-user-v1", JSON.stringify({
+            id: 1, email: "smoke@example.com", displayName: "Smoke User",
+          }));
+          localStorage.setItem(`streamarena-resume:${sourceIdentity}`, "5");
+          localStorage.setItem("streamarena-recent-working-sources-v1", JSON.stringify({
+            owner: "1",
+            entries: { [sourceIdentity]: {
+              sourceHash, provider: "external-embed", updatedAt: Date.now(),
+              preferences: JSON.stringify(["en", "off", "auto", "mp4", "en", "single", ["mp4", "mkv"]]),
+            } },
+          }));
+        }, { tmdbId: initialResolveRaceTmdbId, sourceHash: initialResolvePreferredHash });
+      }
 
       if (pageSpec.expectServerContinueWatchingTruth) {
         await context.addInitScript(() => {
