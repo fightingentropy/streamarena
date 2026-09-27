@@ -180,13 +180,11 @@ pub fn custom_base(id: &str) -> Option<String> {
 }
 
 /// Provider tiers shared by the Server menu and automatic native-HLS selection.
-/// Match the requested CineJoy default: Nebula, Lisbon, then Solara (observed
-/// on CineJoy's Oppenheimer player on 2026-09-27). This is a user preference,
-/// not a claim that Nebula outperformed Lisbon in the seven-title benchmark.
-/// Other HLS providers remain recovery options after the CineJoy sources.
-/// Aether Link precedes Lul after the current movie playback checks; Lul adds
-/// broader verified HD TV coverage. Retired low-quality and
-/// repeatedly failing providers are absent from every built-in catalog.
+/// Keep the requested CineJoy default, Nebula. Current production playback
+/// puts Lul then Link next; Lisbon and Solara retain previously verified HD
+/// capability but failed the fresh sample, so they are last-resort backups.
+/// Retired low-quality and repeatedly failing providers are absent from every
+/// built-in catalog.
 /// These weights express policy tiers, not latency or a probability of success.
 /// Evidence: `docs/benchmarks/hls-providers-2026-09-27.json`.
 ///
@@ -195,9 +193,9 @@ pub fn custom_base(id: &str) -> Option<String> {
 /// tier gaps exceed positive health nudges while remaining below the uncapped
 /// dead-source penalty; source eligibility and explicit pins are separate.
 pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
-    ("cinejoy", 2_200),
-    ("aether-link", 1_800),
-    ("aether-lul", 1_600),
+    ("cinejoy", 1_400),
+    ("aether-lul", 2_200),
+    ("aether-link", 2_000),
 ];
 
 /// Compiled default ranking weight for an embed provider (custom providers get
@@ -220,7 +218,7 @@ pub fn embed_default_rank(id: &str) -> i64 {
 pub fn embed_source_default_rank(id: &str, server: Option<&str>) -> i64 {
     match (id, server) {
         ("cinejoy", Some("NEBULA")) => 2_600,
-        ("cinejoy", Some("SOLARA")) => 2_000,
+        ("cinejoy", Some("SOLARA")) => 1_200,
         _ => embed_default_rank(id),
     }
 }
@@ -572,7 +570,7 @@ mod tests {
     #[test]
     fn only_named_cinejoy_variants_have_independent_compiled_tiers() {
         assert_eq!(embed_source_default_rank("cinejoy", Some("NEBULA")), 2_600);
-        assert_eq!(embed_source_default_rank("cinejoy", Some("SOLARA")), 2_000);
+        assert_eq!(embed_source_default_rank("cinejoy", Some("SOLARA")), 1_200);
         for id in EMBED_IDS {
             assert_eq!(embed_source_default_rank(id, None), embed_default_rank(id));
             for server in ["YORU", "RAZE", "UNMEASURED"] {

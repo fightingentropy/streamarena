@@ -874,10 +874,10 @@ fn cinejoy_preference_leads_other_hls_sources_without_label_bonuses() {
             .collect::<Vec<_>>(),
         vec![
             ("CineJoy Nebula", 2_600),
-            ("CineJoy Lisbon", 2_200),
-            ("CineJoy Solara", 2_000),
-            ("Aether Link", 1_800),
-            ("Aether Lul", 1_600)
+            ("Aether Lul", 2_200),
+            ("Aether Link", 2_000),
+            ("CineJoy Lisbon", 1_400),
+            ("CineJoy Solara", 1_200)
         ],
     );
     let aether_link_rank = external_embed_source_rank_score(
@@ -885,9 +885,9 @@ fn cinejoy_preference_leads_other_hls_sources_without_label_bonuses() {
         &metadata,
         &health,
     );
-    assert_eq!(aether_link_rank, 1_800);
+    assert_eq!(aether_link_rank, 2_000);
     assert!(
-        top_rank > 1_800 + 150,
+        top_rank > 2_200 + 150,
         "positive health cannot erase the tier gap"
     );
     assert!(aether_link_rank > 500 + 150);
@@ -1406,10 +1406,10 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
         source_ids,
         vec![
             ("cinejoy", "NEBULA"),
-            ("cinejoy", "default"),
-            ("cinejoy", "SOLARA"),
             ("aether-lul", "default"),
             ("aether-link", "default"),
+            ("cinejoy", "default"),
+            ("cinejoy", "SOLARA"),
         ]
     );
     let eligible_menu_hashes = build_external_embed_source_summaries(&metadata, &health_scores)
@@ -1449,10 +1449,10 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
         tv_source_ids,
         vec![
             ("cinejoy", "NEBULA"),
-            ("cinejoy", "default"),
-            ("cinejoy", "SOLARA"),
             ("aether-lul", "default"),
             ("aether-link", "default"),
+            ("cinejoy", "default"),
+            ("cinejoy", "SOLARA"),
         ]
     );
 
