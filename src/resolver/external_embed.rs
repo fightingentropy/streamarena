@@ -74,8 +74,8 @@ pub(super) const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
     },
 ];
 
-// Lisbon is the base source (one automatic attempt); the other independently
-// pinned choices share its provider budget, toggle, cache, and rank controls.
+// Lisbon retains its existing base-source identity. All three CineJoy servers
+// participate in automatic HLS selection, with independent pins and health.
 const CINEJOY_SERVERS: &[ExternalEmbedServer] = &[
     ExternalEmbedServer {
         id: "NEBULA",
@@ -276,7 +276,8 @@ pub(super) fn is_default_external_embed_hls_fallback_source(source: ExternalEmbe
             .server
             .map(|server| server.id == "YORU")
             .unwrap_or(true),
-        "vidlink" | "cinejoy" => source.server.is_none(),
+        "cinejoy" => true,
+        "vidlink" => source.server.is_none(),
         "vidrock" | "notorrent" | "vixsrc" | "lordflix" | "meridian" | "gallic" | "nebula" => {
             source.server.is_none()
         }

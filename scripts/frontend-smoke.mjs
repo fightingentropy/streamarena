@@ -521,6 +521,11 @@ const pages = [
     // carries the full identity (tmdbId + media type + season/episode).
     expectCanonicalWatchPath: `/watch/tv/${hlsManagedTmdbId}/off-campus/s1e1`,
   },
+  ...["movie", "tv"].map((mediaType) => ({
+    path: `/player.html?tmdbId=hls-retry-${mediaType}&mediaType=${mediaType}&title=HLS%20Retry&seasonNumber=1&episodeNumber=1`,
+    selector: ".player-shell",
+    expectAutomaticHlsResolveRetry: true,
+  })),
   {
     path: "/player.html?tmdbId=auto-fallback-tv&mediaType=tv&title=Off%20Campus&seasonNumber=1&episodeNumber=1",
     selector: ".player-shell",
@@ -592,6 +597,7 @@ async function runSmoke() {
       let signupConfigRequests = 0;
       let sawHlsManagedImportHold = false;
       let automaticFallbackResolveCount = 0;
+      const automaticHlsRetryRequests = [];
       let sawAutomaticFallbackResolveHash = "";
       let liveStreamResolveSources = [];
       let liveStreamHlsInputs = [];
@@ -751,6 +757,42 @@ async function runSmoke() {
         if (discoverySmoke && await discoverySmoke.route(route)) return;
         const request = route.request();
         const url = new URL(request.url());
+        if (pageSpec.expectAutomaticHlsResolveRetry) {
+          if (url.pathname === "/api/user/torrent-settings") {
+            await route.fulfill(jsonResponse({ configured: true, enabled: true, localTorrentEnabled: true }));
+            return;
+          }
+          if (url.pathname === "/api/resolve/movie" || url.pathname === "/api/resolve/tv") {
+            automaticHlsRetryRequests.push(Object.fromEntries(url.searchParams));
+            if (automaticHlsRetryRequests.length === 1) {
+              await route.fulfill(jsonResponse({ error: "External HLS sources are unavailable." }, 424));
+            } else {
+              await route.fulfill(jsonResponse({ sourceHash: sourceSwitchHashB, resolverProvider: "external-embed",
+                playableUrl: `${smokeVideo}?source=${sourceSwitchHashB}`, fallbackUrls: [],
+                tracks: { audioTracks: [], subtitleTracks: [] }, selectedAudioStreamIndex: -1, selectedSubtitleStreamIndex: -1,
+                preferences: { audioLang: "en", subtitleLang: "" }, metadata: { displayTitle: "HLS Retry" } }));
+            }
+            return;
+          }
+          if (url.pathname === "/api/resolve/sources") {
+            await route.fulfill(jsonResponse({ sources: [{ sourceHash: sourceSwitchHashB, primary: "CineJoy Nebula", container: "hls", isTorrent: false }] }));
+            return;
+          }
+        }
+        if (pageSpec.expectAutomaticSourceFallback) {
+          if (url.pathname === "/api/user/torrent-settings" && request.method() === "GET") {
+            await route.fulfill(jsonResponse({ configured: true, enabled: true, localTorrentEnabled: true }));
+            return;
+          }
+          if (url.pathname === "/api/resolve/sources") {
+            await route.fulfill(jsonResponse({ sources: [
+              { sourceHash: realDebridCachedHash, primary: "Cached torrent", container: "mkv", isTorrent: true, realDebridCached: true, score: 9_000_000 },
+              { sourceHash: sourceSwitchHashB, primary: "CineJoy Nebula", container: "hls", isTorrent: false, automaticFallbackEligible: true, score: 1_002_600 },
+              { sourceHash: sourceSwitchHashA, primary: "CineJoy Lisbon", container: "hls", isTorrent: false, automaticFallbackEligible: true, score: 1_002_200 },
+            ] }));
+            return;
+          }
+        }
         if (url.pathname === "/api/auth/config") {
           signupConfigRequests += 1;
         }
@@ -910,12 +952,12 @@ async function runSmoke() {
                 {
                   sourceHash: initialResolveActualHash,
                   infoHash: initialResolveActualHash,
-                  primary: "Resolved direct source",
-                  filename: "Resolved.Direct.Source.1080p.mp4",
-                  provider: "Torrentio",
+                  primary: "CineJoy Nebula",
+                  filename: "CineJoy Nebula embed",
+                  provider: "CineJoy",
                   qualityLabel: "1080p",
-                  container: "mp4",
-                  isTorrent: true,
+                  container: "hls",
+                  isTorrent: false,
                   seeders: 200,
                   size: "1 GB",
                   releaseGroup: "Smoke",
@@ -1004,6 +1046,9 @@ async function runSmoke() {
           pageSpec.expectAutomaticSourceFallback &&
           url.pathname === "/api/resolve/tv"
         ) {
+          if (url.searchParams.has("skipExternalEmbed") || url.searchParams.get("resolverProvider") !== "fastest" || url.searchParams.get("sourceHash") === realDebridCachedHash) {
+            throw new Error("Automatic HLS playback must not request torrent/RD resolution.");
+          }
           automaticFallbackResolveCount += 1;
           const sourceHash = url.searchParams.get("sourceHash") || "";
           if (sourceHash) {
@@ -1101,6 +1146,9 @@ async function runSmoke() {
           return;
         }
         const payload = apiPayload(url, request.method(), fixtureNow);
+        if (pageSpec.expectAutomaticSourceFallback && url.pathname === "/api/resolve/tv") {
+          payload.resolverProvider = "external-embed";
+        }
         if (pageSpec.expectLiveStreamSwitch && url.pathname === "/api/live/hls.m3u8") {
           liveStreamHlsInputs.push(url.searchParams.get("input") || "");
         }
@@ -1178,6 +1226,8 @@ async function runSmoke() {
       if (
         pageSpec.expectSourceSwitch ||
         pageSpec.expectSourceSwitchFailureRestore ||
+        pageSpec.expectAutomaticSourceFallback ||
+        pageSpec.expectAutomaticHlsResolveRetry ||
         pageSpec.expectRealDebridCacheRefresh ||
         initialResolveRaceCase
       ) {
@@ -1375,10 +1425,10 @@ async function runSmoke() {
             null,
             { timeout: 8_000 },
           );
-          // Explicitly browse the non-playing HLS tab while A is unresolved.
-          // A will return the torrent-tab source C below.
+          // Explicitly browse Torrents while the automatic HLS resolve is pending.
+          // Playback must not close or reset the menu the viewer is browsing.
           await page.evaluate(() => {
-            document.querySelector('[data-source-tab="hls"]')?.click();
+            document.querySelector('[data-source-tab="torrents"]')?.click();
           });
           releaseInitialResolveRace();
           await page.waitForFunction(
@@ -1403,7 +1453,7 @@ async function runSmoke() {
           }));
           if (
             !openBrowseState.menuOpen ||
-            openBrowseState.activeTab !== "hls" ||
+            openBrowseState.activeTab !== "torrents" ||
             openBrowseState.selectedRowHash
           ) {
             throw new Error(
@@ -1534,7 +1584,7 @@ async function runSmoke() {
             ownershipState.preferredSourcePlaying ||
             !ownershipState.overlayHidden ||
             ownershipState.overlayIsError ||
-            ownershipState.activeSourceTab !== "torrents");
+            ownershipState.activeSourceTab !== "hls");
         if (commonFailed || failureCaseFailed || successCaseFailed) {
           throw new Error(
             `${pageSpec.path}\nSource discovery changed initial resolve ownership or left a non-actionable failure.\n${JSON.stringify({
@@ -2334,10 +2384,16 @@ async function runSmoke() {
         }
       }
 
+      if (pageSpec.expectAutomaticHlsResolveRetry) {
+        await page.waitForFunction((hash) => (document.querySelector("video")?.getAttribute("src") || "").includes(hash), sourceSwitchHashB);
+        if (automaticHlsRetryRequests.length !== 2 || automaticHlsRetryRequests.some((params) => params.skipExternalEmbed || params.resolverProvider !== "fastest" || params.sourceHash)) {
+          throw new Error(`HLS resolve retries must stay unpinned and HLS-first: ${JSON.stringify(automaticHlsRetryRequests)}`);
+        }
+      }
+
       if (pageSpec.expectAutomaticSourceFallback) {
-        // The player defaults to the 4K source (hashB). A fatal playback error no
-        // longer silently switches sources; it surfaces the recovery overlay,
-        // whose "Try another source" action resolves the 1080p alternate (hashA).
+        // A playback failure must automatically move from Nebula to Lisbon,
+        // even with both torrent engines enabled and a highly ranked cached torrent.
         await page.waitForFunction(
           (hash) =>
             Boolean(
@@ -2346,36 +2402,18 @@ async function runSmoke() {
             (document.querySelector("video")?.getAttribute("src") || "").includes(hash),
           sourceSwitchHashB,
           { timeout: 8_000 },
-        );
+        ).catch(async (error) => {
+          throw new Error(`${error.message}\n${JSON.stringify({ failures, automaticFallbackResolveCount,
+            state: await page.evaluate(() => ({ source: document.querySelector("video")?.getAttribute("src"),
+              text: document.querySelector(".resolver-overlay")?.textContent,
+              sources: [...document.querySelectorAll(".source-option")].map(e => ({ hash: e.dataset.sourceHash, text: e.textContent })) })) })}`);
+        });
 
         // Fail the active (hashB) source.
         await page.evaluate(() => {
           document.querySelector("video")?.dispatchEvent(new Event("error"));
         });
 
-        // Recovery surfaces an error overlay with a usable "Try another source"
-        // action rather than auto-switching.
-        await page.waitForFunction(
-          () => {
-            const overlay = document.querySelector(".resolver-overlay");
-            const alternate = document.querySelector("#resolverAlternateButton");
-            return Boolean(
-              overlay &&
-                !overlay.hidden &&
-                overlay.classList.contains("is-error") &&
-                alternate &&
-                !alternate.hidden,
-            );
-          },
-          null,
-          { timeout: 8_000 },
-        );
-
-        // Choosing "Try another source" resolves the alternate (hashA) and makes
-        // it the active playback source. As in the manual source-switch test we
-        // assert on the selected source + active video rather than overlay state
-        // (the mock <video> never fires canplay headless, so the overlay lingers).
-        await page.click("#resolverAlternateButton");
         for (let attempt = 0; attempt < 150; attempt += 1) {
           const recovered = await page.evaluate((hash) => {
             const selectedHash =
@@ -2405,7 +2443,7 @@ async function runSmoke() {
           !fallbackState.videoSource.includes(sourceSwitchHashA)
         ) {
           throw new Error(
-            `${pageSpec.path}\nManual source recovery failed.\n${JSON.stringify({
+            `${pageSpec.path}\nAutomatic HLS recovery failed.\n${JSON.stringify({
               sawAutomaticFallbackResolveHash,
               automaticFallbackResolveCount,
               fallbackState,

@@ -168,7 +168,6 @@ import {
   normalizeRealDebridSettings,
   pickTorrentResolverProvider,
   resolveTorrentRequestProvider,
-  shouldFallbackAutomaticTorrentResolveToExternal,
 } from "../lib/real-debrid-settings.js";
 import { replaySafeMutationBody } from "../lib/replay-safe-state.js";
 import { renderPlayerShell } from "../player/player-shell-template.jsx";
@@ -1239,7 +1238,7 @@ function clearDisabledTorrentPlaybackState() {
   return true;
 }
 
-function shouldAllowTorrentResolveFallback() {
+function hasEnabledTorrentProvider() {
   return Boolean(
     userRealDebridSettingsLoaded &&
       (isUserRealDebridPlaybackEnabled() || userLocalTorrentEnabled),
@@ -1309,9 +1308,9 @@ function rememberServerContinueWatchingEntry(entry) {
   return mergeRememberedServerContinueWatchingEntry(sourceIdentity, entry);
 }
 
-// Explicit source pins remain Server choices. A recent source that actually
-// played is only a bounded resume hint and falls back to normal resolution.
-clearDisabledTorrentPlaybackState();
+// Only a source explicitly present in the URL is a Server choice. Stored watch
+// parameters and past torrent playback must not override the HLS default.
+if (isTmdbResolvedPlayback) clearRememberedTmdbSourcePinForFreshResolve();
 function getCanonicalContinueWatchingMetadata() {
   const isTmdbSeriesPlayback = Boolean(isTmdbTvPlayback && tmdbId);
   const normalizedSeriesId = isSeriesPlayback
@@ -2766,16 +2765,6 @@ function setVideoSource(
       hlsPlaybackController.destroy();
       const fallbackMessage =
         String(message || "").trim() || "HLS playback failed.";
-      if (
-        isCurrentTmdbExternalEmbedSource() &&
-        !hasQueuedTmdbSourceFallback()
-      ) {
-        // Only demote (and drop the menu selection) once this source has no
-        // mirror fallbacks left. While queued mirrors remain we stay on the same
-        // source -- recovery hops to the next mirror and keeps its tick. Demoting
-        // here lets recovery escalate to torrent resolution.
-        demoteCurrentExternalEmbedSourceForRecovery(fallbackMessage);
-      }
       if (isLivePlayback && liveStreamOptions.length > 1) {
         void attemptAutomaticLiveStreamFallback(
           "Live stream failed. Trying another source...",
@@ -3149,9 +3138,10 @@ function demoteCurrentExternalEmbedSourceForRecovery(message = "") {
   }
 
   const failedSourceHash = normalizeSourceHash(selectedSourceHash);
+  let failureReport = Promise.resolve(false);
   if (failedSourceHash) {
     resolverFailedSourceHashes.add(failedSourceHash);
-    void reportCurrentTmdbPlaybackFailure(
+    failureReport = reportCurrentTmdbPlaybackFailure(
       message || "External HLS playback failed.",
       "playback_error",
       { includeSourceHash: true, dedupe: false },
@@ -3165,11 +3155,12 @@ function demoteCurrentExternalEmbedSourceForRecovery(message = "") {
   currentTmdbResolvedFilename = "";
   currentTmdbSelectedFile = "";
   activeTrackSourceInput = "";
-  tmdbSkipExternalEmbed = true;
+  tmdbSkipExternalEmbed = false;
+  preferredResolverProvider = DEFAULT_RESOLVER_PROVIDER;
   applyPreferredSourceAudioSync(selectedSourceHash);
   persistSourceHashInUrl();
   syncSourceSelectionState();
-  return true;
+  return failureReport;
 }
 
 async function tryNextTmdbSource() {
@@ -3376,7 +3367,7 @@ async function applyResolvedTmdbPlayback(
         filename: String(resolved?.filename || ""),
         provider: "Current",
         qualityLabel: "",
-        container: "",
+        container: currentTmdbResolverProvider === "external-embed" ? "hls" : "",
         seeders: 0,
         size: "",
         releaseGroup: "",
@@ -3521,7 +3512,7 @@ async function resolveTmdbSourcesAndPlay({
   if (isTmdbResolvedPlayback) {
     await loadUserRealDebridPlaybackSettings();
     const clearedDisabledTorrentState = clearDisabledTorrentPlaybackState();
-    if (clearedDisabledTorrentState || !shouldAllowTorrentResolveFallback()) {
+    if (clearedDisabledTorrentState || !hasEnabledTorrentProvider()) {
       skipExternalEmbed = false;
     }
   }
@@ -3652,29 +3643,24 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
     return true;
   }
 
-  demoteCurrentExternalEmbedSourceForRecovery(
+  const invalidateCurrentSession = demoteCurrentExternalEmbedSourceForRecovery(
     failureMessage || message || "External HLS playback failed.",
+  ) || reportCurrentTmdbPlaybackFailure(
+    failureMessage || message || "Playback failed.",
+    "playback_error",
+    { includeSourceHash: false, dedupe: false },
   );
 
-  if (
-    shouldAllowTorrentResolveFallback() &&
-    tmdbResolveRetries < maxTmdbResolveRetries
-  ) {
+  if (tmdbResolveRetries < maxTmdbResolveRetries) {
     tmdbResolveRetries += 1;
-    tmdbSkipExternalEmbed = true;
-    preferredResolverProvider = pickTorrentResolverProvider({
-      currentProvider: preferredResolverProvider,
-      realDebridActive: isUserRealDebridPlaybackEnabled(),
-      localTorrentEnabled: userLocalTorrentEnabled,
-    });
-    showResolver(
-      `Trying torrent fallback (${tmdbResolveRetries}/${maxTmdbResolveRetries})...`,
-    );
-    const invalidateCurrentSession = reportCurrentTmdbPlaybackFailure(
-      failureMessage || message || "Playback failed.",
-      "playback_error",
-      { includeSourceHash: false, dedupe: false },
-    );
+    tmdbSkipExternalEmbed = false;
+    preferredResolverProvider = DEFAULT_RESOLVER_PROVIDER;
+    // Recovery stays on eligible HLS servers even when torrent integrations are
+    // enabled. The Server picker remains the explicit way to select a torrent.
+    selectedSourceHash = "";
+    sourceSelectionPinned = false;
+    currentTmdbPlaybackSessionKey = "";
+    showResolver("Trying another streaming source...");
     void invalidateCurrentSession
       .then(() =>
         // Force a fresh resolve on recovery so a stale/dead cached upstream URL is
@@ -3682,8 +3668,8 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
         resolveTmdbSourcesAndPlay({
           startSeconds: resumeAt,
           refreshResolve: true,
-          skipExternalEmbed: true,
-          resolveTimeoutMs: getTmdbTorrentResolveTimeoutMs(),
+          requestSourceHash: pickResolverAlternateSourceHash({ allowPreviouslyFailedFallback: false }),
+          skipExternalEmbed: false,
         }),
       )
       .catch((error) => {
@@ -7189,13 +7175,11 @@ async function resolveTmdbMovieViaBackend(
     }
     lastError = error;
     if (allowSourceFallback && pinnedSourceHash) {
-      const skipEmbedFallback =
-        shouldAllowTorrentResolveFallback() &&
-        (skipExternalEmbed || isSourceFallbackResolveError(error));
       try {
         return await requestPlaybackResolve(
           `/api/resolve/movie?${buildQuery({
-            skipExternalEmbed: skipEmbedFallback,
+            skipExternalEmbed: false,
+            resolverProvider: DEFAULT_RESOLVER_PROVIDER,
           }).toString()}`,
           requestTimeoutMs,
         );
@@ -7210,30 +7194,6 @@ async function resolveTmdbMovieViaBackend(
 
   if (
     allowSourceFallback &&
-    shouldFallbackAutomaticTorrentResolveToExternal({
-      skipExternalEmbed,
-      resolverProvider: preferredResolverProvider,
-      sourceHash: pinnedSourceHash,
-    })
-  ) {
-    try {
-      return await requestPlaybackResolve(
-        `/api/resolve/movie?${buildQuery({
-          skipExternalEmbed: false,
-          resolverProvider: DEFAULT_RESOLVER_PROVIDER,
-        }).toString()}`,
-        requestTimeoutMs,
-      );
-    } catch (fallbackError) {
-      if (isResolveAbortError(fallbackError)) {
-        throw fallbackError;
-      }
-      lastError = fallbackError;
-    }
-  }
-
-  if (
-    allowSourceFallback &&
     (isTransientResolveError(lastError) || isSourceFallbackResolveError(lastError))
   ) {
     return requestPlaybackResolve(
@@ -7243,7 +7203,8 @@ async function resolveTmdbMovieViaBackend(
         quality: shouldPreferMobileLightTmdbSources()
           ? preferredQuality
           : DEFAULT_STREAM_QUALITY_PREFERENCE,
-        skipExternalEmbed: shouldAllowTorrentResolveFallback(),
+        skipExternalEmbed: false,
+        resolverProvider: DEFAULT_RESOLVER_PROVIDER,
       }).toString()}`,
       requestTimeoutMs,
     );
@@ -7342,34 +7303,8 @@ async function resolveTmdbTvEpisodeViaBackend(
       throw error;
     }
     let lastError = error;
-    if (
-      allowSourceFallback &&
-      shouldFallbackAutomaticTorrentResolveToExternal({
-        skipExternalEmbed,
-        resolverProvider: preferredResolverProvider,
-        sourceHash: pinnedSourceHash,
-      })
-    ) {
-      try {
-        return await requestPlaybackResolve(
-          `/api/resolve/tv?${buildQuery(preferredContainer, "", {
-            skipExternalEmbed: false,
-            resolverProvider: DEFAULT_RESOLVER_PROVIDER,
-          }).toString()}`,
-          requestTimeoutMs,
-        );
-      } catch (fallbackError) {
-        if (isResolveAbortError(fallbackError)) {
-          throw fallbackError;
-        }
-        lastError = fallbackError;
-      }
-    }
     const fallbackAttempts = [];
     const seen = new Set([`${preferredContainer}::${pinnedSourceHash}`]);
-    const skipEmbedFallback =
-      shouldAllowTorrentResolveFallback() &&
-      (skipExternalEmbed || isSourceFallbackResolveError(error));
 
     const pushFallback = (
       containerPreference,
@@ -7405,7 +7340,8 @@ async function resolveTmdbTvEpisodeViaBackend(
           `/api/resolve/tv?${buildQuery(fallbackContainer, fallbackSource, {
             sessionKey: fallbackSessionKey,
             includeSourceFilters: !fallbackSource,
-            skipExternalEmbed: skipEmbedFallback,
+            skipExternalEmbed: false,
+            resolverProvider: DEFAULT_RESOLVER_PROVIDER,
           }).toString()}`,
           requestTimeoutMs,
         );
@@ -7428,7 +7364,8 @@ async function resolveTmdbTvEpisodeViaBackend(
           quality: shouldPreferMobileLightTmdbSources()
             ? preferredQuality
             : DEFAULT_STREAM_QUALITY_PREFERENCE,
-          skipExternalEmbed: shouldAllowTorrentResolveFallback(),
+          skipExternalEmbed: false,
+          resolverProvider: DEFAULT_RESOLVER_PROVIDER,
         }).toString()}`,
         requestTimeoutMs,
       );

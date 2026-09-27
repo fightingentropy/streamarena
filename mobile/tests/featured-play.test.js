@@ -44,7 +44,7 @@ test("Home Play starts a series at its first real season and carries episode cou
 test("Home Resume preserves the watched episode and selected source, matching media type", () => {
   const href = buildFeaturedPlayHref({ ...title, mediaType: "tv" }, [
     { tmdbId: "42", mediaType: "movie", sourceIdentity: "tmdb:movie:42", sourceHash: "wrong" },
-    { tmdbId: "42", mediaType: "tv", sourceIdentity: "tmdb:tv:42:s2:e6", sourceHash: "chosen" },
+    { tmdbId: "42", mediaType: "tv", sourceIdentity: "tmdb:tv:42:s2:e6", sourceHash: "chosen", resolverProvider: "external-embed" },
   ], { number_of_seasons: 3 });
   assert.equal(href.pathname, "/watch/[id]");
   assert.equal(href.params.seasonNumber, "2");
@@ -59,3 +59,13 @@ test("a saved series with no episode opens the episode picker instead of restart
   ]);
   assert.equal(href.pathname, "/title/[mediaType]/[id]");
 });
+
+for (const resolverProvider of ["real-debrid", "local-torrent", undefined]) {
+  test(`Home Resume does not pin a previous ${resolverProvider || "unknown"} source`, () => {
+    const href = buildFeaturedPlayHref(title, [{ tmdbId: "42", mediaType: "movie",
+      sourceIdentity: "tmdb:movie:42", sourceHash: "old-torrent", resolverProvider }]);
+    assert.equal(href.pathname, "/watch/[id]");
+    assert.equal(href.params.id, "42");
+    assert.equal(href.params.sourceHash, undefined);
+  });
+}

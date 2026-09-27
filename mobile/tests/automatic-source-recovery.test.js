@@ -71,7 +71,7 @@ test("explicit manual source selection remains allowed", async () => {
   assert.equal(store.getState().selectedSourceHash, "manual");
 });
 
-test("automatic recovery preserves torrent and older-server rows without the flag", async () => {
+test("automatic recovery skips torrents even on older servers", async () => {
   for (const candidate of [
     { sourceHash: "torrent", isTorrent: true },
     { sourceHash: "legacy", isTorrent: false },
@@ -79,7 +79,7 @@ test("automatic recovery preserves torrent and older-server rows without the fla
     const { store, requests } = playerStore([candidate]);
     store.getState().onStall();
     await settled();
-    assert.deepEqual(requests, [candidate.sourceHash]);
+    assert.deepEqual(requests, candidate.isTorrent ? [] : [candidate.sourceHash]);
   }
 });
 
@@ -94,4 +94,14 @@ test("exhausted automatic candidates do not fall through to a manual-only server
   await settled();
   assert.deepEqual(requests, []);
   assert.equal(store.getState().status, "error");
+});
+
+test("a torrent remains manually selectable when automatic recovery excludes it", async () => {
+  const { store, requests } = playerStore([{ sourceHash: "torrent", isTorrent: true, automaticFallbackEligible: true }]);
+  store.getState().onStall();
+  await settled();
+  assert.deepEqual(requests, []);
+  store.getState().reopenWith({ sourceHash: "torrent" });
+  await settled();
+  assert.deepEqual(requests, ["torrent"]);
 });

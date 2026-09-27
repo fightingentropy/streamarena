@@ -1,7 +1,8 @@
 import { normalizeSourceHash } from "./sources.js";
 
 const STORAGE_KEY = "streamarena-recent-working-sources-v1";
-const PROVIDERS = new Set(["external-embed", "real-debrid", "local-torrent"]);
+// Resuming must not turn a previous manual torrent choice into the default.
+const PROVIDERS = new Set(["external-embed"]);
 
 /** A short-lived resume hint, recorded only after media advances. It stores a
  * source identity, never a signed playback URL or a persistent Server choice. */

@@ -446,51 +446,6 @@ export function createPlaybackRouting({
     return score + Math.min(seeders, 200) * 0.2;
   }
 
-  function isLikelySourcePack(sourceOption) {
-    const text = [
-      sourceOption?.primary,
-      sourceOption?.filename,
-      sourceOption?.provider,
-      sourceOption?.releaseGroup,
-    ]
-      .map((value) => String(value || "").toLowerCase())
-      .join(" ");
-    return /\b(pack|collection|top\s*\d+|gdrive|movies)\b/.test(text);
-  }
-
-  function scoreResolverAlternateSource(sourceOption) {
-    if (isSourceOptionEmbed(sourceOption)) {
-      return 100000;
-    }
-    const seeders = Math.max(0, Number(sourceOption?.seeders) || 0);
-    const sizeGb = parseSourceSizeGb(sourceOption?.size);
-    const resolution = parseSourceOptionVerticalResolution(sourceOption);
-    const backendScore = Number(sourceOption?.score);
-    let score = Number.isFinite(backendScore) ? backendScore / 100 : 0;
-    if (shouldPreferMobileLightTmdbSources()) {
-      score += scoreMobileLightSourceOption(sourceOption);
-    }
-
-    score += Math.min(seeders, 300) * 0.25;
-    if (sizeGb > 0) {
-      if (sizeGb <= 3) score += 85;
-      else if (sizeGb <= 6) score += 70;
-      else if (sizeGb <= 10) score += 50;
-      else if (sizeGb <= 16) score += 20;
-      else if (sizeGb > 60) score -= 120;
-      else if (sizeGb > 30) score -= 80;
-    }
-    if (resolution === 1080) score += 35;
-    else if (resolution === 720) score += 15;
-    else if (resolution >= 2160) score += sizeGb > 0 && sizeGb <= 10 ? 8 : -30;
-
-    if (isSourceOptionLikelyContainer(sourceOption, "mp4")) score += 25;
-    if (isSourceOptionLikelyContainer(sourceOption, "mkv")) score -= 5;
-    if (isLikelySourcePack(sourceOption)) score -= 110;
-
-    return score;
-  }
-
   function pickResolverAlternateSourceHash({
     availablePlaybackSources = [],
     resolverFailedSourceHashes = new Set(),
@@ -499,6 +454,7 @@ export function createPlaybackRouting({
   } = {}) {
     const currentHash = normalizeSourceHash(selectedSourceHash);
     const options = availablePlaybackSources
+      .filter((option) => isSourceOptionEmbed(option) && option?.isTorrent !== true && option?.automaticFallbackEligible !== false)
       .map((option, index) => ({
         option,
         index,
@@ -523,18 +479,9 @@ export function createPlaybackRouting({
       return "";
     }
 
-    if (getPreferredResolverProvider() !== "real-debrid") {
-      candidates.sort((left, right) => {
-        const scoreDelta =
-          scoreResolverAlternateSource(right.option) -
-          scoreResolverAlternateSource(left.option);
-        if (scoreDelta !== 0) {
-          return scoreDelta > 0 ? 1 : -1;
-        }
-        return left.index - right.index;
-      });
-      return candidates[0].sourceHash;
-    }
+    candidates.sort((left, right) =>
+      (Number(right.option.score) || 0) - (Number(left.option.score) || 0) || left.index - right.index,
+    );
 
     return candidates[0].sourceHash;
   }

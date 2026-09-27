@@ -84,15 +84,3 @@ export function resolveTorrentRequestProvider({
   }
   return provider;
 }
-
-export function shouldFallbackAutomaticTorrentResolveToExternal({
-  skipExternalEmbed = false,
-  resolverProvider = "fastest",
-  sourceHash = "",
-} = {}) {
-  return Boolean(
-    skipExternalEmbed &&
-      String(resolverProvider || "fastest").trim().toLowerCase() === "fastest" &&
-      !String(sourceHash || "").trim()
-  );
-}

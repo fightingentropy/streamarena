@@ -128,9 +128,17 @@ const storage = { getItem: (key) => entries.get(key), setItem: (key, value) => e
 let time = 1000, owner = "viewer";
 const cache = createRecentPlaybackSourceCache({ storage, owner, getOwner: () => owner, now: () => time, ttlMs: 1000 });
 const hash = "a".repeat(40), preferences = '["en","off","auto"]';
-assert.equal(cache.remember({ sourceIdentity: identity, sourceHash: hash, provider: "real-debrid", preferences }), true);
+for (const provider of ["real-debrid", "local-torrent"]) {
+  assert.equal(cache.remember({ sourceIdentity: identity, sourceHash: hash, provider, preferences }), false);
+  // Also reject a hint written by the old version, even if its integration is enabled.
+  storage.setItem("streamarena-recent-working-sources-v1", JSON.stringify({ owner, entries: {
+    [identity]: { sourceHash: hash, provider, preferences, updatedAt: time },
+  } }));
+  assert.equal(cache.get({ sourceIdentity: identity, preferences, resumeSeconds: 50, providerAllowed: () => true }), null);
+}
+assert.equal(cache.remember({ sourceIdentity: identity, sourceHash: hash, provider: "external-embed", preferences }), true);
 const lookup = { sourceIdentity: identity, preferences, resumeSeconds: 50 };
-assert.deepEqual(cache.get(lookup), { sourceHash: hash, provider: "real-debrid" });
+assert.deepEqual(cache.get(lookup), { sourceHash: hash, provider: "external-embed" });
 assert.equal(cache.get({ ...lookup, explicitSourceHash: "b".repeat(40) }), null, "manual source pins win over automatic resume hints");
 assert.equal(cache.get({ ...lookup, resumeSeconds: 0 }), null, "new playback keeps the normal default source policy");
 assert.equal(cache.get({ ...lookup, preferences: "different" }), null, "changed playback preferences invalidate hints");

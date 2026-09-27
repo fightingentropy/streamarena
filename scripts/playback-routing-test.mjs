@@ -221,3 +221,15 @@ assert.match(
 );
 
 console.log("playback-routing-test: ok");
+
+const automaticSources = [
+  { ...mkv2160, isTorrent: true, score: 9_000_000 },
+  { ...hlsBackup, sourceHash: "f".repeat(40), automaticFallbackEligible: false, score: 8_000_000 },
+  hlsBackup, hlsDefault,
+];
+for (const resolverProvider of ["fastest", "real-debrid", "local-torrent"]) {
+  const routing = createPlaybackRouting({ getPreferredResolverProvider: () => resolverProvider });
+  assert.equal(routing.pickResolverAlternateSourceHash({ availablePlaybackSources: automaticSources }), hashHls);
+  assert.equal(routing.pickResolverAlternateSourceHash({ availablePlaybackSources: automaticSources,
+    selectedSourceHash: hashHls, resolverFailedSourceHashes: new Set([hashHlsBackup]), allowPreviouslyFailedFallback: false }), "");
+}

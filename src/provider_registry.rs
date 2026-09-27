@@ -192,10 +192,10 @@ pub fn custom_base(id: &str) -> Option<String> {
 }
 
 /// Provider tiers shared by the Server menu and automatic native-HLS selection.
-/// Retesting the current CineJoy integration on seven movie/TV titles found
-/// Lisbon consistently delivered 1080-class playback, while VixSrc started
-/// faster at 720-class quality. Solara also passed every title but started more
-/// slowly; Nebula buffered on two titles. VidLink had narrower baseline coverage.
+/// Match the requested CineJoy default: Nebula, Lisbon, then Solara (observed
+/// on CineJoy's Oppenheimer player on 2026-09-27). This is a user preference,
+/// not a claim that Nebula outperformed Lisbon in the seven-title benchmark.
+/// Other HLS providers remain recovery options after the CineJoy sources.
 /// Sources without verified playback share a fallback tier with no inferred order.
 /// These current-domain results supersede the obsolete CineJoy-domain failures.
 /// These weights express policy tiers, not latency or a probability of success.
@@ -235,12 +235,11 @@ pub fn embed_default_rank(id: &str) -> i64 {
         })
 }
 
-/// Compiled tier for an independently measured server. Other sources inherit the
-/// provider baseline; no relative order is inferred for unmeasured variants.
+/// Compiled server preference. Other sources inherit the provider baseline.
 pub fn embed_source_default_rank(id: &str, server: Option<&str>) -> i64 {
     match (id, server) {
-        ("cinejoy", Some("NEBULA")) => 1_400,
-        ("cinejoy", Some("SOLARA")) => 1_600,
+        ("cinejoy", Some("NEBULA")) => 2_600,
+        ("cinejoy", Some("SOLARA")) => 2_000,
         _ => embed_default_rank(id),
     }
 }
@@ -579,20 +578,19 @@ mod tests {
     }
 
     #[test]
-    fn family_override_preserves_measured_variant_gaps_and_fallback_order() {
+    fn family_override_preserves_cinejoy_server_preference_gaps() {
         let family = embed_default_rank("cinejoy");
-        let reliable_other_provider = embed_default_rank("vixsrc");
         for server in ["NEBULA", "SOLARA"] {
             let variant = embed_source_default_rank("cinejoy", Some(server));
             for override_rank in [None, Some(2_300), Some(0)] {
                 let base = apply_embed_family_rank_override(family, family, override_rank);
-                let manual = apply_embed_family_rank_override(family, variant, override_rank);
-                assert_eq!(base - manual, family - variant);
-                assert!(manual < reliable_other_provider);
-                assert_eq!(manual - variant, base - family);
+                let ranked_variant =
+                    apply_embed_family_rank_override(family, variant, override_rank);
+                assert_eq!(base - ranked_variant, family - variant);
+                assert_eq!(ranked_variant - variant, base - family);
             }
             // A large explicit admin promotion is intentional and still applies
-            // to the whole family, preserving each measured server's offset.
+            // to the whole family, preserving each server's offset.
             assert_eq!(
                 apply_embed_family_rank_override(family, variant, Some(10_000)),
                 10_000 + variant - family
@@ -602,8 +600,8 @@ mod tests {
 
     #[test]
     fn only_named_cinejoy_variants_have_independent_compiled_tiers() {
-        assert_eq!(embed_source_default_rank("cinejoy", Some("NEBULA")), 1_400);
-        assert_eq!(embed_source_default_rank("cinejoy", Some("SOLARA")), 1_600);
+        assert_eq!(embed_source_default_rank("cinejoy", Some("NEBULA")), 2_600);
+        assert_eq!(embed_source_default_rank("cinejoy", Some("SOLARA")), 2_000);
         for id in EMBED_IDS {
             assert_eq!(embed_source_default_rank(id, None), embed_default_rank(id));
             for server in ["YORU", "RAZE", "UNMEASURED"] {

@@ -332,7 +332,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     if (ac.signal.aborted) return;
 
     const next = (list ?? []).find((src) =>
-      src.automaticFallbackEligible !== false && src.sourceHash && !tried.has(src.sourceHash),
+      !src.isTorrent && src.automaticFallbackEligible !== false && src.sourceHash && !tried.has(src.sourceHash),
     );
     if (next?.sourceHash) {
       set({
