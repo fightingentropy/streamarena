@@ -378,6 +378,7 @@ body {
     inset: 0;
     display: grid;
     grid-template-rows: auto 1fr auto;
+    grid-template-columns: minmax(0, 1fr);
     pointer-events: none;
     background: linear-gradient(
         180deg,
@@ -489,6 +490,7 @@ body {
 
 .controls-panel {
     grid-row: 3;
+    min-width: 0;
     align-self: end;
     padding: 0 32px 30px;
     pointer-events: auto;
@@ -745,6 +747,11 @@ body {
 .episode-label {
     margin: 0;
     text-align: center;
+    min-width: 0;
+    min-height: 1.1em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 20px;
     font-weight: 600;
     line-height: 1.1;
@@ -811,7 +818,7 @@ body {
     min-width: 64px;
 }
 
-.series-control-btn[disabled] {
+.control-btn[disabled] {
     opacity: 0.34;
     cursor: default;
 }

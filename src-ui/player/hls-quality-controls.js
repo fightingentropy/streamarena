@@ -163,13 +163,17 @@ export function createHlsQualityControls({
     } = getElements();
     const shouldShow = shouldShowControl();
     if (control) {
-      control.hidden = !shouldShow;
+      // Keep the slot visible while manifests load and during source changes.
+      control.hidden = false;
       if (!shouldShow) {
         closePopover(false, { force: true });
       }
     }
 
-    const accessibleLabel = `Quality (${getCurrentLabel()})`;
+    if (toggle) toggle.disabled = !shouldShow;
+    const fixedLevel = qualityLevels.length === 1 ? formatHlsQualityLabel(qualityLevels[0]) : "";
+    const accessibleLabel = shouldShow ? `Quality (${getCurrentLabel()})`
+      : fixedLevel ? `Quality (${fixedLevel}, set by source)` : "Quality (set by source)";
     toggle?.setAttribute("aria-label", accessibleLabel);
     toggle?.setAttribute("title", accessibleLabel);
     menu?.setAttribute("aria-label", accessibleLabel);

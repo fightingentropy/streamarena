@@ -138,7 +138,7 @@ function jsonResponse(payload, status = 200) {
 function apiPayload(url, method, fixtureNow) {
   const path = url.pathname;
   if (path === "/api/auth/me") {
-    return { id: 1, email: "smoke@example.com", displayName: "Smoke User" };
+    return { id: 1, email: "smoke@example.com", displayName: "Smoke User", emailVerified: true };
   }
   if (path === "/api/auth/config") {
     return { signup: { open: false } };
@@ -490,6 +490,17 @@ const pages = [
     expectHlsMaster: true,
     expectMobileFullscreenToggle: true,
   },
+  ...[
+    { mediaType: "movie", viewport: { width: 1280, height: 900 } },
+    { mediaType: "tv", viewport: { width: 1280, height: 900 } },
+    { mediaType: "tv", viewport: { width: 390, height: 844 } },
+  ].map(({ mediaType, viewport }) => ({
+    path: `/player.html?tmdbId=stable-controls&mediaType=${mediaType}&title=Stable%20Controls&seasonNumber=1&episodeNumber=1`,
+    selector: ".player-shell",
+    contextOptions: { viewport },
+    expectStableControls: mediaType,
+    stubHlsPlayback: true,
+  })),
   {
     path: liveStreamSwitchPath,
     selector: ".player-shell",
@@ -631,6 +642,10 @@ async function runSmoke() {
         notifyInitialResolveSourcesResponded = resolveResponded;
       });
 
+      let releaseControlCatalog;
+      const controlCatalogGate = new Promise(resolve => { releaseControlCatalog = resolve; });
+      let releaseControlManifest;
+      let controlManifestGate = new Promise(resolve => { releaseControlManifest = resolve; });
       let hlsBundleHoldActive = false;
       let previewCancellationExpected = false;
       page.on("pageerror", (error) => {
@@ -692,7 +707,7 @@ async function runSmoke() {
                   static isSupported() { return true; }
                   constructor() {
                     this.handlers = new Map();
-                    this.levels = [{ height: 1080, bitrate: 5000000, name: "1080p" }];
+                    this.levels = ${JSON.stringify(pageSpec.expectStableControls ? [{ height: 1080, bitrate: 5000000 }, { height: 720, bitrate: 2000000 }] : [{ height: 1080, bitrate: 5000000, name: "1080p" }])};
                     this.currentLevel = -1;
                   }
                   on(event, handler) {
@@ -774,6 +789,27 @@ async function runSmoke() {
           return;
         }
         const url = new URL(request.url());
+        if (pageSpec.expectStableControls) {
+          if (url.pathname === "/api/tmdb/details") {
+            await controlCatalogGate;
+            await route.fulfill(jsonResponse({ title: "A much longer title arriving with the episode catalog", seasons: [{ seasonNumber: 1, episodeCount: 2 }] }));
+            return;
+          }
+          if (url.pathname === "/api/tmdb/tv/season") {
+            await route.fulfill(jsonResponse({ seasonNumber: 1, episodes: [1, 2].map(episodeNumber => ({ episodeNumber, name: `Episode ${episodeNumber}`, airDate: "2020-01-01" })) }));
+            return;
+          }
+          if (url.pathname === "/api/resolve/sources") {
+            await route.fulfill(jsonResponse({ sources: [sourceSwitchHashA, sourceSwitchHashB].map((sourceHash, index) => ({ sourceHash, infoHash: sourceHash, primary: `HLS ${index + 1}`, provider: "LivNet", container: "hls", qualityLabel: "1080p", isTorrent: false })) }));
+            return;
+          }
+          if (/^\/api\/resolve\/(movie|tv)$/.test(url.pathname)) {
+            const sourceHash = url.searchParams.get("sourceHash") || sourceSwitchHashA;
+            await route.fulfill(jsonResponse({ sourceHash, sourceInput: "https://media.example.test/stream.m3u8", playableUrl: `/api/live/hls.m3u8?input=${sourceHash}`, resolverProvider: "external-embed", fallbackUrls: [], tracks: { audioTracks: [], subtitleTracks: [] }, selectedAudioStreamIndex: -1, selectedSubtitleStreamIndex: -1 }));
+            return;
+          }
+          if (url.pathname === "/api/live/hls.m3u8") await controlManifestGate;
+        }
         if (pageSpec.expectAutomaticHlsResolveRetry) {
           if (url.pathname === "/api/user/torrent-settings") {
             await route.fulfill(jsonResponse({ configured: true, enabled: true, localTorrentEnabled: true }));
@@ -1361,6 +1397,45 @@ async function runSmoke() {
         }
       }
       await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
+
+      if (pageSpec.expectStableControls) {
+        const expectedIds = ["togglePlay", "toggleSource", "toggleAudio", "toggleHlsQuality", "toggleSpeed", "toggleFullscreen",
+          ...(pageSpec.expectStableControls === "tv" ? ["nextEpisode", "toggleEpisodes"] : [])];
+        const measureControls = () => page.evaluate((ids) => Object.fromEntries(ids.map(id => {
+          const element = document.getElementById(id);
+          const rect = element.getBoundingClientRect();
+          return [id, { x: rect.x, y: rect.y, width: rect.width, height: rect.height }];
+        })), expectedIds);
+        const initial = await measureControls();
+        for (const [id, rect] of Object.entries(initial)) {
+          if (rect.width <= 0 || rect.height <= 0) throw new Error(`${id} must have its slot before metadata arrives.`);
+        }
+        if (await page.locator("#toggleHlsQuality").isEnabled()) throw new Error("Quality must wait for the manifest.");
+        const assertStable = async (stage) => {
+          const current = await measureControls();
+          for (const id of expectedIds) for (const key of ["x", "y", "width", "height"]) {
+            if (Math.abs(current[id][key] - initial[id][key]) > 0.5) {
+              throw new Error(`Control moved after ${stage}: ${id}.${key}: ${initial[id][key]} -> ${current[id][key]}`);
+            }
+          }
+        };
+        releaseControlCatalog();
+        if (pageSpec.expectStableControls === "tv") {
+          await page.waitForFunction(() => !document.getElementById("toggleEpisodes").disabled && !document.getElementById("nextEpisode").disabled);
+          await assertStable("episode catalog loaded");
+        }
+        releaseControlManifest();
+        await page.waitForFunction(() => !document.getElementById("toggleHlsQuality").disabled);
+        await assertStable("quality options loaded");
+        controlManifestGate = new Promise(resolve => { releaseControlManifest = resolve; });
+        await page.locator("#toggleSource").click();
+        await page.locator(`.source-option[data-source-hash="${sourceSwitchHashB}"]`).click();
+        await page.waitForFunction(() => document.getElementById("toggleHlsQuality").disabled);
+        await assertStable("source change reset quality");
+        releaseControlManifest();
+        await page.waitForFunction(() => !document.getElementById("toggleHlsQuality").disabled);
+        await assertStable("replacement manifest loaded");
+      }
 
       if (pageSpec.expectClosedSignup) {
         for (let attempt = 0; attempt < 40 && signupConfigRequests < 1; attempt += 1) {

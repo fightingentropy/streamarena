@@ -1,4 +1,5 @@
 export function renderPlayerShell({
+  controlLayout,
   defaultEpisodeThumbnail,
   refs,
 }) {
@@ -169,7 +170,7 @@ export function renderPlayerShell({
                   id="sourceControl"
                   ref={refs.sourceControl}
                   class="speed-menu-wrap source-menu-wrap bottom-source-control"
-                  hidden
+                  hidden={controlLayout.live}
                 >
                   <button
                     id="toggleSource"
@@ -243,7 +244,8 @@ export function renderPlayerShell({
                   class="control-btn series-control-btn"
                   type="button"
                   aria-label="Next episode"
-                  hidden
+                  disabled
+                  hidden={!controlLayout.series}
                 >
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M4 5.5v13l11-6.5-11-6.5Zm13 .2h3v12.6h-3z"></path>
@@ -253,13 +255,14 @@ export function renderPlayerShell({
                   id="episodesControl"
                   ref={refs.episodesControl}
                   class="speed-menu-wrap episodes-menu-wrap"
-                  hidden
+                  hidden={!controlLayout.series}
                 >
                   <button
                     id="toggleEpisodes"
                     ref={refs.toggleEpisodes}
                     class="control-btn episodes-btn"
                     type="button"
+                    disabled
                     aria-label="Episodes"
                     aria-haspopup="dialog"
                     aria-controls="episodesMenu"
@@ -324,13 +327,14 @@ export function renderPlayerShell({
                   id="liveStreamControl"
                   ref={refs.liveStreamControl}
                   class="speed-menu-wrap live-stream-menu-wrap"
-                  hidden
+                  hidden={!controlLayout.live}
                 >
                   <button
                     id="toggleLiveStream"
                     ref={refs.toggleLiveStream}
                     class="control-btn live-stream-btn"
                     type="button"
+                    disabled
                     aria-label="Live stream"
                     aria-haspopup="listbox"
                     aria-controls="liveStreamMenu"
@@ -540,13 +544,13 @@ export function renderPlayerShell({
                   id="hlsQualityControl"
                   ref={refs.hlsQualityControl}
                   class="speed-menu-wrap hls-quality-menu-wrap"
-                  hidden
                 >
                   <button
                     id="toggleHlsQuality"
                     ref={refs.toggleHlsQuality}
                     class="control-btn hls-quality-btn"
                     type="button"
+                    disabled
                     aria-label="Quality"
                     aria-haspopup="listbox"
                     aria-controls="hlsQualityMenu"

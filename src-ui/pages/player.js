@@ -995,6 +995,12 @@ let isTmdbTvPlayback = Boolean(
   !hasExplicitSource && tmdbId && mediaType === "tv",
 );
 let isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
+// Content identity determines the toolbar's slots. Async media information only
+// enables controls; it must not insert/remove buttons during playback.
+const controlLayout = {
+  live: Boolean(isLivePlayback || _watchPath?.kind === "live"),
+  series: Boolean(isSeriesPlayback || isExplicitTvPlayback || requestedSeriesId || hasRequestedEpisodeIndexParam),
+};
 const SOURCE_AUDIO_SYNC_PREF_KEY_PREFIX = "streamarena-source-audio-sync:";
 const DEFAULT_SOURCE_RESULTS_LIMIT = 20;
 const SOURCE_FETCH_BATCH_LIMIT = 20;
@@ -1765,7 +1771,8 @@ function shouldShowTmdbSourceControls() {
 function syncTmdbSourceControls() {
   const shouldShow = shouldShowTmdbSourceControls();
   if (sourceControl) {
-    sourceControl.hidden = !shouldShow;
+    sourceControl.hidden = controlLayout.live;
+    if (toggleSource) toggleSource.disabled = !shouldShow;
   }
   if (!shouldShow) {
     closeSourcePopover(false, { force: true });
@@ -1833,7 +1840,8 @@ function syncAudioSubtitleControlVisibility() {
     return;
   }
   const shouldShow = shouldShowAudioSubtitleControl();
-  audioControl.hidden = !shouldShow;
+  audioControl.hidden = false;
+  if (toggleAudio) toggleAudio.disabled = !shouldShow;
   if (!shouldShow) {
     closeAudioPopover(false, { force: true });
   }
@@ -4449,7 +4457,7 @@ function closeEpisodesPopover(withDelay = false) {
 }
 
 function syncSeriesControls() {
-  const shouldShowControls = hasSeriesEpisodeControls;
+  const shouldShowControls = controlLayout.series;
   const nextEpisodeEntry =
     shouldShowControls &&
     seriesEpisodeIndex >= 0 &&
@@ -4474,15 +4482,19 @@ function syncSeriesControls() {
     );
   }
 
+  if (toggleEpisodes) toggleEpisodes.disabled = !hasSeriesEpisodeControls;
   if (episodesControl) {
     episodesControl.hidden = !shouldShowControls;
-  if (!shouldShowControls) {
+    if (!hasSeriesEpisodeControls) {
       episodesControl.classList.remove("is-open");
       toggleEpisodes?.setAttribute("aria-expanded", "false");
     }
   }
 
-  if (toggleEpisodes && shouldShowControls) {
+  if (toggleEpisodes && !hasSeriesEpisodeControls) {
+    toggleEpisodes.setAttribute("aria-label", "Episodes unavailable");
+  }
+  if (toggleEpisodes && hasSeriesEpisodeControls) {
     const activeSeasonNumber = getActiveSeriesEpisodeSeasonNumber();
     const seasonGroups = getSeriesSeasonGroups();
     const seasonSuffix =
@@ -4793,6 +4805,7 @@ function syncLiveStreamControls() {
     liveStreamOptions,
     selectedLiveStreamId,
     isLivePlayback,
+    showControl: controlLayout.live,
   });
 }
 
@@ -7872,6 +7885,7 @@ async function initPlaybackSource() {
   isTmdbTvPlayback = Boolean(!hasExplicitSource && tmdbId && mediaType === "tv");
   isTmdbResolvedPlayback = Boolean(isTmdbMoviePlayback || isTmdbTvPlayback);
   applyMobileLightTmdbDefaults();
+  controlLayout.series ||= isSeriesPlayback || isTmdbTvPlayback;
   await preferLocalMoviePlaybackSourceFromLibrary();
   if (isTmdbTvPlayback && !isSeriesPlayback) {
     await hydrateTmdbTvEpisodeCatalog();
@@ -9755,6 +9769,9 @@ trackListener(window, "storage", (event) => {
       video.playbackRate = savedSpeed;
     }
     syncSpeedState();
+    syncSeriesControls();
+    syncTmdbSourceControls();
+    setEpisodeLabel(title, episode);
     renderLiveStreamOptions();
     syncLiveStreamControls();
     hlsQualityControls.renderOptions();
@@ -9843,6 +9860,7 @@ trackListener(window, "storage", (event) => {
 
 
   return renderPlayerShell({
+    controlLayout,
     defaultEpisodeThumbnail: DEFAULT_EPISODE_THUMBNAIL,
     refs: {
       audioControl: (el) => { audioControl = el; },

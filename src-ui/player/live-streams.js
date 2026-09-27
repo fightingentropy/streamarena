@@ -232,12 +232,14 @@ export function syncLiveStreamControls({
   liveStreamOptions,
   selectedLiveStreamId,
   isLivePlayback,
+  showControl = isLivePlayback,
 }) {
   const shouldShow = shouldShowLiveStreamControls(isLivePlayback, liveStreamOptions);
   if (liveStreamControl) {
-    liveStreamControl.hidden = !shouldShow;
+    liveStreamControl.hidden = !showControl;
   }
   if (toggleLiveStream) {
+    toggleLiveStream.disabled = !shouldShow;
     const selectedOption = getSelectedLiveStreamOption(
       liveStreamOptions,
       selectedLiveStreamId,
