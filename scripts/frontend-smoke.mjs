@@ -2597,8 +2597,9 @@ async function runSmoke() {
         const downloadButton = page.locator(`.source-option-download[data-source-hash="${sourceSwitchHashB}"]`);
         await downloadButton.click();
         await page.locator('.source-download-status[data-state="error"]').waitFor({ state: "visible" });
-        if (await downloadButton.innerText() !== "Retry" || sourceDownloadTransfers !== 0) {
-          throw new Error("A failed download must show Retry without starting a transfer.");
+        if (!(await downloadButton.getAttribute("aria-label"))?.startsWith("Retry:") ||
+            (await downloadButton.innerText()).trim() || sourceDownloadTransfers !== 0) {
+          throw new Error("A failed download must offer an accessible, icon-only retry without starting a transfer.");
         }
         const downloadEvent = page.waitForEvent("download");
         await downloadButton.click();

@@ -1964,17 +1964,15 @@ body {
     flex: 0 0 auto;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    min-width: 106px;
-    min-height: 40px;
-    padding: 8px 10px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 10px;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 9px;
     background: rgba(255, 255, 255, 0.04);
     color: rgba(255, 255, 255, 0.82);
     font: inherit;
-    font-size: 0.76rem;
-    font-weight: 550;
     cursor: pointer;
     transition: background-color 140ms ease, color 140ms ease;
 }
@@ -1984,7 +1982,7 @@ body {
 .source-option-download.is-loading { opacity: 1; }
 .source-option-download.has-error { color: #ffc2ca; }
 .source-option-download-icon { display: inline-flex; }
-.source-option-download-icon svg { width: 16px; height: 16px; }
+.source-option-download-icon svg { width: 18px; height: 18px; }
 .source-option-download.is-loading .source-option-download-icon { display: none; }
 
 .source-option-spinner {
@@ -2712,7 +2710,6 @@ body {
     .source-popover-header { padding: 18px 18px 16px; }
     .source-option { min-height: 70px; gap: 10px; padding: 12px 10px; }
     .source-option-name { font-size: 1rem; }
-    .source-option-download { min-width: 100px; min-height: 44px; padding: 8px; }
     .source-option-row { padding-right: 8px; }
     .source-download-status { padding: 14px 18px; }
 

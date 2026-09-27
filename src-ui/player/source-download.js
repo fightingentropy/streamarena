@@ -252,8 +252,6 @@ export function createSourceDownloadController({
           : hasError ? `Retry: ${idleLabel}` : idleLabel,
       );
       button.title = isDownloading ? "Preparing download" : hasError ? "Retry download" : "Download MP4";
-      const label = button.querySelector(".source-option-download-label");
-      if (label) label.textContent = isDownloading ? "Preparing…" : hasError ? "Retry" : "Download";
     });
   }
 

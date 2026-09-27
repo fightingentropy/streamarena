@@ -167,10 +167,7 @@ export function createSourceOptionButton({
   const downloadSpinner = document.createElement("span");
   downloadSpinner.className = "source-option-spinner";
   downloadSpinner.setAttribute("aria-hidden", "true");
-  const downloadText = document.createElement("span");
-  downloadText.className = "source-option-download-label";
-  downloadText.textContent = "Download";
-  downloadButton.append(downloadIcon, downloadSpinner, downloadText);
+  downloadButton.append(downloadIcon, downloadSpinner);
 
   const row = document.createElement("div");
   row.className = "source-option-row";
