@@ -1,0 +1,1348 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-27",
+  "status": "locally-verified-pending-production",
+  "scope": "VOD movies and TV; sports/live excluded",
+  "criteria": {
+    "minimumQuality": "HD rendition at least 1920 pixels wide or 1080 high, including cropped films",
+    "labelsAreProof": false,
+    "unknownResolution": "reject",
+    "adaptiveLowerRungs": "retained when HD exists"
+  },
+  "preChangeMiniCatalog": [
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "CineJoy Nebula",
+      "resolveMs": 2076,
+      "healthSuppressed": true,
+      "identityMatched": true,
+      "ladder": [
+        "#EXT-X-STREAM-INF:BANDWIDTH=4692000,RESOLUTION=1920x1080,NAME=\"1080p\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2628000,RESOLUTION=1280x720,NAME=\"720p\""
+      ],
+      "status": "manifest"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "VixSrc",
+      "resolveMs": 813,
+      "healthSuppressed": true,
+      "identityMatched": true,
+      "ladder": [
+        "#EXT-X-STREAM-INF:BANDWIDTH=1800000,CODECS=\"avc1.64001f,mp4a.40.2\",RESOLUTION=1280x720,AUDIO=\"audio\",SUBTITLES=\"subs\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=1080000,CODECS=\"avc1.64001f,mp4a.40.2\",RESOLUTION=854x480,AUDIO=\"audio\",SUBTITLES=\"subs\""
+      ],
+      "status": "manifest"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "Yoru",
+      "resolveMs": 669,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "Breach",
+      "resolveMs": 731,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "Cypher",
+      "resolveMs": 790,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "Neon",
+      "resolveMs": 751,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "Raze",
+      "resolveMs": 753,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "Sage",
+      "resolveMs": 777,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "Vyse",
+      "resolveMs": 916,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "NoTorrent",
+      "resolveMs": 784,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "VidEasy",
+      "resolveMs": 686,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "Icefy",
+      "resolveMs": 9940,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "Meridian",
+      "resolveMs": 315,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "CineJoy Solara",
+      "resolveMs": 8569,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "CineJoy Lisbon",
+      "resolveMs": 8601,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "VidLink",
+      "resolveMs": 9298,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "Gallic",
+      "resolveMs": 280,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "NebulaStreams",
+      "resolveMs": 4734,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "LordFlix",
+      "resolveMs": 1270,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "157336"
+      },
+      "provider": "VidRock",
+      "resolveMs": 319,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "CineJoy Nebula",
+      "resolveMs": 2112,
+      "healthSuppressed": true,
+      "identityMatched": true,
+      "ladder": [
+        "#EXT-X-STREAM-INF:BANDWIDTH=3235000,RESOLUTION=1920x1080,NAME=\"1080p\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=1649000,RESOLUTION=1280x720,NAME=\"720p\""
+      ],
+      "status": "manifest"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "VixSrc",
+      "resolveMs": 747,
+      "healthSuppressed": true,
+      "identityMatched": true,
+      "ladder": [
+        "#EXT-X-STREAM-INF:BANDWIDTH=1200000,CODECS=\"avc1.640028,mp4a.40.2\",RESOLUTION=854x480,AUDIO=\"audio\",SUBTITLES=\"subs\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2150000,CODECS=\"avc1.640028,mp4a.40.2\",RESOLUTION=1280x720,AUDIO=\"audio\",SUBTITLES=\"subs\""
+      ],
+      "status": "manifest"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "VidLink",
+      "resolveMs": 9131,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "Breach",
+      "resolveMs": 643,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "Cypher",
+      "resolveMs": 629,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "Neon",
+      "resolveMs": 717,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "Raze",
+      "resolveMs": 842,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "Sage",
+      "resolveMs": 712,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "Vyse",
+      "resolveMs": 711,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "LordFlix",
+      "resolveMs": 749,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "Meridian",
+      "resolveMs": 282,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "NoTorrent",
+      "resolveMs": 403,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "VidEasy",
+      "resolveMs": 630,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "VidRock",
+      "resolveMs": 261,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "Yoru",
+      "resolveMs": 638,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "Icefy",
+      "resolveMs": 9639,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "CineJoy Lisbon",
+      "resolveMs": 8591,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "Gallic",
+      "resolveMs": 586,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "NebulaStreams",
+      "resolveMs": 5668,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "movie",
+        "tmdbId": "872585"
+      },
+      "provider": "CineJoy Solara",
+      "resolveMs": 8668,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "CineJoy Nebula",
+      "resolveMs": 2549,
+      "healthSuppressed": true,
+      "identityMatched": true,
+      "ladder": [
+        "#EXT-X-STREAM-INF:BANDWIDTH=4692000,RESOLUTION=1920x1080,NAME=\"1080p\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2628000,RESOLUTION=1280x720,NAME=\"720p\""
+      ],
+      "status": "manifest"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "CineJoy Lisbon",
+      "resolveMs": 10432,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "Breach",
+      "resolveMs": 777,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "Cypher",
+      "resolveMs": 758,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "Neon",
+      "resolveMs": 951,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "Raze",
+      "resolveMs": 731,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "Sage",
+      "resolveMs": 670,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "Vyse",
+      "resolveMs": 734,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "Icefy",
+      "resolveMs": 17662,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "VidEasy",
+      "resolveMs": 705,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "CineJoy Solara",
+      "resolveMs": 8738,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "VixSrc",
+      "resolveMs": 1513,
+      "healthSuppressed": true,
+      "identityMatched": true,
+      "ladder": [
+        "#EXT-X-STREAM-INF:BANDWIDTH=1200000,CODECS=\"avc1.640028,mp4a.40.2\",RESOLUTION=854x480,AUDIO=\"audio\",SUBTITLES=\"subs\"",
+        "#EXT-X-STREAM-INF:BANDWIDTH=2150000,CODECS=\"avc1.640028,mp4a.40.2\",RESOLUTION=1280x720,AUDIO=\"audio\",SUBTITLES=\"subs\""
+      ],
+      "status": "manifest"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "VidLink",
+      "resolveMs": 9346,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "NebulaStreams",
+      "resolveMs": 5500,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "LordFlix",
+      "resolveMs": 735,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "Meridian",
+      "resolveMs": 292,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "NoTorrent",
+      "resolveMs": 456,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "VidRock",
+      "resolveMs": 318,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    },
+    {
+      "case": {
+        "mediaType": "tv",
+        "tmdbId": "1396",
+        "seasonNumber": 1,
+        "episodeNumber": 1
+      },
+      "provider": "Yoru",
+      "resolveMs": 725,
+      "healthSuppressed": true,
+      "identityMatched": false,
+      "status": "resolve_failed"
+    }
+  ],
+  "aetherDiscovery": {
+    "site": "https://aether.ist/",
+    "apiHostsObserved": [
+      "lul.aether.cx",
+      "link.aether.cx",
+      "nebula.aether.cx",
+      "vidy.aether.cx",
+      "meridian.aether.cx",
+      "api.subl2cw8mg.workers.dev"
+    ],
+    "browserProof": [
+      {
+        "provider": "Lul",
+        "title": "Interstellar",
+        "width": 1920,
+        "height": 1080,
+        "readyState": 4,
+        "currentTime": 25.85589
+      },
+      {
+        "provider": "Link",
+        "title": "Interstellar",
+        "requestedQuality": "1080p",
+        "width": 1920,
+        "height": 1080,
+        "currentTime": 370.38149,
+        "earlierTime": 190.194642,
+        "note": "Advancing video observed; not a controlled startup or stability measurement."
+      }
+    ],
+    "failuresObserved": [
+      "Fast: failed to scrape",
+      "Vidy: failed to scrape",
+      "Gallic: no stream, HTTP 404",
+      "Tiki: selection returned to Lul; not counted as a distinct success"
+    ]
+  },
+  "newAdapterDirectProbes": {
+    "lul": [
+      {
+        "provider": "Aether Lul",
+        "case": "movie:157336",
+        "lookupMs": 324,
+        "manifestMs": 1735,
+        "ladder": [
+          "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=1882215,RESOLUTION=1920x1080,FRAME-RATE=23.974,CODECS=\"avc1.640029,mp4a.40.2\""
+        ],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "width": 1920,
+            "height": 1080
+          },
+          {
+            "codec_name": "aac",
+            "codec_type": "audio"
+          },
+          {
+            "codec_name": "timed_id3",
+            "codec_type": "data"
+          }
+        ],
+        "probeMs": 4981,
+        "success": true
+      },
+      {
+        "provider": "Aether Lul",
+        "case": "movie:872585",
+        "success": false,
+        "error": "ValueError:http_or_transport_56"
+      },
+      {
+        "provider": "Aether Lul",
+        "case": "movie:808",
+        "lookupMs": 1916,
+        "manifestMs": 3114,
+        "ladder": [
+          "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=3576647,RESOLUTION=1920x1040,FRAME-RATE=24.390,CODECS=\"avc1.640033,mp4a.40.2\",VIDEO-RANGE=SDR,AUDIO=\"audio0\",SUBTITLES=\"subs0\"",
+          "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=4089004,RESOLUTION=1920x1040,FRAME-RATE=24.390,CODECS=\"avc1.640033,ac-3\",VIDEO-RANGE=SDR,AUDIO=\"audio1\",SUBTITLES=\"subs0\""
+        ],
+        "success": false,
+        "error": "TimeoutExpired:Command '['ffprobe', '-v', 'error', '-rw_timeout', '12000000', '-read_intervals', '%+1', '-headers',"
+      },
+      {
+        "provider": "Aether Lul",
+        "case": "tv:1399/1/2",
+        "lookupMs": 5186,
+        "manifestMs": 7835,
+        "ladder": [
+          "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=1674424,RESOLUTION=1920x1080,FRAME-RATE=24.390,CODECS=\"avc1.640029,mp4a.40.2\",VIDEO-RANGE=SDR"
+        ],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "width": 1920,
+            "height": 1080
+          },
+          {
+            "codec_name": "aac",
+            "codec_type": "audio"
+          },
+          {
+            "codec_name": "timed_id3",
+            "codec_type": "data"
+          }
+        ],
+        "probeMs": 13161,
+        "success": true
+      },
+      {
+        "provider": "Aether Lul",
+        "case": "tv:1396/1/1",
+        "lookupMs": 239,
+        "manifestMs": 1346,
+        "ladder": [
+          "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=4640170,RESOLUTION=1920x1080,FRAME-RATE=23.974,CODECS=\"avc1.4d4028,mp4a.40.2\""
+        ],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "width": 1920,
+            "height": 1080
+          },
+          {
+            "codec_name": "aac",
+            "codec_type": "audio"
+          },
+          {
+            "codec_name": "timed_id3",
+            "codec_type": "data"
+          }
+        ],
+        "probeMs": 4161,
+        "success": true
+      }
+    ],
+    "link": [
+      {
+        "provider": "Aether Link",
+        "case": "movie:157336",
+        "lookupMs": 2101,
+        "manifestMs": 3116,
+        "ladder": [
+          "#EXT-X-STREAM-INF:BANDWIDTH=806296,CODECS=\"mp4a.40.2,avc1.42c01e\",RESOLUTION=640x360,FRAME-RATE=24,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-25.210,CLOSED-CAPTIONS=NONE",
+          "#EXT-X-STREAM-INF:BANDWIDTH=3087794,CODECS=\"mp4a.40.2,avc1.64001f\",RESOLUTION=1280x720,FRAME-RATE=24,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-25.210,CLOSED-CAPTIONS=NONE",
+          "#EXT-X-STREAM-INF:BANDWIDTH=5684979,CODECS=\"mp4a.40.2,avc1.640028\",RESOLUTION=1920x1080,FRAME-RATE=24,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-25.210,CLOSED-CAPTIONS=NONE"
+        ],
+        "success": false,
+        "error": "TimeoutExpired:Command '['ffprobe', '-v', 'error', '-rw_timeout', '12000000', '-read_intervals', '%+1', '-headers',"
+      },
+      {
+        "provider": "Aether Link",
+        "case": "movie:872585",
+        "lookupMs": 2021,
+        "manifestMs": 3095,
+        "ladder": [
+          "#EXT-X-STREAM-INF:BANDWIDTH=735546,CODECS=\"mp4a.40.2,avc1.42c015\",RESOLUTION=640x290,FRAME-RATE=24,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-20.260,CLOSED-CAPTIONS=NONE",
+          "#EXT-X-STREAM-INF:BANDWIDTH=2746035,CODECS=\"mp4a.40.2,avc1.64001f\",RESOLUTION=1280x582,FRAME-RATE=24,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-20.260,CLOSED-CAPTIONS=NONE",
+          "#EXT-X-STREAM-INF:BANDWIDTH=5020918,CODECS=\"mp4a.40.2,avc1.640028\",RESOLUTION=1920x872,FRAME-RATE=24,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-20.260,CLOSED-CAPTIONS=NONE"
+        ],
+        "success": false,
+        "error": "TimeoutExpired:Command '['ffprobe', '-v', 'error', '-rw_timeout', '12000000', '-read_intervals', '%+1', '-headers',"
+      },
+      {
+        "provider": "Aether Link",
+        "case": "movie:808",
+        "lookupMs": 2105,
+        "manifestMs": 2795,
+        "ladder": [
+          "#EXT-X-STREAM-INF:BANDWIDTH=833692,CODECS=\"mp4a.40.2,avc1.42c01e\",RESOLUTION=640x360,FRAME-RATE=24,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-23.300,CLOSED-CAPTIONS=NONE",
+          "#EXT-X-STREAM-INF:BANDWIDTH=3209708,CODECS=\"mp4a.40.2,avc1.64001f\",RESOLUTION=1280x720,FRAME-RATE=24,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-23.300,CLOSED-CAPTIONS=NONE",
+          "#EXT-X-STREAM-INF:BANDWIDTH=6655205,CODECS=\"mp4a.40.2,avc1.640028\",RESOLUTION=1920x1080,FRAME-RATE=24,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-23.300,CLOSED-CAPTIONS=NONE"
+        ],
+        "success": false,
+        "error": "TimeoutExpired:Command '['ffprobe', '-v', 'error', '-rw_timeout', '12000000', '-read_intervals', '%+1', '-headers',"
+      },
+      {
+        "provider": "Aether Link",
+        "case": "tv:1399/1/2",
+        "lookupMs": 1326,
+        "manifestMs": 2116,
+        "ladder": [
+          "#EXT-X-STREAM-INF:BANDWIDTH=800065,CODECS=\"mp4a.40.2,avc1.42c01e\",RESOLUTION=640x360,FRAME-RATE=25,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-25.790,CLOSED-CAPTIONS=NONE",
+          "#EXT-X-STREAM-INF:BANDWIDTH=2681253,CODECS=\"mp4a.40.2,avc1.64001f\",RESOLUTION=1280x720,FRAME-RATE=25,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-25.790,CLOSED-CAPTIONS=NONE"
+        ],
+        "success": false,
+        "error": "TimeoutExpired:Command '['ffprobe', '-v', 'error', '-rw_timeout', '12000000', '-read_intervals', '%+1', '-headers',"
+      },
+      {
+        "provider": "Aether Link",
+        "case": "tv:1396/1/1",
+        "lookupMs": 1377,
+        "manifestMs": 2419,
+        "ladder": [
+          "#EXT-X-STREAM-INF:BANDWIDTH=715519,CODECS=\"mp4a.40.2,avc1.42c01e\",RESOLUTION=640x360,FRAME-RATE=24,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-25.690,CLOSED-CAPTIONS=NONE",
+          "#EXT-X-STREAM-INF:BANDWIDTH=2892338,CODECS=\"mp4a.40.2,avc1.64001f\",RESOLUTION=1280x720,FRAME-RATE=24,VIDEO-RANGE=SDR,YT-EXT-ABSOLUTE-LOUDNESS=-25.690,CLOSED-CAPTIONS=NONE"
+        ],
+        "success": false,
+        "error": "TimeoutExpired:Command '['ffprobe', '-v', 'error', '-rw_timeout', '12000000', '-read_intervals', '%+1', '-headers',"
+      }
+    ]
+  },
+  "retired": {
+    "lowResolutionOnly": [
+      "VixSrc"
+    ],
+    "repeatedResolutionFailures": [
+      "VidEasy",
+      "Yoru",
+      "Neon",
+      "Cypher",
+      "Sage",
+      "Breach",
+      "Vyse",
+      "Raze",
+      "VidLink",
+      "VidRock",
+      "NoTorrent",
+      "LordFlix",
+      "Icefy",
+      "Meridian",
+      "Gallic",
+      "NebulaStreams"
+    ]
+  },
+  "retainedCinejoyEvidence": "hls-providers-2026-09-24.json currentDomainRetest establishes all three servers support HD, despite current failures for Lisbon/Solara",
+  "rankPolicy": {
+    "CineJoy Nebula": 2600,
+    "CineJoy Lisbon": 2200,
+    "CineJoy Solara": 2000,
+    "Aether Lul": 1600,
+    "Aether Link": 1800,
+    "note": "CineJoy-first user preference; Link precedes Lul based on more consistent movie playback in this small sample. Lul adds HD TV coverage. Weights are policy tiers, not latency estimates."
+  },
+  "integrationCorrections": {
+    "Link": "Lookup uses aether.ist; media requires nextgencloudfabric.com referrer. Without it, segments return 403.",
+    "Lul": "Resolver and playback share Chrome 150 UA. Omit Accept-Language: the same master and child return 200 without it and 403 with it. No new curl transport or browser process is needed.",
+    "redirects": "Every redirect uses the DNS-pinned provider client and is checked for HTTPS/public destinations. Masters have a 2 MiB aggregate cap."
+  },
+  "browserPlayback": {
+    "link": [
+      {
+        "case": "movie:157336",
+        "provider": "Aether Link",
+        "success": true,
+        "failureCodes": [],
+        "timings": {
+          "navigationDomContentLoadedMs": 8.5,
+          "loadMs": 10,
+          "resolveFirstResponseMs": 2687.6,
+          "resolveCompletionMs": 2690.8,
+          "benchmarkApiOriginMs": 23.5,
+          "loadedMetadataMs": 6004.2,
+          "canPlayMs": 6106.9,
+          "playingMs": 6107.1,
+          "firstTimeUpdateMs": 6262.8,
+          "firstFrameMs": 6113.2,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": 11411.7,
+          "steadyCompletedMs": 26413.2
+        },
+        "playback": {
+          "currentTime": 20.262,
+          "readyState": 4,
+          "networkState": 2,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": 10144.009,
+          "width": 1920,
+          "height": 1080,
+          "decodedFrames": 491,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 487,
+          "estimatedFps": 23.981,
+          "maxFrameIntervalMs": 66.7,
+          "waitingCount": 1,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 84.843,
+          "continuous": {
+            "requestedDurationMs": 5000,
+            "sampledDurationMs": 5052.4,
+            "mediaTimeDeltaSeconds": 5.05,
+            "decodedFrameDelta": 121,
+            "frameCallbackDelta": 122,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 21
+          },
+          "steady": {
+            "requestedDurationMs": 15000,
+            "sampledDurationMs": 15001.5,
+            "mediaTimeDeltaSeconds": 15.004,
+            "decodedFrameDelta": 360,
+            "frameCallbackDelta": 360,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 61,
+            "maxNoAdvanceMs": 0,
+            "noAdvanceDurationMs": 0,
+            "minVideoHeight": 1080,
+            "maxVideoHeight": 1080,
+            "verified": true
+          }
+        }
+      },
+      {
+        "case": "movie:872585",
+        "provider": "Aether Link",
+        "success": true,
+        "failureCodes": [],
+        "timings": {
+          "navigationDomContentLoadedMs": 9.1,
+          "loadMs": 10,
+          "resolveFirstResponseMs": 1709,
+          "resolveCompletionMs": 1713.6,
+          "benchmarkApiOriginMs": 23.9,
+          "loadedMetadataMs": 4165,
+          "canPlayMs": 4170.2,
+          "playingMs": 4170.3,
+          "firstTimeUpdateMs": 4416.6,
+          "firstFrameMs": 4177.2,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": 9386.4,
+          "steadyCompletedMs": 24387.7
+        },
+        "playback": {
+          "currentTime": 20.169,
+          "readyState": 4,
+          "networkState": 2,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": 10822.145,
+          "width": 1920,
+          "height": 872,
+          "decodedFrames": 489,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 485,
+          "estimatedFps": 23.97,
+          "maxFrameIntervalMs": 67.2,
+          "waitingCount": 1,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 99.951,
+          "continuous": {
+            "requestedDurationMs": 5000,
+            "sampledDurationMs": 5041,
+            "mediaTimeDeltaSeconds": 5.04,
+            "decodedFrameDelta": 121,
+            "frameCallbackDelta": 121,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 21
+          },
+          "steady": {
+            "requestedDurationMs": 15000,
+            "sampledDurationMs": 15001.3,
+            "mediaTimeDeltaSeconds": 15,
+            "decodedFrameDelta": 360,
+            "frameCallbackDelta": 360,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 61,
+            "maxNoAdvanceMs": 0,
+            "noAdvanceDurationMs": 0,
+            "minVideoHeight": 872,
+            "maxVideoHeight": 872,
+            "verified": true
+          }
+        }
+      },
+      {
+        "case": "tv:1396:s1e1",
+        "provider": "Aether Link",
+        "success": false,
+        "failureCodes": [
+          "RESOLVE_FAILED",
+          "READY_STATE_TOO_LOW",
+          "PLAYBACK_PAUSED",
+          "NO_VIDEO_DIMENSIONS",
+          "NO_DECODED_FRAMES",
+          "ADVANCE_TARGET_NOT_REACHED",
+          "CONTINUOUS_PLAYBACK_NOT_PROVEN",
+          "STEADY_WINDOW_INCOMPLETE",
+          "STEADY_PLAYBACK_NOT_ADVANCING"
+        ],
+        "timings": {
+          "navigationDomContentLoadedMs": 9.1,
+          "loadMs": 10,
+          "resolveFirstResponseMs": 2289.2,
+          "resolveCompletionMs": null,
+          "benchmarkApiOriginMs": 22.9,
+          "loadedMetadataMs": null,
+          "canPlayMs": null,
+          "playingMs": null,
+          "firstTimeUpdateMs": 2300.9,
+          "firstFrameMs": null,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": null,
+          "steadyCompletedMs": null
+        },
+        "playback": {
+          "currentTime": 0,
+          "readyState": 0,
+          "networkState": 0,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": null,
+          "width": 0,
+          "height": 0,
+          "decodedFrames": 0,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 0,
+          "estimatedFps": null,
+          "maxFrameIntervalMs": 0,
+          "waitingCount": 0,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 0,
+          "continuous": null,
+          "steady": null
+        }
+      }
+    ],
+    "lul": [
+      {
+        "case": "movie:157336",
+        "provider": "Aether Lul",
+        "success": true,
+        "failureCodes": [],
+        "timings": {
+          "navigationDomContentLoadedMs": 12,
+          "loadMs": 14.7,
+          "resolveFirstResponseMs": 1690.9,
+          "resolveCompletionMs": 1697.2,
+          "benchmarkApiOriginMs": 28,
+          "loadedMetadataMs": 3471.2,
+          "canPlayMs": 3597.8,
+          "playingMs": 3598,
+          "firstTimeUpdateMs": 3725.4,
+          "firstFrameMs": 3595.3,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": 8751.2,
+          "steadyCompletedMs": 23755.4
+        },
+        "playback": {
+          "currentTime": 20.108,
+          "readyState": 4,
+          "networkState": 2,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": 10143.922,
+          "width": 1920,
+          "height": 1080,
+          "decodedFrames": 482,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 478,
+          "estimatedFps": 23.683,
+          "maxFrameIntervalMs": 157.1,
+          "waitingCount": 1,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 255.22,
+          "continuous": {
+            "requestedDurationMs": 5000,
+            "sampledDurationMs": 5142.4,
+            "mediaTimeDeltaSeconds": 5.096,
+            "decodedFrameDelta": 118,
+            "frameCallbackDelta": 117,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 21
+          },
+          "steady": {
+            "requestedDurationMs": 15000,
+            "sampledDurationMs": 15004.1,
+            "mediaTimeDeltaSeconds": 15.002,
+            "decodedFrameDelta": 360,
+            "frameCallbackDelta": 360,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 60,
+            "maxNoAdvanceMs": 0,
+            "noAdvanceDurationMs": 0,
+            "minVideoHeight": 1080,
+            "maxVideoHeight": 1080,
+            "verified": true
+          }
+        }
+      },
+      {
+        "case": "movie:872585",
+        "provider": "Aether Lul",
+        "success": false,
+        "failureCodes": [
+          "RESOLVE_FAILED",
+          "READY_STATE_TOO_LOW",
+          "PLAYBACK_PAUSED",
+          "NO_VIDEO_DIMENSIONS",
+          "NO_DECODED_FRAMES",
+          "ADVANCE_TARGET_NOT_REACHED",
+          "CONTINUOUS_PLAYBACK_NOT_PROVEN",
+          "STEADY_WINDOW_INCOMPLETE",
+          "STEADY_PLAYBACK_NOT_ADVANCING"
+        ],
+        "timings": {
+          "navigationDomContentLoadedMs": 17.5,
+          "loadMs": 19.1,
+          "resolveFirstResponseMs": 659.3,
+          "resolveCompletionMs": null,
+          "benchmarkApiOriginMs": 36.8,
+          "loadedMetadataMs": null,
+          "canPlayMs": null,
+          "playingMs": null,
+          "firstTimeUpdateMs": 660.9,
+          "firstFrameMs": null,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": null,
+          "steadyCompletedMs": null
+        },
+        "playback": {
+          "currentTime": 0,
+          "readyState": 0,
+          "networkState": 0,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": null,
+          "width": 0,
+          "height": 0,
+          "decodedFrames": 0,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 0,
+          "estimatedFps": null,
+          "maxFrameIntervalMs": 0,
+          "waitingCount": 0,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 0,
+          "continuous": null,
+          "steady": null
+        }
+      },
+      {
+        "case": "tv:1396:s1e1",
+        "provider": "Aether Lul",
+        "success": false,
+        "failureCodes": [
+          "STEADY_WINDOW_TIMEOUT",
+          "STEADY_WINDOW_INCOMPLETE",
+          "STEADY_PLAYBACK_NOT_ADVANCING"
+        ],
+        "timings": {
+          "navigationDomContentLoadedMs": 11,
+          "loadMs": 12.3,
+          "resolveFirstResponseMs": 1044,
+          "resolveCompletionMs": 1048.8,
+          "benchmarkApiOriginMs": 25.7,
+          "loadedMetadataMs": 21076.4,
+          "canPlayMs": 21085.4,
+          "playingMs": 21085.6,
+          "firstTimeUpdateMs": 21337.5,
+          "firstFrameMs": 21091.6,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": 26340.9,
+          "steadyCompletedMs": null
+        },
+        "playback": {
+          "currentTime": 5.213,
+          "readyState": 4,
+          "networkState": 2,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": 3486.497,
+          "width": 1920,
+          "height": 1080,
+          "decodedFrames": 130,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 126,
+          "estimatedFps": 23.93,
+          "maxFrameIntervalMs": 66.7,
+          "waitingCount": 1,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 5.214,
+          "continuous": {
+            "requestedDurationMs": 5000,
+            "sampledDurationMs": 5079.7,
+            "mediaTimeDeltaSeconds": 5.082,
+            "decodedFrameDelta": 122,
+            "frameCallbackDelta": 122,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 21
+          },
+          "steady": null
+        }
+      }
+    ]
+  },
+  "limitations": [
+    "Short samples, not a guarantee of upstream uptime or all-title coverage.",
+    "Link TV masters sampled at 720p are intentionally rejected; this is an expected quality exclusion.",
+    "Lul Oppenheimer lookup failed. Breaking Bad decoded 1920x1080 but its 21-second startup left too little of the 30-second trial for the required steady window. This remains a failed trial.",
+    "Movie timing was measured through the local backend. A concurrent native build may affect timing; production validation is recorded separately.",
+    "CineJoy Lisbon and Solara retained for previously verified HD capability; fresh lookup failures are preserved in this report.",
+    "AAC tracks confirmed via ffprobe for Lul. Automated browser tests prove advancing decoded video, not physical-device audio or battery efficiency."
+  ]
+}

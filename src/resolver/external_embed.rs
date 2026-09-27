@@ -64,50 +64,20 @@ pub(in crate::resolver) struct ExternalEmbedSource {
     pub(in crate::resolver) server: Option<ExternalEmbedServer>,
 }
 
+// Curated HD-capable catalog. Retired providers cannot be restored by an old
+// admin override or a stale source pin. Evidence: hls-providers-2026-09-27.json.
 pub(super) const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
-    ExternalEmbedProvider {
-        id: "videasy",
-        label: "VidEasy",
-    },
-    ExternalEmbedProvider {
-        id: "vidlink",
-        label: "VidLink",
-    },
-    ExternalEmbedProvider {
-        id: "vidrock",
-        label: "VidRock",
-    },
-    ExternalEmbedProvider {
-        id: "notorrent",
-        label: "NoTorrent",
-    },
-    ExternalEmbedProvider {
-        id: "vixsrc",
-        label: "VixSrc",
-    },
-    ExternalEmbedProvider {
-        id: "lordflix",
-        label: "LordFlix",
-    },
-    ExternalEmbedProvider {
-        id: "icefy",
-        label: "Icefy",
-    },
-    ExternalEmbedProvider {
-        id: "meridian",
-        label: "Meridian",
-    },
-    ExternalEmbedProvider {
-        id: "gallic",
-        label: "Gallic",
-    },
-    ExternalEmbedProvider {
-        id: "nebula",
-        label: "NebulaStreams",
-    },
     ExternalEmbedProvider {
         id: "cinejoy",
         label: "CineJoy",
+    },
+    ExternalEmbedProvider {
+        id: "aether-lul",
+        label: "Aether Lul",
+    },
+    ExternalEmbedProvider {
+        id: "aether-link",
+        label: "Aether Link",
     },
 ];
 
@@ -313,9 +283,9 @@ pub(super) fn is_default_external_embed_hls_fallback_source(source: ExternalEmbe
             .server
             .map(|server| server.id == "YORU")
             .unwrap_or(true),
-        "cinejoy" => true,
+        "cinejoy" | "aether-lul" | "aether-link" => true,
         "vidlink" => source.server.is_none(),
-        "vidrock" | "notorrent" | "vixsrc" | "lordflix" | "meridian" | "gallic" | "nebula" => {
+        "vidrock" | "notorrent" | "lordflix" | "meridian" | "gallic" | "nebula" => {
             source.server.is_none()
         }
         id if crate::provider_registry::is_custom(id) => source.server.is_none(),
@@ -339,13 +309,14 @@ pub(super) fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) 
             | "vidlink"
             | "icefy"
             | "vidrock"
-            | "vixsrc"
             | "lordflix"
             | "notorrent"
             | "meridian"
             | "gallic"
             | "nebula"
             | "cinejoy"
+            | "aether-lul"
+            | "aether-link"
     ) || crate::provider_registry::is_custom(source.provider.id)
 }
 
@@ -377,6 +348,9 @@ pub(super) fn external_embed_url(
         return None;
     }
     match (source.provider.id, metadata.media_type.as_str()) {
+        ("aether-lul" | "aether-link", _) => {
+            super::aether::source_url(source.provider.id, metadata)
+        }
         ("videasy", "movie") => Some(format!(
             "https://player.videasy.to/movie/{tmdb_id}?color=ffd700"
         )),
@@ -397,11 +371,6 @@ pub(super) fn external_embed_url(
         ("icefy", "movie") => Some(format!("https://streams.icefy.top/movie/{tmdb_id}")),
         ("icefy", "tv") => Some(format!(
             "https://streams.icefy.top/tv/{}/{}/{}",
-            tmdb_id, metadata.season_number, metadata.episode_number
-        )),
-        ("vixsrc", "movie") => Some(format!("https://vixsrc.to/api/movie/{tmdb_id}")),
-        ("vixsrc", "tv") => Some(format!(
-            "https://vixsrc.to/api/tv/{}/{}/{}",
             tmdb_id, metadata.season_number, metadata.episode_number
         )),
         ("vidrock", "movie") => Some(format!("https://vidrock.net/movie/{tmdb_id}")),
@@ -554,7 +523,7 @@ fn external_embed_source_quality_label(source: ExternalEmbedSource) -> &'static 
     }
     if matches!(
         source.provider.id,
-        "icefy" | "vidrock" | "vixsrc" | "lordflix" | "notorrent" | "meridian"
+        "icefy" | "vidrock" | "lordflix" | "notorrent" | "meridian"
     ) {
         return "1080p";
     }
@@ -568,13 +537,13 @@ fn external_embed_source_detail_label(source: ExternalEmbedSource) -> &'static s
     match source.provider.id {
         "icefy" => return "Fast native HLS",
         "vidrock" => return "Native HLS",
-        "vixsrc" => return "Native HLS, alternate audio",
         "lordflix" => return "Multi-server native HLS",
         "notorrent" => return "Stremio addon HLS",
         "nebula" => return "Stremio addon HLS",
         "meridian" => return "Native HLS, TV + movies",
         "gallic" => return "Native HLS, up to 4K",
         "cinejoy" => return "CineJoy native HLS",
+        "aether-lul" | "aether-link" => return "Aether native HLS",
         id if crate::provider_registry::is_custom(id) => return "Custom Stremio addon",
         _ => {}
     }

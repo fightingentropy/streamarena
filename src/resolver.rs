@@ -51,9 +51,11 @@ use crate::utils::{
     normalize_subtitle_preference,
 };
 
+mod aether;
 mod benchmark;
 mod cinejoy;
 mod external_embed;
+mod hls_quality;
 mod real_debrid;
 mod scoring;
 use benchmark::BenchmarkExactSessionRequest;
@@ -184,7 +186,7 @@ const EXTERNAL_EMBED_HEDGE_STAGGER_MS: u64 = 1_200;
 const EXTERNAL_EMBED_PREFERRED_FAMILY_TIMEOUT_MS: u64 = 8_000;
 const EXTERNAL_EMBED_PROVIDER_HEALTH_KEY_PREFIX: &str = "external-embed-provider:";
 const EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP: i64 = 75;
-const EXTERNAL_EMBED_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36";
+pub(crate) const EXTERNAL_EMBED_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36";
 const VIDROCK_AES_PASSPHRASE: &str = "x7k9mPqT2rWvY8zA5bC3nF6hJ2lK4mN9";
 const VIDROCK_PROXY_PREFIX: &str = "https://proxy.vidrock.store/";
 
@@ -201,12 +203,6 @@ static MULTI_AUDIO_RELEASE_RE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("valid multi audio release regex")
 });
-static VIXSRC_TOKEN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"token["']\s*:\s*["']([^"']+)"#).expect("valid token regex"));
-static VIXSRC_EXPIRES_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"expires["']\s*:\s*["']([^"']+)"#).expect("valid expires regex"));
-static VIXSRC_PLAYLIST_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"url\s*:\s*["']([^"']+)"#).expect("valid playlist regex"));
 static CONTAINER_MP4_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\.mp4(?:$|[?#&/])").expect("valid mp4 regex"));
 static CONTAINER_MKV_RE: LazyLock<Regex> =
@@ -399,12 +395,6 @@ struct IcefyStreamResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct VixSrcApiResponse {
-    #[serde(default)]
-    src: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct VidRockStreamInfo {
     #[serde(default)]
     url: Option<String>,
@@ -513,12 +503,6 @@ const AETHER_PROXY_URL_MARKER: &str = "m3u8-proxy?url=";
 // full resolve budget in external_embed_source_resolve_timeout_ms.
 const ICEFY_HLS_RETRY_ATTEMPTS: usize = 5;
 const ICEFY_HLS_RETRY_DELAY_MS: u64 = 900;
-// VixSrc's api/embed/playlist hosts (vixsrc.to + vix-content.net) fingerprint-
-// block the rustls client; the real fix is the curl transport (see
-// is_curl_fetch_external_embed_host). This light retry only rides over the
-// occasional transient blip on top of that. The parsing itself is correct.
-const VIXSRC_HLS_RETRY_ATTEMPTS: usize = 2;
-const VIXSRC_HLS_RETRY_DELAY_MS: u64 = 700;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ResolvedSource {
@@ -4891,9 +4875,8 @@ fn external_embed_source_resolve_timeout_ms(source: ExternalEmbedSource) -> u64 
         // ranked candidate start while a slower attempt uses this wider budget.
         // meridian/gallic make two sequential round-trips (aether resolve -> unwrap
         // origin -> validate the upstream playlist), so they get the full budget too.
-        "videasy" | "vidlink" | "icefy" | "vixsrc" | "meridian" | "gallic" | "cinejoy" => {
-            external_embed_hls_resolve_timeout_ms()
-        }
+        "videasy" | "vidlink" | "icefy" | "meridian" | "gallic" | "cinejoy" | "aether-lul"
+        | "aether-link" => external_embed_hls_resolve_timeout_ms(),
         _ => external_embed_hls_resolve_timeout_ms().min(EXTERNAL_EMBED_DIRECT_RESOLVE_TIMEOUT_MS),
     }
 }
@@ -5002,8 +4985,10 @@ async fn resolve_external_embed_hls_playback_source(
     timeout_ms: u64,
 ) -> Option<ExternalEmbedHlsPlaybackSource> {
     match source.provider.id {
+        "aether-lul" | "aether-link" => {
+            return aether::resolve(client, source.provider.id, embed_url, timeout_ms).await;
+        }
         "icefy" => return resolve_icefy_hls_playback_source(client, embed_url, timeout_ms).await,
-        "vixsrc" => return resolve_vixsrc_hls_playback_source(client, embed_url, timeout_ms).await,
         "vidrock" => {
             return resolve_vidrock_hls_playback_source(client, metadata, timeout_ms).await;
         }
@@ -5097,10 +5082,13 @@ async fn resolve_external_embed_hls_playback_source(
             }
             let referer = normalize_external_embed_hls_referer(&resolver_output.referer)
                 .or_else(|| normalize_external_embed_hls_referer(embed_url.as_str()));
-            Some(ExternalEmbedHlsPlaybackSource {
-                playback_url,
-                referer,
-            })
+            validate_external_embed_hls_playlist(
+                client,
+                playback_url.as_str(),
+                referer.as_deref(),
+                resolve_timeout_ms,
+            )
+            .await
         },
     )
     .await
@@ -5138,82 +5126,6 @@ async fn resolve_icefy_hls_playback_source(
         }
     }
     None
-}
-
-async fn resolve_vixsrc_hls_playback_source(
-    client: &reqwest::Client,
-    api_url: &str,
-    timeout_ms: u64,
-) -> Option<ExternalEmbedHlsPlaybackSource> {
-    for attempt in 0..VIXSRC_HLS_RETRY_ATTEMPTS {
-        if attempt > 0 {
-            sleep(Duration::from_millis(
-                VIXSRC_HLS_RETRY_DELAY_MS.saturating_mul(attempt as u64),
-            ))
-            .await;
-        }
-        if let Some(source) =
-            resolve_vixsrc_hls_playback_source_once(client, api_url, timeout_ms).await
-        {
-            return Some(source);
-        }
-    }
-    None
-}
-
-async fn resolve_vixsrc_hls_playback_source_once(
-    client: &reqwest::Client,
-    api_url: &str,
-    timeout_ms: u64,
-) -> Option<ExternalEmbedHlsPlaybackSource> {
-    let response = fetch_external_json::<VixSrcApiResponse>(
-        client,
-        api_url,
-        Some("https://vixsrc.to/"),
-        timeout_ms,
-    )
-    .await?;
-    let base_url = Url::parse("https://vixsrc.to").ok()?;
-    let embed_url = base_url.join(response.src.trim()).ok()?;
-    let html = fetch_external_text(
-        client,
-        embed_url.as_str(),
-        Some("https://vixsrc.to/"),
-        timeout_ms,
-    )
-    .await?;
-    let token = VIXSRC_TOKEN_RE
-        .captures(&html)
-        .and_then(|captures| captures.get(1))
-        .map(|value| value.as_str().trim().to_owned())?;
-    let expires = VIXSRC_EXPIRES_RE
-        .captures(&html)
-        .and_then(|captures| captures.get(1))
-        .map(|value| value.as_str().trim().to_owned())?;
-    let expires_seconds = expires.parse::<i64>().ok()?;
-    if expires_seconds <= (now_ms() / 1000) + 60 {
-        return None;
-    }
-    let playlist = VIXSRC_PLAYLIST_RE
-        .captures(&html)
-        .and_then(|captures| captures.get(1))
-        .map(|value| value.as_str().trim().to_owned())?;
-    let mut playlist_url = Url::parse(&playlist)
-        .or_else(|_| embed_url.join(&playlist))
-        .ok()?;
-    {
-        let mut query = playlist_url.query_pairs_mut();
-        query.append_pair("token", &token);
-        query.append_pair("expires", &expires);
-        query.append_pair("h", "1");
-    }
-    validate_external_embed_hls_playlist(
-        client,
-        playlist_url.as_str(),
-        Some(embed_url.as_str()),
-        timeout_ms,
-    )
-    .await
 }
 
 /// Resolve a Meridian/Gallic title through aether's open endpoint, then unwrap the
@@ -5776,7 +5688,7 @@ async fn validate_external_embed_hls_playlist(
             return None;
         }
         let playlist = String::from_utf8_lossy(&response.body);
-        if !playlist.trim_start().starts_with("#EXTM3U") {
+        if !hls_quality::offers_full_hd(&playlist) {
             return None;
         }
         return Some(ExternalEmbedHlsPlaybackSource {
@@ -5813,7 +5725,7 @@ async fn validate_external_embed_hls_playlist(
     .await
     .ok()?
     .ok()?;
-    if !playlist.trim_start().starts_with("#EXTM3U") {
+    if !hls_quality::offers_full_hd(&playlist) {
         return None;
     }
     Some(ExternalEmbedHlsPlaybackSource {

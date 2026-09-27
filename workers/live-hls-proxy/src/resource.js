@@ -1,6 +1,6 @@
 import { authorizeSignedRequest, isPublicHlsProxyHostname } from "./authorization.js";
 import {
-  BROWSER_UA,
+  hlsUserAgent,
   MAX_BUFFERED_PNG_SEGMENT_BYTES,
   MAX_UPSTREAM_REDIRECTS,
   SEGMENT_CACHE_TTL_SECONDS,
@@ -106,10 +106,11 @@ export async function handleResource(request, url, env) {
 
   const { target, referer } = authorized;
   const upstreamHeaders = {
-    "User-Agent": BROWSER_UA,
+    "User-Agent": hlsUserAgent(referer),
     Accept: "*/*",
-    "Accept-Language": "en-US,en;q=0.9",
   };
+  // Lul signs media URLs that reject an added language preference.
+  if (referer !== "https://aether.ist/") upstreamHeaders["Accept-Language"] = "en-US,en;q=0.9";
   if (referer) upstreamHeaders.Referer = referer;
   const range = request.headers.get("Range");
   if (range) upstreamHeaders.Range = range;

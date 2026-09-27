@@ -6,6 +6,12 @@ export const SIGNATURE_CLOCK_SKEW_SECONDS = 60;
 
 export const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+// Match the resolver: Aether's CDN rejects the legacy playback user-agent.
+export function hlsUserAgent(referer) {
+  return ["https://aether.ist/", "https://nextgencloudfabric.com/"].includes(referer)
+    ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36"
+    : BROWSER_UA;
+}
 export const SEGMENT_CACHE_TTL_SECONDS = 20;
 export const PLAYLIST_CACHE_TTL_SECONDS = 2;
 export const VOD_PLAYLIST_CACHE_TTL_SECONDS = 300;

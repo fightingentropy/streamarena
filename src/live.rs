@@ -546,9 +546,8 @@ async fn stream_live_hls_resource_via_http(
     let mut request = state
         .http_client
         .get(live_request.source_url.clone())
-        .header(reqwest::header::USER_AGENT, LIVE_HLS_BROWSER_USER_AGENT)
-        .header(reqwest::header::ACCEPT, "*/*")
-        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+        .headers(live_hls_request_headers(referer.as_deref()))
+        .header(reqwest::header::ACCEPT, "*/*");
     if let Some(referer) = referer.as_deref() {
         request = request.header(reqwest::header::REFERER, referer);
     }
@@ -666,9 +665,8 @@ async fn stream_live_ts_passthrough(
     let mut request = state
         .http_client
         .get(live_request.source_url.clone())
-        .header(reqwest::header::USER_AGENT, LIVE_HLS_BROWSER_USER_AGENT)
-        .header(reqwest::header::ACCEPT, "*/*")
-        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+        .headers(live_hls_request_headers(referer.as_deref()))
+        .header(reqwest::header::ACCEPT, "*/*");
     if let Some(referer) = referer.as_deref() {
         request = request.header(reqwest::header::REFERER, referer);
     }
@@ -1924,6 +1922,34 @@ fn browser_bound_live_hls_referer_header(referer: Option<&str>) -> Option<String
     Some(referer)
 }
 
+fn live_hls_user_agent(referer: Option<&str>) -> &'static str {
+    // Aether's CDN rejects the old playback UA even when resolution succeeds.
+    // Keep its manifest and segment requests consistent with the resolver.
+    if matches!(
+        referer,
+        Some("https://aether.ist/" | "https://nextgencloudfabric.com/")
+    ) {
+        crate::resolver::EXTERNAL_EMBED_USER_AGENT
+    } else {
+        LIVE_HLS_BROWSER_USER_AGENT
+    }
+}
+
+fn live_hls_request_headers(referer: Option<&str>) -> reqwest::header::HeaderMap {
+    use reqwest::header::{ACCEPT_LANGUAGE, HeaderMap, HeaderValue, USER_AGENT};
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_static(live_hls_user_agent(referer)),
+    );
+    // Lul's signed CDN URLs return 403 when Accept-Language is present. Match
+    // the successful resolver request rather than adding browser preferences.
+    if referer != Some("https://aether.ist/") {
+        headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+    }
+    headers
+}
+
 fn browser_bound_live_hls_page_url(referer: Option<&str>) -> Option<String> {
     referer.and_then(normalize_hls_referer)
 }
@@ -2199,7 +2225,7 @@ async fn fetch_live_hls_via_curl(
         .arg("--max-time")
         .arg(LIVE_HLS_CURL_TIMEOUT_SECONDS.to_string())
         .arg("-A")
-        .arg(LIVE_HLS_BROWSER_USER_AGENT)
+        .arg(live_hls_user_agent(referer))
         .arg("-H")
         .arg(format!("Accept: {accept}"))
         .arg("-H")
@@ -2297,12 +2323,11 @@ async fn fetch_live_hls_playlist_via_http(
     let mut request = state
         .http_client
         .get(live_request.source_url.clone())
-        .header(reqwest::header::USER_AGENT, LIVE_HLS_BROWSER_USER_AGENT)
+        .headers(live_hls_request_headers(referer))
         .header(
             reqwest::header::ACCEPT,
             "application/vnd.apple.mpegurl, application/x-mpegURL, */*",
-        )
-        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+        );
     if let Some(referer) = referer {
         request = request.header(reqwest::header::REFERER, referer);
     }
@@ -2333,9 +2358,8 @@ async fn fetch_live_hls_resource_via_http(
     let mut request = state
         .http_client
         .get(live_request.source_url.clone())
-        .header(reqwest::header::USER_AGENT, LIVE_HLS_BROWSER_USER_AGENT)
-        .header(reqwest::header::ACCEPT, "*/*")
-        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+        .headers(live_hls_request_headers(referer))
+        .header(reqwest::header::ACCEPT, "*/*");
     if let Some(referer) = referer {
         request = request.header(reqwest::header::REFERER, referer);
     }
@@ -4780,6 +4804,30 @@ https://other.example.net/seg-2.ts\n#EXT-X-ENDLIST\n";
             2,
             "both segments proxied through the mini"
         );
+    }
+
+    #[test]
+    fn aether_playback_uses_the_resolver_user_agent_without_changing_other_sources() {
+        for referer in ["https://aether.ist/", "https://nextgencloudfabric.com/"] {
+            assert_eq!(
+                super::live_hls_user_agent(Some(referer)),
+                crate::resolver::EXTERNAL_EMBED_USER_AGENT
+            );
+        }
+        assert!(
+            !super::live_hls_request_headers(Some("https://aether.ist/"))
+                .contains_key(reqwest::header::ACCEPT_LANGUAGE)
+        );
+        for referer in [None, Some("https://cinejoy.pk/"), Some("https://embed.st/")] {
+            assert_eq!(
+                super::live_hls_user_agent(referer),
+                super::LIVE_HLS_BROWSER_USER_AGENT
+            );
+            assert_eq!(
+                super::live_hls_request_headers(referer)[reqwest::header::ACCEPT_LANGUAGE],
+                "en-US,en;q=0.9"
+            );
+        }
     }
 
     #[test]

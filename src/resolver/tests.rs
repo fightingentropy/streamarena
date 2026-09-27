@@ -117,7 +117,12 @@ async fn preferred_family_finishes_before_a_faster_fallback_can_win() {
         vec![
             hedge_attempt(started.clone(), 0, Duration::from_secs(6), Some("nebula")),
             hedge_attempt(started.clone(), 1, Duration::from_secs(4), Some("lisbon")),
-            hedge_attempt(started.clone(), 2, Duration::from_millis(1), Some("vixsrc")),
+            hedge_attempt(
+                started.clone(),
+                2,
+                Duration::from_millis(1),
+                Some("aether-lul"),
+            ),
         ],
         2,
         Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
@@ -141,7 +146,7 @@ async fn preferred_family_failure_releases_fallback_immediately() {
                 started.clone(),
                 2,
                 Duration::from_millis(100),
-                Some("vixsrc"),
+                Some("aether-lul"),
             ),
         ],
         2,
@@ -150,7 +155,7 @@ async fn preferred_family_failure_releases_fallback_immediately() {
         Duration::from_secs(8),
     )
     .await;
-    assert_eq!(winner, Some((2, "vixsrc")));
+    assert_eq!(winner, Some((2, "aether-lul")));
     assert!(start.elapsed() < Duration::from_secs(1));
     assert_eq!(*started.lock().unwrap(), vec![0, 1, 2]);
 }
@@ -166,7 +171,7 @@ async fn preferred_family_timeout_keeps_fallback_and_manual_selection_available(
                 started.clone(),
                 1,
                 Duration::from_millis(100),
-                Some("vixsrc"),
+                Some("aether-lul"),
             ),
         ],
         1,
@@ -175,7 +180,7 @@ async fn preferred_family_timeout_keeps_fallback_and_manual_selection_available(
         Duration::from_secs(8),
     )
     .await;
-    assert_eq!(winner, Some((1, "vixsrc")));
+    assert_eq!(winner, Some((1, "aether-lul")));
     assert!(start.elapsed() >= Duration::from_secs(8));
     assert!(start.elapsed() < Duration::from_secs(9));
     assert_eq!(*started.lock().unwrap(), vec![0, 1]);
@@ -871,20 +876,23 @@ fn cinejoy_preference_leads_other_hls_sources_without_label_bonuses() {
             ("CineJoy Nebula", 2_600),
             ("CineJoy Lisbon", 2_200),
             ("CineJoy Solara", 2_000),
-            ("VixSrc", 1_800),
-            ("VidLink", 1_000)
+            ("Aether Link", 1_800),
+            ("Aether Lul", 1_600)
         ],
     );
-    let vidlink_rank =
-        external_embed_source_rank_score(external_embed_provider("vidlink"), &metadata, &health);
-    assert_eq!(vidlink_rank, 1_000);
+    let aether_link_rank = external_embed_source_rank_score(
+        external_embed_provider("aether-link"),
+        &metadata,
+        &health,
+    );
+    assert_eq!(aether_link_rank, 1_800);
     assert!(
         top_rank > 1_800 + 150,
         "positive health cannot erase the tier gap"
     );
-    assert!(vidlink_rank > 500 + 150);
+    assert!(aether_link_rank > 500 + 150);
     for source in external_embed_sources() {
-        if matches!(source.provider.id, "cinejoy" | "vixsrc" | "vidlink")
+        if matches!(source.provider.id, "cinejoy" | "aether-lul" | "aether-link")
             || crate::provider_registry::is_custom(source.provider.id)
         {
             continue;
@@ -954,95 +962,53 @@ fn cinejoy_variant_tiers_reach_menu_without_changing_pins_or_health_scope() {
         .iter()
         .position(|summary| summary.sourceHash == external_embed_source_hash(nebula, &metadata))
         .unwrap();
-    let vixsrc_index = summaries
+    let lul_index = summaries
         .iter()
-        .position(|summary| summary.primary == "VixSrc")
+        .position(|summary| summary.primary == "Aether Lul")
         .unwrap();
     assert!(
-        vixsrc_index < nebula_index,
+        lul_index < nebula_index,
         "a failed variant must not outrank a healthy provider"
     );
 }
 
 #[test]
-fn external_source_summaries_mark_automatic_eligibility_and_order_tied_manual_choices_last() {
+fn source_summaries_mark_unhealthy_hd_sources_ineligible_for_automatic_playback() {
     for metadata in [sample_movie_metadata(), sample_tv_metadata()] {
-        let vixsrc = external_embed_provider("vixsrc");
-        let unhealthy_hash = external_embed_source_hash(vixsrc, &metadata);
-        let health = HashMap::from([(unhealthy_hash.clone(), SOURCE_HEALTH_AVOID_SCORE)]);
-        let summaries = build_external_embed_source_summaries(&metadata, &health);
-        for summary in &summaries {
-            let source = external_embed_source_for_source_hash(&metadata, &summary.sourceHash)
-                .expect("source identity remains selectable");
-            let expected = is_default_external_embed_hls_fallback_source(source)
-                && summary.sourceHash != unhealthy_hash;
-            assert_eq!(summary.automaticFallbackEligible, Some(expected));
+        let lul = external_embed_provider("aether-lul");
+        let hash = external_embed_source_hash(lul, &metadata);
+        let health = HashMap::from([(hash.clone(), SOURCE_HEALTH_AVOID_SCORE)]);
+        for summary in build_external_embed_source_summaries(&metadata, &health) {
             assert_eq!(
-                serde_json::to_value(summary).unwrap()["automaticFallbackEligible"],
-                expected,
+                summary.automaticFallbackEligible,
+                Some(summary.sourceHash != hash)
             );
         }
-        let fallback_tier = summaries
-            .iter()
-            .filter(|summary| summary.score == 1_000_500)
-            .collect::<Vec<_>>();
-        let first_manual = fallback_tier
-            .iter()
-            .position(|summary| summary.automaticFallbackEligible == Some(false))
-            .expect("manual-only sources remain in the menu");
-        assert!(first_manual > 0);
-        assert!(
-            fallback_tier[..first_manual]
-                .iter()
-                .all(|summary| summary.automaticFallbackEligible == Some(true))
-        );
-        assert!(
-            fallback_tier[first_manual..]
-                .iter()
-                .all(|summary| summary.automaticFallbackEligible == Some(false))
-        );
-        for group in [
-            &fallback_tier[..first_manual],
-            &fallback_tier[first_manual..],
-        ] {
-            assert!(
-                group
-                    .windows(2)
-                    .all(|pair| pair[0].primary <= pair[1].primary)
-            );
-        }
-        assert!(
-            summaries.iter().any(|summary| summary.primary == "Raze"
-                && summary.automaticFallbackEligible == Some(false))
-        );
-        assert!(
-            summaries.iter().any(|summary| summary.primary == "Yoru"
-                && summary.automaticFallbackEligible == Some(true))
-        );
     }
 }
 
 #[test]
-fn meridian_builds_movie_and_tv_urls_gallic_is_movie_only() {
-    let movie = sample_resolve_metadata("movie", "872585", 0, 0);
-    let tv = sample_resolve_metadata("tv", "1399", 1, 1);
-    let meridian = external_embed_provider("meridian");
-    let gallic = external_embed_provider("gallic");
-
-    assert_eq!(
-        external_embed_url(meridian, &movie).as_deref(),
-        Some("https://meridian.aether.bar/movie/872585")
-    );
-    assert_eq!(
-        external_embed_url(meridian, &tv).as_deref(),
-        Some("https://meridian.aether.bar/show/1399/1/1")
-    );
-    assert_eq!(
-        external_embed_url(gallic, &movie).as_deref(),
-        Some("https://gallic.aether.bar/movie/872585")
-    );
-    // Gallic's upstream (senpai-stream.club) is movie-only, so no TV candidate.
-    assert_eq!(external_embed_url(gallic, &tv), None);
+fn retired_sources_cannot_be_selected_or_reenabled() {
+    for id in [
+        "vixsrc",
+        "videasy",
+        "vidlink",
+        "vidrock",
+        "lordflix",
+        "notorrent",
+        "icefy",
+        "meridian",
+        "gallic",
+        "nebula",
+    ] {
+        assert!(
+            !EXTERNAL_EMBED_PROVIDERS
+                .iter()
+                .any(|provider| provider.id == id)
+        );
+        assert!(!crate::provider_registry::EMBED_IDS.contains(&id));
+        assert_eq!(crate::provider_registry::embed_default_rank(id), 0);
+    }
 }
 
 #[test]
@@ -1164,7 +1130,7 @@ fn resolved_embed_cache_cannot_pin_a_fallback_over_the_current_preference() {
     assert_eq!(preferred.provider.id, "cinejoy");
     let fallback = external_embed_sources()
         .into_iter()
-        .find(|source| source.provider.id == "vixsrc")
+        .find(|source| source.provider.id == "aether-lul")
         .unwrap();
     let key = external_embed_resolve_cache_key(&metadata, "");
     let entry = CachedResolvedEmbed {
@@ -1234,133 +1200,30 @@ fn curl_fetch_external_embed_host_covers_vixsrc_only() {
 }
 
 #[test]
-fn external_embed_sources_use_stable_hashes_and_hls_urls() {
-    let metadata = sample_movie_metadata();
-    let health_scores = HashMap::new();
-    let sources = build_external_embed_source_summaries(&metadata, &health_scores);
-
-    assert_eq!(sources.len(), 19);
-    let winner = &sources[0];
-    assert_eq!(winner.primary, "CineJoy Nebula");
-    assert_eq!(winner.provider, "CineJoy");
-    assert_eq!(winner.filename, "CineJoy CineJoy Nebula embed");
-    assert_eq!(winner.qualityLabel, "HLS");
-    assert_eq!(winner.container, "hls");
-    assert!(!winner.isTorrent);
-    assert_eq!(winner.releaseGroup, "CineJoy native HLS");
-    assert_eq!(normalize_source_hash(&winner.sourceHash), winner.sourceHash);
-
-    let cinejoy = external_embed_source_for_source_hash(&metadata, &winner.sourceHash)
-        .expect("matching external provider");
-    assert_eq!(cinejoy.provider.id, "cinejoy");
-    assert_eq!(cinejoy.server.map(|server| server.id), Some("NEBULA"));
-    assert!(external_embed_url(cinejoy, &metadata).is_some_and(|url| !url.is_empty()));
-    assert_eq!(
-        external_embed_source_hash(cinejoy, &metadata),
-        winner.sourceHash
-    );
-
-    let vidrock_summary = sources
-        .iter()
-        .find(|source| source.primary == "VidRock")
-        .unwrap();
-    let vidrock = external_embed_source_for_source_hash(&metadata, &vidrock_summary.sourceHash)
-        .expect("matching vidrock provider");
-    assert_eq!(vidrock.provider.id, "vidrock");
-    assert_eq!(
-        external_embed_url(vidrock, &metadata).unwrap(),
-        "https://vidrock.net/movie/1368166"
-    );
-    let videasy = sources
-        .iter()
-        .find(|source| source.primary == "VidEasy")
-        .unwrap();
-    assert_eq!(videasy.provider, "LivNet");
-    assert_eq!(videasy.filename, "VidEasy embed");
-    let icefy = sources
-        .iter()
-        .find(|source| source.primary == "Icefy")
-        .unwrap();
-    assert_eq!(icefy.provider, "LivNet");
-    assert_eq!(icefy.filename, "Icefy embed");
-    assert_eq!(icefy.qualityLabel, "1080p");
-    assert_eq!(icefy.releaseGroup, "Fast native HLS");
-
-    let yoru_summary = sources
-        .iter()
-        .find(|source| source.primary == "Yoru")
-        .expect("yoru source");
-    assert_eq!(yoru_summary.provider, "VidEasy");
-    assert_eq!(yoru_summary.qualityLabel, "4K");
-
-    let notorrent_summary = sources
-        .iter()
-        .find(|source| source.primary == "NoTorrent")
-        .expect("notorrent source");
-    assert_eq!(notorrent_summary.provider, "LivNet");
-    assert_eq!(notorrent_summary.releaseGroup, "Stremio addon HLS");
-
-    let lordflix_summary = sources
-        .iter()
-        .find(|source| source.primary == "LordFlix")
-        .expect("lordflix source");
-    assert_eq!(lordflix_summary.provider, "LivNet");
-    assert_eq!(lordflix_summary.releaseGroup, "Multi-server native HLS");
-
-    // The aether-backed fallbacks appear (movie): Gallic advertises 4K, Meridian 1080p.
-    let gallic_summary = sources
-        .iter()
-        .find(|source| source.primary == "Gallic")
-        .expect("gallic source summary");
-    assert_eq!(gallic_summary.provider, "LivNet");
-    assert_eq!(gallic_summary.qualityLabel, "4K");
-    assert_eq!(gallic_summary.releaseGroup, "Native HLS, up to 4K");
-    let meridian_summary = sources
-        .iter()
-        .find(|source| source.primary == "Meridian")
-        .expect("meridian source summary");
-    assert_eq!(meridian_summary.qualityLabel, "1080p");
-    assert_eq!(meridian_summary.releaseGroup, "Native HLS, TV + movies");
-
-    let neon_source = sources
-        .iter()
-        .find(|source| source.primary == "Neon")
-        .expect("neon source summary");
-    let neon_source = external_embed_source_for_source_hash(&metadata, &neon_source.sourceHash)
-        .expect("matching neon external provider");
-    assert_eq!(neon_source.provider.id, "videasy");
-    assert_eq!(neon_source.server.map(|server| server.id), Some("NEON"));
-
-    let vidlink_source = external_embed_sources()
-        .into_iter()
-        .find(|source| source.provider.id == "vidlink" && source.server.is_none())
-        .expect("vidlink fallback source");
-    assert_eq!(
-        external_embed_url(vidlink_source, &metadata).unwrap(),
-        "https://vidlink.pro/movie/1368166"
-    );
-
-    let tv_metadata = sample_tv_metadata();
-    let videasy_source = external_embed_sources()
-        .into_iter()
-        .find(|source| source.provider.id == "videasy" && source.server.is_none())
-        .expect("videasy fallback source");
-    assert_eq!(
-        external_embed_url(videasy_source, &tv_metadata).unwrap(),
-        "https://player.videasy.to/tv/76331/1/1?nextEpisode=true&autoplayNextEpisode=true&episodeSelector=false&overlay=true&color=ffd700"
-    );
-    assert_eq!(
-        external_embed_url(vidlink_source, &tv_metadata).unwrap(),
-        "https://vidlink.pro/tv/76331/1/1"
-    );
-
-    // Gallic remains movie-only; CineJoy contributes three movie/TV choices.
-    let tv_sources = build_external_embed_source_summaries(&tv_metadata, &health_scores);
-    assert_eq!(tv_sources.len(), 18);
-    assert!(tv_sources.iter().any(|source| source.primary == "Meridian"));
-    assert!(!tv_sources.iter().any(|source| source.primary == "Gallic"));
-    assert_eq!(tv_sources[0].primary, "CineJoy Nebula");
-    assert_eq!(tv_sources[0].provider, "CineJoy");
+fn curated_hd_sources_have_distinct_stable_pins_for_movies_and_tv() {
+    for metadata in [sample_movie_metadata(), sample_tv_metadata()] {
+        let sources = build_external_embed_source_summaries(&metadata, &HashMap::new());
+        assert_eq!(sources.len(), 5);
+        assert_eq!(sources[0].primary, "CineJoy Nebula");
+        let mut hashes = std::collections::HashSet::new();
+        for summary in &sources {
+            assert!(!summary.isTorrent);
+            assert_eq!(summary.container, "hls");
+            assert_eq!(summary.qualityLabel, "HLS");
+            assert!(hashes.insert(summary.sourceHash.clone()));
+            let source =
+                external_embed_source_for_source_hash(&metadata, &summary.sourceHash).unwrap();
+            assert_eq!(
+                external_embed_source_hash(source, &metadata),
+                summary.sourceHash
+            );
+            assert!(
+                external_embed_url(source, &metadata)
+                    .unwrap()
+                    .starts_with("https://")
+            );
+        }
+    }
 }
 
 #[test]
@@ -1433,7 +1296,13 @@ fn external_embed_payload_routes_playlists_via_worker_when_configured() {
     };
     // Use LordFlix explicitly as a direct-segment HLS fixture, independent of
     // the currently preferred provider.
-    let lordflix = external_embed_provider("lordflix");
+    let lordflix = ExternalEmbedSource {
+        provider: super::external_embed::ExternalEmbedProvider {
+            id: "lordflix",
+            label: "LordFlix",
+        },
+        server: None,
+    };
     assert_eq!(lordflix.provider.id, "lordflix");
 
     // Worker configured + direct-segment provider: worker URLs lead, the
@@ -1485,7 +1354,7 @@ fn external_embed_payload_routes_playlists_via_worker_when_configured() {
     // Worker configured + relay-only provider: worker playlist first, zone second.
     let vidrock = external_embed_sources()
         .into_iter()
-        .find(|source| source.provider.id == "vidrock" && source.server.is_none())
+        .find(|source| source.provider.id == "aether-link" && source.server.is_none())
         .expect("vidrock source");
     let relay_payload = finalize_external_embed_payload(
         &metadata,
@@ -1539,15 +1408,8 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
             ("cinejoy", "NEBULA"),
             ("cinejoy", "default"),
             ("cinejoy", "SOLARA"),
-            ("vixsrc", "default"),
-            ("vidlink", "default"),
-            ("gallic", "default"),
-            ("lordflix", "default"),
-            ("meridian", "default"),
-            ("notorrent", "default"),
-            ("videasy", "default"),
-            ("vidrock", "default"),
-            ("videasy", "YORU"),
+            ("aether-lul", "default"),
+            ("aether-link", "default"),
         ]
     );
     let eligible_menu_hashes = build_external_embed_source_summaries(&metadata, &health_scores)
@@ -1589,16 +1451,8 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
             ("cinejoy", "NEBULA"),
             ("cinejoy", "default"),
             ("cinejoy", "SOLARA"),
-            ("vixsrc", "default"),
-            ("vidlink", "default"),
-            ("lordflix", "default"),
-            ("meridian", "default"),
-            ("notorrent", "default"),
-            ("videasy", "default"),
-            ("vidrock", "default"),
-            // Existing Yoru TV eligibility is unchanged; it remains behind base
-            // sources. Its movie-only hint was never a metadata-specific score rule.
-            ("videasy", "YORU"),
+            ("aether-lul", "default"),
+            ("aether-link", "default"),
         ]
     );
 
@@ -1625,23 +1479,23 @@ fn external_embed_unhealthy_sources_skip_auto_fallback() {
         external_embed_source_hash(
             external_embed_sources()
                 .into_iter()
-                .find(|source| source.provider.id == "vidrock")
+                .find(|source| source.provider.id == "aether-link")
                 .expect("vidrock source"),
             &metadata,
         ),
         SOURCE_HEALTH_AVOID_SCORE - 500,
     )]);
-    let source = external_embed_provider("meridian");
+    let source = external_embed_provider("cinejoy");
     let candidates = external_embed_hls_candidate_sources(source, &metadata, true, &health_scores);
     let provider_ids = candidates
         .iter()
         .map(|candidate| candidate.provider.id)
         .collect::<Vec<_>>();
-    assert!(!provider_ids.contains(&"vidrock"));
+    assert!(!provider_ids.contains(&"aether-link"));
 
     let icefy_source = external_embed_sources()
         .into_iter()
-        .find(|source| source.provider.id == "icefy")
+        .find(|source| source.provider.id == "aether-lul")
         .expect("icefy source");
     let pinned_candidates =
         external_embed_hls_candidate_sources(icefy_source, &metadata, false, &health_scores);
@@ -1651,7 +1505,7 @@ fn external_embed_unhealthy_sources_skip_auto_fallback() {
 #[test]
 fn external_embed_health_changes_automatic_default_but_not_explicit_pins() {
     let metadata = sample_movie_metadata();
-    let vixsrc = external_embed_provider("vixsrc");
+    let vixsrc = external_embed_provider("aether-lul");
     let cinejoy = external_embed_provider("cinejoy");
     let health_scores = HashMap::from([
         (
@@ -1713,7 +1567,7 @@ fn automatic_external_embed_does_not_revive_unhealthy_or_manual_only_sources() {
     assert!(default_external_embed_source(&metadata, &health_scores).is_none());
     // Manual-only sources remain listed and selectable, but cannot silently
     // become the default when every automatically eligible source is unhealthy.
-    let icefy = external_embed_provider("icefy");
+    let icefy = external_embed_provider("aether-lul");
     assert_eq!(
         external_embed_hls_candidate_sources(icefy, &metadata, false, &health_scores),
         vec![icefy],
@@ -1729,10 +1583,10 @@ fn selected_external_embed_sources_are_native_hls_only() {
     let neon_source = external_embed_sources()
         .into_iter()
         .find(|source| {
-            source.provider.id == "videasy"
+            source.provider.id == "cinejoy"
                 && source
                     .server
-                    .map(|server| server.id == "NEON")
+                    .map(|server| server.id == "NEBULA")
                     .unwrap_or(false)
         })
         .expect("neon source");
@@ -3250,25 +3104,6 @@ fn stremio_addon_stream_url_builds_movie_and_series_endpoints() {
         stremio_addon_stream_url("https://nebula.work.gd", &no_imdb),
         None
     );
-}
-
-#[test]
-fn nebula_is_a_hls_capable_fallback_embed_provider() {
-    let nebula = EXTERNAL_EMBED_PROVIDERS
-        .iter()
-        .copied()
-        .find(|provider| provider.id == "nebula")
-        .map(|provider| ExternalEmbedSource {
-            provider,
-            server: None,
-        })
-        .expect("nebula provider registered");
-    assert!(is_external_embed_hls_capable_source(nebula));
-    assert!(is_default_external_embed_hls_fallback_source(nebula));
-    // Registered in the shared registry with a positive default rank weight,
-    // and inert until NEBULA_ADDON_BASE is configured (no URL without a base).
-    assert!(crate::provider_registry::embed_default_rank("nebula") > 0);
-    assert!(external_embed_url(nebula, &sample_movie_metadata()).is_none());
 }
 
 fn sample_stream(title: &str, info_hash: &str) -> DiscoveryStream {

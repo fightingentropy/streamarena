@@ -24,6 +24,24 @@ function loadProxy(fetcher) {
   return mod.exports;
 }
 
+for (const referer of ["https://aether.ist/", "https://nextgencloudfabric.com/"]) {
+  test(`Aether device requests match the resolver UA and keep cookies off the CDN: ${referer}`, async () => {
+    const requests = [];
+    const proxy = loadProxy(async (url, init) => {
+      requests.push({ url, init });
+      return new Response(master);
+    });
+    await proxy.resolveToMediaPlaylist("https://cdn.example/master.m3u8", referer);
+    assert.match(requests[0].init.headers["User-Agent"], /Chrome\/150 /);
+    assert.equal(requests[0].init.headers.Referer, referer);
+    assert.equal(requests[0].init.credentials, "omit");
+    await proxy.resolveToMediaPlaylist("https://streamarena.xyz/api/live/hls.m3u8", referer);
+    assert.equal(requests[1].init.headers["User-Agent"], undefined);
+    assert.equal(requests[1].init.headers.Referer, undefined);
+    assert.equal(requests[1].init.credentials, "include");
+  });
+}
+
 for (const referer of ["https://cinejoy.pk/", "https://cinejoy.to/"]) {
   test(`CineJoy retains 4K/HDR and external audio for ${referer}`, async () => {
     const requests = [];

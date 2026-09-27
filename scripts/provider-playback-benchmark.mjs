@@ -50,31 +50,15 @@ const PROGRESS_PATHS = [
   "/api/session/progress",
 ];
 export const REQUIRED_BASE_PROVIDERS = Object.freeze({
-  movie: Object.freeze([
-    "VidEasy",
-    "VidLink",
-    "VidRock",
-    "NoTorrent",
-    "VixSrc",
-    "LordFlix",
-    "Icefy",
-    "Meridian",
-    "Gallic",
-    "CineJoy",
-  ]),
-  tv: Object.freeze([
-    "VidEasy",
-    "VidLink",
-    "VidRock",
-    "NoTorrent",
-    "VixSrc",
-    "LordFlix",
-    "Icefy",
-    "Meridian",
-    "CineJoy",
-  ]),
+  movie: Object.freeze(["CineJoy", "Aether Lul", "Aether Link"]),
+  tv: Object.freeze(["CineJoy", "Aether Lul", "Aether Link"]),
 });
-const OPTIONAL_BASE_PROVIDERS = Object.freeze(["NebulaStreams"]);
+// Historical reports can still be parsed; these are never required in the
+// curated production catalog and do not register a provider with the backend.
+const OPTIONAL_BASE_PROVIDERS = Object.freeze([
+  "VidEasy", "VidLink", "VidRock", "NoTorrent", "VixSrc", "LordFlix",
+  "Icefy", "Meridian", "Gallic", "NebulaStreams",
+]);
 const BASE_PROVIDER_CANONICAL = new Map(
   [...REQUIRED_BASE_PROVIDERS.movie, ...OPTIONAL_BASE_PROVIDERS].map((name) => [
     name.toLowerCase(),

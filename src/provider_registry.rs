@@ -45,19 +45,7 @@ pub mod keys {
 /// Provider ids of the external VOD embeds. Their base URLs are deeply coupled to
 /// per-host referer/fingerprint logic in the resolver, so they are not URL-
 /// swappable; the dashboard exposes an enable/disable toggle instead.
-pub const EMBED_IDS: &[&str] = &[
-    "videasy",
-    "vidlink",
-    "vidrock",
-    "notorrent",
-    "vixsrc",
-    "lordflix",
-    "icefy",
-    "meridian",
-    "gallic",
-    "nebula",
-    "cinejoy",
-];
+pub const EMBED_IDS: &[&str] = &["cinejoy", "aether-lul", "aether-link"];
 
 /// Replace the whole override map (called once at startup from the DB).
 pub fn load(map: HashMap<String, String>) {
@@ -196,10 +184,11 @@ pub fn custom_base(id: &str) -> Option<String> {
 /// on CineJoy's Oppenheimer player on 2026-09-27). This is a user preference,
 /// not a claim that Nebula outperformed Lisbon in the seven-title benchmark.
 /// Other HLS providers remain recovery options after the CineJoy sources.
-/// Sources without verified playback share a fallback tier with no inferred order.
-/// These current-domain results supersede the obsolete CineJoy-domain failures.
+/// Aether Link precedes Lul after the current movie playback checks; Lul adds
+/// broader verified HD TV coverage. Retired low-quality and
+/// repeatedly failing providers are absent from every built-in catalog.
 /// These weights express policy tiers, not latency or a probability of success.
-/// Evidence: `docs/benchmarks/hls-providers-2026-09-24.json`.
+/// Evidence: `docs/benchmarks/hls-providers-2026-09-27.json`.
 ///
 /// Admin `embed:<id>:rank` overrides apply to the whole provider family. Learned
 /// health can reorder tied sources or demote a failing preferred source. The
@@ -207,16 +196,8 @@ pub fn custom_base(id: &str) -> Option<String> {
 /// dead-source penalty; source eligibility and explicit pins are separate.
 pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
     ("cinejoy", 2_200),
-    ("vixsrc", 1_800),
-    ("vidlink", 1_000),
-    ("meridian", 500),
-    ("lordflix", 500),
-    ("vidrock", 500),
-    ("notorrent", 500),
-    ("videasy", 500),
-    ("icefy", 500),
-    ("gallic", 500),
-    ("nebula", 500),
+    ("aether-link", 1_800),
+    ("aether-lul", 1_600),
 ];
 
 /// Compiled default ranking weight for an embed provider (custom providers get
@@ -423,19 +404,9 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
     // (testable) — the URL itself is not swappable because each host is coupled to
     // per-provider referer/fingerprint handling in the resolver.
     const EMBED_BASES: &[(&str, &str, &str)] = &[
-        ("videasy", "VidEasy", "https://player.videasy.to"),
-        ("vidlink", "VidLink", "https://vidlink.pro"),
-        ("vidrock", "VidRock", "https://vidrock.net"),
-        ("notorrent", "NoTorrent", "https://addon-osvh.onrender.com"),
-        ("vixsrc", "VixSrc", "https://vixsrc.to"),
-        ("lordflix", "LordFlix", "https://snowhouse.lordflix.club"),
-        ("icefy", "Icefy", "https://streams.icefy.top"),
-        ("meridian", "Meridian", "https://meridian.aether.bar"),
-        ("gallic", "Gallic", "https://gallic.aether.bar"),
-        // Reference base only — the real install URL (with its private token) is
-        // supplied via the NEBULA_ADDON_BASE env var and never shown/stored here.
-        ("nebula", "NebulaStreams", "https://nebula.work.gd"),
         ("cinejoy", "CineJoy", "https://cinejoy.pk"),
+        ("aether-lul", "Aether Lul", "https://lul.aether.cx"),
+        ("aether-link", "Aether Link", "https://link.aether.cx"),
     ];
     for (id, label, base) in EMBED_BASES.iter().copied() {
         out.push(ProviderInfo {
@@ -541,11 +512,11 @@ mod tests {
             Some(WriteKind::Url)
         );
         assert_eq!(
-            classify_writable("embed:vidlink:enabled"),
+            classify_writable("embed:aether-link:enabled"),
             Some(WriteKind::Toggle)
         );
         assert_eq!(
-            classify_writable("embed:vidlink:rank"),
+            classify_writable("embed:aether-link:rank"),
             Some(WriteKind::Rank)
         );
         // Not writable: unknown embed id, the env-only worker base, malformed keys.

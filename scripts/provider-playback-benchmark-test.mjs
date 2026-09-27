@@ -804,7 +804,7 @@ const movieManifest = classifyExternalSourceRows(baseRows, {
   mediaType: "movie",
 });
 assert.deepEqual(movieManifest.missingRequiredBaseProviders, []);
-assert.equal(movieManifest.selected.length, 11);
+assert.equal(movieManifest.selected.length, 4);
 assert.deepEqual(
   movieManifest.variants.map((source) => source.provider),
   ["VidEasy / Yoru", "CineJoy / CineJoy Nebula", "CineJoy / CineJoy Solara"],
@@ -826,25 +826,25 @@ assert.equal(
     mediaType: "movie",
     includeVariants: true,
   }).selected.length,
-  14,
+  7,
 );
 const tvManifest = classifyExternalSourceRows(baseRows, { mediaType: "tv" });
 assert.deepEqual(tvManifest.missingRequiredBaseProviders, []);
 assert.equal(tvManifest.selected.some((source) => source.baseProvider === "Gallic"), false);
 assert.deepEqual(
   classifyExternalSourceRows(
-    baseRows.filter((row) => row.primary !== "Meridian"),
+    baseRows.filter((row) => row.primary !== "Aether Link"),
     { mediaType: "movie" },
   ).missingRequiredBaseProviders,
-  ["Meridian"],
+  ["Aether Link"],
 );
 const impersonatingCustomRows = baseRows
-  .filter((row) => row.primary !== "VidLink" && row.primary !== "Unlisted source")
+  .filter((row) => row.primary !== "Aether Link" && row.primary !== "Unlisted source")
   .concat({
     isTorrent: false,
     sourceHash: hashFor(30),
     provider: "LivNet",
-    primary: "VidLink",
+    primary: "Aether Link",
     releaseGroup: "Custom Stremio addon",
   });
 const impersonatingCustomManifest = classifyExternalSourceRows(
@@ -852,7 +852,7 @@ const impersonatingCustomManifest = classifyExternalSourceRows(
   { mediaType: "movie" },
 );
 assert.equal(
-  impersonatingCustomManifest.missingRequiredBaseProviders.includes("VidLink"),
+  impersonatingCustomManifest.missingRequiredBaseProviders.includes("Aether Link"),
   true,
 );
 assert.equal(

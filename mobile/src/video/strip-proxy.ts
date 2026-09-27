@@ -238,7 +238,11 @@ function isApiHost(u: string): boolean {
 // and need no UA override. CDN URLs need the browser UA (+ the source's Referer, if any).
 function upstreamHeaders(u: string, referer: string): Record<string, string> {
   if (isApiHost(u)) return {};
-  const headers: Record<string, string> = { "User-Agent": CHROME_UA, Accept: "*/*" };
+  // Aether's CDN requires the same user-agent used when resolving the source.
+  const userAgent = ["https://aether.ist/", "https://nextgencloudfabric.com/"].includes(referer)
+    ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36"
+    : CHROME_UA;
+  const headers: Record<string, string> = { "User-Agent": userAgent, Accept: "*/*" };
   if (referer) headers.Referer = referer;
   return headers;
 }
