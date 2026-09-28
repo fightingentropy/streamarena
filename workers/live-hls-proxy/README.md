@@ -7,9 +7,10 @@ but cache behavior must be verified on the actual playback hostname. A
 domain also bypasses the cache.
 
 The Worker authorizes each request before fetching a media resource. Its
-`fetch` cache retains the complete upstream URL, including signed provider
-tokens, referrer and expiry. No custom Cache API, unsigned shared identity or
-Enterprise cache-key override is needed. The normal streaming body path is
+`fetch` cache retains the complete origin-relay URL, including signed provider
+tokens, referrer and expiry. Direct CDN fetches retain the complete provider
+URL and still require Worker authorization first. No custom Cache API,
+unsigned shared identity or Enterprise cache-key override is needed. The normal streaming body path is
 unchanged; cache policy does not buffer media.
 
 `X-Upstream-Cache: HIT` shows that the upstream subrequest used an edge cache.
