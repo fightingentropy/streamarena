@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { handlePlaylist } from "../src/playlist.js";
 import { handleResource, fetchWithSafeRedirects } from "../src/resource.js";
-import { boundedCacheTtl } from "../src/cache-policy.js";
+import { boundedCacheTtl, upstreamFreshnessTtl } from "../src/cache-policy.js";
 import { logProxyFailure } from "../src/diagnostics.js";
 
 const SECRET = "test-cache-expiry-secret-with-enough-length";
@@ -130,6 +130,72 @@ test("origin relay cache identity keeps signed input, referrer and expiry intact
     assert.equal(response.headers.get("cache-control"), `public, max-age=${expires - NOW}`);
   }
   assert.notEqual(requested[0].url.toString(), requested[1].url.toString());
+});
+
+test("an aged origin cache HIT does not restart the browser freshness window", async (t) => {
+  t.mock.method(Date, "now", () => NOW * 1000);
+  t.mock.method(globalThis, "fetch", async () => new Response("segment", {
+    headers: {
+      "content-type": "video/mp4",
+      "cache-control": "public, max-age=60, s-maxage=3600",
+      "date": new Date((NOW - 25) * 1000).toUTCString(),
+      "age": "30",
+      "cf-cache-status": "HIT",
+    },
+  }));
+  const url = signedUrl({ vod: true, origin: true });
+  const response = await handleResource(new Request(url), url, ENV);
+  assert.equal(response.headers.get("x-upstream-cache"), "HIT");
+  assert.equal(response.headers.get("cache-control"), "public, max-age=30");
+  assert.equal(await response.text(), "segment");
+
+  const expiring = signedUrl({ vod: true, origin: true, expires: NOW + 10 });
+  const expiringResponse = await handleResource(new Request(expiring), expiring, ENV);
+  assert.equal(expiringResponse.headers.get("cache-control"), "public, max-age=10");
+});
+
+test("freshness handles Date, Age, Expires and distinct shared/browser lifetimes conservatively", () => {
+  const date = new Date((NOW - 10) * 1000).toUTCString();
+  for (const [headers, expected] of [
+    [{ "cache-control": "public, max-age=60", date, age: "20" }, 40],
+    [{ "cache-control": "public, max-age=60", date, age: "5" }, 50],
+    [{ "cache-control": "public, max-age=60, s-maxage=3600", age: "20" }, 40],
+    [{ "cache-control": "public, max-age=3600, s-maxage=60", age: "20" }, 40],
+    [{ "cache-control": 'public, MAX-AGE="60"', age: "20" }, 40],
+    [{ expires: new Date((NOW + 30) * 1000).toUTCString(), date, age: "20" }, 20],
+    [{ "cache-control": "max-age=60", expires: "0", age: "20" }, 40],
+    [{ "cache-control": "max-age=60", date: new Date((NOW - 70) * 1000).toUTCString() }, 0],
+    [{ "cache-control": "max-age=60", age: "61" }, 0],
+    [{ "cache-control": "max-age=60", age: "not-a-number" }, 0],
+    [{ "cache-control": "max-age=60", date: "invalid" }, 0],
+    [{ "cache-control": "max-age=60, max-age=90" }, 0],
+    [{ "cache-control": "max-age=60, s-maxage=invalid" }, 0],
+    [{ "cache-control": "max-age=invalid" }, 0],
+    [{ "cache-control": "max-age=0" }, 0],
+    [{ "cache-control": "private, max-age=60" }, 0],
+    [{ "cache-control": "public, no-cache, max-age=60" }, 0],
+    [{ expires: "0" }, 0],
+    [{}, null],
+  ]) {
+    assert.equal(upstreamFreshnessTtl(new Headers(headers), NOW), expected, JSON.stringify(headers));
+  }
+});
+
+test("stale media and immutable playlists do not acquire a new browser cache lifetime", async (t) => {
+  t.mock.method(Date, "now", () => NOW * 1000);
+  t.mock.method(globalThis, "fetch", async () => new Response("#EXTM3U\n#EXT-X-ENDLIST", {
+    headers: { "cache-control": "public, max-age=20", "age": "25" },
+  }));
+  for (const origin of [false, true]) {
+    const url = signedUrl({ vod: true, origin });
+    const response = await handleResource(new Request(url), url, ENV);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+  }
+  const url = signedUrl({ route: "hls.m3u8" });
+  const response = await handlePlaylist(new Request(url), url, ENV);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
 });
 
 test("ranges, private upstream responses and provider failures are never served as public cache entries", async (t) => {
