@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aes::Aes256;
 use base64::Engine as _;
@@ -58,6 +58,7 @@ mod external_embed;
 mod hls_quality;
 mod real_debrid;
 mod scoring;
+mod subtitles;
 use benchmark::BenchmarkExactSessionRequest;
 pub(crate) use real_debrid::build_real_debrid_cache_scope;
 pub(crate) use real_debrid::is_real_debrid_lazy_hls_input;
@@ -1118,7 +1119,9 @@ impl ResolverService {
         refresh_resolve: bool,
         record_external_health_events: bool,
         benchmark_exact_session_reuse: bool,
+        defer_subtitles: bool,
     ) -> AppResult<Value> {
+        let resolution_started = Instant::now();
         self.resolve_metrics
             .movie_requests
             .fetch_add(1, Ordering::Relaxed);
@@ -1199,8 +1202,23 @@ impl ResolverService {
                 record_external_health_events,
             )
             .await?;
-        self.attach_external_subtitle_tracks_to_payload(&mut payload)
-            .await;
+        // Playback URL discovery is complete. Subtitle lookup must not hold the
+        // title lock while another viewer is ready to reuse the resolved source.
+        drop(_guard);
+        let source_elapsed = resolution_started.elapsed();
+        let subtitles_deferred = subtitles::mark_deferred_subtitles(&mut payload, defer_subtitles);
+        let subtitle_started = Instant::now();
+        if !subtitles_deferred {
+            self.attach_external_subtitle_tracks_to_payload(&mut payload)
+                .await;
+        }
+        tracing::info!(
+            source_ms = source_elapsed.as_millis() as u64,
+            subtitles_ms = subtitle_started.elapsed().as_millis() as u64,
+            total_ms = resolution_started.elapsed().as_millis() as u64,
+            subtitles_deferred,
+            "Playback resolution completed"
+        );
         Ok(payload)
     }
 
@@ -1622,7 +1640,9 @@ impl ResolverService {
         refresh_resolve: bool,
         record_external_health_events: bool,
         benchmark_exact_session_reuse: bool,
+        defer_subtitles: bool,
     ) -> AppResult<Value> {
+        let resolution_started = Instant::now();
         self.resolve_metrics
             .tv_requests
             .fetch_add(1, Ordering::Relaxed);
@@ -1729,8 +1749,23 @@ impl ResolverService {
                 record_external_health_events,
             )
             .await?;
-        self.attach_external_subtitle_tracks_to_payload(&mut payload)
-            .await;
+        // Playback URL discovery is complete. Subtitle lookup must not hold the
+        // title lock while another viewer is ready to reuse the resolved source.
+        drop(_guard);
+        let source_elapsed = resolution_started.elapsed();
+        let subtitles_deferred = subtitles::mark_deferred_subtitles(&mut payload, defer_subtitles);
+        let subtitle_started = Instant::now();
+        if !subtitles_deferred {
+            self.attach_external_subtitle_tracks_to_payload(&mut payload)
+                .await;
+        }
+        tracing::info!(
+            source_ms = source_elapsed.as_millis() as u64,
+            subtitles_ms = subtitle_started.elapsed().as_millis() as u64,
+            total_ms = resolution_started.elapsed().as_millis() as u64,
+            subtitles_deferred,
+            "Playback resolution completed"
+        );
         Ok(payload)
     }
 
@@ -2660,88 +2695,6 @@ impl ResolverService {
         }
 
         Err(real_debrid_error.unwrap_or_else(real_debrid_api_key_required_error))
-    }
-
-    /// Backfill external subtitle tracks on resolved payloads that have none.
-    ///
-    /// The external-embed pipeline builds its payload without a media probe or
-    /// subtitle search (see build_external_embed_resolved_payload_with_playable_url),
-    /// so embed playback — the most common VOD path — would otherwise always
-    /// surface an empty Subtitles menu. Reads everything it needs back out of
-    /// the payload, so it covers fresh resolves, embed-cache hits, and pinned
-    /// sources alike.
-    async fn attach_external_subtitle_tracks_to_payload(&self, payload: &mut Value) {
-        if stringify_json(payload.get("resolverProvider")) != EXTERNAL_EMBED_RESOLVER_PROVIDER {
-            return;
-        }
-        let has_subtitle_tracks = payload
-            .get("tracks")
-            .and_then(|tracks| tracks.get("subtitleTracks"))
-            .and_then(Value::as_array)
-            .map(|tracks| !tracks.is_empty())
-            .unwrap_or(false);
-        if has_subtitle_tracks {
-            return;
-        }
-        let Some(metadata) = payload.get("metadata") else {
-            return;
-        };
-        let imdb_id = stringify_json(metadata.get("imdbId"));
-        let display_title = stringify_json(metadata.get("displayTitle"));
-        let display_year = stringify_json(metadata.get("displayYear"));
-        let season_number = metadata
-            .get("seasonNumber")
-            .and_then(Value::as_i64)
-            .unwrap_or_default();
-        let episode_number = metadata
-            .get("episodeNumber")
-            .and_then(Value::as_i64)
-            .unwrap_or_default();
-        let filename = stringify_json(payload.get("filename"));
-        let preferred_subtitle_lang = stringify_json(
-            payload
-                .get("preferences")
-                .and_then(|preferences| preferences.get("subtitleLang")),
-        );
-        if preferred_subtitle_lang == "off" {
-            return;
-        }
-
-        let mut subtitle_tracks = self
-            .media
-            .search_opensubtitles_tracks(
-                &imdb_id,
-                &display_title,
-                &display_year,
-                &preferred_subtitle_lang,
-                &filename,
-            )
-            .await;
-        if subtitle_tracks.is_empty() {
-            subtitle_tracks = self
-                .media
-                .search_stremio_addon_subtitle_tracks(
-                    &imdb_id,
-                    season_number,
-                    episode_number,
-                    &preferred_subtitle_lang,
-                )
-                .await;
-        }
-        if subtitle_tracks.is_empty() {
-            return;
-        }
-
-        let probe = MediaProbe {
-            subtitleTracks: subtitle_tracks,
-            ..MediaProbe::default()
-        };
-        let selected_subtitle_stream_index =
-            choose_subtitle_track_from_probe(&probe, &preferred_subtitle_lang)
-                .map(|track| track.streamIndex)
-                .unwrap_or(-1);
-        payload["tracks"]["subtitleTracks"] = json!(probe.subtitleTracks);
-        payload["selectedSubtitleStreamIndex"] = json!(selected_subtitle_stream_index);
     }
 
     #[allow(clippy::too_many_arguments)]

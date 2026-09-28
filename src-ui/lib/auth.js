@@ -409,7 +409,7 @@ function hydrationEntries(payload) {
 
 /**
  * Start all account reads together. Home waits only for preferences; the player
- * still awaits complete hydration before deciding whether/how far to resume.
+ * awaits preferences and resume hydration before deciding where to start.
  * Every response is scoped to the validated owner and this hydration generation.
  */
 export function beginServerHydration() {
@@ -419,7 +419,7 @@ export function beginServerHydration() {
   const result = emptyHydrationState();
   if (!owner || readStorageValue(storage, USER_STATE_OWNER_KEY) !== owner) {
     const complete = Promise.resolve(result);
-    return { preferencesReady: complete, myListReady: complete, progressReady: complete, continueWatchingReady: complete, complete };
+    return { preferencesReady: complete, playbackReady: complete, myListReady: complete, progressReady: complete, continueWatchingReady: complete, complete };
   }
   if (activeHydration?.owner === owner && activeHydration.generation === hydrationGeneration) {
     return activeHydration;
@@ -524,6 +524,8 @@ export function beginServerHydration() {
     if (entries.length) storage.setItem(MY_LIST_STORAGE_KEY, JSON.stringify(entries));
     else storage.removeItem(MY_LIST_STORAGE_KEY);
   });
+  // Playback needs resume state and preferences, but never the saved-title list.
+  const playbackReady = Promise.all([preferencesReady, progressReady, continueReady]).then(() => ({ ...result }));
   const complete = Promise.all([preferencesReady, progressReady, continueReady, listReady]).then(() => {
     result.pending = false;
     result.ok = !result.authExpired && result.didLoadPreferences && result.didLoadProgress && result.didLoadContinueWatching && result.didLoadMyList;
@@ -533,7 +535,7 @@ export function beginServerHydration() {
     }
     return { ...result };
   });
-  activeHydration = { owner, generation, preferencesReady, progressReady, continueWatchingReady: continueReady, myListReady: listReady, complete };
+  activeHydration = { owner, generation, preferencesReady, playbackReady, progressReady, continueWatchingReady: continueReady, myListReady: listReady, complete };
   return activeHydration;
 }
 

@@ -4,13 +4,11 @@
   "main": "src/index.js",
   "compatibility_date": "2026-08-01",
   "workers_dev": true,
-  // Two hosts on purpose. The zone-routed custom domain is the primary: only on
-  // a zone route do the cf.cacheTtl/cacheEverything fetch hints in src/index.js
-  // actually engage the edge cache (segment fan-out, 2s playlist coalescing,
-  // cross-viewer transcode dedup) — on workers.dev they are inert no-ops. The
-  // workers.dev host stays enabled as the instant-rollback path: the backend
-  // selects which host signed URLs point at via LIVE_HLS_RESOURCE_WORKER_BASE,
-  // so reverting is an env-var flip on the mini, not a Worker redeploy.
+  // The custom domain is the primary playback endpoint. Keep workers.dev
+  // available as an alternate hostname; both run this same Worker version.
+  // Fetch caching depends on the upstream response policy and Cloudflare zone
+  // behavior, so verify actual cache headers instead of inferring from hostname.
+  // LIVE_HLS_RESOURCE_WORKER_BASE on the mini selects the public hostname.
   "routes": [{ "pattern": "live.streamarena.xyz", "custom_domain": true }],
   "observability": { "enabled": true, "head_sampling_rate": 0.1 },
   // Public origin the playlist/viaOrigin routes relay to (the mini behind

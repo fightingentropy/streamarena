@@ -6,4 +6,4 @@ import { loadLiveChannelOverrides } from "../lib/live-channels.js";
 // Apply admin URL overrides to the live-channel resume fallbacks.
 loadLiveChannelOverrides();
 
-await mountAuthenticatedPage(() => import("../pages/player.js"));
+await mountAuthenticatedPage(() => import("../pages/player.js"), { hydration: "playback" });

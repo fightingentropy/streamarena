@@ -18,7 +18,7 @@ import {
   DEFAULT_EPISODE_THUMBNAIL,
   STATIC_SERIES_LIBRARY,
   mergeSeriesLibraries,
-  fetchLocalSeriesLibrary,
+  normalizeLocalSeriesLibrary,
   getSeriesEpisodeLabel,
 } from "../player/episodes.js";
 import {
@@ -189,6 +189,7 @@ function readPlayerUserStateOwner() {
 }
 
 export default function PlayerPage() {
+  let playerDisposed = false;
   const playerUserStateOwner = readPlayerUserStateOwner();
   const checkpointSaveQueue = createCheckpointSaveQueue({
     fetchFn: fetchUserApi,
@@ -300,6 +301,7 @@ let availableSubtitleTracks = [];
 let availablePlaybackSources = [];
 let activeSourceTypeTab = "";
 let isFetchingPlaybackSources = false;
+let torrentSourceCatalogRequested = false;
 let playbackSourcesRequestToken = 0;
 let resolverFailedSourceHashes = new Set();
 let subtitleTrackElement = null;
@@ -483,6 +485,7 @@ const deferredMediaTracks = createDeferredMediaTrackController({
     filename: currentTmdbResolvedFilename, isTv: isTmdbTvPlayback,
     seasonNumber, episodeNumber,
     selectedAudioStreamIndex, selectedSubtitleStreamIndex,
+    audioTracks: availableAudioTracks,
     activeAudioSyncMs, preferredAudioSyncMs,
   }),
   setActiveSourceInput: (value) => { activeTrackSourceInput = value; },
@@ -721,8 +724,7 @@ function tmdbTitleIsMissing(value) {
   const normalized = String(value || "").trim().toLowerCase();
   return !normalized || normalized === "untitled" || normalized === "title";
 }
-const _needsTmdbResolve =
-  _watchPath?.kind === "tmdb" && tmdbTitleIsMissing(params.get("title"));
+const _needsTmdbResolve = _watchPath?.kind === "tmdb" && tmdbTitleIsMissing(params.get("title"));
 // A short live URL rebuilds its stream set from the channel catalog when cold.
 const _needsLiveResolve =
   _watchPath?.kind === "live" && !params.has("src");
@@ -735,12 +737,18 @@ const benchmarkModeEnabled = new Set(["1", "true", "yes", "on"]).has(
 // DEFAULT_EPISODE_THUMBNAIL, STATIC_SERIES_LIBRARY — imported from ./src-ui/player/episodes.js
 
 // normalizeSeriesContentKind, cloneSeriesEpisode, mergeSeriesLibraries,
-// normalizeLocalSeriesLibrary, fetchLocalSeriesLibrary — imported from ./src-ui/player/episodes.js
+// normalizeLocalSeriesLibrary — imported from ./src-ui/player/episodes.js
 
 let SERIES_LIBRARY = Object.freeze({ ...STATIC_SERIES_LIBRARY });
-// Async local library merge is deferred to onMount
-let _seriesLibraryReady = fetchLocalSeriesLibrary().then((local) => {
-  SERIES_LIBRARY = Object.freeze({ ...mergeSeriesLibraries(STATIC_SERIES_LIBRARY, local) });
+// A remote episode already has its identity. Local/legacy links and movie
+// overrides share one bounded library read instead of fetching it twice.
+const needsPlaybackLibrary = _watchPath?.kind !== "live" && !isTruthyParamValue(params.get("live")) &&
+  (_needsSlugResolve || params.get("seriesId") || params.get("src") || params.get("mediaType") !== "tv");
+const playbackLibraryReady = needsPlaybackLibrary
+  ? requestJson("/api/library", {}, 3000).catch(() => null)
+  : Promise.resolve(null);
+const _seriesLibraryReady = playbackLibraryReady.then((payload) => {
+  SERIES_LIBRARY = Object.freeze({ ...mergeSeriesLibraries(STATIC_SERIES_LIBRARY, normalizeLocalSeriesLibrary(payload || {})) });
 });
 let rawSourceParam = String(params.get("src") || "").trim();
 let normalizedRawSourceParam = normalizePlaybackSourceValue(rawSourceParam);
@@ -1014,7 +1022,7 @@ const DEFAULT_REMUX_VIDEO_MODE = "auto";
 const MOBILE_DEFAULT_STREAM_QUALITY_PREFERENCE = "720p";
 // SOURCE_LANGUAGE_TOKENS — imported from ./src-ui/player/sources.js
 const AUDIO_SYNC_STEP_MS = 50;
-const RESUME_SAVE_MIN_INTERVAL_MS = 3000;
+const RESUME_SAVE_MIN_INTERVAL_MS = 10000;
 const RESUME_SAVE_MIN_DELTA_SECONDS = 1.5;
 const RESUME_FLUSH_INTERVAL_MS = 1000;
 const LOCAL_CACHE_UPGRADE_POLL_MS = 20_000;
@@ -1217,11 +1225,16 @@ async function loadUserRealDebridPlaybackSettings() {
     await userRealDebridSettingsPromise;
     return;
   }
+  const settingsOwner = readPlayerUserStateOwner();
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 3000);
   userRealDebridSettingsPromise = fetchUserApi("/api/user/torrent-settings", {
     cache: "no-store",
+    signal: controller.signal,
   })
-    .then(async (response) => (response.ok ? response.json() : {}))
+    .then(async (response) => response.ok ? response.json() : {})
     .then((payload) => {
+      if (playerDisposed || settingsOwner !== readPlayerUserStateOwner()) return;
       const settings = normalizeRealDebridSettings(payload);
       userRealDebridConfigured = settings.configured;
       userRealDebridEnabled = settings.enabled;
@@ -1233,13 +1246,15 @@ async function loadUserRealDebridPlaybackSettings() {
       userLocalTorrentEnabled = false;
     })
     .finally(() => {
+      window.clearTimeout(timeout);
       userRealDebridSettingsLoaded = true;
+      if (!playerDisposed) renderSourceOptionsWhenStable();
     });
   await userRealDebridSettingsPromise;
 }
 
 function clearDisabledTorrentPlaybackState() {
-  if (!isTmdbResolvedPlayback) {
+  if (!isTmdbResolvedPlayback || !userRealDebridSettingsLoaded) {
     return false;
   }
   const provider = String(
@@ -1950,7 +1965,7 @@ function renderSourceOptionButtons() {
   if (!seenHashes.size) {
     const emptyState = document.createElement("p");
     emptyState.className = "source-option-empty";
-    emptyState.textContent = sourceView.emptyMessage;
+    emptyState.textContent = isFetchingPlaybackSources ? "Loading sources..." : sourceView.emptyMessage;
     sourceOptionsContainer.appendChild(emptyState);
     if (sourceOptionDetails) {
       sourceOptionDetails.hidden = true;
@@ -3237,6 +3252,14 @@ async function applyResolvedTmdbPlayback(
   }
   currentTmdbResolvedFilename = String(resolved?.filename || "").trim();
   currentTmdbSelectedFile = String(resolved?.selectedFile || "").trim();
+  if (tmdbTitleIsMissing(title) && resolved?.metadata?.displayTitle) {
+    title = rawTitle = String(resolved.metadata.displayTitle).trim();
+    params.set("title", title);
+  }
+  if (!year && resolved?.metadata?.displayYear) {
+    year = String(resolved.metadata.displayYear).trim();
+    params.set("year", year);
+  }
   activeTrackSourceInput = String(resolved?.sourceInput || "").trim();
   availableAudioTracks = Array.isArray(resolved?.tracks?.audioTracks)
     ? resolved.tracks.audioTracks
@@ -3377,6 +3400,7 @@ async function applyResolvedTmdbPlayback(
     resetInitialResume: explicitStartSeconds <= 0,
     autoplay,
   });
+  void loadPlaybackEpisodeControls();
   markManualSourceSwitchPlaybackRequested(normalizedResolvedSourceHash);
   applySubtitleTrackByStreamIndex(selectedSubtitleStreamIndex);
   syncAudioState();
@@ -3451,7 +3475,7 @@ async function resolveTmdbSourcesAndPlay({
     stopLocalCacheUpgradeWatch();
     localCacheUpgradeWatch.setHasUpgraded(false);
   }
-  if (isTmdbResolvedPlayback) {
+  if (isTmdbResolvedPlayback && (skipExternalEmbed || requiredSourceHash || requestSourceHash || getPinnedSourceHashForRequests() || isTorrentResolverProvider(preferredResolverProvider))) {
     await loadUserRealDebridPlaybackSettings();
     const clearedDisabledTorrentState = clearDisabledTorrentPlaybackState();
     if (clearedDisabledTorrentState || !hasEnabledTorrentProvider()) {
@@ -3854,6 +3878,36 @@ async function fetchTmdbSeasonEpisodes(tmdbSeriesId, season) {
     .filter((episodeEntry) => episodeEntry.episodeNumber > 0);
 }
 
+let episodeCatalogPromise = null;
+function loadPlaybackEpisodeControls() {
+  if (!episodeCatalogPromise) {
+    const metadata = _needsTmdbResolve && isTmdbMoviePlayback
+      ? hydrateColdMovieArtwork() : hydrateTmdbTvEpisodeCatalog();
+    episodeCatalogPromise = metadata.then(() => {
+      if (playerDisposed) return;
+      hasSeriesEpisodeControls = isEpisodeListPlayback() && Boolean(seriesEpisodes.length > 1);
+      setEpisodeLabel(title, episode);
+      renderSeriesEpisodePreview();
+      syncSeriesControls();
+      void hydrateSeriesEpisodeThumbnails();
+    });
+  }
+  return episodeCatalogPromise;
+}
+
+async function hydrateColdMovieArtwork() {
+  const movieId = tmdbId;
+  try {
+    const details = await requestJson(`/api/tmdb/details?${new URLSearchParams({ tmdbId: movieId, mediaType: "movie" })}`, {}, 10000);
+    if (playerDisposed || tmdbId !== movieId) return;
+    const poster = String(details?.poster_path || details?.backdrop_path || "").trim();
+    if (poster) {
+      thumbParam = `https://image.tmdb.org/t/p/w780${poster}`;
+      params.set("thumb", thumbParam);
+    }
+  } catch { /* Optional artwork never holds playback. */ }
+}
+
 async function hydrateTmdbTvEpisodeCatalog() {
   if (!isTmdbTvPlayback || isSeriesPlayback || !tmdbId) {
     return false;
@@ -3861,9 +3915,10 @@ async function hydrateTmdbTvEpisodeCatalog() {
 
   const currentSeason = Math.max(1, Math.floor(Number(seasonNumber) || 1));
   const currentEpisode = Math.max(1, Math.floor(Number(episodeNumber) || 1));
+  const catalogTmdbId = tmdbId;
   let details = null;
   try {
-    const query = new URLSearchParams({ tmdbId, mediaType: "tv" });
+    const query = new URLSearchParams({ tmdbId: catalogTmdbId, mediaType: "tv" });
     details = await requestJson(
       `/api/tmdb/details?${query.toString()}`,
       {},
@@ -3876,7 +3931,7 @@ async function hydrateTmdbTvEpisodeCatalog() {
   const seasonNumbers = getTmdbSeasonNumbersToFetch(details, currentSeason);
   const seasonPayloads = await Promise.all(
     seasonNumbers.map((season) =>
-      fetchTmdbSeasonEpisodes(tmdbId, season).catch(() => []),
+      fetchTmdbSeasonEpisodes(catalogTmdbId, season).catch(() => []),
     ),
   );
   const episodes = seasonPayloads
@@ -3891,7 +3946,8 @@ async function hydrateTmdbTvEpisodeCatalog() {
     })
     .slice(0, MAX_TMDB_EPISODE_LIST_EPISODES);
 
-  if (!episodes.length) {
+  if (!episodes.length || playerDisposed || tmdbId !== catalogTmdbId ||
+      seasonNumber !== currentSeason || episodeNumber !== currentEpisode) {
     return false;
   }
 
@@ -3900,7 +3956,9 @@ async function hydrateTmdbTvEpisodeCatalog() {
       Number(episodeEntry?.seasonNumber || 1) === currentSeason &&
       Number(episodeEntry?.episodeNumber || 1) === currentEpisode,
   );
-  const selectedIndex = matchedIndex >= 0 ? matchedIndex : 0;
+  // Late metadata must never replace the episode already playing.
+  if (matchedIndex < 0) return false;
+  const selectedIndex = matchedIndex;
   const selectedEpisode = episodes[selectedIndex] || episodes[0];
   const detailsTitle = String(details?.name || details?.title || "").trim();
   const detailsDate = String(
@@ -4563,6 +4621,7 @@ function prefetchNextEpisodeResolve(next) {
     audioLang: "auto",
     quality: "auto",
     resolverProvider: "auto",
+    deferSubtitles: "1",
   });
   if (activeSeries?.year) {
     query.set("year", String(activeSeries.year));
@@ -5273,6 +5332,13 @@ function closeLiveStreamPopover(withDelay = false) {
   liveStreamPopoverCloseTimeout = window.setTimeout(close, 140);
 }
 
+function ensureVisibleTorrentSourceCatalog() {
+  if (!playerDisposed && sourceControl?.classList.contains("is-open") && activeSourceTypeTab === "torrents" &&
+      !torrentSourceCatalogRequested && !isFetchingPlaybackSources) {
+    void fetchTmdbSourceOptionsViaBackend({ includeTorrents: true });
+  }
+}
+
 function openSourcePopover() {
   if (!sourceControl || !shouldShowTmdbSourceControls()) {
     return;
@@ -5287,7 +5353,7 @@ function openSourcePopover() {
   // Re-open on the tab that matches the currently playing source instead of
   // whatever tab the user last browsed while the menu was open.
   activeSourceTypeTab = "";
-  if (!availablePlaybackSources.length && !isFetchingPlaybackSources) {
+  if (!availablePlaybackSources.length && !isFetchingPlaybackSources && !torrentSourceCatalogRequested) {
     void fetchTmdbSourceOptionsViaBackend();
   } else {
     // Resetting the tab is stateful; rebuild the filtered rows immediately so
@@ -5299,6 +5365,7 @@ function openSourcePopover() {
   sourceControl.classList.add("is-open");
   toggleSource?.setAttribute("aria-expanded", "true");
   syncTmdbSourceControls();
+  ensureVisibleTorrentSourceCatalog();
 }
 
 function toggleSourcePopoverFromControl() {
@@ -7327,6 +7394,7 @@ async function resolveTmdbTvEpisodeViaBackend(
 async function fetchTmdbSourceOptionsViaBackend({
   realDebridCacheRefresh = false,
   expectedRequestKey = "",
+  includeTorrents = activeSourceTypeTab === "torrents" || tmdbSkipExternalEmbed || isTorrentResolverProvider(preferredResolverProvider),
 } = {}) {
   if (!isTmdbResolvedPlayback || !tmdbId) {
     availablePlaybackSources = [];
@@ -7334,8 +7402,12 @@ async function fetchTmdbSourceOptionsViaBackend({
     renderSourceOptionsWhenStable();
     return;
   }
-  await loadUserRealDebridPlaybackSettings();
-  clearDisabledTorrentPlaybackState();
+  if (includeTorrents) {
+    // Mark before settings hydration so repeated menu opens cannot race it.
+    torrentSourceCatalogRequested = true;
+    await loadUserRealDebridPlaybackSettings();
+    clearDisabledTorrentPlaybackState();
+  }
   const pinnedSourceHash = getPinnedSourceHashForRequests();
   const query = buildTmdbSourceDiscoveryQuery({
     tmdbId, title, year, pinnedSourceHash,
@@ -7349,6 +7421,7 @@ async function fetchTmdbSourceOptionsViaBackend({
     sourceLanguage: preferredSourceLanguage,
     sourceAudioProfile: preferredSourceAudioProfile,
   });
+  query.set("includeTorrents", includeTorrents ? "1" : "0");
   const requestKey = query.toString();
   if (!realDebridSourceRefresh.prepareRequest({
     requestKey,
@@ -7390,7 +7463,7 @@ async function fetchTmdbSourceOptionsViaBackend({
     ) {
       if (previousSelectedSourceOption) {
         nextPlaybackSources.unshift(previousSelectedSourceOption);
-      } else if (!realDebridCacheRefresh) {
+      } else if (!realDebridCacheRefresh && includeTorrents) {
         selectedSourceHash = "";
         sourceSelectionPinned = false;
         applyPreferredSourceAudioSync(selectedSourceHash);
@@ -7400,16 +7473,19 @@ async function fetchTmdbSourceOptionsViaBackend({
     availablePlaybackSources = sortSourcesBySeeders(nextPlaybackSources, {
       preferContainer: getSourceListPreferredContainer(),
     });
-    realDebridSourceRefresh.observeSources({
-      requestKey,
-      refreshRequest: realDebridCacheRefresh,
-      sources: nextPlaybackSources,
-    });
+    if (includeTorrents) {
+      realDebridSourceRefresh.observeSources({
+        requestKey,
+        refreshRequest: realDebridCacheRefresh,
+        sources: nextPlaybackSources,
+      });
+    }
     isFetchingPlaybackSources = false;
     // The unpinned playback resolve owns initial source choice. This endpoint
     // only enriches the menu; starting a second preferred resolve here can
     // discard a valid first result and leave the player without an owner.
     renderSourceOptionsWhenStable();
+    if (!includeTorrents) ensureVisibleTorrentSourceCatalog();
   } catch {
     if (requestToken !== playbackSourcesRequestToken) {
       return;
@@ -7427,7 +7503,9 @@ async function fetchTmdbSourceOptionsViaBackend({
     realDebridSourceRefresh.cancelPending();
     availablePlaybackSources = [];
     isFetchingPlaybackSources = false;
+    if (includeTorrents) torrentSourceCatalogRequested = false;
     renderSourceOptionsWhenStable();
+    if (!includeTorrents) ensureVisibleTorrentSourceCatalog();
   }
 }
 
@@ -7678,11 +7756,8 @@ async function preferLocalMoviePlaybackSourceFromLibrary() {
   }
 
   try {
-    const response = await fetch("/api/library", { cache: "no-store" });
-    if (!response.ok) {
-      return false;
-    }
-    const libraryPayload = await response.json();
+    const libraryPayload = await playbackLibraryReady;
+    if (!libraryPayload) return false;
     const localMovie = findLocalMoviePlaybackEntry(libraryPayload);
     return applyLocalMoviePlaybackEntry(localMovie);
   } catch {
@@ -7732,49 +7807,14 @@ async function initPlaybackSource() {
     }
   }
 
-  // ─── Cold short tmdb URL: hydrate title/year/poster from TMDB ───
-  if (_needsTmdbResolve && _watchPath) {
-    try {
-      const _detailQuery = new URLSearchParams({
-        tmdbId: _watchPath.tmdbId,
-        mediaType: _watchPath.mediaType,
-      });
-      const _details = await requestJson(
-        `/api/tmdb/details?${_detailQuery.toString()}`,
-        {},
-        25000,
-      );
-      // TMDB is authoritative for a cold short URL: overwrite rather than
-      // fill-if-absent, since an early reproducible-URL pass can seed a
-      // placeholder "Untitled" title into params before this runs.
-      const _resolvedTitle = String(_details?.title || _details?.name || "").trim();
-      if (_resolvedTitle) {
-        params.set("title", _resolvedTitle);
-      }
-      const _releaseDate = String(
-        _details?.release_date || _details?.first_air_date || "",
-      ).trim();
-      if (_releaseDate.length >= 4) {
-        params.set("year", _releaseDate.slice(0, 4));
-      }
-      const _posterPath = String(
-        _details?.poster_path || _details?.backdrop_path || "",
-      ).trim();
-      if (_posterPath) {
-        params.set("thumb", `https://image.tmdb.org/t/p/w1280${_posterPath}`);
-        thumbParam = params.get("thumb");
-      }
-    } catch {
-      // Best-effort; playback can still resolve from the tmdbId alone.
-    }
-  }
+  // Resolver metadata supplies cold-link display details alongside the video;
+  // a separate TMDB lookup must not delay the media request.
 
   // ─── Clean URL slug resolution (on refresh with no query params) ───
   if (_needsSlugResolve && _watchPath) {
     try {
-      const _libResp = await fetch("/api/library");
-      if (_libResp.ok) {
-        const _lib = await _libResp.json();
+      const _lib = await playbackLibraryReady;
+      if (_lib) {
         const _slug = _watchPath.slug;
         const _movies = Array.isArray(_lib?.movies) ? _lib.movies : [];
         const _allSeries = Array.isArray(_lib?.series) ? _lib.series : [];
@@ -7887,11 +7927,6 @@ async function initPlaybackSource() {
   applyMobileLightTmdbDefaults();
   controlLayout.series ||= isSeriesPlayback || isTmdbTvPlayback;
   await preferLocalMoviePlaybackSourceFromLibrary();
-  if (isTmdbTvPlayback && !isSeriesPlayback) {
-    await hydrateTmdbTvEpisodeCatalog();
-    hasSeriesEpisodeControls =
-      isEpisodeListPlayback() && Boolean(seriesEpisodes.length > 1);
-  }
   // Playback identity is settled; reveal identity-gated controls together
   // instead of letting each pop in as resolution/playback progresses.
   setEpisodeLabel(title, episode);
@@ -7977,7 +8012,7 @@ async function initPlaybackSource() {
   const serverWatchProgressRetry = shouldRetryWatchProgress
     ? startBoundedWatchProgressRetry()
     : null;
-  if (userRealDebridSettingsReady) {
+  if (userRealDebridSettingsReady && (tmdbSkipExternalEmbed || getPinnedSourceHashForRequests() || isTorrentResolverProvider(preferredResolverProvider))) {
     await userRealDebridSettingsReady;
   }
   if (!startupUserStateOwnerIsCurrent()) return;
@@ -9172,6 +9207,7 @@ if (sourceMenu) trackListener(sourceMenu, "click", (event) => {
   if (sourceTab instanceof HTMLButtonElement) {
     activeSourceTypeTab = String(sourceTab.dataset.sourceTab || "");
     renderSourceOptionButtons();
+    ensureVisibleTorrentSourceCatalog();
     sourceTab.focus({ preventScroll: true });
     return;
   }
@@ -9410,6 +9446,7 @@ trackListener(video, "stalled", () => {
   scheduleStreamStallRecovery();
 });
 trackListener(video, "seeked", () => {
+  persistResumeTime(true);
   renderCustomSubtitleOverlay();
   if (video.paused || video.readyState >= 2) {
     hideSeekLoadingIndicator();
@@ -9799,12 +9836,7 @@ trackListener(window, "storage", (event) => {
     paintSeekProgress(seekBar.value);
     syncDurationText();
     scheduleControlsHide();
-    initPlaybackSource().then(() => {
-      setEpisodeLabel(title, episode);
-      renderSeriesEpisodePreview();
-      syncSeriesControls();
-      void hydrateSeriesEpisodeThumbnails();
-    });
+    initPlaybackSource().then(() => void loadPlaybackEpisodeControls());
 
     playerShell.focus();
 
@@ -9817,6 +9849,7 @@ trackListener(window, "storage", (event) => {
   });
 
   onCleanup(() => {
+    playerDisposed = true;
     persistResumeTime(true);
     checkpointSaveQueue.flushForExit();
     checkpointSaveQueue.dispose();

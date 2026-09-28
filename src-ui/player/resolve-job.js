@@ -300,6 +300,12 @@ export function createResolveRequester({
   }
 
   async function requestResolveJson(url, timeoutMs, { retryTransient = true } = {}) {
+    // Subtitle discovery enriches a working stream; never hold its first frame.
+    const resolveUrl = new URL(url, "https://streamarena.invalid");
+    if (/^\/api\/resolve\/(movie|tv)$/.test(resolveUrl.pathname)) {
+      resolveUrl.searchParams.set("deferSubtitles", "1");
+      url = `${resolveUrl.pathname}${resolveUrl.search}`;
+    }
     if (disposed) {
       throw createResolveAbortError();
     }

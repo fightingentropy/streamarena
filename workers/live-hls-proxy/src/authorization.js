@@ -119,6 +119,9 @@ export async function authorizeSignedRequest(
   env,
   nowSeconds = Math.floor(Date.now() / 1000),
 ) {
+  // Session-bound private sources are served only by the authenticated origin.
+  // A Worker must never turn one into a publicly cached bearer response.
+  if (url.searchParams.has("privateSession")) return deny(403, "private source not supported");
   const input = url.searchParams.get("input");
   const referer = url.searchParams.get("referer") || "";
   if (!input || url.searchParams.get("externalEmbed") !== "1") {

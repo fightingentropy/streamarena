@@ -80,7 +80,7 @@ use admin::{
 #[cfg(test)]
 use admin::{manifest_is_stream_addon, normalize_custom_addon_base, provider_slugify};
 use discovery::{tmdb_recommendations_handler, tmdb_search_handler};
-use playback_media::{media_tracks_handler, remux_handler};
+use playback_media::{media_tracks_handler, remux_handler, resolve_subtitles_handler};
 use real_debrid_benchmark::{
     attach_benchmark_server_instance, benchmark_query_matches_cardinality,
     exact_single_query_value, playback_intent_requested, prepare_real_debrid_benchmark_probe,
@@ -473,6 +473,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/gallery/save-stream", any(gallery_save_stream_handler))
         .route("/api/resolve/sources", any(resolve_sources_handler))
+        .route("/api/resolve/subtitles", any(resolve_subtitles_handler))
         .route("/api/resolve/movie", any(resolve_movie_handler))
         .route("/api/resolve/tv", any(resolve_tv_handler))
         .route("/api/resolve/job/{job_id}", any(resolve_job_handler))
@@ -1432,8 +1433,17 @@ pub async fn resolve_sources_handler(
         ));
     }
     let user = request_auth.require_auth(&state.db, &headers).await?;
-    let real_debrid_api_key = real_debrid_api_key_for_user(&state, user.id).await?;
-    let local_torrent_enabled = local_torrent_enabled_for_user(&state.db, user.id).await?;
+    // A lightweight HLS catalog needs neither torrent credentials nor a scarce
+    // resolver permit. Older clients retain the full catalog by default.
+    let (real_debrid_api_key, local_torrent_enabled) =
+        if include_torrents_in_source_catalog(&params) {
+            (
+                real_debrid_api_key_for_user(&state, user.id).await?,
+                local_torrent_enabled_for_user(&state.db, user.id).await?,
+            )
+        } else {
+            (String::new(), false)
+        };
 
     let payload = state
         .resolver
@@ -1498,6 +1508,12 @@ pub async fn resolve_sources_handler(
         )
         .await?;
     Ok(json_response(payload))
+}
+
+fn include_torrents_in_source_catalog(params: &BTreeMap<String, String>) -> bool {
+    !params
+        .get("includeTorrents")
+        .is_some_and(|value| value.trim() == "0" || value.trim().eq_ignore_ascii_case("false"))
 }
 
 fn truthy_query_flag(params: &BTreeMap<String, String>, key: &str) -> bool {
@@ -1722,6 +1738,7 @@ pub async fn resolve_movie_handler(
                     refresh_resolve,
                     record_external_health_events,
                     real_debrid_benchmark_exact_reuse,
+                    truthy_query_flag(&params, "deferSubtitles"),
                 )
                 .await;
             if let Ok(payload) = &result {
@@ -1800,6 +1817,7 @@ pub async fn resolve_movie_handler(
             refresh_resolve,
             record_external_health_events,
             real_debrid_benchmark_exact_reuse,
+            truthy_query_flag(&params, "deferSubtitles"),
         )
         .await;
     if let Ok(payload) = &mut result {
@@ -2036,6 +2054,7 @@ pub async fn resolve_tv_handler(
                     refresh_resolve,
                     record_external_health_events,
                     real_debrid_benchmark_exact_reuse,
+                    truthy_query_flag(&params, "deferSubtitles"),
                 )
                 .await;
             if let Ok(payload) = &result {
@@ -2131,6 +2150,7 @@ pub async fn resolve_tv_handler(
             refresh_resolve,
             record_external_health_events,
             real_debrid_benchmark_exact_reuse,
+            truthy_query_flag(&params, "deferSubtitles"),
         )
         .await;
     if let Ok(payload) = &mut result {
@@ -4219,6 +4239,17 @@ impl StringExt for String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_catalog_is_full_by_default_and_can_skip_torrent_work() {
+        use super::{include_torrents_in_source_catalog, query_pairs};
+        for query in ["", "includeTorrents=1", "includeTorrents=true"] {
+            assert!(include_torrents_in_source_catalog(&query_pairs(query)));
+        }
+        for query in ["includeTorrents=0", "includeTorrents=false"] {
+            assert!(!include_torrents_in_source_catalog(&query_pairs(query)));
+        }
+    }
+
     use super::{
         RESOLVE_JOB_INLINE_WAIT_MS, USER_IDENTITY_MAX_BYTES, USER_SYNC_MAX_ENTRIES,
         absolute_request_url_with_authority, apply_private_no_store, apply_security_headers,

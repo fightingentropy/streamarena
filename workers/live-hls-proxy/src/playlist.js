@@ -10,6 +10,8 @@ import {
 } from "./constants.js";
 import { BodyLimitError, deny, readBoundedText, upstreamCacheStatus } from "./http.js";
 import { fetchFromOrigin } from "./origin.js";
+import { boundedCacheTtl, isImmutablePlaylist, responseCacheControl } from "./cache-policy.js";
+import { logProxyFailure } from "./diagnostics.js";
 
 export class PlaylistLimitError extends Error {}
 
@@ -60,9 +62,10 @@ export async function handlePlaylist(request, url, env) {
   if (authorized instanceof Response) return authorized;
 
   const immutableVod = url.searchParams.get("directSeg") === "1";
-  const playlistTtl = immutableVod
+  const playlistTtl = boundedCacheTtl(authorized, immutableVod
     ? VOD_PLAYLIST_CACHE_TTL_SECONDS
-    : PLAYLIST_CACHE_TTL_SECONDS;
+    : PLAYLIST_CACHE_TTL_SECONDS);
+  const startedAt = Date.now();
   const originFetch = fetchFromOrigin(
     env,
     "/api/live/hls.m3u8",
@@ -75,10 +78,12 @@ export async function handlePlaylist(request, url, env) {
   let upstream;
   try {
     upstream = await originFetch;
-  } catch {
+  } catch (error) {
+    logProxyFailure("playlist_origin", { error, startedAt });
     return deny(502, "origin fetch failed");
   }
   if (!upstream.ok) {
+    logProxyFailure("playlist_origin", { status: upstream.status, startedAt });
     let message = "origin request failed";
     try {
       message = await readBoundedText(upstream, MAX_ERROR_BODY_BYTES);
@@ -104,6 +109,7 @@ export async function handlePlaylist(request, url, env) {
       url.origin,
     );
   } catch (error) {
+    logProxyFailure("playlist_rewrite", { error, startedAt });
     if (error instanceof BodyLimitError || error instanceof PlaylistLimitError) {
       return deny(502, "origin playlist exceeded safety limits");
     }
@@ -113,8 +119,12 @@ export async function handlePlaylist(request, url, env) {
     status: 200,
     headers: {
       "content-type": "application/vnd.apple.mpegurl; charset=utf-8",
-      "cache-control": immutableVod
-        ? `public, max-age=${VOD_PLAYLIST_CACHE_TTL_SECONDS}`
+      "cache-control": isImmutablePlaylist(body)
+        ? responseCacheControl(
+            upstream,
+            boundedCacheTtl(authorized, VOD_PLAYLIST_CACHE_TTL_SECONDS),
+            request.headers,
+          )
         : "no-store",
       "Access-Control-Allow-Origin": "*",
       "X-Live-Proxy": "cf-worker",

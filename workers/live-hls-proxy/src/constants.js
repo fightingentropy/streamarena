@@ -13,6 +13,7 @@ export function hlsUserAgent(referer) {
     : BROWSER_UA;
 }
 export const SEGMENT_CACHE_TTL_SECONDS = 20;
+export const VOD_SEGMENT_CACHE_TTL_SECONDS = 3_600;
 export const PLAYLIST_CACHE_TTL_SECONDS = 2;
 export const VOD_PLAYLIST_CACHE_TTL_SECONDS = 300;
 

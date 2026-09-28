@@ -3,10 +3,11 @@ import {
   hlsUserAgent,
   MAX_BUFFERED_PNG_SEGMENT_BYTES,
   MAX_UPSTREAM_REDIRECTS,
-  SEGMENT_CACHE_TTL_SECONDS,
 } from "./constants.js";
 import { BodyLimitError, deny, readBoundedBytes, upstreamCacheStatus } from "./http.js";
 import { fetchFromOrigin } from "./origin.js";
+import { fetchCacheOptions, resourceCacheTtl, responseCacheControl } from "./cache-policy.js";
+import { logProxyFailure } from "./diagnostics.js";
 
 export async function fetchWithSafeRedirects(
   initialUrl,
@@ -24,6 +25,7 @@ export async function fetchWithSafeRedirects(
     }
     const response = await fetcher(current.toString(), { ...init, redirect: "manual" });
     if (response.status < 300 || response.status >= 400) return response;
+    void response.body?.cancel().catch(() => {});
     if (redirects >= maxRedirects) throw new Error("redirect limit exceeded");
     const location = response.headers.get("location");
     if (!location) throw new Error("redirect missing location");
@@ -31,7 +33,8 @@ export async function fetchWithSafeRedirects(
   }
 }
 
-async function relayResourceViaOrigin(request, url, env) {
+async function relayResourceViaOrigin(request, url, env, authorized) {
+  const startedAt = Date.now();
   const forwarded = new URLSearchParams(url.searchParams);
   forwarded.delete("viaOrigin");
   const originFetch = fetchFromOrigin(
@@ -39,16 +42,18 @@ async function relayResourceViaOrigin(request, url, env) {
     "/api/live/hls-resource",
     `?${forwarded.toString()}`,
     request.headers,
-    SEGMENT_CACHE_TTL_SECONDS,
+    resourceCacheTtl(url, authorized),
   );
   if (!originFetch) return deny(503, "origin not configured");
   let upstream;
   try {
     upstream = await originFetch;
-  } catch {
+  } catch (error) {
+    logProxyFailure("resource_origin", { error, startedAt });
     return deny(502, "origin fetch failed");
   }
-  return relayResponse(request, upstream, "origin");
+  if (!upstream.ok) logProxyFailure("resource_origin", { status: upstream.status, startedAt });
+  return relayResponse(request, upstream, "origin", resourceCacheTtl(url, authorized));
 }
 
 export function stripPngPrefixedTs(bytes) {
@@ -74,7 +79,7 @@ export function stripPngPrefixedTs(bytes) {
   return bytes;
 }
 
-function relayResponse(request, upstream, mode) {
+async function relayResponse(request, upstream, mode, ttl) {
   const headers = new Headers();
   for (const name of ["content-type", "content-length", "content-range", "accept-ranges"]) {
     const value = upstream.headers.get(name);
@@ -82,12 +87,13 @@ function relayResponse(request, upstream, mode) {
   }
   headers.set(
     "Cache-Control",
-    upstream.ok ? `public, max-age=${SEGMENT_CACHE_TTL_SECONDS}` : "no-store",
+    responseCacheControl(upstream, ttl, request.headers),
   );
   headers.set("Access-Control-Allow-Origin", "*");
   headers.set("X-Live-Proxy", "cf-worker");
   headers.set("X-Live-Proxy-Mode", mode);
   headers.set("X-Upstream-Cache", upstreamCacheStatus(upstream));
+  if (request.method === "HEAD") await upstream.body?.cancel();
   return new Response(request.method === "HEAD" ? null : upstream.body, {
     status: upstream.status,
     headers,
@@ -101,9 +107,8 @@ export async function handleResource(request, url, env) {
   const authorized = await authorizeSignedRequest(url, env);
   if (authorized instanceof Response) return authorized;
   if (url.searchParams.get("viaOrigin") === "1") {
-    return relayResourceViaOrigin(request, url, env);
+    return relayResourceViaOrigin(request, url, env, authorized);
   }
-
   const { target, referer } = authorized;
   const upstreamHeaders = {
     "User-Agent": hlsUserAgent(referer),
@@ -114,23 +119,24 @@ export async function handleResource(request, url, env) {
   if (referer) upstreamHeaders.Referer = referer;
   const range = request.headers.get("Range");
   if (range) upstreamHeaders.Range = range;
-  const cf = range
-    ? {}
-    : {
-        cacheTtl: SEGMENT_CACHE_TTL_SECONDS,
-        cacheEverything: true,
-        cacheKey: target.toString(),
-      };
-
+  const startedAt = Date.now();
   let upstream;
   try {
     upstream = await fetchWithSafeRedirects(
       target,
-      { method: "GET", headers: upstreamHeaders, cf },
+      {
+        method: "GET",
+        headers: upstreamHeaders,
+        ...fetchCacheOptions(resourceCacheTtl(url, authorized), request.headers),
+      },
       { blockedHostname: url.hostname },
     );
-  } catch {
+  } catch (error) {
+    logProxyFailure("resource_upstream", { target, error, startedAt });
     return deny(502, "upstream fetch failed");
+  }
+  if (!upstream.ok) {
+    logProxyFailure("resource_upstream", { target, status: upstream.status, startedAt });
   }
 
   const contentType = upstream.headers.get("content-type") || "";
@@ -142,16 +148,21 @@ export async function handleResource(request, url, env) {
       headers.set("content-type", stripped.length !== raw.length ? "video/mp2t" : contentType);
       const acceptRanges = upstream.headers.get("accept-ranges");
       if (acceptRanges) headers.set("accept-ranges", acceptRanges);
-      headers.set("Cache-Control", `public, max-age=${SEGMENT_CACHE_TTL_SECONDS}`);
+      headers.set("Cache-Control", responseCacheControl(
+        upstream,
+        resourceCacheTtl(url, authorized),
+        request.headers,
+      ));
       headers.set("Access-Control-Allow-Origin", "*");
       headers.set("X-Live-Proxy", "cf-worker");
       headers.set("X-Live-Proxy-Mode", "upstream");
       headers.set("X-Upstream-Cache", upstreamCacheStatus(upstream));
       return new Response(stripped, { status: upstream.status, headers });
     } catch (error) {
+      logProxyFailure("resource_decode", { target, error, startedAt });
       if (error instanceof BodyLimitError) return deny(502, "segment exceeded safety limits");
       return deny(502, "segment decode failed");
     }
   }
-  return relayResponse(request, upstream, "upstream");
+  return relayResponse(request, upstream, "upstream", resourceCacheTtl(url, authorized));
 }

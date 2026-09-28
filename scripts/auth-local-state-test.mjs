@@ -458,4 +458,29 @@ for (const stage of ["headers", "body", "expired"]) {
   assert(!loginSource.includes("/api/user/sync"), "Login still uploads unowned browser data.");
 }
 
+// Playback can mount with verified preferences/resume while My List is still
+// pending. The later list response must not overwrite a newer playback save.
+{
+  const state = installBrowserState();
+  establishUserLocalState({ id: 12, email: "playback@example.com" });
+  let releaseList;
+  const listGate = new Promise(resolve => { releaseList = resolve; });
+  globalThis.fetch = async (path) => {
+    if (path === "/api/user/my-list") { await listGate; return jsonResponse({ entries: [] }); }
+    if (path === "/api/user/preferences") return jsonResponse({ "streamarena-default-audio-lang": "ja" });
+    if (path === "/api/user/watch-progress") return jsonResponse({ entries: [{ sourceIdentity: "tmdb:tv:1:s1:e2", resumeSeconds: 123 }] });
+    return jsonResponse({ entries: [] });
+  };
+  const hydration = beginServerHydration();
+  const result = await hydration.playbackReady;
+  assert(result.didLoadPreferences && result.didLoadProgress && result.didLoadContinueWatching && !result.didLoadMyList,
+    "Playback waited for unrelated My List or omitted required resume/preferences.", result);
+  assert(state.localStorage.getItem("streamarena-resume:tmdb:tv:1:s1:e2") === "123", "Playback lost authoritative resume.");
+  assert(state.localStorage.getItem("streamarena-default-audio-lang") === "ja", "Playback omitted account preferences.");
+  state.localStorage.setItem("streamarena-resume:tmdb:tv:1:s1:e2", "125");
+  releaseList();
+  await hydration.complete;
+  assert(state.localStorage.getItem("streamarena-resume:tmdb:tv:1:s1:e2") === "125", "Deferred list completion rolled back playback.");
+}
+
 console.log("Auth ownership, hydration, and logout state tests passed.");

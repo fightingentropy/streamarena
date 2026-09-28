@@ -1,4 +1,6 @@
 import { isPublicHlsProxyHostname } from "./authorization.js";
+import { fetchCacheOptions } from "./cache-policy.js";
+import { logProxyFailure } from "./diagnostics.js";
 
 const ORIGIN_DIRECT_SOFT_DEADLINE_MS = 2_500;
 const ORIGIN_DIRECT_COOLDOWN_MS = 30_000;
@@ -27,7 +29,7 @@ function originSubrequest(base, path, search, requestHeaders, cacheTtl, signal) 
     method: "GET",
     headers,
     redirect: "manual",
-    cf: { cacheTtl, cacheEverything: true, cacheKey: originUrl },
+    ...fetchCacheOptions(cacheTtl, requestHeaders),
   };
   if (signal) init.signal = signal;
   return fetch(originUrl, init);
@@ -68,10 +70,15 @@ export function fetchFromOrigin(env, path, search, requestHeaders, cacheTtl) {
         directOriginTrippedUntil = 0;
         return settled.response;
       }
+      logProxyFailure("origin_direct", {
+        error: settled.error,
+        status: settled.response?.status,
+      });
       directOriginTrippedUntil = Date.now() + ORIGIN_DIRECT_COOLDOWN_MS;
       return originSubrequest(edge, path, search, requestHeaders, cacheTtl);
     }
     directOriginTrippedUntil = Date.now() + ORIGIN_DIRECT_COOLDOWN_MS;
+    logProxyFailure("origin_direct", { error: new DOMException("timed out", "AbortError") });
     controller.abort();
     return originSubrequest(edge, path, search, requestHeaders, cacheTtl);
   })();

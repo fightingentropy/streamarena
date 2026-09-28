@@ -382,12 +382,16 @@ export function createDeferredMediaTrackController({
     }
   }
 
-  async function applyDeferredPayload(payload) {
+  async function applyDeferredPayload(payload, { subtitlesOnly = false } = {}) {
     const before = getState();
     const shouldMapAudioSelection = before.audioLang !== "auto";
     const normalizedTracks = normalizeTrackPayload(payload, before.audioLang, {
       mapAudioSelection: shouldMapAudioSelection,
     });
+    if (subtitlesOnly) {
+      normalizedTracks.audioTracks = before.audioTracks || [];
+      normalizedTracks.selectedAudioStreamIndex = before.selectedAudioStreamIndex;
+    }
     applyTrackState(normalizedTracks, {
       resetDuration: false,
       updateAudioPreference: true,
@@ -428,7 +432,7 @@ export function createDeferredMediaTrackController({
     rebuildTrackOptionButtons();
     syncAudioState();
     syncDurationText();
-    if (!restartPlan.required || !state.sourceInput) {
+    if (subtitlesOnly || !restartPlan.required || !state.sourceInput) {
       applySubtitleTrackByStreamIndex(state.selectedSubtitleStreamIndex);
       return false;
     }
@@ -497,6 +501,10 @@ export function createDeferredMediaTrackController({
     if (!query) {
       return false;
     }
+    const subtitlesOnly = resolved?.subtitlesPending === true;
+    const requestQuery = new URLSearchParams(query);
+    if (subtitlesOnly) requestQuery.delete("input");
+    const endpoint = subtitlesOnly ? "/api/resolve/subtitles" : "/api/media/tracks";
     const { scheduledSequence, controller } = beginOperation();
 
     void (async () => {
@@ -520,7 +528,7 @@ export function createDeferredMediaTrackController({
       let payload;
       try {
         payload = await runRequest(
-          `/api/media/tracks?${query}`,
+          `${endpoint}?${requestQuery}`,
           45_000,
           scheduledSequence,
           controller,
@@ -542,7 +550,7 @@ export function createDeferredMediaTrackController({
         return;
       }
       try {
-        await applyDeferredPayload(payload);
+        await applyDeferredPayload(payload, { subtitlesOnly });
       } catch (error) {
         if (scheduledSequence === requestSequence) {
           warn("Deferred media track application failed.", error);

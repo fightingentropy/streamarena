@@ -225,3 +225,147 @@ pub(super) async fn media_tracks_handler(
     attach_benchmark_server_instance(&mut response, benchmark_instance.as_deref())?;
     Ok(response)
 }
+
+/// Subtitle-only enrichment deliberately has no media input and never probes or
+/// resolves video. It is called after playback starts by clients that opt in.
+pub(super) async fn resolve_subtitles_handler(
+    State(state): State<AppState>,
+    request_auth: auth::RequestAuth,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+) -> AppResult<Response<Body>> {
+    if method != Method::GET {
+        return Err(ApiError::method_not_allowed("Method not allowed."));
+    }
+    request_auth.require_auth(&state.db, &headers).await?;
+    let params = query_pairs(uri.query().unwrap_or_default());
+    let mut payload = subtitle_enrichment_payload(&params)?;
+    let started = Instant::now();
+    state
+        .resolver
+        .attach_external_subtitle_tracks_to_payload(&mut payload)
+        .await;
+    let mut response = json_response(json!({
+        "tracks": payload["tracks"],
+        "selectedSubtitleStreamIndex": payload["selectedSubtitleStreamIndex"],
+        "preferences": payload["preferences"],
+    }));
+    apply_private_no_store(response.headers_mut());
+    if let Ok(timing) = HeaderValue::from_str(&format!(
+        "subtitles;dur={:.3}",
+        started.elapsed().as_secs_f64() * 1_000.0
+    )) {
+        response.headers_mut().insert("server-timing", timing);
+    }
+    Ok(response)
+}
+
+fn subtitle_enrichment_payload(params: &BTreeMap<String, String>) -> AppResult<Value> {
+    let imdb_id = params
+        .get("imdbId")
+        .map(|value| value.trim())
+        .unwrap_or_default();
+    let digits = imdb_id.strip_prefix("tt").unwrap_or(imdb_id);
+    if !imdb_id.is_empty()
+        && (digits.is_empty()
+            || digits.len() > 16
+            || !digits.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Err(ApiError::bad_request("Invalid IMDb id."));
+    }
+    let text = |key: &str| {
+        params
+            .get(key)
+            .map(|value| value.trim().chars().take(512).collect::<String>())
+            .unwrap_or_default()
+    };
+    let title = text("title");
+    if imdb_id.is_empty() && title.is_empty() {
+        return Err(ApiError::bad_request("Missing subtitle search identity."));
+    }
+    let normalized_imdb_id = if imdb_id.is_empty() {
+        String::new()
+    } else {
+        format!("tt{digits}")
+    };
+    let ordinal = |key: &str| {
+        params
+            .get(key)
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or_default()
+            .clamp(0, 10_000)
+    };
+    Ok(json!({
+        "resolverProvider": "external-embed",
+        "metadata": {
+            "imdbId": normalized_imdb_id,
+            "displayTitle": title,
+            "displayYear": normalize_year(text("year")),
+            "seasonNumber": ordinal("seasonNumber"),
+            "episodeNumber": ordinal("episodeNumber"),
+        },
+        "filename": text("filename"),
+        "tracks": crate::media::MediaProbe::default(),
+        "selectedSubtitleStreamIndex": -1,
+        "preferences": { "subtitleLang": normalize_subtitle_preference(&text("subtitleLang")) },
+    }))
+}
+
+#[cfg(test)]
+mod subtitle_enrichment_tests {
+    use super::*;
+
+    #[test]
+    fn subtitle_lookup_uses_bounded_identity_hints_and_never_media_input() {
+        let payload = subtitle_enrichment_payload(&query_pairs(
+            "imdbId=tt0944947&title=Game%20of%20Thrones&year=2011&seasonNumber=1&episodeNumber=2&subtitleLang=en&input=https%3A%2F%2Fprivate.invalid%2Fvideo",
+        )).unwrap();
+        assert_eq!(payload["metadata"]["imdbId"], "tt0944947");
+        assert_eq!(payload["metadata"]["seasonNumber"], 1);
+        assert_eq!(payload["metadata"]["episodeNumber"], 2);
+        assert!(payload.get("input").is_none());
+        assert!(payload.get("sourceInput").is_none());
+        let mut params = query_pairs("imdbId=123&seasonNumber=-20&episodeNumber=999999");
+        params.insert("title".into(), "x".repeat(2_000));
+        let bounded = subtitle_enrichment_payload(&params).unwrap();
+        assert_eq!(
+            bounded["metadata"]["displayTitle"].as_str().unwrap().len(),
+            512
+        );
+        assert_eq!(bounded["metadata"]["seasonNumber"], 0);
+        assert_eq!(bounded["metadata"]["episodeNumber"], 10_000);
+    }
+
+    #[test]
+    fn subtitle_lookup_rejects_invalid_imdb_identity() {
+        for value in [
+            "",
+            "tt",
+            "tt../admin",
+            "12345678901234567",
+            "https://example.org",
+        ] {
+            let mut params = BTreeMap::new();
+            params.insert("imdbId".into(), value.into());
+            assert!(subtitle_enrichment_payload(&params).is_err());
+        }
+    }
+
+    #[test]
+    fn subtitle_lookup_preserves_title_fallback_without_imdb() {
+        for query in [
+            "title=Example&year=2026",
+            "imdbId=%20&title=Example&year=2026",
+        ] {
+            let payload = subtitle_enrichment_payload(&query_pairs(query)).unwrap();
+            assert_eq!(payload["metadata"]["imdbId"], "");
+            assert_eq!(payload["metadata"]["displayTitle"], "Example");
+            assert_eq!(payload["metadata"]["displayYear"], "2026");
+        }
+        assert!(subtitle_enrichment_payload(&query_pairs("title=%20")).is_err());
+        assert!(
+            subtitle_enrichment_payload(&query_pairs("title=Example&imdbId=ttinvalid")).is_err()
+        );
+    }
+}

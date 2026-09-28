@@ -532,4 +532,30 @@ function createControllerHarness({
   assert.equal(harness.getTrackStateApplyCount(), 0);
 }
 
+{
+  let requestedUrl = "";
+  const harness = createControllerHarness({
+    subtitleLang: "en", audioLang: "en", mediaReadyState: 0,
+    requestTracks: async (url) => {
+      requestedUrl = url;
+      return { tracks: { audioTracks: [], subtitleTracks: [{ streamIndex: 700, language: "en" }] }, selectedSubtitleStreamIndex: 700 };
+    },
+  });
+  harness.state.audioTracks = [{ streamIndex: 2, language: "en", isDefault: true }];
+  harness.state.selectedAudioStreamIndex = 2;
+  harness.controller.schedule({ tracksPending: true, subtitlesPending: true, sourceInput: harness.state.sourceInput, metadata: { imdbId: "tt5875444" } });
+  await flushAsyncWork();
+  assert.equal(requestedUrl, "", "Subtitle enrichment must wait for playable media.");
+  harness.state.video.dispatch("playing");
+  await flushAsyncWork();
+  const url = new URL(requestedUrl, "https://streamarena.test");
+  assert.equal(url.pathname, "/api/resolve/subtitles");
+  assert.equal(url.searchParams.get("imdbId"), "tt5875444");
+  assert.equal(url.searchParams.has("input"), false, "Subtitle lookup must not probe/reload the video.");
+  assert.equal(harness.state.selectedAudioStreamIndex, 2);
+  assert.equal(harness.state.audioTracks[0].streamIndex, 2);
+  assert.equal(harness.state.selectedSubtitleStreamIndex, 700);
+  assert.equal(harness.sourceChanges.length, 0, "Late external subtitles must not restart playback.");
+}
+
 console.log("deferred-media-tracks-test: ok");

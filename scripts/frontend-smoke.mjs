@@ -491,6 +491,12 @@ const pages = [
     expectMobileFullscreenToggle: true,
   },
   ...[
+    { mediaType: "movie", path: "/watch/movie/999997/startup-film" },
+    { mediaType: "tv", path: "/watch/tv/999998/startup-series/s1e2" },
+  ].map(({ mediaType, path }) => ({
+    path, selector: ".player-shell", expectIndependentPlaybackStartup: mediaType,
+  })),
+  ...[
     { mediaType: "movie", viewport: { width: 1280, height: 900 } },
     { mediaType: "tv", viewport: { width: 1280, height: 900 } },
     { mediaType: "tv", viewport: { width: 390, height: 844 } },
@@ -646,6 +652,9 @@ async function runSmoke() {
       const controlCatalogGate = new Promise(resolve => { releaseControlCatalog = resolve; });
       let releaseControlManifest;
       let controlManifestGate = new Promise(resolve => { releaseControlManifest = resolve; });
+      let releaseStartupExtras;
+      const startupExtrasGate = new Promise(resolve => { releaseStartupExtras = resolve; });
+      const startupRequests = [];
       let hlsBundleHoldActive = false;
       let previewCancellationExpected = false;
       page.on("pageerror", (error) => {
@@ -789,6 +798,37 @@ async function runSmoke() {
           return;
         }
         const url = new URL(request.url());
+        if (pageSpec.expectIndependentPlaybackStartup) {
+          startupRequests.push({ path: url.pathname, query: Object.fromEntries(url.searchParams) });
+          if (url.pathname === "/api/user/my-list" || url.pathname === "/api/user/torrent-settings") {
+            await startupExtrasGate;
+            await route.fulfill(jsonResponse(url.pathname.endsWith("torrent-settings")
+              ? { configured: true, enabled: true, localTorrentEnabled: true } : { entries: [] }));
+            return;
+          }
+          if (url.pathname === "/api/library" || url.pathname === "/api/user/continue-watching" || url.pathname === "/api/user/watch-progress") {
+            await route.fulfill(jsonResponse({ movies: [], series: [], entries: [] }));
+            return;
+          }
+          if (url.pathname === "/api/tmdb/details") {
+            await route.fulfill(jsonResponse({ title: "Startup series", seasons: [1, 2].map(season_number => ({ season_number, episode_count: 2 })) }));
+            return;
+          }
+          if (url.pathname === "/api/tmdb/tv/season") {
+            const seasonNumber = Number(url.searchParams.get("seasonNumber"));
+            if (seasonNumber === 2) await startupExtrasGate;
+            await route.fulfill(jsonResponse({ seasonNumber, episodes: [1, 2].map(episodeNumber => ({ episodeNumber, name: `Episode ${episodeNumber}`, airDate: "2020-01-01" })) }));
+            return;
+          }
+          if (url.pathname === "/api/resolve/sources") {
+            await route.fulfill(jsonResponse({ sources: [{ sourceHash: sourceSwitchHashA, primary: "CineJoy Nebula", provider: "CineJoy", container: "hls", isTorrent: false }] }));
+            return;
+          }
+          if (/^\/api\/resolve\/(movie|tv)$/.test(url.pathname)) {
+            await route.fulfill(jsonResponse({ sourceHash: sourceSwitchHashA, sourceInput: "https://media.example.test/startup.mp4", playableUrl: `/${smokeVideo}`, resolverProvider: "external-embed", tracks: { audioTracks: [], subtitleTracks: [] }, selectedAudioStreamIndex: -1, selectedSubtitleStreamIndex: -1, metadata: { displayTitle: "Startup title", episodeNumber: 2 } }));
+            return;
+          }
+        }
         if (pageSpec.expectStableControls) {
           if (url.pathname === "/api/tmdb/details") {
             await controlCatalogGate;
@@ -871,6 +911,10 @@ async function runSmoke() {
           url.pathname === "/api/resolve/sources" &&
           url.searchParams.get("tmdbId") === realDebridCacheRefreshTmdbId
         ) {
+          if (url.searchParams.get("includeTorrents") === "0") {
+            await route.fulfill(jsonResponse({ sources: [{ sourceHash: realDebridHlsHash, primary: "Meridian", provider: "LivNet", container: "hls", isTorrent: false }] }));
+            return;
+          }
           realDebridCacheRefreshRequests += 1;
           if (realDebridCacheRefreshRequests === 2) {
             await route.fulfill(jsonResponse({ error: "Transient cache refresh" }, 503));
@@ -1016,6 +1060,11 @@ async function runSmoke() {
                   releaseGroup: "Smoke",
                   score: 900_000,
                 },
+                ...(url.searchParams.get("includeTorrents") === "1" ? [{
+                  sourceHash: realDebridCachedHash,
+                  primary: "Cached alternate torrent",
+                  container: "mp4", isTorrent: true, realDebridCached: true,
+                }] : []),
               ],
             }),
           );
@@ -1398,6 +1447,40 @@ async function runSmoke() {
       }
       await page.waitForSelector(pageSpec.selector, { timeout: 8_000 });
 
+      if (pageSpec.expectIndependentPlaybackStartup) {
+        // Real decoded frames must advance while unrelated account/catalog work
+        // remains pending, not just a fulfilled resolve or manifest request.
+        await page.waitForFunction(() => {
+          const video = document.querySelector("video");
+          return video?.readyState >= 2 && video.videoWidth > 0 && video.currentTime > 0.1 && !video.paused;
+        }, null, { timeout: 2500 }).catch(async error => {
+          const state = await page.evaluate(() => { const v = document.querySelector("video"); return { source: v?.currentSrc, time: v?.currentTime, ready: v?.readyState, paused: v?.paused, error: v?.error?.message, text: document.body.innerText }; });
+          throw new Error(`${error.message}\n${JSON.stringify({ requests: startupRequests, state, failures })}`);
+        });
+        const resolves = startupRequests.filter(item => /^\/api\/resolve\/(movie|tv)$/.test(item.path));
+        if (resolves.length !== 1 || resolves[0].query.deferSubtitles !== "1") throw new Error(`Playback must resolve once with deferred subtitles: ${JSON.stringify(resolves)}`);
+        const expectedLibraryReads = pageSpec.expectIndependentPlaybackStartup === "movie" ? 1 : 0;
+        if (startupRequests.filter(item => item.path === "/api/library").length !== expectedLibraryReads) throw new Error("Playback fetched an unnecessary/duplicate library snapshot.");
+        if (startupRequests.some(item => item.path === "/api/resolve/sources" && item.query.includeTorrents !== "0")) throw new Error("Automatic HLS startup must not discover torrents.");
+        if (pageSpec.expectIndependentPlaybackStartup === "tv") {
+          if (resolves[0].query.seasonNumber !== "1" || resolves[0].query.episodeNumber !== "2") throw new Error("Deferred catalog changed the requested episode.");
+          const resolveIndex = startupRequests.indexOf(resolves[0]);
+          const detailIndex = startupRequests.findIndex(item => item.path === "/api/tmdb/details");
+          if (detailIndex >= 0 && detailIndex < resolveIndex) throw new Error("Cold metadata must not precede the playback resolve.");
+        }
+        releaseStartupExtras();
+        await page.locator("#toggleSource").click();
+        const torrentTab = page.locator('[data-source-tab="torrents"]');
+        await torrentTab.waitFor({ state: "visible" });
+        if (startupRequests.some(item => item.path === "/api/resolve/sources" && item.query.includeTorrents !== "0")) throw new Error("Opening the HLS tab must not discover torrents.");
+        const torrentDiscovery = page.waitForRequest(request => {
+          const url = new URL(request.url());
+          return url.pathname === "/api/resolve/sources" && url.searchParams.get("includeTorrents") === "1";
+        });
+        await torrentTab.click();
+        await torrentDiscovery;
+      }
+
       if (pageSpec.expectStableControls) {
         const expectedIds = ["togglePlay", "toggleSource", "toggleAudio", "toggleHlsQuality", "toggleSpeed", "toggleFullscreen",
           ...(pageSpec.expectStableControls === "tv" ? ["nextEpisode", "toggleEpisodes"] : [])];
@@ -1461,6 +1544,9 @@ async function runSmoke() {
       }
 
       if (pageSpec.expectRealDebridCacheRefresh) {
+        await page.waitForFunction((hash) =>
+          (document.querySelector("video")?.getAttribute("src") || "").includes(hash), sourceSwitchHashB);
+        await page.locator("#toggleSource").click();
         await page.waitForFunction(
           ({ cachedHash, selectedHash }) => {
             const sourceOptions = Array.from(
@@ -1487,6 +1573,12 @@ async function runSmoke() {
           },
           { timeout: 8_000 },
         );
+        // A playing torrent selects this tab automatically. Opening it must
+        // discover alternatives, while reopening or selecting it again must
+        // reuse that catalog rather than start another discovery request.
+        await page.locator("#toggleSource").click();
+        await page.locator("#toggleSource").click();
+        await page.locator('[data-source-tab="torrents"]').click();
         await delay(1_500);
         const cacheRefreshState = await page.evaluate(() => ({
           orderedHashes: Array.from(
@@ -1673,7 +1765,7 @@ async function runSmoke() {
         );
         const [initialRequest] = initialResolveRaceRequests;
         const commonFailed =
-          initialResolveRaceSourceResponses !== 1 ||
+          initialResolveRaceSourceResponses !== (initialResolveRaceCase === "active" ? 2 : 1) ||
           initialResolveRaceRequests.length !== 1 ||
           initialResolveRaceCancelRequests.length !== 0 ||
           initialRequest?.method !== "GET" ||

@@ -17,6 +17,7 @@ export function buildMovieResolvePrewarmUrl({
     audioLang: String(audioLang || "en").trim() || "en",
     quality: String(quality || "auto").trim(),
     resolverProvider: "fastest",
+    deferSubtitles: "1",
     sourceLang: "en",
     sourceAudioProfile: "single",
   });
@@ -53,6 +54,7 @@ export function buildTvResolvePrewarmUrl({
     audioLang: String(audioLang || "en").trim() || "en",
     quality: String(quality || "auto").trim(),
     resolverProvider: "fastest",
+    deferSubtitles: "1",
     sourceLang: "en",
     sourceAudioProfile: "single",
   });

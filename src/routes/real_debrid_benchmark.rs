@@ -329,12 +329,41 @@ pub(super) fn provider_resolve_result_with_benchmark_headers(
 ) -> AppResult<Response<Body>> {
     let mut response = provider_resolve_result(result, record_external_health_events)?;
     finalize_real_debrid_benchmark_response(&mut response, exact_reuse, resolver_elapsed);
+    // Expose only duration, never provider URLs, credentials, or user metadata.
+    if !exact_reuse
+        && let Ok(value) = HeaderValue::from_str(&format!(
+            "resolve-response;dur={:.3}",
+            resolver_elapsed.as_secs_f64() * 1_000.0
+        ))
+    {
+        response.headers_mut().insert("server-timing", value);
+    }
     Ok(response)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_resolution_exposes_duration_without_benchmark_identity() {
+        let response = provider_resolve_result_with_benchmark_headers(
+            Ok(json!({ "playableUrl": "/example" })),
+            true,
+            false,
+            Duration::from_micros(12_345),
+        )
+        .unwrap();
+        assert_eq!(
+            response.headers().get("server-timing").unwrap(),
+            "resolve-response;dur=12.345"
+        );
+        assert!(
+            !response
+                .headers()
+                .contains_key("x-streamarena-benchmark-exact-reuse")
+        );
+    }
 
     #[test]
     fn real_debrid_benchmark_route_requires_an_exact_safe_session_request() {

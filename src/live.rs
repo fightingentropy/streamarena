@@ -1805,7 +1805,7 @@ pub fn build_trusted_external_embed_hls_playback_source(
     referer: Option<&str>,
     live_hls_proxy_secret: &str,
 ) -> String {
-    let expires_at = current_unix_seconds().saturating_add(LIVE_HLS_SIGNATURE_TTL_SECONDS);
+    let expires_at = public_hls_signature_expiry(current_unix_seconds());
     live_hls_proxy_playlist_url_with_trust(
         input,
         referer,
@@ -1815,6 +1815,17 @@ pub fn build_trusted_external_embed_hls_playback_source(
             private_session_binding: None,
         }),
     )
+}
+
+// Public provider URLs for the same media can reuse rewritten playlists and
+// Worker cache entries within this window. Round down so grants are never
+// extended beyond the existing four-hour maximum (remaining TTL: 3h45m–4h).
+// Private Real-Debrid grants deliberately keep their exact session-bound expiry.
+fn public_hls_signature_expiry(now: i64) -> i64 {
+    const WINDOW_SECONDS: i64 = 15 * 60;
+    now.div_euclid(WINDOW_SECONDS)
+        .saturating_mul(WINDOW_SECONDS)
+        .saturating_add(LIVE_HLS_SIGNATURE_TTL_SECONDS)
 }
 
 pub fn build_private_real_debrid_hls_playback_source(
@@ -3508,6 +3519,23 @@ mod tests {
         normalize_hls_referer, png_prefixed_ts_strip_offset, query_pairs,
         rewrite_live_hls_playlist, strip_video_only_stream_inf_codecs,
     };
+
+    #[test]
+    fn public_hls_expiry_reuses_windows_without_extending_grants() {
+        let start = 1_900_000_000_i64.div_euclid(900) * 900;
+        let expiry = super::public_hls_signature_expiry(start);
+        assert_eq!(expiry, start + super::LIVE_HLS_SIGNATURE_TTL_SECONDS);
+        for offset in [0, 1, 450, 899] {
+            let now = start + offset;
+            assert_eq!(super::public_hls_signature_expiry(now), expiry);
+            assert!(expiry <= now + super::LIVE_HLS_SIGNATURE_TTL_SECONDS);
+            assert!(expiry - now > super::LIVE_HLS_SIGNATURE_TTL_SECONDS - 900);
+        }
+        assert_eq!(
+            super::public_hls_signature_expiry(start + 900),
+            expiry + 900
+        );
+    }
 
     #[test]
     fn fmp4_fragments_have_a_media_type_even_when_the_cdn_labels_them_html() {

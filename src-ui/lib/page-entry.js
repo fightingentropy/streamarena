@@ -34,7 +34,9 @@ export async function mountAuthenticatedPage(loadPage, options = {}) {
   if (session.status === "authenticated") {
     const hydration = options.deferHydration
       ? await beginServerHydration().preferencesReady
-      : await hydrateFromServer();
+      : options.hydration === "playback"
+        ? await beginServerHydration().playbackReady
+        : await hydrateFromServer();
     if (hydration.authExpired) {
       return;
     }

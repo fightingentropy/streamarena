@@ -439,7 +439,7 @@ await run("uses an inline async result without a status round trip", async () =>
   });
   assert.deepEqual(requests, [
     {
-      url: "/api/resolve/movie?tmdbId=1&async=1",
+      url: "/api/resolve/movie?tmdbId=1&deferSubtitles=1&async=1",
       options: {
         headers: { "X-StreamArena-Playback-Intent": "1" },
       },
@@ -474,7 +474,7 @@ await run("resolve requester owns async registration and wait transport", async 
   assert.deepEqual(result, { playableUrl: "/local-ready" });
   assert.deepEqual(requests, [
     {
-      url: "/api/resolve/movie?tmdbId=1&async=1",
+      url: "/api/resolve/movie?tmdbId=1&deferSubtitles=1&async=1",
       options: {
         headers: { "X-StreamArena-Playback-Intent": "1" },
       },
