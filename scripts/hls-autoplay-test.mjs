@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 import { createHlsPlaybackController } from "../src-ui/player/hls-controller.js";
 
 function createHarness({
@@ -156,4 +158,49 @@ try {
   }
 }
 
-console.log("\nAll HLS autoplay tests passed (4 cases).");
+// Exercise the player entrypoint too: a real HLS-to-HLS switch leaves currentSrc
+// pointing at the detached blob until the asynchronous attachment completes.
+const playerSource = await readFile(new URL("../src-ui/pages/player.js", import.meta.url), "utf8");
+const tryPlaySource = playerSource.slice(
+  playerSource.indexOf("async function tryPlay() {"),
+  playerSource.indexOf("async function togglePlayback() {"),
+);
+let pending = true;
+let playCalls = 0;
+const nextSource = "https://app.test/api/live/hls.m3u8?input=aether";
+const video = {
+  currentSrc: "blob:https://app.test/previous-cinejoy",
+  networkState: 2,
+  ended: false,
+  getAttribute: () => pending ? "" : "blob:https://app.test/new-aether",
+  play: async () => {
+    playCalls += 1;
+    if (pending) throw Object.assign(new Error("Interrupted by a new load"), { name: "AbortError" });
+  },
+};
+const tryPlay = vm.runInNewContext(`${tryPlaySource}\ntryPlay`, {
+  video,
+  isLiveIframePlaybackActive: () => false,
+  lastRequestedAbsolutePlaybackSource: nextSource,
+  lastRequestedPlaybackSource: "",
+  hlsPlaybackController: {
+    isPendingSource: (source) => pending && source === nextSource,
+    isActive: () => !pending,
+  },
+  hasActiveSource: () => true,
+  armLiveStartupHealthWatch() {},
+  syncPlayState() {},
+  isLivePlayback: false,
+  isManualSourceSwitchPending: () => true,
+  isPlaybackBlockedByPolicy: () => false,
+});
+await tryPlay();
+assert.equal(playCalls, 0, "do not play the old blob while its replacement attaches");
+pending = false;
+await tryPlay();
+assert.equal(playCalls, 1, "the manifest callback can play the newly attached source");
+video.play = async () => { throw Object.assign(new Error("Unsupported codec"), { name: "NotSupportedError" }); };
+await assert.rejects(tryPlay(), { name: "NotSupportedError" });
+console.log("✓ HLS source switches wait for attachment and still report real playback errors");
+
+console.log("\nAll HLS autoplay tests passed (5 cases).");

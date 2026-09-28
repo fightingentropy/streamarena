@@ -6356,6 +6356,14 @@ async function tryPlay() {
     (lastRequestedPlaybackSource
       ? new URL(lastRequestedPlaybackSource, window.location.origin).toString()
       : "");
+  // currentSrc can still be the old blob while hls.js attaches the new source.
+  // Playing it now rejects with AbortError and rolls a valid manual switch back.
+  // The HLS manifest callback will request playback once attachment is ready.
+  if (fallbackRequestedSource && hlsPlaybackController.isPendingSource(fallbackRequestedSource)) {
+    armLiveStartupHealthWatch();
+    syncPlayState();
+    return;
+  }
   const restoreSource =
     !attributeSource && fallbackRequestedSource
       ? fallbackRequestedSource
