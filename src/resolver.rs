@@ -98,14 +98,13 @@ use external_embed::{
     external_embed_playback_url, external_embed_source_filename,
     external_embed_source_for_source_hash, external_embed_source_hash, external_embed_sources,
     is_external_embed_hls_capable_source, preferred_external_embed_hls_sources,
-    race_preferred_then_fallback, should_prefer_default_external_embed,
-    should_resolve_torrent_candidates,
+    race_with_hd_fallback, should_prefer_default_external_embed, should_resolve_torrent_candidates,
 };
 
 #[cfg(test)]
 use external_embed::{
     EXTERNAL_EMBED_PROVIDERS, external_embed_source_rank_score, external_embed_url,
-    is_default_external_embed_hls_fallback_source,
+    is_default_external_embed_hls_fallback_source, race_preferred_then_fallback,
 };
 
 const REAL_DEBRID_API_BASE: &str = "https://api.real-debrid.com/rest/1.0";
@@ -387,6 +386,7 @@ struct ExternalEmbedHlsResolverOutput {
 struct ExternalEmbedHlsPlaybackSource {
     playback_url: Url,
     referer: Option<String>,
+    full_hd: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4532,10 +4532,17 @@ async fn build_external_embed_resolved_playback_payload(
     let attempts = candidates
         .into_iter()
         .map(|candidate| {
-            resolve_external_embed_candidate_attempt(&request, candidate, hls_deadline_ms)
+            let request = &request;
+            async move {
+                let resolved =
+                    resolve_external_embed_candidate_attempt(request, candidate, hls_deadline_ms)
+                        .await?;
+                let preferred_quality = resolved.1.full_hd || !request.allow_native_fallback;
+                Some((resolved, preferred_quality))
+            }
         })
         .collect::<Vec<_>>();
-    let (_index, (candidate, hls_source, embed_url)) = race_preferred_then_fallback(
+    let (_index, (candidate, hls_source, embed_url)) = race_with_hd_fallback(
         attempts,
         preferred_count,
         Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
@@ -4549,7 +4556,9 @@ async fn build_external_embed_resolved_playback_payload(
         record_external_embed_health_event(request.db, candidate, request.metadata, "success", ""),
     )
     .await;
-    if request.record_health_events {
+    // Recheck the full-HD catalog on the next automatic play instead of making
+    // a 720p fallback sticky. Explicit selections keep their normal cache.
+    if request.record_health_events && (hls_source.full_hd || !request.allow_native_fallback) {
         request.resolve_cache.store(
             request.cache_key.to_owned(),
             CachedResolvedEmbed {
@@ -5641,12 +5650,13 @@ async fn validate_external_embed_hls_playlist(
             return None;
         }
         let playlist = String::from_utf8_lossy(&response.body);
-        if !hls_quality::offers_full_hd(&playlist) {
+        if !hls_quality::offers_hd(&playlist) {
             return None;
         }
         return Some(ExternalEmbedHlsPlaybackSource {
             playback_url,
             referer,
+            full_hd: hls_quality::offers_full_hd(&playlist),
         });
     }
     let mut request = client
@@ -5678,12 +5688,13 @@ async fn validate_external_embed_hls_playlist(
     .await
     .ok()?
     .ok()?;
-    if !hls_quality::offers_full_hd(&playlist) {
+    if !hls_quality::offers_hd(&playlist) {
         return None;
     }
     Some(ExternalEmbedHlsPlaybackSource {
         playback_url: final_url,
         referer,
+        full_hd: hls_quality::offers_full_hd(&playlist),
     })
 }
 
@@ -5946,6 +5957,9 @@ fn compute_source_health_score(stats: &SourceHealthStats) -> i64 {
 
 fn compute_external_embed_rank_health_score(stats: &SourceHealthStats) -> i64 {
     let score = compute_source_health_score(stats);
+    if external_embed_failure_cooled_down(stats, score) {
+        return 0;
+    }
     if score > 0 {
         score.min(EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP)
     } else {
@@ -5962,6 +5976,9 @@ fn compute_external_embed_rank_health_score(stats: &SourceHealthStats) -> i64 {
 /// which should still sink it across tiers.
 fn compute_external_embed_provider_rank_health_score(stats: &SourceHealthStats) -> i64 {
     let score = compute_source_health_score(stats);
+    if external_embed_failure_cooled_down(stats, score) {
+        return 0;
+    }
     if score <= SOURCE_HEALTH_AVOID_SCORE {
         return score;
     }
@@ -5969,6 +5986,14 @@ fn compute_external_embed_provider_rank_health_score(stats: &SourceHealthStats) 
         -EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP,
         EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP,
     )
+}
+
+fn external_embed_failure_cooled_down(stats: &SourceHealthStats, score: i64) -> bool {
+    // A transient error (including an older quality-policy rejection) must not
+    // exclude an external source for the cache's 30-day retention period.
+    score <= SOURCE_HEALTH_AVOID_SCORE
+        && stats.updated_at > 0
+        && now_ms().saturating_sub(stats.updated_at) >= 5 * 60 * 1000
 }
 
 fn stream_quality_target(value: &str) -> i64 {

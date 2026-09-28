@@ -16,7 +16,7 @@ fn valid_playlist(url: &Url, server: &str) -> bool {
         .filter(|part| !part.is_empty())
         .collect();
     match (server, url.host_str()) {
-        ("LISBON", Some("ok.solarpanelcleaning.cc")) => {
+        ("LISBON", Some("ok.solarpanelcleaning.cc" | "lit.cheaptruckrepairs.cc")) => {
             parts.len() == 2 && parts[0] == "playlist" && parts[1].ends_with(".m3u8")
         }
         ("NEBULA", Some("nebula.bright67.online")) => {
@@ -64,6 +64,10 @@ mod tests {
             (
                 "LISBON",
                 "https://ok.solarpanelcleaning.cc/playlist/test.m3u8",
+            ),
+            (
+                "LISBON",
+                "https://lit.cheaptruckrepairs.cc/playlist/test.m3u8",
             ),
             (
                 "NEBULA",

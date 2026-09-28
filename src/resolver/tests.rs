@@ -110,6 +110,85 @@ async fn hedge_attempt(
     result
 }
 
+async fn quality_attempt(
+    delay_ms: u64,
+    result: Option<(&'static str, bool)>,
+) -> Option<(&'static str, bool)> {
+    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    result
+}
+
+#[tokio::test(start_paused = true)]
+async fn full_hd_beats_an_earlier_720p_result_even_from_the_preferred_family() {
+    let winner = super::race_with_hd_fallback(
+        vec![
+            quality_attempt(10, Some(("cinejoy-720p", false))),
+            quality_attempt(100, Some(("aether-1080p", true))),
+        ],
+        1,
+        Duration::from_millis(50),
+        Duration::from_millis(20),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(winner, Some((1, "aether-1080p")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn hd_fallback_keeps_rank_order_after_all_full_hd_attempts_fail() {
+    let winner = super::race_with_hd_fallback(
+        vec![
+            quality_attempt(100, None),
+            quality_attempt(200, Some(("higher-ranked-720p", false))),
+            quality_attempt(10, Some(("faster-720p", false))),
+        ],
+        0,
+        Duration::from_millis(50),
+        Duration::from_millis(20),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(winner, Some((1, "higher-ranked-720p")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn hd_fallback_survives_the_preferred_family_timeout() {
+    let start = tokio::time::Instant::now();
+    let winner = super::race_with_hd_fallback(
+        vec![
+            quality_attempt(10, Some(("720p", false))),
+            quality_attempt(10_000, Some(("stalled-1080p", true))),
+            quality_attempt(10, None),
+        ],
+        2,
+        Duration::from_millis(50),
+        Duration::from_millis(20),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(winner, Some((0, "720p")));
+    assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn external_source_failures_can_be_retried_after_a_bounded_cooldown() {
+    let mut stats = SourceHealthStats {
+        failure_count: 1,
+        playback_error_count: 1,
+        updated_at: now_ms(),
+        ..SourceHealthStats::default()
+    };
+    assert!(compute_external_embed_rank_health_score(&stats) <= SOURCE_HEALTH_AVOID_SCORE);
+    assert!(compute_external_embed_provider_rank_health_score(&stats) <= SOURCE_HEALTH_AVOID_SCORE);
+    stats.updated_at -= 6 * 60 * 1000;
+    assert_eq!(compute_external_embed_rank_health_score(&stats), 0);
+    assert_eq!(compute_external_embed_provider_rank_health_score(&stats), 0);
+    assert!(
+        compute_source_health_score(&stats) <= SOURCE_HEALTH_AVOID_SCORE,
+        "torrent source health keeps its existing policy"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn preferred_family_finishes_before_a_faster_fallback_can_win() {
     let started = Arc::new(StdMutex::new(Vec::new()));
@@ -774,6 +853,7 @@ fn provider_rank_health_caps_spotty_but_sinks_dead_providers() {
         decode_failure_count: 0,
         ended_early_count: 0,
         playback_error_count: 17,
+        ..SourceHealthStats::default()
     };
     let score = compute_external_embed_provider_rank_health_score(&spotty);
     assert!(
@@ -788,6 +868,7 @@ fn provider_rank_health_caps_spotty_but_sinks_dead_providers() {
         decode_failure_count: 0,
         ended_early_count: 0,
         playback_error_count: 0,
+        ..SourceHealthStats::default()
     };
     assert_eq!(
         compute_external_embed_provider_rank_health_score(&strong),
@@ -801,6 +882,7 @@ fn provider_rank_health_caps_spotty_but_sinks_dead_providers() {
         decode_failure_count: 0,
         ended_early_count: 0,
         playback_error_count: 5,
+        ..SourceHealthStats::default()
     };
     assert!(
         compute_external_embed_provider_rank_health_score(&dead) <= SOURCE_HEALTH_AVOID_SCORE,

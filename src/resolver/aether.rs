@@ -91,12 +91,11 @@ pub(super) async fn resolve(
             bytes.extend_from_slice(&chunk);
         }
         let playlist = std::str::from_utf8(&bytes).ok()?;
-        return super::hls_quality::offers_full_hd(playlist).then_some(
-            ExternalEmbedHlsPlaybackSource {
-                playback_url: url,
-                referer: Some(playback_referer.to_owned()),
-            },
-        );
+        return super::hls_quality::offers_hd(playlist).then_some(ExternalEmbedHlsPlaybackSource {
+            playback_url: url,
+            referer: Some(playback_referer.to_owned()),
+            full_hd: super::hls_quality::offers_full_hd(playlist),
+        });
     }
     None
 }

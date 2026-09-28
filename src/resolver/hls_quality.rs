@@ -1,7 +1,15 @@
-/// Require a real HD rendition, not a provider's name or advertised badge.
+/// Require a real video rendition, not a provider's name or advertised badge.
 /// Cinemascope films can be 1920x800; anamorphic releases can be 1440x1080.
 /// A lower adaptive rendition is fine when this master also offers full HD.
 pub(super) fn offers_full_hd(playlist: &str) -> bool {
+    offers_resolution(playlist, 1920, 1080)
+}
+
+pub(super) fn offers_hd(playlist: &str) -> bool {
+    offers_resolution(playlist, 1280, 720)
+}
+
+fn offers_resolution(playlist: &str, min_width: u32, min_height: u32) -> bool {
     if !playlist.trim_start().starts_with("#EXTM3U") {
         return false;
     }
@@ -16,7 +24,7 @@ pub(super) fn offers_full_hd(playlist: &str) -> bool {
                     return false;
                 };
                 matches!((width.parse::<u32>(), height.parse::<u32>()),
-                    (Ok(w), Ok(h)) if w > 0 && h > 0 && (w >= 1920 || h >= 1080))
+                    (Ok(w), Ok(h)) if w > 0 && h > 0 && (w >= min_width || h >= min_height))
             });
         } else if !line.is_empty() && !line.starts_with('#') {
             if pending_hd {
@@ -30,7 +38,22 @@ pub(super) fn offers_full_hd(playlist: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::offers_full_hd;
+    use super::{offers_full_hd, offers_hd};
+
+    #[test]
+    fn accepts_real_720p_as_hd_without_calling_it_full_hd() {
+        let playlist = "#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1280x720\n720.m3u8";
+        assert!(offers_hd(playlist));
+        assert!(!offers_full_hd(playlist));
+        for invalid in [
+            "#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=854x480,NAME=\"720p\"\nsd.m3u8",
+            "#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1280x720",
+            "#EXTM3U\n#EXTINF:6,\nsegment.ts",
+            "<html>720p</html>",
+        ] {
+            assert!(!offers_hd(invalid));
+        }
+    }
 
     #[test]
     fn requires_hd_video_rendition_with_uri_and_preserves_cropped_films() {

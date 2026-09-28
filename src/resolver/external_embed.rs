@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
 
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use tokio::time::timeout;
 
 use super::{
@@ -42,6 +42,52 @@ where
     race_staggered_first_success_with_initial_grace(fallback, initial_grace, stagger)
         .await
         .map(|(index, result)| (preferred_count + index, result))
+}
+
+/// Retain valid 720p results while the bounded race looks for full HD. A lower
+/// resolution is not a failed provider, and must not require a second lookup.
+pub(super) async fn race_with_hd_fallback<Fut, T: Send>(
+    futures: Vec<Fut>,
+    preferred_count: usize,
+    initial_grace: Duration,
+    stagger: Duration,
+    preferred_timeout: Duration,
+) -> Option<(usize, T)>
+where
+    Fut: Future<Output = Option<(T, bool)>>,
+{
+    let fallbacks = Mutex::new(Vec::new());
+    let attempts = futures
+        .into_iter()
+        .enumerate()
+        .map(|(index, attempt)| {
+            let fallbacks = &fallbacks;
+            async move {
+                let (value, preferred_quality) = attempt.await?;
+                if preferred_quality {
+                    Some(value)
+                } else {
+                    fallbacks.lock().unwrap().push((index, value));
+                    None
+                }
+            }
+        })
+        .collect();
+    race_preferred_then_fallback(
+        attempts,
+        preferred_count,
+        initial_grace,
+        stagger,
+        preferred_timeout,
+    )
+    .await
+    .or_else(|| {
+        fallbacks
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .min_by_key(|(index, _)| *index)
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

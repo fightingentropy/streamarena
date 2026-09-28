@@ -170,6 +170,7 @@ pub struct SourceHealthStats {
     pub decode_failure_count: i64,
     pub ended_early_count: i64,
     pub playback_error_count: i64,
+    pub updated_at: i64,
 }
 
 #[allow(non_snake_case)]
@@ -1320,6 +1321,7 @@ impl Db {
                 decode_failure_count: decode_failure_count.max(0),
                 ended_early_count: ended_early_count.max(0),
                 playback_error_count: playback_error_count.max(0),
+                updated_at,
             };
             return_connection(&pool, connection);
             Ok(Some(result))

@@ -27,7 +27,7 @@ export function isCinejoyPlaylistUrl(value, server) {
   const url = safeUrl(value);
   if (!url) return false;
   if (server === "LISBON") {
-    return url.hostname === "ok.solarpanelcleaning.cc" &&
+    return ["ok.solarpanelcleaning.cc", "lit.cheaptruckrepairs.cc"].includes(url.hostname) &&
       /^\/playlist\/[^/]+\.m3u8$/.test(url.pathname);
   }
   if (server === "NEBULA") {

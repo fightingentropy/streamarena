@@ -28,6 +28,12 @@ test("each pinned server accepts only its own master, never segments or another 
   assert.ok(!isCinejoyPlaylistUrl("https://asm.solarpanelcleaning.cc/content", "SOLARA"));
   assert.ok(!isCinejoyPlaylistUrl("https://info.movieboxnoob.cc/playlist/old.m3u8", "LISBON"));
   assert.ok(!isCinejoyPlaylistUrl("https://lol.movieboxnoob.cc/content?v=old", "SOLARA"));
+  const lisbon = "https://lit.cheaptruckrepairs.cc/playlist/test.m3u8";
+  assert.ok(isCinejoyPlaylistUrl(lisbon, "LISBON"));
+  assert.ok(!isCinejoyPlaylistUrl(lisbon, "NEBULA"));
+  assert.ok(!isCinejoyPlaylistUrl(lisbon, "SOLARA"));
+  assert.ok(!isCinejoyPlaylistUrl(lisbon.replace(".cc/", ".cc.evil.test/"), "LISBON"));
+  assert.ok(!isCinejoyPlaylistUrl("https://lit.cheaptruckrepairs.cc/video/id/video_1080p.m3u8", "LISBON"));
 });
 
 function fakeBrowser({ unavailable = false, timeout = false } = {}) {
