@@ -28,8 +28,7 @@ jobs:
         uses: actions/checkout@v5
 
       # Documented runtime dependency (ffprobe/ffmpeg power probing + transcode).
-      # No current test shells out to it, but install for parity and to keep any
-      # future ffmpeg-touching test green.
+      # Browser smoke tests generate their own decodable H.264/AAC fixtures.
       - name: Install ffmpeg
         run: |
           sudo apt-get update

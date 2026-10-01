@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -10,8 +10,16 @@ const rootDir = resolve(new URL("..", import.meta.url).pathname);
 const port = Number(process.env.FRONTEND_SMOKE_PORT || 4174);
 const baseUrl = `http://127.0.0.1:${port}`;
 const viteBin = resolve(rootDir, "node_modules/.bin/vite");
-const smokeVideo = "assets/videos/fantozzi-1975-1080p-h264-aac-4k-restored.mp4";
-const hevcSmokeVideo = "assets/videos/project-hail-mary-2026-2160p-hevc.mp4";
+const smokeVideo = "assets/videos/frontend-smoke-h264.mp4";
+const hevcSmokeVideo = "assets/videos/frontend-smoke-hevc.mp4";
+// Real startup/download checks need decodable bytes even in a fresh checkout.
+// HEVC selection is tested through mocked metadata; the clip itself is H.264.
+const smokeClip = execFileSync("ffmpeg", [
+  "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24",
+  "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+  "-t", "12", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+  "-c:a", "aac", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1",
+], { maxBuffer: 8 * 1024 * 1024 });
 const sourceSwitchHashA = "a".repeat(40);
 const sourceSwitchHashB = "b".repeat(40);
 const realDebridCacheRefreshTmdbId = "real-debrid-cache-refresh-tv";
@@ -779,6 +787,12 @@ async function runSmoke() {
         });
       });
 
+      await page.route(
+        (url) => url.origin === baseUrl &&
+          [smokeVideo, hevcSmokeVideo].some((path) => url.pathname === `/${path}`),
+        (route) => route.fulfill({ contentType: "video/mp4", body: smokeClip }),
+      );
+
       await page.route("**/api/**", async (route) => {
         if (discoverySmoke && await discoverySmoke.route(route)) return;
         const request = route.request();
@@ -791,7 +805,7 @@ async function runSmoke() {
             sourceDownloadTransfers += 1;
             await route.fulfill({
               status: 200,
-              path: resolve(rootDir, smokeVideo),
+              body: smokeClip,
               headers: { "content-type": "video/mp4", "content-disposition": 'attachment; filename="source-download-test.mp4"' },
             });
           }

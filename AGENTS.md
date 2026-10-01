@@ -42,7 +42,7 @@ Use **tmux** for long-lived `bun run dev` (see portal tmux config under `/exec-d
 
 ### Frontend smoke / sample media
 
-`bun run test:frontend` expects sample files under `assets/videos/` (gitignored). If the directory is empty, create tiny placeholders with `ffmpeg` or symlink local test media; some player smoke cases (source switch / auto-fallback) can be timing-sensitive in headless CI.
+`bun run test:frontend` generates a small H.264/AAC clip with `ffmpeg` and serves it through the browser test routes. It needs no ignored local movies under `assets/videos/`. Some player smoke cases (source switch / auto-fallback) can be timing-sensitive in headless CI.
 
 ### Optional integrations
 
