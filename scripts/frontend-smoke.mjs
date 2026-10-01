@@ -1498,11 +1498,17 @@ async function runSmoke() {
       if (pageSpec.expectStableControls) {
         const expectedIds = ["togglePlay", "toggleSource", "toggleAudio", "toggleHlsQuality", "toggleSpeed", "toggleFullscreen",
           ...(pageSpec.expectStableControls === "tv" ? ["nextEpisode", "toggleEpisodes"] : [])];
-        const measureControls = () => page.evaluate((ids) => Object.fromEntries(ids.map(id => {
-          const element = document.getElementById(id);
-          const rect = element.getBoundingClientRect();
-          return [id, { x: rect.x, y: rect.y, width: rect.width, height: rect.height }];
-        })), expectedIds);
+        const measureControls = () => page.evaluate((ids) => {
+          const shell = document.querySelector(".player-shell");
+          if (shell.scrollHeight > shell.clientHeight) {
+            throw new Error(`Player shell overflows vertically: ${shell.scrollHeight} > ${shell.clientHeight}`);
+          }
+          return Object.fromEntries(ids.map(id => {
+            const element = document.getElementById(id);
+            const rect = element.getBoundingClientRect();
+            return [id, { x: rect.x, y: rect.y, width: rect.width, height: rect.height }];
+          }));
+        }, expectedIds);
         const initial = await measureControls();
         for (const [id, rect] of Object.entries(initial)) {
           if (rect.width <= 0 || rect.height <= 0) throw new Error(`${id} must have its slot before metadata arrives.`);
