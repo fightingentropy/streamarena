@@ -1,4 +1,6 @@
 {
+  // Compatibility config for remaining Wrangler commands (for example tail).
+  // Development, builds and deployments use cloudflare.config.ts through cf.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "streamarena-live-hls-proxy",
   "main": "src/index.js",

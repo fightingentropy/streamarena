@@ -20,7 +20,7 @@
     "audit:js": "bun audit",
     "check:architecture": "node ./scripts/check-architecture.mjs",
     "check:benchmarks": "node ./scripts/check-benchmark-contracts.mjs && node ./scripts/startup-scan-benchmark.mjs --samples 1 --max-p95-ms 5000",
-    "check": "bun run check:quality && bun run lint:frontend && bun run build && bun run check:architecture && bun run check:benchmarks && bun run test:rust && bun run test:worker && bun run test:ops && bun run test:frontend",
+    "check": "bun run check:quality && bun run lint:frontend && bun run build && bun run check:architecture && bun run check:benchmarks && bun run test:rust && bun run check:worker && bun run test:ops && bun run test:frontend",
     "build": "vite build",
     "preview": "vite preview",
     "mini:deploy": "./scripts/deploy-mini.sh",
@@ -36,7 +36,12 @@
     "bench:resolve": "node ./scripts/resolver-load-benchmark.mjs",
     "bench:providers": "node ./scripts/provider-playback-benchmark.mjs",
     "bench:real-debrid": "node ./scripts/real-debrid-playback-benchmark.mjs",
-    "bench:playback:install": "playwright install chromium"
+    "bench:playback:install": "playwright install chromium",
+    "worker:dev": "npm --prefix workers/live-hls-proxy run dev",
+    "worker:build": "npm --prefix workers/live-hls-proxy run build",
+    "worker:dry-run": "npm --prefix workers/live-hls-proxy run deploy:dry-run",
+    "worker:deploy": "npm --prefix workers/live-hls-proxy run deploy",
+    "check:worker": "bun run test:worker && bun run worker:dry-run"
   },
   "dependencies": {
     "hls.js": "^1.6.16",

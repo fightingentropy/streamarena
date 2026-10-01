@@ -1,4 +1,46 @@
-# Live HLS delivery cache
+# Live HLS proxy
+
+## Tooling and deployment
+
+Use Node 22.18 or newer. The Worker pins `cf` 1.0.0-beta.10 and Wrangler 4.145.0
+in its own npm lockfile; Bun continues to manage the main app. From the repo root:
+
+```sh
+npm ci --prefix workers/live-hls-proxy
+bun run worker:dev       # local Worker on port 8790
+bun run worker:build
+bun run check:worker     # signature/cache tests and deployment dry run
+bun run worker:deploy
+```
+
+The npm scripts run `cf` with Node. `cloudflare.config.ts` owns the Worker name,
+Erlin account, routes, compatibility date, observability and bindings.
+`wrangler.config.ts` configures the bundler. Keep `wrangler.jsonc` for remaining
+Wrangler commands such as live tails; it is not the deployment configuration.
+`bun run check` includes the Worker tests and dry run; the dry run needs no login.
+
+For deployment, verify `cf auth whoami` selects the Erlin account. `cf` and
+Wrangler have separate logins. Existing remote secrets `LIVE_HLS_PROXY_SECRET`
+and `ORIGIN_DIRECT_BASE` are declared by name and reused without copying their
+values. Keep `LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL` absent in normal operation.
+For local development, put test values in this directory's ignored `.dev.vars`;
+missing local secrets do not read or change the remote values.
+
+Use `cf` for remote resource operations, checking its selected account because
+resource commands do not inherit the project's `accountId`. Discover the exact
+operation with `cf cli search`, then inspect its help and schema. For example,
+`cf workers secrets list --worker streamarena-live-hls-proxy` verifies secret
+names without retrieving their values. Do not put secret values in source or
+shell arguments.
+
+The deployed entrypoint exports only its request handler. Tests import internal
+helpers directly; exporting their numeric constants from the entrypoint makes
+the Workers runtime reject startup.
+
+See the [Cloudflare CLI project guide](https://developers.cloudflare.com/cf/projects/)
+and [Wrangler coexistence guide](https://developers.cloudflare.com/cf/wrangler/).
+
+## Delivery cache
 
 Use `https://live.streamarena.xyz` as `LIVE_HLS_RESOURCE_WORKER_BASE` on the
 backend. The custom domain runs the same Worker as the `workers.dev` fallback,

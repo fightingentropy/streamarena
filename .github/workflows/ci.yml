@@ -48,13 +48,16 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
+
+      - name: Install pinned Cloudflare Worker tooling
+        run: npm ci --prefix workers/live-hls-proxy
 
       # frontend-smoke.mjs launches headless Chromium; --with-deps pulls the
       # Linux system libraries the browser needs on the CI runner.

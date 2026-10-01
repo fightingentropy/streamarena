@@ -12,6 +12,7 @@ Use `fightingentropy <erlin.hx@gmail.com>` for author and committer identity. Do
 
 ### Toolchain (first-time / VM notes)
 
+- **Node:** The Cloudflare Worker CLI requires Node 22.18 or newer. Run `cf` with Node; Bun still manages the main app.
 - **Rust:** `Cargo.toml` uses **edition 2024**. Run `rustup default stable` so `cargo` is ≥ 1.85. The image may expose an older `/usr/local/cargo/bin/cargo` until rustup’s stable toolchain is default.
 - **PATH:** `export PATH="$HOME/.bun/bin:/usr/local/cargo/bin:$PATH"` (Bun is installed under `~/.bun` on fresh VMs).
 - **System:** `ffmpeg` and `ffprobe` must be on `PATH` (used for remux/HLS/uploads).
@@ -23,6 +24,8 @@ Use `fightingentropy <erlin.hx@gmail.com>` for author and committer identity. Do
 | Task | Command |
 |------|---------|
 | Install JS deps | `bun install` |
+| Install Worker CLI | `npm ci --prefix workers/live-hls-proxy` |
+| Worker development / deployment preview | `bun run worker:dev` / `bun run worker:dry-run` |
 | Playwright Chromium (smoke / embed helpers) | `bun run bench:playback:install` |
 | Full-stack dev (build + server) | `bun run dev` → http://127.0.0.1:5173 |
 | Backend only | `bun run dev:rust` / `cargo run` (needs `dist/` or use after `bun run build`) |

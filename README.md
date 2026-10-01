@@ -52,7 +52,7 @@ Prerequisites:
 
 - Rust toolchain.
 - Bun, or another package runner that can run the `package.json` scripts.
-- Node.js, used by Vite and resolver helper scripts.
+- Node.js 22.18 or newer, used by Vite, resolver helpers and the Cloudflare CLI.
 - `ffmpeg` and `ffprobe` on `PATH`.
 - Playwright Chromium if you use frontend smoke tests, playback benchmarks, or embed HLS resolver scripts.
 
@@ -61,6 +61,7 @@ Setup:
 ```bash
 cp .env.example .env
 bun install
+npm ci --prefix workers/live-hls-proxy
 bun run bench:playback:install
 ```
 
@@ -681,12 +682,16 @@ Development and checks:
 - `bun run lint:frontend` - JavaScript syntax check for `src-ui`, `scripts`, and `vite.config.js`.
 - `bun run test:rust` - Rust tests.
 - `bun run test:worker` - live-HLS Worker signature/expiry contract tests.
+- `bun run worker:dev` - local live-HLS Worker on port 8790 using the pinned Cloudflare CLI.
+- `bun run worker:build` / `bun run worker:dry-run` - build or preview the Worker deployment without changing Cloudflare.
+- `bun run worker:deploy` - deploy the live-HLS Worker using `cloudflare.config.ts`; see its [tooling guide](workers/live-hls-proxy/README.md#tooling-and-deployment).
+- `bun run check:worker` - Worker tests plus the deployment dry run.
 - `bun run test:frontend` - Playwright smoke test against a mocked API.
 - `bun run check:rust` - Rust formatting and Clippy with warnings denied.
 - `bun run audit:rust` - RustSec dependency audit using the locally installed advisory database.
 - `bun run check:quality` - Rust format, Clippy, and a freshly updated dependency security audit. Install the CI-pinned tool with `cargo install cargo-audit --version 0.22.2 --locked`.
 - `bun run check:architecture` - guardrails for app shape, frontend dependencies, entrypoints, source sizes, and bundle sizes.
-- `bun run check` - the mandatory full gate: Rust format, Clippy, dependency audit, frontend lint/build, architecture check, Rust tests, live-HLS Worker tests, and frontend smoke test.
+- `bun run check` - the mandatory full gate: Rust format, Clippy, dependency audit, frontend lint/build, architecture check, Rust tests, live-HLS Worker tests and deployment dry run, and frontend smoke test.
 
 Benchmarks:
 
@@ -939,11 +944,14 @@ without stranding an active player. Normal operation is strict: leave
 
 For the one-time rollout, prefer Worker first:
 
+These historical rollout steps retain the pinned Wrangler secret commands,
+which deploy each secret change immediately. Routine code deployment uses `cf`.
+
 1. Choose one absolute deadline four hours ahead (`deadline=$(($(date +%s) + 14400))`). Never choose more than six hours ahead.
-2. Put that value in the Worker's temporary binding before deploying the new Worker: `printf '%s' "$deadline" | npx wrangler secret put LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL --config workers/live-hls-proxy/wrangler.jsonc`. Wrangler secret updates deploy a Worker version immediately, so setting it while the old code is live is safe—the old code ignores it.
-3. Deploy `workers/live-hls-proxy` with `npx wrangler deploy --config workers/live-hls-proxy/wrangler.jsonc`. It accepts old missing-expiry v1 URLs only until the deadline and accepts v2 immediately.
+2. Put that value in the Worker's temporary binding before deploying the new Worker: `printf '%s' "$deadline" | workers/live-hls-proxy/node_modules/.bin/wrangler secret put LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL --config workers/live-hls-proxy/wrangler.jsonc`. Wrangler secret updates deploy a Worker version immediately, so setting it while the old code is live is safe—the old code ignores it.
+3. Deploy `workers/live-hls-proxy` with `bun run worker:deploy`. It accepts old missing-expiry v1 URLs only until the deadline and accepts v2 immediately.
 4. Set the same `LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL` in the mini's canonical env, keep `LIVE_HLS_EMIT_LEGACY_SIGNATURE=0`, then deploy/restart the backend. New URLs now contain only `expires` plus v2 `sig`; already-open v1 streams remain valid only for the bounded window.
-5. After the deadline, verify a v1 URL without `expires` is rejected, remove the mini deadline, and run `npx wrangler secret delete LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL --config workers/live-hls-proxy/wrangler.jsonc`.
+5. After the deadline, verify a v1 URL without `expires` is rejected, remove the mini deadline, and run `workers/live-hls-proxy/node_modules/.bin/wrangler secret delete LIVE_HLS_LEGACY_SIGNATURE_ACCEPT_UNTIL --config workers/live-hls-proxy/wrangler.jsonc`.
 
 If operational constraints force backend-first order, temporarily set
 `LIVE_HLS_EMIT_LEGACY_SIGNATURE=1` together with the same deadline. The backend

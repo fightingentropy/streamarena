@@ -6,9 +6,11 @@ import {
   SIGNATURE_CLOCK_SKEW_SECONDS,
   SIGNATURE_MAX_TTL_SECONDS,
   SIGNATURE_TTL_SECONDS,
+} from "../src/constants.js";
+import {
   authorizeSignedRequest,
   verifySignature,
-} from "../src/index.js";
+} from "../src/authorization.js";
 
 const V1_CONTEXT = "streamarena-live-hls-v1";
 const V2_CONTEXT = "streamarena-live-hls-v2";
