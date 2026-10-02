@@ -9,7 +9,6 @@ export const LIVE_LOGOS: Record<string, ImageSourcePropType> = {
   "bloomberg-tv-us": require("../../assets/images/live-thumbs/bloomberg-tv-us.png"),
   "bbc-news": require("../../assets/images/live-thumbs/bbc-news.jpg"),
   "sky-news": require("../../assets/images/live-thumbs/sky-news.png"),
-  "bbc-us": require("../../assets/images/live-thumbs/bbc-us.png"),
   cnn: require("../../assets/images/live-thumbs/cnn.png"),
   "fox-news": require("../../assets/images/live-thumbs/fox-news.png"),
   "espn-2-us": require("../../assets/images/live-thumbs/espn-2-us.png"),

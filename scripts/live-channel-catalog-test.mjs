@@ -11,7 +11,6 @@ import {
 } from "../src-ui/lib/live-channels.js";
 
 const expectedNtvChannels = [
-  ["bbc-us", "BBC", "BBC America", "General", "US", 1],
   ["cnn", "CNN", "CNN", "News", "US", 1],
   ["fox-news", "FOX-News", "FOX News", "News", "US", 1],
   ["espn-2-us", "ESPN-2", "ESPN 2 (US)", "Sports", "US", 1],
@@ -54,13 +53,11 @@ for (const [id, route, title, genre, region, streamCount] of expectedNtvChannels
   assert.equal(findLiveChannelIdBySource(source), id);
 }
 
-assert.equal(ntvCdnLiveChannelUrl("BBC"), "https://ntv.cx/channel-cdnlive/BBC?code=us");
+assert.equal(ntvCdnLiveChannelUrl("CNN"), "https://ntv.cx/channel-cdnlive/CNN?code=us");
 assert.equal(
   novasportsChannelUrl(1),
   "https://hesgoal.team/ntvtvplayer.html?id=NOVASPORTS1",
 );
-const bbcAmerica = LIVE_CHANNELS.find((channel) => channel.id === "bbc-us");
-assert.equal(bbcAmerica.streams.length, 1);
 assert.equal(
   LIVE_CHANNELS.some((channel) =>
     channel.streams.some((stream) => String(stream.source || "").startsWith("live-iframe:")),
@@ -155,11 +152,4 @@ assert.match(
   /loadLiveChannelOverrides/,
 );
 
-const bbcAmericaCatalog = catalog.channels.find((channel) => channel.id === "bbc-us");
-assert.equal(
-  bbcAmericaCatalog.streams.length,
-  1,
-  "shared catalog must not restore the removed iframe fallback",
-);
-
-console.log("Live channel catalog and card UI tests passed (7 NTV/CDNLive channels).");
+console.log("Live channel catalog and card UI tests passed (6 NTV/CDNLive channels).");

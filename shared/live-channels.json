@@ -88,26 +88,6 @@
       "quality": "720p HLS"
     },
     {
-      "id": "bbc-us",
-      "title": "BBC America",
-      "source": "https://ntv.cx/channel-cdnlive/BBC?code=us",
-      "defaultStreamId": "ntv-titan",
-      "streams": [
-        {
-          "id": "ntv-titan",
-          "label": "BBC America · NTV Titan",
-          "source": "https://ntv.cx/channel-cdnlive/BBC?code=us",
-          "quality": "Live HLS"
-        }
-      ],
-      "liveEmbed": true,
-      "liveResolver": "sports",
-      "artwork": "assets/images/live-thumbs/bbc-us.svg",
-      "genre": "General",
-      "region": "US",
-      "quality": "Live HLS"
-    },
-    {
       "id": "cnn",
       "title": "CNN",
       "source": "https://ntv.cx/channel-cdnlive/CNN?code=us",
