@@ -605,6 +605,11 @@ body {
     object-fit: cover;
 }
 
+.seek-preview[hidden],
+.seek-preview-thumb[hidden] {
+    display: none;
+}
+
 .seek-preview-time {
     margin-top: 4px;
     font-size: 13px;

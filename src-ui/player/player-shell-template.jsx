@@ -76,7 +76,7 @@ export function renderPlayerShell({
                 aria-label="Seek"
               />
               <div id="seekPreview" ref={refs.seekPreview} class="seek-preview" hidden>
-                <canvas id="seekPreviewCanvas" ref={refs.seekPreviewCanvas} class="seek-preview-thumb" width="160" height="90"></canvas>
+                <canvas id="seekPreviewCanvas" ref={refs.seekPreviewCanvas} class="seek-preview-thumb" width="160" height="90" hidden></canvas>
                 <span id="seekPreviewTime" ref={refs.seekPreviewTime} class="seek-preview-time">00:00</span>
               </div>
             </div>

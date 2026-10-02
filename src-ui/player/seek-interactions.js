@@ -4,6 +4,7 @@ const SEEK_PREVIEW_WIDTH = 160;
 const SEEK_PREVIEW_HEIGHT = 90;
 const SEEK_PREVIEW_SEEK_THROTTLE_MS = 220;
 const SEEK_PREVIEW_RENDERED_TARGET_EPSILON_SECONDS = 0.08;
+const SEEK_PREVIEW_IDLE_TIMEOUT_MS = 15_000;
 
 export function attachSeekInteractions({
   clampLiveSeekTargetSeconds,
@@ -53,16 +54,24 @@ export function attachSeekInteractions({
   let seekPreviewRenderedTarget = null;
   let seekPreviewLastSeekAt = Number.NEGATIVE_INFINITY;
   let seekPreviewThrottleTimer = null;
+  let seekPreviewIdleTimer = null;
   let seekPreviewSourceRequestId = 0;
+  seekPreviewCanvas.hidden = true;
 
   function clearSeekPreviewCanvas() {
+    seekPreviewCanvas.hidden = true;
     seekPreviewCtx.clearRect(0, 0, SEEK_PREVIEW_WIDTH, SEEK_PREVIEW_HEIGHT);
-    seekPreviewCtx.fillStyle = "#000";
-    seekPreviewCtx.fillRect(0, 0, SEEK_PREVIEW_WIDTH, SEEK_PREVIEW_HEIGHT);
   }
 
   function drawSeekPreviewFrame() {
-    if (!seekPreviewVideo || seekPreviewVideo.readyState < 2) {
+    if (
+      !seekPreviewVideo ||
+      seekPreviewLoadingTarget === null ||
+      seekPreviewVideo.seeking ||
+      seekPreviewVideo.readyState < 2 ||
+      !seekPreviewVideo.videoWidth ||
+      Math.abs(seekPreviewVideo.currentTime - seekPreviewLoadingTarget) > 0.25
+    ) {
       return false;
     }
     try {
@@ -75,33 +84,43 @@ export function attachSeekInteractions({
       );
       seekPreviewRenderedTarget = Number(seekPreviewVideo.currentTime) || 0;
       seekPreviewLoadingTarget = null;
+      seekPreviewCanvas.hidden = false;
+      // A paused thumbnail needs one decoded frame, not a playback buffer.
+      seekPreviewHlsController?.stopLoad();
       return true;
     } catch {
       return false;
     }
   }
 
-  function handleSeekPreviewFrameReady() {
-    if (seekPreviewLoadingTarget === null) {
+  function handleSeekPreviewFrameReady(event) {
+    const previewVideo = seekPreviewVideo;
+    const requestId = seekPreviewSourceRequestId;
+    const target = seekPreviewLoadingTarget;
+    if (event.currentTarget !== previewVideo || target === null) {
       return;
     }
     window.requestAnimationFrame(() => {
-      drawSeekPreviewFrame();
+      if (
+        previewVideo === seekPreviewVideo &&
+        requestId === seekPreviewSourceRequestId &&
+        target === seekPreviewLoadingTarget
+      ) {
+        drawSeekPreviewFrame();
+      }
     });
   }
 
-  function handleSeekPreviewMetadataReady() {
-    markSeekPreviewReady();
-    const target = seekPreviewLoadingTarget ?? seekPreviewPendingTarget;
-    if (target !== null) {
-      scheduleSeekPreviewFrame(target, { force: true });
+  function handleSeekPreviewMetadataReady(event) {
+    if (event.currentTarget === seekPreviewVideo) {
+      markSeekPreviewReady();
     }
   }
 
   function getOrCreatePreviewVideo() {
     if (seekPreviewVideo) return seekPreviewVideo;
     seekPreviewVideo = document.createElement("video");
-    seekPreviewVideo.preload = "auto";
+    seekPreviewVideo.preload = "metadata";
     seekPreviewVideo.muted = true;
     seekPreviewVideo.playsInline = true;
     seekPreviewVideo.crossOrigin = video.crossOrigin || "anonymous";
@@ -142,6 +161,8 @@ export function attachSeekInteractions({
 
   function closeSeekPreviewVideo() {
     destroySeekPreviewHlsController();
+    window.clearTimeout(seekPreviewIdleTimer);
+    seekPreviewIdleTimer = null;
     if (seekPreviewThrottleTimer) {
       window.clearTimeout(seekPreviewThrottleTimer);
       seekPreviewThrottleTimer = null;
@@ -196,8 +217,9 @@ export function attachSeekInteractions({
       return;
     }
     seekPreviewReady = true;
-    if (seekPreviewPendingTarget !== null) {
-      scheduleSeekPreviewFrame(seekPreviewPendingTarget, { force: true });
+    const target = seekPreviewPendingTarget ?? seekPreviewLoadingTarget;
+    if (target !== null && !seekPreview.hidden) {
+      scheduleSeekPreviewFrame(target, { force: true });
     }
   }
 
@@ -220,6 +242,9 @@ export function attachSeekInteractions({
     seekPreviewPendingTarget = null;
     seekPreviewLoadingTarget = null;
     seekPreviewRenderedTarget = null;
+    seekPreviewLastSeekAt = Number.NEGATIVE_INFINITY;
+    window.clearTimeout(seekPreviewThrottleTimer);
+    seekPreviewThrottleTimer = null;
     clearSeekPreviewCanvas();
     pv.pause();
     pv.removeAttribute("src");
@@ -238,10 +263,11 @@ export function attachSeekInteractions({
             return;
           }
           const hls = new HlsConstructor({
-            autoStartLoad: true,
-            startPosition: -1,
-            maxBufferLength: 8,
-            maxMaxBufferLength: 12,
+            autoStartLoad: false,
+            startLevel: 0,
+            maxBufferLength: 2,
+            maxMaxBufferLength: 4,
+            maxBufferSize: 2_000_000,
             backBufferLength: 0,
           });
           seekPreviewHlsController = hls;
@@ -252,6 +278,8 @@ export function attachSeekInteractions({
           });
           hls.on(HlsConstructor.Events.MANIFEST_PARSED, () => {
             if (seekPreviewHlsController === hls) {
+              // The smallest rendition is sufficient for a 160px thumbnail.
+              hls.loadLevel = 0;
               markSeekPreviewReady();
             }
           });
@@ -269,7 +297,6 @@ export function attachSeekInteractions({
       return false;
     }
 
-    pv.addEventListener("loadedmetadata", markSeekPreviewReady, { once: true });
     pv.src = nextSource;
     pv.load();
     return false;
@@ -297,21 +324,29 @@ export function attachSeekInteractions({
       Math.abs(seekPreviewRenderedTarget - clampedTarget) <
         SEEK_PREVIEW_RENDERED_TARGET_EPSILON_SECONDS
     ) {
+      seekPreviewPendingTarget = null;
+      seekPreviewLoadingTarget = null;
+      seekPreviewHlsController?.stopLoad();
       return;
     }
     seekPreviewPendingTarget = null;
     seekPreviewLoadingTarget = clampedTarget;
-    clearSeekPreviewCanvas();
+    // Keep the last decoded frame visible while the new timestamp loads.
     try {
       if (
         Math.abs(Number(seekPreviewVideo.currentTime || 0) - clampedTarget) <
-        0.25
+          0.25 &&
+        drawSeekPreviewFrame()
       ) {
-        drawSeekPreviewFrame();
         return;
       }
-      seekPreviewVideo.currentTime = clampedTarget;
-      if (seekPreviewHlsController?.startLoad) {
+      if (seekPreviewVideo.currentTime !== clampedTarget) {
+        seekPreviewVideo.currentTime = clampedTarget;
+      }
+      if (
+        seekPreviewHlsController &&
+        (!seekPreviewHlsController.loadingEnabled || seekPreviewVideo.readyState === 0)
+      ) {
         seekPreviewHlsController.startLoad(clampedTarget);
       }
     } catch {
@@ -345,11 +380,15 @@ export function attachSeekInteractions({
       }
       return;
     }
+    window.clearTimeout(seekPreviewThrottleTimer);
+    seekPreviewThrottleTimer = null;
     seekPreviewLastSeekAt = now;
     requestSeekPreviewFrame(target);
   }
 
   function updateSeekPreview(event) {
+    window.clearTimeout(seekPreviewIdleTimer);
+    seekPreviewIdleTimer = null;
     const rect = seekBar.getBoundingClientRect();
     const x = Math.max(0, Math.min(event.clientX - rect.left, rect.width));
     const ratio = x / rect.width;
@@ -441,7 +480,18 @@ export function attachSeekInteractions({
   trackListener(seekBar, "pointerenter", updateSeekPreview);
   trackListener(seekBar, "pointerleave", () => {
     seekPreview.hidden = true;
-    closeSeekPreviewVideo();
+    window.clearTimeout(seekPreviewThrottleTimer);
+    seekPreviewThrottleTimer = null;
+    seekPreviewPendingTarget = null;
+    seekPreviewLoadingTarget = null;
+    seekPreviewHlsController?.stopLoad();
+    // Reuse metadata and the decoded frame on a quick return, without fetching
+    // HLS segments in the background or retaining an idle decoder indefinitely.
+    window.clearTimeout(seekPreviewIdleTimer);
+    seekPreviewIdleTimer = window.setTimeout(
+      closeSeekPreviewVideo,
+      SEEK_PREVIEW_IDLE_TIMEOUT_MS,
+    );
   });
 
   trackListener(seekBar, "pointerdown", (event) => {
