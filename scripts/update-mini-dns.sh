@@ -1,133 +1,94 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MINI_HOST="${MINI_HOST:-hermes@m4mini.local}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}"
-ZONE_NAME="${ZONE_NAME:-streamarena.xyz}"
-PUBLIC_HOSTS="${PUBLIC_HOSTS:-streamarena.xyz,www.streamarena.xyz}"
-PROXIED="${PROXIED:-true}"
-# Cloudflare requires proxied records to use automatic TTL (`1` in the API).
-TTL="${TTL:-1}"
-PUBLIC_IP="${PUBLIC_IP:-}"
-
-usage() {
-  cat <<'USAGE'
-Usage: CF_API_TOKEN=... scripts/update-mini-dns.sh
-
-Sets Cloudflare-proxied A records for the Mac mini's current home public IP.
-The token must have Zone.DNS edit access for the zone.
-
-Environment:
-  CF_API_TOKEN  Required Cloudflare API token with Zone.DNS edit permission.
-  CF_ZONE_ID    Optional. If omitted, the script resolves it from ZONE_NAME.
-  ZONE_NAME     Default: streamarena.xyz
-  PUBLIC_HOSTS  Default: streamarena.xyz,www.streamarena.xyz
-  PUBLIC_IP     Optional. If omitted, read from the Mac mini.
-  PROXIED       Default: true
-  TTL           Default: 1 (Cloudflare automatic)
-USAGE
-}
-
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  usage
+  cat <<'USAGE'
+Usage: scripts/update-mini-dns.sh [--dry-run]
+Set proxied A records for the Mac mini using the pinned Node-based cf CLI.
+Authenticate with cf auth login. CF_API_TOKEN is an optional legacy alias for
+CLOUDFLARE_API_TOKEN. CF_ACCOUNT_ID selects the expected account.
+ZONE_NAME defaults to streamarena.xyz; PUBLIC_HOSTS defaults to
+streamarena.xyz,www.streamarena.xyz. PUBLIC_IP skips the Mini IP lookup.
+CF_ZONE_ID, MINI_HOST, SSH_KEY, PROXIED and TTL remain optional overrides.
+USAGE
   exit 0
 fi
 
-if [[ -z "${CF_API_TOKEN:-}" ]]; then
-  echo "CF_API_TOKEN is required" >&2
+if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--dry-run" ) ]]; then
+  echo "Usage: scripts/update-mini-dns.sh [--dry-run]" >&2
   exit 2
 fi
 
-if [[ -z "$PUBLIC_IP" ]]; then
-  PUBLIC_IP="$(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$MINI_HOST" \
-    'curl -fsS --max-time 5 https://api.ipify.org')"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export CF_CLI="$SCRIPT_DIR/../workers/live-hls-proxy/node_modules/cf/bin/cf"
+export CLOUDFLARE_ACCOUNT_ID="${CF_ACCOUNT_ID:-9349e7e9527ec0aad29368255a686ec4}"
+if [[ -n "${CF_API_TOKEN:-}" ]]; then export CLOUDFLARE_API_TOKEN="$CF_API_TOKEN"; fi
+export ZONE_NAME="${ZONE_NAME:-streamarena.xyz}"
+export PUBLIC_HOSTS="${PUBLIC_HOSTS:-streamarena.xyz,www.streamarena.xyz}"
+export PROXIED="${PROXIED:-true}"
+export TTL="${TTL:-1}"
+export CF_ZONE_ID="${CF_ZONE_ID:-}"
+export DRY_RUN=false
+if [[ "${1:-}" == "--dry-run" ]]; then export DRY_RUN=true; fi
+if [[ -z "${PUBLIC_IP:-}" ]]; then
+  PUBLIC_IP="$(ssh -i "${SSH_KEY:-$HOME/.ssh/id_ed25519_codex_m4mini}" -o BatchMode=yes -o ConnectTimeout=10 "${MINI_HOST:-hermes@m4mini.local}" 'curl -fsS --max-time 5 https://api.ipify.org')"
 fi
+export PUBLIC_IP
 
-CF_API_TOKEN="$CF_API_TOKEN" \
-CF_ZONE_ID="${CF_ZONE_ID:-}" \
-ZONE_NAME="$ZONE_NAME" \
-PUBLIC_HOSTS="$PUBLIC_HOSTS" \
-PUBLIC_IP="$PUBLIC_IP" \
-PROXIED="$PROXIED" \
-TTL="$TTL" \
 /usr/bin/python3 - <<'PY'
+import ipaddress
 import json
 import os
-import sys
-import urllib.parse
-import urllib.request
+import subprocess
 
-token = os.environ["CF_API_TOKEN"]
-zone_id = os.environ.get("CF_ZONE_ID", "")
 zone_name = os.environ["ZONE_NAME"]
-hosts = [part.strip() for part in os.environ["PUBLIC_HOSTS"].split(",") if part.strip()]
-public_ip = os.environ["PUBLIC_IP"].strip()
-proxied = os.environ["PROXIED"].strip().lower() in {"1", "true", "yes", "on"}
+hosts = [h.strip() for h in os.environ["PUBLIC_HOSTS"].split(",") if h.strip()]
+public_ip = str(ipaddress.IPv4Address(os.environ["PUBLIC_IP"].strip()))
+proxied = os.environ["PROXIED"].lower() in {"1", "true", "yes", "on"}
 ttl = int(os.environ["TTL"])
+dry_run = os.environ["DRY_RUN"] == "true"
+if not hosts or any(h != zone_name and not h.endswith("." + zone_name) for h in hosts):
+    raise SystemExit("PUBLIC_HOSTS must contain hosts within ZONE_NAME")
+if proxied and ttl != 1:
+    raise SystemExit("Proxied records require TTL=1")
 
-if not hosts:
-    raise SystemExit("PUBLIC_HOSTS resolved to an empty list")
-if not public_ip:
-    raise SystemExit("PUBLIC_IP is empty")
+def cf(*args):
+    result = subprocess.run(["node", os.environ["CF_CLI"], *args], check=True, capture_output=True, text=True)
+    return json.loads(result.stdout) if result.stdout.strip() else None
 
-def request(method, path, query=None, body=None):
-    url = "https://api.cloudflare.com/client/v4" + path
-    if query:
-        url += "?" + urllib.parse.urlencode(query)
-    data = None
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    if body is not None:
-        data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, method=method, data=data, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        payload = json.loads(error.read().decode("utf-8"))
-        raise RuntimeError(f"{method} {path} failed: {payload}") from error
-    if not payload.get("success"):
-        raise RuntimeError(f"{method} {path} failed: {payload}")
-    return payload
+def pages(*args):
+    result, page = [], 1
+    while True:
+        batch = cf(*args, "--page", str(page), "--per-page", "50")
+        if not isinstance(batch, list):
+            raise RuntimeError("Unexpected cf list response")
+        result.extend(batch)
+        if len(batch) < 50:
+            return result
+        page += 1
 
-if not zone_id:
-    zones = request("GET", "/zones", {"name": zone_name, "per_page": 1})["result"]
-    if not zones:
-        raise SystemExit(f"Zone not found: {zone_name}")
-    zone_id = zones[0]["id"]
+zones = pages("zones", "list", "--name", zone_name, "--account-id", os.environ["CLOUDFLARE_ACCOUNT_ID"])
+if len(zones) != 1:
+    raise SystemExit("Expected exactly one matching zone in the selected account")
+zone_id = zones[0]["id"]
+if os.environ["CF_ZONE_ID"] and os.environ["CF_ZONE_ID"] != zone_id:
+    raise SystemExit("CF_ZONE_ID does not match the selected zone and account")
 
 for host in hosts:
-    records = request("GET", f"/zones/{zone_id}/dns_records", {"name": host, "per_page": 100})["result"]
-    editable = [record for record in records if record["type"] in {"A", "AAAA", "CNAME"}]
-    if not editable:
-        created = request("POST", f"/zones/{zone_id}/dns_records", body={
-            "type": "A",
-            "name": host,
-            "content": public_ip,
-            "ttl": ttl,
-            "proxied": proxied,
-            "comment": "Cloudflare-proxied Mac mini Caddy origin",
-        })["result"]
-        print(f"{host}: created {created['type']} {created['content']} proxied={created.get('proxied')}")
+    records = pages("dns", "records", "list", "--zone", zone_id, "--name", host)
+    editable = [r for r in records if r["type"] in {"A", "AAAA", "CNAME"}]
+    body = json.dumps({"type": "A", "name": host, "content": public_ip, "ttl": ttl, "proxied": proxied, "comment": "Cloudflare-proxied Mac mini Caddy origin"})
+    action = ["dns", "records", "update", editable[0]["id"]] if editable else ["dns", "records", "create"]
+    preview = ["--dry-run"] if dry_run else []
+    cf(*action, "--zone", zone_id, "--body", body, *preview)
+    for stale in editable[1:]:
+        cf("dns", "records", "delete", stale["id"], "--zone", zone_id, *preview, *([] if dry_run else ["--force"]))
+    if dry_run:
+        print(f"{host}: preview A {public_ip}, {len(editable[1:])} stale record(s)")
         continue
-
-    primary, *stale = editable
-    updated = request("PUT", f"/zones/{zone_id}/dns_records/{primary['id']}", body={
-        "type": "A",
-        "name": host,
-        "content": public_ip,
-        "ttl": ttl,
-        "proxied": proxied,
-        "comment": "Cloudflare-proxied Mac mini Caddy origin",
-    })["result"]
-    print(f"{host}: updated {primary['type']}->{updated['type']} {updated['content']} proxied={updated.get('proxied')}")
-
-    for record in stale:
-        request("DELETE", f"/zones/{zone_id}/dns_records/{record['id']}")
-        print(f"{host}: deleted stale {record['type']} {record['content']}")
-
-print(f"zone_id={zone_id}")
-print(f"public_ip={public_ip}")
+    verified = pages("dns", "records", "list", "--zone", zone_id, "--name", host)
+    addresses = [r for r in verified if r["type"] in {"A", "AAAA", "CNAME"}]
+    if len(addresses) != 1 or addresses[0]["type"] != "A" or addresses[0]["content"] != public_ip or addresses[0]["proxied"] != proxied:
+        raise RuntimeError(f"DNS read-back did not match the requested record for {host}")
+    print(f"{host}: verified A {public_ip} proxied={proxied}")
 PY
