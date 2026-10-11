@@ -53,9 +53,10 @@ export const REQUIRED_BASE_PROVIDERS = Object.freeze({
   movie: Object.freeze(["CineJoy", "Aether Lul", "Aether Link"]),
   tv: Object.freeze(["CineJoy", "Aether Lul", "Aether Link"]),
 });
-// Historical reports can still be parsed; these are never required in the
-// curated production catalog and do not register a provider with the backend.
+// Additional current providers and historical reports can be selected without
+// requiring every catalog to expose them. This does not register backend sources.
 const OPTIONAL_BASE_PROVIDERS = Object.freeze([
+  "Vidrift Evion", "Vidrift Vela",
   "VidEasy", "VidLink", "VidRock", "NoTorrent", "VixSrc", "LordFlix",
   "Icefy", "Meridian", "Gallic", "NebulaStreams",
 ]);

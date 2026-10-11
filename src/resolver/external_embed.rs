@@ -125,6 +125,14 @@ pub(super) const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
         id: "aether-link",
         label: "Aether Link",
     },
+    ExternalEmbedProvider {
+        id: "vidrift-evion",
+        label: "Vidrift Evion",
+    },
+    ExternalEmbedProvider {
+        id: "vidrift-vela",
+        label: "Vidrift Vela",
+    },
 ];
 
 // Lisbon retains its existing base-source identity. All three CineJoy servers
@@ -329,7 +337,7 @@ pub(super) fn is_default_external_embed_hls_fallback_source(source: ExternalEmbe
             .server
             .map(|server| server.id == "YORU")
             .unwrap_or(true),
-        "cinejoy" | "aether-lul" | "aether-link" => true,
+        "cinejoy" | "aether-lul" | "aether-link" | "vidrift-evion" | "vidrift-vela" => true,
         "vidlink" => source.server.is_none(),
         "vidrock" | "notorrent" | "lordflix" | "meridian" | "gallic" | "nebula" => {
             source.server.is_none()
@@ -363,6 +371,8 @@ pub(super) fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) 
             | "cinejoy"
             | "aether-lul"
             | "aether-link"
+            | "vidrift-evion"
+            | "vidrift-vela"
     ) || crate::provider_registry::is_custom(source.provider.id)
 }
 
@@ -394,6 +404,9 @@ pub(super) fn external_embed_url(
         return None;
     }
     match (source.provider.id, metadata.media_type.as_str()) {
+        ("vidrift-evion" | "vidrift-vela", _) => {
+            super::vidrift::source_url(source.provider.id, metadata)
+        }
         ("aether-lul" | "aether-link", _) => {
             super::aether::source_url(source.provider.id, metadata)
         }
@@ -590,6 +603,7 @@ fn external_embed_source_detail_label(source: ExternalEmbedSource) -> &'static s
         "gallic" => return "Native HLS, up to 4K",
         "cinejoy" => return "CineJoy native HLS",
         "aether-lul" | "aether-link" => return "Aether native HLS",
+        "vidrift-evion" | "vidrift-vela" => return "Vidrift native HLS",
         id if crate::provider_registry::is_custom(id) => return "Custom Stremio addon",
         _ => {}
     }

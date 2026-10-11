@@ -1,0 +1,825 @@
+{
+  "checkedAt": "2026-10-11",
+  "site": "https://7movies.ac/",
+  "player": "https://embed.vidrift.net/",
+  "method": "Public player/API inspection, highest advertised rendition, bounded ffprobe decode of approximately two seconds. Probe timings are not browser time-to-first-frame. Local MacBook network; caches may be warm. Browser Evion GoT playback also advanced with decoded frames.",
+  "decisions": {
+    "vidrift-evion": "Add below CineJoy and Aether. Genuine H.264 1080p on two TV samples; unavailable on three film samples. Only use its boot-provided URL.",
+    "vidrift-vela": "Add below Evion. Genuine H.264 1080p on five playable film/TV samples. One cold lookup took about ten seconds; production keeps bounded failover. Verify AVC dimensions from its fMP4 init before accepting a title.",
+    "orion": "Defer. HEVC-only, Interstellar lookup failed, Dark Knight only 720p.",
+    "lyra": "Reject. Every playable sample advertised full HD but decoded at 720p or 1280x640.",
+    "vaplayer": "No additional alias. Its embed points to nextgencloudfabric.com, already used by Aether Link.",
+    "otherExternalEmbeds": "Not qualified in this pass; no additions based on labels alone."
+  },
+  "notes": [
+    "Breaking Bad S1E1 boot explicitly denied playback for that title; no attempt was made to bypass it.",
+    "This limited sample establishes decoded resolution and short playback, not long-term reliability."
+  ],
+  "samples": [
+    {
+      "provider": "evion",
+      "manifest_status": "200",
+      "manifest_seconds": 0.082,
+      "advertised_resolution": [
+        1920,
+        1080
+      ],
+      "probe_seconds": 0.769,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 1920,
+          "height": 1080,
+          "nb_read_frames": "50"
+        }
+      ],
+      "total_seconds": 0.851,
+      "title": "Game of Thrones S1E1"
+    },
+    {
+      "provider": "orion",
+      "manifest_status": "200",
+      "manifest_seconds": 0.186,
+      "advertised_resolution": [
+        1920,
+        1080
+      ],
+      "probe_seconds": 1.049,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "hevc",
+          "width": 1920,
+          "height": 1080,
+          "nb_read_frames": "50"
+        }
+      ],
+      "total_seconds": 1.235,
+      "title": "Game of Thrones S1E1"
+    },
+    {
+      "provider": "vela",
+      "manifest_status": "200",
+      "manifest_seconds": 0.106,
+      "probe_seconds": 1.279,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 1920,
+          "height": 1080,
+          "nb_read_frames": "48"
+        }
+      ],
+      "total_seconds": 1.386,
+      "title": "Game of Thrones S1E1"
+    },
+    {
+      "provider": "lyra",
+      "manifest_status": "200",
+      "manifest_seconds": 0.141,
+      "advertised_resolution": [
+        1920,
+        1080
+      ],
+      "probe_seconds": 0.747,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 1280,
+          "height": 720,
+          "nb_read_frames": "48"
+        }
+      ],
+      "total_seconds": 0.888,
+      "title": "Game of Thrones S1E1"
+    },
+    {
+      "title": "Interstellar",
+      "provider": "evion",
+      "error": "Invalid resolver response",
+      "status": "502"
+    },
+    {
+      "provider": "vela",
+      "manifest_status": "200",
+      "manifest_seconds": 0.234,
+      "probe_seconds": 0.821,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 2584,
+          "height": 1080,
+          "nb_read_frames": "48"
+        }
+      ],
+      "total_seconds": 1.055,
+      "title": "Interstellar",
+      "resolve_seconds": 1.25,
+      "resolve_and_probe_seconds": 2.305
+    },
+    {
+      "title": "Interstellar",
+      "provider": "orion",
+      "error": "Invalid resolver response",
+      "status": "502"
+    },
+    {
+      "provider": "lyra",
+      "manifest_status": "200",
+      "manifest_seconds": 0.103,
+      "advertised_resolution": [
+        1920,
+        1080
+      ],
+      "probe_seconds": 0.454,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 1280,
+          "height": 720,
+          "nb_read_frames": "48"
+        }
+      ],
+      "total_seconds": 0.557,
+      "title": "Interstellar",
+      "resolve_seconds": 1.676,
+      "resolve_and_probe_seconds": 2.233
+    },
+    {
+      "title": "The Godfather",
+      "provider": "evion",
+      "error": "Invalid resolver response",
+      "status": "502"
+    },
+    {
+      "provider": "vela",
+      "manifest_status": "200",
+      "manifest_seconds": 0.509,
+      "probe_seconds": 0.792,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 1920,
+          "height": 1080,
+          "nb_read_frames": "48"
+        }
+      ],
+      "total_seconds": 1.302,
+      "title": "The Godfather",
+      "resolve_seconds": 10.031,
+      "resolve_and_probe_seconds": 11.333
+    },
+    {
+      "provider": "orion",
+      "manifest_status": "200",
+      "manifest_seconds": 0.128,
+      "advertised_resolution": [
+        1920,
+        1080
+      ],
+      "probe_seconds": 0.561,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "hevc",
+          "width": 1920,
+          "height": 1080,
+          "nb_read_frames": "50"
+        }
+      ],
+      "total_seconds": 0.689,
+      "title": "The Godfather",
+      "resolve_seconds": 0.664,
+      "resolve_and_probe_seconds": 1.353
+    },
+    {
+      "provider": "lyra",
+      "manifest_status": "200",
+      "manifest_seconds": 0.087,
+      "advertised_resolution": [
+        1920,
+        1080
+      ],
+      "probe_seconds": 0.413,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 1280,
+          "height": 720,
+          "nb_read_frames": "48"
+        }
+      ],
+      "total_seconds": 0.5,
+      "title": "The Godfather",
+      "resolve_seconds": 2.254,
+      "resolve_and_probe_seconds": 2.754
+    },
+    {
+      "title": "Breaking Bad S1E1",
+      "provider": "evion",
+      "error": "Invalid resolver response",
+      "status": "403"
+    },
+    {
+      "title": "Breaking Bad S1E1",
+      "provider": "vela",
+      "error": "Invalid resolver response",
+      "status": "403"
+    },
+    {
+      "title": "Breaking Bad S1E1",
+      "provider": "orion",
+      "error": "Invalid resolver response",
+      "status": "403"
+    },
+    {
+      "title": "Breaking Bad S1E1",
+      "provider": "lyra",
+      "error": "Invalid resolver response",
+      "status": "403"
+    },
+    {
+      "title": "The Dark Knight",
+      "provider": "evion",
+      "error": "Invalid resolver response",
+      "status": "502"
+    },
+    {
+      "provider": "vela",
+      "manifest_status": "200",
+      "manifest_seconds": 0.308,
+      "probe_seconds": 0.992,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 2592,
+          "height": 1080,
+          "nb_read_frames": "48"
+        }
+      ],
+      "total_seconds": 1.3,
+      "title": "The Dark Knight",
+      "resolve_seconds": 0.701,
+      "resolve_and_probe_seconds": 2.001
+    },
+    {
+      "provider": "orion",
+      "manifest_status": "200",
+      "manifest_seconds": 0.223,
+      "advertised_resolution": [
+        1280,
+        720
+      ],
+      "probe_seconds": 0.518,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "hevc",
+          "width": 1280,
+          "height": 720,
+          "nb_read_frames": "48"
+        }
+      ],
+      "total_seconds": 0.742,
+      "title": "The Dark Knight",
+      "resolve_seconds": 0.445,
+      "resolve_and_probe_seconds": 1.187
+    },
+    {
+      "provider": "lyra",
+      "manifest_status": "200",
+      "manifest_seconds": 0.09,
+      "advertised_resolution": [
+        1920,
+        1080
+      ],
+      "probe_seconds": 0.451,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 1280,
+          "height": 720,
+          "nb_read_frames": "117"
+        }
+      ],
+      "total_seconds": 0.542,
+      "title": "The Dark Knight",
+      "resolve_seconds": 1.192,
+      "resolve_and_probe_seconds": 1.734
+    },
+    {
+      "provider": "evion",
+      "manifest_status": "200",
+      "manifest_seconds": 0.07,
+      "advertised_resolution": [
+        1920,
+        1080
+      ],
+      "probe_seconds": 0.517,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 1920,
+          "height": 1080,
+          "nb_read_frames": "41"
+        }
+      ],
+      "total_seconds": 0.587,
+      "title": "Stranger Things S1E1",
+      "resolve_seconds": 0.111,
+      "resolve_and_probe_seconds": 0.698
+    },
+    {
+      "provider": "vela",
+      "manifest_status": "200",
+      "manifest_seconds": 0.269,
+      "probe_seconds": 0.698,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 1920,
+          "height": 1080,
+          "nb_read_frames": "48"
+        }
+      ],
+      "total_seconds": 0.967,
+      "title": "Stranger Things S1E1",
+      "resolve_seconds": 0.419,
+      "resolve_and_probe_seconds": 1.386
+    },
+    {
+      "provider": "orion",
+      "manifest_status": "200",
+      "manifest_seconds": 0.189,
+      "advertised_resolution": [
+        1920,
+        1080
+      ],
+      "probe_seconds": 0.647,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "hevc",
+          "width": 1920,
+          "height": 1080,
+          "nb_read_frames": "46"
+        }
+      ],
+      "total_seconds": 0.836,
+      "title": "Stranger Things S1E1",
+      "resolve_seconds": 0.293,
+      "resolve_and_probe_seconds": 1.129
+    },
+    {
+      "provider": "lyra",
+      "manifest_status": "200",
+      "manifest_seconds": 0.095,
+      "advertised_resolution": [
+        1920,
+        960
+      ],
+      "probe_seconds": 0.418,
+      "probe_exit": 0,
+      "decoded": [
+        {
+          "codec_name": "h264",
+          "width": 1280,
+          "height": 640,
+          "nb_read_frames": "48"
+        }
+      ],
+      "total_seconds": 0.513,
+      "title": "Stranger Things S1E1",
+      "resolve_seconds": 1.128,
+      "resolve_and_probe_seconds": 1.641
+    }
+  ],
+  "streamarenaPlayback": {
+    "environment": "Isolated local release backend and production frontend build; production Worker path when configured. No account progress or provider-health writes.",
+    "quality": "1080p",
+    "continuousSeconds": 5,
+    "steadySeconds": 15,
+    "cachePolicy": "Warm player shell; uncontrolled upstream caches; single trial per provider/title; not a long-term reliability result.",
+    "trials": [
+      {
+        "case": "tv:1399:s1e1",
+        "provider": "Vidrift Evion",
+        "success": true,
+        "failureCodes": [],
+        "timings": {
+          "navigationDomContentLoadedMs": 10.9,
+          "loadMs": 11.2,
+          "resolveFirstResponseMs": 580.3,
+          "resolveCompletionMs": 588.1,
+          "benchmarkApiOriginMs": 19.2,
+          "loadedMetadataMs": 1493.8,
+          "canPlayMs": 1616.4,
+          "playingMs": 1616.5,
+          "firstTimeUpdateMs": 1759.9,
+          "firstFrameMs": 1615.4,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": 6879.4,
+          "steadyCompletedMs": 21882.2
+        },
+        "playback": {
+          "currentTime": 20.218,
+          "readyState": 4,
+          "networkState": 2,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": 3543.68,
+          "width": 1920,
+          "height": 1080,
+          "decodedFrames": 510,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 506,
+          "estimatedFps": 24.969,
+          "maxFrameIntervalMs": 66.6,
+          "waitingCount": 1,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 329.718,
+          "continuous": {
+            "requestedDurationMs": 5000,
+            "sampledDurationMs": 5048.1,
+            "mediaTimeDeltaSeconds": 5.048,
+            "decodedFrameDelta": 126,
+            "frameCallbackDelta": 126,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 21
+          },
+          "steady": {
+            "requestedDurationMs": 15000,
+            "sampledDurationMs": 15002.7,
+            "mediaTimeDeltaSeconds": 15.003,
+            "decodedFrameDelta": 375,
+            "frameCallbackDelta": 375,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 61,
+            "maxNoAdvanceMs": 0,
+            "noAdvanceDurationMs": 0,
+            "minVideoHeight": 1080,
+            "maxVideoHeight": 1080,
+            "verified": true
+          }
+        }
+      },
+      {
+        "case": "tv:1399:s1e1",
+        "provider": "Vidrift Vela",
+        "success": true,
+        "failureCodes": [],
+        "timings": {
+          "navigationDomContentLoadedMs": 10.7,
+          "loadMs": 10.8,
+          "resolveFirstResponseMs": 581.9,
+          "resolveCompletionMs": 588.1,
+          "benchmarkApiOriginMs": 24.5,
+          "loadedMetadataMs": 1108.7,
+          "canPlayMs": 1144.2,
+          "playingMs": 1144.3,
+          "firstTimeUpdateMs": 1372.6,
+          "firstFrameMs": 1126.4,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": 6383.8,
+          "steadyCompletedMs": 21385.2
+        },
+        "playback": {
+          "currentTime": 20.191,
+          "readyState": 4,
+          "networkState": 2,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": 3695.025,
+          "width": 1920,
+          "height": 1080,
+          "decodedFrames": 490,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 486,
+          "estimatedFps": 23.941,
+          "maxFrameIntervalMs": 83,
+          "waitingCount": 1,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 75.905,
+          "continuous": {
+            "requestedDurationMs": 5000,
+            "sampledDurationMs": 5066.7,
+            "mediaTimeDeltaSeconds": 5.074,
+            "decodedFrameDelta": 122,
+            "frameCallbackDelta": 122,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 21
+          },
+          "steady": {
+            "requestedDurationMs": 15000,
+            "sampledDurationMs": 15001.4,
+            "mediaTimeDeltaSeconds": 15.001,
+            "decodedFrameDelta": 360,
+            "frameCallbackDelta": 360,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 61,
+            "maxNoAdvanceMs": 0,
+            "noAdvanceDurationMs": 0,
+            "minVideoHeight": 1080,
+            "maxVideoHeight": 1080,
+            "verified": true
+          }
+        }
+      },
+      {
+        "case": "tv:66732:s1e1",
+        "provider": "Vidrift Vela",
+        "success": true,
+        "failureCodes": [],
+        "timings": {
+          "navigationDomContentLoadedMs": 9.4,
+          "loadMs": 10.2,
+          "resolveFirstResponseMs": 565.2,
+          "resolveCompletionMs": 570.3,
+          "benchmarkApiOriginMs": 22,
+          "loadedMetadataMs": 872.8,
+          "canPlayMs": 881.3,
+          "playingMs": 881.5,
+          "firstTimeUpdateMs": 1124.5,
+          "firstFrameMs": 880.9,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": 6131.7,
+          "steadyCompletedMs": 21134.7
+        },
+        "playback": {
+          "currentTime": 20.203,
+          "readyState": 4,
+          "networkState": 2,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": 3264.011,
+          "width": 1920,
+          "height": 1080,
+          "decodedFrames": 490,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 486,
+          "estimatedFps": 23.959,
+          "maxFrameIntervalMs": 66.8,
+          "waitingCount": 1,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 75.893,
+          "continuous": {
+            "requestedDurationMs": 5000,
+            "sampledDurationMs": 5066.7,
+            "mediaTimeDeltaSeconds": 5.071,
+            "decodedFrameDelta": 122,
+            "frameCallbackDelta": 122,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 21
+          },
+          "steady": {
+            "requestedDurationMs": 15000,
+            "sampledDurationMs": 15003,
+            "mediaTimeDeltaSeconds": 15.003,
+            "decodedFrameDelta": 360,
+            "frameCallbackDelta": 360,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 61,
+            "maxNoAdvanceMs": 0,
+            "noAdvanceDurationMs": 0,
+            "minVideoHeight": 1080,
+            "maxVideoHeight": 1080,
+            "verified": true
+          }
+        }
+      },
+      {
+        "case": "tv:66732:s1e1",
+        "provider": "Vidrift Evion",
+        "success": true,
+        "failureCodes": [],
+        "timings": {
+          "navigationDomContentLoadedMs": 8.6,
+          "loadMs": 9.9,
+          "resolveFirstResponseMs": 466.2,
+          "resolveCompletionMs": 477.6,
+          "benchmarkApiOriginMs": 21.4,
+          "loadedMetadataMs": 1349.9,
+          "canPlayMs": 1355.5,
+          "playingMs": 1355.6,
+          "firstTimeUpdateMs": 1615.9,
+          "firstFrameMs": 1354.7,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": 6653.8,
+          "steadyCompletedMs": 21657
+        },
+        "playback": {
+          "currentTime": 20.252,
+          "readyState": 4,
+          "networkState": 2,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": 2977.172,
+          "width": 1920,
+          "height": 1080,
+          "decodedFrames": 491,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 487,
+          "estimatedFps": 23.942,
+          "maxFrameIntervalMs": 91.7,
+          "waitingCount": 1,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 12.197,
+          "continuous": {
+            "requestedDurationMs": 5000,
+            "sampledDurationMs": 5083.1,
+            "mediaTimeDeltaSeconds": 5.082,
+            "decodedFrameDelta": 121,
+            "frameCallbackDelta": 122,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 21
+          },
+          "steady": {
+            "requestedDurationMs": 15000,
+            "sampledDurationMs": 15003.2,
+            "mediaTimeDeltaSeconds": 15.003,
+            "decodedFrameDelta": 360,
+            "frameCallbackDelta": 360,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 61,
+            "maxNoAdvanceMs": 0,
+            "noAdvanceDurationMs": 0,
+            "minVideoHeight": 1080,
+            "maxVideoHeight": 1080,
+            "verified": true
+          }
+        }
+      },
+      {
+        "case": "movie:157336",
+        "provider": "Vidrift Vela",
+        "success": true,
+        "failureCodes": [],
+        "timings": {
+          "navigationDomContentLoadedMs": 9.9,
+          "loadMs": 11,
+          "resolveFirstResponseMs": 688.6,
+          "resolveCompletionMs": 696.8,
+          "benchmarkApiOriginMs": 24.4,
+          "loadedMetadataMs": 966.4,
+          "canPlayMs": 975.9,
+          "playingMs": 976,
+          "firstTimeUpdateMs": 1230.1,
+          "firstFrameMs": 979.6,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": 6144.1,
+          "steadyCompletedMs": 21147.1
+        },
+        "playback": {
+          "currentTime": 20.122,
+          "readyState": 4,
+          "networkState": 2,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": 10142.591,
+          "width": 2587,
+          "height": 1080,
+          "decodedFrames": 488,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 484,
+          "estimatedFps": 23.96,
+          "maxFrameIntervalMs": 75,
+          "waitingCount": 1,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 75.974,
+          "continuous": {
+            "requestedDurationMs": 5000,
+            "sampledDurationMs": 5075.6,
+            "mediaTimeDeltaSeconds": 5.075,
+            "decodedFrameDelta": 123,
+            "frameCallbackDelta": 122,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 21
+          },
+          "steady": {
+            "requestedDurationMs": 15000,
+            "sampledDurationMs": 15003,
+            "mediaTimeDeltaSeconds": 15.003,
+            "decodedFrameDelta": 360,
+            "frameCallbackDelta": 360,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 61,
+            "maxNoAdvanceMs": 0,
+            "noAdvanceDurationMs": 0,
+            "minVideoHeight": 1080,
+            "maxVideoHeight": 1080,
+            "verified": true
+          }
+        }
+      },
+      {
+        "case": "movie:238",
+        "provider": "Vidrift Vela",
+        "success": true,
+        "failureCodes": [],
+        "timings": {
+          "navigationDomContentLoadedMs": 8.8,
+          "loadMs": 9.9,
+          "resolveFirstResponseMs": 596.9,
+          "resolveCompletionMs": 606,
+          "benchmarkApiOriginMs": 23.8,
+          "loadedMetadataMs": 1020.2,
+          "canPlayMs": 1030.3,
+          "playingMs": 1030.5,
+          "firstTimeUpdateMs": 1272.2,
+          "firstFrameMs": 1034.8,
+          "resumeTargetFrameMs": null,
+          "advanceTargetMs": 6133.8,
+          "steadyCompletedMs": 21137
+        },
+        "playback": {
+          "currentTime": 20.05,
+          "readyState": 4,
+          "networkState": 2,
+          "mode": "direct",
+          "playbackRate": 1,
+          "videoDurationSeconds": 10534.149,
+          "width": 1920,
+          "height": 1080,
+          "decodedFrames": 487,
+          "droppedFrames": 0,
+          "corruptedFrames": 0,
+          "frameCallbacks": 482,
+          "estimatedFps": 23.96,
+          "maxFrameIntervalMs": 66.7,
+          "waitingCount": 1,
+          "stalledCount": 0,
+          "errorCount": 0,
+          "bufferAheadSeconds": 76.046,
+          "continuous": {
+            "requestedDurationMs": 5000,
+            "sampledDurationMs": 5065.4,
+            "mediaTimeDeltaSeconds": 5.038,
+            "decodedFrameDelta": 121,
+            "frameCallbackDelta": 121,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 21
+          },
+          "steady": {
+            "requestedDurationMs": 15000,
+            "sampledDurationMs": 15003.2,
+            "mediaTimeDeltaSeconds": 14.998,
+            "decodedFrameDelta": 361,
+            "frameCallbackDelta": 360,
+            "droppedFrameDelta": 0,
+            "waitingDelta": 0,
+            "stalledDelta": 0,
+            "sampleCount": 61,
+            "maxNoAdvanceMs": 0,
+            "noAdvanceDurationMs": 0,
+            "minVideoHeight": 1080,
+            "maxVideoHeight": 1080,
+            "verified": true
+          }
+        }
+      }
+    ]
+  }
+}

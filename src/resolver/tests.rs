@@ -951,13 +951,15 @@ fn cinejoy_preference_leads_other_hls_sources_without_label_bonuses() {
     assert_eq!(
         summaries
             .iter()
-            .take(5)
+            .take(7)
             .map(|source| (source.primary.as_str(), source.score - 1_000_000))
             .collect::<Vec<_>>(),
         vec![
             ("CineJoy Nebula", 2_600),
             ("Aether Lul", 2_200),
             ("Aether Link", 2_000),
+            ("Vidrift Evion", 1_800),
+            ("Vidrift Vela", 1_600),
             ("CineJoy Lisbon", 1_400),
             ("CineJoy Solara", 1_200)
         ],
@@ -974,8 +976,10 @@ fn cinejoy_preference_leads_other_hls_sources_without_label_bonuses() {
     );
     assert!(aether_link_rank > 500 + 150);
     for source in external_embed_sources() {
-        if matches!(source.provider.id, "cinejoy" | "aether-lul" | "aether-link")
-            || crate::provider_registry::is_custom(source.provider.id)
+        if matches!(
+            source.provider.id,
+            "cinejoy" | "aether-lul" | "aether-link" | "vidrift-evion" | "vidrift-vela"
+        ) || crate::provider_registry::is_custom(source.provider.id)
         {
             continue;
         }
@@ -1285,7 +1289,7 @@ fn curl_fetch_external_embed_host_covers_vixsrc_only() {
 fn curated_hd_sources_have_distinct_stable_pins_for_movies_and_tv() {
     for metadata in [sample_movie_metadata(), sample_tv_metadata()] {
         let sources = build_external_embed_source_summaries(&metadata, &HashMap::new());
-        assert_eq!(sources.len(), 5);
+        assert_eq!(sources.len(), 7);
         assert_eq!(sources[0].primary, "CineJoy Nebula");
         let mut hashes = std::collections::HashSet::new();
         for summary in &sources {
@@ -1490,6 +1494,8 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
             ("cinejoy", "NEBULA"),
             ("aether-lul", "default"),
             ("aether-link", "default"),
+            ("vidrift-evion", "default"),
+            ("vidrift-vela", "default"),
             ("cinejoy", "default"),
             ("cinejoy", "SOLARA"),
         ]
@@ -1533,6 +1539,8 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
             ("cinejoy", "NEBULA"),
             ("aether-lul", "default"),
             ("aether-link", "default"),
+            ("vidrift-evion", "default"),
+            ("vidrift-vela", "default"),
             ("cinejoy", "default"),
             ("cinejoy", "SOLARA"),
         ]

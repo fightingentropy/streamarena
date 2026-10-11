@@ -45,7 +45,13 @@ pub mod keys {
 /// Provider ids of the external VOD embeds. Their base URLs are deeply coupled to
 /// per-host referer/fingerprint logic in the resolver, so they are not URL-
 /// swappable; the dashboard exposes an enable/disable toggle instead.
-pub const EMBED_IDS: &[&str] = &["cinejoy", "aether-lul", "aether-link"];
+pub const EMBED_IDS: &[&str] = &[
+    "cinejoy",
+    "aether-lul",
+    "aether-link",
+    "vidrift-evion",
+    "vidrift-vela",
+];
 
 /// Replace the whole override map (called once at startup from the DB).
 pub fn load(map: HashMap<String, String>) {
@@ -196,6 +202,11 @@ pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
     ("cinejoy", 1_400),
     ("aether-lul", 2_200),
     ("aether-link", 2_000),
+    // 7Movies audit (2026-10-11): Evion has limited but fast AVC/1080p
+    // coverage; Vela covers more titles but its cold lookup can take ~10s.
+    // Preserve CineJoy/Aether preference until longer-term health supports it.
+    ("vidrift-evion", 1_800),
+    ("vidrift-vela", 1_600),
 ];
 
 /// Compiled default ranking weight for an embed provider (custom providers get
@@ -405,6 +416,12 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
         ("cinejoy", "CineJoy", "https://cinejoy.pk"),
         ("aether-lul", "Aether Lul", "https://lul.aether.cx"),
         ("aether-link", "Aether Link", "https://link.aether.cx"),
+        (
+            "vidrift-evion",
+            "Vidrift Evion",
+            "https://embed.vidrift.net",
+        ),
+        ("vidrift-vela", "Vidrift Vela", "https://embed.vidrift.net"),
     ];
     for (id, label, base) in EMBED_BASES.iter().copied() {
         out.push(ProviderInfo {

@@ -59,6 +59,7 @@ mod hls_quality;
 mod real_debrid;
 mod scoring;
 mod subtitles;
+mod vidrift;
 use benchmark::BenchmarkExactSessionRequest;
 pub(crate) use real_debrid::build_real_debrid_cache_scope;
 pub(crate) use real_debrid::is_real_debrid_lazy_hls_input;
@@ -4947,6 +4948,9 @@ async fn resolve_external_embed_hls_playback_source(
     timeout_ms: u64,
 ) -> Option<ExternalEmbedHlsPlaybackSource> {
     match source.provider.id {
+        "vidrift-evion" | "vidrift-vela" => {
+            return vidrift::resolve(client, source.provider.id, metadata, timeout_ms).await;
+        }
         "aether-lul" | "aether-link" => {
             return aether::resolve(client, source.provider.id, embed_url, timeout_ms).await;
         }
