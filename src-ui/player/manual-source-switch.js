@@ -21,6 +21,18 @@ export function getManualSourceSwitchTimeouts({
   return { resolveTimeoutMs: 50_000, startupTimeoutMs: 30_000 };
 }
 
+// Refresh the confirmed stream while it is still playing. Once its replacement
+// has attached, media time/paused describe an unconfirmed (often reset) element.
+export function refreshManualSourceSwitchBaseline(baseline, {
+  activePlaybackSource, currentTime, paused,
+} = {}) {
+  if (baseline && activePlaybackSource === baseline.restorePlaybackSource) {
+    baseline.restoreResumeSeconds = Math.max(0, Number(currentTime) || 0);
+    baseline.restoreWasPaused = Boolean(paused);
+  }
+  return baseline;
+}
+
 /**
  * Coordinates a manual source change without depending on player globals or DOM
  * APIs. The controller keeps the last confirmed playback snapshot until a new

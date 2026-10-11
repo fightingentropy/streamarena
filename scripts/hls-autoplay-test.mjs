@@ -8,6 +8,7 @@ function createHarness({
   nativeHls = true,
   hlsJs = false,
   effectiveCurrentTime = 0,
+  loadHlsConstructorFn,
 } = {}) {
   const events = new EventTarget();
   const state = {
@@ -41,6 +42,7 @@ function createHarness({
     },
   };
   const controller = createHlsPlaybackController({
+    ...(loadHlsConstructorFn ? { loadHlsConstructorFn } : {}),
     getVideo: () => video,
     getLastRequestedAbsolutePlaybackSource: () => state.lastRequestedSource,
     hasNativeHlsPlaybackSupport: () => nativeHls,
@@ -128,6 +130,81 @@ try {
   }
 
   {
+    const { controller, state, video } = createHarness();
+    const failures = [];
+    for (const name of ["old", "current"]) {
+      controller.destroy();
+      state.lastRequestedSource = `https://media.test/${name}.m3u8`;
+      controller.play({
+        absoluteSource: state.lastRequestedSource,
+        handleHlsPlaybackFailure: () => failures.push(name),
+      });
+    }
+    video.dispatch("error");
+    assert.deepEqual(failures, ["current"], "a previous native HLS error handler must not fail the replacement");
+    console.log("✓ native HLS detaches callbacks when switching providers");
+  }
+
+  {
+    const pendingImport = Promise.withResolvers();
+    const instances = [];
+    class FakeHls {
+      static isSupported = () => true;
+      static Events = Object.fromEntries(["ERROR", "MEDIA_ATTACHED", "MANIFEST_PARSED", "FRAG_BUFFERED", "LEVEL_SWITCHED"].map(name => [name, name]));
+      static ErrorTypes = { NETWORK_ERROR: "network", MEDIA_ERROR: "media" };
+      constructor(config) {
+        this.config = config;
+        this.listeners = new Map();
+        this.starts = [];
+        this.loads = [];
+        this.levels = [];
+        instances.push(this);
+      }
+      on(name, callback) { this.listeners.set(name, callback); }
+      emit(name, data) { this.listeners.get(name)?.(name, data); }
+      attachMedia() { this.emit("MEDIA_ATTACHED"); }
+      loadSource(source) { this.loads.push(source); }
+      startLoad(position) { this.starts.push(position); }
+      recoverMediaError() { this.emit("MEDIA_ATTACHED"); }
+      destroy() { this.destroyed = true; }
+    }
+    const { controller, state, video } = createHarness({
+      nativeHls: false, hlsJs: true,
+      loadHlsConstructorFn: () => pendingImport.promise,
+    });
+    state.lastRequestedSource = "https://media.test/same-url.m3u8";
+    controller.play({ absoluteSource: state.lastRequestedSource, requestedStartSeconds: 10 });
+    controller.destroy();
+    controller.play({ absoluteSource: state.lastRequestedSource, requestedStartSeconds: 60 });
+    assert.equal(controller.seek(300), true);
+    assert.equal(controller.seek(420), true);
+    pendingImport.resolve(FakeHls);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(instances.length, 1, "same-URL retries must not resurrect a destroyed pending instance");
+    const hls = instances[0];
+    assert(controller.isPendingSource(state.lastRequestedSource), "wait for manifest before allowing play of the new blob");
+    hls.emit("MANIFEST_PARSED");
+    assert.deepEqual(hls.starts, [420], "load the latest requested seek without fetching the opening segment");
+    video.readyState = 1;
+    video.seeking = true;
+    hls.emit("FRAG_BUFFERED");
+    assert.deepEqual(state.playableSources, [], "audio/init/buffered bytes alone do not confirm a successful video handoff");
+    video.currentTime = 120;
+    hls.emit("ERROR", { fatal: true, type: "network" });
+    assert.equal(hls.starts.at(-1), 120, "recover at the current backward seek, not hls.js's previous high-water time");
+    video.currentTime = 180;
+    hls.emit("ERROR", { fatal: true, type: "media" });
+    assert.equal(hls.starts.at(-1), 180);
+    assert.equal(hls.loads.length, 1, "media recovery should reuse the manifest and preserve the new position");
+    video.readyState = 3;
+    video.seeking = false;
+    video.dispatch("canplay");
+    assert.deepEqual(state.playableSources, [state.lastRequestedSource]);
+    controller.destroy();
+    console.log("✓ HLS generations, queued seeks, playable confirmation and position-preserving recovery");
+  }
+
+  {
     const { controller, state, video } = createHarness({ nativeHls: false });
     const source = "https://media.test/unsupported-fallback.m3u8";
     state.lastRequestedSource = source;
@@ -191,6 +268,7 @@ const tryPlay = vm.runInNewContext(`${tryPlaySource}\ntryPlay`, {
   armLiveStartupHealthWatch() {},
   syncPlayState() {},
   isLivePlayback: false,
+  playbackSourceGeneration: 1,
   isManualSourceSwitchPending: () => true,
   isPlaybackBlockedByPolicy: () => false,
 });
@@ -203,4 +281,4 @@ video.play = async () => { throw Object.assign(new Error("Unsupported codec"), {
 await assert.rejects(tryPlay(), { name: "NotSupportedError" });
 console.log("✓ HLS source switches wait for attachment and still report real playback errors");
 
-console.log("\nAll HLS autoplay tests passed (5 cases).");
+console.log("\nAll HLS autoplay tests passed.");

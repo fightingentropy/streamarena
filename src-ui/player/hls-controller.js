@@ -118,6 +118,9 @@ export function createHlsPlaybackController({
   onSourceLoadProgress = () => {},
   onSourcePlayable = () => {},
   onRemuxFallbackActivated = () => {},
+  loadHlsConstructorFn = () => import("hls.js").then(
+    (module) => module.default || module.Hls || module,
+  ),
 } = {}) {
   let activeHlsController = null;
   let hlsConstructorPromise = null;
@@ -125,6 +128,9 @@ export function createHlsPlaybackController({
   let qualityLevels = [];
   let selectedQualityLevel = -1;
   let activeQualityLevel = -1;
+  let playbackGeneration = 0;
+  let currentSession = null;
+  const mediaListeners = new Set();
   // FRAG_BUFFERED fires per segment (every few seconds); writing localStorage
   // that often is pointless churn, so persistence is throttled to ~5s. Shared
   // across hls instances on purpose — a source switch shouldn't reset the
@@ -187,14 +193,19 @@ export function createHlsPlaybackController({
 
   function loadHlsConstructor() {
     if (!hlsConstructorPromise) {
-      hlsConstructorPromise = import("hls.js").then(
-        (module) => module.default || module.Hls || module,
-      );
+      hlsConstructorPromise = Promise.resolve().then(loadHlsConstructorFn).catch((error) => {
+        hlsConstructorPromise = null;
+        throw error;
+      });
     }
     return hlsConstructorPromise;
   }
 
   function destroy() {
+    playbackGeneration += 1;
+    currentSession = null;
+    for (const remove of mediaListeners) remove();
+    mediaListeners.clear();
     pendingHlsJsPlaybackSource = "";
     if (!activeHlsController) {
       resetQualityLevels();
@@ -226,6 +237,33 @@ export function createHlsPlaybackController({
     return pendingHlsJsPlaybackSource === source;
   }
 
+  function seek(targetSeconds) {
+    const video = getVideo();
+    if (!currentSession || !video) return false;
+    const target = Math.max(0, Number(targetSeconds) || 0);
+    currentSession.startPosition = target;
+    // MSE attachment resets currentTime. Retain only the latest seek until the
+    // manifest is ready, then load the destination segment directly.
+    if (pendingHlsJsPlaybackSource || video.readyState === 0) {
+      if (activeHlsController && currentSession.manifestReady) {
+        activeHlsController.startLoad(target);
+      }
+      return true;
+    }
+    video.currentTime = Number.isFinite(video.duration)
+      ? Math.min(video.duration, target) : target;
+    return true;
+  }
+
+  function retryAtCurrentTime() {
+    if (!activeHlsController || !currentSession?.manifestReady) return false;
+    const video = getVideo();
+    const target = video?.readyState > 0
+      ? Number(video.currentTime) : currentSession.startPosition;
+    activeHlsController.startLoad(Number.isFinite(target) && target >= 0 ? target : -1);
+    return true;
+  }
+
   function setQualityLevel(levelIndex) {
     if (!activeHlsController || !qualityLevels.length) {
       return false;
@@ -249,6 +287,40 @@ export function createHlsPlaybackController({
     if (!video || !absoluteSource) {
       return false;
     }
+    destroy();
+    const generation = playbackGeneration;
+    const isCurrent = () => generation === playbackGeneration &&
+      getLastRequestedAbsolutePlaybackSource() === absoluteSource;
+    const session = {
+      startPosition: requestedStartSeconds > 0 ? requestedStartSeconds : -1,
+      manifestReady: false,
+    };
+    currentSession = session;
+    const listenOnce = (type, callback) => {
+      const remove = () => video.removeEventListener(type, handler);
+      const handler = (...args) => {
+        remove();
+        mediaListeners.delete(remove);
+        if (isCurrent()) callback(...args);
+      };
+      mediaListeners.add(remove);
+      video.addEventListener(type, handler);
+    };
+    const requestPlay = () => {
+      if (!autoplay || !isCurrent()) return;
+      // A new source or a pause can reject a pending play() promise. Never let
+      // that old promise roll back the current provider or become unhandled.
+      Promise.resolve(tryPlay()).catch((error) => {
+        if (isCurrent() && error?.name !== "AbortError" && error?.name !== "NotAllowedError") {
+          handleHlsPlaybackFailure(error?.message || "HLS playback failed.");
+        }
+      });
+    };
+    const confirmPlayable = () => {
+      if (isCurrent() && video.readyState >= 2 && !video.seeking) {
+        onSourcePlayable(absoluteSource);
+      }
+    };
 
     // Honor the resume offset for every VOD HLS source, not just local
     // transcoder masters: external-embed streams (VixSrc, LordFlix, ...) have
@@ -262,7 +334,7 @@ export function createHlsPlaybackController({
         window.location.origin,
       ).toString();
       video.setAttribute("src", absoluteFallbackSource);
-      video.addEventListener(
+      listenOnce(
         "loadeddata",
         () => {
           if (getLastRequestedAbsolutePlaybackSource() !== absoluteSource) {
@@ -277,19 +349,16 @@ export function createHlsPlaybackController({
             onSourcePlayable(absoluteFallbackSource);
           }
         },
-        { once: true },
       );
       video.load();
-      if (autoplay) {
-        void tryPlay();
-      }
+      requestPlay();
     };
 
     if (hasNativeHlsPlaybackSupport()) {
       resetQualityLevels();
       video.setAttribute("src", absoluteSource);
       video.load();
-      video.addEventListener(
+      listenOnce(
         "loadeddata",
         () => {
           if (getLastRequestedAbsolutePlaybackSource() !== absoluteSource) {
@@ -302,22 +371,19 @@ export function createHlsPlaybackController({
             onSourcePlayable(absoluteSource);
           }
         },
-        { once: true },
       );
-      if (hlsStartPosition >= 0) {
+      {
         const applyNativeHlsStartPosition = () => {
           if (getLastRequestedAbsolutePlaybackSource() !== absoluteSource) {
             return;
           }
           try {
-            video.currentTime = hlsStartPosition;
+            if (session.startPosition >= 0) video.currentTime = session.startPosition;
           } catch {
             // Keep the stream's default start if the seek is rejected.
           }
         };
-        video.addEventListener("loadedmetadata", applyNativeHlsStartPosition, {
-          once: true,
-        });
+        listenOnce("loadedmetadata", applyNativeHlsStartPosition);
       }
 
       const onNativeHlsError = () => {
@@ -336,11 +402,8 @@ export function createHlsPlaybackController({
         );
         loadRemuxFallback(remuxFallback);
       };
-      video.addEventListener("error", onNativeHlsError, { once: true });
-
-      if (autoplay) {
-        void tryPlay();
-      }
+      listenOnce("error", onNativeHlsError);
+      requestPlay();
       scheduleStreamStallRecovery();
       return true;
     }
@@ -349,10 +412,9 @@ export function createHlsPlaybackController({
       pendingHlsJsPlaybackSource = absoluteSource;
       void loadHlsConstructor()
         .then((HlsConstructor) => {
-          if (getLastRequestedAbsolutePlaybackSource() !== absoluteSource) {
+          if (!isCurrent()) {
             return;
           }
-          pendingHlsJsPlaybackSource = "";
           if (!HlsConstructor?.isSupported?.()) {
             handleHlsPlaybackFailure("This browser cannot play the HLS stream.");
             return;
@@ -419,8 +481,8 @@ export function createHlsPlaybackController({
             // the test is only kept for first-ever sessions, where there is no
             // persisted measurement to trust.
             testBandwidth: !persistedBandwidthEstimate,
-            autoStartLoad: hlsStartPosition < 0,
-            startPosition: hlsStartPosition,
+            autoStartLoad: false,
+            startPosition: session.startPosition,
             ...(failFastNetworkErrors
               ? {
                   manifestLoadPolicy: fastFailurePlaylistLoadPolicy,
@@ -468,7 +530,7 @@ export function createHlsPlaybackController({
               // the SAME source at the current position. This is the path a post-seek
               // segment error takes — it must not switch providers or restart at zero.
               hlsRecoveryAttempts += 1;
-              hls.startLoad();
+              retryAtCurrentTime();
               return;
             }
             if (data.type === HlsConstructor.ErrorTypes.NETWORK_ERROR) {
@@ -483,6 +545,7 @@ export function createHlsPlaybackController({
               hlsRecoveryAttempts < 2
             ) {
               hlsRecoveryAttempts += 1;
+              session.startPosition = Math.max(0, Number(video.currentTime) || 0);
               hls.recoverMediaError();
               return;
             }
@@ -494,11 +557,14 @@ export function createHlsPlaybackController({
           });
           hls.on(HlsConstructor.Events.MEDIA_ATTACHED, () => {
             if (activeHlsController === hls) {
-              hls.loadSource(absoluteSource);
+              if (session.manifestReady) hls.startLoad(session.startPosition);
+              else hls.loadSource(absoluteSource);
             }
           });
           hls.on(HlsConstructor.Events.MANIFEST_PARSED, () => {
             if (activeHlsController === hls) {
+              session.manifestReady = true;
+              pendingHlsJsPlaybackSource = "";
               // The playlist parsed: the source responded and is real. This lands well
               // before the first (possibly far-seek) segment, so it's the earliest
               // proof a freshly selected source is alive.
@@ -512,12 +578,8 @@ export function createHlsPlaybackController({
               );
               hls.currentLevel = selectedQualityLevel;
               publishQualityLevels();
-              if (hlsStartPosition >= 0) {
-                hls.startLoad(hlsStartPosition);
-              }
-              if (autoplay) {
-                void tryPlay();
-              }
+              hls.startLoad(session.startPosition);
+              requestPlay();
             }
           });
           hls.on(HlsConstructor.Events.FRAG_BUFFERED, () => {
@@ -528,7 +590,7 @@ export function createHlsPlaybackController({
               // segment refreshes the in-place retry budget for the next hiccup.
               sourceHasStartedPlayback = true;
               hlsRecoveryAttempts = 0;
-              onSourcePlayable(absoluteSource);
+              confirmPlayable();
               // Each appended segment is forward progress — keeps a slow-but-working
               // source (e.g. a cold transcode buffering a far seek) from being treated
               // as a failed startup.
@@ -540,6 +602,8 @@ export function createHlsPlaybackController({
               }
             }
           });
+          listenOnce("loadeddata", confirmPlayable);
+          listenOnce("canplay", confirmPlayable);
           hls.on(HlsConstructor.Events.LEVEL_SWITCHED, (_event, data = {}) => {
             if (activeHlsController !== hls) {
               return;
@@ -554,7 +618,7 @@ export function createHlsPlaybackController({
           hls.attachMedia(video);
         })
         .catch(() => {
-          if (getLastRequestedAbsolutePlaybackSource() === absoluteSource) {
+          if (isCurrent()) {
             pendingHlsJsPlaybackSource = "";
             handleHlsPlaybackFailure("Unable to load HLS playback support.");
           }
@@ -592,6 +656,8 @@ export function createHlsPlaybackController({
     isActive,
     isPendingSource,
     setQualityLevel,
+    seek,
+    retryAtCurrentTime,
     play,
   };
 }

@@ -146,6 +146,7 @@ import {
 import {
   createManualSourceSwitchController,
   getManualSourceSwitchTimeouts,
+  refreshManualSourceSwitchBaseline,
 } from "../player/manual-source-switch.js";
 import { createLocalCacheUpgradeWatch } from "../player/local-cache-upgrade-watch.js";
 import { createLiveIframePlaybackClock } from "../player/live-iframe-playback-clock.js";
@@ -357,6 +358,8 @@ let audioDecodeRecoverySourceKey = "";
 let audioDecodeRecoveryAttempts = 0;
 let lastAudioDecodeRecoveryAt = 0;
 let lastPlaybackSourceSetAt = 0;
+let playbackSourceGeneration = 0;
+let stallRetryGeneration = -1;
 let lastPlaybackSeekAt = 0;
 const liveIframePlaybackClock = createLiveIframePlaybackClock({
   now: () => performance.now(),
@@ -2651,8 +2654,12 @@ function setVideoSource(
   { resetInitialResume = true, startSeconds = 0, autoplay = true } = {},
 ) {
   if (!nextSource) return;
+  playbackSourceGeneration += 1;
+  stallRetryGeneration = -1;
+  closeSeekPreviewVideo?.();
   deferredMediaTracks.cancel();
   const requestedStartSeconds = normalizeResumeStartSeconds(startSeconds);
+  pendingRecoverySeekSeconds = null;
   clearLiveIframePlayback();
   const sourceWithStart = withRemuxResumeStart(nextSource, requestedStartSeconds, window.location.origin);
   const sourceWithAudioSync = withPreferredAudioSyncForRemuxSource(
@@ -2877,8 +2884,14 @@ async function rollbackManualSourceSwitchPlayback(
   if (!restoreState) {
     return false;
   }
-
+  if (request && !manualSourceSwitch.isCurrent(request)) return false;
   await requestResolveJson.cancelActive();
+  if (request && !manualSourceSwitch.isCurrent(request)) return false;
+  refreshManualSourceSwitchBaseline(restoreState, {
+    activePlaybackSource: getManualSourceSwitchRestoreSource(),
+    currentTime: getEffectiveCurrentTime(),
+    paused: video.paused,
+  });
   const rollbackPlaybackRequestToken = ++tmdbPlaybackRequestToken;
   stopLocalCacheUpgradeWatch();
   const activePlaybackSource = getManualSourceSwitchRestoreSource();
@@ -2950,12 +2963,6 @@ async function rollbackManualSourceSwitchPlayback(
         return false;
       }
     }
-    if (
-      restoreState.restoreResumeSeconds > 1 &&
-      !isTranscodeSourceActive()
-    ) {
-      seekToAbsoluteTime(restoreState.restoreResumeSeconds);
-    }
     knownDurationSeconds = restoreState.knownDurationSeconds;
   }
   expectedDurationSeconds = restoreState.expectedDurationSeconds;
@@ -3010,6 +3017,7 @@ function markManualSourceSwitchPlaybackRequested(sourceHash = "") {
 }
 
 function completeManualSourceSwitchIfActive(activePlaybackSource = "") {
+  if (!isLiveIframePlaybackActive() && (video.readyState < 2 || video.seeking)) return false;
   const completed = manualSourceSwitch.completeIfActive(undefined, {
     activePlaybackSource,
   });
@@ -3395,9 +3403,10 @@ async function applyResolvedTmdbPlayback(
   const preferredSource =
     tmdbSourceQueue[0] || preferredBrowserSource || nativePreferredSource;
   const explicitStartSeconds = normalizeResumeStartSeconds(startSeconds);
+  if (isProvisionalManualSourceSwitch) markInitialResumeHandled();
   setVideoSource(preferredSource, {
-    startSeconds: explicitStartSeconds || getInitialPlaybackStartSeconds(),
-    resetInitialResume: explicitStartSeconds <= 0,
+    startSeconds: isProvisionalManualSourceSwitch ? explicitStartSeconds : explicitStartSeconds || getInitialPlaybackStartSeconds(),
+    resetInitialResume: !isProvisionalManualSourceSwitch && explicitStartSeconds <= 0,
     autoplay,
   });
   void loadPlaybackEpisodeControls();
@@ -3471,12 +3480,19 @@ async function resolveTmdbSourcesAndPlay({
   const activePlaybackRequestToken = applyPlayback
     ? playbackRequestToken || ++tmdbPlaybackRequestToken
     : playbackRequestToken;
+  const isSuperseded = () => Boolean(
+    (activePlaybackRequestToken && activePlaybackRequestToken !== tmdbPlaybackRequestToken) ||
+    (applyPlayback && isManualSourceSwitchPending()),
+  );
+  const staleResult = () => ({ nativeLaunched: false, resolved: null, resolvedSourceHash: "", stale: true });
+  if (isSuperseded()) return staleResult();
   if (applyPlayback) {
     stopLocalCacheUpgradeWatch();
     localCacheUpgradeWatch.setHasUpgraded(false);
   }
   if (isTmdbResolvedPlayback && (skipExternalEmbed || requiredSourceHash || requestSourceHash || getPinnedSourceHashForRequests() || isTorrentResolverProvider(preferredResolverProvider))) {
     await loadUserRealDebridPlaybackSettings();
+    if (isSuperseded()) return staleResult();
     const clearedDisabledTorrentState = clearDisabledTorrentPlaybackState();
     if (clearedDisabledTorrentState || !hasEnabledTorrentProvider()) {
       skipExternalEmbed = false;
@@ -3531,10 +3547,7 @@ async function resolveTmdbSourcesAndPlay({
             skipExternalEmbed,
             refreshResolve,
           }),
-    isSuperseded: () =>
-      applyPlayback &&
-      (activePlaybackRequestToken !== tmdbPlaybackRequestToken ||
-        isManualSourceSwitchPending()),
+    isSuperseded,
   });
   if (resolveAttempt.stale) {
     return {
@@ -3594,6 +3607,7 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
   }
 
   const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
+  const recoveryRequestToken = ++tmdbPlaybackRequestToken;
   stopLocalCacheUpgradeWatch();
   isRecoveringTmdbStream = true;
   showResolver(message || "Switching source...");
@@ -3628,17 +3642,20 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
     currentTmdbPlaybackSessionKey = "";
     showResolver("Trying another streaming source...");
     void invalidateCurrentSession
-      .then(() =>
+      .then(() => {
+        if (recoveryRequestToken !== tmdbPlaybackRequestToken || isManualSourceSwitchPending()) return;
         // Force a fresh resolve on recovery so a stale/dead cached upstream URL is
         // evicted server-side rather than re-served.
-        resolveTmdbSourcesAndPlay({
+        return resolveTmdbSourcesAndPlay({
+          playbackRequestToken: recoveryRequestToken,
           startSeconds: resumeAt,
           refreshResolve: true,
           requestSourceHash: pickResolverAlternateSourceHash({ allowPreviouslyFailedFallback: false }),
           skipExternalEmbed: false,
-        }),
-      )
+        });
+      })
       .catch((error) => {
+        if (recoveryRequestToken !== tmdbPlaybackRequestToken || isManualSourceSwitchPending()) return;
         console.error("Failed to refresh TMDB playback source:", error);
         const fallbackMessage =
           error?.message || "Resolved stream could not be played. Try again.";
@@ -5888,7 +5905,8 @@ function scheduleStreamStallRecovery(
     }
 
     const nowTime = getEffectiveCurrentTime();
-    if (nowTime > checkpointTime + 0.8 || video.readyState >= 3) {
+    if (!video.seeking && video.readyState >= 2 &&
+        (nowTime > checkpointTime + 0.8 || video.readyState >= 3)) {
       return;
     }
 
@@ -5896,6 +5914,15 @@ function scheduleStreamStallRecovery(
       void attemptAutomaticLiveStreamFallback(
         "Live stream stalled. Trying another source...",
       );
+      return;
+    }
+
+    // One quiet in-place retry gives a slow/failed destination segment a chance
+    // to recover without a resolver round trip or an unsolicited provider hop.
+    if (!isManualSourceSwitchPending() && !isBrowserOffline() &&
+        stallRetryGeneration !== playbackSourceGeneration && hlsPlaybackController.retryAtCurrentTime()) {
+      stallRetryGeneration = playbackSourceGeneration;
+      scheduleStreamStallRecovery(message);
       return;
     }
 
@@ -6407,9 +6434,11 @@ async function tryPlay() {
   }
 
   armLiveStartupHealthWatch();
+  const playGeneration = playbackSourceGeneration;
   try {
     await video.play();
   } catch (error) {
+    if (playGeneration !== playbackSourceGeneration || error?.name === "AbortError") return;
     if (isLivePlayback && isPlaybackBlockedByPolicy(error)) {
       clearLiveStartupHealthWatch({ resetRequest: true });
     }
@@ -6452,6 +6481,7 @@ function seekToAbsoluteTime(
     }
   }
   lastPlaybackSeekAt = performance.now();
+  stallRetryGeneration = -1;
   resetAudioDecodeWatchState();
   if (!isInitialResume) {
     markInitialResumeHandled();
@@ -6460,6 +6490,8 @@ function seekToAbsoluteTime(
     showSeekLoadingIndicator();
   }
   if (!isTranscodeSourceActive()) {
+    pendingRecoverySeekSeconds = null;
+    if (hlsPlaybackController.seek(clampedTarget)) return;
     if (isLivePlayback) {
       video.currentTime = clampedTarget;
       return;
@@ -6474,6 +6506,14 @@ function seekToAbsoluteTime(
 
   if (!activeTranscodeInput) {
     return;
+  }
+
+  const relativeTarget = clampedTarget - transcodeBaseOffsetSeconds;
+  for (let index = 0; index < video.buffered.length; index += 1) {
+    if (relativeTarget >= video.buffered.start(index) && relativeTarget < video.buffered.end(index) - 0.1) {
+      video.currentTime = relativeTarget;
+      return;
+    }
   }
 
   const shouldResumePlayback = !video.paused;
@@ -6748,8 +6788,7 @@ function retryCurrentPlaybackFromSavedPosition() {
       { resetInitialResume: false },
     );
   } else {
-    pendingRecoverySeekSeconds = resumeAt;
-    setVideoSource(requestedSource, { resetInitialResume: false });
+    setVideoSource(requestedSource, { startSeconds: resumeAt, resetInitialResume: false });
   }
   void tryPlay();
   return true;
@@ -9008,7 +9047,6 @@ async function handleSourceOptionSelection(nextSourceHash) {
   });
   const resumeFrom = getEffectiveCurrentTime();
   const wasPaused = isLiveIframePlaybackActive() ? liveIframePlaybackClock.isPaused() : video.paused;
-  const previousPreferredResolverProvider = preferredResolverProvider;
   const sourceSwitchRequest = manualSourceSwitch.begin({
     targetSourceHash: normalizedNextSourceHash,
     startupTimeoutMs: sourceSwitchTimeouts.startupTimeoutMs,
@@ -9017,6 +9055,8 @@ async function handleSourceOptionSelection(nextSourceHash) {
       wasPaused,
     }),
   });
+  const playbackRequestToken = ++tmdbPlaybackRequestToken;
+  clearPlaybackRecovery();
   await requestResolveJson.cancelActive();
   if (!manualSourceSwitch.isCurrent(sourceSwitchRequest)) {
     return;
@@ -9031,7 +9071,6 @@ async function handleSourceOptionSelection(nextSourceHash) {
     !switchingToEmbed && (
       isUserRealDebridPlaybackEnabled() || userLocalTorrentEnabled
     );
-  const playbackRequestToken = ++tmdbPlaybackRequestToken;
   stopLocalCacheUpgradeWatch();
   localCacheUpgradeWatch.setHasUpgraded(false);
   sourceSelectionPinned = true;
@@ -9054,6 +9093,7 @@ async function handleSourceOptionSelection(nextSourceHash) {
   }
   try {
     const result = await resolveTmdbSourcesAndPlay({
+      playbackRequestToken,
       allowSourceFallback: false,
       applyPlayback: false,
       requiredSourceHash: normalizedNextSourceHash,
@@ -9080,12 +9120,17 @@ async function handleSourceOptionSelection(nextSourceHash) {
     selectedSourceHash = normalizedNextSourceHash;
     syncSourceSelectionState();
     manualSourceSwitch.arm(sourceSwitchRequest);
+    const handoff = refreshManualSourceSwitchBaseline(sourceSwitchRequest.baseline, {
+      activePlaybackSource: getManualSourceSwitchRestoreSource(),
+      currentTime: getEffectiveCurrentTime(),
+      paused: video.paused,
+    });
     const applied = await applyResolvedTmdbPlayback(result.resolved, {
       resolvedSourceHash: result.resolvedSourceHash || normalizedNextSourceHash,
-      startSeconds: resumeFrom,
+      startSeconds: handoff.restoreResumeSeconds,
       playbackRequestToken,
       manualSourceSwitchRequest: sourceSwitchRequest,
-      autoplay: !wasPaused,
+      autoplay: !handoff.restoreWasPaused,
     });
     if (applied?.stale) {
       if (
@@ -9111,9 +9156,6 @@ async function handleSourceOptionSelection(nextSourceHash) {
       closeSourcePopover(false, { force: true });
       return;
     }
-    if (resumeFrom > 1 && !isTranscodeSourceActive()) {
-      seekToAbsoluteTime(resumeFrom);
-    }
     if (
       manualSourceSwitch.isCurrent(sourceSwitchRequest) &&
       (video.readyState >= 2 || isLiveIframePlaybackActive())
@@ -9122,25 +9164,12 @@ async function handleSourceOptionSelection(nextSourceHash) {
     }
     // Otherwise leave the row spinner up until startup completes or rolls back.
   } catch (error) {
-    if (
-      error?.name === "AbortError" &&
-      !manualSourceSwitch.isCurrent(sourceSwitchRequest)
-    ) {
+    if (!manualSourceSwitch.isCurrent(sourceSwitchRequest)) {
       return;
     }
     const message = error?.message || "Unable to switch source.";
-    if (manualSourceSwitch.isCurrent(sourceSwitchRequest)) {
-      await manualSourceSwitch.fail(sourceSwitchRequest, message);
-    } else if (sourceSwitchRequest?.baseline) {
-      await rollbackManualSourceSwitchPlayback(sourceSwitchRequest.baseline, {
-        reason: message,
-        request: sourceSwitchRequest,
-      });
-      setPendingSourceSwitchHash("");
-    } else {
-      preferredResolverProvider = previousPreferredResolverProvider;
-      setPendingSourceSwitchHash("");
-    }
+    await manualSourceSwitch.fail(sourceSwitchRequest, message);
+    if (manualSourceSwitch.isPending()) return;
     syncSourceSelectionState();
     renderSelectedSourceDetails();
     // Stay on the stream that was already playing — do not hunt a new HLS.
@@ -9444,6 +9473,7 @@ trackListener(video, "seeking", () => {
   resetAudioDecodeWatchState();
   invalidateRenderedCue();
   renderCustomSubtitleOverlay();
+  scheduleStreamStallRecovery();
 });
 trackListener(video, "progress", syncSeekState);
 trackListener(video, "durationchange", syncSeekState);
@@ -9471,6 +9501,7 @@ trackListener(video, "canplay", () => {
   applyPendingRecoverySeek();
   clearPlaybackRecovery();
   clearStreamStallRecovery();
+  stallRetryGeneration = -1;
   clearLiveStartupHealthWatch({ resetRequest: true });
   rememberLiveStreamSuccess(getSelectedLiveStreamOption(), "canplay");
   hideSeekLoadingIndicator();
@@ -9493,7 +9524,7 @@ trackListener(video, "playing", () => {
   }
 });
 trackListener(video, "timeupdate", () => {
-  if (getEffectiveCurrentTime() > 0.5) {
+  if (getEffectiveCurrentTime() > 0.5 && !video.seeking && video.readyState >= 3) {
     completeManualSourceSwitchIfActive();
     clearPlaybackRecovery();
     clearStreamStallRecovery();
