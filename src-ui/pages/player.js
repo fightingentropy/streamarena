@@ -2543,7 +2543,7 @@ function getEffectiveCurrentTime() {
   if (isTranscodeSourceActive()) {
     return transcodeBaseOffsetSeconds + (Number(video.currentTime) || 0);
   }
-  return Number(video.currentTime) || 0;
+  return hlsPlaybackController.getPendingStartPosition() ?? (Number(video.currentTime) || 0);
 }
 
 function getLiveSeekableWindow() {
@@ -2728,7 +2728,9 @@ function setVideoSource(
   if (isHlsSource) {
     const hlsMeta = parseHlsMasterSource(sourceWithAudioSync);
     const handleHlsPlaybackFailure = (message) => {
-      hlsPlaybackController.destroy();
+      // Keep the media timeline until recovery has handed off to its replacement.
+      // destroy() detaches MSE and resets currentTime/paused, which used to turn a
+      // failed far seek into a jump back to the last persisted resume position.
       const fallbackMessage =
         String(message || "").trim() || "HLS playback failed.";
       if (isLivePlayback && liveStreamOptions.length > 1) {
@@ -3139,12 +3141,14 @@ async function tryNextTmdbSource() {
   const nextSource = tmdbSourceQueue[tmdbSourceAttemptIndex];
   tmdbSourceAttemptIndex += 1;
   const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
+  const autoplay = !video.paused;
   showResolver("Switching source...");
   setVideoSource(nextSource, {
     startSeconds: resumeAt,
     resetInitialResume: false,
+    autoplay,
   });
-  await tryPlay();
+  if (autoplay) await tryPlay();
   return true;
 }
 
@@ -3229,6 +3233,7 @@ async function applyResolvedTmdbPlayback(
     startSeconds = 0,
     playbackRequestToken = 0,
     manualSourceSwitchRequest = null,
+    preservePlaybackState = false,
     autoplay = true,
   } = {},
 ) {
@@ -3403,10 +3408,11 @@ async function applyResolvedTmdbPlayback(
   const preferredSource =
     tmdbSourceQueue[0] || preferredBrowserSource || nativePreferredSource;
   const explicitStartSeconds = normalizeResumeStartSeconds(startSeconds);
-  if (isProvisionalManualSourceSwitch) markInitialResumeHandled();
+  const hasExplicitPlaybackState = isProvisionalManualSourceSwitch || preservePlaybackState;
+  if (hasExplicitPlaybackState) markInitialResumeHandled();
   setVideoSource(preferredSource, {
-    startSeconds: isProvisionalManualSourceSwitch ? explicitStartSeconds : explicitStartSeconds || getInitialPlaybackStartSeconds(),
-    resetInitialResume: !isProvisionalManualSourceSwitch && explicitStartSeconds <= 0,
+    startSeconds: hasExplicitPlaybackState ? explicitStartSeconds : explicitStartSeconds || getInitialPlaybackStartSeconds(),
+    resetInitialResume: !hasExplicitPlaybackState && explicitStartSeconds <= 0,
     autoplay,
   });
   void loadPlaybackEpisodeControls();
@@ -3476,6 +3482,7 @@ async function resolveTmdbSourcesAndPlay({
   skipExternalEmbed = tmdbSkipExternalEmbed,
   refreshResolve = false,
   startSeconds = 0,
+  preservePlaybackState = false,
 } = {}) {
   const activePlaybackRequestToken = applyPlayback
     ? playbackRequestToken || ++tmdbPlaybackRequestToken
@@ -3486,7 +3493,13 @@ async function resolveTmdbSourcesAndPlay({
   );
   const staleResult = () => ({ nativeLaunched: false, resolved: null, resolvedSourceHash: "", stale: true });
   if (isSuperseded()) return staleResult();
+  const playbackBaseline = preservePlaybackState ? {
+    restorePlaybackSource: getManualSourceSwitchRestoreSource(),
+    restoreResumeSeconds: startSeconds,
+    restoreWasPaused: video.paused,
+  } : null;
   if (applyPlayback) {
+    if (!playbackRequestToken) isRecoveringTmdbStream = false;
     stopLocalCacheUpgradeWatch();
     localCacheUpgradeWatch.setHasUpgraded(false);
   }
@@ -3580,9 +3593,16 @@ async function resolveTmdbSourcesAndPlay({
       stale: true,
     };
   }
+  refreshManualSourceSwitchBaseline(playbackBaseline, {
+    activePlaybackSource: getManualSourceSwitchRestoreSource(),
+    currentTime: getEffectiveCurrentTime(),
+    paused: video.paused,
+  });
   return applyResolvedTmdbPlayback(resolved, {
     resolvedSourceHash,
-    startSeconds,
+    startSeconds: playbackBaseline?.restoreResumeSeconds ?? startSeconds,
+    autoplay: playbackBaseline ? !playbackBaseline.restoreWasPaused : true,
+    preservePlaybackState,
     playbackRequestToken: activePlaybackRequestToken,
   });
 }
@@ -3618,7 +3638,7 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
   // re-resolving a different source.
   if (hasQueuedTmdbSourceFallback()) {
     void tryNextTmdbSource().finally(() => {
-      isRecoveringTmdbStream = false;
+      if (recoveryRequestToken === tmdbPlaybackRequestToken) isRecoveringTmdbStream = false;
     });
     return true;
   }
@@ -3649,6 +3669,7 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
         return resolveTmdbSourcesAndPlay({
           playbackRequestToken: recoveryRequestToken,
           startSeconds: resumeAt,
+          preservePlaybackState: true,
           refreshResolve: true,
           requestSourceHash: pickResolverAlternateSourceHash({ allowPreviouslyFailedFallback: false }),
           skipExternalEmbed: false,
@@ -3662,7 +3683,7 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
         showResolverError(fallbackMessage);
       })
       .finally(() => {
-        isRecoveringTmdbStream = false;
+        if (recoveryRequestToken === tmdbPlaybackRequestToken) isRecoveringTmdbStream = false;
       });
     return true;
   }
@@ -7002,6 +7023,8 @@ function tryAlternatePlaybackSourceNow() {
 }
 
 async function handlePlaybackErrorRecovery(message) {
+  const sourceGeneration = playbackSourceGeneration;
+  const requestToken = tmdbPlaybackRequestToken;
   const fallbackMessage =
     String(message || "").trim() || "Resolved stream could not be played.";
   const manualSwitchRequest = manualSourceSwitch.getPending();
@@ -7017,6 +7040,9 @@ async function handlePlaybackErrorRecovery(message) {
   }
 
   const serverHealthy = await checkPlaybackServerHealth();
+  if (sourceGeneration !== playbackSourceGeneration || requestToken !== tmdbPlaybackRequestToken) {
+    return true;
+  }
   if (!serverHealthy) {
     schedulePlaybackRecovery("server", "", { resetAttempts: true });
     return true;
@@ -9056,6 +9082,7 @@ async function handleSourceOptionSelection(nextSourceHash) {
     }),
   });
   const playbackRequestToken = ++tmdbPlaybackRequestToken;
+  isRecoveringTmdbStream = false;
   clearPlaybackRecovery();
   await requestResolveJson.cancelActive();
   if (!manualSourceSwitch.isCurrent(sourceSwitchRequest)) {

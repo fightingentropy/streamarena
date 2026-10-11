@@ -185,3 +185,66 @@ test("retrying HLS passes the saved position into its loader", () => {
   vm.runInNewContext(`${extract("function retryCurrentPlaybackFromSavedPosition()", "async function runPlaybackRecoveryAttempt(")}\nretryCurrentPlaybackFromSavedPosition();`, context);
   assert.equal(options.startSeconds, 432);
 });
+
+test("fatal HLS recovery retains the seek target until the replacement takes over", async () => {
+  const video = { currentTime: 900, paused: false };
+  let recoveredAt;
+  const context = {
+    video, isLivePlayback: false, isTmdbResolvedPlayback: true,
+    hlsPlaybackController: { destroy: () => { video.currentTime = 0; video.paused = true; } },
+    handlePlaybackErrorRecovery: async () => { recoveredAt = video.currentTime; return true; },
+    reportCurrentTmdbPlaybackFailure() {},
+  };
+  vm.runInNewContext(`${extract("const handleHlsPlaybackFailure = (message) => {", "    hlsPlaybackController.play({")}\nhandleHlsPlaybackFailure('decode failed');`, context);
+  await flush();
+  assert.equal(recoveredAt, 900, "detaching MSE before recovery loses the seek target");
+  assert.equal(video.paused, false);
+});
+
+test("an old health check cannot recover over a newer source selection", async () => {
+  const health = Promise.withResolvers();
+  let recoveries = 0;
+  const context = {
+    manualSourceSwitch: { getPending: () => null }, isBrowserOffline: () => false,
+    playbackSourceGeneration: 1, tmdbPlaybackRequestToken: 1,
+    checkPlaybackServerHealth: () => health.promise,
+    attemptTmdbRecovery: () => { recoveries++; return true; },
+    showResolverError() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(extract("async function handlePlaybackErrorRecovery(message)", "function isSourceFallbackResolveError("), context);
+  const recovery = context.handlePlaybackErrorRecovery("old decode error");
+  context.tmdbPlaybackRequestToken++;
+  health.resolve(true);
+  await recovery;
+  assert.equal(recoveries, 0);
+});
+
+test("automatic fallback follows a seek and pause made while the replacement resolves", async () => {
+  const resolve = Promise.withResolvers();
+  let applied;
+  const context = {
+    ...manual, tmdbPlaybackRequestToken: 1, tmdbSkipExternalEmbed: false,
+    isTmdbResolvedPlayback: true, isTmdbTvPlayback: false, tmdbId: 123,
+    selectedSourceHash: "A", preferredResolverProvider: "fastest", userLocalTorrentEnabled: false,
+    availablePlaybackSources: [{}], video: { currentTime: 170, paused: false },
+    isManualSourceSwitchPending: () => false, stopLocalCacheUpgradeWatch() {},
+    localCacheUpgradeWatch: { setHasUpgraded() {} }, getPinnedSourceHashForRequests: () => "",
+    isTorrentResolverProvider: () => false, resolveTorrentRequestProvider: () => "fastest",
+    isUserRealDebridPlaybackEnabled: () => false, normalizeSourceHash: value => value,
+    resolveTmdbMovieViaBackend: () => resolve.promise,
+    runResolveWithSupersession: async ({ resolve, isSuperseded }) => ({ value: await resolve(), stale: isSuperseded() }),
+    getManualSourceSwitchRestoreSource: () => "A-url",
+    applyResolvedTmdbPlayback: async (_, options) => { applied = options; },
+  };
+  context.getEffectiveCurrentTime = () => context.video.currentTime;
+  vm.createContext(context);
+  vm.runInContext(extract("async function resolveTmdbSourcesAndPlay({", "// A single source can expose"), context);
+  const recovery = context.resolveTmdbSourcesAndPlay({ startSeconds: 170, preservePlaybackState: true });
+  context.video.currentTime = 900;
+  context.video.paused = true;
+  resolve.resolve({ sourceHash: "B" });
+  await recovery;
+  assert.equal(applied.startSeconds, 900);
+  assert.equal(applied.autoplay, false);
+});

@@ -45,6 +45,8 @@ try {
   let failingSegments = 0;
   let segmentFailure = null;
   let hangingSegment = null;
+  let healthGate = null;
+  let healthRequests = 0;
   await page.route("**/api/**", async route => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -66,7 +68,11 @@ try {
         selectedSubtitleStreamIndex: -1, preferences: { subtitleLang: "off" }, metadata: { displayTitle: "Transition test", runtimeSeconds: 180 } };
     } else if (path === "/api/tmdb/details") payload = { title: "Transition test", runtime: 3 };
     else if (path.endsWith("watch-progress") || path.endsWith("continue-watching") || path.endsWith("my-list")) payload = { entries: [] };
-    else if (path.startsWith("/api/health")) payload = { ok: true };
+    else if (path.startsWith("/api/health")) {
+      healthRequests++;
+      await healthGate?.promise;
+      payload = { ok: true };
+    }
     await route.fulfill({ json: payload });
   });
   await page.route("**/fixture-media/**", async route => {
@@ -171,6 +177,43 @@ try {
   assert.equal(await page.locator(`.source-option[data-source-hash="${hashes.b}"]`).getAttribute("aria-pressed"), "true");
   assert.deepEqual(errors, [], "no stale play promises or media callback errors");
   console.log("✓ failed provider restores the confirmed stream with decoded frames and no page errors");
+
+  // Delay the health check from B's error until C is already playing. The old
+  // callback must not demote the new selection or start another resolve.
+  healthGate = gate();
+  const healthBefore = healthRequests;
+  await page.locator("#playerVideo").evaluate(video => video.dispatchEvent(new Event("error")));
+  for (let index = 0; healthRequests === healthBefore && index < 30; index++) await delay(20);
+  assert(healthRequests > healthBefore);
+  await choose("c");
+  await waitSelected("c");
+  const resolvesAfterC = resolves.length;
+  healthGate.resolve();
+  await delay(300);
+  assert.equal(resolves.length, resolvesAfterC, "old health check must not replace C");
+  await waitSelected("c");
+  console.log("✓ late health response cannot undo a newer provider selection");
+
+  // An automatic fallback is resolving while the viewer seeks and pauses the
+  // old stream. Replacement playback must honor those latest user actions.
+  const aResolve = gate();
+  resolveGates.set("a", aResolve);
+  const resolvesBeforeRecovery = resolves.length;
+  await page.locator("#playerVideo").evaluate(video => video.dispatchEvent(new Event("error")));
+  for (let index = 0; resolves.length === resolvesBeforeRecovery && index < 100; index++) await delay(20);
+  assert.equal(resolves.at(-1), "a");
+  await seek(130);
+  await page.locator("#playerVideo").evaluate(video => video.pause());
+  const latestSeek = (await state()).time;
+  aResolve.resolve();
+  await waitSelected("a");
+  await page.waitForFunction(() => !document.querySelector("#playerVideo").seeking);
+  const afterRecovery = await state();
+  assert(afterRecovery.paused, "automatic fallback must preserve the latest pause");
+  assert(Math.abs(afterRecovery.time - latestSeek) < 1, `fallback lost newer seek: ${JSON.stringify(afterRecovery)}`);
+  assert(afterRecovery.frames > 0 && afterRecovery.width > 0);
+  assert.deepEqual(errors, []);
+  console.log("✓ automatic fallback preserves a newer seek and pause with a decoded replacement frame");
 } finally {
   for (const pending of gates) pending.resolve();
   await browser?.close();

@@ -237,6 +237,11 @@ export function createHlsPlaybackController({
     return pendingHlsJsPlaybackSource === source;
   }
 
+  function getPendingStartPosition() {
+    return currentSession?.startPosition >= 0 && getVideo()?.readyState === 0
+      ? currentSession.startPosition : null;
+  }
+
   function seek(targetSeconds) {
     const video = getVideo();
     if (!currentSession || !video) return false;
@@ -306,8 +311,8 @@ export function createHlsPlaybackController({
       mediaListeners.add(remove);
       video.addEventListener(type, handler);
     };
-    const requestPlay = () => {
-      if (!autoplay || !isCurrent()) return;
+    const requestPlay = (shouldAutoplay = autoplay) => {
+      if (!shouldAutoplay || !isCurrent()) return;
       // A new source or a pause can reject a pending play() promise. Never let
       // that old promise roll back the current provider or become unhandled.
       Promise.resolve(tryPlay()).catch((error) => {
@@ -545,7 +550,9 @@ export function createHlsPlaybackController({
               hlsRecoveryAttempts < 2
             ) {
               hlsRecoveryAttempts += 1;
-              session.startPosition = Math.max(0, Number(video.currentTime) || 0);
+              session.recoveryAutoplay = video.readyState > 0
+                ? !video.paused : session.recoveryAutoplay ?? autoplay;
+              session.startPosition = getPendingStartPosition() ?? Math.max(0, Number(video.currentTime) || 0);
               hls.recoverMediaError();
               return;
             }
@@ -557,8 +564,10 @@ export function createHlsPlaybackController({
           });
           hls.on(HlsConstructor.Events.MEDIA_ATTACHED, () => {
             if (activeHlsController === hls) {
-              if (session.manifestReady) hls.startLoad(session.startPosition);
-              else hls.loadSource(absoluteSource);
+              if (session.manifestReady) {
+                hls.startLoad(session.startPosition);
+                requestPlay(session.recoveryAutoplay ?? autoplay);
+              } else hls.loadSource(absoluteSource);
             }
           });
           hls.on(HlsConstructor.Events.MANIFEST_PARSED, () => {
@@ -655,6 +664,7 @@ export function createHlsPlaybackController({
     destroy,
     isActive,
     isPendingSource,
+    getPendingStartPosition,
     setQualityLevel,
     seek,
     retryAtCurrentTime,

@@ -193,13 +193,27 @@ try {
     hls.emit("ERROR", { fatal: true, type: "network" });
     assert.equal(hls.starts.at(-1), 120, "recover at the current backward seek, not hls.js's previous high-water time");
     video.currentTime = 180;
+    video.paused = false;
+    const playBeforeRecovery = state.playRequests;
     hls.emit("ERROR", { fatal: true, type: "media" });
     assert.equal(hls.starts.at(-1), 180);
+    assert.equal(state.playRequests, playBeforeRecovery + 1, "MSE reattachment must resume a previously playing video");
     assert.equal(hls.loads.length, 1, "media recovery should reuse the manifest and preserve the new position");
+    video.currentTime = 0;
+    video.readyState = 0;
+    assert.equal(controller.getPendingStartPosition(), 180, "MSE reattachment must retain the requested timeline position");
+    hls.emit("FRAG_BUFFERED");
+    hls.emit("ERROR", { fatal: true, type: "media" });
+    assert.equal(hls.starts.at(-1), 180, "a second decode failure before metadata must not reset the seek target to zero");
     video.readyState = 3;
     video.seeking = false;
     video.dispatch("canplay");
     assert.deepEqual(state.playableSources, [state.lastRequestedSource]);
+    hls.emit("FRAG_BUFFERED");
+    video.paused = true;
+    const playBeforePausedRecovery = state.playRequests;
+    hls.emit("ERROR", { fatal: true, type: "media" });
+    assert.equal(state.playRequests, playBeforePausedRecovery, "decode recovery must not unpause the viewer");
     controller.destroy();
     console.log("✓ HLS generations, queued seeks, playable confirmation and position-preserving recovery");
   }
