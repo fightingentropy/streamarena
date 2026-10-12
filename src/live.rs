@@ -3038,15 +3038,17 @@ fn rewrite_live_hls_master_playlist(
     signing_context: Option<LiveHlsSigningContext<'_>>,
     direct_segments: bool,
 ) -> String {
-    // CineJoy's full ladder is explicitly supported, including 4K/HDR. Its fixed
+    // CineJoy and Miami retain their verified full quality ladders. The fixed
     // referer is covered by the resolver's signature and must follow every child
     // request, so these renditions stay proxied. Other relayed providers retain
     // the bandwidth cap; browser-direct streams already keep their full ladder.
     let capped_storage;
     let lines: &[&str] = if signing_context.is_some()
         && !direct_segments
-        && !matches!(referer, Some("https://cinejoy.pk/" | "https://cinejoy.to/"))
-    {
+        && !matches!(
+            referer,
+            Some("https://cinejoy.pk/" | "https://cinejoy.to/" | "https://www.movy.bz/")
+        ) {
         capped_storage = cap_external_embed_master_to_1080p(lines);
         &capped_storage
     } else {
@@ -4705,7 +4707,7 @@ mod tests {
     }
 
     #[test]
-    fn cinejoy_keeps_4k_hdr_and_signed_referrers_while_other_providers_stay_capped() {
+    fn full_quality_providers_keep_4k_and_signed_referrers_while_others_stay_capped() {
         let secret = "test-live-hls-proxy-secret-with-enough-length";
         let signing_context = Some(super::LiveHlsSigningContext {
             secret,
@@ -4718,6 +4720,10 @@ video_4k_hdr.m3u8\n\
 #EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS=\"avc1.4D4032,mp4a.40.2\"\n\
 video_1080p.m3u8\n";
         for (upstream, referer) in [
+            (
+                "https://moon.zenoak.top/hls/test/master.m3u8",
+                "https://www.movy.bz/",
+            ),
             (
                 "https://ok.solarpanelcleaning.cc/playlist/test.m3u8",
                 "https://cinejoy.pk/",
