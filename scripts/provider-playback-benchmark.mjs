@@ -56,6 +56,7 @@ export const REQUIRED_BASE_PROVIDERS = Object.freeze({
 // Additional current providers and historical reports can be selected without
 // requiring every catalog to expose them. This does not register backend sources.
 const OPTIONAL_BASE_PROVIDERS = Object.freeze([
+  "Miami",
   "Vidrift Evion", "Vidrift Vela",
   "VidEasy", "VidLink", "VidRock", "NoTorrent", "VixSrc", "LordFlix",
   "Icefy", "Meridian", "Gallic", "NebulaStreams",

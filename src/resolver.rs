@@ -56,6 +56,7 @@ mod benchmark;
 mod cinejoy;
 mod external_embed;
 mod hls_quality;
+mod miami;
 mod real_debrid;
 mod scoring;
 mod subtitles;
@@ -4948,6 +4949,7 @@ async fn resolve_external_embed_hls_playback_source(
     timeout_ms: u64,
 ) -> Option<ExternalEmbedHlsPlaybackSource> {
     match source.provider.id {
+        "miami" => return miami::resolve(client, metadata, timeout_ms).await,
         "vidrift-evion" | "vidrift-vela" => {
             return vidrift::resolve(client, source.provider.id, metadata, timeout_ms).await;
         }

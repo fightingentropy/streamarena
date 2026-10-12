@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use url::Url;
 
+use super::hls_quality::avc_dimensions;
 use super::{ExternalEmbedHlsPlaybackSource, ResolveMetadata};
 
 const ORIGIN: &str = "https://embed.vidrift.net/";
@@ -160,44 +161,6 @@ fn init_segment_url(base: &Url, playlist: &str) -> Option<Url> {
     let (uri, _) = uri.split_once('"')?;
     let url = base.join(uri).ok()?;
     valid_destination(&url).then_some(url)
-}
-
-/// Inspect ISO BMFF sample entries, not track display dimensions or API labels.
-/// The depth/length checks keep malformed upstream files bounded and panic-free.
-fn avc_dimensions(mut data: &[u8], depth: u8) -> Option<(u16, u16)> {
-    if depth > 8 {
-        return None;
-    }
-    while data.len() >= 8 {
-        let size = u32::from_be_bytes(data[..4].try_into().ok()?);
-        let (size, header) = match size {
-            0 => (data.len(), 8),
-            1 => (
-                usize::try_from(u64::from_be_bytes(data.get(8..16)?.try_into().ok()?)).ok()?,
-                16,
-            ),
-            size => (size as usize, 8),
-        };
-        if size < header || size > data.len() {
-            return None;
-        }
-        let payload = &data[header..size];
-        let dimensions = match &data[4..8] {
-            b"avc1" | b"avc3" => {
-                let width = u16::from_be_bytes(payload.get(24..26)?.try_into().ok()?);
-                let height = u16::from_be_bytes(payload.get(26..28)?.try_into().ok()?);
-                (width > 0 && height > 0).then_some((width, height))
-            }
-            b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" => avc_dimensions(payload, depth + 1),
-            b"stsd" => avc_dimensions(payload.get(8..)?, depth + 1),
-            _ => None,
-        };
-        if dimensions.is_some() {
-            return dimensions;
-        }
-        data = &data[size..];
-    }
-    None
 }
 
 fn valid_destination(url: &Url) -> bool {

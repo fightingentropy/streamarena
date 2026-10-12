@@ -46,6 +46,7 @@ pub mod keys {
 /// per-host referer/fingerprint logic in the resolver, so they are not URL-
 /// swappable; the dashboard exposes an enable/disable toggle instead.
 pub const EMBED_IDS: &[&str] = &[
+    "miami",
     "cinejoy",
     "aether-lul",
     "aether-link",
@@ -187,7 +188,7 @@ pub fn custom_base(id: &str) -> Option<String> {
 
 /// Provider tiers shared by the Server menu and automatic native-HLS selection.
 /// Keep the requested CineJoy default, Nebula. Current production playback
-/// puts Lul then Link next; Lisbon and Solara retain previously verified HD
+/// puts Miami, Lul then Link next; Lisbon and Solara retain previously verified HD
 /// capability but failed the fresh sample, so they are last-resort backups.
 /// Retired low-quality and repeatedly failing providers are absent from every
 /// built-in catalog.
@@ -199,6 +200,9 @@ pub fn custom_base(id: &str) -> Option<String> {
 /// tier gaps exceed positive health nudges while remaining below the uncapped
 /// dead-source penalty; source eligibility and explicit pins are separate.
 pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
+    // FrameX audit (2026-10-12): fast AVC/full-HD on three titles and verified
+    // 4K playback. Second only to the established CineJoy Nebula default.
+    ("miami", 2_400),
     ("cinejoy", 1_400),
     ("aether-lul", 2_200),
     ("aether-link", 2_000),
@@ -413,6 +417,7 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
     // (testable) — the URL itself is not swappable because each host is coupled to
     // per-provider referer/fingerprint handling in the resolver.
     const EMBED_BASES: &[(&str, &str, &str)] = &[
+        ("miami", "Miami", "https://framextv.xyz"),
         ("cinejoy", "CineJoy", "https://cinejoy.pk"),
         ("aether-lul", "Aether Lul", "https://lul.aether.cx"),
         ("aether-link", "Aether Link", "https://link.aether.cx"),
