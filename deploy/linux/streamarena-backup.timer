@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily StreamArena backup
+
+[Timer]
+OnCalendar=*-*-* 04:15:00 UTC
+RandomizedDelaySec=10min
+Persistent=true
+Unit=streamarena-backup.service
+
+[Install]
+WantedBy=timers.target

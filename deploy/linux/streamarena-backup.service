@@ -1,0 +1,19 @@
+[Unit]
+Description=Back up StreamArena databases and library metadata
+RequiresMountsFor=/var/lib/streamarena /var/backups/streamarena
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/libexec/streamarena/backup-streamarena.py --source /opt/streamarena/current --output-root /var/backups/streamarena --retention-days 14
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=15min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/streamarena
+

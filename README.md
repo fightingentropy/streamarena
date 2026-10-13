@@ -2,7 +2,9 @@
 
 A private streaming app backed by a Rust/Axum server and a multi-page SolidJS/Vite frontend.
 
-The app serves local library titles, resolves remote movie and TV sources, plays live channels, shows live sports schedules, tracks per-user progress, and deploys to an always-on Mac mini behind Caddy.
+The app serves local library titles, resolves remote movie and TV sources, plays live channels, shows live sports schedules, and tracks per-user progress. Production runs on the Ubuntu VM on Oracle; the Mac mini is retained for rollback.
+
+Production deployment and recovery instructions: [Oracle deployment](docs/oracle-deployment.md). Use `bun run oracle:deploy`; the Mini scripts below are for the retired host and deliberate rollback work.
 
 ## Contents
 
@@ -32,7 +34,7 @@ The repository is a single full-stack app:
 - Discovery: TMDB metadata, selected external embed fallbacks, and user-enabled Torrentio/Torznab magnet resolution with optional Real-Debrid acceleration.
 - Local library: `assets/library.json` plus uploaded/managed videos under `assets/videos`.
 - Persistence: two SQLite files — durable accounts/user data in `cache/users.sqlite`, and regenerable cache/resolver state in `cache/resolver-cache.sqlite` (the latter self-heals if corrupt; the former is never auto-wiped).
-- Production target: a Mac mini runtime tree served locally on `127.0.0.1:5173` and exposed through Caddy.
+- Production target: Oracle ARM64 Linux, with systemd, a loopback Rust backend, Caddy, and a dedicated Cloudflare Tunnel. Existing Cloudflare media Worker routes now reach Oracle.
 
 Important paths:
 

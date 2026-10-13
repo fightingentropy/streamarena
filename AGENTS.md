@@ -6,6 +6,8 @@
 
 Single full-stack streaming app: Rust/Axum backend (port **5173**) + SolidJS/Vite MPA. Two SQLite files: durable accounts/user data in `cache/users.sqlite` (never auto-wiped), regenerable cache in `cache/resolver-cache.sqlite` (self-heals from corruption). No Docker in-repo. See `README.md` for architecture and API surface.
 
+Production moved to the **Ubuntu VM on Oracle** (`ssh oracle`) on 2026-10-13. Follow `docs/oracle-deployment.md` and use `bun run oracle:deploy`. The Mini backend/watchdog are disabled rollback copies; do not run `mini:deploy` or restart them during normal releases. Current app files are under `/opt/streamarena/current`, durable data under `/var/lib/streamarena`, and private environment under `/etc/streamarena/env`.
+
 ### Git attribution
 
 Use `fightingentropy <erlin.hx@gmail.com>` for author and committer identity. Do not add automated assistant co-author trailers.
