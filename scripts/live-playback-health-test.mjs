@@ -203,4 +203,24 @@ skipped.watch.armStartup();
 assert.equal(skipped.watch.isStartupArmed(), false);
 assert.equal(skipped.timeouts.length, 0);
 
+const singleProviderWithTransports = createWatch({
+  hasTransportFallback: () => true,
+  getVideo: () => ({ readyState: 0, videoWidth: 0, videoHeight: 0 }),
+});
+singleProviderWithTransports.optionCount = 1;
+singleProviderWithTransports.watch.armStartup();
+assert.equal(singleProviderWithTransports.watch.isStartupArmed(), true);
+singleProviderWithTransports.nowMs = LIVE_STARTUP_HEALTH_TIMEOUT_MS;
+singleProviderWithTransports.timeouts[0].callback();
+assert.equal(singleProviderWithTransports.startupFailovers.length, 1);
+
+const singleProviderBlank = createWatch({ hasTransportFallback: () => true });
+singleProviderBlank.optionCount = 1;
+singleProviderBlank.nowMs = LIVE_VISUAL_HEALTH_GRACE_MS + 1;
+singleProviderBlank.watch.startVisual();
+for (let sample = 0; sample < LIVE_VISUAL_HEALTH_MAX_BLANK_SAMPLES; sample += 1) {
+  singleProviderBlank.intervals[0]();
+}
+assert.equal(singleProviderBlank.visualFailovers.length, 1);
+
 console.log("live-playback-health tests passed");

@@ -142,7 +142,7 @@ test("a seek timeupdate without decoded data must not disarm recovery", () => {
     completeManualSourceSwitchIfActive() {}, clearLiveStartupHealthWatch() {},
     rememberLiveStreamSuccess() {}, getSelectedLiveStreamOption() {},
     hideStaleLiveResolverWhilePlayingForState() {}, isLivePlayback: false, resolverOverlay: null,
-    liveAutoFallbackInFlight: false, hideResolver() {}, applyInitialResumeIfReady: () => true,
+    liveTransportFallback: { isRecovering: () => false }, hideResolver() {}, applyInitialResumeIfReady: () => true,
     persistResumeTime() {}, hasSeriesEpisodeControls: false, autoPlayOverlayVisible: false,
   };
   vm.runInNewContext(extract('trackListener(video, "timeupdate", () => {', 'trackListener(video, "play", syncPlayState)'), context);
@@ -191,6 +191,7 @@ test("fatal HLS recovery retains the seek target until the replacement takes ove
   let recoveredAt;
   const context = {
     video, isLivePlayback: false, isTmdbResolvedPlayback: true,
+    sourceGeneration: 1, playbackSourceGeneration: 1,
     hlsPlaybackController: { destroy: () => { video.currentTime = 0; video.paused = true; } },
     handlePlaybackErrorRecovery: async () => { recoveredAt = video.currentTime; return true; },
     reportCurrentTmdbPlaybackFailure() {},

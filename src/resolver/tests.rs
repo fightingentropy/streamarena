@@ -1404,6 +1404,7 @@ fn external_embed_payload_routes_playlists_via_worker_when_configured() {
         "https://lordflix.org/embed".to_owned(),
         "test-secret",
         "https://live-proxy.example.workers.dev",
+        "",
     );
     let playable = payload["playableUrl"].as_str().expect("playable url");
     let fallbacks: Vec<&str> = payload["fallbackUrls"]
@@ -1432,6 +1433,7 @@ fn external_embed_payload_routes_playlists_via_worker_when_configured() {
         "https://lordflix.org/embed".to_owned(),
         "test-secret",
         "",
+        "",
     );
     let zone_playable = zone_payload["playableUrl"].as_str().expect("playable url");
     let zone_fallbacks = zone_payload["fallbackUrls"].as_array().expect("fallbacks");
@@ -1453,6 +1455,7 @@ fn external_embed_payload_routes_playlists_via_worker_when_configured() {
         "https://vidrock.example/embed".to_owned(),
         "test-secret",
         "https://live-proxy.example.workers.dev",
+        "",
     );
     let relay_playable = relay_payload["playableUrl"].as_str().expect("playable url");
     let relay_fallbacks: Vec<&str> = relay_payload["fallbackUrls"]
@@ -1466,6 +1469,56 @@ fn external_embed_payload_routes_playlists_via_worker_when_configured() {
     );
     assert_eq!(relay_fallbacks.len(), 1);
     assert!(relay_fallbacks[0].starts_with("/api/live/hls.m3u8?"));
+}
+
+#[test]
+fn direct_hls_movie_and_tv_are_additive_without_changing_legacy_delivery() {
+    let source = external_embed_sources()
+        .into_iter()
+        .find(|source| source.provider.id == "miami" && source.server.is_none())
+        .unwrap();
+    let preferences = ResolvePreferences {
+        audio_lang: "en".to_owned(),
+        subtitle_lang: String::new(),
+        quality: "auto".to_owned(),
+    };
+    for metadata in [sample_movie_metadata(), sample_tv_metadata()] {
+        let payload = finalize_external_embed_payload(
+            &metadata,
+            source,
+            &preferences,
+            "https://cdn.example.com/master.m3u8",
+            None,
+            "https://provider.example.com/embed".to_owned(),
+            "test-secret",
+            "https://worker.example.com",
+            "https://media.example.com",
+        );
+        let primary = payload["playableUrl"].as_str().unwrap();
+        let fallbacks = payload["fallbackUrls"].as_array().unwrap();
+        assert!(primary.starts_with("https://worker.example.com/api/live/hls.m3u8?"));
+        assert_eq!(fallbacks.len(), 1);
+        let relative = primary.strip_prefix("https://worker.example.com").unwrap();
+        assert_eq!(fallbacks[0], relative);
+        assert_eq!(
+            payload["directMediaUrls"],
+            json!([format!("https://media.example.com{relative}")])
+        );
+        let disabled = finalize_external_embed_payload(
+            &metadata,
+            source,
+            &preferences,
+            "https://cdn.example.com/master.m3u8",
+            None,
+            "https://provider.example.com/embed".to_owned(),
+            "test-secret",
+            "https://worker.example.com",
+            "",
+        );
+        assert_eq!(disabled["playableUrl"], payload["playableUrl"]);
+        assert_eq!(disabled["fallbackUrls"], payload["fallbackUrls"]);
+        assert_eq!(disabled["directMediaUrls"], json!([]));
+    }
 }
 
 #[test]

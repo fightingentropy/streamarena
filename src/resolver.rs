@@ -559,6 +559,7 @@ struct ExternalEmbedPlaybackRequest<'a> {
     record_health_events: bool,
     live_hls_proxy_secret: &'a str,
     live_hls_worker_base: &'a str,
+    live_hls_direct_base: &'a str,
     provider_budgets: &'a ProviderConcurrencyBudgets,
     resolve_cache: &'a ResolvedEmbedCache,
     cache_key: &'a str,
@@ -781,6 +782,7 @@ impl ResolverService {
                 hit.embed_url,
                 &self.config.live_hls_proxy_secret,
                 &self.config.live_hls_resource_worker_base,
+                &self.config.live_hls_direct_base,
             )));
         }
         let mut external_guard = self.acquire_external_resolve_permit().await?;
@@ -796,6 +798,7 @@ impl ResolverService {
                 record_health_events,
                 live_hls_proxy_secret: &self.config.live_hls_proxy_secret,
                 live_hls_worker_base: &self.config.live_hls_resource_worker_base,
+                live_hls_direct_base: &self.config.live_hls_direct_base,
                 provider_budgets: &self.provider_resolver_permits,
                 resolve_cache: &self.resolved_embed_cache,
                 cache_key,
@@ -4436,6 +4439,7 @@ fn finalize_external_embed_payload(
     embed_url: String,
     live_hls_proxy_secret: &str,
     live_hls_worker_base: &str,
+    live_hls_direct_base: &str,
 ) -> Value {
     let proxied_url = crate::live::build_trusted_external_embed_hls_playback_source(
         upstream_playback_url,
@@ -4449,40 +4453,29 @@ fn finalize_external_embed_payload(
     // home uplink — and keep the fully-proxied URL as a fallback the player switches
     // to if a direct fetch fails.
     //
-    // Playlist URLs are routed via the Cloudflare Worker when configured, for the
-    // same reason live/sports playlists are (2026-06-12 Interstellar incident): the
-    // zone's always-on L7 DDoS ruleset intermittently swallows bursty `/api/live/*`
-    // requests at the edge — the origin never sees them — and the player burns its
-    // 20s-per-source fail-fast budget before recovering. workers.dev is outside the
-    // zone, so the Worker hop dodges that layer entirely. The zone-routed URL stays
-    // last in the queue as a worker-outage fallback.
-    let route_via_worker =
-        |url: String| crate::live::route_live_playback_source_via_worker(live_hls_worker_base, url);
-    let mut candidates = if is_external_embed_direct_segment_provider(source) {
-        let direct_url = format!("{proxied_url}&directSeg=1");
-        vec![
-            route_via_worker(direct_url.clone()),
-            route_via_worker(proxied_url.clone()),
-            direct_url,
-            proxied_url,
-        ]
+    // Keep legacy clients on their existing Worker/same-origin queue. Browsers
+    // with transport recovery opt into the additive directMediaUrls candidates.
+    let sources = if is_external_embed_direct_segment_provider(source) {
+        vec![format!("{proxied_url}&directSeg=1"), proxied_url]
     } else {
-        vec![route_via_worker(proxied_url.clone()), proxied_url]
+        vec![proxied_url]
     };
-    // With no worker base configured the routed and zone URLs are identical;
-    // dedupe so the player's source queue keeps its pre-worker shape.
-    let mut seen = std::collections::HashSet::new();
-    candidates.retain(|url| seen.insert(url.clone()));
+    let direct_media_urls =
+        crate::live::direct_live_hls_playback_candidates(live_hls_direct_base, &sources);
+    let mut candidates =
+        crate::live::live_hls_playback_candidates("", live_hls_worker_base, &sources);
     let playable_url = candidates.remove(0);
     let fallback_urls = candidates;
-    build_external_embed_resolved_payload_with_playable_url(
+    let mut payload = build_external_embed_resolved_payload_with_playable_url(
         metadata,
         source,
         preferences,
         playable_url,
         fallback_urls,
         embed_url,
-    )
+    );
+    payload["directMediaUrls"] = json!(direct_media_urls);
+    payload
 }
 
 async fn build_external_embed_resolved_playback_payload(
@@ -4503,6 +4496,7 @@ async fn build_external_embed_resolved_playback_payload(
             hit.embed_url,
             request.live_hls_proxy_secret,
             request.live_hls_worker_base,
+            request.live_hls_direct_base,
         ));
     }
 
@@ -4581,6 +4575,7 @@ async fn build_external_embed_resolved_playback_payload(
         embed_url,
         request.live_hls_proxy_secret,
         request.live_hls_worker_base,
+        request.live_hls_direct_base,
     ))
 }
 

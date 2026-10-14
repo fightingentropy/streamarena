@@ -62,6 +62,7 @@ export function createLivePlaybackHealthWatch({
   isLivePlayback,
   isIframePlayback,
   getStreamOptionCount,
+  hasTransportFallback = () => false,
   isAutoFallbackInFlight,
   hasRecoverablePlaybackSource,
   hasActiveSource,
@@ -126,7 +127,7 @@ export function createLivePlaybackHealthWatch({
     return Boolean(
       isLivePlayback?.() &&
         !isAutoFallbackInFlight?.() &&
-        Number(getStreamOptionCount?.() || 0) > 1 &&
+        (Number(getStreamOptionCount?.() || 0) > 1 || hasTransportFallback()) &&
         !isIframePlayback?.() &&
         hasRecoverablePlaybackSource?.(),
     );
@@ -187,7 +188,7 @@ export function createLivePlaybackHealthWatch({
     if (
       !isLivePlayback?.() ||
       isAutoFallbackInFlight?.() ||
-      Number(getStreamOptionCount?.() || 0) <= 1 ||
+      (Number(getStreamOptionCount?.() || 0) <= 1 && !hasTransportFallback()) ||
       isDocumentHidden?.() ||
       isIframePlayback?.() ||
       isVideoPaused?.() ||
@@ -220,7 +221,7 @@ export function createLivePlaybackHealthWatch({
     if (
       !isLivePlayback?.() ||
       isIframePlayback?.() ||
-      Number(getStreamOptionCount?.() || 0) <= 1
+      (Number(getStreamOptionCount?.() || 0) <= 1 && !hasTransportFallback())
     ) {
       return;
     }

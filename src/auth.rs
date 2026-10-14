@@ -374,6 +374,7 @@ mod tests {
             signup_invite_code: String::new(),
             live_hls_proxy_secret: "test-live-hls-proxy-secret-with-enough-length".to_owned(),
             live_hls_resource_worker_base: String::new(),
+            live_hls_direct_base: String::new(),
             app_origin: "https://example.com".to_owned(),
             email_from: "noreply@example.com".to_owned(),
             cf_account_id: String::new(),

@@ -2823,27 +2823,33 @@ fn resolved_live_stream_response(
     provider: &'static str,
     _cache_hit: bool,
 ) -> Response<Body> {
-    let playback_url_text = if resolved.playback_type == "hls" {
-        // Serve the signed playlist from the Cloudflare Worker (when
-        // configured) so live playlist polling never crosses the zone's L7
-        // DDoS managed ruleset, which 503s it under bursty load.
-        crate::live::route_live_playback_source_via_worker(
-            &state.config.live_hls_resource_worker_base,
-            crate::live::build_sports_live_hls_playback_source(
-                resolved.playback_url.as_str(),
-                Some(resolved.player_page_url.as_str()),
-                state.config.live_hls_proxy_secret.as_str(),
-            ),
-        )
+    let sources = if resolved.playback_type == "hls" {
+        vec![crate::live::build_sports_live_hls_playback_source(
+            resolved.playback_url.as_str(),
+            Some(resolved.player_page_url.as_str()),
+            state.config.live_hls_proxy_secret.as_str(),
+        )]
     } else {
-        resolved.playback_url.to_string()
+        vec![resolved.playback_url.to_string()]
     };
+    let direct_media_urls = crate::live::direct_live_hls_playback_candidates(
+        &state.config.live_hls_direct_base,
+        &sources,
+    );
+    let mut playback_sources = crate::live::live_hls_playback_candidates(
+        "",
+        &state.config.live_hls_resource_worker_base,
+        &sources,
+    );
+    let playback_url_text = playback_sources.remove(0);
     json_response(json!({
         "source": resolved.source_url.as_str(),
         "provider": provider,
         "playerPage": resolved.player_page_url.as_str(),
         "playbackType": resolved.playback_type,
         "playbackUrl": playback_url_text,
+        "transportFallbackUrls": playback_sources,
+        "directMediaUrls": direct_media_urls,
         "streamUrl": "",
         "embedUrl": playback_url_text.as_str(),
         "resolvedFromFallback": resolved.candidate_index > 0,

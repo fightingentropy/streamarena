@@ -15,8 +15,8 @@ their original routes. The Mini StreamArena app, watchdog and temporary cutover
 forwarder are disabled, preventing two hosts from independently changing user data.
 
 Public ingress is currently Cloudflare Tunnel. A DNS-only direct HTTPS media
-route remains an optional follow-up: Oracle's console session needs sign-in
-before its security list can be configured. Guest ingress remains SSH-only.
+route remains an optional follow-up: Oracle console sign-in is complete, and
+the narrow OCI ingress changes are awaiting approval. Guest ingress remains SSH-only.
 Do not describe the current media delivery as bypassing Cloudflare.
 
 The deployed application release is `ef11d59dbf7ad75a7641ec48ed2bfbfac74e8a17`.
@@ -142,6 +142,53 @@ it restricts writes to service data and private temporary storage instead.
 8. Keep the Mini's last release and frozen data as rollback material. Archive the
    migration manifest, original routes, checksums and snapshots privately. Do not
    leave staging benchmark HTML, credentials, processes or ports in production.
+
+## Direct media HTTPS configuration
+
+`deploy/linux/media.Caddyfile` is a separate media-only virtual host for
+`media.streamarena.xyz`. Installing it does not replace the existing loopback
+tunnel site. Add `auto_https disable_redirects` to Caddy's existing global block
+and import the file after that block. The host binds IPv4 only and obtains and
+renews its certificate using [Caddy's TLS-ALPN-01 ACME support](https://caddyserver.com/docs/caddyfile/directives/tls#issuers).
+It deliberately disables the HTTP challenge: no listener or ingress rule on
+port 80 is needed. TCP 443 is required; UDP 443 enables HTTP/3. DNS must be an
+unproxied A record pointing at the VM, with no AAAA record until IPv6 is configured.
+
+The vhost exposes only `/api/live/hls.m3u8`, `/api/live/hls-resource`, and a local
+`/healthz` response. The backend still validates every media URL's expiring HMAC.
+Cookie and Authorization headers are removed before proxying, and client-IP
+headers are replaced with the actual peer address. Other API and application
+paths return 404. Keep account/session-bound streams on the main app hostname.
+
+Browser CORS is limited to `https://streamarena.xyz` and
+`https://www.streamarena.xyz`, with GET/OPTIONS, Range requests, and exposed
+range/length response headers. Native players may make signed requests without
+an Origin header; arbitrary browser origins and `Origin: null` are rejected.
+No credentialed CORS is enabled. Keep the existing Worker as a transport fallback.
+Verify decoded browser playback, seeking, provider switching and private-stream
+routing before treating the direct route as ready.
+
+This rollout opts the **web player** into direct delivery. The backend exposes
+the new candidates in an additive `directMediaUrls` array, which the web player
+prepends to its delivery queue. Existing `playableUrl`, `fallbackUrls` and live
+transport fields keep their Worker-first ordering for installed native apps.
+Native routing therefore stays unchanged, and this web rollout needs no native
+rebuild. The endpoint's acceptance of no-Origin requests does not itself opt
+native playback into the direct route.
+
+Before installation, save the live Caddy and firewall configuration, validate the
+combined file with `caddy validate`, and confirm the approved OCI ingress rules.
+Insert the narrow guest TCP/UDP 443 accept rules before its terminal INPUT reject
+and save them with `netfilter-persistent`, preserving SSH and InstanceServices.
+Reload Caddy only after the exact candidate passes validation. `/healthz` proves
+the Caddy endpoint only; authenticated app health and decoded playback are separate
+checks. Only after public TLS and live media delivery are verified, set
+`LIVE_HLS_DIRECT_BASE=https://media.streamarena.xyz` and restart the app to publish
+the web player's direct candidates. Retain
+the existing `LIVE_HLS_RESOURCE_WORKER_BASE` value so the Worker remains a
+transport fallback. To roll back, remove or empty `LIVE_HLS_DIRECT_BASE` and
+restart the app; do not point the direct-base setting at the Worker. This restores
+the previous delivery path without changing the main domain or its tunnel.
 
 ## Subsequent releases
 

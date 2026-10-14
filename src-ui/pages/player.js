@@ -103,6 +103,8 @@ import {
   normalizeLiveStreamPreferenceProvider,
 } from "../player/live-stream-cache.js";
 import { createLivePlaybackHealthWatch } from "../player/live-playback-health.js";
+import { createLiveTransportFallbackController } from "../player/live-transport-fallback.js";
+import { buildMediaDeliveryQueue } from "../player/media-delivery.js";
 import {
   LIVE_EDGE_PIN_RATIO,
   LIVE_EDGE_REJOIN_TOLERANCE_SECONDS,
@@ -361,6 +363,7 @@ let lastPlaybackSourceSetAt = 0;
 let playbackSourceGeneration = 0;
 let stallRetryGeneration = -1;
 let lastPlaybackSeekAt = 0;
+let liveAutoplayRequested = true;
 const liveIframePlaybackClock = createLiveIframePlaybackClock({
   now: () => performance.now(),
   isActive: () => isLiveIframePlaybackActive(),
@@ -377,8 +380,9 @@ const {
   isLivePlayback: () => isLivePlayback,
   isIframePlayback: () => isLiveIframePlaybackActive(),
   getStreamOptionCount: () => liveStreamOptions.length,
-  isAutoFallbackInFlight: () => liveAutoFallbackInFlight,
-  hasRecoverablePlaybackSource,
+  hasTransportFallback: () => liveTransportFallback.hasDeliveryAlternatives(),
+  isAutoFallbackInFlight: () => liveTransportFallback.isRecovering(),
+  hasRecoverablePlaybackSource: () => liveAutoplayRequested && hasRecoverablePlaybackSource(),
   hasActiveSource,
   isVideoPaused: () => Boolean(video?.paused),
   isDocumentHidden: () => document.visibilityState === "hidden",
@@ -401,7 +405,7 @@ const {
     );
   },
 });
-let liveAutoFallbackInFlight = false;
+const liveTransportFallback = createLiveTransportFallbackController();
 let liveAutoFallbackAttemptedStreamIds = new Set();
 const liveFallbackRetry = createBoundedRetryController({
   maxCycles: LIVE_FALLBACK_RETRY_MAX_CYCLES,
@@ -909,8 +913,12 @@ let src = isSeriesPlayback
   ? normalizedSeriesSourceParam || normalizedRawSourceParam
   : normalizedRawSourceParam;
 
-function setExplicitPlaybackSourceState(nextSource) {
+function setExplicitPlaybackSourceState(nextSource, { preserveLiveRecovery = false } = {}) {
   const normalizedSource = normalizePlaybackSourceValue(nextSource);
+  if (normalizedSource !== src && !preserveLiveRecovery) {
+    liveTransportFallback.reset();
+    liveFallbackRetry.cancel();
+  }
   rawSourceParam = normalizedSource;
   normalizedRawSourceParam = normalizedSource;
   src = normalizedSource;
@@ -2654,6 +2662,10 @@ function setVideoSource(
   { resetInitialResume = true, startSeconds = 0, autoplay = true } = {},
 ) {
   if (!nextSource) return;
+  if (isLivePlayback) liveAutoplayRequested = autoplay;
+  if (isLivePlayback && !liveTransportFallback.isKnownSource(nextSource)) {
+    liveTransportFallback.reset();
+  }
   playbackSourceGeneration += 1;
   stallRetryGeneration = -1;
   closeSeekPreviewVideo?.();
@@ -2726,21 +2738,17 @@ function setVideoSource(
   const isHlsSource = isHlsPlaybackSource(absoluteSource);
 
   if (isHlsSource) {
+    const sourceGeneration = playbackSourceGeneration;
     const hlsMeta = parseHlsMasterSource(sourceWithAudioSync);
     const handleHlsPlaybackFailure = (message) => {
+      if (sourceGeneration !== playbackSourceGeneration) return;
       // Keep the media timeline until recovery has handed off to its replacement.
       // destroy() detaches MSE and resets currentTime/paused, which used to turn a
       // failed far seek into a jump back to the last persisted resume position.
       const fallbackMessage =
         String(message || "").trim() || "HLS playback failed.";
-      if (isLivePlayback && liveStreamOptions.length > 1) {
-        void attemptAutomaticLiveStreamFallback(
-          "Live stream failed. Trying another source...",
-        ).then((recovered) => {
-          if (!recovered) {
-            showResolverError(fallbackMessage, "Live stream failed.");
-          }
-        });
+      if (isLivePlayback) {
+        handleLivePlaybackFailure(fallbackMessage);
         return;
       }
       void handlePlaybackErrorRecovery(fallbackMessage).then((recovered) => {
@@ -3396,7 +3404,10 @@ async function applyResolvedTmdbPlayback(
     skipRemuxFallback: shouldSkipRemuxFallback,
     parseTranscodeSource,
   });
-  setTmdbSourceQueue(preferredBrowserSource, resolvedFallbackUrls);
+  const deliveryQueue = buildMediaDeliveryQueue(
+    preferredBrowserSource, resolvedFallbackUrls, resolved?.directMediaUrls,
+  );
+  setTmdbSourceQueue(deliveryQueue[0] || preferredBrowserSource, deliveryQueue.slice(1));
   if (isProvisionalManualSourceSwitch) {
     manualSourceSwitch.setCommitData(manualSourceSwitchRequest, {
       persistSubtitleStreamPreference: shouldPersistSubtitleStreamPreference,
@@ -4966,7 +4977,7 @@ function rememberLiveStreamSuccess(
   streamOption = getSelectedLiveStreamOption(),
   reason = "",
 ) {
-  if (!isLivePlayback || liveStreamOptions.length <= 1) {
+  if (!isLivePlayback) {
     return;
   }
   liveFallbackRetry.reset();
@@ -5101,72 +5112,94 @@ function getLiveEmbedFallbackSources(source) {
 }
 
 async function resolveLivePlaybackSource(source, { preflight = false } = {}) {
-  const normalizedSource = normalizePlaybackSourceValue(source);
-  if (!normalizedSource) {
-    throw new Error("Missing live stream source.");
-  }
-  if (parseLiveIframePlaybackSource(normalizedSource)) {
-    return normalizedSource;
-  }
-  if (!shouldResolveLiveEmbedSource) {
-    return getLivePlaybackSource(normalizedSource, isLivePlayback);
-  }
-  if (isHlsPlaybackSource(normalizedSource)) {
-    return getLivePlaybackSource(normalizedSource, true);
-  }
+  const request = liveTransportFallback.beginResolution();
+  try {
+    const rememberResolvedSources = (primary, fallbacks = []) => {
+      if (!liveTransportFallback.setResolvedSources(request, primary, fallbacks)) {
+        throw new DOMException("Live source selection changed.", "AbortError");
+      }
+      return primary;
+    };
+    const normalizedSource = normalizePlaybackSourceValue(source);
+    if (!normalizedSource) {
+      throw new Error("Missing live stream source.");
+    }
+    if (parseLiveIframePlaybackSource(normalizedSource)) {
+      return rememberResolvedSources(normalizedSource);
+    }
+    if (!shouldResolveLiveEmbedSource) {
+      return rememberResolvedSources(getLivePlaybackSource(normalizedSource, isLivePlayback));
+    }
+    if (isHlsPlaybackSource(normalizedSource)) {
+      return rememberResolvedSources(getLivePlaybackSource(normalizedSource, true));
+    }
 
-  const query = new URLSearchParams({ url: normalizedSource });
-  const fallbackSources = getLiveEmbedFallbackSources(normalizedSource);
-  if (fallbackSources.length > 0) {
-    query.set("fallbackUrls", JSON.stringify(fallbackSources));
-    // First-watch only: resolve the candidates concurrently so a dead primary
-    // doesn't gate the working source behind it (the backend re-orders to it).
-    if (preflight) {
-      query.set("preflight", "1");
+    const query = new URLSearchParams({ url: normalizedSource });
+    const fallbackSources = getLiveEmbedFallbackSources(normalizedSource);
+    if (fallbackSources.length > 0) {
+      query.set("fallbackUrls", JSON.stringify(fallbackSources));
+      // First-watch only: resolve the candidates concurrently so a dead primary
+      // doesn't gate the working source behind it (the backend re-orders to it).
+      if (preflight) {
+        query.set("preflight", "1");
+      }
     }
-  }
-  const payload = await requestJson(
-    `/api/${liveEmbedResolver}/stream?${query.toString()}`,
-    {},
-    30000,
-  );
-  const playbackUrl = normalizePlaybackSourceValue(
-    payload?.playbackUrl || payload?.streamUrl || "",
-  );
-  const playbackType = String(payload?.playbackType || "")
-    .trim()
-    .toLowerCase();
-  if (playbackType === "iframe" || playbackType === "embed") {
-    throw new Error("Live stream resolver returned an embed instead of HLS.");
-  }
-  if (playbackType && playbackType !== "hls") {
-    throw new Error("Live stream playback type is not supported.");
-  }
-  if (!isHlsPlaybackSource(playbackUrl)) {
-    throw new Error("Could not resolve this live stream to HLS.");
-  }
-  const resolvedSource = normalizePlaybackSourceValue(payload?.source || normalizedSource);
-  if (resolvedSource && resolvedSource !== normalizedSource) {
-    const resolvedOption = liveStreamOptions.find(
-      (option) => normalizePlaybackSourceValue(option?.source) === resolvedSource,
+    const payload = await requestJson(
+      `/api/${liveEmbedResolver}/stream?${query.toString()}`,
+      {},
+      30000,
     );
-    if (resolvedOption) {
-      selectedLiveStreamId = resolvedOption.id;
-      setExplicitPlaybackSourceState(resolvedOption.source);
-      syncLiveStreamControls();
-      persistLiveStreamSelectionInUrl();
+    if (!liveTransportFallback.isResolutionCurrent(request)) {
+      throw new DOMException("Live source selection changed.", "AbortError");
     }
+    const playbackUrl = normalizePlaybackSourceValue(
+      payload?.playbackUrl || payload?.streamUrl || "",
+    );
+    const playbackType = String(payload?.playbackType || "")
+      .trim()
+      .toLowerCase();
+    if (playbackType === "iframe" || playbackType === "embed") {
+      throw new Error("Live stream resolver returned an embed instead of HLS.");
+    }
+    if (playbackType && playbackType !== "hls") {
+      throw new Error("Live stream playback type is not supported.");
+    }
+    if (!isHlsPlaybackSource(playbackUrl)) {
+      throw new Error("Could not resolve this live stream to HLS.");
+    }
+    const resolvedSource = normalizePlaybackSourceValue(payload?.source || normalizedSource);
+    if (resolvedSource && resolvedSource !== normalizedSource) {
+      const resolvedOption = liveStreamOptions.find(
+        (option) => normalizePlaybackSourceValue(option?.source) === resolvedSource,
+      );
+      if (resolvedOption) {
+        selectedLiveStreamId = resolvedOption.id;
+        setExplicitPlaybackSourceState(resolvedOption.source, { preserveLiveRecovery: true });
+        syncLiveStreamControls();
+        persistLiveStreamSelectionInUrl();
+      }
+    }
+    if (!playbackUrl) {
+      throw new Error("Could not resolve this live stream.");
+    }
+    const playerPageReferer = normalizeBrowserBoundLiveHlsReferer(
+      payload?.playerPage || resolvedSource || normalizedSource,
+    );
+    activeLiveHlsReferer = playerPageReferer;
+    const primary = getLivePlaybackSource(playbackUrl, true, {
+      referer: playbackUrl.includes("/api/live/hls.m3u8") ? "" : playerPageReferer,
+    });
+    const fallbacks = (Array.isArray(payload?.transportFallbackUrls)
+      ? payload.transportFallbackUrls : [])
+      .filter((url) => typeof url === "string" && isHlsPlaybackSource(url))
+      .map((url) => getLivePlaybackSource(url, true, {
+        referer: url.includes("/api/live/hls.m3u8") ? "" : playerPageReferer,
+      }));
+    const deliveryQueue = buildMediaDeliveryQueue(primary, fallbacks, payload?.directMediaUrls);
+    return rememberResolvedSources(deliveryQueue[0] || primary, deliveryQueue.slice(1));
+  } finally {
+    liveTransportFallback.finishResolution(request);
   }
-  if (!playbackUrl) {
-    throw new Error("Could not resolve this live stream.");
-  }
-  const playerPageReferer = normalizeBrowserBoundLiveHlsReferer(
-    payload?.playerPage || resolvedSource || normalizedSource,
-  );
-  activeLiveHlsReferer = playerPageReferer;
-  return getLivePlaybackSource(playbackUrl, true, {
-    referer: playbackUrl.includes("/api/live/hls.m3u8") ? "" : playerPageReferer,
-  });
 }
 
 function isPlaybackBlockedByPolicy(error) {
@@ -5218,9 +5251,10 @@ async function switchToLiveStreamOption(
 ) {
   const previousStreamId = selectedLiveStreamId;
   const previousSource = src;
+  const generation = liveTransportFallback.getGeneration();
 
   selectedLiveStreamId = nextStream.id;
-  setExplicitPlaybackSourceState(nextStream.source);
+  setExplicitPlaybackSourceState(nextStream.source, { preserveLiveRecovery: true });
   persistLiveStreamSelectionInUrl();
   resetLiveStreamPlaybackState();
   syncLiveStreamControls();
@@ -5228,19 +5262,25 @@ async function switchToLiveStreamOption(
 
   try {
     const playbackSource = await resolveLivePlaybackSource(nextStream.source);
-    setVideoSource(playbackSource);
+    if (!liveTransportFallback.isGenerationCurrent(generation)) return false;
+    setVideoSource(playbackSource, { autoplay: !wasPaused });
     persistLiveStreamSelectionInUrl();
     hideResolver();
     if (!wasPaused) {
-      await tryPlay();
+      // Do not hold the failover lock while play() waits for the first frame;
+      // the startup watchdog must be able to try the next delivery route.
+      void tryPlay();
     }
     syncPlayState();
     syncDurationText();
     closeLiveStreamPopover();
     return true;
   } catch (error) {
+    if (!liveTransportFallback.isGenerationCurrent(generation) || isResolveAbortError(error)) {
+      return false;
+    }
     selectedLiveStreamId = previousStreamId;
-    setExplicitPlaybackSourceState(previousSource);
+    setExplicitPlaybackSourceState(previousSource, { preserveLiveRecovery: true });
     persistLiveStreamSelectionInUrl();
     syncLiveStreamControls();
     syncPlayState();
@@ -5257,64 +5297,94 @@ async function switchToLiveStreamOption(
 async function attemptAutomaticLiveStreamFallback(
   message = "Live stream looks blank. Trying another source...",
 ) {
-  if (
-    !isLivePlayback ||
-    liveAutoFallbackInFlight ||
-    liveStreamOptions.length <= 1
-  ) {
-    return false;
-  }
-
-  const currentStream = getSelectedLiveStreamOption();
-  if (currentStream?.id) {
-    liveAutoFallbackAttemptedStreamIds.add(currentStream.id);
-    rememberLiveStreamFailure(currentStream, message);
-  }
-
-  liveAutoFallbackInFlight = true;
-  clearLiveVisualHealthWatch({ resetSamples: true });
-  clearLiveStartupHealthWatch({ resetRequest: true });
-  let recovered = false;
-  // Fresh sources first, then retry recently-failed ones (often transient) before giving up.
-  const nextOption = () => getOrderedLiveFallbackOptions()[0] || getOrderedLiveFallbackOptions({ includeCachedFailures: true })[0] || null;
-  try {
-    let nextStream = nextOption();
-    while (nextStream) {
+  if (!isLivePlayback) return false;
+  // Errors from the old media must not replace a provider the viewer is
+  // currently selecting. Resolution failure is handled by that request.
+  if (liveTransportFallback.isResolving()) return true;
+  const generation = liveTransportFallback.getGeneration();
+  const recovered = await liveTransportFallback.runRecovery(async (isCurrent) => {
+    const wasPaused = !liveAutoplayRequested;
+    clearLiveVisualHealthWatch({ resetSamples: true });
+    clearLiveStartupHealthWatch({ resetRequest: true });
+    let deliverySource = liveTransportFallback.takeNext();
+    while (deliverySource && isCurrent()) {
       try {
-        showResolver(message, { showStatus: true });
-        await switchToLiveStreamOption(nextStream, {
-          autoFallback: true,
-          reasonMessage: message,
-          wasPaused: false,
-        });
-        recovered = true;
+        // Keep the selected provider, source identity and bookmark unchanged.
+        setVideoSource(deliverySource, { autoplay: !wasPaused });
+        hideResolver();
+        if (!wasPaused) void tryPlay();
+        syncPlayState();
         return true;
       } catch {
+        deliverySource = liveTransportFallback.takeNext();
+      }
+    }
+    if (!isCurrent()) return true;
+    const currentStream = getSelectedLiveStreamOption();
+    if (currentStream?.id) {
+      liveAutoFallbackAttemptedStreamIds.add(currentStream.id);
+      rememberLiveStreamFailure(currentStream, message);
+    }
+    // Provider failover starts only after its delivery routes are exhausted.
+    const nextOption = () => getOrderedLiveFallbackOptions()[0] || getOrderedLiveFallbackOptions({ includeCachedFailures: true })[0] || null;
+    let nextStream = nextOption();
+    while (nextStream && isCurrent()) {
+      try {
+        showResolver(message, { showStatus: true });
+        const switched = await switchToLiveStreamOption(nextStream, {
+          autoFallback: true,
+          reasonMessage: message,
+          wasPaused,
+        });
+        return switched || !isCurrent();
+      } catch {
+        if (!isCurrent()) return true;
         liveAutoFallbackAttemptedStreamIds.add(nextStream.id);
         rememberLiveStreamFailure(nextStream, message);
         nextStream = nextOption();
       }
     }
-  } finally {
-    liveAutoFallbackInFlight = false;
-    if (recovered) {
-      startLiveVisualHealthWatch();
-      armLiveStartupHealthWatch();
-    }
+    if (isCurrent()) scheduleLiveFallbackRetry(message);
+    return false;
+  });
+  if (recovered && liveTransportFallback.isGenerationCurrent(generation)) {
+    startLiveVisualHealthWatch();
+    armLiveStartupHealthWatch();
   }
+  return recovered || !liveTransportFallback.isGenerationCurrent(generation);
+}
 
-  scheduleLiveFallbackRetry(message);
-  return false;
+function handleLivePlaybackFailure(message) {
+  const generation = liveTransportFallback.getGeneration();
+  void attemptAutomaticLiveStreamFallback("Live stream failed. Trying another source...")
+    .then((recovered) => {
+      if (!recovered && liveTransportFallback.isGenerationCurrent(generation) && !liveFallbackRetry.pending()) {
+        showResolverError(message, "Live stream failed.");
+      }
+    });
 }
 
 function scheduleLiveFallbackRetry(message) {
+  const generation = liveTransportFallback.getGeneration();
   const queued = liveFallbackRetry.schedule(
-    () => {
-      if (!isLivePlayback || video.paused || document.visibilityState === "hidden") {
+    async () => {
+      if (!liveTransportFallback.isGenerationCurrent(generation) || !isLivePlayback ||
+          !liveAutoplayRequested || document.visibilityState === "hidden") {
         return;
       }
       // Give every source (including recently-failed ones) a fresh chance.
       resetLiveAutoFallbackAttempts();
+      const currentStream = getSelectedLiveStreamOption();
+      if (currentStream?.source) {
+        try {
+          await switchToLiveStreamOption(currentStream, {
+            autoFallback: true, reasonMessage: message, wasPaused: false,
+          });
+          return;
+        } catch {
+          if (!liveTransportFallback.isGenerationCurrent(generation)) return;
+        }
+      }
       void attemptAutomaticLiveStreamFallback(message);
     },
     () => {
@@ -5460,10 +5530,12 @@ async function switchLiveStream(streamId) {
   }
 
   resetLiveAutoFallbackAttempts();
+  liveTransportFallback.reset();
+  liveFallbackRetry.reset();
   clearLiveStreamFailure(nextStream);
   await switchToLiveStreamOption(nextStream, {
     reasonMessage: "Loading live stream...",
-    wasPaused: video.paused,
+    wasPaused: !liveAutoplayRequested,
   });
 }
 
@@ -6392,6 +6464,7 @@ function persistResumeTime(force = false) {
 }
 
 async function tryPlay() {
+  if (isLivePlayback) liveAutoplayRequested = true;
   if (isLiveIframePlaybackActive()) {
     liveIframePlaybackClock.play();
     syncPlayState();
@@ -6484,6 +6557,7 @@ async function togglePlayback() {
   } else if (isIframePlayback) {
     liveIframePlaybackClock.pause();
   } else {
+    if (isLivePlayback) liveAutoplayRequested = false;
     video.pause();
   }
 
@@ -8177,15 +8251,18 @@ async function initPlaybackSource() {
       hideAllSubtitleTracks();
       rebuildTrackOptionButtons();
       showResolver("Loading live stream...");
+      const liveRequestGeneration = liveTransportFallback.getGeneration();
       try {
         const playbackSource = await resolveLivePlaybackSource(src, {
           preflight: true,
         });
+        if (!liveTransportFallback.isGenerationCurrent(liveRequestGeneration)) return;
         setVideoSource(playbackSource);
         hideResolver();
         await tryPlay();
       } catch (error) {
-        if (liveStreamOptions.length > 1) {
+        if (!liveTransportFallback.isGenerationCurrent(liveRequestGeneration) || isResolveAbortError(error)) return;
+        if (liveStreamOptions.length > 1 || liveTransportFallback.hasFallback()) {
           const recovered = await attemptAutomaticLiveStreamFallback(
             "Live stream failed. Trying another source...",
           );
@@ -9543,7 +9620,7 @@ trackListener(video, "playing", () => {
   clearStreamStallRecovery();
   clearLiveStartupHealthWatch({ resetRequest: true });
   rememberLiveStreamSuccess(getSelectedLiveStreamOption(), "playing");
-  hideStaleLiveResolverWhilePlayingForState({ isLivePlayback, resolverOverlay, liveAutoFallbackInFlight, hideResolver });
+  hideStaleLiveResolverWhilePlayingForState({ isLivePlayback, resolverOverlay, liveAutoFallbackInFlight: liveTransportFallback.isRecovering(), hideResolver });
   hideSeekLoadingIndicator();
   startLiveVisualHealthWatch();
   if (!applyInitialResumeIfReady()) {
@@ -9557,7 +9634,7 @@ trackListener(video, "timeupdate", () => {
     clearStreamStallRecovery();
     clearLiveStartupHealthWatch({ resetRequest: true });
     rememberLiveStreamSuccess(getSelectedLiveStreamOption(), "timeupdate");
-    hideStaleLiveResolverWhilePlayingForState({ isLivePlayback, resolverOverlay, liveAutoFallbackInFlight, hideResolver });
+    hideStaleLiveResolverWhilePlayingForState({ isLivePlayback, resolverOverlay, liveAutoFallbackInFlight: liveTransportFallback.isRecovering(), hideResolver });
   }
   if (!applyInitialResumeIfReady()) {
     scheduleInitialResumeRetry();
@@ -9654,6 +9731,9 @@ trackListener(video, "canplay", () => {
   }
 });
 trackListener(video, "error", () => {
+  // load() clears MediaError; a queued event from the old source must not
+  // consume a fallback route belonging to the replacement.
+  if (isLivePlayback && !video.error) return;
   clearLiveVisualHealthWatch({ resetSamples: true });
   clearLiveStartupHealthWatch({ resetRequest: true });
   if (isLiveIframePlaybackActive()) {
@@ -9666,14 +9746,8 @@ trackListener(video, "error", () => {
   const message =
     mediaError?.message || "Resolved stream could not be played. Try again.";
 
-  if (isLivePlayback && liveStreamOptions.length > 1) {
-    void attemptAutomaticLiveStreamFallback(
-      "Live stream failed. Trying another source...",
-    ).then((recovered) => {
-      if (!recovered) {
-        showResolverError(message, "Live stream failed.");
-      }
-    });
+  if (isLivePlayback) {
+    handleLivePlaybackFailure(message);
     return;
   }
 
@@ -9916,6 +9990,8 @@ trackListener(window, "storage", (event) => {
 
   onCleanup(() => {
     playerDisposed = true;
+    liveTransportFallback.reset();
+    liveFallbackRetry.cancel();
     persistResumeTime(true);
     checkpointSaveQueue.flushForExit();
     checkpointSaveQueue.dispose();

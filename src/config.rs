@@ -72,6 +72,10 @@ pub struct Config {
     /// bandwidth is served from Cloudflare instead of the mini's home uplink.
     /// Empty = disabled (mini serves segments, as before).
     pub live_hls_resource_worker_base: String,
+    /// Optional DNS-only HTTPS origin for signed public HLS. Capable web players
+    /// opt into additive directMediaUrls; legacy clients keep Worker delivery.
+    /// Private HLS stays session-bound on the app origin.
+    pub live_hls_direct_base: String,
     /// Public origin used to build email verification links (e.g. https://streamarena.xyz).
     pub app_origin: String,
     /// From address for transactional email (e.g. noreply@streamarena.xyz).
@@ -157,6 +161,10 @@ impl Config {
         let hls_max_segment_renders = parse_usize_env("HLS_MAX_SEGMENT_RENDERS", 2, 1, 16);
         let hls_segment_queue_timeout_ms =
             parse_u64_env("HLS_SEGMENT_QUEUE_TIMEOUT_MS", 2_000, 100, 60_000);
+
+        let live_hls_direct_base =
+            normalize_live_hls_direct_base(&env::var("LIVE_HLS_DIRECT_BASE").unwrap_or_default())
+                .unwrap_or_else(|message| panic!("{message}"));
 
         Self {
             root_dir: root_dir.clone(),
@@ -259,7 +267,8 @@ impl Config {
                 env::var("LIVE_HLS_RESOURCE_WORKER_BASE")
                     .unwrap_or_default()
                     .trim(),
-                parse_bool_env("REQUIRE_LIVE_HLS_PROXY_SECRET", false),
+                parse_bool_env("REQUIRE_LIVE_HLS_PROXY_SECRET", false)
+                    || !live_hls_direct_base.is_empty(),
             )
             .unwrap_or_else(|message| panic!("{message}")),
             live_hls_resource_worker_base: env::var("LIVE_HLS_RESOURCE_WORKER_BASE")
@@ -267,6 +276,7 @@ impl Config {
                 .trim()
                 .trim_end_matches('/')
                 .to_owned(),
+            live_hls_direct_base,
             app_origin: env::var("APP_ORIGIN")
                 .unwrap_or_else(|_| "https://streamarena.xyz".to_owned())
                 .trim()
@@ -367,6 +377,29 @@ fn parse_proxy_bypass_env(name: &str) -> Vec<String> {
     }
 }
 
+fn normalize_live_hls_direct_base(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(String::new());
+    }
+    let invalid = || {
+        "LIVE_HLS_DIRECT_BASE must be an HTTPS origin without credentials, path, query or fragment."
+            .to_owned()
+    };
+    let url = url::Url::parse(raw).map_err(|_| invalid())?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid());
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
 fn generate_live_hls_proxy_secret() -> String {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).expect("OS CSPRNG unavailable - cannot sign live HLS URLs");
@@ -389,7 +422,7 @@ fn resolve_live_hls_proxy_secret(
     }
     if require_pinned || !worker_base.trim().is_empty() {
         return Err(
-            "LIVE_HLS_PROXY_SECRET must be set to at least 32 characters when REQUIRE_LIVE_HLS_PROXY_SECRET=1 or LIVE_HLS_RESOURCE_WORKER_BASE is set."
+            "LIVE_HLS_PROXY_SECRET must be set to at least 32 characters when REQUIRE_LIVE_HLS_PROXY_SECRET=1 or LIVE_HLS_RESOURCE_WORKER_BASE / LIVE_HLS_DIRECT_BASE is set."
                 .to_owned(),
         );
     }
@@ -578,6 +611,29 @@ mod tests {
             normalize_local_torrent_upload_bps(Some("999999999")),
             Some(32 * 1024 * 1024)
         );
+    }
+
+    #[test]
+    fn direct_hls_origin_requires_https_and_rejects_url_components() {
+        assert_eq!(super::normalize_live_hls_direct_base("  ").unwrap(), "");
+        assert_eq!(
+            super::normalize_live_hls_direct_base(" https://media.example.com/ ").unwrap(),
+            "https://media.example.com"
+        );
+        for invalid in [
+            "http://media.example.com",
+            "https://user:pass@media.example.com",
+            "https://media.example.com/path",
+            "https://media.example.com/?x=1",
+            "https://media.example.com/#hash",
+            "invalid",
+        ] {
+            assert!(
+                super::normalize_live_hls_direct_base(invalid).is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(resolve_live_hls_proxy_secret(None, "", true).is_err());
     }
 
     #[test]

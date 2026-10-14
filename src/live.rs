@@ -196,7 +196,9 @@ pub async fn live_hls_handler(
         live_request.direct_segments,
     );
     let rewritten = maybe_route_live_resources_to_worker(
-        &state,
+        &state.config.live_hls_resource_worker_base,
+        &state.config.live_hls_direct_base,
+        &state.live_audio_transcode_cache,
         rewritten,
         live_request.trusted_external_embed,
         live_request.private_session_binding.is_some(),
@@ -225,13 +227,23 @@ pub async fn live_hls_handler(
 /// disabled, untrusted, or the transcode decision is unknown/needed (in which
 /// case the mini keeps serving so transcoding still works).
 fn maybe_route_live_resources_to_worker(
-    state: &AppState,
+    worker_base: &str,
+    direct_base: &str,
+    audio_cache: &LiveAudioTranscodeCache,
     rewritten: String,
     trusted_external_embed: bool,
     private_session_bound: bool,
 ) -> String {
-    let worker_base = state.config.live_hls_resource_worker_base.trim();
-    if worker_base.is_empty() || !trusted_external_embed || private_session_bound {
+    let worker_base = worker_base.trim();
+    // Keep shared cached playlists host-neutral when direct delivery is enabled.
+    // Relative children follow the selected transport: direct, Worker (whose
+    // rewriter handles them), or the app. A fallback must never send segments
+    // back to the unavailable direct host.
+    if !direct_base.trim().is_empty()
+        || worker_base.is_empty()
+        || !trusted_external_embed
+        || private_session_bound
+    {
         return rewritten;
     }
     let Some(first_input) = first_live_resource_input(&rewritten)
@@ -247,9 +259,7 @@ fn maybe_route_live_resources_to_worker(
         return rewritten;
     }
     let browser_safe = matches!(
-        state
-            .live_audio_transcode_cache
-            .get_fresh(&live_audio_stream_key(&first_input)),
+        audio_cache.get_fresh(&live_audio_stream_key(&first_input)),
         Some(decision) if !decision.needs_processing()
     );
     if !browser_safe {
@@ -276,6 +286,58 @@ pub fn route_live_playback_source_via_worker(worker_base: &str, source: String) 
         return source;
     }
     format!("{worker_base}{source}")
+}
+
+/// Delivery candidates for public signed HLS, grouped by origin so every
+/// provider URL variant is exhausted before changing transport. Private and
+/// unsigned streams retain their original origin/session requirements.
+pub fn live_hls_playback_candidates(
+    direct_base: &str,
+    worker_base: &str,
+    sources: &[String],
+) -> Vec<String> {
+    let mut candidates = Vec::new();
+    for base in [direct_base, worker_base]
+        .into_iter()
+        .filter(|base| !base.trim().is_empty())
+        .chain(std::iter::once(""))
+    {
+        for source in sources {
+            let Some(query) = source.strip_prefix("/api/live/hls.m3u8?") else {
+                if base.is_empty() && !candidates.contains(source) {
+                    candidates.push(source.clone());
+                }
+                continue;
+            };
+            let params = query_pairs(query);
+            let public_signed = params.get("externalEmbed").map(String::as_str) == Some("1")
+                && params.get("sig").is_some_and(|value| !value.is_empty())
+                && params.get("expires").is_some_and(|value| !value.is_empty())
+                && !params.contains_key("privateSession");
+            if !base.trim().is_empty() && !public_signed {
+                continue;
+            }
+            let candidate = route_live_playback_source_via_worker(base, source.clone());
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates
+}
+
+/// Additive opt-in candidates: legacy clients keep their established primary
+/// and fallbacks until they explicitly support direct-transport recovery.
+pub fn direct_live_hls_playback_candidates(direct_base: &str, sources: &[String]) -> Vec<String> {
+    let base = direct_base.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Vec::new();
+    }
+    let prefix = format!("{base}/api/live/hls.m3u8?");
+    live_hls_playback_candidates(base, "", sources)
+        .into_iter()
+        .filter(|candidate| candidate.starts_with(&prefix))
+        .collect()
 }
 
 /// True when `uri` is a live HLS proxy request carrying a valid
@@ -3892,6 +3954,132 @@ mod tests {
             ),
             "https://cdn.example.com/direct.m3u8",
         );
+    }
+
+    #[test]
+    fn direct_hls_candidates_preserve_grants_and_private_session_boundaries() {
+        let secret = "direct-hls-test-secret-at-least-thirty-two-characters";
+        let source = super::build_trusted_external_embed_hls_playback_source(
+            "https://cdn.example.com/movie/master.m3u8",
+            Some("https://provider.example.com/"),
+            secret,
+        );
+        let candidates = super::live_hls_playback_candidates(
+            "https://media.example.com/",
+            "https://worker.example.com",
+            std::slice::from_ref(&source),
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                format!("https://media.example.com{source}"),
+                format!("https://worker.example.com{source}"),
+                source.clone(),
+            ]
+        );
+        assert_eq!(
+            super::direct_live_hls_playback_candidates(
+                "https://media.example.com/",
+                std::slice::from_ref(&source)
+            ),
+            vec![format!("https://media.example.com{source}")]
+        );
+        assert!(
+            super::direct_live_hls_playback_candidates("", std::slice::from_ref(&source))
+                .is_empty()
+        );
+        for candidate in &candidates {
+            let url = url::Url::parse("https://app.example.com/")
+                .unwrap()
+                .join(candidate)
+                .unwrap();
+            let uri = format!("{}?{}", url.path(), url.query().unwrap())
+                .parse()
+                .unwrap();
+            assert!(super::is_signed_live_hls_request(secret, &uri));
+        }
+        for protected in [
+            format!("{source}&privateSession=account-session-binding"),
+            "/api/live/hls.m3u8?input=https%3A%2F%2Fcdn.example.com%2Flive.m3u8".to_owned(),
+            "/api/local-torrent/stream?token=private".to_owned(),
+        ] {
+            assert!(
+                super::direct_live_hls_playback_candidates(
+                    "https://media.example.com",
+                    std::slice::from_ref(&protected)
+                )
+                .is_empty()
+            );
+            assert_eq!(
+                super::live_hls_playback_candidates(
+                    "https://media.example.com",
+                    "https://worker.example.com",
+                    std::slice::from_ref(&protected),
+                ),
+                vec![protected]
+            );
+        }
+        assert_eq!(
+            super::live_hls_playback_candidates("", "", std::slice::from_ref(&source)),
+            vec![source]
+        );
+    }
+
+    #[test]
+    fn direct_hls_cached_playlists_keep_fallback_children_on_the_selected_origin() {
+        let secret = "direct-hls-test-secret-at-least-thirty-two-characters";
+        let upstream = url::Url::parse("https://cdn.example.com/movie/1080/index.m3u8").unwrap();
+        let rewritten = super::rewrite_live_hls_playlist(
+            &upstream,
+            "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6,\n1.ts\n#EXT-X-ENDLIST\n",
+            None,
+            Some(super::LiveHlsSigningContext {
+                secret,
+                expires_at: super::current_unix_seconds() + 3600,
+                private_session_binding: None,
+            }),
+            false,
+        );
+        let cache = super::LiveAudioTranscodeCache::new();
+        cache.record(
+            super::live_audio_stream_key(&upstream),
+            super::LiveTranscodeDecision {
+                audio_needs_transcode: false,
+                has_data_streams: false,
+                video_height: Some(1080),
+            },
+        );
+        let legacy = super::maybe_route_live_resources_to_worker(
+            "https://worker.example.com",
+            "",
+            &cache,
+            rewritten.clone(),
+            true,
+            false,
+        );
+        assert!(legacy.contains("https://worker.example.com/api/live/hls-resource?"));
+        let neutral = super::maybe_route_live_resources_to_worker(
+            "https://worker.example.com",
+            "https://media.example.com",
+            &cache,
+            rewritten.clone(),
+            true,
+            false,
+        );
+        assert_eq!(neutral, rewritten);
+        let segment = neutral
+            .lines()
+            .find(|line| line.starts_with("/api/live/hls-resource?"))
+            .unwrap();
+        for origin in ["https://media.example.com/", "https://app.example.com/"] {
+            let base = url::Url::parse(origin).unwrap();
+            let child = base.join(segment).unwrap();
+            assert_eq!(child.origin(), base.origin());
+            let uri = format!("{}?{}", child.path(), child.query().unwrap())
+                .parse()
+                .unwrap();
+            assert!(super::is_signed_live_hls_request(secret, &uri));
+        }
     }
 
     #[test]

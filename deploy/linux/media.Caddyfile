@@ -1,0 +1,92 @@
+# Import from /etc/caddy/Caddyfile after its global block. That global block must
+# include `auto_https disable_redirects`: this media-only listener uses port 443
+# (TCP and UDP), with TLS-ALPN-01 certificates and no port 80 redirect/challenge.
+# Keep the existing loopback :5180 tunnel site unchanged.
+media.streamarena.xyz {
+	bind 0.0.0.0
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+
+	@health {
+		path /healthz
+		method GET HEAD
+	}
+	@media path /api/live/hls.m3u8 /api/live/hls-resource
+	@allowed_origin {
+		header Origin https://streamarena.xyz
+		header Origin https://www.streamarena.xyz
+	}
+	@foreign_origin {
+		header Origin *
+		not {
+			header Origin https://streamarena.xyz
+			header Origin https://www.streamarena.xyz
+		}
+	}
+	@preflight {
+		header Origin https://streamarena.xyz
+		header Origin https://www.streamarena.xyz
+		header Access-Control-Request-Method GET
+	}
+	@options method OPTIONS
+	@read method GET
+
+	route {
+		header {
+			-Server
+			X-StreamArena-Origin oracle-direct
+		}
+		handle @health {
+			header Cache-Control no-store
+			respond "ok" 200
+		}
+		handle @media {
+			route {
+				header {
+					+Vary Origin
+					defer
+				}
+				respond @foreign_origin "Origin not allowed" 403
+				header @allowed_origin {
+					Access-Control-Allow-Origin {http.request.header.Origin}
+					Access-Control-Expose-Headers Content-Length,Content-Range,Accept-Ranges
+					defer
+				}
+				handle @options {
+					header {
+						Access-Control-Allow-Methods "GET, OPTIONS"
+						Access-Control-Allow-Headers Range
+						Access-Control-Max-Age 600
+						+Vary Access-Control-Request-Method
+						+Vary Access-Control-Request-Headers
+					}
+					respond @preflight 204
+					respond "Preflight not allowed" 403
+				}
+				handle @read {
+					# The backend validates expiring HMACs. Never carry a user session
+					# through this public relay; private streams stay on the app host.
+					reverse_proxy 127.0.0.1:5173 {
+						header_up -Cookie
+						header_up -Authorization
+						header_up -Proxy-Authorization
+						header_up -Forwarded
+						header_up -X-Real-IP
+						header_up CF-Connecting-IP {http.request.remote.host}
+						header_up X-Forwarded-For {http.request.remote.host}
+						header_up X-Forwarded-Proto https
+						header_up X-Forwarded-Host media.streamarena.xyz
+						header_down -Set-Cookie
+						flush_interval -1
+					}
+				}
+				header Allow "GET, OPTIONS"
+				respond "Method not allowed" 405
+			}
+		}
+		respond "Not found" 404
+	}
+}
