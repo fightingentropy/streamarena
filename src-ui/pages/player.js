@@ -3641,18 +3641,13 @@ function attemptTmdbRecovery(message, { failureMessage = "", sourceUnavailable =
   const recoveryRequestToken = ++tmdbPlaybackRequestToken;
   stopLocalCacheUpgradeWatch();
   isRecoveringTmdbStream = true;
-  if (sourceUnavailable) {
-    // The provider's media is missing on every delivery route. Do not spend
-    // another seek/retry cycle on the same master through Worker and app relays.
-    tmdbSourceAttemptIndex = tmdbSourceQueue.length;
-  }
   showResolver(message || "Switching source...");
 
   // Hopping between mirrors of the current source is not leaving it, so keep the
   // selected source hash (and its menu tick) and just advance the queue. Only
   // demote/clear the selection when no mirrors remain and we fall through to
   // re-resolving a different source.
-  if (hasQueuedTmdbSourceFallback()) {
+  if (!sourceUnavailable && hasQueuedTmdbSourceFallback()) {
     void tryNextTmdbSource().finally(() => {
       if (recoveryRequestToken === tmdbPlaybackRequestToken) isRecoveringTmdbStream = false;
     });
