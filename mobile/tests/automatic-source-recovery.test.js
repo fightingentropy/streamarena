@@ -17,6 +17,7 @@ function playerStore(sources) {
     module: mod, exports: mod.exports, AbortController,
     setTimeout: () => 1, clearTimeout() {},
     require: (id) => {
+      if (id === "./strip-proxy") return { hasUnavailableStripProxyMedia: () => false, setStripProxyUnavailableHandler() {} };
       if (id === "zustand") return require("zustand");
       if (id === "@/lib/streamarena") return { getCachedPreferences: () => ({}) };
       if (id === "./identity") return { progressIdentity: () => "tmdb:movie:496243" };

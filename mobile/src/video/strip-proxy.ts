@@ -30,6 +30,24 @@ const segTable = new Map<number, { url: string; ref: string }>();
 const segIndex = new Map<string, number>();
 let segSeq = 0;
 let sessionGeneration = 0;
+let unavailableGeneration: number | null = null;
+let unavailableHandler: (() => void) | null = null;
+
+export function setStripProxyUnavailableHandler(handler: () => void): void {
+  unavailableHandler = handler;
+}
+
+export function hasUnavailableStripProxyMedia(sourceUri: string): boolean {
+  if (unavailableGeneration !== sessionGeneration) return false;
+  try {
+    const url = new URL(sourceUri);
+    const id = url.searchParams.get("mid");
+    return url.hostname === "127.0.0.1" && url.port === String(serverPort) &&
+      url.pathname === "/m" && id !== null && segTable.has(Number(id));
+  } catch {
+    return false;
+  }
+}
 function segId(url: string, ref: string): number {
   const key = `${ref}\n${url}`;
   let id = segIndex.get(key);
@@ -70,6 +88,7 @@ function segCachePut(id: number, bytes: Uint8Array): void {
 // different title through a recycled /m?mid=0 or cached /s?id=1.
 function resetSegState(): void {
   sessionGeneration += 1;
+  unavailableGeneration = null;
   segTable.clear();
   segIndex.clear();
   segCache.clear();
@@ -226,6 +245,15 @@ async function serve(socket: TcpSock, path: string, range: string | null): Promi
     }
   } catch (err) {
     sendText(socket, 502, String(err instanceof Error ? err.message : err));
+    // VLC can keep retrying a broken segment without emitting onError. Notify
+    // the current player once, but never let a late response from an older
+    // resolution fail the replacement provider.
+    if (generation === sessionGeneration && url.pathname === "/s" &&
+        err instanceof UpstreamHttpError && err.sourceUnavailable &&
+        unavailableGeneration !== generation) {
+      unavailableGeneration = generation;
+      unavailableHandler?.();
+    }
   }
 }
 
@@ -276,7 +304,7 @@ function delay(ms: number): Promise<void> {
 }
 
 class UpstreamHttpError extends Error {
-  constructor(readonly status: number, what: string) {
+  constructor(readonly status: number, what: string, readonly sourceUnavailable = false) {
     super(`${what} ${status}`);
   }
 }
@@ -288,7 +316,8 @@ async function fetchWithTimeout<T>(
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
     const res = await fetch(u, { ...init, signal: ac.signal });
-    if (!res.ok) throw new UpstreamHttpError(res.status, what);
+    if (!res.ok) throw new UpstreamHttpError(res.status, what,
+      res.status === 424 && new URL(u).pathname === "/api/live/hls-resource");
     // A stalled body must not keep this socket busy forever after headers arrive.
     return await read(res);
   } finally {

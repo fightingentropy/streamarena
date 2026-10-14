@@ -165,6 +165,7 @@ try {
       attachMedia() { this.emit("MEDIA_ATTACHED"); }
       loadSource(source) { this.loads.push(source); }
       startLoad(position) { this.starts.push(position); }
+      stopLoad() { this.stops = (this.stops || 0) + 1; }
       recoverMediaError() { this.emit("MEDIA_ATTACHED"); }
       destroy() { this.destroyed = true; }
     }
@@ -175,7 +176,9 @@ try {
     state.lastRequestedSource = "https://media.test/same-url.m3u8";
     controller.play({ absoluteSource: state.lastRequestedSource, requestedStartSeconds: 10 });
     controller.destroy();
-    controller.play({ absoluteSource: state.lastRequestedSource, requestedStartSeconds: 60 });
+    const failures = [];
+    controller.play({ absoluteSource: state.lastRequestedSource, requestedStartSeconds: 60,
+      handleHlsPlaybackFailure: (...args) => failures.push(args) });
     assert.equal(controller.seek(300), true);
     assert.equal(controller.seek(420), true);
     pendingImport.resolve(FakeHls);
@@ -214,7 +217,22 @@ try {
     const playBeforePausedRecovery = state.playRequests;
     hls.emit("ERROR", { fatal: true, type: "media" });
     assert.equal(state.playRequests, playBeforePausedRecovery, "decode recovery must not unpause the viewer");
+    const startsBeforeUnavailable = hls.starts.length;
+    video.currentTime = 180;
+    const unavailable = { fatal: false, type: "network", details: "fragLoadError", response: { code: 424 } };
+    hls.emit("ERROR", unavailable);
+    hls.emit("FRAG_BUFFERED");
+    hls.emit("ERROR", unavailable);
+    assert.equal(failures.length, 1, "missing audio/video media must trigger only one recovery, even if the other track buffers");
+    assert.equal(failures[0][1].sourceUnavailable, true);
+    assert.equal(hls.stops, 1);
+    assert.equal(controller.retryAtCurrentTime(), false);
+    assert.equal(hls.starts.length, startsBeforeUnavailable, "do not retry a confirmed missing origin");
+    assert.equal(video.currentTime, 180);
+    assert.equal(video.paused, true);
     controller.destroy();
+    hls.emit("ERROR", unavailable);
+    assert.equal(failures.length, 1, "an old missing segment cannot fail the next source");
     console.log("✓ HLS generations, queued seeks, playable confirmation and position-preserving recovery");
   }
 

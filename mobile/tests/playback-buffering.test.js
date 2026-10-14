@@ -14,6 +14,7 @@ function playerStore() {
   runInNewContext(compiled, {
     module: mod, exports: mod.exports, setTimeout, clearTimeout,
     require: (id) => {
+      if (id === "./strip-proxy") return { hasUnavailableStripProxyMedia: () => false, setStripProxyUnavailableHandler() {} };
       if (id === "zustand") return require("zustand");
       if (id === "./report") return { reportProgress() {} };
       return {};

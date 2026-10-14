@@ -19,7 +19,7 @@ function videoHarness({ fetcher = fetch, services = {}, timer = setTimeout, clea
     "@/lib/config": config,
     "@/lib/streamarena": {
       getCachedPreferences: () => ({}),
-      getSources: async () => ({ sources: [] }),
+      getSources: async (...args) => services.getSources?.(...args) ?? { sources: [] },
       resolveTitle: async (params, signal) => {
         requests.push(params);
         return services.resolveTitle?.(params, signal);

@@ -2740,7 +2740,7 @@ function setVideoSource(
   if (isHlsSource) {
     const sourceGeneration = playbackSourceGeneration;
     const hlsMeta = parseHlsMasterSource(sourceWithAudioSync);
-    const handleHlsPlaybackFailure = (message) => {
+    const handleHlsPlaybackFailure = (message, options = {}) => {
       if (sourceGeneration !== playbackSourceGeneration) return;
       // Keep the media timeline until recovery has handed off to its replacement.
       // destroy() detaches MSE and resets currentTime/paused, which used to turn a
@@ -2751,7 +2751,7 @@ function setVideoSource(
         handleLivePlaybackFailure(fallbackMessage);
         return;
       }
-      void handlePlaybackErrorRecovery(fallbackMessage).then((recovered) => {
+      void handlePlaybackErrorRecovery(fallbackMessage, options).then((recovered) => {
         if (!recovered && isTmdbResolvedPlayback) {
           reportCurrentTmdbPlaybackFailure(fallbackMessage);
         }
@@ -3628,7 +3628,7 @@ function hasQueuedTmdbSourceFallback() {
   );
 }
 
-function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
+function attemptTmdbRecovery(message, { failureMessage = "", sourceUnavailable = false } = {}) {
   if (
     !isTmdbResolvedPlayback ||
     isRecoveringTmdbStream ||
@@ -3641,6 +3641,11 @@ function attemptTmdbRecovery(message, { failureMessage = "" } = {}) {
   const recoveryRequestToken = ++tmdbPlaybackRequestToken;
   stopLocalCacheUpgradeWatch();
   isRecoveringTmdbStream = true;
+  if (sourceUnavailable) {
+    // The provider's media is missing on every delivery route. Do not spend
+    // another seek/retry cycle on the same master through Worker and app relays.
+    tmdbSourceAttemptIndex = tmdbSourceQueue.length;
+  }
   showResolver(message || "Switching source...");
 
   // Hopping between mirrors of the current source is not leaving it, so keep the
@@ -7096,7 +7101,7 @@ function tryAlternatePlaybackSourceNow() {
   retryPlaybackRecoveryNow();
 }
 
-async function handlePlaybackErrorRecovery(message) {
+async function handlePlaybackErrorRecovery(message, { sourceUnavailable = false } = {}) {
   const sourceGeneration = playbackSourceGeneration;
   const requestToken = tmdbPlaybackRequestToken;
   const fallbackMessage =
@@ -7125,6 +7130,7 @@ async function handlePlaybackErrorRecovery(message) {
   if (
     attemptTmdbRecovery("Trying alternate source...", {
       failureMessage: fallbackMessage,
+      sourceUnavailable,
     })
   ) {
     return true;

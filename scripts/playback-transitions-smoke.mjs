@@ -45,6 +45,7 @@ try {
   let failingSegments = 0;
   let segmentFailure = null;
   let hangingSegment = null;
+  let unavailableProvider = "";
   let healthGate = null;
   let healthRequests = 0;
   await page.route("**/api/**", async route => {
@@ -64,7 +65,8 @@ try {
       resolves.push(name);
       await resolveGates.get(name)?.promise;
       payload = { sourceHash: hash, resolverProvider: "external-embed", playableUrl: `/fixture-media/${name}/main.m3u8`,
-        fallbackUrls: [], tracks: { audioTracks: [], subtitleTracks: [] }, selectedAudioStreamIndex: -1,
+        fallbackUrls: name === "a" ? ["/fixture-media/a-worker/main.m3u8", "/fixture-media/a-app/main.m3u8"] : [],
+        tracks: { audioTracks: [], subtitleTracks: [] }, selectedAudioStreamIndex: -1,
         selectedSubtitleStreamIndex: -1, preferences: { subtitleLang: "off" }, metadata: { displayTitle: "Transition test", runtimeSeconds: 180 } };
     } else if (path === "/api/tmdb/details") payload = { title: "Transition test", runtime: 3 };
     else if (path.endsWith("watch-progress") || path.endsWith("continue-watching") || path.endsWith("my-list")) payload = { entries: [] };
@@ -80,6 +82,9 @@ try {
     requests.push({ name, filename, at: Date.now() });
     if (name === "d") return route.fulfill({ status: 404, body: "missing" });
     if (filename.endsWith("m3u8")) await manifestGates.get(name)?.promise;
+    if (name === unavailableProvider && Number(filename.match(/segment-(\d+)/)?.[1]) >= 70) {
+      return route.fulfill({ status: 424, json: { error: "Upstream media is unavailable. Try another source." } });
+    }
     if (filename === segmentFailure && failingSegments++ < 2) return route.fulfill({ status: 503, body: "temporary failure" });
     if (filename === hangingSegment?.filename) {
       hangingSegment.count++;
@@ -214,6 +219,26 @@ try {
   assert(afterRecovery.frames > 0 && afterRecovery.width > 0);
   assert.deepEqual(errors, []);
   console.log("✓ automatic fallback preserves a newer seek and pause with a decoded replacement frame");
+
+  unavailableProvider = "a";
+  await page.goto(`${base}/player.html?tmdbId=123&mediaType=movie&title=Transition%20test&benchmark=1`);
+  await waitPlaying(0.5);
+  await page.locator("#playerVideo").evaluate(video => video.pause());
+  const beforeMissing = requests.length;
+  const missingSeek = await seek(150);
+  await waitSelected("b");
+  await page.waitForFunction(() => !document.querySelector("#playerVideo").seeking);
+  const missingRecovered = await state();
+  assert(missingRecovered.paused, "missing-origin recovery must retain a paused seek");
+  assert(Math.abs(missingRecovered.time - 150) < 1);
+  assert(missingRecovered.frames > 0 && missingRecovered.width > 0);
+  assert(missingSeek.seekLatencyMs < 5000, "missing origin must not spend multiple retry/relay budgets");
+  assert(!requests.slice(beforeMissing).some(r => ["a-worker", "a-app"].includes(r.name)), "skip relay copies of the missing media");
+  assert(requests.slice(beforeMissing).filter(r => r.name === "a" && r.filename === "segment-75.ts").length <= 2, "do not keep fetching the known missing fragment");
+  await page.evaluate(() => window.__STREAMARENA_PLAYBACK_BENCHMARK__.play());
+  await waitPlaying(150.5);
+  console.log(`✓ missing upstream segment switches provider at the paused seek (${missingSeek.seekLatencyMs}ms), then resumes decoded playback`);
+  assert.deepEqual(errors, []);
 } finally {
   for (const pending of gates) pending.resolve();
   await browser?.close();

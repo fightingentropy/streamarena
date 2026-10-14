@@ -250,7 +250,7 @@ export function createHlsPlaybackController({
     // MSE attachment resets currentTime. Retain only the latest seek until the
     // manifest is ready, then load the destination segment directly.
     if (pendingHlsJsPlaybackSource || video.readyState === 0) {
-      if (activeHlsController && currentSession.manifestReady) {
+      if (activeHlsController && currentSession.manifestReady && !currentSession.sourceUnavailable) {
         activeHlsController.startLoad(target);
       }
       return true;
@@ -261,7 +261,7 @@ export function createHlsPlaybackController({
   }
 
   function retryAtCurrentTime() {
-    if (!activeHlsController || !currentSession?.manifestReady) return false;
+    if (!activeHlsController || !currentSession?.manifestReady || currentSession.sourceUnavailable) return false;
     const video = getVideo();
     const target = video?.readyState > 0
       ? Number(video.currentTime) : currentSession.startPosition;
@@ -504,15 +504,31 @@ export function createHlsPlaybackController({
           // proven it plays, a transient error (e.g. a far-seek segment hiccup) must
           // recover in place on the SAME source, never silently switch providers.
           let sourceHasStartedPlayback = false;
+          let sourceUnavailable = false;
           activeHlsController = hls;
           qualityLevels = [];
           selectedQualityLevel = -1;
           activeQualityLevel = -1;
 
           hls.on(HlsConstructor.Events.ERROR, (_event, data = {}) => {
-            if (activeHlsController !== hls || !data?.fatal) {
+            if (activeHlsController !== hls || sourceUnavailable) {
               return;
             }
+            // The relay only uses 424 when the provider explicitly reports a
+            // missing origin. Catch the first fragment error (usually nonfatal),
+            // before hls.js retries it or cycles through quality levels. Keep MSE
+            // attached so recovery can retain the latest seek and pause state.
+            if (data.type === HlsConstructor.ErrorTypes.NETWORK_ERROR &&
+                data.details === "fragLoadError" && Number(data.response?.code) === 424) {
+              sourceUnavailable = true;
+              session.sourceUnavailable = true;
+              hls.stopLoad();
+              handleHlsPlaybackFailure("This source's media is unavailable. Trying another source...", {
+                sourceUnavailable: true,
+              });
+              return;
+            }
+            if (!data?.fatal) return;
             if (
               data.type === HlsConstructor.ErrorTypes.NETWORK_ERROR &&
               failFastNetworkErrors &&

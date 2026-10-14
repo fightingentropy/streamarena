@@ -234,6 +234,7 @@ for (const mediaType of ["movie", "tv"]) {
       "./live": {},
       "./live-recovery": {},
       "./refresh": {},
+      "./strip-proxy": { hasUnavailableStripProxyMedia: () => false, setStripProxyUnavailableHandler() {} },
       "./report": { beginReporting() {}, stopReporting() {}, reportNow() {} },
       "./resolve": { resolveAndRoute: async () => { resolveCalls++; throw new Error("Network unavailable"); } },
       "./resume": { loadResumeSeconds: () => new Promise(() => {}) },

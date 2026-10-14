@@ -110,6 +110,67 @@ test("expired/forbidden media fails promptly rather than retrying the same autho
   }
 });
 
+test("missing origin skips relay retries and re-resolve, retains a newer seek and pause", async () => {
+  let finishSources;
+  const sourceList = new Promise(resolve => { finishSources = resolve; });
+  let fetchCount = 0;
+  const h = videoHarness({
+    timer: noTimers, clearTimer() {},
+    fetcher: async () => { fetchCount++; return new Response("missing", { status: 424 }); },
+    services: {
+      resolveTitle: async params => ({ ...resolved, sourceHash: params.sourceHash || "lisbon" }),
+      getSources: () => sourceList,
+    },
+  });
+  const module = h.load("state");
+  const store = module.usePlayerStore;
+  const proxy = h.load("strip-proxy");
+  const seeks = [];
+  module.registerSeek(seconds => seeks.push(seconds));
+  await store.getState().open({ tmdbId: "157336", mediaType: "movie" });
+  const first = store.getState().source;
+  store.getState().onLoad(1000, first);
+  store.getState().seekTo(600);
+  store.getState().pause();
+  const broken = "/s?" + new URLSearchParams({ u: "https://media.streamarena.xyz/api/live/hls-resource?input=missing" });
+  await proxy.serve({ write() {} }, broken, null);
+  assert.equal(store.getState().status, "resolving", "relay must notify even when VLC does not emit an error");
+  assert.equal(store.getState().source, null);
+  store.getState().seekTo(720);
+  await proxy.serve({ write() {} }, broken, null);
+  store.getState().onError("late old engine error", first);
+  finishSources({ sources: [{ sourceHash: "miami", isTorrent: false }, { sourceHash: "lisbon", isTorrent: false }] });
+  await settled();
+  const replacement = store.getState().source;
+  store.getState().onLoad(1000, replacement);
+  assert.equal(store.getState().selectedSourceHash, "miami");
+  assert.equal(store.getState().position, 720);
+  assert.equal(store.getState().paused, true);
+  assert.equal(seeks.at(-1), 720);
+  assert.equal(h.requests.length, 2, "no duplicate resolve or refresh of Lisbon");
+  assert.equal(h.requests[1].refreshResolve, undefined);
+  assert.equal(h.reports.length, 1);
+  assert.equal(fetchCount, 2, "each missing request is attempted only once");
+  assert.equal(proxy.hasUnavailableStripProxyMedia(replacement.uri), false);
+  store.getState().close();
+});
+
+test("a late missing-origin response cannot fail a new relay session", async () => {
+  let finish;
+  const proxy = videoHarness({ fetcher: () => new Promise(resolve => { finish = resolve; }) }).load("strip-proxy");
+  await proxy.ensureStripProxy();
+  proxy.beginStripProxySession();
+  let notified = 0;
+  proxy.setStripProxyUnavailableHandler(() => { notified++; });
+  const pending = proxy.serve({ write() {} }, "/s?u=" + encodeURIComponent("https://media.streamarena.xyz/api/live/hls-resource?input=old"), null);
+  proxy.beginStripProxySession();
+  const next = proxy.stripProxyMasterUrl(8771, direct);
+  finish(new Response("missing", { status: 424 }));
+  await pending;
+  assert.equal(notified, 0);
+  assert.equal(proxy.hasUnavailableStripProxyMedia(next), false);
+});
+
 async function playerFixture(options = {}, timers = {}) {
   const h = videoHarness({
     timer: noTimers, clearTimer() {}, ...timers,

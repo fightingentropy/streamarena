@@ -618,10 +618,7 @@ async fn stream_live_hls_resource_via_http(
         .map_err(|_| ApiError::bad_gateway("Live HLS resource request timed out."))?
         .map_err(|_| ApiError::bad_gateway("Live HLS resource request failed."))?;
     if !response.status().is_success() {
-        return Err(ApiError::bad_gateway(format!(
-            "Live HLS resource request failed with status {}.",
-            response.status()
-        )));
+        return Err(live_hls_resource_http_error(response).await);
     }
     let final_url = response.url().clone();
     ensure_allowed_live_hls_final_url(&final_url, live_request, LiveHlsRequestKind::Resource)?;
@@ -677,6 +674,43 @@ async fn stream_live_hls_resource_via_http(
         .body(body)
         .map(Some)
         .map_err(|error| ApiError::internal(error.to_string()))
+}
+
+// A relay outage and a provider's missing origin are different failures. Lisbon
+// can serve cached opening fragments while later audio/video returns this exact
+// error. Another delivery route cannot supply the missing media. 424 tells the
+// player to change provider at its current position, rather than retry all routes.
+fn live_hls_resource_error(status: u16, body: &[u8]) -> ApiError {
+    if status == 502 && body.len() <= 1024 && body.trim_ascii() == b"origin unavailable" {
+        return ApiError::failed_dependency("Upstream media is unavailable. Try another source.");
+    }
+    ApiError::bad_gateway(format!(
+        "Live HLS resource request failed with status {status}."
+    ))
+}
+
+async fn live_hls_resource_http_error(mut response: reqwest::Response) -> ApiError {
+    let status = response.status().as_u16();
+    let body = if status == 502 {
+        // Never buffer an arbitrary upstream error page or wait on a stalled body.
+        timeout(Duration::from_secs(1), async {
+            let mut body = Vec::new();
+            loop {
+                match response.chunk().await {
+                    Ok(Some(chunk)) if body.len() + chunk.len() <= 1024 => {
+                        body.extend_from_slice(&chunk);
+                    }
+                    Ok(None) => return body,
+                    _ => return Vec::new(),
+                }
+            }
+        })
+        .await
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    live_hls_resource_error(status, &body)
 }
 
 /// How much of the body to peek before deciding to stream: enough for the PNG
@@ -737,10 +771,7 @@ async fn stream_live_ts_passthrough(
         .map_err(|_| ApiError::bad_gateway("Live HLS resource request timed out."))?
         .map_err(|_| ApiError::bad_gateway("Live HLS resource request failed."))?;
     if !response.status().is_success() {
-        return Err(ApiError::bad_gateway(format!(
-            "Live HLS resource request failed with status {}.",
-            response.status()
-        )));
+        return Err(live_hls_resource_http_error(response).await);
     }
     let final_url = response.url().clone();
     ensure_allowed_live_hls_final_url(&final_url, live_request, LiveHlsRequestKind::Resource)?;
@@ -2370,10 +2401,7 @@ async fn fetch_live_hls_resource_via_curl(
     let response =
         fetch_live_hls_via_curl(&live_request.source_url, referer.as_deref(), "*/*").await?;
     if !(200..300).contains(&response.status) {
-        return Err(ApiError::bad_gateway(format!(
-            "Live HLS resource request failed with status {}.",
-            response.status
-        )));
+        return Err(live_hls_resource_error(response.status, &response.bytes));
     }
     ensure_allowed_live_hls_final_url(
         &live_request.source_url,
@@ -2441,10 +2469,7 @@ async fn fetch_live_hls_resource_via_http(
         .map_err(|_| ApiError::bad_gateway("Live HLS resource request timed out."))?
         .map_err(|_| ApiError::bad_gateway("Live HLS resource request failed."))?;
     if !response.status().is_success() {
-        return Err(ApiError::bad_gateway(format!(
-            "Live HLS resource request failed with status {}.",
-            response.status()
-        )));
+        return Err(live_hls_resource_http_error(response).await);
     }
     let final_url = response.url().clone();
     ensure_allowed_live_hls_final_url(&final_url, live_request, LiveHlsRequestKind::Resource)?;
@@ -3583,6 +3608,53 @@ mod tests {
         normalize_hls_referer, png_prefixed_ts_strip_offset, query_pairs,
         rewrite_live_hls_playlist, strip_video_only_stream_inf_codecs,
     };
+
+    #[tokio::test]
+    async fn unavailable_media_origin_is_a_non_cacheable_dependency_failure() {
+        use axum::response::IntoResponse;
+        use axum::{Router, http::StatusCode, routing::get};
+
+        let app = Router::new()
+            .route(
+                "/missing",
+                get(|| async { (StatusCode::BAD_GATEWAY, "origin unavailable\n") }),
+            )
+            .route(
+                "/transient",
+                get(|| async { (StatusCode::BAD_GATEWAY, "temporary overload") }),
+            )
+            .route(
+                "/oversized",
+                get(|| async {
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        format!("origin unavailable{}", " ".repeat(2048)),
+                    )
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        for (path, status) in [("missing", 424), ("transient", 502), ("oversized", 502)] {
+            let upstream = client
+                .get(format!("http://{address}/{path}"))
+                .send()
+                .await
+                .unwrap();
+            let error = super::live_hls_resource_http_error(upstream).await;
+            assert_eq!(error.status().as_u16(), status);
+            let response = error.into_response();
+            assert_eq!(response.headers()["cache-control"], "no-store");
+        }
+        for status in [403, 404, 500, 503, 504] {
+            assert_eq!(
+                super::live_hls_resource_error(status, b"origin unavailable").status(),
+                StatusCode::BAD_GATEWAY
+            );
+        }
+        server.abort();
+    }
 
     #[test]
     fn public_hls_expiry_reuses_windows_without_extending_grants() {

@@ -11,6 +11,7 @@ import { buildFallbackCandidates } from "./refresh";
 import { beginReporting, reportNow, reportPlaybackError, reportProgress, stopReporting } from "./report";
 import { resolveAndRoute } from "./resolve";
 import { loadResumeSeconds } from "./resume";
+import { hasUnavailableStripProxyMedia, setStripProxyUnavailableHandler } from "./strip-proxy";
 import { findSelectedTextTrackIndex } from "./tracks";
 import type { PlayRequest, PlayerStatus, VideoSource } from "./types";
 
@@ -359,7 +360,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
   // Bounded by triedHashes (each server tried at most once) so it can't loop.
   async function advanceToNextServer(message?: string) {
     const { request, scope, sources, triedHashes, selectedSourceHash } = get();
-    const position = recoveryPosition(get());
     if (!request) {
       set({ status: "error", error: message || "Playback error", buffering: false });
       return;
@@ -391,6 +391,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       }
     }
     if (ac.signal.aborted) return;
+    // A viewer can seek again while the source list is loading.
+    const position = recoveryPosition(get());
 
     const next = (list ?? []).find((src) =>
       !src.isTorrent && src.automaticFallbackEligible !== false && src.sourceHash && !tried.has(src.sourceHash),
@@ -755,6 +757,14 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       }
       const { resolved, request, scope, reresolved, selectedAudioStreamIndex, selectedSourceHash } = get();
       const position = recoveryPosition(get());
+      if (hasUnavailableStripProxyMedia(get().source?.uri || "")) {
+        reportPlaybackError(message);
+        // 424 confirms missing provider media, not a failed delivery route.
+        // Do not refresh the same master or retry it through two more relays.
+        set({ source: null, fallbackSources: [], status: "resolving", buffering: true });
+        void advanceToNextServer(message);
+        return;
+      }
       // A transport failure doesn't prove that the provider is unhealthy.
       if (tryTransportFallback()) return;
       reportPlaybackError(message);
@@ -884,4 +894,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       });
     },
   };
+});
+
+setStripProxyUnavailableHandler(() => {
+  const state = usePlayerStore.getState();
+  if (state.source && hasUnavailableStripProxyMedia(state.source.uri)) {
+    state.onError("This source's media is unavailable. Trying another source...", state.source);
+  }
 });
