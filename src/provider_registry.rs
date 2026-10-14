@@ -187,8 +187,8 @@ pub fn custom_base(id: &str) -> Option<String> {
 }
 
 /// Provider tiers shared by the Server menu and automatic native-HLS selection.
-/// Keep the requested CineJoy default, Nebula. Current production playback
-/// puts Miami, Lul then Link next; Lisbon and Solara retain previously verified HD
+/// Prefer Miami for verified 4K coverage, with CineJoy Nebula as the first
+/// backup, followed by Lul then Link. Lisbon and Solara retain verified HD
 /// capability but failed the fresh sample, so they are last-resort backups.
 /// Retired low-quality and repeatedly failing providers are absent from every
 /// built-in catalog.
@@ -201,8 +201,9 @@ pub fn custom_base(id: &str) -> Option<String> {
 /// dead-source penalty; source eligibility and explicit pins are separate.
 pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
     // FrameX audit (2026-10-12): fast AVC/full-HD on three titles and verified
-    // 4K playback. Second only to the established CineJoy Nebula default.
-    ("miami", 2_400),
+    // 4K playback. Prefer its adaptive master; the player still chooses a
+    // suitable rendition for each device and connection.
+    ("miami", 2_800),
     ("cinejoy", 1_400),
     ("aether-lul", 2_200),
     ("aether-link", 2_000),

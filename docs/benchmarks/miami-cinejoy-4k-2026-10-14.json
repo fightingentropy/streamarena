@@ -1,0 +1,215 @@
+{
+  "date": "2026-10-14",
+  "location": "Oracle London VM",
+  "method": "Isolated public upstream resolver requests, highest rendition fMP4 initialization parsed by ffprobe. No account sessions, watch history, resolver cache or app health mutations. CineJoy one-shot cold Chromium CLI; Miami API-only discovery. Timings are single samples and are not browser startup time or comparable to the warmed production CineJoy worker. Encoded raster does not prove perceptual detail or HDR.",
+  "samples": [
+    {
+      "provider": "Miami",
+      "title": "Interstellar",
+      "discoveryMs": 331,
+      "ladder": [
+        {
+          "width": 2584,
+          "height": 1080,
+          "bandwidth": 6168323
+        },
+        {
+          "width": 3832,
+          "height": 1600,
+          "bandwidth": 16152957
+        },
+        {
+          "width": 852,
+          "height": 480,
+          "bandwidth": 1330890
+        },
+        {
+          "width": 1724,
+          "height": 720,
+          "bandwidth": 3136330
+        }
+      ],
+      "encoded": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 3832,
+          "height": 1600
+        }
+      ],
+      "probeBytes": 1213,
+      "probeKind": "fMP4 initialization",
+      "manifestAndProbeMs": 2726,
+      "totalMs": 3057
+    },
+    {
+      "provider": "Miami",
+      "title": "Oppenheimer",
+      "discoveryMs": 282,
+      "ladder": [
+        {
+          "width": 3840,
+          "height": 2160,
+          "bandwidth": 16210625
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "bandwidth": 6146802
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "bandwidth": 3117122
+        },
+        {
+          "width": 852,
+          "height": 480,
+          "bandwidth": 1318057
+        }
+      ],
+      "encoded": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 3840,
+          "height": 2160
+        }
+      ],
+      "probeBytes": 1212,
+      "probeKind": "fMP4 initialization",
+      "manifestAndProbeMs": 1573,
+      "totalMs": 1855
+    },
+    {
+      "provider": "Miami",
+      "title": "Game of Thrones S1E2",
+      "discoveryMs": 318,
+      "ladder": [
+        {
+          "width": 3840,
+          "height": 2160,
+          "bandwidth": 15899420
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "bandwidth": 6029138
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "bandwidth": 3050424
+        },
+        {
+          "width": 852,
+          "height": 480,
+          "bandwidth": 1294144
+        }
+      ],
+      "encoded": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 3840,
+          "height": 2160,
+          "side_data_list": [
+            {},
+            {}
+          ]
+        }
+      ],
+      "probeBytes": 1256,
+      "probeKind": "fMP4 initialization",
+      "manifestAndProbeMs": 542,
+      "totalMs": 860
+    },
+    {
+      "provider": "CineJoy Nebula",
+      "title": "Interstellar",
+      "discoveryMs": 4249,
+      "ladder": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "bandwidth": null
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "bandwidth": null
+        }
+      ],
+      "encoded": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "probeBytes": 1365,
+      "probeKind": "fMP4 initialization",
+      "manifestAndProbeMs": 323,
+      "totalMs": 4572
+    },
+    {
+      "provider": "CineJoy Nebula",
+      "title": "Oppenheimer",
+      "discoveryMs": 4235,
+      "ladder": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "bandwidth": null
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "bandwidth": null
+        }
+      ],
+      "encoded": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1920,
+          "height": 872
+        }
+      ],
+      "probeBytes": 1370,
+      "probeKind": "fMP4 initialization",
+      "manifestAndProbeMs": 291,
+      "totalMs": 4526
+    },
+    {
+      "provider": "CineJoy Nebula",
+      "title": "Game of Thrones S1E2",
+      "discoveryMs": 4425,
+      "ladder": [
+        {
+          "width": 1920,
+          "height": 1080,
+          "bandwidth": null
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "bandwidth": null
+        }
+      ],
+      "encoded": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "probeBytes": 1379,
+      "probeKind": "fMP4 initialization",
+      "manifestAndProbeMs": 300,
+      "totalMs": 4725
+    }
+  ]
+}

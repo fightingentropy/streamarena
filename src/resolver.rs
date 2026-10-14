@@ -100,8 +100,9 @@ use external_embed::{
     combine_external_embed_source_summaries, default_external_embed_source,
     external_embed_playback_url, external_embed_source_filename,
     external_embed_source_for_source_hash, external_embed_source_hash, external_embed_sources,
-    is_external_embed_hls_capable_source, preferred_external_embed_hls_sources,
-    race_with_hd_fallback, should_prefer_default_external_embed, should_resolve_torrent_candidates,
+    is_external_embed_hls_capable_source, preferred_external_embed_family_count,
+    preferred_external_embed_hls_sources, race_with_hd_fallback,
+    should_prefer_default_external_embed, should_resolve_torrent_candidates,
 };
 
 #[cfg(test)]
@@ -184,7 +185,7 @@ const EXTERNAL_EMBED_INITIAL_GRACE_MS: u64 = 2_500;
 /// After the first candidate, keep recovery hedges short so later sources retain
 /// their chance within the shared total deadline.
 const EXTERNAL_EMBED_HEDGE_STAGGER_MS: u64 = 1_200;
-// Give the preferred CineJoy family a bounded attempt before racing other hosts.
+// Give the top-ranked provider family a bounded attempt before racing other hosts.
 // A faster fallback must not override the user's preferred provider by default.
 const EXTERNAL_EMBED_PREFERRED_FAMILY_TIMEOUT_MS: u64 = 8_000;
 const EXTERNAL_EMBED_PROVIDER_HEALTH_KEY_PREFIX: &str = "external-embed-provider:";
@@ -4510,7 +4511,7 @@ async fn build_external_embed_resolved_playback_payload(
     );
     let hls_deadline_ms = now_ms() + external_embed_hls_total_timeout_ms() as i64;
 
-    // Hedge within the leading CineJoy family first, then use other hosts only
+    // Hedge within the leading ranked provider family first, then use other hosts
     // when that family fails or exceeds its bounded window. Admin ranking and
     // health still determine the leading candidates; explicit pins stay single.
     // The winner's remaining futures are dropped (their in-flight node/curl
@@ -4518,14 +4519,8 @@ async fn build_external_embed_resolved_playback_payload(
     // attempt records its own failure internally; the winner's success is recorded
     // here so a losing-but-successful racer can never double-count. Admin benchmark
     // requests use the identical path with both writes suppressed.
-    let preferred_count = if request.allow_native_fallback {
-        candidates
-            .iter()
-            .take_while(|candidate| candidate.provider.id == "cinejoy")
-            .count()
-    } else {
-        0
-    };
+    let preferred_count =
+        preferred_external_embed_family_count(&candidates, request.allow_native_fallback);
     let attempts = candidates
         .into_iter()
         .map(|candidate| {

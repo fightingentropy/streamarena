@@ -12,6 +12,26 @@ use super::{
     race_staggered_first_success_with_initial_grace, stremio_addon_stream_url,
 };
 
+/// Protect the current leading provider's bounded startup window. Candidate order
+/// already incorporates enablement, admin rankings and health; never search ahead
+/// for a hardcoded provider or pull a lower-ranked variant ahead of another host.
+/// Explicit source pins retain their independent per-source resolve deadline.
+pub(super) fn preferred_external_embed_family_count(
+    candidates: &[ExternalEmbedSource],
+    allow_native_fallback: bool,
+) -> usize {
+    if !allow_native_fallback {
+        return 0;
+    }
+    let Some(first) = candidates.first() else {
+        return 0;
+    };
+    candidates
+        .iter()
+        .take_while(|candidate| candidate.provider.id == first.provider.id)
+        .count()
+}
+
 /// Keep fallback hosts lazy until the preferred family fails or spends its
 /// bounded window. Both groups preserve ranked hedging; pinned single-source
 /// requests use the ordinary race with no additional family timeout.

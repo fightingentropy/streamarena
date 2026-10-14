@@ -1,0 +1,145 @@
+{
+  "checkedAt": "2026-10-14T17:41:53.893578+00:00",
+  "publicSite": "https://framextv.xyz/",
+  "catalogUrl": "https://api.framextv.tech/api/providers",
+  "mainAsset": "https://framextv.xyz/assets/index-BjuW7-8D.js",
+  "playerAsset": "https://framextv.xyz/assets/Player-D3xkTx_7.js",
+  "catalog": [
+    {
+      "id": "miner",
+      "name": "Miner XIX",
+      "tagline": "Movy Multi-City 4K Server",
+      "category": "movie_tv",
+      "status": "available"
+    },
+    {
+      "id": "headhunter",
+      "name": "Headhunter XXXI",
+      "tagline": "VidLink Server",
+      "category": "movie_tv",
+      "status": "available"
+    },
+    {
+      "id": "valkyrie",
+      "name": "Valkyrie VI",
+      "tagline": "4K Ultra Multi-Server",
+      "category": "movie_tv",
+      "status": "available"
+    },
+    {
+      "id": "hog_rider",
+      "name": "Hog Rider XI",
+      "tagline": "4K Pilled Server",
+      "category": "movie_tv",
+      "status": "available"
+    },
+    {
+      "id": "lavahound",
+      "name": "Lava Hound XII",
+      "tagline": "4K Fast Multi-Server Stream",
+      "category": "movie_tv",
+      "status": "available"
+    },
+    {
+      "id": "super_barbarian",
+      "name": "Super Barbarian XVI",
+      "tagline": "Direct Auto HLS Stream",
+      "category": "movie_tv",
+      "status": "available"
+    },
+    {
+      "id": "bowler",
+      "name": "Bowler XVIII",
+      "tagline": "Multi-Language",
+      "category": "movie_tv",
+      "status": "available"
+    }
+  ],
+  "miamiIntegration": {
+    "api": "https://api.wecollege.net",
+    "referer": "https://www.movy.bz/",
+    "changed": false
+  },
+  "boise": {
+    "origin": "https://player.videasy.to/",
+    "verifiedEncoded": [
+      {
+        "tmdbId": 157336,
+        "type": "movie",
+        "width": 3832,
+        "height": 1600,
+        "initBytes": 1213
+      },
+      {
+        "tmdbId": 27205,
+        "type": "movie",
+        "width": 3840,
+        "height": 2160,
+        "initBytes": 1212
+      },
+      {
+        "tmdbId": 1399,
+        "type": "tv",
+        "season": 1,
+        "episode": 1,
+        "width": 3840,
+        "height": 2160,
+        "initBytes": 1212
+      }
+    ],
+    "sameMasterAsMiami": true,
+    "pairedTitles": 3,
+    "sameCDN": "moon.zenoak.top",
+    "differentOpaqueURLs": true
+  },
+  "otherProviderSamples": [
+    {
+      "provider": "hog_rider",
+      "upstream": "VidUp",
+      "tmdbId": 157336,
+      "result": "No sources; upstream page fetch EOF",
+      "elapsedMs": 1716
+    },
+    {
+      "provider": "lavahound",
+      "upstream": "VidFast",
+      "tmdbId": 157336,
+      "result": "No sources; upstream connection reset",
+      "elapsedMs": 1152
+    },
+    {
+      "provider": "bowler",
+      "upstream": "RiveStream",
+      "tmdbId": 157336,
+      "result": "Sources present",
+      "elapsedMs": 1327,
+      "sources": [
+        {
+          "name": "PrimeVids dcloud",
+          "encodedWidth": 1920,
+          "encodedHeight": 1080,
+          "codec": "h264",
+          "sampleBytes": 65536
+        },
+        {
+          "name": "PrimeVids ipcloud",
+          "advertisedResolutions": [
+            "1280x720"
+          ]
+        },
+        {
+          "name": "Citadel",
+          "advertisedQuality": [
+            "720p",
+            "480p"
+          ]
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "FrameX labels some provider groups as 4K without verifying the current title rendition; metadata alone is not proof.",
+    "Boise and Miami yielded byte-identical master playlists in all three paired title samples; no independent quality/CDN benefit established.",
+    "Other-provider failures are one current title sample, not proof of universal unavailability."
+  ]
+}
