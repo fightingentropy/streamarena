@@ -41,7 +41,7 @@ test("Home Play starts a series at its first real season and carries episode cou
   assert.equal(href.params.seasonCount, "3");
 });
 
-test("Home Resume preserves the watched episode and selected source, matching media type", () => {
+test("Home Resume preserves the watched episode but re-ranks its source, matching media type", () => {
   const href = buildFeaturedPlayHref({ ...title, mediaType: "tv" }, [
     { tmdbId: "42", mediaType: "movie", sourceIdentity: "tmdb:movie:42", sourceHash: "wrong" },
     { tmdbId: "42", mediaType: "tv", sourceIdentity: "tmdb:tv:42:s2:e6", sourceHash: "chosen", resolverProvider: "external-embed" },
@@ -49,7 +49,7 @@ test("Home Resume preserves the watched episode and selected source, matching me
   assert.equal(href.pathname, "/watch/[id]");
   assert.equal(href.params.seasonNumber, "2");
   assert.equal(href.params.episodeNumber, "6");
-  assert.equal(href.params.sourceHash, "chosen");
+  assert.equal(href.params.sourceHash, undefined);
   assert.equal(href.params.seasonCount, "3");
 });
 
@@ -60,10 +60,10 @@ test("a saved series with no episode opens the episode picker instead of restart
   assert.equal(href.pathname, "/title/[mediaType]/[id]");
 });
 
-for (const resolverProvider of ["real-debrid", "local-torrent", undefined]) {
+for (const resolverProvider of ["external-embed", "real-debrid", "local-torrent", undefined]) {
   test(`Home Resume does not pin a previous ${resolverProvider || "unknown"} source`, () => {
     const href = buildFeaturedPlayHref(title, [{ tmdbId: "42", mediaType: "movie",
-      sourceIdentity: "tmdb:movie:42", sourceHash: "old-torrent", resolverProvider }]);
+      sourceIdentity: "tmdb:movie:42", sourceHash: "old-source", resolverProvider }]);
     assert.equal(href.pathname, "/watch/[id]");
     assert.equal(href.params.id, "42");
     assert.equal(href.params.sourceHash, undefined);

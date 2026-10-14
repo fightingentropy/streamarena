@@ -52,9 +52,11 @@ Health demotion and admin ranking can put another family first. Cached fallback
 results cannot override the current preferred provider. No cache or database
 flush is required.
 
-The server controls this order for web and native clients, so this change requires
-no iPhone rebuild. Existing iPhone Continue Watching entries can preserve their
-saved HLS source; a fresh automatic play uses the current server ranking.
+The server controls this order for web and native clients. The ranking release
+itself required no iPhone rebuild. Native build 15 additionally removes saved
+provider pins from Continue Watching: existing entries now use the current
+ranking while retaining their episode and saved watch position. See the
+[native resume verification](native-continue-watching-2026-10-14.md).
 
 Regression tests cover the default order, successful slower preferred resolution,
 immediate failure, the eight-second deadline, health demotion, explicit pins,

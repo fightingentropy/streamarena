@@ -37,7 +37,7 @@ function videoHarness({ fetcher = fetch, services = {}, timer = setTimeout, clea
       reportProgress() {}, reportNow() {}, stopReporting() {}, beginReporting() {},
       reportPlaybackError: (message) => reports.push(message),
     },
-    "./resume": { loadResumeSeconds: async () => 0 },
+    "./resume": { loadResumeSeconds: async (...args) => services.loadResumeSeconds?.(...args) ?? 0 },
     "react-native-tcp-socket": {
       createServer: () => ({ on() {}, close() {}, listen(_options, ready) { ready(); } }),
     },

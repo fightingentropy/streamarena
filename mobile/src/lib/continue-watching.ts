@@ -29,9 +29,8 @@ export function buildResumeHref(item: ContinueWatchingItem, seasonCount?: number
   if (item.title) extra.title = item.title;
   if (item.year) extra.year = item.year;
   if (item.thumb) extra.poster = item.thumb;
-  // Keep a known HLS server on resume, but never turn a previous torrent/RD
-  // selection (or an older unknown provider) into an automatic source choice.
-  if (item.resolverProvider === "external-embed" && item.sourceHash) extra.sourceHash = item.sourceHash;
+  // Resume with the current server ranking. Saved progress is keyed by title and
+  // episode, independently of the old provider, and the player loads it on open.
   if (mediaType === "tv") {
     const se = tvSeasonEpisode(item);
     if (!se) return titleHref(mediaType, item.tmdbId);
