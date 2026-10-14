@@ -1,12 +1,14 @@
 # Oracle deployment
 
 StreamArena runs as a dedicated `streamarena` system user under systemd. The
-Cloudflare edge terminates public HTTPS; a dedicated Oracle Tunnel forwards to Caddy
+Cloudflare edge terminates app HTTPS; a dedicated Oracle Tunnel forwards to Caddy
 on loopback port 5180, then reaches the backend on `127.0.0.1:5173`. Neither
-listener is publicly exposed. Keep the current Cloudflare Worker provider routing: some upstreams
-require the origin relay and reject requests directly from Workers.
+loopback listener is publicly exposed. A separate media-only Caddy host provides
+direct HTTPS on port 443. Keep the current Cloudflare Worker provider routing as
+a fallback: some upstreams require the origin relay and reject requests directly
+from Workers.
 
-## Deployed state, 13 October 2026
+## Deployed state, 14 October 2026
 
 The main domain, www alias, and existing Worker-origin hostname point to the
 dedicated `streamarena-oracle` tunnel. The app, relay, user databases, Jackett,
@@ -14,16 +16,19 @@ and sports WARP proxy run on Oracle. Music and the other Mini services retain
 their original routes. The Mini StreamArena app, watchdog and temporary cutover
 forwarder are disabled, preventing two hosts from independently changing user data.
 
-Public ingress is currently Cloudflare Tunnel. A DNS-only direct HTTPS media
-route remains an optional follow-up: Oracle console sign-in is complete, and
-the narrow OCI ingress changes are awaiting approval. Guest ingress remains SSH-only.
-Do not describe the current media delivery as bypassing Cloudflare.
+The app and account APIs continue through Cloudflare Tunnel. The DNS-only
+`media.streamarena.xyz` A record now reaches Oracle directly, with public TLS
+working. Narrow OCI and guest ingress rules allow TCP/UDP 443; SSH and Oracle
+InstanceServices rules are preserved. Port 80 and the backend's loopback ports
+remain closed to public ingress. This endpoint exposes signed media routes, not
+the full application.
 
-The deployed application release is `ef11d59dbf7ad75a7641ec48ed2bfbfac74e8a17`.
-Its 60 Rust source/manifest files were hash-matched before installing the
-Linux ARM64 build; its frontend is the pristine production build, without
-staging benchmark injections. This migration changes hosting and operations,
-not the web/mobile application code or its public URL.
+The deployed and verified application release is
+`997d7175cd7c2b60ef98c2576b9b23358da0dce6`; its full `bun run check` gate passed.
+`LIVE_HLS_DIRECT_BASE=https://media.streamarena.xyz` is enabled. The web player
+uses the new direct media candidates, with Worker and app-tunnel fallbacks, while
+legacy transport fields retain their ordering for installed native apps. No
+native rebuild is required for this web rollout.
 
 All 12 accounts and 9 existing sessions were copied with SQLite verification,
 along with progress, lists, preferences and assets. Only title track preferences
@@ -31,10 +36,53 @@ were retained from the resolver cache; host-bound playback URLs and provider
 health were regenerated. Frozen migration snapshots remain on the Mini and
 in the private migration backup. Daily Oracle backups retain 14 days.
 
-Verified through HTTPS: existing login, 3832×1600 movie playback, movie provider
-switch to CineJoy, native 1080p Sky Sports, and 3840×2160 TV playback. A fresh
-40-minute seek took 457 ms with the Mini backend and forwarder both stopped.
+The initial migration verified through HTTPS: existing login, 3832×1600 movie
+playback, movie provider switch to CineJoy, native 1080p Sky Sports, and 3840×2160
+TV playback. A fresh 40-minute seek took 457 ms with the Mini backend and
+forwarder both stopped.
 These are observed samples, not a guaranteed latency for every provider.
+
+Direct endpoint checks now pass with a signed public HLS fixture: valid app
+Origin and no-Origin requests return 200; altered expiry, absent signature and
+bogus private-session binding return 401; foreign Origin returns 403; other API
+paths return 404; HEAD on media routes returns 405. App CORS grants only the
+allowed origin, and a no-Origin request receives no CORS grant. Three warmed
+master-playlist requests from Oracle had median TTFB of 41.5 ms direct, 74.3 ms
+through the app tunnel and 128.1 ms through the Worker. These are bounded
+Oracle-side fixture measurements, not browser startup or playback benchmarks.
+
+Direct browser verification used the actual published player in disposable
+same-origin Help documents, with browser storage isolated and progress writes
+blocked. Movie/TV requests pinned the existing provider and disabled provider
+health recording. This proves playback and failover in the deployed player; it
+does not measure ordinary navigation or startup time.
+
+- **Interstellar / Miami:** direct HTTP/3 delivery, 3832×1600 decoded frames and
+  advancing playback. A forward seek to 120 seconds recovered in 1,630 ms. The
+  earlier Worker seek sample was 913 ms; these separate cold observations do
+  not establish a seek-speed improvement or a general performance ranking.
+- **Movie transport failover:** blocking the direct host during a seek to 600
+  seconds recovered through the Worker in 814.8 ms. Blocking both direct and
+  Worker hosts during a seek to 1,200 seconds recovered through the app tunnel
+  in 1,789.1 ms. Both resumed the same Miami source at 3832×1600 with decoded
+  frames and advancing time. Only one resolve occurred across the movie test;
+  recovery did not switch providers or repeat resolution.
+- **Game of Thrones S1E2 / CineJoy Nebula:** direct HTTP/3, 1920×1080 decoded
+  frames and advancing time; a seek to 900 seconds recovered in 410.4 ms.
+- **Sky Sports Main Event / CDNLiveTV:** direct HTTP/3 delivery with 1920×1080
+  decoded frames and advancing playback (1,953 frames at 61.35 seconds). Blocking
+  the direct host recovered through the Worker over HTTP/3 at 1920×1080, with
+  the video playing and ready state 4. Blocking both direct and Worker hosts
+  then recovered through `streamarena.xyz` over HTTP/3 at 1920×1080, again
+  playing at ready state 4; frames advanced from 1,184 to 3,452 and playback
+  time from 63.89 to 109.41 seconds. Both recoveries retained the single pinned CDNLiveTV source;
+  there were no alternative providers. Recovery latency and uninterrupted
+  playback were not established by these checks.
+
+These are individual observed samples, not repeated, controlled performance
+benchmarks. The current direct test did not repeat private account-bound stream
+playback or an explicit provider switch; keep the previous migration's provider
+switch evidence and signed private-session rejection checks distinct.
 
 ## Layout
 
@@ -189,6 +237,15 @@ the existing `LIVE_HLS_RESOURCE_WORKER_BASE` value so the Worker remains a
 transport fallback. To roll back, remove or empty `LIVE_HLS_DIRECT_BASE` and
 restart the app; do not point the direct-base setting at the Worker. This restores
 the previous delivery path without changing the main domain or its tunnel.
+
+For a complete endpoint rollback, first disable direct candidates and verify new
+playback uses the Worker/app fallback. Then remove only the media vhost import,
+validate and reload Caddy, remove the media DNS record and the matching TCP/UDP
+443 ingress rules from OCI and the guest firewall, and persist the guest rules.
+Use the saved pre-rollout configuration to identify those exact additions;
+preserve the app tunnel, SSH, InstanceServices and unrelated services. Removing
+the endpoint can interrupt already-open direct streams, so app-only rollback is
+the first recovery step.
 
 ## Subsequent releases
 
