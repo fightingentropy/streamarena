@@ -3,7 +3,7 @@
 # (TCP and UDP), with TLS-ALPN-01 certificates and no port 80 redirect/challenge.
 # Keep the existing loopback :5180 tunnel site unchanged.
 media.streamarena.xyz {
-	bind 0.0.0.0
+	bind tcp4/0.0.0.0
 	tls {
 		issuer acme {
 			disable_http_challenge
