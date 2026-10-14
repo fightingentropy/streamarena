@@ -54,6 +54,7 @@ use crate::utils::{
 mod aether;
 mod benchmark;
 mod cinejoy;
+mod cinejoy_worker;
 mod external_embed;
 mod hls_quality;
 mod miami;
@@ -5007,7 +5008,7 @@ async fn resolve_external_embed_hls_playback_source(
     let resolve_timeout_ms = timeout_ms.clamp(1_000, 120_000);
     let mut command = Command::new("node");
     command
-        .arg(script_path)
+        .arg(&script_path)
         .arg(embed_url.as_str())
         .env(
             EXTERNAL_EMBED_HLS_RESOLVE_TIMEOUT_MS_ENV,
@@ -5023,13 +5024,22 @@ async fn resolve_external_embed_hls_playback_source(
     timeout(
         Duration::from_millis(resolve_timeout_ms.saturating_add(1_000)),
         async {
-            let output = command.output().await.ok()?;
-            if !output.status.success() {
-                return None;
-            }
-
             let resolver_output =
-                serde_json::from_slice::<ExternalEmbedHlsResolverOutput>(&output.stdout).ok()?;
+                if source.provider.id == "cinejoy" && cinejoy_worker::enabled(&script_path) {
+                    cinejoy_worker::resolve(
+                        &script_path,
+                        embed_url.as_str(),
+                        source.server.map(|server| server.id).unwrap_or("LISBON"),
+                        resolve_timeout_ms,
+                    )
+                    .await?
+                } else {
+                    let output = command.output().await.ok()?;
+                    if !output.status.success() {
+                        return None;
+                    }
+                    serde_json::from_slice::<ExternalEmbedHlsResolverOutput>(&output.stdout).ok()?
+                };
             let playback_url = Url::parse(resolver_output.playback_url.trim()).ok()?;
             if source.provider.id == "cinejoy" {
                 return cinejoy::validate(

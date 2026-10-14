@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { getCachedPreferences, getSources, type ResolvedSource, type SourceSummary } from "@/lib/streamarena";
 import { buildOfflineResolved, getReadyOfflineRecord } from "@/store/offline";
 import { progressIdentity } from "./identity";
-import { type LivePlayRequest, type LiveSourceOption, resolveLiveSourceUrl } from "./live";
+import { type LivePlayRequest, type LiveSourceOption, resolveLiveSourceUrls } from "./live";
 import {
   LIVE_HEALTHY_PLAYBACK_SECONDS,
   shouldRefreshSingleLiveSource,
@@ -28,8 +28,24 @@ export function clearSeek(fn: (seconds: number) => void) {
 
 // One in-flight resolve at a time; opening a new request aborts the previous.
 let resolveAbort: AbortController | null = null;
-// Give up the in-place fallback walk after this many failed sources per resolved source.
-const MAX_ERRORS = 3;
+let playbackSequence = 0;
+let healthyPlaybackSeconds = 0;
+let healthProgressPosition: number | null = null;
+let pendingSeekSample: number | null = null;
+let pendingSeekStartedAt = 0;
+const SEEK_CONFIRMATION_TIMEOUT_MS = 10_000;
+// Native engines may land at a neighboring keyframe. Require nearby natural
+// advancement, not exact timestamp equality, before accepting such a landing.
+const SEEK_LANDING_WINDOW_SECONDS = 30;
+function beginSeekConfirmation() {
+  pendingSeekSample = null;
+  pendingSeekStartedAt = Date.now();
+}
+function activateSource(source: VideoSource): VideoSource {
+  healthyPlaybackSeconds = 0;
+  healthProgressPosition = null;
+  return { ...source, playbackId: ++playbackSequence };
+}
 // Genuine playback past this many seconds clears the accumulated error budget.
 const HEALTHY_PLAYBACK_SECONDS = 30;
 // Live drops happen fast and a working feed proves itself in seconds, so a shorter
@@ -107,6 +123,8 @@ type PlayerState = {
   scope: string | null;
   resolved: ResolvedSource | null;
   source: VideoSource | null;
+  // Consumed once for the current resolve, before refresh/provider recovery.
+  fallbackSources: VideoSource[];
   paused: boolean;
   position: number;
   duration: number;
@@ -119,6 +137,8 @@ type PlayerState = {
   // value belongs to so a late onLoad can't apply it to a different target.
   resumeSeconds: number;
   resumeApplied: boolean;
+  // Issuing a native seek does not mean it finished; early progress can still be 0.
+  pendingSeekSeconds: number | null;
   resumeFor: PlayRequest | null;
   loaded: boolean;
   selectedSubtitle: number | null;
@@ -144,11 +164,11 @@ type PlayerState = {
   reopenWith: (opts: { audioStreamIndex?: number; sourceHash?: string }) => void;
   retry: () => void;
   setSubtitle: (index: number | null) => void;
-  onLoad: (duration: number) => void;
-  setProgress: (position: number, duration: number) => void;
-  onBuffer: (buffering: boolean) => void;
-  onEnd: (info?: { fraction?: number }) => void;
-  onError: (message?: string) => void;
+  onLoad: (duration: number, source?: VideoSource) => void;
+  setProgress: (position: number, duration: number, source?: VideoSource) => void;
+  onBuffer: (buffering: boolean, source?: VideoSource) => void;
+  onEnd: (info?: { fraction?: number }, source?: VideoSource) => void;
+  onError: (message?: string, source?: VideoSource) => void;
   onStall: () => void;
   play: () => void;
   pause: () => void;
@@ -158,6 +178,12 @@ type PlayerState = {
   setVolume: (v: number) => void;
   close: () => void;
 };
+
+function recoveryPosition(state: PlayerState): number {
+  if (state.pendingSeekSeconds != null) return state.pendingSeekSeconds;
+  return !state.live && state.resumeFor === state.request && !state.resumeApplied
+    ? state.resumeSeconds : state.position;
+}
 
 // Resolve a request, route it, and prime reporting. Shared by open(), the re-resolve
 // recovery path, and track switching. Bails quietly if superseded/aborted.
@@ -187,7 +213,8 @@ async function runResolve(
     set({
       status: "loading",
       resolved,
-      source,
+      source: activateSource(source),
+      fallbackSources: buildFallbackCandidates(resolved, extra.audioStreamIndex ?? resolved.selectedAudioStreamIndex),
       buffering: true,
       selectedSubtitle: findSelectedTextTrackIndex(resolved),
       selectedAudioStreamIndex: extra.audioStreamIndex ?? resolved.selectedAudioStreamIndex,
@@ -203,13 +230,38 @@ async function runResolve(
 }
 
 export const usePlayerStore = create<PlayerState>((set, get) => {
+  function tryTransportFallback(): boolean {
+    const s = get();
+    const [source, ...remaining] = s.fallbackSources;
+    if (!source) return false;
+    set({
+      source: activateSource(source),
+      fallbackSources: remaining,
+      status: "loading",
+      buffering: true,
+      error: null,
+      loaded: false,
+      resumeApplied: false,
+      pendingSeekSeconds: null,
+      resumeSeconds: s.live ? 0 : recoveryPosition(s),
+      resumeFor: s.request,
+    });
+    armStallTimer();
+    return true;
+  }
+
   // Resolve a live source option to a concrete HLS URL and load it; bails if superseded.
   // On resolve failure, walks to the next source (bounded, one pass over the list).
   async function loadLiveSource(opt: LiveSourceOption, ac: AbortController) {
     try {
-      const uri = await resolveLiveSourceUrl(opt, ac.signal);
+      const [uri, ...fallbacks] = await resolveLiveSourceUrls(opt, ac.signal);
       if (ac.signal.aborted) return;
-      set({ status: "loading", source: { uri, isHls: true }, buffering: true, error: null, selectedLiveSourceId: opt.id });
+      set({
+        status: "loading", source: activateSource({ uri, isHls: true }),
+        fallbackSources: fallbacks.map((url) => ({ uri: url, isHls: true })),
+        buffering: true, error: null, selectedLiveSourceId: opt.id,
+      });
+      armStallTimer();
     } catch (e) {
       if (ac.signal.aborted) return;
       set({ selectedLiveSourceId: opt.id });
@@ -220,6 +272,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
   // Advance to the next live source after a resolve/playback failure, or surface the error
   // once every source has been tried once (bounded by the source count — no infinite loop).
   function failLiveSource(message?: string) {
+    if (tryTransportFallback()) return;
     const {
       liveSources,
       selectedLiveSourceId,
@@ -249,6 +302,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         buffering: true,
         error: null,
         source: null,
+        fallbackSources: [],
         position: 0,
         duration: 0,
         loaded: false,
@@ -263,7 +317,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       resolveAbort?.abort();
       const ac = new AbortController();
       resolveAbort = ac;
-      set({ errorCount: attempt, status: "resolving", buffering: true, error: null, selectedLiveSourceId: next.id });
+      set({
+        errorCount: attempt, status: "resolving", buffering: true, error: null,
+        source: null, fallbackSources: [], loaded: false, selectedLiveSourceId: next.id,
+      });
       void loadLiveSource(next, ac);
     } else {
       set({ status: "error", error: message || "No working stream found for this channel.", buffering: false });
@@ -286,10 +343,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     }
     const fits = target > 5 && (s.duration <= 0 || target < s.duration - 10);
     if (fits) {
+      lastProgressSample = null;
+      healthProgressPosition = null;
+      beginSeekConfirmation();
       seekImpl?.(target);
-      set({ position: target, resumeApplied: true });
+      set({ position: target, resumeApplied: true, pendingSeekSeconds: target });
     } else {
-      set({ resumeApplied: true });
+      set({ resumeApplied: true, pendingSeekSeconds: null });
     }
   }
 
@@ -298,7 +358,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
   // error path: a dead/blocked/stego default server is skipped until one actually plays.
   // Bounded by triedHashes (each server tried at most once) so it can't loop.
   async function advanceToNextServer(message?: string) {
-    const { request, scope, position, sources, triedHashes, selectedSourceHash } = get();
+    const { request, scope, sources, triedHashes, selectedSourceHash } = get();
+    const position = recoveryPosition(get());
     if (!request) {
       set({ status: "error", error: message || "Playback error", buffering: false });
       return;
@@ -344,8 +405,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         reresolved: false,
         resolved: null,
         source: null,
+        fallbackSources: [],
         loaded: false,
         resumeApplied: false,
+        pendingSeekSeconds: null,
         resumeSeconds: position,
         resumeFor: request,
         selectedSubtitle: null,
@@ -362,6 +425,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     scope: null,
     resolved: null,
     source: null,
+    fallbackSources: [],
     paused: false,
     position: 0,
     duration: 0,
@@ -371,6 +435,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     reresolved: false,
     resumeSeconds: 0,
     resumeApplied: false,
+    pendingSeekSeconds: null,
     resumeFor: null,
     loaded: false,
     selectedSubtitle: null,
@@ -394,6 +459,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         scope,
         resolved: null,
         source: null,
+        fallbackSources: [],
         error: null,
         errorCount: 0,
         reresolved: false,
@@ -403,6 +469,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         buffering: true,
         resumeSeconds: 0,
         resumeApplied: false,
+        pendingSeekSeconds: null,
         resumeFor: null,
         loaded: false,
         selectedSubtitle: null,
@@ -440,7 +507,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         set({
           status: "loading",
           resolved,
-          source: { uri: offline.videoPath, isHls: false },
+          source: activateSource({ uri: offline.videoPath, isHls: false }),
           buffering: true,
           selectedAudioStreamIndex: offline.meta.audioStreamIndex,
           selectedSourceHash: resolved.sourceHash,
@@ -455,7 +522,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     // current position (re-seeks once the new source loads). Drops the subtitle choice —
     // the new source's track list may differ, so a stale index could show the wrong one.
     reopenWith(opts) {
-      const { request, scope, position, selectedAudioStreamIndex, selectedSourceHash } = get();
+      const { request, scope, selectedAudioStreamIndex, selectedSourceHash } = get();
+      const position = recoveryPosition(get());
       if (!request) return;
       resolveAbort?.abort();
       const ac = new AbortController();
@@ -471,8 +539,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         reresolved: false,
         resolved: null,
         source: null,
+        fallbackSources: [],
         loaded: false,
         resumeApplied: false,
+        pendingSeekSeconds: null,
         resumeSeconds: position,
         resumeFor: request,
         selectedSubtitle: null,
@@ -490,6 +560,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       const ac = new AbortController();
       resolveAbort = ac;
       stopReporting();
+      clearStallTimer();
       const initial = req.sources.find((s) => s.id === req.initialSourceId) ?? req.sources[0];
       set({
         status: "resolving",
@@ -497,6 +568,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         scope: null,
         resolved: null,
         source: null,
+        fallbackSources: [],
         error: null,
         errorCount: 0,
         reresolved: false,
@@ -506,6 +578,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         buffering: true,
         resumeSeconds: 0,
         resumeApplied: false,
+        pendingSeekSeconds: null,
         resumeFor: null,
         loaded: false,
         selectedSubtitle: null,
@@ -529,14 +602,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       resolveAbort?.abort();
       const ac = new AbortController();
       resolveAbort = ac;
+      clearStallTimer();
       set({
         status: "resolving",
         buffering: true,
         error: null,
         errorCount: 0,
         reresolved: false,
-        paused: false,
         source: null,
+        fallbackSources: [],
         position: 0,
         duration: 0,
         loaded: false,
@@ -560,7 +634,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       set({ selectedSubtitle: index });
     },
 
-    onLoad(duration) {
+    onLoad(duration, source) {
+      if (source && source !== get().source) return;
       if (get().status === "idle" || (!get().request && !get().live)) return;
       set({
         duration: Number.isFinite(duration) && duration > 0 ? duration : get().duration,
@@ -572,20 +647,36 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       // (blocked CDN, or stego segments AVPlayer can't demux) still fires onLoad, then sits
       // at 0:00. So DON'T clear the watchdog here — leave the loading-armed window running so
       // the full ~15s startup budget applies; only real position advancement (setProgress)
-      // clears it. Live keeps its own failLiveSource recovery.
-      if (get().live) clearStallTimer();
+      // clears it. Live needs the same proof before disarming its startup deadline.
       maybeApplyResume();
     },
 
-    setProgress(position, duration) {
+    setProgress(position, duration, source) {
+      if (source && source !== get().source) return;
       if (get().status === "idle" || (!get().request && !get().live)) return;
-      const next: Partial<PlayerState> = { position };
+      const pendingSeek = get().pendingSeekSeconds;
+      const seekDelta = pendingSeekSample == null ? 0 : position - pendingSeekSample;
+      const nearTarget = pendingSeek != null && Math.abs(position - pendingSeek) <= SEEK_LANDING_WINDOW_SECONDS;
+      const seekConfirmed = pendingSeek == null || Math.abs(position - pendingSeek) <= 2 || (
+        nearTarget && pendingSeekSample != null &&
+        Math.abs(pendingSeekSample - pendingSeek) <= SEEK_LANDING_WINDOW_SECONDS && seekDelta > 0 && seekDelta <= 5
+      );
+      pendingSeekSample = pendingSeek == null || seekConfirmed ? null : position;
+      if (!seekConfirmed && !get().paused && Date.now() - pendingSeekStartedAt >= SEEK_CONFIRMATION_TIMEOUT_MS) {
+        get().onError("Playback did not reach the requested position.", source);
+        return;
+      }
+      const next: Partial<PlayerState> = {
+        position: seekConfirmed ? position : pendingSeek,
+        ...(seekConfirmed ? { pendingSeekSeconds: null } : {}),
+      };
       // Real advancement (position climbing past the previous sample) proves the source
       // actually plays — disarm the stall watchdog. A source frozen at 0:00 never advances,
       // so the watchdog survives to fire. The first sample only sets the baseline, which
       // makes this robust to a resume-seek jumping the position before playback begins.
-      if (!get().live) {
-        if (lastProgressSample != null && position > lastProgressSample + 0.3) {
+      {
+        const advanced = lastProgressSample == null ? 0 : position - lastProgressSample;
+        if (seekConfirmed && !get().paused && advanced > 0.3 && advanced <= 5) {
           clearStallTimer();
           // VLC can resume after an adaptive quality switch without another playing
           // event. Advancing playback also clears that stale buffering indicator.
@@ -594,7 +685,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
             next.status = "playing";
           }
         }
-        lastProgressSample = position;
+        lastProgressSample = seekConfirmed ? position : null;
       }
       if (Number.isFinite(duration) && duration > 0) next.duration = duration;
       // Sustained playback means the current source genuinely works — clear the error
@@ -602,16 +693,20 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       // between two flaky-but-loadable candidates). Live uses a shorter window so a
       // proven feed isn't declared dead over an early blip.
       const healthySeconds = get().live ? LIVE_HEALTHY_PLAYBACK_SECONDS : HEALTHY_PLAYBACK_SECONDS;
-      if (position > healthySeconds && (get().errorCount > 0 || get().reresolved)) {
+      const healthDelta = healthProgressPosition == null ? 0 : position - healthProgressPosition;
+      if (seekConfirmed && get().loaded && !get().paused && healthDelta > 0 && healthDelta <= 5) healthyPlaybackSeconds += healthDelta;
+      healthProgressPosition = seekConfirmed ? position : null;
+      if (healthyPlaybackSeconds > healthySeconds && (get().errorCount > 0 || get().reresolved)) {
         next.errorCount = 0;
         next.reresolved = false;
       }
       set(next);
       // Live playback has no resume/Continue-Watching, so it never reports progress.
-      if (!get().live) reportProgress(position, next.duration ?? get().duration);
+      if (!get().live && seekConfirmed) reportProgress(position, next.duration ?? get().duration);
     },
 
-    onBuffer(buffering) {
+    onBuffer(buffering, source) {
+      if (source && source !== get().source) return;
       // Buffering while the stall watchdog is armed (VOD startup) is the "still loading"
       // signal that lets onStall grant an extension instead of walking a slow-but-working
       // source. Sticky for the window so a single transition still counts.
@@ -619,7 +714,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       set({ buffering });
     },
 
-    onEnd(info) {
+    onEnd(info, source) {
+      if (source && source !== get().source) return;
       if (get().status === "idle") return;
       // A live stream "ending" means the feed dropped — walk to the next source.
       if (get().live) {
@@ -648,7 +744,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       }
     },
 
-    onError(message) {
+    onError(message, source) {
+      if (source && source !== get().source) return;
       if (get().status === "idle" || (!get().request && !get().live)) return;
       clearStallTimer();
       // Live: walk the source list (no TMDB re-resolve / VOD fallback candidates).
@@ -656,27 +753,25 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         failLiveSource(message);
         return;
       }
-      const { resolved, errorCount, request, scope, reresolved } = get();
+      const { resolved, request, scope, reresolved, selectedAudioStreamIndex, selectedSourceHash } = get();
+      const position = recoveryPosition(get());
+      // A transport failure doesn't prove that the provider is unhealthy.
+      if (tryTransportFallback()) return;
       reportPlaybackError(message);
-      const attempt = errorCount + 1;
-
-      // 1) Walk the in-place fallback candidates for the current resolved source.
-      if (resolved && attempt <= MAX_ERRORS) {
-        const candidates = buildFallbackCandidates(resolved);
-        if (attempt <= candidates.length) {
-          set({ errorCount: attempt, status: "loading", buffering: true, error: null, source: candidates[attempt - 1] });
-          armStallTimer();
-          return;
-        }
-      }
 
       // 2) One fresh re-resolve (its own candidates get a new error budget).
       if (request && resolved && !reresolved) {
         resolveAbort?.abort();
         const ac = new AbortController();
         resolveAbort = ac;
-        set({ reresolved: true, errorCount: 0, status: "resolving", buffering: true, error: null });
-        void runResolve(request, scope, { refresh: true }, ac, set);
+        set({
+          reresolved: true, errorCount: 0, status: "resolving", buffering: true, error: null,
+          source: null, fallbackSources: [], loaded: false, resumeApplied: false, pendingSeekSeconds: null,
+          resumeSeconds: position, resumeFor: request,
+        });
+        void runResolve(request, scope, {
+          refresh: true, sourceHash: selectedSourceHash, audioStreamIndex: selectedAudioStreamIndex,
+        }, ac, set);
         return;
       }
 
@@ -685,18 +780,21 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
       void advanceToNextServer(message);
     },
 
-    // Stall watchdog fired: a VOD source produced no playback within STALL_FALLBACK_MS.
-    // Skip straight to the next server — a hung source rarely recovers via its own
-    // fallbackUrls (they share the same dead upstream). Guarded so a late timer can't
-    // act after playback actually began, or during live.
+    // Try the remaining delivery routes when a source never produces playback,
+    // then recover the provider. A blackholed direct host need not emit onError.
     onStall() {
       const s = get();
       // Fire only while genuinely stuck: VOD, a request is live, and the user hasn't paused
       // or stopped. Crucially do NOT skip on loaded/"playing" — onLoad flips status to
       // "playing" before a single frame plays, and that frozen-at-0:00 case is exactly what
       // we must escape. The timer only survives to here when no real progress happened.
-      if (s.live || !s.request || s.paused) return;
+      if ((!s.live && !s.request) || s.paused) return;
       if (s.status === "idle" || s.status === "ended" || s.status === "error") return;
+      if (s.live) {
+        clearStallTimer();
+        failLiveSource("The live stream didn't start.");
+        return;
+      }
       // Showed buffering activity and budget remains? It's a slow start, not a hung source —
       // extend instead of walking, so a cold transcode spinning up to a deep resume offset
       // isn't abandoned. A frozen source that never buffered (or has run out of extensions)
@@ -707,14 +805,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         return;
       }
       clearStallTimer();
+      if (tryTransportFallback()) return;
       reportPlaybackError("Source stalled before playback.");
       void advanceToNextServer("This title's servers aren't responding right now.");
     },
 
     play() {
       set({ paused: false, status: "playing" });
+      if (get().pendingSeekSeconds != null) beginSeekConfirmation();
+      if (get().source && (healthyPlaybackSeconds === 0 || get().pendingSeekSeconds != null)) armStallTimer();
     },
     pause() {
+      clearStallTimer();
       if (!get().live) reportNow(get().position, get().duration);
       set({ paused: true, status: "paused" });
     },
@@ -726,8 +828,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     seekTo(seconds) {
       const duration = get().duration;
       const clamped = Math.max(0, duration > 0 ? Math.min(seconds, duration) : seconds);
+      lastProgressSample = null;
+      healthProgressPosition = null;
+      beginSeekConfirmation();
       seekImpl?.(clamped);
-      set({ position: clamped });
+      set({
+        position: clamped,
+        pendingSeekSeconds: get().live ? null : clamped,
+        ...(!get().live && !get().loaded ? {
+          resumeSeconds: clamped, resumeFor: get().request, resumeApplied: false,
+        } : {}),
+      });
+      if (get().source && !get().paused) armStallTimer();
     },
     seekBy(delta) {
       get().seekTo(get().position + delta);
@@ -748,6 +860,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         scope: null,
         resolved: null,
         source: null,
+        fallbackSources: [],
         paused: false,
         position: 0,
         duration: 0,
@@ -757,6 +870,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         reresolved: false,
         resumeSeconds: 0,
         resumeApplied: false,
+        pendingSeekSeconds: null,
         resumeFor: null,
         loaded: false,
         selectedSubtitle: null,

@@ -2,6 +2,7 @@ import { toAbsoluteApiUrl } from "@/lib/config";
 import { buildHlsMasterUrl, type ResolvedSource } from "@/lib/streamarena";
 import { getStripProxyPort, stripProxyMasterUrl } from "./strip-proxy";
 import type { VideoSource } from "./types";
+import { mediaDeliveryUrls } from "./media-delivery";
 
 // The signed `/api/live/hls.m3u8` URL carries the source's referer (`&referer=`), empty
 // for most embeds. Forward it to the proxy so its CDN fetches send the same Referer the
@@ -43,7 +44,7 @@ function isLiveProxyEmbed(url: string): boolean {
 //     server-muxed by `&audioStream=`) → remux via /api/hls/master.m3u8.
 // `audioStreamIndex` is the stream the caller wants baked in; only >=0 forces the proxy.
 export function decideSource(resolved: ResolvedSource, audioStreamIndex?: number): VideoSource {
-  const url = resolved.playableUrl || "";
+  const url = mediaDeliveryUrls(resolved.playableUrl, [], resolved.directMediaUrls)[0] || "";
   const wantsServerAudio = typeof audioStreamIndex === "number" && audioStreamIndex >= 0;
 
   if (isLiveProxyEmbed(url)) {

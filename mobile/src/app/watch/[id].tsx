@@ -171,18 +171,20 @@ export default function WatchScreen() {
         {source ? (
           source.engine === "vlc" ? (
             <VlcVideo
+              key={source.playbackId}
               ref={videoRef as RefObject<VlcVideoRef>}
               uri={source.uri}
               paused={paused}
               volume={volume}
-              onLoad={(dur) => usePlayerStore.getState().onLoad(dur)}
-              onProgress={(cur, dur) => usePlayerStore.getState().setProgress(cur, dur)}
-              onBuffer={(b) => usePlayerStore.getState().onBuffer(b)}
-              onEnd={(info) => usePlayerStore.getState().onEnd(info)}
-              onError={(msg) => usePlayerStore.getState().onError(msg)}
+              onLoad={(dur) => usePlayerStore.getState().onLoad(dur, source)}
+              onProgress={(cur, dur) => usePlayerStore.getState().setProgress(cur, dur, source)}
+              onBuffer={(b) => usePlayerStore.getState().onBuffer(b, source)}
+              onEnd={(info) => usePlayerStore.getState().onEnd(info, source)}
+              onError={(msg) => usePlayerStore.getState().onError(msg, source)}
             />
           ) : (
             <Video
+              key={source.playbackId}
               ref={videoRef as RefObject<VideoRef>}
               source={nativeVideoSource}
               style={StyleSheet.absoluteFill}
@@ -204,14 +206,14 @@ export default function WatchScreen() {
                   ? { type: SelectedTrackType.DISABLED }
                   : { type: SelectedTrackType.INDEX, value: selectedSubtitle }
               }
-              onLoad={(d: OnLoadData) => usePlayerStore.getState().onLoad(d.duration)}
+              onLoad={(d: OnLoadData) => usePlayerStore.getState().onLoad(d.duration, source)}
               onProgress={(p: OnProgressData) =>
-                usePlayerStore.getState().setProgress(p.currentTime, p.seekableDuration || p.playableDuration || 0)
+                usePlayerStore.getState().setProgress(p.currentTime, p.seekableDuration || p.playableDuration || 0, source)
               }
-              onBuffer={(b: OnBufferData) => usePlayerStore.getState().onBuffer(b.isBuffering)}
-              onEnd={() => usePlayerStore.getState().onEnd()}
+              onBuffer={(b: OnBufferData) => usePlayerStore.getState().onBuffer(b.isBuffering, source)}
+              onEnd={() => usePlayerStore.getState().onEnd(undefined, source)}
               onError={(e: OnVideoErrorData) =>
-                usePlayerStore.getState().onError(e?.error?.errorString || "This source couldn't be played.")
+                usePlayerStore.getState().onError(e?.error?.errorString || "This source couldn't be played.", source)
               }
             />
           )

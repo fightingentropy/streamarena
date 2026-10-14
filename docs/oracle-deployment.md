@@ -23,12 +23,13 @@ InstanceServices rules are preserved. Port 80 and the backend's loopback ports
 remain closed to public ingress. This endpoint exposes signed media routes, not
 the full application.
 
-The deployed and verified application release is
+The initial direct-delivery application release was
 `997d7175cd7c2b60ef98c2576b9b23358da0dce6`; its full `bun run check` gate passed.
 `LIVE_HLS_DIRECT_BASE=https://media.streamarena.xyz` is enabled. The web player
 uses the new direct media candidates, with Worker and app-tunnel fallbacks, while
-legacy transport fields retain their ordering for installed native apps. No
-native rebuild is required for this web rollout.
+legacy transport fields retain their ordering for older native apps. Native
+build 14 adds direct routing and requires a signed app update. For the currently
+running release, inspect `/opt/streamarena/current/.release-commit`.
 
 All 12 accounts and 9 existing sessions were copied with SQLite verification,
 along with progress, lists, preferences and assets. Only title track preferences
@@ -216,13 +217,22 @@ No credentialed CORS is enabled. Keep the existing Worker as a transport fallbac
 Verify decoded browser playback, seeking, provider switching and private-stream
 routing before treating the direct route as ready.
 
-This rollout opts the **web player** into direct delivery. The backend exposes
-the new candidates in an additive `directMediaUrls` array, which the web player
-prepends to its delivery queue. Existing `playableUrl`, `fallbackUrls` and live
-transport fields keep their Worker-first ordering for installed native apps.
-Native routing therefore stays unchanged, and this web rollout needs no native
-rebuild. The endpoint's acceptance of no-Origin requests does not itself opt
-native playback into the direct route.
+The backend exposes direct candidates in an additive `directMediaUrls` array.
+The web player and native iOS build 14 prepend validated public candidates to
+their delivery queues, falling back to the Worker and app routes. Existing
+`playableUrl`, `fallbackUrls` and live transport fields retain their ordering so
+older installed native builds continue to work; those builds need an update to
+use direct delivery. Private sessions retain the authenticated app route.
+The native VLC relay preserves distinct transport URLs, pause state and pending
+seek position during recovery. No cookies are sent to public media hosts.
+
+CineJoy discovery reuses up to two private Node/Chromium workers with fresh
+browser contexts per request. Only public fingerprinted JS/CSS is cached;
+API/session data and signed media URLs are not shared between contexts. Workers
+retire after 15 minutes idle, 100 jobs or one hour. Set `CINEJOY_WARM_RESOLVER=0`
+and restart only StreamArena to restore one-shot discovery. See
+[the measured comparison](cinejoy-resolver-benchmark-2026-10-14.md) for timing
+and lifecycle evidence; this improves warm discovery, not first-cold startup.
 
 Before installation, save the live Caddy and firewall configuration, validate the
 combined file with `caddy validate`, and confirm the approved OCI ingress rules.

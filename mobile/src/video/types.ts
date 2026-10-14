@@ -21,6 +21,8 @@ export type VideoSource = {
   uri: string;
   isHls: boolean;
   engine?: "native" | "vlc";
+  // A new native player instance per load, including a refresh with the same URL.
+  playbackId?: number;
 };
 
 // High-level player phase for the UI. Transport (paused/buffering) is tracked

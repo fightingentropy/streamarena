@@ -314,6 +314,7 @@ export type SubtitleTrack = {
 export type ResolvedSource = {
   playableUrl: string;
   fallbackUrls?: string[];
+  directMediaUrls?: string[];
   filename?: string;
   sourceHash: string;
   selectedFile?: string;

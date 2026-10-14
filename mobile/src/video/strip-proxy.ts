@@ -29,6 +29,7 @@ let starting: Promise<number> | null = null;
 const segTable = new Map<number, { url: string; ref: string }>();
 const segIndex = new Map<string, number>();
 let segSeq = 0;
+let sessionGeneration = 0;
 function segId(url: string, ref: string): number {
   const key = `${ref}\n${url}`;
   let id = segIndex.get(key);
@@ -64,14 +65,18 @@ function segCachePut(id: number, bytes: Uint8Array): void {
   }
 }
 
-// Drop all per-session segment state. Called when a new master is built (a new title starts)
-// so the id table can't grow unbounded across a long session, and a new title's ids can't
-// collide with the previous title's cached bytes.
+// Reset only when a new resolve is accepted, never while planning fallback URLs.
+// IDs remain monotonic: a late request from an old player must fail, not fetch a
+// different title through a recycled /m?mid=0 or cached /s?id=1.
 function resetSegState(): void {
+  sessionGeneration += 1;
   segTable.clear();
   segIndex.clear();
   segCache.clear();
-  segSeq = 0;
+}
+
+export function beginStripProxySession(): void {
+  resetSegState();
 }
 
 /** The running proxy port, or null if it hasn't started yet (callers fall back). */
@@ -97,9 +102,6 @@ export function ensureStripProxy(): Promise<number> {
 
 /** Build the master URL handed to the player: it hits the proxy, never the CDN. */
 export function stripProxyMasterUrl(port: number, masterAbsUrl: string, referer?: string): string {
-  // A new playback session starts here (decideSource calls this once before VLC issues any
-  // /m or /s request), so it's the safe point to drop the previous title's segment state.
-  resetSegState();
   return proxyUrl(port, "m", masterAbsUrl, referer || "");
 }
 
@@ -178,6 +180,7 @@ function handleConnection(socket: TcpSock): void {
 }
 
 async function serve(socket: TcpSock, path: string, range: string | null): Promise<void> {
+  const generation = sessionGeneration;
   let url: URL;
   try {
     url = new URL("http://127.0.0.1" + path);
@@ -201,6 +204,7 @@ async function serve(socket: TcpSock, path: string, range: string | null): Promi
   try {
     if (url.pathname === "/m") {
       const { text, baseUrl } = await resolveToMediaPlaylist(target, referer);
+      if (generation !== sessionGeneration) return sendText(socket, 410, "playback session ended");
       const playlist = rewritePlaylist(text, baseUrl, referer, serverPort as number);
       send(socket, 200, "OK", "application/vnd.apple.mpegurl", Buffer.from(playlist, "utf8"));
     } else if (url.pathname === "/s") {
@@ -210,6 +214,7 @@ async function serve(socket: TcpSock, path: string, range: string | null): Promi
       let clean = Number.isNaN(cacheId) ? undefined : segCacheGet(cacheId);
       if (clean === undefined) {
         clean = stripPngPrefix(await fetchBytes(target, referer));
+        if (generation !== sessionGeneration) return sendText(socket, 410, "playback session ended");
         if (!Number.isNaN(cacheId)) segCachePut(cacheId, clean);
       }
       const mp4 = clean.length >= 8 && ["ftyp", "styp", "moof", "sidx"].includes(
@@ -270,41 +275,53 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function fetchWithTimeout(u: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+class UpstreamHttpError extends Error {
+  constructor(readonly status: number, what: string) {
+    super(`${what} ${status}`);
+  }
+}
+
+async function fetchWithTimeout<T>(
+  u: string, init: RequestInit, timeoutMs: number, what: string, read: (res: Response) => Promise<T>,
+): Promise<T> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    return await fetch(u, { ...init, signal: ac.signal });
+    const res = await fetch(u, { ...init, signal: ac.signal });
+    if (!res.ok) throw new UpstreamHttpError(res.status, what);
+    // A stalled body must not keep this socket busy forever after headers arrive.
+    return await read(res);
   } finally {
     clearTimeout(timer);
   }
 }
 
 // Fetch with a per-attempt timeout and bounded retries on transient network/HTTP failures.
-async function fetchUpstream(u: string, referer: string, timeoutMs: number, what: string): Promise<Response> {
+async function fetchUpstream<T>(
+  u: string, referer: string, timeoutMs: number, what: string, read: (res: Response) => Promise<T>,
+): Promise<T> {
   let lastErr: unknown;
-  for (let attempt = 0; attempt < FETCH_ATTEMPTS; attempt++) {
+  // Relays already retry providers. Let the player try the independent delivery
+  // route promptly instead of retrying this same dead host three times.
+  const attempts = /\/api\/live\/(?:hls\.m3u8|hls-resource)(?:\?|$)/.test(u) ? 1 : FETCH_ATTEMPTS;
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      const res = await fetchWithTimeout(u, fetchInit(u, referer), timeoutMs);
-      if (res.ok) return res;
-      lastErr = new Error(`${what} ${res.status}`);
-      if (!RETRYABLE_STATUS.has(res.status)) throw lastErr;
+      return await fetchWithTimeout(u, fetchInit(u, referer), timeoutMs, what, read);
     } catch (e) {
+      if (e instanceof UpstreamHttpError && !RETRYABLE_STATUS.has(e.status)) throw e;
       lastErr = e; // network error or abort (timeout) — retryable
     }
-    if (attempt < FETCH_ATTEMPTS - 1) await delay(150 * (attempt + 1));
+    if (attempt < attempts - 1) await delay(150 * (attempt + 1));
   }
   throw lastErr instanceof Error ? lastErr : new Error(`${what} failed`);
 }
 
 async function fetchText(u: string, referer: string): Promise<string> {
-  const res = await fetchUpstream(u, referer, PLAYLIST_TIMEOUT_MS, "playlist");
-  return res.text();
+  return fetchUpstream(u, referer, PLAYLIST_TIMEOUT_MS, "playlist", (res) => res.text());
 }
 
 async function fetchBytes(u: string, referer: string): Promise<Uint8Array> {
-  const res = await fetchUpstream(u, referer, SEGMENT_TIMEOUT_MS, "segment");
-  return new Uint8Array(await res.arrayBuffer());
+  return fetchUpstream(u, referer, SEGMENT_TIMEOUT_MS, "segment", async (res) => new Uint8Array(await res.arrayBuffer()));
 }
 
 // --- playlist rewriting ---------------------------------------------------------------

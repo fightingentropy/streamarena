@@ -223,7 +223,10 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
     }
   };
 
-  const showSpinner = status === "resolving" || status === "loading" || (buffering && status !== "error");
+  // VLC can stay "buffering" after a paused seek until the user presses Play.
+  // Keep the transport controls available to resume instead of replacing them
+  // with the very spinner that needs playback to dismiss it.
+  const showSpinner = !paused && (status === "resolving" || status === "loading" || (buffering && status !== "error"));
 
   // Error overlay sits above everything and ignores auto-hide.
   if (status === "error") {

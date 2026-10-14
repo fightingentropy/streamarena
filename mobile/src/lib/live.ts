@@ -84,6 +84,8 @@ export function useSportMatches(sport: SportId, enabled = true) {
 // or an absolute HLS URL, ready to play. The signature already authorizes it.
 export type ResolvedLiveStream = {
   playbackUrl: string;
+  directMediaUrls?: string[];
+  transportFallbackUrls?: string[];
   playbackType: string;
   provider?: string;
   playerPage?: string;
@@ -113,6 +115,8 @@ export type TwitchStream = {
   playerPage: string;
   playbackType: string; // "hls"
   playbackUrl: string; // absolute usher.ttvnw.net signed HLS — play directly
+  directMediaUrls?: string[];
+  transportFallbackUrls?: string[];
   streamUrl: string;
 };
 

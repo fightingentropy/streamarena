@@ -27,6 +27,8 @@ function isRegularFile(path) {
 
 const missingFiles = [
   loaderPath,
+  ...["cinejoy-worker.mjs", "resolve-cinejoy-hls.mjs", "cinejoy-policy.mjs", "cinejoy-asset-cache.mjs"]
+    .map(name => resolve(runtimeDir, "lib", name)),
   ...resolverEntrypoints.map((name) => resolve(runtimeDir, name)),
 ].filter((path) => !isRegularFile(path));
 

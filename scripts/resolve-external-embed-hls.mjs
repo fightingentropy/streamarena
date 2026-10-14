@@ -535,6 +535,13 @@ async function resolveWithPlaywrightBrowser() {
   }
 }
 
+if (embedUrl === "--cinejoy-worker") {
+  const { serveCinejoyWorker } = await import("./lib/cinejoy-worker.mjs");
+  await serveCinejoyWorker();
+  // Only the worker protocol owns process lifetime in this mode.
+  await new Promise(() => {});
+}
+
 if (!isSupportedEmbedUrl(embedUrl)) {
   console.error(
     "Usage: resolve-external-embed-hls.mjs https://player.videasy.to/... | https://player.videasy.net/... | https://vidlink.pro/... | https://cinejoy.pk/watch/...",

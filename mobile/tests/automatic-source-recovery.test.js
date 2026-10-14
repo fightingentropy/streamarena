@@ -24,6 +24,7 @@ function playerStore(sources) {
         reportPlaybackError() {}, stopReporting() {}, beginReporting() {},
       };
       if (id === "./tracks") return { findSelectedTextTrackIndex: () => null };
+      if (id === "./refresh") return { buildFallbackCandidates: () => [] };
       if (id === "./resolve") return {
         async resolveAndRoute(_request, options) {
           requests.push(options.sourceHash);

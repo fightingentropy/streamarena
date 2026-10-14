@@ -1,6 +1,7 @@
 import { toAbsoluteApiUrl } from "@/lib/config";
 import type { LiveChannel } from "@/lib/live-channels";
 import { resolveSportStream, resolveTwitchStream, type SportMatch } from "@/lib/live";
+import { mediaDeliveryUrls } from "./media-delivery";
 
 // One playable option for a live target. Exactly one resolution strategy is set:
 //  • directUrl — a ready HLS URL (a direct channel, or an already-absolute playlist)
@@ -26,23 +27,28 @@ export type LivePlayRequest = {
   initialSourceId?: string;
 };
 
-// Resolve a single option to a concrete, absolute HLS URL ready for <Video>.
-export async function resolveLiveSourceUrl(opt: LiveSourceOption, signal?: AbortSignal): Promise<string> {
-  if (opt.directUrl) return toAbsoluteApiUrl(opt.directUrl);
+// Keep all delivery routes for this provider so an unreachable direct host can
+// fall back to the Worker/app before resolving another feed, even on one-source channels.
+export async function resolveLiveSourceUrls(opt: LiveSourceOption, signal?: AbortSignal): Promise<string[]> {
+  if (opt.directUrl) return [toAbsoluteApiUrl(opt.directUrl)];
   if (opt.twitch) {
     // A failed resolve throws in getJson (backend 502) before we'd see an empty body, so
     // collapse both the throw and the empty case into one friendly message. An aborted
     // request also lands here, but the caller (loadLiveSource) checks signal.aborted first.
     const r = await resolveTwitchStream(opt.twitch.channel, signal).catch(() => null);
     if (!r?.playbackUrl) throw new Error("This Twitch channel is offline or unavailable.");
-    return toAbsoluteApiUrl(r.playbackUrl);
+    return mediaDeliveryUrls(r.playbackUrl, r.transportFallbackUrls, r.directMediaUrls).map(toAbsoluteApiUrl);
   }
   if (opt.sports) {
     const r = await resolveSportStream(opt.sports.url, opt.sports.fallbackUrls, signal).catch(() => null);
     if (!r?.playbackUrl) throw new Error("Couldn't find a working stream for this channel.");
-    return toAbsoluteApiUrl(r.playbackUrl);
+    return mediaDeliveryUrls(r.playbackUrl, r.transportFallbackUrls, r.directMediaUrls).map(toAbsoluteApiUrl);
   }
   throw new Error("This stream isn't playable.");
+}
+
+export async function resolveLiveSourceUrl(opt: LiveSourceOption, signal?: AbortSignal): Promise<string> {
+  return (await resolveLiveSourceUrls(opt, signal))[0];
 }
 
 // Build a live request from a Live TV channel: direct channels play their streams as-is;
