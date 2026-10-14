@@ -322,7 +322,7 @@ export function createHlsPlaybackController({
       });
     };
     const confirmPlayable = () => {
-      if (isCurrent() && video.readyState >= 2 && !video.seeking) {
+      if (isCurrent() && !session.sourceUnavailable && video.readyState >= 2 && !video.seeking) {
         onSourcePlayable(absoluteSource);
       }
     };
@@ -608,7 +608,7 @@ export function createHlsPlaybackController({
             }
           });
           hls.on(HlsConstructor.Events.FRAG_BUFFERED, () => {
-            if (activeHlsController === hls) {
+            if (activeHlsController === hls && !sourceUnavailable) {
               // A buffered fragment is real, playable progress: the source works.
               // From here on, transient errors recover in place instead of tripping
               // the startup fast-fail that would switch providers, and each clean

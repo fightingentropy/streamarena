@@ -196,7 +196,7 @@ test("fatal HLS recovery retains the seek target until the replacement takes ove
     handlePlaybackErrorRecovery: async () => { recoveredAt = video.currentTime; return true; },
     reportCurrentTmdbPlaybackFailure() {},
   };
-  vm.runInNewContext(`${extract("const handleHlsPlaybackFailure = (message) => {", "    hlsPlaybackController.play({")}\nhandleHlsPlaybackFailure('decode failed');`, context);
+  vm.runInNewContext(`${extract("const handleHlsPlaybackFailure = (", "    hlsPlaybackController.play({")}\nhandleHlsPlaybackFailure('decode failed');`, context);
   await flush();
   assert.equal(recoveredAt, 900, "detaching MSE before recovery loses the seek target");
   assert.equal(video.paused, false);
@@ -213,7 +213,7 @@ test("an old health check cannot recover over a newer source selection", async (
     showResolverError() {},
   };
   vm.createContext(context);
-  vm.runInContext(extract("async function handlePlaybackErrorRecovery(message)", "function isSourceFallbackResolveError("), context);
+  vm.runInContext(extract("async function handlePlaybackErrorRecovery(", "function isSourceFallbackResolveError("), context);
   const recovery = context.handlePlaybackErrorRecovery("old decode error");
   context.tmdbPlaybackRequestToken++;
   health.resolve(true);
