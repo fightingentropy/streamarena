@@ -1,8 +1,9 @@
 # Miami first: FrameX and encoded 4K verification
 
 Checked on 14 October 2026 from the Oracle London VM. The default order is now
-Miami (2800), CineJoy Nebula (2600), Aether Lul (2200), Aether Link (2000),
-CineJoy Lisbon (1400), then CineJoy Solara (1200). Admin overrides and learned
+Miami (2800), CineJoy Lisbon (2600), CineJoy Nebula (2400), Aether Lul (2200),
+Aether Link (2000), Vidrift Evion (1800), Vidrift Vela (1600), then CineJoy
+Solara (1200). Admin overrides and learned
 health can change this order; explicit source selections remain pinned.
 
 ## Encoded quality
@@ -12,6 +13,14 @@ Small fMP4 initialization files parsed by ffprobe confirm H.264 video dimensions
 - Interstellar: Miami 3832×1600 (cropped 4K width), Nebula 1920×1080.
 - Oppenheimer: Miami 3840×2160, Nebula 1920×872 (cropped 1080p width).
 - Game of Thrones S1E2: Miami 3840×2160, Nebula 1920×1080.
+
+The subsequent Gemflix audit also verified Lisbon at HEVC 3840×2160 on all
+three titles using fMP4 initialization files parsed by ffprobe. Gemflix's
+Vidsrc.pm/Quasar route returned the same media URLs and byte-identical master
+playlists as our existing CineJoy Lisbon source. Lisbon is therefore promoted
+to second place rather than adding a duplicate provider. Its prior September
+lookup failures no longer represent the fresh sample. Actual rendition and
+codec support still depend on the title, device and connection.
 
 Miami keeps its complete adaptive ladder, including lower renditions. Choosing
 Miami first does not force 4K or change the player's Auto quality policy. Encoded
@@ -58,7 +67,8 @@ provider pins from Continue Watching: existing entries now use the current
 ranking while retaining their episode and saved watch position. See the
 [native resume verification](native-continue-watching-2026-10-14.md).
 
-Regression tests cover the default order, successful slower preferred resolution,
+Regression tests cover Miami → Lisbon → Nebula for movies and TV, positive
+health nudges that preserve these tiers, successful slower preferred resolution,
 immediate failure, the eight-second deadline, health demotion, explicit pins,
 and stale fallback-cache rejection. Live release verification is reported
 separately from source probes and local tests.

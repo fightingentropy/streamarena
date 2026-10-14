@@ -187,13 +187,13 @@ pub fn custom_base(id: &str) -> Option<String> {
 }
 
 /// Provider tiers shared by the Server menu and automatic native-HLS selection.
-/// Prefer Miami for verified 4K coverage, with CineJoy Nebula as the first
-/// backup, followed by Lul then Link. Lisbon and Solara retain verified HD
-/// capability but failed the fresh sample, so they are last-resort backups.
+/// Prefer Miami, then CineJoy Lisbon for verified 4K coverage, followed by
+/// CineJoy Nebula, Lul and Link. Solara remains a last-resort backup.
 /// Retired low-quality and repeatedly failing providers are absent from every
 /// built-in catalog.
 /// These weights express policy tiers, not latency or a probability of success.
-/// Evidence: `docs/benchmarks/hls-providers-2026-09-27.json`.
+/// Evidence: `docs/framex-4k-ranking-2026-10-14.md` and
+/// `docs/benchmarks/hls-providers-2026-09-27.json`.
 ///
 /// Admin `embed:<id>:rank` overrides apply to the whole provider family. Learned
 /// health can reorder tied sources or demote a failing preferred source. The
@@ -204,7 +204,9 @@ pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
     // 4K playback. Prefer its adaptive master; the player still chooses a
     // suitable rendition for each device and connection.
     ("miami", 2_800),
-    ("cinejoy", 1_400),
+    // The base CineJoy source is Lisbon. Its HEVC/4K ladder was verified on
+    // three titles in the 2026-10-14 Gemflix audit; keep Auto quality selection.
+    ("cinejoy", 2_600),
     ("aether-lul", 2_200),
     ("aether-link", 2_000),
     // 7Movies audit (2026-10-11): Evion has limited but fast AVC/1080p
@@ -233,7 +235,7 @@ pub fn embed_default_rank(id: &str) -> i64 {
 /// Compiled server preference. Other sources inherit the provider baseline.
 pub fn embed_source_default_rank(id: &str, server: Option<&str>) -> i64 {
     match (id, server) {
-        ("cinejoy", Some("NEBULA")) => 2_600,
+        ("cinejoy", Some("NEBULA")) => 2_400,
         ("cinejoy", Some("SOLARA")) => 1_200,
         _ => embed_default_rank(id),
     }
@@ -592,7 +594,7 @@ mod tests {
 
     #[test]
     fn only_named_cinejoy_variants_have_independent_compiled_tiers() {
-        assert_eq!(embed_source_default_rank("cinejoy", Some("NEBULA")), 2_600);
+        assert_eq!(embed_source_default_rank("cinejoy", Some("NEBULA")), 2_400);
         assert_eq!(embed_source_default_rank("cinejoy", Some("SOLARA")), 1_200);
         for id in EMBED_IDS {
             assert_eq!(embed_source_default_rank(id, None), embed_default_rank(id));

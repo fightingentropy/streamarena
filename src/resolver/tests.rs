@@ -285,20 +285,20 @@ async fn preferred_family_timeout_keeps_fallback_and_manual_selection_available(
 }
 
 #[tokio::test(start_paused = true)]
-async fn ranked_4k_provider_keeps_preference_over_a_faster_full_hd_backup() {
+async fn ranked_4k_provider_keeps_preference_over_a_faster_4k_backup() {
     let metadata = sample_movie_metadata();
     let preferred = default_external_embed_source(&metadata, &HashMap::new()).unwrap();
     let candidates =
         external_embed_hls_candidate_sources(preferred, &metadata, true, &HashMap::new());
     assert_eq!(candidates[0].provider.id, "miami");
-    assert_eq!(candidates[1].server.map(|server| server.id), Some("NEBULA"));
+    assert_eq!(candidates[1], external_embed_provider("cinejoy"));
     let protected_count = super::preferred_external_embed_family_count(&candidates, true);
     assert_eq!(protected_count, 1);
 
     let winner = super::race_with_hd_fallback(
         vec![
             quality_attempt(6_000, Some(("miami-4k", true))),
-            quality_attempt(100, Some(("nebula-1080p", true))),
+            quality_attempt(100, Some(("lisbon-4k", true))),
         ],
         protected_count,
         Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
@@ -325,7 +325,7 @@ async fn ranked_4k_preference_releases_backup_on_failure_or_deadline() {
         let winner = super::race_with_hd_fallback(
             vec![
                 quality_attempt(preferred_delay_ms, preferred_result),
-                quality_attempt(100, Some(("nebula-1080p", true))),
+                quality_attempt(100, Some(("lisbon-4k", true))),
             ],
             protected_count,
             Duration::from_millis(EXTERNAL_EMBED_INITIAL_GRACE_MS),
@@ -333,7 +333,7 @@ async fn ranked_4k_preference_releases_backup_on_failure_or_deadline() {
             Duration::from_millis(super::EXTERNAL_EMBED_PREFERRED_FAMILY_TIMEOUT_MS),
         )
         .await;
-        assert_eq!(winner, Some((1, "nebula-1080p")));
+        assert_eq!(winner, Some((1, "lisbon-4k")));
         let elapsed = started_at.elapsed();
         assert!(elapsed >= Duration::from_millis(expected_ms));
         assert!(elapsed < Duration::from_millis(expected_ms + 20));
@@ -350,11 +350,12 @@ fn protected_family_follows_rank_and_health_without_reordering_candidates() {
     )]);
     let preferred = default_external_embed_source(&metadata, &health).unwrap();
     let candidates = external_embed_hls_candidate_sources(preferred, &metadata, true, &health);
-    assert_eq!(preferred.server.map(|server| server.id), Some("NEBULA"));
+    assert_eq!(preferred, external_embed_provider("cinejoy"));
+    assert_eq!(candidates[1].server.map(|server| server.id), Some("NEBULA"));
     assert!(!candidates.contains(&miami));
     assert_eq!(
         super::preferred_external_embed_family_count(&candidates, true),
-        1
+        2
     );
     assert_eq!(
         super::preferred_external_embed_family_count(&candidates, false),
@@ -363,7 +364,7 @@ fn protected_family_follows_rank_and_health_without_reordering_candidates() {
     assert_eq!(super::preferred_external_embed_family_count(&[], true), 0);
 
     let cinejoy = external_embed_provider("cinejoy");
-    let ranked = [preferred, cinejoy, miami, cinejoy];
+    let ranked = [preferred, candidates[1], miami, cinejoy];
     assert_eq!(
         super::preferred_external_embed_family_count(&ranked, true),
         2
@@ -1036,12 +1037,12 @@ fn verified_4k_provider_leads_hls_sources_without_label_bonuses() {
             .collect::<Vec<_>>(),
         vec![
             ("Miami", 2_800),
-            ("CineJoy Nebula", 2_600),
+            ("CineJoy Lisbon", 2_600),
+            ("CineJoy Nebula", 2_400),
             ("Aether Lul", 2_200),
             ("Aether Link", 2_000),
             ("Vidrift Evion", 1_800),
             ("Vidrift Vela", 1_600),
-            ("CineJoy Lisbon", 1_400),
             ("CineJoy Solara", 1_200)
         ],
     );
@@ -1084,6 +1085,31 @@ fn verified_4k_provider_leads_hls_sources_without_label_bonuses() {
         build_external_embed_source_summaries(&metadata, &improved_fallback_health)[0].sourceHash,
         external_embed_source_hash(miami, &metadata),
     );
+
+    // Faster or historically successful lower tiers cannot displace either
+    // verified 4K preference. Failures remain free to demote them separately.
+    let lisbon = external_embed_provider("cinejoy");
+    for metadata in [sample_movie_metadata(), sample_tv_metadata()] {
+        let improved_backup_health = external_embed_sources()
+            .into_iter()
+            .filter(|source| ![miami, lisbon].contains(source))
+            .map(|source| (external_embed_source_hash(source, &metadata), 150))
+            .collect();
+        let summaries = build_external_embed_source_summaries(&metadata, &improved_backup_health);
+        let candidates =
+            external_embed_hls_candidate_sources(miami, &metadata, true, &improved_backup_health);
+        assert_eq!(&candidates[..2], &[miami, lisbon]);
+        assert_eq!(
+            summaries[..2]
+                .iter()
+                .map(|summary| summary.sourceHash.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                external_embed_source_hash(miami, &metadata),
+                external_embed_source_hash(lisbon, &metadata),
+            ],
+        );
+    }
 }
 
 #[test]
@@ -1375,7 +1401,8 @@ fn curated_hd_sources_have_distinct_stable_pins_for_movies_and_tv() {
         let sources = build_external_embed_source_summaries(&metadata, &HashMap::new());
         assert_eq!(sources.len(), 8);
         assert_eq!(sources[0].primary, "Miami");
-        assert_eq!(sources[1].primary, "CineJoy Nebula");
+        assert_eq!(sources[1].primary, "CineJoy Lisbon");
+        assert_eq!(sources[2].primary, "CineJoy Nebula");
         let mut hashes = std::collections::HashSet::new();
         for summary in &sources {
             assert!(!summary.isTorrent);
@@ -1630,12 +1657,12 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
         source_ids,
         vec![
             ("miami", "default"),
+            ("cinejoy", "default"),
             ("cinejoy", "NEBULA"),
             ("aether-lul", "default"),
             ("aether-link", "default"),
             ("vidrift-evion", "default"),
             ("vidrift-vela", "default"),
-            ("cinejoy", "default"),
             ("cinejoy", "SOLARA"),
         ]
     );
@@ -1676,12 +1703,12 @@ fn default_external_embed_native_fallback_can_try_hls_sources() {
         tv_source_ids,
         vec![
             ("miami", "default"),
+            ("cinejoy", "default"),
             ("cinejoy", "NEBULA"),
             ("aether-lul", "default"),
             ("aether-link", "default"),
             ("vidrift-evion", "default"),
             ("vidrift-vela", "default"),
-            ("cinejoy", "default"),
             ("cinejoy", "SOLARA"),
         ]
     );

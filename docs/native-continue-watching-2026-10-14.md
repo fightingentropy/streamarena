@@ -4,8 +4,10 @@ Native version **1.0.1**, build **15**.
 
 Continue Watching cards, their Resume action, and the Home featured Resume
 button now open without the previous provider's source hash. The backend chooses
-the current highest-ranked healthy source, currently Miami first with CineJoy
-Nebula as backup. The title and canonical season/episode identity are preserved;
+the current highest-ranked healthy source, currently Miami first, followed by
+CineJoy Lisbon and CineJoy Nebula. This shared server ranking reaches the
+installed build without another native rebuild. The title and canonical
+season/episode identity are preserved;
 the player loads its existing saved watch position independently of the provider.
 No stored progress, account data, or provider metadata is rewritten by this change.
 Explicit source changes inside the player and ready offline downloads retain
@@ -29,4 +31,5 @@ their existing behavior.
   Physical-screen playback was not observed.
 
 The simulator was returned to the production-configured Release app after the
-fixture check. The app backend, web frontend and Oracle services need no redeploy.
+fixture check. The native-only resume change required no backend redeploy;
+later shared provider-ranking changes are deployed to Oracle independently.
