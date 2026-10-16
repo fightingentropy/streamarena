@@ -240,7 +240,7 @@ body.sports-route .page {
     padding: 0 5px;
     border-radius: 999px;
     background: var(--brand-red);
-    color: #fff;
+    color: var(--sa-on-accent);
     font-size: 0.72rem;
     font-weight: 700;
 }
@@ -489,7 +489,7 @@ body.sports-route .page {
 
 .sports-badge.is-live {
     background: var(--brand-red);
-    color: #fff;
+    color: var(--sa-on-accent);
     letter-spacing: 0.08em;
     text-transform: uppercase;
 }
@@ -648,7 +648,7 @@ body.sports-route .page {
     border: 0;
     border-radius: 4px;
     background: var(--brand-red);
-    color: #fff;
+    color: var(--sa-on-accent);
     font: inherit;
     font-weight: 700;
     cursor: pointer;

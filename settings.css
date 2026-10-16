@@ -6,14 +6,14 @@
   --panel: var(--sa-surface);
   --panel-soft: var(--sa-surface);
   --surface: var(--sa-raised);
-  --surface-strong: #2d3038;
+  --surface-strong: var(--sa-raised);
   --line: var(--sa-line);
   --line-soft: var(--sa-line);
   --text: var(--sa-text);
   --muted: var(--sa-muted);
   --muted-soft: #9296a0;
   --brand-red: var(--sa-accent);
-  --focus: #e4e3dd;
+  --focus: var(--sa-accent);
   --success: #9ee4b7;
   --warning: #efd290;
   --danger: #ff9a9a;
@@ -85,7 +85,7 @@ a:focus-visible {
   height: 76px;
   padding: 0 clamp(22px, 3vw, 42px);
   border-bottom: 1px solid var(--line-soft);
-  background: #0b0c0ff2;
+  background: var(--sa-header);
   backdrop-filter: none;
 }
 
@@ -466,7 +466,7 @@ a:focus-visible {
   margin: 0;
   color: var(--sa-text);
   font-size: 1.18rem;
-  font-weight: 750;
+  font-weight: 600;
   line-height: 1.25;
 }
 
@@ -500,7 +500,7 @@ a:focus-visible {
   margin: 0;
   color: var(--muted);
   font-size: 0.72rem;
-  font-weight: 750;
+  font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -858,10 +858,10 @@ a:focus-visible {
   padding: 0 22px;
   border: 0;
   border-radius: var(--radius);
-  background: var(--sa-text);
-  color: var(--sa-bg);
+  background: var(--sa-accent);
+  color: var(--sa-on-accent);
   font-size: 1rem;
-  font-weight: 750;
+  font-weight: 600;
   cursor: pointer;
   transition:
     background-color 120ms ease,
@@ -869,7 +869,7 @@ a:focus-visible {
 }
 
 .save-btn:hover {
-  background: #dddcd8;
+  background: var(--sa-accent-hover);
 }
 
 .save-btn:active {
@@ -892,10 +892,10 @@ a:focus-visible {
   padding: 13px 20px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: var(--radius);
-  background: var(--sa-text);
-  color: var(--sa-bg);
+  background: var(--sa-accent);
+  color: var(--sa-on-accent);
   font-size: 1rem;
-  font-weight: 750;
+  font-weight: 600;
   box-shadow:
     0 14px 32px rgba(0, 0, 0, 0.22),
     0 4px 10px rgba(0, 0, 0, 0.12);

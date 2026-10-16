@@ -3,13 +3,13 @@
 :root {
   color-scheme: dark;
   --page-bg: var(--sa-bg);
-  --panel: #111111;
-  --panel-raised: #131313;
-  --surface: #161616;
-  --surface-strong: #1a1a1a;
-  --line: #1e1e1e;
-  --line-strong: #2c2c2c;
-  --text: #e5e5e5;
+  --panel: var(--sa-surface);
+  --panel-raised: var(--sa-raised);
+  --surface: var(--sa-surface);
+  --surface-strong: var(--sa-raised);
+  --line: var(--sa-line);
+  --line-strong: var(--sa-line-strong);
+  --text: var(--sa-text);
   --muted: var(--sa-muted);
   --muted-soft: #828793;
   --danger: #ff8a7a;
@@ -86,9 +86,10 @@ a:focus-visible {
   width: 100%;
   max-width: 480px;
   padding: 48px 40px;
-  border: 0;
+  border: 1px solid var(--sa-line);
   border-radius: var(--radius-lg);
-  background: transparent;
+  background: var(--sa-surface);
+  box-shadow: var(--sa-shadow);
 }
 
 .login-logo {
@@ -141,7 +142,7 @@ a:focus-visible {
   padding: 14px 16px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
-  background: var(--sa-surface);
+  background: var(--sa-bg);
   color: var(--text);
   font-size: 16px;
   outline: none;
@@ -151,8 +152,8 @@ a:focus-visible {
 }
 
 .login-field input:focus {
-  border-color: rgba(255, 255, 255, 0.4);
-  background: #080808;
+  border-color: var(--sa-accent);
+  background: var(--sa-bg);
 }
 
 .login-field input::placeholder {
@@ -178,8 +179,8 @@ a:focus-visible {
   padding: 0 24px;
   border: 0;
   border-radius: var(--radius);
-  background: #e5e5e5;
-  color: #0a0a0a;
+  background: var(--sa-accent);
+  color: var(--sa-on-accent);
   font-size: 1rem;
   font-weight: 600;
   cursor: pointer;
@@ -187,7 +188,7 @@ a:focus-visible {
 }
 
 .login-btn:hover {
-  opacity: 0.85;
+  background: var(--sa-accent-hover);
 }
 
 .login-btn:active {
@@ -260,6 +261,7 @@ a:focus-visible {
     border: 0;
     border-radius: 0;
     background: transparent;
+    box-shadow: none;
   }
 
   .login-page {

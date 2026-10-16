@@ -5,8 +5,8 @@
     --text: var(--sa-text);
     --muted: var(--sa-muted);
     --brand-red: var(--sa-accent);
-    --glass: rgba(10, 10, 10, 0.38);
-    --card-bg: rgba(20, 20, 20, 0.72);
+    --glass: #151c2661;
+    --card-bg: #151c26b8;
     --font-brand-sans: var(--font-ui);
 }
 
@@ -623,9 +623,11 @@ body.modal-open {
 }
 
 .cta-play {
-    color: #111;
-    background: #fff;
+    color: var(--sa-on-accent);
+    background: var(--sa-accent);
 }
+
+.cta-play:hover { background: var(--sa-accent-hover); }
 
 .cta-info {
     color: #fff;
@@ -914,14 +916,14 @@ body.modal-open {
 }
 
 body.is-search-mode .top-nav {
-    background-color: rgba(0, 0, 0, 0.98);
+    background-color: var(--sa-header);
     background-image: none;
     box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
-    backdrop-filter: blur(8px);
+    backdrop-filter: none;
 }
 
 body.is-nav-scrolled .top-nav {
-    background-color: #000;
+    background-color: var(--sa-header);
     background-image: none;
     box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
     backdrop-filter: none;
@@ -2632,6 +2634,7 @@ body.is-search-mode #libraryRow {
 
 .feedback-thumb-remove:hover:not(:disabled) {
     background: var(--brand-red);
+    color: var(--sa-on-accent);
     border-color: transparent;
 }
 
@@ -2674,11 +2677,11 @@ body.is-search-mode #libraryRow {
 .feedback-btn.is-primary {
     border-color: transparent;
     background: var(--brand-red);
-    color: #fff;
+    color: var(--sa-on-accent);
 }
 
 .feedback-btn.is-primary:hover:not(:disabled) {
-    background: #f6121d;
+    background: var(--sa-accent-hover);
 }
 
 .feedback-btn:disabled {

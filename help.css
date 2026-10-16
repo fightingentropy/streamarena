@@ -59,7 +59,7 @@ body {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: #0b0c0ff2;
+  background: var(--sa-header);
   backdrop-filter: none;
   border-bottom: 1px solid var(--help-line);
 }

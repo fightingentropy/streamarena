@@ -1,32 +1,34 @@
-@font-face {
-  font-family: "Manrope";
-  font-style: normal;
-  font-weight: 400 800;
-  font-display: swap;
-  src: url("./assets/fonts/manrope-variable.woff2") format("woff2");
-}
+@import "./assets/fonts/geist.css";
 
 :root {
-  --font-ui: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --sa-bg: #0b0c0f;
-  --sa-surface: #17191e;
-  --sa-raised: #202229;
-  --sa-text: #f5f4f0;
-  --sa-muted: #a4a7af;
-  --sa-line: #ffffff16;
-  --sa-accent: #f05263;
+  color-scheme: dark;
+  --font-ui: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --sa-bg: #0b1017;
+  --sa-surface: #151c26;
+  --sa-raised: #202a37;
+  --sa-text: #f1f4f8;
+  --sa-muted: #a8b3c3;
+  --sa-line: #d9e5ff1c;
+  --sa-line-strong: #d9e5ff33;
+  --sa-accent: #f2a38b;
+  --sa-accent-hover: #ffc0ab;
+  --sa-accent-soft: #f2a38b16;
+  --sa-accent-line: #f2a38b70;
+  --sa-on-accent: #291911;
+  --sa-header: #0b1017f5;
+  --sa-shadow: 0 18px 60px #0006;
   --sa-radius: 14px;
   --sa-gutter: clamp(24px, 4.5vw, 88px);
 }
 
 html { -webkit-text-size-adjust: 100%; }
-body { -webkit-font-smoothing: antialiased; }
-.brand-wordmark { color: var(--sa-text); font-family: var(--font-ui); font-size: 25px; font-weight: 800; letter-spacing: -.055em; line-height: 1; white-space: nowrap; }
+body { -webkit-font-smoothing: antialiased; font-size: 16px; line-height: 1.5; letter-spacing: -.012em; }
+.brand-wordmark { color: var(--sa-text); font-family: var(--font-ui); font-size: 25px; font-weight: 650; letter-spacing: -.045em; line-height: 1; white-space: nowrap; }
 .brand-wordmark-accent { color: var(--sa-accent); }
 button, input, select, textarea { font-family: inherit; }
 button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
-::selection { background: #f0526352; color: #fff; }
-:where(button, a, input, select, textarea):focus-visible { outline: 2px solid var(--sa-text); outline-offset: 5px; }
+::selection { background: #f2a38b45; color: var(--sa-text); }
+:where(button, a, input, select, textarea):focus-visible { outline: 2px solid var(--sa-accent); outline-offset: 4px; }
 .title-details-button { display: grid; place-items: center; flex: 0 0 44px; width: 44px; height: 44px; padding: 10px; border: 0; border-radius: 12px; background: transparent; color: var(--sa-muted); cursor: pointer; }
 .title-details-button:hover { background: #ffffff15; color: var(--sa-text); }
 .title-details-button svg { width: 21px; height: 21px; stroke: currentColor; stroke-width: 1.6; }

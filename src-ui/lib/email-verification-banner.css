@@ -55,7 +55,7 @@
   font-size: 13px;
   cursor: pointer;
 }
-.email-verify-banner__btn--primary { background: var(--brand-red, #e50914); color: #fff; }
+.email-verify-banner__btn--primary { background: var(--sa-accent); color: var(--sa-on-accent); }
 .email-verify-banner__btn--primary:disabled { opacity: 0.6; cursor: default; }
 .email-verify-banner__btn--ghost { background: transparent; color: var(--muted, #c9c9c9); }
 .email-verify-banner__btn--ghost:hover { color: var(--text, #f6f6f6); }
