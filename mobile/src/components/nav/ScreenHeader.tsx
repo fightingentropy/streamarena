@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
-import { Text, View } from "react-native";
+import { View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { ProfileButton } from "@/components/profile/ProfileButton";
 import { colors } from "@/theme";
 
@@ -33,7 +34,7 @@ export function ScreenHeader({
             color: colors.foreground,
             fontSize: 34,
             lineHeight: 39,
-            fontWeight: "700",
+            fontWeight: "600",
             letterSpacing: -0.9,
           }}
         >
@@ -42,7 +43,7 @@ export function ScreenHeader({
         {subtitle ? (
           <Text
             numberOfLines={1}
-            style={{ color: colors.muted, fontSize: 13, lineHeight: 18, marginTop: 2 }}
+            style={{ color: colors.muted, fontSize: 14, lineHeight: 20, marginTop: 2 }}
           >
             {subtitle}
           </Text>

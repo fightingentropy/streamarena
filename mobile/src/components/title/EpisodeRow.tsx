@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
-import { Text, View } from "react-native";
+import { View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { PosterImage } from "@/components/PosterImage";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { type Episode, tmdbImage } from "@/lib/streamarena";

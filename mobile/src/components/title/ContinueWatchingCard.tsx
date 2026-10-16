@@ -1,5 +1,6 @@
 import { memo, useCallback } from "react";
-import { FlatList, type ListRenderItemInfo, Text, View } from "react-native";
+import { FlatList, type ListRenderItemInfo, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import { Play } from "lucide-react-native";
 import { PosterImage } from "@/components/PosterImage";
@@ -71,7 +72,7 @@ const CardItem = memo(function CardItem({ item, onLongPress }: CardProps) {
           </View>
         </View>
         {progressPercent !== null ? <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 2, backgroundColor: colors.line }}>
-          <View style={{ height: "100%", width: `${progressPercent}%`, backgroundColor: colors.foreground }} />
+          <View style={{ height: "100%", width: `${progressPercent}%`, backgroundColor: colors.accent }} />
         </View> : null}
       </View>
       <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 14, lineHeight: 19, fontWeight: "600", marginTop: 8, width: w }}>
@@ -97,7 +98,7 @@ export function ContinueWatchingRail({
   if (!items.length) return null;
   return (
     <View style={{ marginBottom: 34 }}>
-      <Text style={{ color: colors.foreground, fontSize: 22, lineHeight: 27, fontWeight: "700", letterSpacing: -0.35, paddingHorizontal: 16, marginBottom: 12 }}>
+      <Text style={{ color: colors.foreground, fontSize: 22, lineHeight: 27, fontWeight: "600", letterSpacing: -0.35, paddingHorizontal: 16, marginBottom: 12 }}>
         Continue Watching
       </Text>
       <FlatList

@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { ActivityIndicator, ScrollView, Switch, Text, View } from "react-native";
+import { ActivityIndicator, ScrollView, Switch, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import Constants from "expo-constants";
 import { ChevronRight, HardDrive, Magnet, SlidersHorizontal } from "lucide-react-native";
@@ -193,8 +194,8 @@ export default function SettingsScreen() {
             <Switch
               value={torrentEnabled}
               onValueChange={toggleTorrentStreaming}
-              trackColor={{ true: colors.foreground, false: colors.surfaceRaised }}
-              thumbColor={torrentEnabled ? colors.background : colors.foreground}
+              trackColor={{ true: colors.accent, false: colors.surfaceRaised }}
+              thumbColor={torrentEnabled ? colors.onAccent : colors.foreground}
               ios_backgroundColor={colors.surfaceRaised}
               accessibilityLabel="Torrent streaming"
               accessibilityHint="Controls local torrent streaming through your Mini"

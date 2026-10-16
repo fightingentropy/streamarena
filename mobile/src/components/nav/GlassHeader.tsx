@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
   Extrapolation,
@@ -51,7 +52,7 @@ export function GlassHeader({
       <Animated.View
         style={[
           StyleSheet.absoluteFill,
-          { backgroundColor: "rgba(0,0,0,0.96)" },
+          { backgroundColor: colors.header },
           bgStyle,
         ]}
       >
@@ -85,7 +86,7 @@ export function GlassHeader({
                 style={{
                   color: colors.foreground,
                   fontSize: 17,
-                  fontWeight: "700",
+                  fontWeight: "600",
                   letterSpacing: -0.25,
                 }}
               >

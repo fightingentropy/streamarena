@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { type LayoutChangeEvent, Text, type TextStyle, View } from "react-native";
+import { type LayoutChangeEvent, type TextStyle, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import Animated, {
   cancelAnimation,
   Easing,

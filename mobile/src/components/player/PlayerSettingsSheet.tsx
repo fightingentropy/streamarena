@@ -1,4 +1,5 @@
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Check } from "lucide-react-native";
 import { Sheet } from "@/components/ui/Sheet";
 import { selectionAsync } from "@/lib/haptics";
@@ -24,7 +25,7 @@ function Row({ label, sublabel, active, onPress }: { label: string; sublabel?: s
     >
       <View style={{ width: 22, alignItems: "center" }}>{active ? <Check size={20} color={colors.accent} /> : null}</View>
       <View style={{ flex: 1 }}>
-        <Text style={{ color: colors.foreground, fontSize: 15, fontWeight: active ? "700" : "500" }}>{label}</Text>
+        <Text style={{ color: colors.foreground, fontSize: 15, fontWeight: active ? "600" : "500" }}>{label}</Text>
         {sublabel ? <Text style={{ color: colors.muted, fontSize: 12, marginTop: 1 }}>{sublabel}</Text> : null}
       </View>
     </Pressable>
@@ -57,7 +58,7 @@ export function PlayerSettingsSheet({
   return (
     <Sheet visible={visible} onClose={onClose} heightPct={0.6} zIndex={200}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>
-        <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "700", letterSpacing: -0.25, marginTop: 6 }}>Playback settings</Text>
+        <Text style={{ color: colors.foreground, fontSize: 24, fontWeight: "600", letterSpacing: -0.25, marginTop: 6 }}>Playback settings</Text>
 
         <SectionTitle>Subtitles</SectionTitle>
         {isVlc ? (

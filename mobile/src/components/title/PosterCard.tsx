@@ -1,5 +1,6 @@
 import { memo } from "react";
-import { PixelRatio, Text } from "react-native";
+import { PixelRatio } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import { PosterImage } from "@/components/PosterImage";
 import { PressableScale } from "@/components/ui/PressableScale";

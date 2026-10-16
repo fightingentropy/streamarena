@@ -7,11 +7,11 @@
     "icon": "./assets/images/icon.png",
     "scheme": "streamarena",
     "userInterfaceStyle": "dark",
-    "backgroundColor": "#000000",
+    "backgroundColor": "#0b1017",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "xyz.streamarena.app",
-      "buildNumber": "16",
+      "buildNumber": "17",
       "infoPlist": {
         "CFBundleDisplayName": "Netflix",
         "CFBundleName": "Netflix",
@@ -67,12 +67,49 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#000000",
+          "backgroundColor": "#0b1017",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 140
         }
       ],
-      "expo-font",
+      [
+        "expo-font",
+        {
+          "ios": {
+            "fonts": [
+              "./assets/fonts/Geist-Regular.ttf",
+              "./assets/fonts/Geist-Medium.ttf",
+              "./assets/fonts/Geist-SemiBold.ttf",
+              "./assets/fonts/Geist-Bold.ttf"
+            ]
+          },
+          "android": {
+            "fonts": [
+              {
+                "fontFamily": "Geist",
+                "fontDefinitions": [
+                  {
+                    "path": "./assets/fonts/Geist-Regular.ttf",
+                    "weight": 400
+                  },
+                  {
+                    "path": "./assets/fonts/Geist-Medium.ttf",
+                    "weight": 500
+                  },
+                  {
+                    "path": "./assets/fonts/Geist-SemiBold.ttf",
+                    "weight": 600
+                  },
+                  {
+                    "path": "./assets/fonts/Geist-Bold.ttf",
+                    "weight": 700
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
       "expo-image",
       "expo-sqlite",
       "expo-status-bar"

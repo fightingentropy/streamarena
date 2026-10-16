@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { Text, useWindowDimensions, View } from "react-native";
+import { useWindowDimensions, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import * as Brightness from "expo-brightness";
 import { Sun, Volume2, VolumeX } from "lucide-react-native";

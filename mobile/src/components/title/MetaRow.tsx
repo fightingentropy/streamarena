@@ -1,4 +1,5 @@
-import { Text, View } from "react-native";
+import { View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Star } from "lucide-react-native";
 import { formatCertification, formatRating, formatRuntime } from "@/lib/format";
 import { colors } from "@/theme";

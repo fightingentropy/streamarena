@@ -52,7 +52,7 @@ test("the native launcher and splash use the Netflix N artwork", () => {
   assert.deepEqual(splashPlugin, [
     "expo-splash-screen",
     {
-      backgroundColor: "#000000",
+      backgroundColor: "#0b1017",
       image: "./assets/images/splash-icon.png",
       imageWidth: 140,
     },

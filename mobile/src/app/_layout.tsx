@@ -12,13 +12,15 @@ import { AuthProvider, useAccountScopeOrNull, useAuth } from "@/lib/auth";
 import { loadLiveChannelOverrides } from "@/lib/live-channels";
 import { TabBar } from "@/components/nav/TabBar";
 import { ProfileMenu } from "@/components/profile/ProfileMenu";
+import { TypographyProvider } from "@/components/ui/Text";
 import { initOfflineSync, setOfflineAccountScope } from "@/store/offline";
-import { colors } from "@/theme";
+import { colors, typography } from "@/theme";
 
 const headerOptions = {
   headerShown: true,
   headerStyle: { backgroundColor: colors.background },
-  headerTintColor: colors.foreground,
+  headerTintColor: colors.accent,
+  headerTitleStyle: { fontFamily: typography.fontFamily, fontWeight: "600", color: colors.foreground },
   headerShadowVisible: false,
   scrollEdgeEffects: { top: "soft", bottom: "soft" },
   headerBackButtonDisplayMode: "minimal",
@@ -26,9 +28,15 @@ const headerOptions = {
 
 const streamArenaNavigationTheme = {
   ...DarkTheme,
+  fonts: {
+    regular: { fontFamily: typography.fontFamily, fontWeight: "400" as const },
+    medium: { fontFamily: typography.fontFamily, fontWeight: "500" as const },
+    bold: { fontFamily: typography.fontFamily, fontWeight: "600" as const },
+    heavy: { fontFamily: typography.fontFamily, fontWeight: "700" as const },
+  },
   colors: {
     ...DarkTheme.colors,
-    primary: colors.foreground,
+    primary: colors.accent,
     background: colors.background,
     card: colors.background,
     text: colors.foreground,
@@ -87,38 +95,40 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
-      <SafeAreaProvider>
-        <AuthProvider>
-          <ThemeProvider value={streamArenaNavigationTheme}>
-            <AuthGate>
-              <Stack
-                screenOptions={{
-                  headerShown: false,
-                  contentStyle: { backgroundColor: colors.background },
-                  statusBarStyle: "light",
-                }}
-              >
-                <Stack.Screen name="(tabs)" />
-                <Stack.Screen name="signin" options={{ presentation: "modal" }} />
-                <Stack.Screen name="register" options={{ presentation: "modal" }} />
-                <Stack.Screen name="title/[mediaType]/[id]" options={{ headerShown: false }} />
-                <Stack.Screen
-                  name="watch/[id]"
-                  options={{ headerShown: false, presentation: "fullScreenModal", animation: "fade" }}
-                />
-                <Stack.Screen name="settings" options={{ ...headerOptions, title: "Settings" }} />
-                <Stack.Screen name="settings/playback" options={{ ...headerOptions, title: "Playback" }} />
-                <Stack.Screen name="settings/storage" options={{ ...headerOptions, title: "Storage" }} />
-              </Stack>
-              <TabBar />
-              <ProfileMenu />
-              <OfflineBootstrap />
-              <LiveCatalogBootstrap />
-            </AuthGate>
-          </ThemeProvider>
-        </AuthProvider>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+    <TypographyProvider>
+      <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
+        <SafeAreaProvider>
+          <AuthProvider>
+            <ThemeProvider value={streamArenaNavigationTheme}>
+              <AuthGate>
+                <Stack
+                  screenOptions={{
+                    headerShown: false,
+                    contentStyle: { backgroundColor: colors.background },
+                    statusBarStyle: "light",
+                  }}
+                >
+                  <Stack.Screen name="(tabs)" />
+                  <Stack.Screen name="signin" options={{ presentation: "modal" }} />
+                  <Stack.Screen name="register" options={{ presentation: "modal" }} />
+                  <Stack.Screen name="title/[mediaType]/[id]" options={{ headerShown: false }} />
+                  <Stack.Screen
+                    name="watch/[id]"
+                    options={{ headerShown: false, presentation: "fullScreenModal", animation: "fade" }}
+                  />
+                  <Stack.Screen name="settings" options={{ ...headerOptions, title: "Settings" }} />
+                  <Stack.Screen name="settings/playback" options={{ ...headerOptions, title: "Playback" }} />
+                  <Stack.Screen name="settings/storage" options={{ ...headerOptions, title: "Storage" }} />
+                </Stack>
+                <TabBar />
+                <ProfileMenu />
+                <OfflineBootstrap />
+                <LiveCatalogBootstrap />
+              </AuthGate>
+            </ThemeProvider>
+          </AuthProvider>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    </TypographyProvider>
   );
 }

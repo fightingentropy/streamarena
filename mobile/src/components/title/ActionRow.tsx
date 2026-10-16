@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
-import { Text, View } from "react-native";
+import { View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Play } from "lucide-react-native";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { colors, radius } from "@/theme";
@@ -29,7 +30,7 @@ export function DetailAction({
       <View style={{ height: 28, alignItems: "center", justifyContent: "center" }}>{icon}</View>
       <Text
         style={{
-          color: active ? colors.foreground : colors.muted,
+          color: active ? colors.accent : colors.muted,
           fontSize: 11.5,
           fontWeight: "600",
           marginTop: 5,
@@ -41,7 +42,7 @@ export function DetailAction({
   );
 }
 
-// The detail-screen action block: a full-width white Play button, then a left-aligned
+// The detail-screen action block: a full-width coral Play button, then a left-aligned
 // row of secondary DetailActions passed as children.
 export function ActionRow({
   onPlay,
@@ -58,7 +59,7 @@ export function ActionRow({
         onPress={onPlay}
         style={{
           minHeight: 50,
-          backgroundColor: colors.foreground,
+          backgroundColor: colors.accent,
           borderRadius: radius.control,
           borderCurve: "continuous",
           flexDirection: "row",
@@ -68,8 +69,8 @@ export function ActionRow({
           gap: 8,
         }}
       >
-        <Play size={20} color={colors.black} fill={colors.black} />
-        <Text style={{ color: colors.black, fontWeight: "700", fontSize: 16 }}>{playLabel}</Text>
+        <Play size={20} color={colors.onAccent} fill={colors.onAccent} />
+        <Text style={{ color: colors.onAccent, fontWeight: "600", fontSize: 16 }}>{playLabel}</Text>
       </PressableScale>
       <View style={{ flexDirection: "row", marginTop: 16, minHeight: 48, gap: 4 }}>{children}</View>
     </View>

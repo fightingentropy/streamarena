@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Captions, Layers, Pause, Play, Radio, RotateCcw, RotateCw, SkipForward, X } from "lucide-react-native";
@@ -78,8 +79,8 @@ function CircleButton({
 
   return (
     <GlassSurface
-      fallbackColor={active ? "rgba(255,255,255,0.20)" : bg}
-      tintColor={active ? "rgba(255,255,255,0.15)" : "rgba(8,8,9,0.42)"}
+      fallbackColor={active ? colors.accentSoft : bg}
+      tintColor={active ? colors.accentSoft : "rgba(11,16,23,0.42)"}
       glassStyle="clear"
       interactive
       blurIntensity={30}
@@ -89,7 +90,7 @@ function CircleButton({
         borderRadius: size / 2,
         overflow: "hidden",
         borderWidth: 0.5,
-        borderColor: active ? "rgba(255,255,255,0.28)" : colors.hairline,
+        borderColor: active ? colors.accentLine : colors.hairline,
       }}
     >
       {button}
@@ -108,7 +109,7 @@ function SkipButton({ direction, onPress }: { direction: "back" | "forward"; onP
       style={{ width: 56, height: 56, alignItems: "center", justifyContent: "center" }}
     >
       <Icon size={40} color={colors.foreground} strokeWidth={1.5} />
-      <Text style={{ position: "absolute", color: colors.foreground, fontSize: 11, fontWeight: "800" }}>
+      <Text style={{ position: "absolute", color: colors.foreground, fontSize: 11, fontWeight: "700" }}>
         {SKIP_SECONDS}
       </Text>
     </PressableScale>
@@ -243,14 +244,14 @@ export function VideoControls({ title, subtitle, live = false, textTracks = [], 
               accessibilityLabel="Retry"
               style={{
                 minHeight: 44,
-                backgroundColor: colors.foreground,
+                backgroundColor: colors.accent,
                 paddingHorizontal: 22,
                 justifyContent: "center",
                 borderRadius: radius.control,
                 borderCurve: "continuous",
               }}
             >
-              <Text style={{ color: colors.black, fontSize: 14, fontWeight: "700" }}>Try again</Text>
+              <Text style={{ color: colors.onAccent, fontSize: 14, fontWeight: "700" }}>Try again</Text>
             </PressableScale>
           ) : null}
           <PressableScale

@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { Alert, ScrollView, Switch, Text, View } from "react-native";
+import { Alert, ScrollView, Switch, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Check } from "lucide-react-native";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
@@ -84,7 +85,7 @@ function Row({
           paddingVertical: 13,
           paddingHorizontal: 16,
           gap: 12,
-          backgroundColor: active ? colors.cardHover : "transparent",
+          backgroundColor: active ? colors.accentSoft : "transparent",
         }}
       >
         <View style={{ flex: 1 }}>
@@ -104,10 +105,10 @@ function Row({
                 borderRadius: 11,
                 borderWidth: active ? 0 : 1,
                 borderColor: colors.hairline,
-                backgroundColor: active ? colors.foreground : "transparent",
+                backgroundColor: active ? colors.accent : "transparent",
               }}
             >
-              {active ? <Check size={14} color={colors.background} strokeWidth={3} /> : null}
+              {active ? <Check size={14} color={colors.onAccent} strokeWidth={3} /> : null}
             </View>
           ))}
       </PressableScale>

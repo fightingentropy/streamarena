@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import { Wordmark } from "@/components/brand/Wordmark";
 import { Screen } from "@/components/ui/Screen";
@@ -62,7 +63,7 @@ export default function SignInScreen() {
                 color: colors.foreground,
                 fontSize: 36,
                 lineHeight: 40,
-                fontWeight: "700",
+                fontWeight: "600",
                 letterSpacing: -1,
               }}
             >
@@ -115,11 +116,11 @@ export default function SignInScreen() {
                 justifyContent: "center",
                 borderRadius: 14,
                 borderCurve: "continuous",
-                backgroundColor: colors.foreground,
+                backgroundColor: colors.accent,
                 opacity: disabled ? 0.46 : 1,
               }}
             >
-              <Text style={{ color: colors.background, fontSize: 16, fontWeight: "700" }}>
+              <Text style={{ color: colors.onAccent, fontSize: 16, fontWeight: "600" }}>
                 {busy ? "Signing in…" : "Sign in"}
               </Text>
             </PressableScale>

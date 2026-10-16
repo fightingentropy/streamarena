@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
-import { ActivityIndicator, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, ScrollView, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Check } from "lucide-react-native";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
@@ -68,7 +69,7 @@ function OptionRow({
           paddingVertical: 13,
           paddingHorizontal: 16,
           gap: 12,
-          backgroundColor: active ? colors.cardHover : "transparent",
+          backgroundColor: active ? colors.accentSoft : "transparent",
         }}
       >
         <Text style={{ flex: 1, color: colors.foreground, fontSize: 15, fontWeight: active ? "600" : "400" }}>
@@ -83,10 +84,10 @@ function OptionRow({
             borderRadius: 11,
             borderWidth: active ? 0 : 1,
             borderColor: colors.hairline,
-            backgroundColor: active ? colors.foreground : "transparent",
+            backgroundColor: active ? colors.accent : "transparent",
           }}
         >
-          {active ? <Check size={14} color={colors.background} strokeWidth={3} /> : null}
+          {active ? <Check size={14} color={colors.onAccent} strokeWidth={3} /> : null}
         </View>
       </PressableScale>
       {showDivider ? <View style={{ height: 0.5, marginLeft: 16, backgroundColor: colors.hairline }} /> : null}

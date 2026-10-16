@@ -1,4 +1,5 @@
-import { Text, View } from "react-native";
+import { View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { type Href, usePathname, useRouter } from "expo-router";
 import {
@@ -58,7 +59,7 @@ export function TabBar() {
         zIndex: 90,
         height: layout.mobileNavHeight + insets.bottom,
         paddingBottom: insets.bottom,
-        backgroundColor: "rgba(6,6,7,0.98)",
+        backgroundColor: colors.header,
         borderTopWidth: 0.5,
         borderTopColor: colors.hairline,
       }}
@@ -82,7 +83,7 @@ export function TabBar() {
             // owner, so always return to the requested tab root.
             router.navigate(tab.path);
           };
-          const tint = isActive ? colors.white : colors.iconIdle;
+          const tint = isActive ? colors.accent : colors.iconIdle;
           return (
             <PressableScale
               key={tab.key}
@@ -93,14 +94,14 @@ export function TabBar() {
               accessibilityState={{ selected: isActive }}
               accessibilityLabel={tab.label}
             >
-              <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 2 }}>
+              <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 3, borderRadius: 14, marginHorizontal: 2, backgroundColor: isActive ? colors.accentSoft : "transparent" }}>
                 <tab.Icon active={isActive} color={tint} size={22} />
                 <Text
                   numberOfLines={1}
                   style={{
                     color: tint,
-                    fontSize: 9.5,
-                    fontWeight: isActive ? "700" : "600",
+                    fontSize: 10.5,
+                    fontWeight: isActive ? "600" : "500",
                     letterSpacing: 0.05,
                   }}
                 >

@@ -1,4 +1,5 @@
-import { ScrollView, Text, View } from "react-native";
+import { ScrollView, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { PosterImage } from "@/components/PosterImage";
 import { type CastMember, tmdbImage } from "@/lib/streamarena";
 import { colors, radius } from "@/theme";
@@ -13,7 +14,7 @@ export function CastRail({ cast, imageBase }: { cast?: CastMember[]; imageBase?:
         style={{
           color: colors.foreground,
           fontSize: 22,
-          fontWeight: "700",
+          fontWeight: "600",
           letterSpacing: -0.35,
           paddingHorizontal: 16,
           marginBottom: 14,

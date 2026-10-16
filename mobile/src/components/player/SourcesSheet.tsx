@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Check } from "lucide-react-native";
 import { Sheet } from "@/components/ui/Sheet";
 import { selectionAsync } from "@/lib/haptics";
@@ -77,7 +78,7 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
 
   return (
     <Sheet visible={visible} onClose={onClose} heightPct={0.6} zIndex={200}>
-      <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "700", letterSpacing: -0.25, marginHorizontal: 20, marginTop: 6, marginBottom: 4 }}>Sources</Text>
+      <Text style={{ color: colors.foreground, fontSize: 24, fontWeight: "600", letterSpacing: -0.25, marginHorizontal: 20, marginTop: 6, marginBottom: 4 }}>Sources</Text>
       <Text style={{ color: colors.muted, fontSize: 13, lineHeight: 18, marginHorizontal: 20, marginBottom: 14 }}>
         Switch server if the current one buffers or won’t play.
       </Text>
@@ -114,10 +115,10 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
                   gap: 7,
                   paddingVertical: 9,
                   borderRadius: 9,
-                  backgroundColor: selected ? colors.cardActive : "transparent",
+                  backgroundColor: selected ? colors.accentSoft : "transparent",
                 }}
               >
-                <Text style={{ color: selected ? colors.foreground : colors.muted, fontSize: 14, fontWeight: "700" }}>
+                <Text style={{ color: selected ? colors.accent : colors.muted, fontSize: 14, fontWeight: "700" }}>
                   {tab === "hls" ? "HLS" : "Torrents"}
                 </Text>
                 <View
@@ -129,7 +130,7 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
                     backgroundColor: selected ? colors.hairline : colors.line,
                   }}
                 >
-                  <Text style={{ color: selected ? colors.foreground : colors.muted, textAlign: "center", fontSize: 11, fontWeight: "700" }}>
+                  <Text style={{ color: selected ? colors.accent : colors.muted, textAlign: "center", fontSize: 11, fontWeight: "700" }}>
                     {count}
                   </Text>
                 </View>
@@ -176,13 +177,13 @@ export function SourcesSheet({ visible, onClose }: { visible: boolean; onClose: 
                   if (!active) usePlayerStore.getState().reopenWith({ sourceHash: s.sourceHash });
                   onClose();
                 }}
-                style={{ flexDirection: "row", alignItems: "center", minHeight: 54, paddingVertical: 10, gap: 12, borderBottomWidth: 0.5, borderBottomColor: colors.line }}
+                style={{ flexDirection: "row", alignItems: "center", minHeight: 64, paddingVertical: 12, paddingHorizontal: 12, marginBottom: 8, gap: 12, borderRadius: radius.control, borderWidth: 0.5, borderColor: active ? colors.accentLine : colors.line, backgroundColor: active ? colors.accentSoft : colors.card }}
                 accessibilityRole="button"
                 accessibilityState={{ selected: active }}
               >
                 <View style={{ width: 22, alignItems: "center" }}>{active ? <Check size={20} color={colors.accent} /> : null}</View>
                 <View style={{ flex: 1 }}>
-                  <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 15, fontWeight: active ? "700" : "500" }}>
+                  <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 15, fontWeight: active ? "600" : "500" }}>
                     {s.primary || s.filename || s.provider || `Source ${i + 1}`}
                   </Text>
                   {meta ? <Text numberOfLines={1} style={{ color: colors.muted, fontSize: 12, marginTop: 1 }}>{meta}</Text> : null}

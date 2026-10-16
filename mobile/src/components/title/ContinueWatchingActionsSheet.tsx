@@ -1,14 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  Modal,
-  Pressable,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import { ActivityIndicator, Alert, Modal, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Check, Download as DownloadIcon, Info, Play, Plus, Trash2 } from "lucide-react-native";
@@ -195,7 +187,7 @@ function MenuContent({ item, onClose, onRemove }: { item: ContinueWatchingItem }
             <PosterImage uri={item.thumb || item.src} style={{ width: 46, height: 64 }} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 16, fontWeight: "800" }}>
+            <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 16, fontWeight: "700" }}>
               {item.title ?? "Untitled"}
             </Text>
             <Text numberOfLines={1} style={{ color: colors.muted, fontSize: 13, marginTop: 2 }}>

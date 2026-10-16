@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ScrollView, Text, useWindowDimensions, View } from "react-native";
+import { ScrollView, useWindowDimensions, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Image } from "expo-image";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
@@ -41,14 +42,14 @@ function CategoryChip({ label, active, onPress }: { label: string; active: boole
         alignItems: "center",
         justifyContent: "center",
         borderBottomWidth: 1.5,
-        borderBottomColor: active ? colors.foreground : "transparent",
+        borderBottomColor: active ? colors.accent : "transparent",
       }}
     >
       <Text
         style={{
-          color: active ? colors.foreground : colors.muted,
+          color: active ? colors.accent : colors.muted,
           fontSize: 14,
-          fontWeight: active ? "700" : "500",
+          fontWeight: active ? "600" : "500",
         }}
       >
         {label}

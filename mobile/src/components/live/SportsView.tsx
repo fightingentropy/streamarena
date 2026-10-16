@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, ScrollView, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { CONTENT_BOTTOM_INSET } from "@/components/ui/Screen";
 import { EmptyState, ErrorText } from "@/components/ui/States";
@@ -51,7 +52,7 @@ function MatchCard({ match, onPlay }: { match: SportMatch; onPlay: (m: SportMatc
         {live ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
             <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.live }} />
-            <Text style={{ color: colors.live, fontSize: 11, fontWeight: "800", letterSpacing: 0.6 }}>LIVE</Text>
+            <Text style={{ color: colors.live, fontSize: 11, fontWeight: "700", letterSpacing: 0.6 }}>LIVE</Text>
           </View>
         ) : (
           <Text style={{ color: colors.muted, fontSize: 12, fontWeight: "600" }}>
@@ -147,14 +148,14 @@ export function SportsView() {
                 alignItems: "center",
                 justifyContent: "center",
                 borderBottomWidth: 1.5,
-                borderBottomColor: active ? colors.foreground : "transparent",
+                borderBottomColor: active ? colors.accent : "transparent",
               }}
             >
               <Text
                 style={{
-                  color: active ? colors.foreground : colors.muted,
+                  color: active ? colors.accent : colors.muted,
                   fontSize: 14,
-                  fontWeight: active ? "700" : "500",
+                  fontWeight: active ? "600" : "500",
                 }}
               >
                 {s.label}

@@ -1,43 +1,49 @@
 // Design-system tokens for non-className contexts (icon colors, artwork scrims,
 // reanimated motion, and player chrome). Mirror of tailwind.config.js.
 //
-// The app chrome is deliberately monochrome: artwork is the expressive colour,
-// while red is reserved for live/destructive semantics. The legacy
-// `green`/`emerald` aliases remain so older ported components keep compiling while
-// inheriting the neutral selection colour.
+// Match the web's Geist / ink / coral theme. Keep the video canvas black and
+// preserve distinct live, warning and destructive colors.
 
 export const colors = {
-  background: "#000000",
-  surface: "#0c0c0d",
-  surfaceRaised: "#151516",
-  foreground: "#f2f2f2",
-  muted: "rgba(255,255,255,0.60)",
-  dim: "rgba(255,255,255,0.40)",
-  accent: "#f2f2f2",
-  accentPressed: "#d8d8da",
+  background: "#0b1017",
+  surface: "#151c26",
+  surfaceRaised: "#202a37",
+  foreground: "#f1f4f8",
+  muted: "#a8b3c3",
+  dim: "#8995a7",
+  accent: "#f2a38b",
+  accentPressed: "#ffc0ab",
+  accentSoft: "#f2a38b16",
+  accentLine: "#f2a38b70",
+  onAccent: "#291911",
+  header: "#0b1017f5",
   live: "#ff453a",
   danger: "#ff6961",
   warning: "#ff9f0a",
   // Legacy aliases used by a few ported components.
-  green: "#f2f2f2",
-  emerald: "#f2f2f2",
-  emeraldDarkCheck: "#111113",
-  card: "rgba(255,255,255,0.045)",
-  cardHover: "rgba(255,255,255,0.065)",
-  cardActive: "rgba(255,255,255,0.09)",
-  line: "rgba(255,255,255,0.08)",
-  hairline: "rgba(255,255,255,0.12)",
-  iconIdle: "rgba(255,255,255,0.58)",
+  green: "#f2a38b",
+  emerald: "#f2a38b",
+  emeraldDarkCheck: "#291911",
+  card: "#d9e5ff0b",
+  cardHover: "#d9e5ff11",
+  cardActive: "#d9e5ff17",
+  line: "#d9e5ff1c",
+  hairline: "#d9e5ff33",
+  iconIdle: "#a8b3c3",
   backdrop: "rgba(0,0,0,0.66)",
   // Functional artwork/video scrim stops.
   scrimTop: "rgba(0,0,0,0)",
-  scrimMid: "rgba(0,0,0,0.46)",
-  scrimBottom: "rgba(0,0,0,0.96)",
-  skeletonBase: "rgba(255,255,255,0.055)",
-  skeletonShimmer: "rgba(255,255,255,0.09)",
+  scrimMid: "rgba(11,16,23,0.46)",
+  scrimBottom: "rgba(11,16,23,0.96)",
+  skeletonBase: "#d9e5ff0e",
+  skeletonShimmer: "#d9e5ff17",
   white: "#ffffff",
   black: "#000000",
 } as const;
+
+// Static weights are embedded by expo-font at build time, so iOS can select the
+// correct face immediately without a startup fetch or a font-swap layout shift.
+export const typography = { fontFamily: "Geist" } as const;
 
 export const layout = {
   mobileNavHeight: 58, // bottom tab bar

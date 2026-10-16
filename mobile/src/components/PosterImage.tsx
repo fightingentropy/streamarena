@@ -33,7 +33,7 @@ export function PosterImage({
 
   if (!abs || failed) {
     return (
-      <View style={[{ backgroundColor: "#1a1a1a", alignItems: "center", justifyContent: "center" }, style as StyleProp<ViewStyle>]}>
+      <View style={[{ backgroundColor: colors.surfaceRaised, alignItems: "center", justifyContent: "center" }, style as StyleProp<ViewStyle>]}>
         {showPlaceholderIcon ? <Film size={22} color={colors.dim} /> : null}
       </View>
     );

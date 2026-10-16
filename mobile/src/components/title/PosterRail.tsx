@@ -1,5 +1,6 @@
 import { useCallback } from "react";
-import { FlatList, type ListRenderItemInfo, ScrollView, Text, View } from "react-native";
+import { FlatList, type ListRenderItemInfo, ScrollView, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { PosterCard } from "@/components/title/PosterCard";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { type Title } from "@/lib/streamarena";
@@ -32,7 +33,7 @@ export function PosterRail({
           color: colors.foreground,
           fontSize: 22,
           lineHeight: 27,
-          fontWeight: "700",
+          fontWeight: "600",
           letterSpacing: -0.35,
           paddingHorizontal: 16,
           marginBottom: 12,

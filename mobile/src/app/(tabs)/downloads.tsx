@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { ActivityIndicator, Alert, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Alert, ScrollView, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import { AlertCircle, Check, HardDrive, Play, Settings2, Trash2 } from "lucide-react-native";
 import { PosterImage } from "@/components/PosterImage";

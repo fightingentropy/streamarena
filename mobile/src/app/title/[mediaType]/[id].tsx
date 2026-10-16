@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import Animated, { useAnimatedScrollHandler, useSharedValue } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -186,9 +187,9 @@ export default function TitleDetailScreen() {
               numberOfLines={2}
               style={{
                 color: colors.foreground,
-                fontSize: 30,
-                lineHeight: 34,
-                fontWeight: "800",
+                fontSize: 34,
+                lineHeight: 39,
+                fontWeight: "600",
                 letterSpacing: -0.6,
               }}
             >
@@ -259,7 +260,7 @@ export default function TitleDetailScreen() {
               style={{
                 color: colors.foreground,
                 fontSize: 22,
-                fontWeight: "700",
+                fontWeight: "600",
                 letterSpacing: -0.35,
                 paddingHorizontal: 16,
                 marginBottom: 8,

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { type LayoutChangeEvent, Text, View } from "react-native";
+import { type LayoutChangeEvent, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { formatTime } from "@/lib/format";
 import { colors } from "@/theme";
@@ -108,7 +109,7 @@ export function Scrubber({ position, duration, onSeek, onScrubbing, live = false
               height: TRACK_H,
               width: fillW,
               borderRadius: TRACK_H / 2,
-              backgroundColor: colors.foreground,
+              backgroundColor: colors.accent,
             }}
           />
           <View
@@ -119,7 +120,7 @@ export function Scrubber({ position, duration, onSeek, onScrubbing, live = false
               width: THUMB,
               height: THUMB,
               borderRadius: THUMB / 2,
-              backgroundColor: colors.foreground,
+              backgroundColor: colors.accent,
             }}
           />
         </View>

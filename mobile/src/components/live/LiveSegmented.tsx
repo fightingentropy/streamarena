@@ -1,4 +1,5 @@
-import { Text, View } from "react-native";
+import { View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { selectionAsync } from "@/lib/haptics";
 import { colors } from "@/theme";
@@ -43,14 +44,14 @@ export function LiveSegmented({ value, onChange }: { value: LiveTab; onChange: (
               marginRight: 26,
               paddingHorizontal: 2,
               borderBottomWidth: 2,
-              borderBottomColor: active ? colors.foreground : "transparent",
+              borderBottomColor: active ? colors.accent : "transparent",
             }}
           >
             <Text
               style={{
-                color: active ? colors.foreground : colors.muted,
+                color: active ? colors.accent : colors.muted,
                 fontSize: 15,
-                fontWeight: active ? "700" : "500",
+                fontWeight: active ? "600" : "500",
               }}
             >
               {tab.label}

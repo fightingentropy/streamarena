@@ -1,4 +1,5 @@
-import { Pressable, Text, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { Check } from "lucide-react-native";
 import { Sheet } from "@/components/ui/Sheet";
 import { selectionAsync } from "@/lib/haptics";
@@ -13,7 +14,7 @@ export function LiveSourcesSheet({ visible, onClose }: { visible: boolean; onClo
 
   return (
     <Sheet visible={visible} onClose={onClose} heightPct={0.5} zIndex={120}>
-      <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: "700", letterSpacing: -0.25, marginHorizontal: 20, marginTop: 6, marginBottom: 4 }}>Streams</Text>
+      <Text style={{ color: colors.foreground, fontSize: 24, fontWeight: "600", letterSpacing: -0.25, marginHorizontal: 20, marginTop: 6, marginBottom: 4 }}>Streams</Text>
       <Text style={{ color: colors.muted, fontSize: 13, lineHeight: 18, marginHorizontal: 20, marginBottom: 14 }}>
         Pick a source if the current one stalls or buffers.
       </Text>
@@ -33,7 +34,7 @@ export function LiveSourcesSheet({ visible, onClose }: { visible: boolean; onClo
           >
             <View style={{ width: 22, alignItems: "center" }}>{active ? <Check size={20} color={colors.accent} /> : null}</View>
             <View style={{ flex: 1 }}>
-              <Text style={{ color: colors.foreground, fontSize: 15, fontWeight: active ? "700" : "500" }}>{opt.label}</Text>
+              <Text style={{ color: colors.foreground, fontSize: 15, fontWeight: active ? "600" : "500" }}>{opt.label}</Text>
               {opt.quality ? <Text style={{ color: colors.muted, fontSize: 12, marginTop: 1 }}>{opt.quality}</Text> : null}
             </View>
           </Pressable>

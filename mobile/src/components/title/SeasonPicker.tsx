@@ -1,4 +1,5 @@
-import { ScrollView, Text } from "react-native";
+import { ScrollView } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { type TmdbSeasonSummary } from "@/lib/streamarena";
 import { colors } from "@/theme";
@@ -34,14 +35,14 @@ export function SeasonPicker({
               justifyContent: "center",
               paddingVertical: 8,
               borderBottomWidth: 2,
-              borderBottomColor: active ? colors.foreground : "transparent",
+              borderBottomColor: active ? colors.accent : "transparent",
             }}
           >
             <Text
               style={{
-                color: active ? colors.foreground : colors.muted,
+                color: active ? colors.accent : colors.muted,
                 fontSize: 14,
-                fontWeight: active ? "700" : "600",
+                fontWeight: active ? "600" : "600",
               }}
             >
               {season.name || `Season ${season.season_number}`}

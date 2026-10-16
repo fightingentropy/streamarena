@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useRouter } from "expo-router";
 import { Wordmark } from "@/components/brand/Wordmark";
 import { Screen } from "@/components/ui/Screen";
@@ -64,7 +65,7 @@ export default function RegisterScreen() {
                 color: colors.foreground,
                 fontSize: 36,
                 lineHeight: 40,
-                fontWeight: "700",
+                fontWeight: "600",
                 letterSpacing: -1,
               }}
             >
@@ -136,11 +137,11 @@ export default function RegisterScreen() {
                 justifyContent: "center",
                 borderRadius: 14,
                 borderCurve: "continuous",
-                backgroundColor: colors.foreground,
+                backgroundColor: colors.accent,
                 opacity: canSubmit ? 1 : 0.46,
               }}
             >
-              <Text style={{ color: colors.background, fontSize: 16, fontWeight: "700" }}>
+              <Text style={{ color: colors.onAccent, fontSize: 16, fontWeight: "600" }}>
                 {busy ? "Creating…" : "Create account"}
               </Text>
             </PressableScale>

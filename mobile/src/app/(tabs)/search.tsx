@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { ActivityIndicator, FlatList, Keyboard, ScrollView, Text, TextInput, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, FlatList, Keyboard, ScrollView, useWindowDimensions, View } from "react-native";
+import { Text, TextInput } from "@/components/ui/Text";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Search as SearchIcon, SlidersHorizontal, X } from "lucide-react-native";
@@ -16,8 +17,8 @@ import type { MediaType } from "@/lib/streamarena";
 import { colors, radius } from "@/theme";
 
 function Chip({ label, active = false, onPress }: { label: string; active?: boolean; onPress: () => void }) {
-  return <PressableScale onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active }} style={{ minHeight: 38, justifyContent: "center", paddingHorizontal: 13, paddingVertical: 9, borderRadius: radius.control, borderWidth: 0.5, borderColor: active ? colors.foreground : colors.hairline, backgroundColor: active ? colors.surfaceRaised : colors.background }}>
-    <Text style={{ color: active ? colors.foreground : colors.muted, fontSize: 13, fontWeight: "600" }}>{label}</Text>
+  return <PressableScale onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active }} style={{ minHeight: 38, justifyContent: "center", paddingHorizontal: 13, paddingVertical: 9, borderRadius: radius.control, borderWidth: 0.5, borderColor: active ? colors.accentLine : colors.hairline, backgroundColor: active ? colors.accentSoft : colors.surface }}>
+    <Text style={{ color: active ? colors.accent : colors.muted, fontSize: 13, fontWeight: "600" }}>{label}</Text>
   </PressableScale>;
 }
 
@@ -58,7 +59,7 @@ export default function SearchScreen() {
           {([["all", "All"], ["movie", "Movies"], ["tv", "Series"]] as const).map(([value, label]) => <Chip key={value} label={label} active={mediaType === value} onPress={() => setMediaType(value)} />)}
           <View style={{ flex: 1 }} />
           <PressableScale accessibilityRole="button" accessibilityLabel="Filter by genre and year" onPress={() => { Keyboard.dismiss(); setDraftGenre(genre); setDraftYear(year); setFiltersOpen(true); }} style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 10 }}>
-            <SlidersHorizontal size={17} color={filtered ? colors.foreground : colors.muted} /><Text style={{ color: filtered ? colors.foreground : colors.muted, fontSize: 13 }}>Filters{filtered ? " ·" : ""}</Text>
+            <SlidersHorizontal size={17} color={filtered ? colors.accent : colors.muted} /><Text style={{ color: filtered ? colors.accent : colors.muted, fontSize: 13 }}>Filters{filtered ? " ·" : ""}</Text>
           </PressableScale>
         </View>
         {filtered ? <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
@@ -87,7 +88,7 @@ export default function SearchScreen() {
 
       <Sheet visible={filtersOpen} onClose={() => setFiltersOpen(false)} heightPct={0.67}>
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 20, gap: 18, paddingBottom: insets.bottom + 24 }}>
-          <Text style={{ color: colors.foreground, fontSize: 22, fontWeight: "700" }}>Filter titles</Text>
+          <Text style={{ color: colors.foreground, fontSize: 24, fontWeight: "600" }}>Filter titles</Text>
           <Text style={{ color: colors.muted, fontSize: 13 }}>Genre</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}><Chip label="All genres" active={!draftGenre} onPress={() => setDraftGenre("")} />{response?.genres?.map((g) => <Chip key={g.id} label={g.name} active={draftGenre === g.id} onPress={() => setDraftGenre(g.id)} />)}</View>
           <Text style={{ color: colors.muted, fontSize: 13 }}>Release year</Text>

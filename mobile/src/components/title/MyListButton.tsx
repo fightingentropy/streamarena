@@ -28,7 +28,7 @@ export function MyListButton({ item }: { item: MyListItem }) {
   return (
     <DetailAction
       icon={
-        saved ? <Check size={26} color={colors.foreground} /> : <Plus size={26} color={colors.foreground} />
+        saved ? <Check size={26} color={colors.accent} /> : <Plus size={26} color={colors.foreground} />
       }
       label="My List"
       active={saved}

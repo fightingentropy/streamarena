@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo } from "react";
-import { FlatList, type ListRenderItemInfo, Text, useWindowDimensions, View } from "react-native";
+import { FlatList, type ListRenderItemInfo, useWindowDimensions, View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ScreenHeader } from "@/components/nav/ScreenHeader";
 import { PosterCard } from "@/components/title/PosterCard";

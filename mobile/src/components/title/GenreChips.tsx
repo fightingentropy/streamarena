@@ -1,4 +1,4 @@
-import { Text } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { colors } from "@/theme";
 
 // Compact inline genres avoid adding a second layer of decorative cards.

@@ -1,5 +1,6 @@
 import { useRouter } from "expo-router";
-import { Text, View } from "react-native";
+import { View } from "react-native";
+import { Text } from "@/components/ui/Text";
 import { PressableScale } from "@/components/ui/PressableScale";
 import { colors, radius } from "@/theme";
 
@@ -39,7 +40,7 @@ export function EmptyState({
           style={{ backgroundColor: colors.accent, borderRadius: radius.control }}
           accessibilityLabel={actionLabel}
         >
-          <Text className="font-semibold text-black">{actionLabel}</Text>
+          <Text className="font-semibold" style={{ color: colors.onAccent }}>{actionLabel}</Text>
         </PressableScale>
       ) : null}
     </View>
@@ -58,7 +59,7 @@ export function SignedOutPrompt({ message }: { message: string }) {
         className="px-6 py-3"
         style={{ backgroundColor: colors.accent, borderRadius: radius.control }}
       >
-        <Text className="font-semibold text-black">Sign in</Text>
+        <Text className="font-semibold" style={{ color: colors.onAccent }}>Sign in</Text>
       </PressableScale>
     </View>
   );
