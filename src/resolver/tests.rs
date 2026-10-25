@@ -23,7 +23,7 @@ use super::{
     LocalTorrentResolvedSource, PlaybackSession, PlaybackSessionRevalidation,
     RD_SELECTED_FILE_MISMATCH_ERROR, ResolveFilters, ResolveMetadata, ResolvePreferences,
     ResolvedSource, ResolverExternalGuard, ResolverMetrics, ResolverProvider, ResolverService,
-    SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats,
+    SOURCE_HEALTH_AVOID_SCORE, SourceFilters, SourceHealthStats, avoid_external_embed_sources,
     build_external_embed_source_summaries, build_movie_resolve_lock_key,
     build_playback_session_key_for_metadata, build_rd_torrent_cache_key,
     build_real_debrid_cache_scope, build_real_debrid_unrestrict_form,
@@ -1815,6 +1815,47 @@ fn external_embed_health_changes_automatic_default_but_not_explicit_pins() {
         ..SourceHealthStats::default()
     });
     assert!(failed < SOURCE_HEALTH_AVOID_SCORE);
+}
+
+#[test]
+fn recovery_avoid_list_skips_sources_whose_media_failed_for_that_request() {
+    let metadata = sample_movie_metadata();
+    let health_scores: HashMap<String, i64> = external_embed_sources()
+        .into_iter()
+        .map(|source| (external_embed_source_hash(source, &metadata), 0))
+        .collect();
+    let first =
+        default_external_embed_source(&metadata, &health_scores).expect("default embed source");
+    let first_hash = external_embed_source_hash(first, &metadata);
+    // The manifest resolved, so resolver health alone still ranks it first.
+    let mut health_scores = health_scores;
+    health_scores.insert(first_hash.clone(), 75);
+    let unknown_hash = "f".repeat(40);
+    let mut avoided = health_scores.clone();
+    avoid_external_embed_sources(
+        &mut avoided,
+        &format!(" {} ,not-a-hash,{unknown_hash}", first_hash.to_uppercase()),
+    );
+    let next = default_external_embed_source(&metadata, &avoided).expect("another source");
+    assert_ne!(next, first);
+    avoid_external_embed_sources(&mut avoided, &external_embed_source_hash(next, &metadata));
+    let candidates = external_embed_hls_candidate_sources(first, &metadata, true, &avoided);
+    assert!(!candidates.is_empty());
+    assert!(!candidates.contains(&first) && !candidates.contains(&next));
+    assert!(
+        !avoided.contains_key(&unknown_hash),
+        "unknown hashes are ignored"
+    );
+    assert_eq!(
+        external_embed_hls_candidate_sources(first, &metadata, false, &avoided),
+        vec![first],
+        "an explicitly selected source stays selectable"
+    );
+    assert_eq!(
+        default_external_embed_source(&metadata, &health_scores),
+        Some(first),
+        "avoidance applies only to the request that named the sources"
+    );
 }
 
 #[test]

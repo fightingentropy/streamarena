@@ -17,7 +17,7 @@ function switchingHarness() {
     ...manual, console, HTMLElement: class {},
     selectedSourceHash: "A", pendingSourceSwitchHash: "", sourceSelectionPinned: false,
     isTmdbResolvedPlayback: true, userLocalTorrentEnabled: false,
-    preferredResolverProvider: "fastest", tmdbPlaybackRequestToken: 0, tmdbResolveRetries: 0,
+    preferredResolverProvider: "fastest", tmdbPlaybackRequestToken: 0, sourceRecovery: { reset() {} },
     sourceControl: null, sourceOptionDetails: null, resumeTime: 42,
     video: { currentTime: 42, paused: false, readyState: 4 },
     activeSource: "A-url",
@@ -144,6 +144,7 @@ test("a seek timeupdate without decoded data must not disarm recovery", () => {
     hideStaleLiveResolverWhilePlayingForState() {}, isLivePlayback: false, resolverOverlay: null,
     liveTransportFallback: { isRecovering: () => false }, hideResolver() {}, applyInitialResumeIfReady: () => true,
     persistResumeTime() {}, hasSeriesEpisodeControls: false, autoPlayOverlayVisible: false,
+    isRecoveringTmdbStream: false, sourceRecovery: { noteProgress() {} },
   };
   vm.runInNewContext(extract('trackListener(video, "timeupdate", () => {', 'trackListener(video, "play", syncPlayState)'), context);
   handlers[0]();

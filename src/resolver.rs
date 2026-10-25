@@ -1125,6 +1125,7 @@ impl ResolverService {
         resolver_provider: &str,
         skip_external_embed: bool,
         refresh_resolve: bool,
+        avoid_source_hashes: &str,
         record_external_health_events: bool,
         benchmark_exact_session_reuse: bool,
         defer_subtitles: bool,
@@ -1207,6 +1208,7 @@ impl ResolverService {
                 resolver_provider,
                 skip_external_embed,
                 refresh_resolve,
+                avoid_source_hashes,
                 record_external_health_events,
             )
             .await?;
@@ -1313,6 +1315,7 @@ impl ResolverService {
         resolver_provider: ResolverProvider,
         skip_external_embed: bool,
         refresh_resolve: bool,
+        avoid_source_hashes: &str,
         record_external_health_events: bool,
     ) -> AppResult<Value> {
         let stored_preference = self
@@ -1355,7 +1358,9 @@ impl ResolverService {
         let metadata = self
             .fetch_movie_metadata(tmdb_id, title_fallback, year_fallback)
             .await?;
-        let external_health_scores = self.compute_external_embed_health_scores(&metadata).await?;
+        let mut external_health_scores =
+            self.compute_external_embed_health_scores(&metadata).await?;
+        avoid_external_embed_sources(&mut external_health_scores, avoid_source_hashes);
         // Bust the resolved-embed cache when the client asks for a fresh resolve
         // (e.g. the player retrying after a playback failure), so a stale/dead
         // upstream URL can't be re-served on the recovery path.
@@ -1646,6 +1651,7 @@ impl ResolverService {
         resolver_provider: &str,
         skip_external_embed: bool,
         refresh_resolve: bool,
+        avoid_source_hashes: &str,
         record_external_health_events: bool,
         benchmark_exact_session_reuse: bool,
         defer_subtitles: bool,
@@ -1754,6 +1760,7 @@ impl ResolverService {
                 resolver_provider,
                 skip_external_embed,
                 refresh_resolve,
+                avoid_source_hashes,
                 record_external_health_events,
             )
             .await?;
@@ -1803,6 +1810,7 @@ impl ResolverService {
         resolver_provider: ResolverProvider,
         skip_external_embed: bool,
         refresh_resolve: bool,
+        avoid_source_hashes: &str,
         record_external_health_events: bool,
     ) -> AppResult<Value> {
         let stored_preference = self
@@ -1867,7 +1875,9 @@ impl ResolverService {
                 episode_number,
             )
             .await?;
-        let external_health_scores = self.compute_external_embed_health_scores(&metadata).await?;
+        let mut external_health_scores =
+            self.compute_external_embed_health_scores(&metadata).await?;
+        avoid_external_embed_sources(&mut external_health_scores, avoid_source_hashes);
         // Bust the resolved-embed cache on a fresh-resolve request (e.g. player
         // recovery after a playback failure) so a stale/dead upstream URL can't be
         // re-served from cache.
@@ -5994,6 +6004,29 @@ fn compute_external_embed_provider_rank_health_score(stats: &SourceHealthStats) 
         -EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP,
         EXTERNAL_EMBED_POSITIVE_HEALTH_SCORE_CAP,
     )
+}
+
+/// Bounds the parsing of the player-supplied avoid list.
+const MAX_AVOIDED_SOURCE_HASHES: usize = 32;
+
+/// Player recovery names the sources whose media just failed for this viewer.
+/// Their resolver health can still look good: the manifest resolved, and only the
+/// media relay saw the missing origin (424), so each refresh re-recorded a success
+/// and the five-minute failed-source skip never applied. Rank them as unhealthy
+/// for this one automatic choice; explicit pins ignore health and stay selectable.
+fn avoid_external_embed_sources(
+    health_scores: &mut HashMap<String, i64>,
+    avoid_source_hashes: &str,
+) {
+    for source_hash in avoid_source_hashes
+        .split(',')
+        .take(MAX_AVOIDED_SOURCE_HASHES)
+        .map(normalize_source_hash)
+    {
+        if let Some(score) = health_scores.get_mut(&source_hash) {
+            *score = (*score).min(SOURCE_HEALTH_AVOID_SCORE);
+        }
+    }
 }
 
 fn external_embed_failure_cooled_down(stats: &SourceHealthStats, score: i64) -> bool {
