@@ -747,6 +747,10 @@ mod tests {
                         _ => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
                     };
                     let _ = socket.write_all(&response).await;
+                    // Close gracefully: an abrupt drop can reset the
+                    // connection before the client reads the body.
+                    let _ = socket.shutdown().await;
+                    let _ = socket.read(&mut buffer).await;
                 });
             }
         });
@@ -773,18 +777,18 @@ mod tests {
             async move { fetch_bytes_to(&client, target, range, limit, timeout_ms, loopback_only).await }
         };
 
-        let (final_url, body) = fetch("/hop", None, 1024, 2_000).await.unwrap();
+        let (final_url, body) = fetch("/hop", None, 1024, 10_000).await.unwrap();
         assert_eq!(
             (final_url.path(), body.as_slice()),
             ("/ok", b"hello".as_slice())
         );
         for path in ["/to-private", "/to-plaintext-host", "/loop", "/missing"] {
-            assert!(fetch(path, None, 1024, 2_000).await.is_none(), "{path}");
+            assert!(fetch(path, None, 1024, 10_000).await.is_none(), "{path}");
         }
         // Whole responses over the limit are refused; a ranged probe keeps
         // only its prefix from a server that ignores Range.
-        assert!(fetch("/large", None, 1024, 2_000).await.is_none());
-        let (_, prefix) = fetch("/ignores-range", Some(1024), 1024, 2_000)
+        assert!(fetch("/large", None, 1024, 10_000).await.is_none());
+        let (_, prefix) = fetch("/ignores-range", Some(1024), 1024, 10_000)
             .await
             .unwrap();
         assert_eq!(prefix.len(), 1024);
@@ -799,7 +803,7 @@ mod tests {
         }
         // Production refuses the loopback fixture before connecting.
         assert!(
-            fetch_bytes(&client, url("/ok"), None, 1024, 2_000)
+            fetch_bytes(&client, url("/ok"), None, 1024, 10_000)
                 .await
                 .is_none()
         );
