@@ -104,7 +104,7 @@ import {
 } from "../player/live-stream-cache.js";
 import { createLivePlaybackHealthWatch } from "../player/live-playback-health.js";
 import { createLiveTransportFallbackController } from "../player/live-transport-fallback.js";
-import { createSourceRecoveryBudget, describeFailedSourceRecovery, runBoundedSourceRecovery } from "../player/source-recovery.js";
+import { createSourceRecoveryBudget, describeFailedSourceRecovery, pickRecoverySourceHash, runBoundedSourceRecovery } from "../player/source-recovery.js";
 import { buildMediaDeliveryQueue } from "../player/media-delivery.js";
 import {
   LIVE_EDGE_PIN_RATIO,
@@ -3638,10 +3638,10 @@ function attemptTmdbRecovery(message, { failureMessage = "", sourceUnavailable =
   ) {
     return false;
   }
-  // The final error stays until the viewer acts; later stall/media callbacks are handled.
-  if (sourceRecovery.hasFailed()) return true;
-  sourceRecovery.begin(normalizeSourceHash(selectedSourceHash));
-  if (sourceRecovery.isExhausted()) return failAutomaticSourceRecovery();
+  // The final error stays until the viewer acts; a dismissed one is shown again.
+  if (sourceRecovery.hasFailed()) return resolverOverlay?.classList.contains("is-error") || failAutomaticSourceRecovery();
+  const hopToMirror = !sourceUnavailable && hasQueuedTmdbSourceFallback();
+  if (!hopToMirror && sourceRecovery.begin(normalizeSourceHash(selectedSourceHash))) return failAutomaticSourceRecovery();
 
   const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
   const recoveryRequestToken = ++tmdbPlaybackRequestToken;
@@ -3653,7 +3653,7 @@ function attemptTmdbRecovery(message, { failureMessage = "", sourceUnavailable =
   // selected source hash (and its menu tick) and just advance the queue. Only
   // demote/clear the selection when no mirrors remain and we fall through to
   // re-resolving a different source.
-  if (!sourceUnavailable && hasQueuedTmdbSourceFallback()) {
+  if (hopToMirror) {
     void tryNextTmdbSource().finally(() => {
       if (recoveryRequestToken === tmdbPlaybackRequestToken) isRecoveringTmdbStream = false;
     });
@@ -3681,16 +3681,16 @@ function attemptTmdbRecovery(message, { failureMessage = "", sourceUnavailable =
     .then(() => runBoundedSourceRecovery({
       budget: sourceRecovery,
       isCurrent,
-      pickSourceHash: (avoided) => (availablePlaybackSources.length ? pickResolverAlternateSourceHash(avoided, false) || null : ""),
+      pickSourceHash: (avoided) => pickRecoverySourceHash(pickResolverAlternateSourceHash(avoided, false), availablePlaybackSources, { loading: isFetchingPlaybackSources }),
       // A fresh resolve evicts a stale cached upstream URL server-side. One request
-      // per source: no hidden unpinned fallback that could land on a failed source.
+      // per source: no hidden unpinned or container fallback for the same source.
       resolveSource: ({ sourceHash, timeoutMs, avoidSourceHashes }) => resolveTmdbSourcesAndPlay({
         playbackRequestToken: recoveryRequestToken, startSeconds: resumeAt, preservePlaybackState: true,
-        refreshResolve: true, allowSourceFallback: false, skipExternalEmbed: false,
+        refreshResolve: true, allowSourceFallback: false, allowContainerFallback: false, skipExternalEmbed: false,
         requestSourceHash: sourceHash, resolveTimeoutMs: timeoutMs, avoidSourceHashes,
       }).then((result) => ({ stale: result?.stale, sourceHash: normalizeSourceHash(result?.resolved?.sourceHash) })),
     }))
-    .then((outcome) => outcome.stale || outcome.recovered || failAutomaticSourceRecovery(outcome.error))
+    .then((outcome) => outcome.stale || outcome.recovered || failAutomaticSourceRecovery(outcome.error, outcome))
     .catch((error) => isCurrent() && failAutomaticSourceRecovery(error))
     .finally(() => {
       if (recoveryRequestToken === tmdbPlaybackRequestToken) isRecoveringTmdbStream = false;
@@ -3698,12 +3698,12 @@ function attemptTmdbRecovery(message, { failureMessage = "", sourceUnavailable =
   return true;
 }
 
-function failAutomaticSourceRecovery(lastError = null) {
+function failAutomaticSourceRecovery(lastError = null, { connectivity = false } = {}) {
   if (lastError) console.error("Automatic source recovery failed:", lastError);
   const summary = sourceRecovery.fail();
   // Keep the position for Retry, but stop the broken media from hiding the error.
   video.pause();
-  showResolverError(describeFailedSourceRecovery(summary), "", { showRetry: true });
+  showResolverError(describeFailedSourceRecovery({ ...summary, connectivity }), "", { showRetry: true });
   return true;
 }
 
@@ -6776,8 +6776,8 @@ function schedulePlaybackRecovery(
   if (isManualSourceSwitchPending()) {
     return true;
   }
-  // Late network errors from the abandoned source must not replace the final error.
-  if (sourceRecovery.hasFailed()) return true;
+  // Late errors from the abandoned source keep (or re-show a dismissed) final error.
+  if (sourceRecovery.hasFailed()) return resolverOverlay?.classList.contains("is-error") || failAutomaticSourceRecovery();
 
   if (!playerShell && !hasRecoverablePlaybackSource() && !isTmdbResolvedPlayback) {
     return false;
@@ -7089,6 +7089,7 @@ function tryAlternatePlaybackSourceNow() {
   }
 
   clearPlaybackRecovery({ hideOverlay: false });
+  sourceRecovery.reset(); // A viewer request starts a fresh bounded attempt.
   if (attemptTmdbRecovery("Trying another source...")) {
     return;
   }

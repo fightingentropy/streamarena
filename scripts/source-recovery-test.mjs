@@ -8,8 +8,10 @@ import { createPlaybackRouting } from "../src-ui/player/playback-routing.js";
 import {
   AUTOMATIC_RECOVERY_BUDGET_MS,
   AUTOMATIC_RECOVERY_MAX_SOURCES,
+  classifySourceRecoveryError,
   createSourceRecoveryBudget,
   describeFailedSourceRecovery,
+  pickRecoverySourceHash,
   runBoundedSourceRecovery,
 } from "../src-ui/player/source-recovery.js";
 
@@ -116,12 +118,92 @@ test("sustained playback ends the attempt; a reset starts a fresh one", () => {
 });
 
 test("the avoid list keeps recent failures first and stays bounded", () => {
-  const known = new Set(Array.from({ length: 20 }, (_, index) => index.toString(16).padStart(40, "0")));
-  const budget = createSourceRecoveryBudget({ knownFailedSourceHashes: known });
+  const older = Array.from({ length: 20 }, (_, index) => index.toString(16).padStart(40, "0"));
+  const budget = createSourceRecoveryBudget({ knownFailedSourceHashes: new Set(older) });
   budget.begin(A);
+  budget.markTried(B);
   const avoided = budget.avoidedSourceHashes();
-  assert.equal(avoided[0], A);
+  assert.deepEqual(avoided.slice(0, 2), [B, A], "this attempt's sources first, newest first");
   assert.equal(avoided.length, 16);
+  assert(avoided.includes(older.at(-1)), "the newest page-lifetime failure is kept");
+  assert(!avoided.includes(older[0]), "the oldest page-lifetime failure is dropped first");
+});
+
+test("time a replacement spends playing or paused does not spend the budget", async () => {
+  let now = 0;
+  const budget = createSourceRecoveryBudget({ nowFn: () => now });
+  budget.begin(A);
+  await runBoundedSourceRecovery({
+    budget,
+    pickSourceHash: () => B,
+    resolveSource: async ({ sourceHash }) => {
+      now += 20_000;
+      return { sourceHash };
+    },
+  });
+  // B plays briefly, the viewer pauses for ten minutes, then B fails.
+  now += 600_000;
+  budget.begin(B);
+  assert.equal(budget.isExhausted(), false);
+  assert.equal(budget.summary().elapsedMs, 20_000);
+  const timeouts = [];
+  await runBoundedSourceRecovery({
+    budget,
+    pickSourceHash: () => C,
+    resolveSource: async ({ sourceHash, timeoutMs }) => {
+      timeouts.push(timeoutMs);
+      return { sourceHash };
+    },
+  });
+  assert.deepEqual(timeouts, [AUTOMATIC_RECOVERY_BUDGET_MS - 20_000]);
+});
+
+test("errors are classified as source, transient or connectivity failures", () => {
+  assert.equal(classifySourceRecoveryError(unavailable()), "source");
+  assert.equal(classifySourceRecoveryError(new Error("Request timed out.")), "transient");
+  assert.equal(classifySourceRecoveryError(Object.assign(new Error("busy"), { status: 429 })), "transient");
+  assert.equal(classifySourceRecoveryError(Object.assign(new Error("bad gateway"), { status: 502 })), "transient");
+  assert.equal(classifySourceRecoveryError(new TypeError("Failed to fetch")), "connectivity");
+  assert.equal(classifySourceRecoveryError(unavailable(), { offline: true }), "connectivity");
+});
+
+test("a dropped connection ends the loop without blaming or spending sources", async () => {
+  const failed = new Set();
+  const budget = createSourceRecoveryBudget({ knownFailedSourceHashes: failed });
+  budget.begin(A);
+  const resolved = [];
+  const outcome = await runBoundedSourceRecovery({
+    budget,
+    classifyError: classifySourceRecoveryError,
+    pickSourceHash: avoided => [B, C, D].find(candidate => !avoided.has(candidate)) ?? null,
+    resolveSource: async ({ sourceHash }) => {
+      resolved.push(sourceHash);
+      throw new TypeError("Failed to fetch");
+    },
+  });
+  assert.equal(outcome.connectivity, true);
+  assert.deepEqual(resolved, [B]);
+  assert.equal(failed.size, 0, "a healthy source is not avoided for the rest of the page");
+  assert.equal(budget.summary().sources, 0);
+});
+
+test("a timed-out resolve is tried but not remembered as a failed source", async () => {
+  const failed = new Set();
+  const budget = createSourceRecoveryBudget({ knownFailedSourceHashes: failed });
+  budget.begin(A);
+  const resolved = [];
+  await runBoundedSourceRecovery({
+    budget,
+    classifyError: classifySourceRecoveryError,
+    pickSourceHash: avoided => [B, C].find(candidate => !avoided.has(candidate)) ?? null,
+    resolveSource: async ({ sourceHash }) => {
+      resolved.push(sourceHash);
+      if (sourceHash === B) throw new Error("Request timed out.");
+      return { sourceHash };
+    },
+  });
+  assert.deepEqual(resolved, [B, C], "B is not resolved twice in one attempt");
+  assert.equal(failed.has(B), false);
 });
 
 test("an automatic resolve cannot replay a source that already failed", async () => {
@@ -155,7 +237,7 @@ test("an automatic resolve cannot replay a source that already failed", async ()
 
 // Production, 2026-10-25: each replacement's opening segments played, then its
 // media returned 424. The player re-resolved for 106 s with no final state.
-function recoveryHarness({ fails = new Set(), sources = sourceList } = {}) {
+function recoveryHarness({ fails = new Set(), sources = sourceList, fetchingSources = false } = {}) {
   let now = 0;
   const failed = new Set();
   const resolves = [];
@@ -168,9 +250,11 @@ function recoveryHarness({ fails = new Set(), sources = sourceList } = {}) {
     selectedSourceHash: A, sourceSelectionPinned: false, currentTmdbPlaybackSessionKey: "",
     tmdbPlaybackRequestToken: 0, tmdbSkipExternalEmbed: false, preferredResolverProvider: "fastest",
     DEFAULT_RESOLVER_PROVIDER: "fastest", availablePlaybackSources: sources,
+    isFetchingPlaybackSources: fetchingSources, pickRecoverySourceHash,
     pickResolverAlternateSourceHashFromRouting: pickResolverAlternateSourceHash,
     getEffectiveCurrentTime: () => 600, stopLocalCacheUpgradeWatch() {},
-    hasQueuedTmdbSourceFallback: () => false, tryNextTmdbSource: async () => true,
+    hasQueuedTmdbSourceFallback: () => context.queuedMirrors > 0, queuedMirrors: 0, mirrorHops: 0,
+    tryNextTmdbSource: async () => { context.queuedMirrors -= 1; context.mirrorHops += 1; return true; },
     reportCurrentTmdbPlaybackFailure: async () => true,
     demoteCurrentExternalEmbedSourceForRecovery: () => {
       failed.add(context.selectedSourceHash);
@@ -188,12 +272,13 @@ function recoveryHarness({ fails = new Set(), sources = sourceList } = {}) {
     overlay: null,
     showResolver: message => { context.overlay = { message, error: false }; },
     showResolverError: (message, _fallback, options) => { context.overlay = { message, error: true, ...options }; },
+    resolverOverlay: { classList: { contains: name => name === "is-error" && Boolean(context.overlay?.error) } },
   };
   vm.createContext(context);
   vm.runInContext(`${extract("function attemptTmdbRecovery(", "function setEpisodeLabel(")}
 ${extract("function pickResolverAlternateSourceHash(", "async function resolveTmdbFromResolverAction(")}`, context);
-  const mediaFails = async () => {
-    const handled = context.attemptTmdbRecovery("Trying alternate source...", { sourceUnavailable: true });
+  const mediaFails = async ({ sourceUnavailable = true } = {}) => {
+    const handled = context.attemptTmdbRecovery("Trying alternate source...", { sourceUnavailable });
     for (let index = 0; index < 5; index++) await flush();
     return handled;
   };
@@ -211,8 +296,9 @@ test("replacements that start and then lose their media end in a final error", a
   const pinned = resolves.map(request => request.requestSourceHash);
   assert.deepEqual(pinned, [B, C, D]);
   assert(!pinned.includes(A), "the source whose media failed is never re-resolved");
-  assert(resolves.every(request => request.refreshResolve && request.allowSourceFallback === false),
-    "each claimed source is one fresh resolve, without a hidden unpinned fallback");
+  assert(resolves.every(request => request.refreshResolve && request.allowSourceFallback === false &&
+    request.allowContainerFallback === false),
+    "each claimed source is one fresh resolve, without a hidden unpinned or container fallback");
   assert.equal(context.overlay.error, true);
   assert.equal(context.overlay.showRetry, true);
   assert.match(context.overlay.message, /after trying 3 other sources\. Retry now, or try another source\./);
@@ -239,4 +325,44 @@ test("without a source list the server chooses, avoiding the failed source", asy
   assert.deepEqual(resolves[0].avoidSourceHashes, [A]);
   assert.equal(context.overlay.error, true);
   assert.match(context.overlay.message, /after trying another source/);
+});
+
+test("a dismissed final error comes back when the dead stream fails again", async () => {
+  const { context, resolves, mediaFails } = recoveryHarness({ fails: new Set([B, C, D]) });
+  await mediaFails();
+  assert.equal(context.overlay.error, true);
+  const resolveCount = resolves.length;
+  // The viewer closes the overlay (for example by opening the Audio popover) and presses play.
+  context.overlay = null;
+  context.video.paused = false;
+  assert.equal(await mediaFails(), true);
+  assert.equal(context.overlay?.error, true);
+  assert.equal(context.overlay.showRetry, true);
+  assert.equal(context.video.paused, true);
+  assert.equal(resolves.length, resolveCount, "the latch does not start new resolves");
+});
+
+test("the last replacement can still fail over to its own mirrors", async () => {
+  const { context, resolves, mediaFails } = recoveryHarness();
+  for (let index = 0; index < AUTOMATIC_RECOVERY_MAX_SOURCES; index++) await mediaFails();
+  assert.equal(resolves.length, AUTOMATIC_RECOVERY_MAX_SOURCES);
+  context.queuedMirrors = 1;
+  await mediaFails({ sourceUnavailable: false });
+  assert.equal(context.mirrorHops, 1, "the in-source mirror hop runs despite a spent source budget");
+  assert.notEqual(context.overlay?.error, true);
+});
+
+test("a source list with only the resolved row lets the server choose", async () => {
+  const current = [{ sourceHash: A, provider: "Current", container: "hls" }];
+  const { resolves, mediaFails } = recoveryHarness({ sources: current, fails: new Set([""]) });
+  await mediaFails();
+  assert.equal(resolves.length, 1);
+  assert.equal(resolves[0].requestSourceHash, "");
+  assert.deepEqual(resolves[0].avoidSourceHashes, [A]);
+});
+
+test("while the catalog is still loading, recovery asks the server instead of giving up", async () => {
+  const { resolves, mediaFails } = recoveryHarness({ sources: [sourceList[0]], fetchingSources: true, fails: new Set([B]) });
+  await mediaFails();
+  assert.deepEqual(resolves.map(request => request.requestSourceHash), [B, ""]);
 });
