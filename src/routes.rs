@@ -1736,6 +1736,10 @@ pub async fn resolve_movie_handler(
                         .unwrap_or_default(),
                     skip_external_embed,
                     refresh_resolve,
+                    params
+                        .get("avoidSourceHashes")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
                     record_external_health_events,
                     real_debrid_benchmark_exact_reuse,
                     truthy_query_flag(&params, "deferSubtitles"),
@@ -1815,6 +1819,10 @@ pub async fn resolve_movie_handler(
                 .unwrap_or_default(),
             skip_external_embed,
             refresh_resolve,
+            params
+                .get("avoidSourceHashes")
+                .map(String::as_str)
+                .unwrap_or_default(),
             record_external_health_events,
             real_debrid_benchmark_exact_reuse,
             truthy_query_flag(&params, "deferSubtitles"),
@@ -2052,6 +2060,10 @@ pub async fn resolve_tv_handler(
                         .unwrap_or_default(),
                     skip_external_embed,
                     refresh_resolve,
+                    params
+                        .get("avoidSourceHashes")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
                     record_external_health_events,
                     real_debrid_benchmark_exact_reuse,
                     truthy_query_flag(&params, "deferSubtitles"),
@@ -2148,6 +2160,10 @@ pub async fn resolve_tv_handler(
                 .unwrap_or_default(),
             skip_external_embed,
             refresh_resolve,
+            params
+                .get("avoidSourceHashes")
+                .map(String::as_str)
+                .unwrap_or_default(),
             record_external_health_events,
             real_debrid_benchmark_exact_reuse,
             truthy_query_flag(&params, "deferSubtitles"),

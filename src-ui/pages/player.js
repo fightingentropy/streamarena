@@ -104,6 +104,7 @@ import {
 } from "../player/live-stream-cache.js";
 import { createLivePlaybackHealthWatch } from "../player/live-playback-health.js";
 import { createLiveTransportFallbackController } from "../player/live-transport-fallback.js";
+import { createSourceRecoveryBudget, describeFailedSourceRecovery, runBoundedSourceRecovery } from "../player/source-recovery.js";
 import { buildMediaDeliveryQueue } from "../player/media-delivery.js";
 import {
   LIVE_EDGE_PIN_RATIO,
@@ -274,7 +275,6 @@ let subtitleRestoreAfterSourceChangeTimeout = null;
 let tmdbSourceQueue = [];
 let tmdbSourceAttemptIndex = 0;
 let tmdbSkipExternalEmbed = false;
-let tmdbResolveRetries = 0;
 let tmdbPlaybackRequestToken = 0;
 const resolveJobRequestCoordinator = createResolveJobRequestCoordinator();
 const requestResolveJson = createResolveRequester({
@@ -288,7 +288,6 @@ let userLocalTorrentEnabled = false;
 let userRealDebridSettingsPromise = null;
 let knownDurationSeconds = 0;
 let expectedDurationSeconds = 0;
-const maxTmdbResolveRetries = 2;
 let isRecoveringTmdbStream = false;
 let activeTranscodeInput = "";
 let activeAudioStreamIndex = -1;
@@ -306,7 +305,8 @@ let activeSourceTypeTab = "";
 let isFetchingPlaybackSources = false;
 let torrentSourceCatalogRequested = false;
 let playbackSourcesRequestToken = 0;
-let resolverFailedSourceHashes = new Set();
+const resolverFailedSourceHashes = new Set();
+const sourceRecovery = createSourceRecoveryBudget({ knownFailedSourceHashes: resolverFailedSourceHashes });
 let subtitleTrackElement = null;
 const subtitleOffset = createSubtitleOffsetController();
 const {
@@ -3267,10 +3267,7 @@ async function applyResolvedTmdbPlayback(
       resolved?.metadata?.resolverProvider ||
       "",
   ).trim();
-  if (currentTmdbResolverProvider !== "external-embed") {
-    tmdbSkipExternalEmbed = false;
-    tmdbResolveRetries = 0;
-  }
+  if (currentTmdbResolverProvider !== "external-embed") tmdbSkipExternalEmbed = false;
   currentTmdbResolvedFilename = String(resolved?.filename || "").trim();
   currentTmdbSelectedFile = String(resolved?.selectedFile || "").trim();
   if (tmdbTitleIsMissing(title) && resolved?.metadata?.displayTitle) {
@@ -3492,6 +3489,7 @@ async function resolveTmdbSourcesAndPlay({
   retryTransientResolve = true,
   skipExternalEmbed = tmdbSkipExternalEmbed,
   refreshResolve = false,
+  avoidSourceHashes = [],
   startSeconds = 0,
   preservePlaybackState = false,
 } = {}) {
@@ -3561,6 +3559,7 @@ async function resolveTmdbSourcesAndPlay({
             retryTransientResolve,
               skipExternalEmbed,
               refreshResolve,
+              avoidSourceHashes,
             },
           )
         : resolveTmdbMovieViaBackend(tmdbId, {
@@ -3570,6 +3569,7 @@ async function resolveTmdbSourcesAndPlay({
             retryTransientResolve,
             skipExternalEmbed,
             refreshResolve,
+            avoidSourceHashes,
           }),
     isSuperseded,
   });
@@ -3593,6 +3593,8 @@ async function resolveTmdbSourcesAndPlay({
       "Selected source is unavailable right now. Try another source.",
     );
   }
+  // A server that ignored the avoid list must not replay a source that just failed.
+  if (avoidSourceHashes.includes(resolvedSourceHash)) throw new Error("The server returned a source that already failed.");
   if (!applyPlayback) {
     return { nativeLaunched: false, resolved, resolvedSourceHash };
   }
@@ -3636,6 +3638,10 @@ function attemptTmdbRecovery(message, { failureMessage = "", sourceUnavailable =
   ) {
     return false;
   }
+  // The final error stays until the viewer acts; later stall/media callbacks are handled.
+  if (sourceRecovery.hasFailed()) return true;
+  sourceRecovery.begin(normalizeSourceHash(selectedSourceHash));
+  if (sourceRecovery.isExhausted()) return failAutomaticSourceRecovery();
 
   const resumeAt = Math.max(0, Math.floor(getEffectiveCurrentTime()));
   const recoveryRequestToken = ++tmdbPlaybackRequestToken;
@@ -3662,45 +3668,43 @@ function attemptTmdbRecovery(message, { failureMessage = "", sourceUnavailable =
     { includeSourceHash: false, dedupe: false },
   );
 
-  if (tmdbResolveRetries < maxTmdbResolveRetries) {
-    tmdbResolveRetries += 1;
-    tmdbSkipExternalEmbed = false;
-    preferredResolverProvider = DEFAULT_RESOLVER_PROVIDER;
-    // Recovery stays on eligible HLS servers even when torrent integrations are
-    // enabled. The Server picker remains the explicit way to select a torrent.
-    selectedSourceHash = "";
-    sourceSelectionPinned = false;
-    currentTmdbPlaybackSessionKey = "";
-    showResolver("Trying another streaming source...");
-    void invalidateCurrentSession
-      .then(() => {
-        if (recoveryRequestToken !== tmdbPlaybackRequestToken || isManualSourceSwitchPending()) return;
-        // Force a fresh resolve on recovery so a stale/dead cached upstream URL is
-        // evicted server-side rather than re-served.
-        return resolveTmdbSourcesAndPlay({
-          playbackRequestToken: recoveryRequestToken,
-          startSeconds: resumeAt,
-          preservePlaybackState: true,
-          refreshResolve: true,
-          requestSourceHash: pickResolverAlternateSourceHash({ allowPreviouslyFailedFallback: false }),
-          skipExternalEmbed: false,
-        });
-      })
-      .catch((error) => {
-        if (recoveryRequestToken !== tmdbPlaybackRequestToken || isManualSourceSwitchPending()) return;
-        console.error("Failed to refresh TMDB playback source:", error);
-        const fallbackMessage =
-          error?.message || "Resolved stream could not be played. Try again.";
-        showResolverError(fallbackMessage);
-      })
-      .finally(() => {
-        if (recoveryRequestToken === tmdbPlaybackRequestToken) isRecoveringTmdbStream = false;
-      });
-    return true;
-  }
+  tmdbSkipExternalEmbed = false;
+  preferredResolverProvider = DEFAULT_RESOLVER_PROVIDER;
+  // Recovery stays on eligible HLS servers even when torrent integrations are
+  // enabled. The Server picker remains the explicit way to select a torrent.
+  selectedSourceHash = "";
+  sourceSelectionPinned = false;
+  currentTmdbPlaybackSessionKey = "";
+  showResolver("Trying another streaming source...");
+  const isCurrent = () => recoveryRequestToken === tmdbPlaybackRequestToken && !isManualSourceSwitchPending();
+  void invalidateCurrentSession
+    .then(() => runBoundedSourceRecovery({
+      budget: sourceRecovery,
+      isCurrent,
+      pickSourceHash: (avoided) => (availablePlaybackSources.length ? pickResolverAlternateSourceHash(avoided, false) || null : ""),
+      // A fresh resolve evicts a stale cached upstream URL server-side. One request
+      // per source: no hidden unpinned fallback that could land on a failed source.
+      resolveSource: ({ sourceHash, timeoutMs, avoidSourceHashes }) => resolveTmdbSourcesAndPlay({
+        playbackRequestToken: recoveryRequestToken, startSeconds: resumeAt, preservePlaybackState: true,
+        refreshResolve: true, allowSourceFallback: false, skipExternalEmbed: false,
+        requestSourceHash: sourceHash, resolveTimeoutMs: timeoutMs, avoidSourceHashes,
+      }).then((result) => ({ stale: result?.stale, sourceHash: normalizeSourceHash(result?.resolved?.sourceHash) })),
+    }))
+    .then((outcome) => outcome.stale || outcome.recovered || failAutomaticSourceRecovery(outcome.error))
+    .catch((error) => isCurrent() && failAutomaticSourceRecovery(error))
+    .finally(() => {
+      if (recoveryRequestToken === tmdbPlaybackRequestToken) isRecoveringTmdbStream = false;
+    });
+  return true;
+}
 
-  isRecoveringTmdbStream = false;
-  return false;
+function failAutomaticSourceRecovery(lastError = null) {
+  if (lastError) console.error("Automatic source recovery failed:", lastError);
+  const summary = sourceRecovery.fail();
+  // Keep the position for Retry, but stop the broken media from hiding the error.
+  video.pause();
+  showResolverError(describeFailedSourceRecovery(summary), "", { showRetry: true });
+  return true;
 }
 
 function setEpisodeLabel(currentTitle, currentEpisode) {
@@ -6772,6 +6776,8 @@ function schedulePlaybackRecovery(
   if (isManualSourceSwitchPending()) {
     return true;
   }
+  // Late network errors from the abandoned source must not replace the final error.
+  if (sourceRecovery.hasFailed()) return true;
 
   if (!playerShell && !hasRecoverablePlaybackSource() && !isTmdbResolvedPlayback) {
     return false;
@@ -6971,15 +6977,8 @@ function retryPlaybackRecoveryNow() {
   void runPlaybackRecoveryAttempt(sequence, mode);
 }
 
-function pickResolverAlternateSourceHash({
-  allowPreviouslyFailedFallback = true,
-} = {}) {
-  return pickResolverAlternateSourceHashFromRouting({
-    availablePlaybackSources,
-    resolverFailedSourceHashes,
-    selectedSourceHash,
-    allowPreviouslyFailedFallback,
-  });
+function pickResolverAlternateSourceHash(failedSourceHashes = resolverFailedSourceHashes, allowPreviouslyFailedFallback = true) {
+  return pickResolverAlternateSourceHashFromRouting({ availablePlaybackSources, resolverFailedSourceHashes: failedSourceHashes, selectedSourceHash, allowPreviouslyFailedFallback });
 }
 
 async function resolveTmdbFromResolverAction({
@@ -7003,7 +7002,7 @@ async function resolveTmdbFromResolverAction({
     syncAudioState();
   }
 
-  tmdbResolveRetries = 0;
+  sourceRecovery.reset();
   const resumeFrom = getEffectiveCurrentTime();
   if (!suppressErrorUi) {
     showResolver(isAlternate ? "Trying another source..." : "Loading video...");
@@ -7268,6 +7267,7 @@ async function resolveTmdbMovieViaBackend(
     retryTransientResolve = true,
     skipExternalEmbed = false,
     refreshResolve = false,
+    avoidSourceHashes = [],
   } = {},
 ) {
   const requestPlaybackResolve = (url, timeout) => requestResolveJson(url, timeout, { retryTransient: retryTransientResolve });
@@ -7294,6 +7294,7 @@ async function resolveTmdbMovieViaBackend(
     if (refreshResolve) {
       query.set("refreshResolve", "1");
     }
+    if (avoidSourceHashes.length) query.set("avoidSourceHashes", avoidSourceHashes.join(","));
     if (preferredSubtitleLang) {
       query.set("subtitleLang", preferredSubtitleLang);
     }
@@ -7389,6 +7390,7 @@ async function resolveTmdbTvEpisodeViaBackend(
     retryTransientResolve = true,
     skipExternalEmbed = false,
     refreshResolve = false,
+    avoidSourceHashes = [],
   } = {},
 ) {
   const requestPlaybackResolve = (url, timeout) => requestResolveJson(url, timeout, { retryTransient: retryTransientResolve });
@@ -7422,6 +7424,7 @@ async function resolveTmdbTvEpisodeViaBackend(
     if (refreshResolve) {
       query.set("refreshResolve", "1");
     }
+    if (avoidSourceHashes.length) query.set("avoidSourceHashes", avoidSourceHashes.join(","));
     if (preferredSubtitleLang) {
       query.set("subtitleLang", preferredSubtitleLang);
     }
@@ -8969,7 +8972,7 @@ if (audioOptionsContainer) trackListener(audioOptionsContainer, "click", async (
     }
 
     const resumeFrom = getEffectiveCurrentTime();
-    tmdbResolveRetries = 0;
+    sourceRecovery.reset();
     showResolver("Switching audio language...");
     try {
       const result = await resolveTmdbSourcesAndPlay();
@@ -9189,7 +9192,7 @@ async function handleSourceOptionSelection(nextSourceHash) {
       ? "Preparing Real-Debrid source — current stream keeps playing."
       : "Preparing torrent — current stream keeps playing.";
   }
-  tmdbResolveRetries = 0;
+  sourceRecovery.reset();
   closeAudioPopover(false, { force: true });
   // Keep Server menu open with an understated row spinner (no full overlay).
   // With local torrent, HLS/embed stays on screen until the torrent has a playable URL.
@@ -9631,6 +9634,7 @@ trackListener(video, "playing", () => {
 trackListener(video, "timeupdate", () => {
   if (getEffectiveCurrentTime() > 0.5 && !video.seeking && video.readyState >= 3) {
     completeManualSourceSwitchIfActive();
+    if (!isRecoveringTmdbStream) sourceRecovery.noteProgress(getEffectiveCurrentTime());
     clearPlaybackRecovery();
     clearStreamStallRecovery();
     clearLiveStartupHealthWatch({ resetRequest: true });
@@ -9727,9 +9731,7 @@ trackListener(video, "ended", () => {
 });
 trackListener(video, "volumechange", syncMuteState);
 trackListener(video, "canplay", () => {
-  if (isTmdbResolvedPlayback) {
-    hideResolver();
-  }
+  if (isTmdbResolvedPlayback && !sourceRecovery.hasFailed()) hideResolver();
 });
 trackListener(video, "error", () => {
   // load() clears MediaError; a queued event from the old source must not
