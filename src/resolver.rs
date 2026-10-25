@@ -62,6 +62,7 @@ mod real_debrid;
 mod scoring;
 mod subtitles;
 mod vidrift;
+mod vidzee;
 use benchmark::BenchmarkExactSessionRequest;
 pub(crate) use real_debrid::build_real_debrid_cache_scope;
 pub(crate) use real_debrid::is_real_debrid_lazy_hls_input;
@@ -4831,7 +4832,7 @@ fn external_embed_source_resolve_timeout_ms(source: ExternalEmbedSource) -> u64 
         // meridian/gallic make two sequential round-trips (aether resolve -> unwrap
         // origin -> validate the upstream playlist), so they get the full budget too.
         "videasy" | "vidlink" | "icefy" | "meridian" | "gallic" | "cinejoy" | "aether-lul"
-        | "aether-link" => external_embed_hls_resolve_timeout_ms(),
+        | "aether-link" | "vidzee" => external_embed_hls_resolve_timeout_ms(),
         _ => external_embed_hls_resolve_timeout_ms().min(EXTERNAL_EMBED_DIRECT_RESOLVE_TIMEOUT_MS),
     }
 }
@@ -4947,6 +4948,7 @@ async fn resolve_external_embed_hls_playback_source(
         "aether-lul" | "aether-link" => {
             return aether::resolve(client, source.provider.id, embed_url, timeout_ms).await;
         }
+        "vidzee" => return vidzee::resolve(client, metadata, timeout_ms).await,
         "icefy" => return resolve_icefy_hls_playback_source(client, embed_url, timeout_ms).await,
         "vidrock" => {
             return resolve_vidrock_hls_playback_source(client, metadata, timeout_ms).await;

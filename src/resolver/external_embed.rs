@@ -138,6 +138,10 @@ pub(super) const EXTERNAL_EMBED_PROVIDERS: &[ExternalEmbedProvider] = &[
         label: "Miami",
     },
     ExternalEmbedProvider {
+        id: "vidzee",
+        label: "Vidzee",
+    },
+    ExternalEmbedProvider {
         id: "cinejoy",
         label: "CineJoy",
     },
@@ -361,9 +365,8 @@ pub(super) fn is_default_external_embed_hls_fallback_source(source: ExternalEmbe
             .server
             .map(|server| server.id == "YORU")
             .unwrap_or(true),
-        "miami" | "cinejoy" | "aether-lul" | "aether-link" | "vidrift-evion" | "vidrift-vela" => {
-            true
-        }
+        "miami" | "vidzee" | "cinejoy" | "aether-lul" | "aether-link" | "vidrift-evion"
+        | "vidrift-vela" => true,
         "vidlink" => source.server.is_none(),
         "vidrock" | "notorrent" | "lordflix" | "meridian" | "gallic" | "nebula" => {
             source.server.is_none()
@@ -386,6 +389,7 @@ pub(super) fn is_external_embed_hls_capable_source(source: ExternalEmbedSource) 
     matches!(
         source.provider.id,
         "miami"
+            | "vidzee"
             | "videasy"
             | "vidlink"
             | "icefy"
@@ -432,6 +436,7 @@ pub(super) fn external_embed_url(
     }
     match (source.provider.id, metadata.media_type.as_str()) {
         ("miami", _) => super::miami::source_url(metadata),
+        ("vidzee", _) => super::vidzee::source_url(metadata),
         ("vidrift-evion" | "vidrift-vela", _) => {
             super::vidrift::source_url(source.provider.id, metadata)
         }
@@ -626,6 +631,7 @@ fn external_embed_source_quality_label(source: ExternalEmbedSource) -> &'static 
 fn external_embed_source_detail_label(source: ExternalEmbedSource) -> &'static str {
     match source.provider.id {
         "miami" => return "Native HLS, up to 4K",
+        "vidzee" => return "Vidzee native HLS",
         "icefy" => return "Fast native HLS",
         "vidrock" => return "Native HLS",
         "lordflix" => return "Multi-server native HLS",

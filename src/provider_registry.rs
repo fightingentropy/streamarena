@@ -47,6 +47,7 @@ pub mod keys {
 /// swappable; the dashboard exposes an enable/disable toggle instead.
 pub const EMBED_IDS: &[&str] = &[
     "miami",
+    "vidzee",
     "cinejoy",
     "aether-lul",
     "aether-link",
@@ -207,6 +208,11 @@ pub const EMBED_DEFAULT_RANK: &[(&str, i64)] = &[
     // The base CineJoy source is Lisbon. Its HEVC/4K ladder was verified on
     // three titles in the 2026-10-14 Gemflix audit; keep Auto quality selection.
     ("cinejoy", 2_600),
+    // FrameX audit (2026-10-25): FrameX's "Root Rider". One direct API call
+    // (0.3-1s), AVC 1920x1080 verified from the segment SPS on every resolve,
+    // with a second CDN server. Full HD only, so it follows the verified 4K
+    // tier and Nebula's shared CineJoy family.
+    ("vidzee", 2_300),
     ("aether-lul", 2_200),
     ("aether-link", 2_000),
     // 7Movies audit (2026-10-11): Evion has limited but fast AVC/1080p
@@ -421,6 +427,7 @@ pub fn catalog(config: &Config) -> Vec<ProviderInfo> {
     // per-provider referer/fingerprint handling in the resolver.
     const EMBED_BASES: &[(&str, &str, &str)] = &[
         ("miami", "Miami", "https://framextv.xyz"),
+        ("vidzee", "Vidzee", "https://player.vidzee.wtf"),
         ("cinejoy", "CineJoy", "https://cinejoy.pk"),
         ("aether-lul", "Aether Lul", "https://lul.aether.cx"),
         ("aether-link", "Aether Link", "https://link.aether.cx"),
